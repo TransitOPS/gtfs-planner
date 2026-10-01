@@ -174,6 +174,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:alignment_follow, nil)
      |> assign(:alignment_generate_dialog, nil)
      |> assign(:alignment_generate_notice, nil)
+     |> assign(:map_line_file, nil)
+     |> allow_upload(:map_line_file,
+       accept: ~w(.geojson .json .kml .kmz .gpx),
+       max_entries: 1,
+       max_file_size: 10_000_000,
+       auto_upload: true
+     )
      |> assign(:bulk_selected, nil)
      |> assign(:bulk_candidates, [])
      |> assign(:bulk_dialog, nil)
@@ -231,6 +238,22 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     end
   end
 
+  # The one completed entry of the map-line upload, or `:error` when nothing
+  # has finished arriving. `max_entries: 1` means there is never more than one
+  # to choose from, so a refused entry simply reads as "not ready yet".
+  defp map_line_entry(socket) do
+    case socket.assigns[:uploads] do
+      %{map_line_file: %Phoenix.LiveView.UploadConfig{entries: entries}} ->
+        case Enum.find(entries, & &1.done?) do
+          %Phoenix.LiveView.UploadEntry{} = entry -> {:ok, entry}
+          nil -> :error
+        end
+
+      _without ->
+        :error
+    end
+  end
+
   # A lost role or membership renders unavailable editing and closes every open
   # confirmation, so nothing is committed through a connection that was opened
   # while the actor still had access.
@@ -253,6 +276,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:alignment_generate_dialog, nil)
     |> assign(:alignment_generate_notice, nil)
     |> assign(:alignment_generation, nil)
+    |> assign(:map_line_file, nil)
     |> assign(:bulk_dialog, nil)
     |> assign(:alignment_bulk, nil)
     |> assign(:alignment_follow, nil)
@@ -988,6 +1012,21 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   @impl true
+  def handle_event("alignment_close_file_import", _params, socket) do
+    {:noreply, Phoenix.Component.assign(socket, :map_line_file, nil)}
+  end
+
+  @impl true
+  def handle_event("alignment_cancel_file", %{"ref" => ref}, socket) do
+    {:noreply,
+     socket
+     |> cancel_upload(:map_line_file, ref)
+     |> assign(:map_line_file, nil)}
+  end
+
+  def handle_event("alignment_cancel_file", _params, socket), do: {:noreply, socket}
+
+  @impl true
   def handle_event("alignment_open_discard", params, socket) do
     {:noreply, RoutePatternAlignmentEvents.open_discard(socket, params)}
   end
@@ -1025,6 +1064,33 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   @impl true
   def handle_event("alignment_open_import", params, socket) do
     {:noreply, RoutePatternAlignmentEvents.open_import(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_open_file_import", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.open_file_import(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_file_choose", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.choose_file_line(socket, params)}
+  end
+
+  # The upload form's change event. It only asks for the entry's own errors
+  # to be rendered; a file is read when the editor asks for it with
+  # "Read this file", which is the submit event below.
+  @impl true
+  def handle_event("alignment_file_validate", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("alignment_file_consume", _params, socket) do
+    case map_line_entry(socket) do
+      {:ok, entry} ->
+        {:noreply, RoutePatternAlignmentEvents.consume_file(socket, entry)}
+
+      :error ->
+        {:noreply, socket}
+    end
   end
 
   @impl true
@@ -2353,6 +2419,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                           generation={@alignment_generation}
                           generate_dialog={@alignment_generate_dialog}
                           generate_notice={@alignment_generate_notice}
+                          file_import={@map_line_file}
+                          map_line_upload={@uploads.map_line_file}
                         />
                       <% else %>
                         <.skeleton

@@ -17,9 +17,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Alignments
+  alias GtfsPlanner.Gtfs.Alignments.Materializer
+  alias GtfsPlanner.Gtfs.MapLineFiles
   alias Phoenix.Component
 
   require Phoenix.LiveView
+  import Phoenix.LiveView, only: [consume_uploaded_entry: 3]
 
   @doc """
   Loads the alignment editor model when the Alignment task shows a pattern
@@ -127,6 +130,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     |> Component.assign(:alignment_import_dialog, nil)
     |> Component.assign(:alignment_generate_dialog, nil)
     |> Component.assign(:bulk_dialog, nil)
+    |> Component.assign(:map_line_file, nil)
     |> Component.assign(:alignment_pending, nil)
   end
 
@@ -471,6 +475,131 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
       _ ->
         Component.assign(socket, :alignment_import_dialog, nil)
     end
+  end
+
+  # --- the map-line path file -----------------------------------------------
+  #
+  # The file is read through `MapLineFiles.parse/2`, the one door for an
+  # uploaded map file (AC-22), and the answer is only rendered or pushed: this
+  # module never writes and never converts a line into a draft (CR-9).
+
+  @doc """
+  Opens the "Import a path file" panel in place of the section list (AC-22).
+
+  An editor with a loaded model gets the choose step; a viewer or a missing
+  model leaves the socket unchanged. Opening it again is "Choose another
+  file": the previous file, its lines and any message are dropped, and
+  whatever the hook already drew stays drawn.
+  """
+  def open_file_import(socket, _params) do
+    if editable?(socket) and not is_nil(socket.assigns[:alignment]) do
+      Component.assign(socket, :map_line_file, %{step: :choose})
+    else
+      socket
+    end
+  end
+
+  @doc """
+  Reads one uploaded path file and shows what it offers (AC-22, AC-23).
+
+  The upload's own limits (`accept`, one entry, 10 MB) refuse a file before
+  it reaches this function, so the parser only ever sees a file the client
+  accepted. One line skips the picker and pushes `alignment:file_line` at
+  once; several lines open the picker; a file problem keeps the panel open on
+  its own message. A socket that is not editable, or a read that fails, only
+  leaves the panel where it is.
+
+  `consume_uploaded_entry/3` is the single-entry form of the LiveView's
+  `consume_uploaded_entries/3`: this upload carries one entry, so there is
+  nothing to iterate.
+  """
+  def consume_file(socket, entry) do
+    if editable?(socket) and not is_nil(socket.assigns[:alignment]) do
+      file = %{name: entry.client_name, size: entry.client_size}
+
+      case read_entry(socket, entry) do
+        {:ok, bytes} -> put_parsed_file(socket, file, MapLineFiles.parse(bytes, file.name))
+        :error -> put_parsed_file(socket, file, {:error, :unreadable})
+      end
+    else
+      socket
+    end
+  end
+
+  @doc """
+  Takes the chosen line's path to the hook (AC-22).
+
+  The pick is a form the panel renders, so the line index arrives as a
+  string: an index this file does not have leaves the panel as it is and
+  nothing is pushed. The push carries the line's own points; the fit against
+  this pattern's stops is the hook's work.
+  """
+  def choose_file_line(socket, %{"line" => wanted}) when is_binary(wanted) do
+    with {index, ""} <- Integer.parse(wanted),
+         %{step: :pick, lines: lines} <- socket.assigns[:map_line_file] || %{},
+         {:ok, line} <- Enum.fetch(lines, index) do
+      push_file_line(socket, line)
+    else
+      _other -> socket
+    end
+  end
+
+  def choose_file_line(socket, _params), do: socket
+
+  defp read_entry(socket, entry) do
+    # The callback's own `{:ok, value}` layer is the signature consuming
+    # requires, and what comes back is that value, so `File.read/1`'s tuple is
+    # the read's own answer.
+    case consume_uploaded_entry(socket, entry, fn %{path: path} -> {:ok, File.read(path)} end) do
+      {:ok, bytes} when is_binary(bytes) -> {:ok, bytes}
+      _other -> :error
+    end
+  end
+
+  # One line needs no choice, so it goes straight to the fit. Several lines
+  # are offered; pieces that did not meet end to end are separate lines here,
+  # which is what a gap beyond the parser's join tolerance means.
+  defp put_parsed_file(socket, _file, {:ok, [only_line]}) do
+    line = file_line(only_line)
+    push_file_line(socket, line)
+  end
+
+  defp put_parsed_file(socket, file, {:ok, lines}) when is_list(lines) and lines != [] do
+    Component.assign(
+      socket,
+      :map_line_file,
+      Map.merge(file, %{step: :pick, lines: Enum.map(lines, &file_line/1)})
+    )
+  end
+
+  defp put_parsed_file(socket, file, {:error, reason}) do
+    Component.assign(socket, :map_line_file, Map.merge(file, %{step: :error, error: reason}))
+  end
+
+  # `MapLineFiles.parse/2` answers `{:error, :empty}` rather than `{:ok, []}`,
+  # so a list-shaped answer with no line in it is a malformed one.
+  defp put_parsed_file(socket, file, _other) do
+    Component.assign(socket, :map_line_file, Map.merge(file, %{step: :error, error: :unreadable}))
+  end
+
+  # The pick renders length and point count beside the name, and says when a
+  # line is several file pieces that met end to end, as Google My Maps splits
+  # a long route into groups of ten stops.
+  defp file_line(line) do
+    %{
+      name: line.name,
+      points: line.points,
+      point_count: length(line.points),
+      length_m: Materializer.length_m(line.points),
+      joined_from: line.joined_from
+    }
+  end
+
+  defp push_file_line(socket, line) do
+    socket
+    |> Component.assign(:map_line_file, nil)
+    |> Component.assign(:status_message, "Checking the file line against this pattern's stops.")
+    |> Phoenix.LiveView.push_event("alignment:file_line", %{points: line.points, name: line.name})
   end
 
   defp import_choice_param(%{"import_shape" => wanted}) when is_binary(wanted), do: wanted
