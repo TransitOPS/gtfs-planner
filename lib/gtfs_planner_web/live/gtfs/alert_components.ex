@@ -1420,7 +1420,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
     required: true,
     doc: "one `%{date: Date, departures: [departure]}` entry per service date, earliest first"
 
-  attr :field, :any, required: true, doc: "the `to_form/2` field the date input writes to"
+  attr :form, :any, required: true, doc: "the `to_form/2` form the date input writes to"
 
   attr :routes_chosen?, :boolean, default: false, doc: "whether the alert already names a route"
 
@@ -1437,7 +1437,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
       <div id="alert-departure-dates" class="grid gap-2">
         <.input
           type="date"
-          field={@field}
+          field={@form[:date]}
           id="service-date"
           label="Service date"
           help="Choose a date this route runs, then add it. Each date gets its own list of departures."

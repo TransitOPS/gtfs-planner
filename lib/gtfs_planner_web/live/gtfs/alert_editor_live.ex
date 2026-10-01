@@ -241,7 +241,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
      |> assign(:departure_error, nil)
      |> assign(:added_dates, [])
      |> assign(:chosen_date, nil)
-     |> assign(:service_date_field, service_date_form(nil))
+     |> assign(:service_date_form, service_date_form(nil))
      |> assign(:form, draft_form(%Alert{}))}
   end
 
@@ -434,7 +434,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     {:noreply,
      socket
      |> assign(:chosen_date, parse_date(value))
-     |> assign(:service_date_field, service_date_form(value))}
+     |> assign(:service_date_form, service_date_form(value))}
   end
 
   def handle_event("autosave", %{"alert" => params}, socket) when is_map(params) do
@@ -2079,7 +2079,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
                   <.departures_question
                     :if={@step == :departures}
                     dates={@departure_dates}
-                    field={@service_date_field}
+                    form={@service_date_form}
                     routes_chosen?={@departure_routes?}
                     error={@departure_error}
                   />
