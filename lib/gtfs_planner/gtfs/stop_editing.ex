@@ -44,10 +44,12 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopNaming
   alias GtfsPlanner.Gtfs.StopPlacement
   alias GtfsPlanner.Gtfs.StopReferences
+  alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion
@@ -1021,6 +1023,424 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
         {count, _} = Repo.delete_all(StopReferences.scope_query(ref, stop))
         Map.update(removed, StopReferences.report_key(ref), count, &(&1 + count))
     end
+  end
+
+  @doc """
+  Answers "what would replacing the old stop with the new one change" (AC-18).
+
+  Read-only, like `delete_review/2` and `move_review/3`: no locks, no writes, so
+  asking does not serialize behind another editor's save.
+
+  Answers `{:ok, %{changes: [...], dropped: [...], fingerprint: ...}}`, or
+  `{:error, {:refused, reasons}}` when the replace must not happen at all.
+
+  ## The refusals, and why each is a refusal
+
+    * `:same_stop` — there is nothing to replace.
+    * `:station` — either stop is a station (`location_type` 1). Rewriting a
+      reference onto a station would attach a timetable row to a drawing.
+    * `:child` — either stop has a parent. A bay's references belong to the
+      station's, and merging them silently would lose which is which.
+    * `:type_mismatch` — the two stops' `location_type`s differ. A stop is not
+      interchangeable with an entrance or a station node.
+    * `{:consecutive_pattern, route_pattern_ids}` — a pattern that visits the
+      old stop and the new one **adjacent**. After the rewrite it would visit
+      the new one twice in a row, which no pattern means.
+    * `{:consecutive_trip, count}` — the same thing in the timetables, counted
+      rather than listed because a trip has no ID to hand back.
+
+  Both adjacency checks read `position` and `stop_sequence` rather than ID
+  order, and both are the *refusal* the spec's worked example describes:
+  Route 12 visiting `…, 1433, 1391, …` may replace 1433 with 1434 but not with
+  1391.
+
+  ## The effects
+
+  Every entry in `StopReferences.all/0` that has rows contributes one
+  `change` — the rows the replace will rewrite — and every row that a rewrite
+  would drop contributes one `drop`. A `change` is
+  `%{key:, label:, count:, rule:, details:}`; a `drop` adds `:kept`, the row
+  that survives in its place. Only the kinds a person needs to act on carry
+  `details`: a deadhead row carries both minutes, because "5 minutes" and "20
+  minutes" for the same garage pair is the whole question.
+
+  A rewrite that would land on a row the replacement already has is a **drop,
+  not a change**: the existing row is kept and the old one deleted, per
+  `:rewrite_keep_existing`. Which rows those are is decided by the entry's own
+  `collision_key`, read off the catalog — so this function and
+  `replace_stop/4` never name a table (CR-1). `:rekey_segments` drops a segment
+  that would become `(new, new)` for the same reason.
+
+  `:refuse` entries are the station rows from step 17: a replace is refused
+  outright while a pathway, a level, a journal entry or an editing status
+  exists, because moving references onto a different stop would orphan the
+  drawing they describe.
+
+  `fingerprint` covers both stops' content and every count, and is what
+  `replace_stop/4` re-checks.
+  """
+  # A kind is a summary, not a data dump: a replace touching ten thousand stop
+  # times must not load ten thousand rows to draw a dialog. The cap is far above
+  # any single stop's realistic reference count.
+  @replace_row_limit 5_000
+
+  @spec replace_review(Ecto.UUID.t(), Ecto.UUID.t(), AuditContext.t()) ::
+          {:ok, map()}
+          | {:error, {:refused, [atom()]} | :forbidden | :not_found | :invalid_input}
+  def replace_review(old_uuid, new_uuid, %AuditContext{} = audit)
+      when is_binary(old_uuid) and is_binary(new_uuid) do
+    if authorize_editor?(audit) do
+      with {:ok, old} <- scoped_stop(old_uuid, audit),
+           {:ok, new} <- scoped_stop(new_uuid, audit) do
+        build_replace_review(old, new, audit)
+      end
+    else
+      {:error, :forbidden}
+    end
+  end
+
+  def replace_review(_old_uuid, _new_uuid, _audit), do: {:error, :invalid_input}
+
+  defp build_replace_review(old, new, audit) do
+    case replace_refusals(old, new) do
+      [] ->
+        changes = Enum.map(StopReferences.all(), &replace_change(&1, old, new))
+        dropped = Enum.flat_map(changes, & &1.drops)
+        effects = Enum.map(changes, &public_change/1)
+
+        {:ok,
+         %{
+           changes: effects,
+           dropped: dropped,
+           fingerprint:
+             replace_fingerprint(old, new, Enum.map(effects, &{&1.key, &1.count}), audit)
+         }}
+
+      reasons ->
+        {:error, {:refused, reasons}}
+    end
+  end
+
+  # The refusal list is built in a fixed order so the same state always answers
+  # with the same reasons — a review an editor reopens after saving should not
+  # present a different list than the one they were shown.
+  defp replace_refusals(old, new) do
+    cond do
+      old.id == new.id -> [:same_stop]
+      station?(old) or station?(new) -> [:station]
+      old.parent_station || new.parent_station -> [:child]
+      old.location_type != new.location_type -> [:type_mismatch]
+      true -> []
+    end
+    |> Kernel.++(station_refusal_reasons(old))
+    |> Kernel.++(consecutive_reasons(old, new))
+  end
+
+  defp station?(stop), do: stop.location_type == 1
+
+  # `:refuse` entries are rows a replace cannot carry across. Listed as one
+  # reason per kind, so an editor is told *what* is in the way rather than
+  # "some station row".
+  defp station_refusal_reasons(old) do
+    StopReferences.all()
+    |> Enum.filter(&(&1.replace == :refuse and replace_count(&1, old) > 0))
+    |> Enum.map(&{:blocked, &1.key})
+  end
+
+  # A pattern or trip that already visits the replacement immediately before or
+  # after the old stop would visit it twice in a row after the rewrite. Found
+  # with a self-join on the adjacent `position` / `stop_sequence`, so the
+  # question is answered for every pattern and every trip in one query each
+  # rather than one per row.
+  defp consecutive_reasons(old, new) do
+    consecutive_pattern(old, new) ++ consecutive_trip(old, new)
+  end
+
+  defp consecutive_pattern(old, new) do
+    patterns =
+      from(rps in RoutePatternStop,
+        join: other in RoutePatternStop,
+        on:
+          other.route_pattern_id == rps.route_pattern_id and
+            other.stop_id == ^new.stop_id and
+            other.position in [rps.position - 1, rps.position + 1],
+        where:
+          rps.stop_id == ^old.stop_id and
+            rps.organization_id == ^old.organization_id and
+            rps.gtfs_version_id == ^old.gtfs_version_id and
+            other.organization_id == ^old.organization_id and
+            other.gtfs_version_id == ^old.gtfs_version_id,
+        select: rps.route_pattern_id,
+        distinct: true
+      )
+      |> Repo.all()
+      |> Enum.sort()
+
+    if patterns == [], do: [], else: [{:consecutive_pattern, patterns}]
+  end
+
+  defp consecutive_trip(old, new) do
+    count =
+      from(st in StopTime,
+        join: other in StopTime,
+        on:
+          other.trip_id == st.trip_id and
+            other.stop_id == ^new.stop_id and
+            other.stop_sequence in [st.stop_sequence - 1, st.stop_sequence + 1],
+        where:
+          st.stop_id == ^old.stop_id and
+            st.organization_id == ^old.organization_id and
+            st.gtfs_version_id == ^old.gtfs_version_id and
+            other.organization_id == ^old.organization_id and
+            other.gtfs_version_id == ^old.gtfs_version_id,
+        select: fragment("count(distinct ?)", st.trip_id)
+      )
+      |> Repo.one()
+
+    if count && count > 0, do: [{:consecutive_trip, count}], else: []
+  end
+
+  defp replace_change(%{replace: :refuse} = ref, old, _new) do
+    # Listed so the review accounts for every kind, but a non-zero count is a
+    # refusal, not a change — see `station_refusal_reasons/1`.
+    %{
+      key: ref.key,
+      label: ref.label,
+      count: replace_count(ref, old),
+      rule: ref.replace,
+      drops: []
+    }
+  end
+
+  # A `:drop` kind — the old stop's translations — is the simplest effect there
+  # is: every row goes and nothing takes its place. Each row is still listed
+  # individually, because a translation is a person's work in a language and
+  # "3 translations removed" does not say which.
+  defp replace_change(%{replace: :drop} = ref, old, _new) do
+    rows = replace_rows(ref, old)
+
+    drops =
+      Enum.map(rows, fn row ->
+        %{
+          key: ref.key,
+          label: ref.label,
+          count: 1,
+          kept: nil,
+          details: translate_details(row)
+        }
+      end)
+
+    %{key: ref.key, label: ref.label, count: length(rows), rule: ref.replace, drops: drops}
+  end
+
+  defp replace_change(ref, old, new) do
+    rows = replace_rows(ref, old)
+    drops = Enum.flat_map(rows, &collision_drop(ref, &1, old, new))
+
+    %{key: ref.key, label: ref.label, count: length(rows), rule: ref.replace, drops: drops}
+  end
+
+  defp translate_details(%{language: language, field_name: field, translation: text}) do
+    [%{language: language, field: field, translation: text}]
+  end
+
+  defp translate_details(_row), do: []
+
+  defp public_change(%{drops: drops} = change) do
+    Map.put(change, :dropped, length(drops))
+  end
+
+  # The rows a rewrite would put on top of a row the replacement already has.
+  # `collision_key` is the entry's own uniqueness columns, so this is one
+  # grouped query per entry and never a table name (CR-1). A row whose
+  # rewritten key matches an existing row is dropped; the existing row is kept.
+  defp collision_drop(ref, row, old, new) when is_map(row) do
+    cond do
+      segment_self_pair?(ref, row, old, new) ->
+        [segment_drop(ref, row)]
+
+      collision?(ref, row, old, new) ->
+        [
+          %{
+            key: ref.key,
+            label: ref.label,
+            count: 1,
+            kept: collision_kept(ref, row, old, new),
+            details: replace_details(ref, row, new)
+          }
+        ]
+
+      true ->
+        []
+    end
+  end
+
+  # `(new, new)` names no journey: a segment whose two ends would become the
+  # same stop is dropped rather than written, because it would draw a zero
+  # length line and read as real service.
+  # Both ends of the *rewritten* pair, not of the stored one: a segment
+  # `1391 -> 1433` does not name the same stop twice until the replace turns
+  # its second end into `1391`.
+  defp segment_self_pair?(ref, row, old, new) do
+    match?(%{replace: :rekey_segments}, ref) and
+      Enum.all?([row.from_stop_id, row.to_stop_id], fn stop_id ->
+        stop_id == old.stop_id or stop_id == new.stop_id
+      end) and
+      Enum.all?([row.from_stop_id, row.to_stop_id], fn stop_id ->
+        rewritten_segment_end(ref, stop_id, old, new) == new.stop_id
+      end)
+  end
+
+  defp rewritten_segment_end(_ref, stop_id, old, new) do
+    if stop_id == old.stop_id, do: new.stop_id, else: stop_id
+  end
+
+  defp segment_drop(%{replace: :rekey_segments} = ref, row) do
+    %{
+      key: ref.key,
+      label: ref.label,
+      count: 1,
+      kept: nil,
+      details: [%{from_stop_id: row.from_stop_id, to_stop_id: row.to_stop_id}]
+    }
+  end
+
+  defp collision?(ref, row, old, new) do
+    case ref.collision_key do
+      nil ->
+        false
+
+      key ->
+        rewritten = Map.new(key, &{&1, rewritten_value(ref, &1, row, old, new)})
+
+        # No prefilter on the ref's own column: `collision_filter/2` already
+        # restricts the whole key, and for a deadhead column the rewritten
+        # value is `stop:<id>` rather than the bare ID, so a prefilter on
+        # `== new.stop_id` would match nothing.
+        ref.schema
+        |> where([r], field(r, :organization_id) == ^new.organization_id)
+        |> where([r], field(r, :gtfs_version_id) == ^new.gtfs_version_id)
+        |> exclude_self(row)
+        |> collision_filter(rewritten)
+        |> limit(1)
+        |> Repo.exists?()
+    end
+  end
+
+  # The row being tested is not a collision with itself. A `where` on the id is
+  # written with `field/2` rather than `id/1` because the column is a runtime
+  # value of the caller's schema, not this module's.
+  defp exclude_self(query, row) do
+    where(query, [r], field(r, :id) != ^row.id)
+  end
+
+  # A `nil` in a collision key is a real key value, not a missing one: the
+  # transfers key carries four nullable route and trip columns, and the transfer
+  # index is `NULLS NOT DISTINCT`, so a nil matches a nil. Ecto refuses
+  # `field(r, ^column) == nil` outright, so nil becomes `is_nil/1` here and the
+  # two forms stay distinguishable.
+  defp collision_filter(query, rewritten) do
+    Enum.reduce(rewritten, query, fn
+      {column, nil}, query -> where(query, [r], is_nil(field(r, ^column)))
+      {column, value}, query -> where(query, [r], field(r, ^column) == ^value)
+    end)
+  end
+
+  # The value a column takes once the old stop's ID becomes the new one's. The
+  # deadhead columns store `stop:<id>` or a bare `<id>` depending on when the
+  # row was written, and the rewritten row has to keep the form it already used
+  # or it would silently point at a different kind of endpoint.
+  defp rewritten_value(%{via: :fk_uuid}, _column, _row, _old, new), do: new.id
+
+  defp rewritten_value(ref, column, row, old, new) do
+    stored = Map.fetch!(row, column)
+
+    if ref.column == column and stop_reference?(stored, old) do
+      reencode_stop_ref(stored, new.stop_id)
+    else
+      stored
+    end
+  end
+
+  # Whether a stored value is a reference to the old stop, in either the bare or
+  # the `stop:`-prefixed form. The row itself is not asked: a deadhead row
+  # stores a `to_ref` string and carries no stop ID of its own, so the only
+  # thing that knows what the value means is the stop being replaced.
+  defp stop_reference?(stored, old) do
+    stored == old.stop_id or stored == "stop:" <> old.stop_id
+  end
+
+  defp reencode_stop_ref("stop:" <> _id, new_stop_id), do: "stop:" <> new_stop_id
+  defp reencode_stop_ref(_bare, new_stop_id), do: new_stop_id
+
+  # The row that survives a collision: the one the replacement already has,
+  # fetched so the review can show the person what they are keeping.
+  defp collision_kept(ref, row, old, new) do
+    key = ref.collision_key
+
+    ref.schema
+    |> where([r], field(r, :organization_id) == ^new.organization_id)
+    |> where([r], field(r, :gtfs_version_id) == ^new.gtfs_version_id)
+    |> exclude_self(row)
+    |> collision_filter(Map.new(key, &{&1, rewritten_value(ref, &1, row, old, new)}))
+    |> limit(1)
+    |> Repo.one()
+    |> kept_summary(ref)
+  end
+
+  defp kept_summary(nil, _ref), do: nil
+
+  defp kept_summary(row, %{key: key}) when key in [:deadhead_from, :deadhead_to] do
+    %{from_ref: row.from_ref, to_ref: row.to_ref, minutes: row.minutes}
+  end
+
+  defp kept_summary(row, _ref), do: %{id: row.id}
+
+  # A row's own minutes for the kinds a person needs to read. A deadhead row
+  # shows both ends' minutes: "5 from the garage, 20 back" is the fact that
+  # decides whether the replacement is acceptable, and neither half says it.
+  defp replace_details(%{key: key}, row, _new) when key in [:deadhead_from, :deadhead_to] do
+    [%{from_ref: row.from_ref, to_ref: row.to_ref, minutes: row.minutes}]
+  end
+
+  defp replace_details(_ref, _row, _new), do: []
+
+  # The rows of one kind that name the old stop, loaded whole: the collision
+  # test needs the other key columns, and a per-row query would be one query
+  # per row on a table with hundreds of them.
+  defp replace_rows(ref, old) do
+    ref
+    |> StopReferences.scope_query(old)
+    |> limit(^@replace_row_limit)
+    |> Repo.all()
+  end
+
+  defp replace_count(ref, old) do
+    ref
+    |> StopReferences.scope_query(old)
+    |> select([row], count(field(row, :id)))
+    |> Repo.one()
+  end
+
+  # Both stops' content, not only their `updated_at`: that column is a whole
+  # second (see `review_fingerprint/4`), so a stop renamed inside the same
+  # second would otherwise leave the fingerprint matching a state nobody
+  # reviewed. Every count is in the hash because a new reference row changes
+  # what the replace would do without changing either stop.
+  defp replace_fingerprint(old, new, counts, audit) do
+    :crypto.hash(
+      :sha256,
+      inspect({
+        {old.id, old.stop_id, old.updated_at, stop_content(old)},
+        {new.id, new.stop_id, new.updated_at, stop_content(new)},
+        old.location_type,
+        new.location_type,
+        counts,
+        audit.organization_id,
+        audit.gtfs_version_id
+      })
+    )
+    |> Base.encode16(case: :lower)
   end
 
   @doc """

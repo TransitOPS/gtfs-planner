@@ -192,6 +192,46 @@ defmodule GtfsPlanner.Gtfs.StopReferencesCatalogTest do
       assert StopReferences.fetch(:not_a_key) == nil
     end
 
+    test "every all/0 entry with a collision key has one that is a real unique index" do
+      for ref <- StopReferences.all(), ref.collision_key do
+        # A table can carry several unique indexes — `relief_points` has both
+        # its own and the primary key — so the entry must match *one* of them.
+        # The index is written on the scope columns too; the entry carries only
+        # what the scoped query does not already supply.
+        scope = Enum.map([:organization_id, :gtfs_version_id], &Atom.to_string/1)
+
+        matched =
+          ref.table
+          |> unique_indexes()
+          |> Enum.any?(fn columns ->
+            # `attname` comes back as text, so both sides are compared as
+            # strings rather than converting a database value into an atom.
+            Enum.sort(columns -- scope) ==
+              Enum.sort(Enum.map(ref.collision_key, &Atom.to_string/1))
+          end)
+
+        assert matched,
+               "#{ref.key} collision key #{inspect(ref.collision_key)} matches none of " <>
+                 "#{ref.table}'s unique indexes #{inspect(unique_indexes(ref.table))}"
+      end
+    end
+
+    test "every table that a rewrite can collide on declares a collision key" do
+      # The other direction. A `:rewrite_keep_existing` or `:rekey_segments` ref
+      # with no key would let `replace_stop/4` write straight into a unique
+      # violation, so each one must either name its key or be genuinely unique.
+      for ref <- StopReferences.all(),
+          ref.replace in [:rewrite_keep_existing, :rekey_segments],
+          ref.collision_key == nil do
+        indexes = unique_indexes(ref.table)
+
+        # A table whose only unique index is the primary key cannot collide on
+        # a rewritten column; anything else has to declare one.
+        assert indexes == [["id"]],
+               "#{ref.key} can collide on #{ref.table} but declares no collision key"
+      end
+    end
+
     test "the schema module's table matches the entry's table" do
       for ref <- StopReferences.all() do
         assert ref.schema.__schema__(:source) == ref.table,
@@ -262,5 +302,26 @@ defmodule GtfsPlanner.Gtfs.StopReferencesCatalogTest do
         assert count == 1, "excluded/0 names #{table}.#{column}, which does not exist"
       end
     end
+  end
+
+  # Each of a table's unique indexes, as a list of column names, read from the
+  # live database rather than from the migrations — so a later migration that
+  # changes an index is caught here instead of at a replace. Expression indexes
+  # carry 0 in `indkey` and are dropped: no column name describes them.
+  defp unique_indexes(table) do
+    %{rows: rows} =
+      Repo.query!(
+        """
+        select i.indexrelid::regclass::text, array_agg(a.attname order by a.attname)
+        from pg_index i
+        join pg_class c on c.oid = i.indrelid
+        join pg_attribute a on a.attrelid = c.oid and a.attnum = any(i.indkey)
+        where c.relname = $1 and i.indisunique
+        group by i.indexrelid
+        """,
+        [table]
+      )
+
+    Enum.map(rows, fn [_name, columns] -> List.wrap(columns) end)
   end
 end

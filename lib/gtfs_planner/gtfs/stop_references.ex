@@ -85,7 +85,8 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
           kind: kind(),
           replace: replace_rule(),
           label: String.t(),
-          via: via()
+          via: via(),
+          collision_key: [atom()] | nil
         }
 
   @ref_keys ~w(
@@ -120,7 +121,8 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
       kind: :blocking,
       replace: :rewrite,
       label: "Stop times",
-      via: :string
+      via: :string,
+      collision_key: nil
     },
     %{
       key: :route_pattern_stops,
@@ -130,10 +132,12 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
       kind: :blocking,
       replace: :rewrite,
       label: "Patterns",
-      via: :string
+      via: :string,
+      collision_key: nil
     },
     %{
       key: :relief_points,
+      collision_key: [:stop_id],
       table: "relief_points",
       schema: ReliefPoint,
       column: :stop_id,
@@ -150,7 +154,8 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
       kind: :blocking,
       replace: :rewrite_dedupe_array,
       label: "Flex hubs",
-      via: :array
+      via: :array,
+      collision_key: nil
     },
     %{
       key: :flex_first,
@@ -160,7 +165,8 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
       kind: :blocking,
       replace: :rewrite,
       label: "Flex first stop",
-      via: :string
+      via: :string,
+      collision_key: nil
     },
     %{
       key: :flex_last,
@@ -170,7 +176,8 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
       kind: :blocking,
       replace: :rewrite,
       label: "Flex last stop",
-      via: :string
+      via: :string,
+      collision_key: nil
     },
     %{
       key: :child_stops,
@@ -180,7 +187,8 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
       kind: :blocking,
       replace: :refuse,
       label: "Stops in this station",
-      via: :string
+      via: :string,
+      collision_key: nil
     },
     %{
       key: :pathways_from,
@@ -190,7 +198,8 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
       kind: :blocking,
       replace: :refuse,
       label: "Pathways from this stop",
-      via: :string
+      via: :string,
+      collision_key: nil
     },
     %{
       key: :pathways_to,
@@ -200,7 +209,8 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
       kind: :blocking,
       replace: :refuse,
       label: "Pathways to this stop",
-      via: :string
+      via: :string,
+      collision_key: nil
     },
     %{
       key: :stop_levels,
@@ -210,7 +220,8 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
       kind: :blocking,
       replace: :refuse,
       label: "Floorplans for this station",
-      via: :fk_uuid
+      via: :fk_uuid,
+      collision_key: nil
     },
     %{
       key: :journal_entries,
@@ -220,7 +231,8 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
       kind: :blocking,
       replace: :refuse,
       label: "Journal entries for this station",
-      via: :fk_uuid
+      via: :fk_uuid,
+      collision_key: nil
     },
     %{
       key: :editing_statuses,
@@ -230,10 +242,19 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
       kind: :blocking,
       replace: :refuse,
       label: "Editing status for this station",
-      via: :fk_uuid
+      via: :fk_uuid,
+      collision_key: nil
     },
     %{
       key: :transfers_from,
+      collision_key: [
+        :from_stop_id,
+        :to_stop_id,
+        :from_route_id,
+        :to_route_id,
+        :from_trip_id,
+        :to_trip_id
+      ],
       table: "transfers",
       schema: Transfer,
       column: :from_stop_id,
@@ -244,6 +265,14 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
     },
     %{
       key: :transfers_to,
+      collision_key: [
+        :from_stop_id,
+        :to_stop_id,
+        :from_route_id,
+        :to_route_id,
+        :from_trip_id,
+        :to_trip_id
+      ],
       table: "transfers",
       schema: Transfer,
       column: :to_stop_id,
@@ -254,6 +283,7 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
     },
     %{
       key: :fare_leg_join_from,
+      collision_key: [:from_network_id, :to_network_id, :from_stop_id, :to_stop_id],
       table: "fare_leg_join_rules",
       schema: FareLegJoinRule,
       column: :from_stop_id,
@@ -264,6 +294,7 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
     },
     %{
       key: :fare_leg_join_to,
+      collision_key: [:from_network_id, :to_network_id, :from_stop_id, :to_stop_id],
       table: "fare_leg_join_rules",
       schema: FareLegJoinRule,
       column: :to_stop_id,
@@ -274,6 +305,7 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
     },
     %{
       key: :stop_areas,
+      collision_key: [:area_id, :stop_id],
       table: "stop_areas",
       schema: StopArea,
       column: :stop_id,
@@ -284,6 +316,7 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
     },
     %{
       key: :walkability_tests,
+      collision_key: [:stop_id, :address],
       table: "walkability_tests",
       schema: WalkabilityTest,
       column: :stop_id,
@@ -294,6 +327,7 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
     },
     %{
       key: :deadhead_from,
+      collision_key: [:from_ref, :to_ref],
       table: "deadhead_times",
       schema: DeadheadTime,
       column: :from_ref,
@@ -304,6 +338,7 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
     },
     %{
       key: :deadhead_to,
+      collision_key: [:from_ref, :to_ref],
       table: "deadhead_times",
       schema: DeadheadTime,
       column: :to_ref,
@@ -320,10 +355,12 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
       kind: :descriptive,
       replace: :drop,
       label: "Translations",
-      via: :string
+      via: :string,
+      collision_key: nil
     },
     %{
       key: :segments_from,
+      collision_key: [:from_stop_id, :to_stop_id],
       table: "alignment_segments",
       schema: AlignmentSegment,
       column: :from_stop_id,
@@ -334,6 +371,7 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
     },
     %{
       key: :segments_to,
+      collision_key: [:from_stop_id, :to_stop_id],
       table: "alignment_segments",
       schema: AlignmentSegment,
       column: :to_stop_id,
@@ -369,6 +407,20 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
   a usage item, a replace count), and is unique across the list even when two
   entries share a table — `flex_first` and `flex_last` are both
   `flex_services`.
+
+  `collision_key` is the set of columns a row of that table must be unique on,
+  **beyond** the `organization_id` and `gtfs_version_id` every query in this
+  module already scopes by. It is the key `replace_review/3` and
+  `replace_stop/4` test a rewritten row against, so a rewrite that would land on
+  an existing row is reported as a collision instead of raising a unique
+  violation halfway through a replace. It is `nil` where a rewrite cannot
+  collide — a table whose only unique index is the row's own id, or one where
+  the rewritten column is not part of any index.
+
+  The list lives here rather than in the replace command so CR-1 holds: the
+  commands read it off the entry and never name a table. The catalog test
+  proves each list is a real unique index on that table, so the two cannot
+  drift.
   """
   @spec all() :: [ref()]
   def all, do: @all
