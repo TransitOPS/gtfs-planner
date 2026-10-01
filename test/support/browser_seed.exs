@@ -22,6 +22,13 @@
 #   active organization administrator for "Account No Version Org" and
 #   "Account No Task Org", so those states draw the contact card home.spec.js
 #   and the references expect.
+# User 8 (stops map): stops-map@gtfs-planner.test — used by
+#   stops_map.spec.js, in "Stops Map Org" (product: :planner) with "Browser
+#   Stops Map Version": 17 stops on real downtown Newport, Oregon coordinates
+#   (the same stops and shape geometry the stop add/edit prototype draws), two
+#   routes with three patterns on saved lines, a possible-duplicate pair 1.5 m
+#   apart, a relief point, a transfer to a transit-centre bay, a station with a
+#   level, an unserved stop with a translation, and garage "1533".
 #
 # Both users belong to the same org. The editor user can access GTFS routes
 # because it has the pathways_studio_editor role and a session-scoped
@@ -38,6 +45,7 @@ alias GtfsPlanner.Accounts.UserToken
 alias GtfsPlanner.AdvancedBlockingFixtures
 alias GtfsPlanner.Gtfs
 alias GtfsPlanner.Gtfs.Agency
+alias GtfsPlanner.Gtfs.AlignmentSegment
 alias GtfsPlanner.Gtfs.Calendar
 alias GtfsPlanner.Gtfs.CalendarAttribute
 alias GtfsPlanner.Gtfs.ChangeLog
@@ -54,6 +62,7 @@ alias GtfsPlanner.Gtfs.FloorplanTransform
 alias GtfsPlanner.Gtfs.Import.ChangeRuns
 alias GtfsPlanner.Gtfs.Import.Run, as: ImportRun
 alias GtfsPlanner.Gtfs.PathwayEvolution
+alias GtfsPlanner.Gtfs.ReliefPoint
 alias GtfsPlanner.Gtfs.Route
 alias GtfsPlanner.Gtfs.RoutePattern
 alias GtfsPlanner.Gtfs.RoutePatternStop
@@ -61,6 +70,7 @@ alias GtfsPlanner.Gtfs.Shape
 alias GtfsPlanner.Gtfs.Stop
 alias GtfsPlanner.Gtfs.StopTime
 alias GtfsPlanner.Gtfs.Transfer
+alias GtfsPlanner.Gtfs.Translation
 alias GtfsPlanner.Gtfs.Trip
 alias GtfsPlanner.Organizations
 alias GtfsPlanner.Reachability.Runner
@@ -9147,6 +9157,551 @@ case Accounts.register_first_admin(%{
       "Browser seed: interp version #{interp_version.id} " <>
         "(BROWSER_INTERP_FILL pattern with a linked trip, " <>
         "BROWSER_INTERP_IMPORT pattern with a blank-middle custom trip)"
+    )
+
+    # ── Stops Map seed data (28-stop-add-edit, step 22) ──
+    #
+    # A planner-product organization of its own, so the Map view journey reads
+    # this fixture instead of whichever version another spec left selected. The
+    # stop IDs, coordinates and shape geometry are the ones the stop add/edit
+    # prototype draws (`.specs/28-stop-add-edit/references/`, real downtown
+    # Newport, Oregon over OpenStreetMap), so the seeded map is the same picture
+    # the reference captures show.
+    #
+    # The seeded problems are the ones the later surfaces exist for:
+    #   * 1433 sits 1.5 m from 1434 (possible duplicate, used by one pattern)
+    #   * 1434 has a relief point and a transfer to the transit centre's Bay B
+    #   * ST-NTC is a station with one level and two bays
+    #   * 1531 is unserved and carries a Spanish name translation
+    #   * garage "1533" makes the next generated stop ID 1534, not 1533
+    {:ok, stops_map_org} =
+      Organizations.create_organization(%{
+        name: "Stops Map Org",
+        alias: "stops-map",
+        product: :planner
+      })
+
+    {:ok, stops_map_version} =
+      Versions.create_gtfs_version(stops_map_org.id, %{name: "Browser Stops Map Version"})
+
+    {:ok, stops_map_editor} =
+      Accounts.register_user(%{
+        email: "stops-map@gtfs-planner.test",
+        password: "StopsMapBrowser1"
+      })
+
+    Repo.update!(User.confirm_changeset(stops_map_editor))
+
+    {:ok, _stops_map_membership} =
+      Accounts.create_user_org_membership(%{
+        user_id: stops_map_editor.id,
+        organization_id: stops_map_org.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+    IO.puts(
+      "Browser seed: stops map editor #{stops_map_editor.email} in #{stops_map_org.name} " <>
+        "(id=#{stops_map_org.id}), version #{stops_map_version.name} (id=#{stops_map_version.id})"
+    )
+
+    stops_map_at = ~U[2026-09-01 00:00:00.000000Z]
+    # Five decimals is the coordinate columns' own resolution, and a literal
+    # keeps a re-run byte-identical where a float-to-string would not.
+    stops_map_coord = fn value -> Decimal.new(:erlang.float_to_binary(value, decimals: 5)) end
+    stops_map_id = fn -> Ecto.UUID.generate() end
+
+    # Great-circle-ish metres between two `{lat, lon}` points, at this feed's
+    # latitude. Only the running `shape_dist_traveled` uses it, and the value it
+    # produces is compared against nothing, so a local scale factor is the right
+    # size of tool here rather than a second distance implementation.
+    stops_map_latitude = 44.635
+
+    stops_map_metres = fn {lat_a, lon_a}, {lat_b, lon_b} ->
+      radians = 3.141592653589793 * stops_map_latitude / 180
+      dlat = (lat_b - lat_a) * 111_132.954 - 559.822 * :math.cos(2 * radians)
+      dlon = (lon_b - lon_a) * 111_412.84 * :math.cos(radians)
+      :math.sqrt(dlat * dlat + dlon * dlon)
+    end
+
+    # The running distance to one shape point, as a `{elapsed, lat, lon}`
+    # accumulator: the first point is the origin at 0.0 m and every later one adds
+    # the leg from the point before it. `map_reduce/3` takes the new accumulator
+    # first and the collected element second, so the collected element is the
+    # triple the caller wants.
+    stops_map_measure_point = fn
+      {lat, lon}, nil ->
+        {{0.0, lat, lon}, {0.0, lat, lon}}
+
+      {lat, lon}, {elapsed, previous_lat, previous_lon} ->
+        next = elapsed + stops_map_metres.({previous_lat, previous_lon}, {lat, lon})
+        {{next, lat, lon}, {next, lat, lon}}
+    end
+
+    # One fare zone, so the read-only fare zone field in the edit panel has a
+    # real value and its Settings link has somewhere to land.
+    {:ok, _stops_map_zone} =
+      FareZones.create_zone(stops_map_org.id, stops_map_version.id, %{
+        zone_id: "NL",
+        name: "Newport local",
+        color: "teal"
+      })
+
+    # {stop_id, name, desc, stop_code, location_type, lat, lon, parent, level}
+    stops_map_stop_rows = [
+      {"1434", "US 101 & SE 1st St", "Northbound", "1434", 0, 44.63561, -124.05317, nil, nil},
+      {"1355", "US 101 & NW 3rd St", "Northbound", "1355", 0, 44.63848, -124.05299, nil, nil},
+      {"1330", "US 101 & NE 7th St", "Northbound", "1330", 0, 44.64126, -124.05297, nil, nil},
+      {"1301", "US 101 & NW 14th St", "Northbound", "1301", 0, 44.64753, -124.05293, nil, nil},
+      {"1308", "US 101 & NW 14th St", "Southbound", "1308", 0, 44.64728, -124.05313, nil, nil},
+      {"1312", "US 101 & NE 11th St", "Southbound", "1312", 0, 44.64458, -124.05315, nil, nil},
+      {"1326", "US 101 & NE 8th St", "Southbound", "1326", 0, 44.64172, -124.05317, nil, nil},
+      {"1433", "US 101 & SE 1st St", "Northbound", "1433", 0, 44.63562, -124.05316, nil, nil},
+      {"1344", "NW 6th St & NW Grove St", "Westbound", "1344", 0, 44.64023, -124.05457, nil, nil},
+      {"1337", "NW 6th St & NW Brook St", "Westbound", "1337", 0, 44.64023, -124.05906, nil, nil},
+      {"1380", "NW Coast St & NW 3rd St", "Southbound", "1380", 0, 44.63824, -124.06079, nil,
+       nil},
+      {"1438", "SW 2nd St & SW Coast St", "Southbound", "1438", 0, 44.63461, -124.06067, nil,
+       nil},
+      {"1452", "SW Hurbert St & SW 7th St", "Southbound", "1452", 0, 44.63359, -124.05722, nil,
+       nil},
+      {"1531", "SE Bay Blvd & SE Moore Dr", "Eastbound", "1531", 0, 44.63095, -124.04077, nil,
+       nil},
+      {"ST-NTC", "Newport Transit Center", "", nil, 1, 44.63470, -124.05325, nil, "GROUND"},
+      {"NTC-A", "Newport Transit Center, Bay A", "A", nil, 0, 44.63461, -124.05348, "ST-NTC",
+       "GROUND"},
+      {"NTC-B", "Newport Transit Center, Bay B", "B", nil, 0, 44.63461, -124.05333, "ST-NTC",
+       "GROUND"}
+    ]
+
+    {17, nil} =
+      Repo.insert_all(
+        Stop,
+        Enum.map(stops_map_stop_rows, fn {stop_id, name, desc, code, type, lat, lon, parent,
+                                          level} ->
+          %{
+            id: stops_map_id.(),
+            organization_id: stops_map_org.id,
+            gtfs_version_id: stops_map_version.id,
+            stop_id: stop_id,
+            stop_name: name,
+            stop_desc: desc,
+            stop_code: code,
+            stop_lat: stops_map_coord.(lat),
+            stop_lon: stops_map_coord.(lon),
+            location_type: type,
+            zone_id: "NL",
+            parent_station: parent,
+            level_id: level,
+            inserted_at: stops_map_at,
+            updated_at: stops_map_at
+          }
+        end)
+      )
+
+    # The station's one level, so a delete of ST-NTC is refused on a cascading
+    # reference and not only on its child stops.
+    {:ok, stops_map_level} =
+      Gtfs.create_level(%{
+        level_id: "GROUND",
+        level_name: "Ground",
+        level_index: 0.0,
+        organization_id: stops_map_org.id,
+        gtfs_version_id: stops_map_version.id
+      })
+
+    [stops_map_station] =
+      Repo.all(
+        from(stop in Stop,
+          where:
+            stop.organization_id == ^stops_map_org.id and
+              stop.gtfs_version_id == ^stops_map_version.id and stop.stop_id == "ST-NTC"
+        )
+      )
+
+    {:ok, _stops_map_stop_level} =
+      Gtfs.create_stop_level(%{
+        organization_id: stops_map_org.id,
+        gtfs_version_id: stops_map_version.id,
+        stop_id: stops_map_station.id,
+        level_id: stops_map_level.id
+      })
+
+    # Shape geometry from the prototype's OpenStreetMap road paths, simplified
+    # to roughly one point per 28 m: every vertex is a real place, and the
+    # inbound Coast Highway path is the outbound one reversed so the two
+    # directions sit on the same street rather than on separate lines.
+    stops_map_shapes = [
+      {"BROWSER_SM_SHAPE_1_0",
+       [
+         {44.63474, -124.05332},
+         {44.63474, -124.05369},
+         {44.63505, -124.05363},
+         {44.63536, -124.05340},
+         {44.63587, -124.05317},
+         {44.63620, -124.05312},
+         {44.63653, -124.05311},
+         {44.63699, -124.05310},
+         {44.63767, -124.05309},
+         {44.63807, -124.05309},
+         {44.63835, -124.05309},
+         {44.63874, -124.05309},
+         {44.63942, -124.05308},
+         {44.63970, -124.05308},
+         {44.64009, -124.05308},
+         {44.64039, -124.05308},
+         {44.64073, -124.05307},
+         {44.64113, -124.05307},
+         {44.64171, -124.05307},
+         {44.64261, -124.05306},
+         {44.64313, -124.05306},
+         {44.64349, -124.05306},
+         {44.64377, -124.05306},
+         {44.64407, -124.05305},
+         {44.64435, -124.05305},
+         {44.64461, -124.05305},
+         {44.64488, -124.05305},
+         {44.64513, -124.05305},
+         {44.64542, -124.05304},
+         {44.64595, -124.05304},
+         {44.64631, -124.05304},
+         {44.64677, -124.05303},
+         {44.64706, -124.05304},
+         {44.64737, -124.05303},
+         {44.64806, -124.05303},
+         {44.64836, -124.05303},
+         {44.64879, -124.05302},
+         {44.64907, -124.05302},
+         {44.64915, -124.05302}
+       ]},
+      {"BROWSER_SM_SHAPE_1_1",
+       [
+         {44.64915, -124.05302},
+         {44.64907, -124.05302},
+         {44.64879, -124.05302},
+         {44.64836, -124.05303},
+         {44.64806, -124.05303},
+         {44.64737, -124.05303},
+         {44.64706, -124.05304},
+         {44.64677, -124.05303},
+         {44.64631, -124.05304},
+         {44.64595, -124.05304},
+         {44.64542, -124.05304},
+         {44.64513, -124.05305},
+         {44.64488, -124.05305},
+         {44.64461, -124.05305},
+         {44.64435, -124.05305},
+         {44.64407, -124.05305},
+         {44.64377, -124.05306},
+         {44.64349, -124.05306},
+         {44.64313, -124.05306},
+         {44.64261, -124.05306},
+         {44.64171, -124.05307},
+         {44.64113, -124.05307},
+         {44.64073, -124.05307},
+         {44.64039, -124.05308},
+         {44.64009, -124.05308},
+         {44.63970, -124.05308},
+         {44.63942, -124.05308},
+         {44.63874, -124.05309},
+         {44.63835, -124.05309},
+         {44.63807, -124.05309},
+         {44.63767, -124.05309},
+         {44.63699, -124.05310},
+         {44.63653, -124.05311},
+         {44.63620, -124.05312},
+         {44.63587, -124.05317},
+         {44.63536, -124.05340},
+         {44.63505, -124.05363},
+         {44.63474, -124.05369},
+         {44.63474, -124.05332}
+       ]},
+      {"BROWSER_SM_SHAPE_3_0",
+       [
+         {44.63474, -124.05332},
+         {44.63474, -124.05369},
+         {44.63505, -124.05363},
+         {44.63536, -124.05340},
+         {44.63587, -124.05317},
+         {44.63620, -124.05312},
+         {44.63653, -124.05311},
+         {44.63699, -124.05310},
+         {44.63767, -124.05309},
+         {44.63807, -124.05309},
+         {44.63835, -124.05309},
+         {44.63874, -124.05309},
+         {44.63942, -124.05308},
+         {44.63970, -124.05308},
+         {44.64009, -124.05308},
+         {44.64016, -124.05366},
+         {44.64016, -124.05403},
+         {44.64016, -124.05440},
+         {44.64016, -124.05486},
+         {44.64016, -124.05539},
+         {44.64016, -124.05648},
+         {44.64016, -124.05711},
+         {44.64017, -124.05816},
+         {44.64016, -124.05852},
+         {44.64016, -124.05888},
+         {44.64016, -124.05984},
+         {44.64016, -124.06070},
+         {44.63948, -124.06070},
+         {44.63916, -124.06070},
+         {44.63888, -124.06070},
+         {44.63837, -124.06069},
+         {44.63792, -124.06071},
+         {44.63745, -124.06071},
+         {44.63701, -124.06070},
+         {44.63656, -124.06071},
+         {44.63566, -124.06071},
+         {44.63517, -124.06071},
+         {44.63476, -124.06071},
+         {44.63476, -124.06022},
+         {44.63475, -124.05987},
+         {44.63475, -124.05887},
+         {44.63475, -124.05815},
+         {44.63430, -124.05815},
+         {44.63373, -124.05724},
+         {44.63339, -124.05689},
+         {44.63263, -124.05608},
+         {44.63296, -124.05542},
+         {44.63323, -124.05491},
+         {44.63350, -124.05440},
+         {44.63380, -124.05384},
+         {44.63445, -124.05435},
+         {44.63462, -124.05407},
+         {44.63474, -124.05369},
+         {44.63474, -124.05332}
+       ]}
+    ]
+
+    # `shape_dist_traveled` is a running distance along the shape, computed here
+    # rather than hand-written: a seeded distance that disagreed with the
+    # geometry would be a lie the alignment review would report later.
+    stops_map_shape_rows =
+      Enum.flat_map(stops_map_shapes, fn {shape_id, points} ->
+        # `map_reduce/3` answers `{collected, final_accumulator}`.
+        {measured, _elapsed} = Enum.map_reduce(points, nil, stops_map_measure_point)
+
+        measured
+        |> Enum.with_index(1)
+        |> Enum.map(fn {{distance, lat, lon}, sequence} ->
+          %{
+            id: stops_map_id.(),
+            organization_id: stops_map_org.id,
+            gtfs_version_id: stops_map_version.id,
+            shape_id: shape_id,
+            shape_pt_lat: stops_map_coord.(lat),
+            shape_pt_lon: stops_map_coord.(lon),
+            shape_pt_sequence: sequence,
+            shape_dist_traveled: Decimal.round(Decimal.from_float(distance), 1),
+            inserted_at: stops_map_at,
+            updated_at: stops_map_at
+          }
+        end)
+      end)
+
+    {stops_map_shape_point_count, nil} = Repo.insert_all(Shape, stops_map_shape_rows)
+
+    # Two routes, one per direction of Coast Highway plus the city loop. Route
+    # "1" and route "3" are the prototype's own short names and colours, so the
+    # map lines read the same as the reference.
+    for {route_id, short_name, long_name, color} <- [
+          {"1", "1", "Coast Highway", "1F5FBF"},
+          {"3", "3", "Newport City Loop", "4B1F78"}
+        ] do
+      {:ok, _route} =
+        Gtfs.create_route(%{
+          organization_id: stops_map_org.id,
+          gtfs_version_id: stops_map_version.id,
+          route_id: route_id,
+          route_short_name: short_name,
+          route_long_name: long_name,
+          route_type: 3,
+          route_color: color
+        })
+    end
+
+    # {pattern_id, route_id, direction_id, headsign, name, shape_id, stops}
+    stops_map_patterns = [
+      {"BROWSER_SM_P1_0", "1", 0, "Lincoln City", "Coast Highway to Lincoln City",
+       "BROWSER_SM_SHAPE_1_0", ["1434", "1355", "1330", "1301"]},
+      {"BROWSER_SM_P1_1", "1", 1, "Newport Transit Center", "Coast Highway to Newport",
+       "BROWSER_SM_SHAPE_1_1", ["1308", "1312", "1326", "1433"]},
+      {"BROWSER_SM_P3_0", "3", 0, "Nye Beach", "City Loop to Nye Beach", "BROWSER_SM_SHAPE_3_0",
+       ["1434", "1355", "1344", "1337", "1380", "1438", "1452"]}
+    ]
+
+    {3, nil} =
+      Repo.insert_all(
+        RoutePattern,
+        Enum.map(stops_map_patterns, fn {pattern_id, route_id, direction_id, headsign, name,
+                                         shape_id, _stops} ->
+          %{
+            id: stops_map_id.(),
+            organization_id: stops_map_org.id,
+            gtfs_version_id: stops_map_version.id,
+            route_pattern_id: pattern_id,
+            route_id: route_id,
+            direction_id: direction_id,
+            headsign: headsign,
+            route_pattern_name: name,
+            route_pattern_typicality: 1,
+            route_pattern_sort_order: direction_id,
+            shape_id: shape_id,
+            inserted_at: stops_map_at,
+            updated_at: stops_map_at
+          }
+        end)
+      )
+
+    stops_map_pattern_rows =
+      Repo.all(from(pattern in RoutePattern, where: pattern.organization_id == ^stops_map_org.id))
+
+    stops_map_pattern_by_natural_id =
+      Map.new(stops_map_pattern_rows, &{&1.route_pattern_id, &1})
+
+    stops_map_shape_points = Map.new(stops_map_shapes)
+
+    # A stop's `shape_dist_traveled` is the distance to the shape point nearest
+    # it, so the occurrences and the shape agree about where a stop sits.
+    stops_map_latlon =
+      Map.new(stops_map_stop_rows, fn {stop_id, _name, _desc, _code, _type, lat, lon, _p, _l} ->
+        {stop_id, {lat, lon}}
+      end)
+
+    stops_map_nearest_distance = fn points, {lat, lon} ->
+      points
+      |> Enum.map(fn point -> stops_map_metres.(point, {lat, lon}) end)
+      |> Enum.min()
+    end
+
+    stops_map_occurrence_count =
+      Enum.sum(
+        Enum.map(stops_map_patterns, fn {_p, _r, _d, _h, _n, _s, stops} ->
+          length(stops)
+        end)
+      )
+
+    {stops_map_occurrence_count, nil} =
+      Repo.insert_all(
+        RoutePatternStop,
+        Enum.flat_map(stops_map_patterns, fn {pattern_id, _route_id, _direction_id, _headsign,
+                                              _name, shape_id, stops} ->
+          pattern = Map.fetch!(stops_map_pattern_by_natural_id, pattern_id)
+          points = Map.fetch!(stops_map_shape_points, shape_id)
+
+          stops
+          |> Enum.with_index(1)
+          |> Enum.map(fn {stop_id, position} ->
+            distance = stops_map_nearest_distance.(points, Map.fetch!(stops_map_latlon, stop_id))
+
+            %{
+              id: stops_map_id.(),
+              route_pattern_id: pattern.id,
+              organization_id: stops_map_org.id,
+              gtfs_version_id: stops_map_version.id,
+              stop_id: stop_id,
+              position: position,
+              shape_dist_traveled: Decimal.round(Decimal.from_float(distance), 1),
+              inserted_at: stops_map_at,
+              updated_at: stops_map_at
+            }
+          end)
+        end)
+      )
+
+    # Shared stop pairs, one segment each, with interior points taken off the
+    # shape between the two stops. A shared segment is what the move review
+    # redraws, so it has to exist before the move journey can ask for a redraw.
+    stops_map_segments = [
+      {"1434", "1355", [[-124.05312, 44.63620], [-124.05309, 44.63807]]},
+      {"1355", "1330", [[-124.05309, 44.63874], [-124.05307, 44.64073]]},
+      {"1330", "1301", [[-124.05307, 44.64171], [-124.05304, 44.64706]]},
+      {"1308", "1312", [[-124.05304, 44.64706], [-124.05305, 44.64488]]},
+      {"1312", "1326", [[-124.05305, 44.64435], [-124.05306, 44.64261]]},
+      {"1326", "1433", [[-124.05307, 44.64113], [-124.05312, 44.63620]]},
+      {"1355", "1344", [[-124.05309, 44.63874], [-124.05403, 44.64016]]},
+      {"1344", "1337", [[-124.05486, 44.64016], [-124.05852, 44.64016]]},
+      {"1337", "1380", [[-124.05984, 44.64016], [-124.06070, 44.63888]]},
+      {"1380", "1438", [[-124.06071, 44.63792], [-124.06071, 44.63517]]},
+      {"1438", "1452", [[-124.06022, 44.63476], [-124.05815, 44.63430]]}
+    ]
+
+    stops_map_segment_count =
+      Enum.reduce(stops_map_segments, 0, fn {from_stop_id, to_stop_id, points}, count ->
+        %AlignmentSegment{}
+        |> AlignmentSegment.changeset(%{points: points})
+        |> Ecto.Changeset.put_change(:organization_id, stops_map_org.id)
+        |> Ecto.Changeset.put_change(:gtfs_version_id, stops_map_version.id)
+        |> Ecto.Changeset.put_change(:from_stop_id, from_stop_id)
+        |> Ecto.Changeset.put_change(:to_stop_id, to_stop_id)
+        |> Ecto.Changeset.put_change(:inserted_at, stops_map_at)
+        |> Ecto.Changeset.put_change(:updated_at, stops_map_at)
+        |> Repo.insert!()
+
+        count + 1
+      end)
+
+    # The seeded problems each reference, written through the same tables the
+    # commands read: 1434's relief point and transfer, and 1531's translation.
+    {:ok, _stops_map_relief} =
+      %ReliefPoint{}
+      |> ReliefPoint.changeset(%{})
+      |> Ecto.Changeset.put_change(:organization_id, stops_map_org.id)
+      |> Ecto.Changeset.put_change(:gtfs_version_id, stops_map_version.id)
+      |> Ecto.Changeset.put_change(:stop_id, "1434")
+      |> Ecto.Changeset.put_change(:inserted_at, stops_map_at)
+      |> Ecto.Changeset.put_change(:updated_at, stops_map_at)
+      |> Repo.insert()
+
+    {:ok, _stops_map_transfer} =
+      %Transfer{}
+      |> Transfer.changeset(%{
+        organization_id: stops_map_org.id,
+        gtfs_version_id: stops_map_version.id,
+        from_stop_id: "1434",
+        to_stop_id: "NTC-B",
+        from_route_id: "1",
+        to_route_id: "1",
+        transfer_type: 0,
+        min_transfer_time: 180
+      })
+      |> Repo.insert()
+
+    {:ok, _stops_map_translation} =
+      %Translation{}
+      |> Translation.changeset(%{
+        organization_id: stops_map_org.id,
+        gtfs_version_id: stops_map_version.id,
+        table_name: "stops",
+        field_name: "stop_name",
+        language: "es",
+        translation: "Bulevar SE Bay y SE Moore Dr",
+        record_id: "1531"
+      })
+      |> Repo.insert()
+
+    # Garage "1533": the next generated stop ID must skip it, which is the case
+    # the naming rule's second example names.
+    stops_map_garage =
+      GtfsPlanner.OperationsFixtures.garage_fixture(stops_map_org.id, %{
+        "garage_id" => "1533",
+        "name" => "Newport Transit Center Garage"
+      })
+
+    # The seed is its own verifier: it reads the version back through the
+    # production read model and fails loudly rather than printing counts a later
+    # UI step cannot rely on.
+    {:ok, stops_map_model} =
+      GtfsPlanner.Gtfs.StopsMap.load(stops_map_org.id, stops_map_version.id)
+
+    served_map_stops = Enum.filter(stops_map_model.stops, & &1.served?)
+
+    IO.puts(
+      "Browser seed: stops map version #{stops_map_version.name} " <>
+        "(#{length(stops_map_model.stops)} stops, #{length(served_map_stops)} served, " <>
+        "#{length(stops_map_model.lines)} patterns, #{stops_map_shape_point_count} shape points, " <>
+        "#{stops_map_segment_count} shared segments, garage #{stops_map_garage.garage_id})"
     )
 
   {:error, changeset} ->
