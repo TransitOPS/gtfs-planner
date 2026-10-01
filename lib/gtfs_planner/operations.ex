@@ -90,6 +90,11 @@ defmodule GtfsPlanner.Operations do
   @range_limit 200
   @max_vehicle_id_length 255
 
+  # Rows per operator insert statement. PostgreSQL caps a statement at 65535 bind
+  # parameters and an operator row binds eight, so one `insert_all` fails above
+  # about 8,000 rows; 500 stays far below that, as `Runs`' write batch does.
+  @operator_insert_batch 500
+
   # --- garages ---------------------------------------------------------------
 
   @doc """
@@ -1042,7 +1047,10 @@ defmodule GtfsPlanner.Operations do
         }
       end)
 
-    insert_planned(Operator, entries, length(rows))
+    entries
+    |> Enum.chunk_every(@operator_insert_batch)
+    |> Enum.map(&insert_planned(Operator, &1, length(&1)))
+    |> Enum.sum()
   end
 
   defp new_seniority_number(:keep), do: nil

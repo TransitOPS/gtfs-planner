@@ -125,6 +125,36 @@ defmodule GtfsPlanner.Operations.OperatorImportApplyTest do
       assert lookup(organization.id, "E4101").id == existing_id
     end
 
+    test "adds a file with more rows than one insert statement can bind" do
+      organization = organization_fixture()
+
+      # Eight bound columns per operator, so 9,000 rows are 72,000 parameters and
+      # a single statement is over PostgreSQL's 65,535 cap. The file is well under
+      # the import's size limit.
+      content =
+        "employee_id,display_name,seniority_number\n" <>
+          Enum.map_join(1..9_000, fn number -> "E#{number},Operator #{number},#{number}\n" end)
+
+      parsed = parsed!(content)
+      preview = Operations.preview_operator_import(organization.id, parsed)
+
+      assert {:ok, %{added: 9_000, updated: 0}} =
+               Operations.apply_operator_import(
+                 organization.id,
+                 operations_actor(organization.id),
+                 parsed,
+                 preview
+               )
+
+      assert Repo.aggregate(
+               from(o in Operator, where: o.organization_id == ^organization.id),
+               :count
+             ) ==
+               9_000
+
+      assert stored(organization.id, "E9000") == {9_000, "Operator 9000"}
+    end
+
     test "stores no column the file's mapped headers do not carry" do
       organization = organization_fixture()
       create_operator(organization.id, attrs("E4101", "Old Name", 3))
