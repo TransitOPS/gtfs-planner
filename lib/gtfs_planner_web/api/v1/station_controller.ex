@@ -283,6 +283,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
   defp serialize_pathway(pathway, journal_entries) do
     %{
       id: pathway.id,
+      revision: pathway.lock_version,
       pathway_id: pathway.pathway_id,
       pathway_mode: pathway.pathway_mode,
       is_bidirectional: pathway.is_bidirectional,

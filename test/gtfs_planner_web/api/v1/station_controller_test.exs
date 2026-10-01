@@ -7,8 +7,9 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
   import GtfsPlanner.GtfsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
-  alias GtfsPlanner.Gtfs.{JournalEntry, JournalPhoto, StopLevel}
+  alias GtfsPlanner.Gtfs.{JournalEntry, JournalPhoto, Pathway, Stations, StopLevel}
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
@@ -397,12 +398,51 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       assert length(data["pathways"]) == 1
       p = hd(data["pathways"])
       assert p["id"] == pathway.id
+      assert is_integer(p["revision"])
+      assert p["revision"] == Repo.get!(Pathway, pathway.id).lock_version
       assert p["pathway_id"] == pathway.pathway_id
 
       # Keep the legacy diagrams[] array for companion client compatibility.
       assert data["diagrams"] == []
 
       assert is_binary(data["downloaded_at"])
+    end
+
+    test "bundle pathway revision advances after a station pathway update", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+      %{station: station, pathway: pathway} = build_station_data(org.id, version.id)
+
+      audit = %AuditContext{
+        organization_id: org.id,
+        gtfs_version_id: version.id,
+        station_stop_id: station.stop_id,
+        actor_id: user.id,
+        actor_email: user.email
+      }
+
+      assert {:ok, updated} =
+               Stations.update_pathway_fields(
+                 audit,
+                 pathway.id,
+                 %{"traversal_time" => pathway.traversal_time + 30},
+                 pathway.lock_version
+               )
+
+      assert updated.lock_version == pathway.lock_version + 1
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations/#{station.id}/bundle")
+
+      assert %{"data" => %{"pathways" => [pathway_json]}} = json_response(conn, 200)
+      assert pathway_json["id"] == pathway.id
+      assert pathway_json["revision"] == Repo.get!(Pathway, pathway.id).lock_version
+      assert pathway_json["revision"] == pathway.lock_version + 1
     end
 
     test "nests scoped journal history with ordered photos at documented bundle targets", %{
