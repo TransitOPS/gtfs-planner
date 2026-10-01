@@ -1,11 +1,14 @@
 import { expect, test } from "vitest";
 
 import {
+  assertVersionId,
   compareSignatures,
   countCsvRows,
+  errorCodes,
   expectedSignatures,
   toSeconds,
   tripSignature,
+  waitFor,
 } from "../../qa/checks/lib.mjs";
 
 // Every expected value below is written out here rather than imported from a
@@ -176,4 +179,157 @@ test("countCsvRows drops the header, the trailing newline and blank lines", () =
   expect(countCsvRows("route_id,route_short_name\n\nAAMV,Airport\n\n\n")).toBe(1);
   expect(countCsvRows("")).toBe(0);
   expect(countCsvRows("route_id,route_short_name\n")).toBe(0);
+});
+
+// A clock that only moves when the poll sleeps, so the deadline in these
+// cases is reached without any real waiting.
+function fakeClock() {
+  const clock = {
+    now: () => clock.at,
+    at: 0,
+    slept: [],
+    sleep: async milliseconds => {
+      clock.slept.push(milliseconds);
+      clock.at += milliseconds;
+    },
+  };
+
+  return clock;
+}
+
+test("waitFor returns a first evaluation that already passes", async () => {
+  const clock = fakeClock();
+  let calls = 0;
+
+  const result = await waitFor(
+    async () => {
+      calls += 1;
+      return { pass: true, observations: ["ready"] };
+    },
+    { timeoutMs: 60_000, now: clock.now, sleep: clock.sleep },
+  );
+
+  expect(result).toEqual({ pass: true, observations: ["ready"] });
+  expect(calls).toBe(1);
+  expect(clock.slept).toEqual([]);
+});
+
+test("waitFor polls until the third evaluation passes", async () => {
+  const clock = fakeClock();
+  let calls = 0;
+
+  const result = await waitFor(
+    async () => {
+      calls += 1;
+      return { pass: calls === 3, observations: [`call ${calls}`] };
+    },
+    { timeoutMs: 60_000, now: clock.now, sleep: clock.sleep },
+  );
+
+  expect(result).toEqual({ pass: true, observations: ["call 3"] });
+  expect(calls).toBe(3);
+  expect(clock.slept).toEqual([2000, 2000]);
+});
+
+test("waitFor returns the last failing result at the deadline", async () => {
+  const clock = fakeClock();
+  let calls = 0;
+
+  const result = await waitFor(
+    async () => {
+      calls += 1;
+      return { pass: false, observations: [`call ${calls}`] };
+    },
+    { timeoutMs: 6000, now: clock.now, sleep: clock.sleep },
+  );
+
+  expect(result).toEqual({ pass: false, observations: [`call ${calls}`] });
+  expect(clock.at).toBe(6000);
+  // 6 s of budget at a 2 s interval is three sleeps, and the sleep that
+  // would cross the deadline is shortened instead of overshooting.
+  expect(clock.slept).toEqual([2000, 2000, 2000]);
+});
+
+test("waitFor sleeps once for a budget shorter than the interval", async () => {
+  const clock = fakeClock();
+  let calls = 0;
+
+  await waitFor(
+    async () => {
+      calls += 1;
+      return { pass: false, observations: [] };
+    },
+    { timeoutMs: 500, now: clock.now, sleep: clock.sleep },
+  );
+
+  expect(calls).toBe(2);
+  expect(clock.slept).toEqual([500]);
+});
+
+test("waitFor refuses a deadline it could never reach", async () => {
+  const clock = fakeClock();
+  const never = async () => ({ pass: false, observations: [] });
+
+  await expect(waitFor(never, { now: clock.now, sleep: clock.sleep })).rejects.toThrow(
+    /finite timeoutMs/,
+  );
+
+  await expect(
+    waitFor(never, { timeoutMs: Number.NaN, now: clock.now, sleep: clock.sleep }),
+  ).rejects.toThrow(/finite timeoutMs/);
+});
+
+const REPORT = {
+  summary: { validatorIssues: { errors: 2, warnings: 1, infos: 1 } },
+  notices: [
+    { code: "stop_time_with_arrival_before_previous_departure_time", severity: "ERROR", totalNotices: 1 },
+    { code: "duplicate_trip", severity: "error", totalNotices: 1 },
+    { code: "missing_trip_edge", severity: "ERROR", totalNotices: 1 },
+    { code: "route_based_agency", severity: "WARNING", totalNotices: 1 },
+    { code: "stop_without_zone_id", severity: "INFO", totalNotices: 1 },
+  ],
+};
+
+test("errorCodes returns only the ERROR notice codes", () => {
+  expect(errorCodes(REPORT)).toEqual([
+    "duplicate_trip",
+    "missing_trip_edge",
+    "stop_time_with_arrival_before_previous_departure_time",
+  ]);
+});
+
+test("errorCodes reads a report with no notices as no codes", () => {
+  expect(errorCodes({ summary: {} })).toEqual([]);
+  expect(errorCodes({ notices: [] })).toEqual([]);
+});
+
+test("errorCodes deduplicates a code the report lists more than once", () => {
+  const report = { notices: [{ code: "duplicate_trip", severity: "ERROR" }, { code: "duplicate_trip", severity: "ERROR" }] };
+
+  expect(errorCodes(report)).toEqual(["duplicate_trip"]);
+});
+
+test("a version id that is not a UUID is refused before any command runs", () => {
+  let raised = null;
+
+  try {
+    assertVersionId("not-a-uuid");
+  } catch (error) {
+    raised = error;
+  }
+
+  expect(raised?.message).toMatch(/not a GTFS version id/);
+  // Exit code 2 is the harness's "could not be judged", the same code a
+  // missing psql or a refused connection raises.
+  expect(raised?.exitCode).toBe(2);
+
+  expect(() => assertVersionId("'; drop table trips; --")).toThrow(/not a GTFS version id/);
+  expect(() => assertVersionId("")).toThrow(/not a GTFS version id/);
+  expect(() => assertVersionId(null)).toThrow(/not a GTFS version id/);
+});
+
+test("a well-formed version id passes the check", () => {
+  const id = "0f9a2b1c-3d4e-4f50-8a6b-7c8d9e0f1a2b";
+
+  expect(assertVersionId(id)).toBe(id);
 });
