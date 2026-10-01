@@ -32,12 +32,12 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ExportTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.ConcurrencyHelpers
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Export.Snapshot
   alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Import.CsvParser
-  alias GtfsPlanner.Gtfs.Level
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Gtfs.Stop
@@ -574,12 +574,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ExportTest do
   # absence is asserted afterwards.
   defp cleanup(organization_ids) do
     unboxed(fn ->
-      Repo.delete_all(from(e in PathwayEvolution, where: e.organization_id in ^organization_ids))
-      Repo.delete_all(from(p in Pathway, where: p.organization_id in ^organization_ids))
-      Repo.delete_all(from(l in Level, where: l.organization_id in ^organization_ids))
-      Repo.delete_all(from(s in Stop, where: s.organization_id in ^organization_ids))
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
-      Repo.delete_all(from(o in Organization, where: o.id in ^organization_ids))
+      ConcurrencyHelpers.delete_committed_scope!(organization_ids)
 
       refute Repo.exists?(
                from(e in PathwayEvolution, where: e.organization_id in ^organization_ids)

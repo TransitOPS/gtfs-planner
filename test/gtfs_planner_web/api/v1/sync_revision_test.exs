@@ -10,11 +10,9 @@ defmodule GtfsPlannerWeb.Api.V1.SyncRevisionTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.{User, UserOrgMembership}
-  alias GtfsPlanner.Gtfs.{ChangeLog, JournalEntry, Pathway, Stop}
+  alias GtfsPlanner.Gtfs.{ChangeLog, JournalEntry, Pathway}
   alias GtfsPlanner.Organizations
-  alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
-  alias GtfsPlanner.Versions.GtfsVersion
 
   @rendezvous_timeout 10_000
   @collect_timeout 15_000
@@ -436,13 +434,7 @@ defmodule GtfsPlannerWeb.Api.V1.SyncRevisionTest do
   end
 
   defp cleanup_unboxed_scope(scope) do
-    org_id = scope.org.id
-    Repo.delete_all(from(row in ChangeLog, where: row.organization_id == ^org_id))
-    Repo.delete_all(from(row in Pathway, where: row.organization_id == ^org_id))
-    Repo.delete_all(from(row in Stop, where: row.organization_id == ^org_id))
-    Repo.delete_all(from(row in UserOrgMembership, where: row.organization_id == ^org_id))
-    Repo.delete_all(from(row in GtfsVersion, where: row.organization_id == ^org_id))
-    Repo.delete_all(from(row in Organization, where: row.id == ^org_id))
+    delete_committed_scope!([scope.org.id])
     Repo.delete_all(from(row in User, where: row.id in ^[scope.user.id, scope.admin.id]))
   end
 

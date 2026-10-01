@@ -65,10 +65,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.BlockAttributesTest do
   alias GtfsPlanner.Gtfs.Blocking.DayTypes
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.Transfer
-  alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
-  alias GtfsPlanner.Versions.GtfsVersion
 
   @moduletag timeout: 120_000
 
@@ -688,9 +686,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.BlockAttributesTest do
 
   # Deletes exactly the rows the lock case committed, keyed to their own
   # organization, on an own connection so the deletion is not part of the sandboxed
-  # test transaction. The version foreign keys cascade to its trips, stop times,
-  # calendars and attribute rows; `stops` and `routes` hang off the organization
-  # itself, so they are deleted by their own key first.
+  # test transaction.
   defp cleanup_committed_scope(scope) do
     unboxed(fn ->
       actor_ids =
@@ -701,22 +697,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.BlockAttributesTest do
           )
         )
 
-      Repo.delete_all(
-        from(m in GtfsPlanner.Accounts.UserOrgMembership,
-          where: m.organization_id == ^scope.organization_id
-        )
-      )
-
-      Repo.delete_all(
-        from(s in GtfsPlanner.Gtfs.Stop, where: s.organization_id == ^scope.organization_id)
-      )
-
-      Repo.delete_all(
-        from(r in GtfsPlanner.Gtfs.Route, where: r.organization_id == ^scope.organization_id)
-      )
-
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^scope.organization_id))
-      Repo.delete_all(from(o in Organization, where: o.id == ^scope.organization_id))
+      GtfsPlanner.ConcurrencyHelpers.delete_committed_scope!([scope.organization_id])
       Repo.delete_all(from(u in GtfsPlanner.Accounts.User, where: u.id in ^actor_ids))
     end)
   end
