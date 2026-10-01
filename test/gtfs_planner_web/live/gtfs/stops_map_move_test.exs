@@ -284,6 +284,31 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapMoveTest do
     end
   end
 
+  describe "a result for a stop the panel has left" do
+    test "a move review read for one stop does not fill the next stop's panel", ctx do
+      hold_routing(200)
+      view = open_map(ctx)
+
+      render_hook(view, "pin_moved", %{"lat" => moved_lat(@review_m), "lon" => @stop_lon})
+      view |> form("#stops-map-edit-form") |> render_submit()
+
+      # The review is in flight: it has reached the routing service, which is
+      # not answering yet.
+      assert_receive {:routing_held, routing}, 5_000
+      assert has_element?(view, "#stops-map-move-panel")
+
+      render_hook(view, "select_stop", %{"stop_id" => "1330"})
+      render_hook(view, "discard_changes", %{})
+      assert has_element?(view, "#stops-map-edit-panel", "Cedar St")
+
+      send(routing, :release)
+      settle(view)
+
+      assert has_element?(view, "#stops-map-edit-panel", "Cedar St")
+      refute has_element?(view, "#stops-map-move-panel")
+    end
+  end
+
   describe "a pin the editor cannot see" do
     test "a pin moved outside the reported view offers to find it", ctx do
       stub_routing(200)
@@ -453,26 +478,46 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapMoveTest do
 
   defp moved_lat_text(metres), do: moved_lat(metres) |> Float.round(5) |> to_string()
 
-  defp stub_routing(status) do
+  defp stub_routing(status), do: Req.Test.stub(@routing_owner, &routing_response(&1, status))
+
+  # The routing service holds its first request until the test sends it
+  # `:release`, so a review stays in flight for as long as the test needs it to.
+  # A review makes one request per pattern; the later ones answer at once.
+  defp hold_routing(status) do
+    test = self()
+    requests = :atomics.new(1, [])
+
     Req.Test.stub(@routing_owner, fn conn ->
-      Plug.Conn.send_resp(
-        Plug.Conn.put_resp_content_type(conn, "application/json"),
-        status,
-        Jason.encode!(%{
-          "type" => "FeatureCollection",
-          "features" => [
-            %{
-              "type" => "Feature",
-              "properties" => %{"mode" => "bus"},
-              "geometry" => %{
-                "type" => "MultiLineString",
-                "coordinates" => [[[-124.0530, 44.6205], [-124.0530, 44.6215]]]
-              }
-            }
-          ]
-        })
-      )
+      if :atomics.add_get(requests, 1, 1) == 1 do
+        send(test, {:routing_held, self()})
+
+        receive do
+          :release -> :ok
+        end
+      end
+
+      routing_response(conn, status)
     end)
+  end
+
+  defp routing_response(conn, status) do
+    Plug.Conn.send_resp(
+      Plug.Conn.put_resp_content_type(conn, "application/json"),
+      status,
+      Jason.encode!(%{
+        "type" => "FeatureCollection",
+        "features" => [
+          %{
+            "type" => "Feature",
+            "properties" => %{"mode" => "bus"},
+            "geometry" => %{
+              "type" => "MultiLineString",
+              "coordinates" => [[[-124.0530, 44.6205], [-124.0530, 44.6215]]]
+            }
+          }
+        ]
+      })
+    )
   end
 
   # Waiting for the panel to stop working: the review is read, then the apply

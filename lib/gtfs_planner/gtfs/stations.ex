@@ -681,7 +681,12 @@ defmodule GtfsPlanner.Gtfs.Stations do
     run(audit, :share, fn station ->
       stop = lock_child!(audit, station, id)
       stale!(stop, expected_revision)
-      write_stop(audit, Stop.editor_changeset(stop, %{diagram_coordinate: coordinate}), "updated")
+
+      write_stop(
+        audit,
+        Stop.child_stop_changeset(stop, %{diagram_coordinate: coordinate}),
+        "updated"
+      )
     end)
   end
 
@@ -1031,8 +1036,8 @@ defmodule GtfsPlanner.Gtfs.Stations do
   defp rollback_changeset(audit, station, %Stop{} = stop, target) do
     changeset =
       if Map.has_key?(target, "stop_id"),
-        do: Stop.create_changeset(stop, target, audit),
-        else: Stop.editor_changeset(stop, target)
+        do: Stop.child_stop_changeset(stop, target, audit),
+        else: Stop.child_stop_changeset(stop, target)
 
     if stop.id == station.id do
       if Ecto.Changeset.get_field(changeset, :location_type) != 1,

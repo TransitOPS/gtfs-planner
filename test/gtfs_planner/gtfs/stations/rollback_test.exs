@@ -72,6 +72,27 @@ defmodule GtfsPlanner.Gtfs.Stations.RollbackTest do
     assert redone.stop_name == "After"
   end
 
+  test "rolls back an edit to a platform that has no coordinates", scope do
+    platform =
+      child_stop_fixture(scope.organization.id, scope.version.id, scope.station.stop_id,
+        stop_name: "Before",
+        location_type: 0,
+        stop_lat: nil,
+        stop_lon: nil
+      )
+
+    assert {:ok, edited} =
+             Stations.update_child_stop(scope.audit, platform.id, %{stop_name: "After"}, 1)
+
+    [source_log] = logs(scope.audit, "stop", platform.id)
+
+    assert {:ok, restored} =
+             Stations.rollback_entity(scope.audit, source_log.id, edited.lock_version)
+
+    assert restored.stop_name == "Before"
+    assert restored.stop_lat == nil
+  end
+
   test "restores pathway and level fields with linked rollback history", scope do
     other = child_stop_fixture(scope.organization.id, scope.version.id, scope.station.stop_id)
 

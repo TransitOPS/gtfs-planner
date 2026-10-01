@@ -110,6 +110,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   @replace_candidate_metres 260.0
   @replace_candidate_limit 4
 
+  # The tasks the edit panel starts for the stop it is showing. Each is named for
+  # that stop's UUID, so a result can be checked against the stop the panel shows
+  # when the result arrives. The writes are the ones whose success changes the
+  # feed, so a stale success still reloads the map.
+  @panel_reads [:move_review, :delete_review, :replace_review]
+  @panel_writes [:edit_save, :move_apply, :delete_stop, :replace_apply]
+
   # The form name the search field's params arrive under.
   @search_as :search
 
@@ -519,6 +526,19 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
      )}
   end
 
+  # A result belongs to the stop the panel showed when its task started. When the
+  # panel has moved to another stop the result is dropped, so one stop's review
+  # or save outcome is never rendered into another stop's panel. A write that
+  # landed still changed the feed, so the map is read again.
+  def handle_async({task, uuid}, result, socket)
+      when task in @panel_reads or task in @panel_writes do
+    if match?(%{edit_stop: %{uuid: ^uuid}}, socket.assigns) do
+      handle_async(task, result, socket)
+    else
+      {:noreply, drop_stale_panel_result(task, result, socket)}
+    end
+  end
+
   def handle_async(:edit_save, {:ok, {:ok, stop}}, socket) do
     # `stops.updated_at` is a whole second, so the struct an update returns
     # carries the microseconds Ecto generated rather than the value the row
@@ -831,6 +851,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     {:noreply, socket |> assign(:replace_saving?, false) |> assign(:replace_outcome, :failed)}
   end
 
+  defp drop_stale_panel_result(task, {:ok, {:ok, _written}}, socket) when task in @panel_writes,
+    do: start_load(socket)
+
+  defp drop_stale_panel_result(_task, _result, socket), do: socket
+
   # A move that landed is a move that is over: the review, the pending move and
   # the pin's ghost all belong to the position the stop no longer has.
   defp assign_move_state_after_apply(socket) do
@@ -856,7 +881,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
         socket = socket |> assign(:delete_loading?, true)
 
-        start_async(socket, :delete_review, fn -> StopEditing.delete_review(uuid, audit) end)
+        start_async(socket, {:delete_review, uuid}, fn ->
+          StopEditing.delete_review(uuid, audit)
+        end)
     end
   end
 
@@ -882,7 +909,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
       socket = socket |> assign(:delete_saving?, true) |> assign(:delete_outcome, :none)
 
-      start_async(socket, :delete_stop, fn ->
+      start_async(socket, {:delete_stop, uuid}, fn ->
         StopEditing.delete_stop(uuid, review.fingerprint, audit)
       end)
     else
@@ -1089,7 +1116,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
         |> assign(:replace_loading?, true)
         |> assign(:replace_outcome, :none)
 
-      start_async(socket, :replace_review, fn ->
+      start_async(socket, {:replace_review, old_uuid}, fn ->
         StopEditing.replace_review(old_uuid, new_uuid, audit)
       end)
     else
@@ -1130,7 +1157,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
       socket = socket |> assign(:replace_saving?, true)
 
-      start_async(socket, :replace_apply, fn ->
+      start_async(socket, {:replace_apply, old_uuid}, fn ->
         StopEditing.replace_stop(old_uuid, new_uuid, options, audit)
       end)
     else
@@ -1326,7 +1353,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
           |> assign(:edit_saving, true)
           |> assign_dirty()
 
-        start_async(socket, :edit_save, fn ->
+        start_async(socket, {:edit_save, stop.uuid}, fn ->
           StopEditing.update_stop(stop.uuid, attrs, loaded, audit)
         end)
     end
@@ -1437,7 +1464,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
           |> assign(:move_review, nil)
           |> assign(:move_answer, nil)
 
-        start_async(socket, :move_review, fn -> StopEditing.move_review(uuid, point, audit) end)
+        start_async(socket, {:move_review, uuid}, fn ->
+          StopEditing.move_review(uuid, point, audit)
+        end)
 
       _no_stop_or_point ->
         socket |> assign(:edit_saving, false) |> assign(:edit_outcome, :failed)
@@ -1465,7 +1494,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
       socket = socket |> assign(:move_saving?, true) |> assign(:move_errors, [])
 
-      start_async(socket, :move_apply, fn ->
+      start_async(socket, {:move_apply, uuid}, fn ->
         StopEditing.apply_move(uuid, attrs, options, audit)
       end)
     else
@@ -2142,6 +2171,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
          ) do
       {:ok, stop} ->
         socket
+        |> assign_edit_state()
         |> assign_edit_stop(stop)
         |> load_parent_name(stop)
         |> start_edit_usage(stop)
