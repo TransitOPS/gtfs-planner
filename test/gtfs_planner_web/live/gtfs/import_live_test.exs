@@ -23,6 +23,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.RunnerSlots
   alias GtfsPlanner.Versions
 
   @levels_content "level_id,level_index,level_name\nL1,0.0,Ground"
@@ -83,7 +84,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
     end
 
     # The runner supervisor admits one import, so the next start needs this one gone.
-    GtfsPlanner.Support.RunnerSlots.await_idle()
+    RunnerSlots.await_idle()
     await_import_settled(view, 100)
   end
 
@@ -717,7 +718,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       upload_gtfs(view, [%{name: "levels.txt", content: @levels_content, type: "text/plain"}])
 
       submit_import(view, "Consume Fail")
-      GtfsPlanner.Support.RunnerSlots.await_idle()
+      RunnerSlots.await_idle()
       html = render(view)
 
       # The run is closed with nothing imported, and its empty version is gone.
@@ -769,7 +770,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       upload_gtfs(view, [%{name: "levels.txt", content: @levels_content, type: "text/plain"}])
 
       submit_import(view, "Unwritable")
-      GtfsPlanner.Support.RunnerSlots.await_idle()
+      RunnerSlots.await_idle()
       html = render(view)
 
       run = Repo.get_by!(Run, organization_id: organization.id, version_name: "Unwritable")
@@ -2016,7 +2017,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
   defp restore_application_env(key, nil), do: Application.delete_env(:gtfs_planner, key)
   defp restore_application_env(key, value), do: Application.put_env(:gtfs_planner, key, value)
 
-  defp await_idle_runners(_context), do: GtfsPlanner.Support.RunnerSlots.await_idle()
+  defp await_idle_runners(_context), do: RunnerSlots.await_idle()
 
   # Sets an application key for one test and restores the previous value on exit.
   defp put_application_env(key, value) do

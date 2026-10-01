@@ -9,6 +9,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveNamingRollbackTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.{AuditContext, ChangeLog, Pathway, Stations, Stop}
   alias GtfsPlanner.Repo
 
@@ -260,7 +261,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveNamingRollbackTest do
       })
 
     {:ok, _audit_log} =
-      GtfsPlanner.Gtfs.Audit.record_change_in_transaction(
+      Audit.record_change_in_transaction(
         scope.audit,
         :stop_level,
         stop_level,

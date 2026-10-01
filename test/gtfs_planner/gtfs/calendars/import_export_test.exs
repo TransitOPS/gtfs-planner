@@ -41,14 +41,14 @@ defmodule GtfsPlanner.Gtfs.Calendars.ImportExportTest do
     Trip
   }
 
+  alias GtfsPlanner.Accounts.User
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs.Export.FileSpec
   alias GtfsPlanner.Gtfs.Export.Snapshot
   alias GtfsPlanner.Gtfs.Import.CsvParser
   alias GtfsPlanner.Gtfs.Import.Recovery
   alias GtfsPlanner.Gtfs.Import.RowParser
   alias GtfsPlanner.Gtfs.ImportRuns
-  alias GtfsPlanner.Accounts.User
-  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Support.StagedImport
   alias GtfsPlanner.Versions.GtfsVersion

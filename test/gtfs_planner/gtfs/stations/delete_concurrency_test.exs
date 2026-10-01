@@ -87,36 +87,37 @@ defmodule GtfsPlanner.Gtfs.Stations.DeleteConcurrencyTest do
     parent = self()
 
     Task.Supervisor.async_nolink(supervisor, fn ->
-      unboxed(fn ->
-        Repo.transaction(fn ->
-          backend = backend_pid()
-          if mode == :insert_now, do: send(parent, {:writer_ready, backend})
+      unboxed(fn -> write_reference(parent, scope, mode) end)
+    end)
+  end
 
-          Versions.lock_for_input_write!(scope.organization.id, scope.version.id)
+  defp write_reference(parent, scope, mode) do
+    Repo.transaction(fn ->
+      backend = backend_pid()
+      if mode == :insert_now, do: send(parent, {:writer_ready, backend})
 
-          stop =
-            Repo.one(
-              from(s in Stop,
-                where:
-                  s.organization_id == ^scope.organization.id and
-                    s.gtfs_version_id == ^scope.version.id and s.stop_id == "S1"
-              )
-            )
+      Versions.lock_for_input_write!(scope.organization.id, scope.version.id)
 
-          inserted =
-            if stop,
-              do:
-                stop_time_fixture(scope.organization.id, scope.version.id, "TRIP", stop.stop_id),
-              else: :absent
+      stop =
+        Repo.one(
+          from(s in Stop,
+            where:
+              s.organization_id == ^scope.organization.id and
+                s.gtfs_version_id == ^scope.version.id and s.stop_id == "S1"
+          )
+        )
 
-          if mode == :hold_after_insert do
-            send(parent, {:writer_holds, backend})
-            await_release()
-          end
+      inserted =
+        if stop,
+          do: stop_time_fixture(scope.organization.id, scope.version.id, "TRIP", stop.stop_id),
+          else: :absent
 
-          inserted
-        end)
-      end)
+      if mode == :hold_after_insert do
+        send(parent, {:writer_holds, backend})
+        await_release()
+      end
+
+      inserted
     end)
   end
 
@@ -124,26 +125,28 @@ defmodule GtfsPlanner.Gtfs.Stations.DeleteConcurrencyTest do
     parent = self()
 
     Task.Supervisor.async_nolink(supervisor, fn ->
-      unboxed(fn ->
-        case mode do
-          :hold_before_delete ->
-            Repo.transaction(fn ->
-              backend = backend_pid()
-              Authorization.lock_editor!(scope.audit)
-              Versions.lock_for_exclusive_write!(scope.organization.id, scope.version.id)
-              send(parent, {:delete_holds, backend})
-              await_release()
-              Stations.delete_child_stop(scope.audit, scope.child.id, scope.child.lock_version)
-            end)
-
-          :delete_now ->
-            backend = backend_pid()
-            send(parent, {:delete_ready, backend})
-
-            Stations.delete_child_stop(scope.audit, scope.child.id, scope.child.lock_version)
-        end
-      end)
+      unboxed(fn -> delete_child(parent, scope, mode) end)
     end)
+  end
+
+  defp delete_child(parent, scope, mode) do
+    case mode do
+      :hold_before_delete ->
+        Repo.transaction(fn ->
+          backend = backend_pid()
+          Authorization.lock_editor!(scope.audit)
+          Versions.lock_for_exclusive_write!(scope.organization.id, scope.version.id)
+          send(parent, {:delete_holds, backend})
+          await_release()
+          Stations.delete_child_stop(scope.audit, scope.child.id, scope.child.lock_version)
+        end)
+
+      :delete_now ->
+        backend = backend_pid()
+        send(parent, {:delete_ready, backend})
+
+        Stations.delete_child_stop(scope.audit, scope.child.id, scope.child.lock_version)
+    end
   end
 
   defp await_release do

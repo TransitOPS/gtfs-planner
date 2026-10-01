@@ -15,10 +15,10 @@ defmodule GtfsPlanner.GtfsFixtures do
   alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Gtfs.Transfer
-  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
 
   @doc "Returns the persisted revision to use when exercising a station rollback in tests."

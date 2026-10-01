@@ -10,6 +10,7 @@ defmodule GtfsPlanner.Gtfs.Stations.RollbackTest do
     Audit,
     AuditContext,
     ChangeLog,
+    DiagramStorage,
     Level,
     Pathway,
     Stations,
@@ -440,7 +441,7 @@ defmodule GtfsPlanner.Gtfs.Stations.RollbackTest do
     assert source_log.snapshot["diagram_filename"] == missing_filename
 
     assert {:error, :not_found} =
-             GtfsPlanner.Gtfs.DiagramStorage.published_path(
+             DiagramStorage.published_path(
                scope.organization.id,
                scope.version.id,
                scope.station.stop_id,

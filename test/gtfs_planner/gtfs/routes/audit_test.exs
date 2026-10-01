@@ -6,9 +6,11 @@ defmodule GtfsPlanner.Gtfs.Routes.AuditTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.Stations
 
   setup do
     organization = organization_fixture()
@@ -234,13 +236,13 @@ defmodule GtfsPlanner.Gtfs.Routes.AuditTest do
                  }
                )
 
-      assert GtfsPlanner.Gtfs.Stations.rollback_target_snapshot(updated_log) ==
+      assert Stations.rollback_target_snapshot(updated_log) ==
                {:error, :audit_only_entity}
 
-      assert GtfsPlanner.Gtfs.Stations.rollback_target_snapshot(created_log) ==
+      assert Stations.rollback_target_snapshot(created_log) ==
                {:error, :audit_only_entity}
 
-      assert GtfsPlanner.Gtfs.Audit.reversible_fields_for(updated_log.entity_type) == []
+      assert Audit.reversible_fields_for(updated_log.entity_type) == []
       refute Enum.any?(Gtfs.reversible_fields_for("route"))
       refute Enum.any?(Gtfs.reversible_fields_for(:route))
 

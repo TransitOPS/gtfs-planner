@@ -20,8 +20,8 @@ defmodule GtfsPlanner.Gtfs.StopReferencesTest do
     Translation
   }
 
-  alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.Blocking.DeadheadTimes
+  alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations.WalkabilityTest
   alias GtfsPlanner.Versions
 

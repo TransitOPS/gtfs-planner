@@ -2,12 +2,12 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
   use GtfsPlanner.DataCase, async: false
 
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Import.Recovery
   alias GtfsPlanner.Gtfs.Import.Run
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Gtfs.TripRun
   alias GtfsPlanner.Integrity.OwnershipAudit

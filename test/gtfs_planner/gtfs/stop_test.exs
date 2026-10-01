@@ -2,6 +2,7 @@ defmodule GtfsPlanner.Gtfs.StopTest do
   use GtfsPlanner.DataCase, async: true
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.Stop
@@ -223,7 +224,7 @@ defmodule GtfsPlanner.Gtfs.StopTest do
       assert {:ok, renamed} = Gtfs.import_update_stop(stop, %{stop_name: "Renamed"})
 
       assert {:ok, _audit_log} =
-               GtfsPlanner.Gtfs.Audit.record_change_in_transaction(
+               Audit.record_change_in_transaction(
                  audit,
                  :stop,
                  stop,
@@ -234,7 +235,7 @@ defmodule GtfsPlanner.Gtfs.StopTest do
       assert [log] = Gtfs.list_change_logs_for_entity(org.id, version.id, "stop", renamed.id)
 
       assert {:ok, _restored} =
-               GtfsPlanner.Gtfs.Stations.rollback_entity(
+               Stations.rollback_entity(
                  audit,
                  log.id,
                  persisted_entity_revision(log)

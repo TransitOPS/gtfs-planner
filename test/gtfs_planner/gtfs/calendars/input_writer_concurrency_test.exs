@@ -28,6 +28,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Agency
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Blocking.DayTypes
@@ -43,8 +44,8 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
-  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Stations
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern
@@ -762,7 +763,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
         end)
 
       unboxed(fn ->
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(audit, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(audit, :stop, stop, "updated", %{
           stop_name: "Changed"
         })
 
@@ -775,7 +776,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
 
       {writer, backend} =
         start_writer(supervisor, fn ->
-          GtfsPlanner.Gtfs.Stations.rollback_entity(audit, log.id, persisted_entity_revision(log))
+          Stations.rollback_entity(audit, log.id, persisted_entity_revision(log))
         end)
 
       send(writer.pid, :go)

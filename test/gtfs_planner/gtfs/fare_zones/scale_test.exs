@@ -38,10 +38,10 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScaleTest do
 
   @moduletag timeout: 120_000
 
+  alias GtfsPlanner.AccountsFixtures
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Gtfs.Stop
-  alias GtfsPlanner.AccountsFixtures
   alias GtfsPlanner.OrganizationsFixtures
   alias GtfsPlanner.Repo
   alias GtfsPlanner.VersionsFixtures

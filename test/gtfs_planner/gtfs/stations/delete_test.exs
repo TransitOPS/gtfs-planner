@@ -340,84 +340,86 @@ defmodule GtfsPlanner.Gtfs.Stations.DeleteTest do
   end
 
   defp insert_reference(key, scope, stop_id) do
-    attrs =
-      case key do
-        :stop_times ->
-          %{trip_id: "TRIP", stop_id: stop_id, stop_sequence: 1}
-
-        :transfers_from ->
-          %{from_stop_id: stop_id, to_stop_id: "X", transfer_type: 0}
-
-        :transfers_to ->
-          %{from_stop_id: "X", to_stop_id: stop_id, transfer_type: 0}
-
-        :alignment_segments_from ->
-          %{from_stop_id: stop_id, to_stop_id: "X"}
-
-        :alignment_segments_to ->
-          %{from_stop_id: "X", to_stop_id: stop_id}
-
-        :flex_first ->
-          %{key: "first", name: "First", kind: :detour, first_stop_id: stop_id}
-
-        :flex_last ->
-          %{key: "last", name: "Last", kind: :detour, last_stop_id: stop_id}
-
-        :flex_hubs ->
-          %{key: "hub", name: "Hub", kind: :detour, hub_stop_ids: [stop_id]}
-
-        :fare_leg_join_rules_from ->
-          %{from_stop_id: stop_id, to_stop_id: "X"}
-
-        :fare_leg_join_rules_to ->
-          %{from_stop_id: "X", to_stop_id: stop_id}
-
-        :stop_areas ->
-          %{area_id: "AREA", stop_id: stop_id}
-
-        :translations ->
-          %{
-            table_name: "stops",
-            field_name: "stop_name",
-            language: "en",
-            translation: "Name",
-            record_id: stop_id
-          }
-
-        :walkability_tests ->
-          %{
-            stop_id: stop_id,
-            address: "123 Main St",
-            address_lat: Decimal.new("42.3601"),
-            address_lon: Decimal.new("-71.0589")
-          }
-
-        :relief_points ->
-          %{stop_id: stop_id}
-
-        :deadhead_times_from ->
-          %{from_ref: "stop:#{stop_id}", to_ref: "garage:#{Ecto.UUID.generate()}", minutes: 7}
-
-        :deadhead_times_to ->
-          %{from_ref: "garage:#{Ecto.UUID.generate()}", to_ref: "stop:#{stop_id}", minutes: 8}
-      end
-
-    schema =
-      case key do
-        :stop_times -> StopTime
-        key when key in [:transfers_from, :transfers_to] -> Transfer
-        key when key in [:alignment_segments_from, :alignment_segments_to] -> AlignmentSegment
-        key when key in [:flex_first, :flex_last, :flex_hubs] -> FlexService
-        key when key in [:fare_leg_join_rules_from, :fare_leg_join_rules_to] -> FareLegJoinRule
-        :stop_areas -> StopArea
-        :translations -> Translation
-        :walkability_tests -> WalkabilityTest
-        :relief_points -> ReliefPoint
-        key when key in [:deadhead_times_from, :deadhead_times_to] -> DeadheadTime
-      end
-
-    insert(schema, scope, attrs)
+    insert(reference_schema(key), scope, reference_attrs(key, stop_id))
   end
+
+  defp reference_attrs(:stop_times, stop_id),
+    do: %{trip_id: "TRIP", stop_id: stop_id, stop_sequence: 1}
+
+  defp reference_attrs(:transfers_from, stop_id),
+    do: %{from_stop_id: stop_id, to_stop_id: "X", transfer_type: 0}
+
+  defp reference_attrs(:transfers_to, stop_id),
+    do: %{from_stop_id: "X", to_stop_id: stop_id, transfer_type: 0}
+
+  defp reference_attrs(:alignment_segments_from, stop_id),
+    do: %{from_stop_id: stop_id, to_stop_id: "X"}
+
+  defp reference_attrs(:alignment_segments_to, stop_id),
+    do: %{from_stop_id: "X", to_stop_id: stop_id}
+
+  defp reference_attrs(:flex_first, stop_id),
+    do: %{key: "first", name: "First", kind: :detour, first_stop_id: stop_id}
+
+  defp reference_attrs(:flex_last, stop_id),
+    do: %{key: "last", name: "Last", kind: :detour, last_stop_id: stop_id}
+
+  defp reference_attrs(:flex_hubs, stop_id),
+    do: %{key: "hub", name: "Hub", kind: :detour, hub_stop_ids: [stop_id]}
+
+  defp reference_attrs(:fare_leg_join_rules_from, stop_id),
+    do: %{from_stop_id: stop_id, to_stop_id: "X"}
+
+  defp reference_attrs(:fare_leg_join_rules_to, stop_id),
+    do: %{from_stop_id: "X", to_stop_id: stop_id}
+
+  defp reference_attrs(:stop_areas, stop_id), do: %{area_id: "AREA", stop_id: stop_id}
+
+  defp reference_attrs(:translations, stop_id) do
+    %{
+      table_name: "stops",
+      field_name: "stop_name",
+      language: "en",
+      translation: "Name",
+      record_id: stop_id
+    }
+  end
+
+  defp reference_attrs(:walkability_tests, stop_id) do
+    %{
+      stop_id: stop_id,
+      address: "123 Main St",
+      address_lat: Decimal.new("42.3601"),
+      address_lon: Decimal.new("-71.0589")
+    }
+  end
+
+  defp reference_attrs(:relief_points, stop_id), do: %{stop_id: stop_id}
+
+  defp reference_attrs(:deadhead_times_from, stop_id),
+    do: %{from_ref: "stop:#{stop_id}", to_ref: "garage:#{Ecto.UUID.generate()}", minutes: 7}
+
+  defp reference_attrs(:deadhead_times_to, stop_id),
+    do: %{from_ref: "garage:#{Ecto.UUID.generate()}", to_ref: "stop:#{stop_id}", minutes: 8}
+
+  defp reference_schema(:stop_times), do: StopTime
+  defp reference_schema(key) when key in [:transfers_from, :transfers_to], do: Transfer
+
+  defp reference_schema(key) when key in [:alignment_segments_from, :alignment_segments_to],
+    do: AlignmentSegment
+
+  defp reference_schema(key) when key in [:flex_first, :flex_last, :flex_hubs], do: FlexService
+
+  defp reference_schema(key) when key in [:fare_leg_join_rules_from, :fare_leg_join_rules_to],
+    do: FareLegJoinRule
+
+  defp reference_schema(:stop_areas), do: StopArea
+  defp reference_schema(:translations), do: Translation
+  defp reference_schema(:walkability_tests), do: WalkabilityTest
+  defp reference_schema(:relief_points), do: ReliefPoint
+
+  defp reference_schema(key) when key in [:deadhead_times_from, :deadhead_times_to],
+    do: DeadheadTime
 
   defp insert(schema, scope, attrs) do
     schema

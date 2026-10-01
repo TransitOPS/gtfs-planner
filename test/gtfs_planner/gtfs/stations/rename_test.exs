@@ -7,8 +7,8 @@ defmodule GtfsPlanner.Gtfs.Stations.RenameTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Gtfs.{
-    AlignmentSegment,
     Alignments,
+    AlignmentSegment,
     Audit,
     AuditContext,
     DeadheadTime,

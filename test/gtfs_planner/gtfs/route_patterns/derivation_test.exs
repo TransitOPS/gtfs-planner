@@ -20,6 +20,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
   alias GtfsPlanner.Gtfs.RoutePatternStop
+  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimedPatternStop
@@ -568,7 +569,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
     assert log.changed_fields["patterns_created"] == 1
     assert log.changed_fields["timings_created"] == 2
 
-    assert {:error, :audit_only_entity} = GtfsPlanner.Gtfs.Stations.rollback_target_snapshot(log)
+    assert {:error, :audit_only_entity} = Stations.rollback_target_snapshot(log)
     assert Gtfs.reversible_fields_for("route_pattern_build") == []
 
     # Custom classification alone is not retryable and creates no second summary.

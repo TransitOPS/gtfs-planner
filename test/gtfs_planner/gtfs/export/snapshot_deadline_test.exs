@@ -27,10 +27,10 @@ defmodule GtfsPlanner.Gtfs.Export.SnapshotDeadlineTest do
   import GtfsPlanner.AdvancedBlockingFixtures
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.Gtfs.{Calendar, CalendarAttribute, CalendarDate, Route, Stop, StopTime, Trip}
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Export.{ArtifactStorage, Run, Snapshot, Worker}
   alias GtfsPlanner.Gtfs.ExportRuns
-  alias GtfsPlanner.Gtfs.{Calendar, CalendarAttribute, CalendarDate, Route, Stop, StopTime, Trip}
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion

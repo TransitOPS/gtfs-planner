@@ -15,6 +15,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
   alias GtfsPlanner.Gtfs.Import.ChangeRuns
   alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.RunnerSlots
 
   setup %{conn: conn} do
     organization = organization_fixture()
@@ -1007,7 +1008,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
     end
 
     # The runner supervisor admits one change run, so the next start needs this one gone.
-    GtfsPlanner.Support.RunnerSlots.await_idle()
+    RunnerSlots.await_idle()
     render(view)
   end
 end

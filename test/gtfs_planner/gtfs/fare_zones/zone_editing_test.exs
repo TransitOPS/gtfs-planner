@@ -20,14 +20,14 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
   """
   use GtfsPlanner.DataCase, async: false
 
+  alias GtfsPlanner.AccountsFixtures
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.FareRule
   alias GtfsPlanner.Gtfs.FareZone
-  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Gtfs.Import.CsvParser
   alias GtfsPlanner.Gtfs.Stop
-  alias GtfsPlanner.AccountsFixtures
   alias GtfsPlanner.OrganizationsFixtures
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Support.StagedImport

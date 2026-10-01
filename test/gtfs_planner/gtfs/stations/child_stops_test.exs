@@ -6,7 +6,7 @@ defmodule GtfsPlanner.Gtfs.Stations.ChildStopsTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
-  alias GtfsPlanner.Gtfs.{Audit, AuditContext, Stop, Stations}
+  alias GtfsPlanner.Gtfs.{Audit, AuditContext, Stations, Stop}
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 

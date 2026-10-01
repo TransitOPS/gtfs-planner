@@ -9,6 +9,7 @@ defmodule GtfsPlanner.GtfsTest do
   alias GtfsPlanner.Gtfs.ReviewedApplyTransactionMock
   alias GtfsPlanner.Gtfs.StationEditingStatus
   alias GtfsPlanner.Gtfs.StationJournal.Scope
+  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopLevel
 
@@ -244,7 +245,7 @@ defmodule GtfsPlanner.GtfsTest do
 
     test "delegates to update_level when level_id unchanged", %{level: level, audit: audit} do
       assert {:ok, updated} =
-               GtfsPlanner.Gtfs.Stations.update_level(
+               Stations.update_level(
                  audit,
                  level.id,
                  %{
@@ -260,7 +261,7 @@ defmodule GtfsPlanner.GtfsTest do
 
     test "cascades level_id rename to Stop.level_id", %{level: level, child: child, audit: audit} do
       assert {:ok, updated} =
-               GtfsPlanner.Gtfs.Stations.update_level(
+               Stations.update_level(
                  audit,
                  level.id,
                  %{level_id: "renamed-level"},
@@ -291,7 +292,7 @@ defmodule GtfsPlanner.GtfsTest do
         })
 
       assert {:ok, _updated} =
-               GtfsPlanner.Gtfs.Stations.update_level(
+               Stations.update_level(
                  audit,
                  level.id,
                  %{level_id: "renamed-level"},
@@ -318,7 +319,7 @@ defmodule GtfsPlanner.GtfsTest do
         })
 
       assert {:ok, _updated} =
-               GtfsPlanner.Gtfs.Stations.update_level(
+               Stations.update_level(
                  audit,
                  level.id,
                  %{level_id: "renamed-level"},
@@ -348,7 +349,7 @@ defmodule GtfsPlanner.GtfsTest do
         })
 
       assert {:ok, _updated} =
-               GtfsPlanner.Gtfs.Stations.update_level(
+               Stations.update_level(
                  audit,
                  level.id,
                  %{level_id: "renamed-level"},
@@ -378,7 +379,7 @@ defmodule GtfsPlanner.GtfsTest do
         })
 
       assert {:error, %Ecto.Changeset{}} =
-               GtfsPlanner.Gtfs.Stations.update_level(
+               Stations.update_level(
                  audit,
                  level.id,
                  %{level_id: ""},
@@ -1693,7 +1694,7 @@ defmodule GtfsPlanner.GtfsTest do
 
     test "delegates to update_stop when stop_id unchanged", %{child: child, audit: audit} do
       assert {:ok, updated} =
-               GtfsPlanner.Gtfs.Stations.update_child_stop(
+               Stations.update_child_stop(
                  audit,
                  child.id,
                  %{
@@ -1736,7 +1737,7 @@ defmodule GtfsPlanner.GtfsTest do
         })
 
       assert {:ok, updated} =
-               GtfsPlanner.Gtfs.Stations.update_child_stop(
+               Stations.update_child_stop(
                  audit,
                  child.id,
                  %{
@@ -1782,7 +1783,7 @@ defmodule GtfsPlanner.GtfsTest do
         })
 
       assert {:ok, updated} =
-               GtfsPlanner.Gtfs.Stations.update_child_stop(
+               Stations.update_child_stop(
                  audit,
                  child.id,
                  %{
@@ -1816,7 +1817,7 @@ defmodule GtfsPlanner.GtfsTest do
         })
 
       assert {:ok, _updated} =
-               GtfsPlanner.Gtfs.Stations.update_child_stop(
+               Stations.update_child_stop(
                  audit,
                  child.id,
                  %{
@@ -5047,7 +5048,7 @@ defmodule GtfsPlanner.GtfsTest do
       assert renamed.stop_name == "Later Unrelated Name"
 
       assert {:ok, restored} =
-               GtfsPlanner.Gtfs.Stations.rollback_entity(
+               Stations.rollback_entity(
                  audit_ctx,
                  log.id,
                  persisted_entity_revision(log)
@@ -5107,7 +5108,7 @@ defmodule GtfsPlanner.GtfsTest do
       assert log.snapshot["diagram_coordinate"] == %{"x" => 50.0, "y" => 40.0}
 
       assert {:ok, restored} =
-               GtfsPlanner.Gtfs.Stations.rollback_entity(
+               Stations.rollback_entity(
                  audit_ctx,
                  log.id,
                  persisted_entity_revision(log)

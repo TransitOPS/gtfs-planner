@@ -9,8 +9,8 @@ defmodule GtfsPlanner.Gtfs.Transfers.StopReferenceLockTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts.{User, UserOrgMembership}
-  alias GtfsPlanner.Gtfs.{AuditContext, ChangeLog, Stop, StopReferences, Transfer}
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.{AuditContext, ChangeLog, Stop, StopReferences, Transfer}
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo

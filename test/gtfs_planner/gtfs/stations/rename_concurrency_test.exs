@@ -104,35 +104,37 @@ defmodule GtfsPlanner.Gtfs.Stations.RenameConcurrencyTest do
     parent = self()
 
     Task.Supervisor.async_nolink(supervisor, fn ->
-      unboxed(fn ->
-        Repo.transaction(fn ->
-          backend = backend_pid()
+      unboxed(fn -> write_reference(parent, scope, mode) end)
+    end)
+  end
 
-          if mode == :insert_now, do: send(parent, {:writer_ready, backend})
+  defp write_reference(parent, scope, mode) do
+    Repo.transaction(fn ->
+      backend = backend_pid()
 
-          Versions.lock_for_input_write!(scope.organization.id, scope.version.id)
+      if mode == :insert_now, do: send(parent, {:writer_ready, backend})
 
-          stop =
-            Repo.one(
-              from s in Stop,
-                where:
-                  s.organization_id == ^scope.organization.id and
-                    s.gtfs_version_id == ^scope.version.id and s.stop_id == "S1"
-            )
+      Versions.lock_for_input_write!(scope.organization.id, scope.version.id)
 
-          inserted =
-            if stop,
-              do: route_pattern_stop_fixture(scope.pattern, stop.stop_id, 1),
-              else: :absent
+      stop =
+        Repo.one(
+          from s in Stop,
+            where:
+              s.organization_id == ^scope.organization.id and
+                s.gtfs_version_id == ^scope.version.id and s.stop_id == "S1"
+        )
 
-          if mode == :hold_after_insert do
-            send(parent, {:writer_holds, backend})
-            await_release()
-          end
+      inserted =
+        if stop,
+          do: route_pattern_stop_fixture(scope.pattern, stop.stop_id, 1),
+          else: :absent
 
-          inserted
-        end)
-      end)
+      if mode == :hold_after_insert do
+        send(parent, {:writer_holds, backend})
+        await_release()
+      end
+
+      inserted
     end)
   end
 
@@ -140,28 +142,30 @@ defmodule GtfsPlanner.Gtfs.Stations.RenameConcurrencyTest do
     parent = self()
 
     Task.Supervisor.async_nolink(supervisor, fn ->
-      unboxed(fn ->
-        Repo.transaction(fn ->
-          backend = backend_pid()
+      unboxed(fn -> rename_child(parent, scope, mode) end)
+    end)
+  end
 
-          case mode do
-            :hold_before_rename ->
-              Versions.lock_for_exclusive_write!(scope.organization.id, scope.version.id)
-              send(parent, {:rename_holds, backend})
-              await_release()
+  defp rename_child(parent, scope, mode) do
+    Repo.transaction(fn ->
+      backend = backend_pid()
 
-            :rename_now ->
-              send(parent, {:rename_ready, backend})
-          end
+      case mode do
+        :hold_before_rename ->
+          Versions.lock_for_exclusive_write!(scope.organization.id, scope.version.id)
+          send(parent, {:rename_holds, backend})
+          await_release()
 
-          Stations.update_child_stop(
-            scope.audit,
-            scope.child.id,
-            %{"stop_id" => "S2"},
-            scope.child.lock_version
-          )
-        end)
-      end)
+        :rename_now ->
+          send(parent, {:rename_ready, backend})
+      end
+
+      Stations.update_child_stop(
+        scope.audit,
+        scope.child.id,
+        %{"stop_id" => "S2"},
+        scope.child.lock_version
+      )
     end)
   end
 

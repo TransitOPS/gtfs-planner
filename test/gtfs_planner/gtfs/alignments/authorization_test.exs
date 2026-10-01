@@ -6,8 +6,8 @@ defmodule GtfsPlanner.Gtfs.Alignments.AuthorizationTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.Alignments
+  alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Shape

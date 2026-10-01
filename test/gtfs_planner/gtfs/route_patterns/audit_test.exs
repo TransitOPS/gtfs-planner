@@ -11,6 +11,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
+  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Repo
@@ -57,7 +58,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
     assert log.changed_fields["after"]["route_pattern_name"] == "Crosstown"
     refute Enum.any?(Gtfs.reversible_fields_for("route_pattern"))
     refute Enum.any?(Gtfs.reversible_fields_for("timed_pattern"))
-    assert {:error, :audit_only_entity} = GtfsPlanner.Gtfs.Stations.rollback_target_snapshot(log)
+    assert {:error, :audit_only_entity} = Stations.rollback_target_snapshot(log)
 
     assert ChangeLog.changeset(%ChangeLog{}, %{
              entity_type: "timed_pattern",

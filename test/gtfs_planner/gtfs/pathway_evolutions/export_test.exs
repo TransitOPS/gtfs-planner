@@ -31,8 +31,8 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ExportTest do
   import GtfsPlanner.VersionsFixtures
 
   alias Ecto.Adapters.SQL.Sandbox
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.ConcurrencyHelpers
+  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Export.Snapshot

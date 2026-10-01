@@ -3,8 +3,8 @@ defmodule GtfsPlanner.AuthorizationTest do
 
   import GtfsPlanner.OrganizationsFixtures
 
-  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Accounts.UserOrgMembership
+  alias GtfsPlanner.Authorization
 
   setup do
     %{organization: organization_fixture()}

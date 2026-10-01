@@ -133,23 +133,25 @@ defmodule GtfsPlanner.Organizations.MembershipConcurrencyTest do
 
     task =
       Task.Supervisor.async_nolink(supervisor, fn ->
-        unboxed(fn ->
-          Repo.transaction(fn ->
-            Authorization.lock_editor!(%{actor_id: editor.id, organization_id: organization.id})
-            send(parent, {:editor_locked, self(), backend_pid()})
-
-            receive do
-              :commit -> :held
-            after
-              @contention_timeout -> raise "editor lock was not released"
-            end
-          end)
-        end)
+        unboxed(fn -> hold_editor_lock(parent, editor, organization) end)
       end)
 
     assert_receive {:editor_locked, task_pid, backend}, @contention_timeout
     assert task_pid == task.pid
     %{task: task, backend: backend}
+  end
+
+  defp hold_editor_lock(parent, editor, organization) do
+    Repo.transaction(fn ->
+      Authorization.lock_editor!(%{actor_id: editor.id, organization_id: organization.id})
+      send(parent, {:editor_locked, self(), backend_pid()})
+
+      receive do
+        :commit -> :held
+      after
+        @contention_timeout -> raise "editor lock was not released"
+      end
+    end)
   end
 
   defp assert_blocked_by(backend, holder_backend) do

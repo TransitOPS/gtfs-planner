@@ -24,6 +24,7 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Schedules
+  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern
@@ -800,7 +801,7 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
                "affected_trip_ids" => [trip.id]
              }
 
-      assert GtfsPlanner.Gtfs.Stations.rollback_target_snapshot(deleted_log) ==
+      assert Stations.rollback_target_snapshot(deleted_log) ==
                {:error, :audit_only_entity}
 
       assert {:ok, updated_log} =
@@ -829,7 +830,7 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
       assert updated_log.changed_fields["before"] == %{"trip_headsign" => "Old"}
       assert updated_log.changed_fields["after"] == %{"trip_headsign" => "New"}
 
-      assert GtfsPlanner.Gtfs.Stations.rollback_target_snapshot(updated_log) ==
+      assert Stations.rollback_target_snapshot(updated_log) ==
                {:error, :audit_only_entity}
     end
   end

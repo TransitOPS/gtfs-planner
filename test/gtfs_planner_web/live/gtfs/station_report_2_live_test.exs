@@ -38,6 +38,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
   alias GtfsPlannerWeb.Gtfs.StationReport2LiveTest.ControlledSnapshotSource
@@ -1932,7 +1933,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       }
 
       assert {:ok, restored} =
-               GtfsPlanner.Gtfs.Stations.rollback_entity(
+               Stations.rollback_entity(
                  audit_ctx,
                  log.id,
                  persisted_entity_revision(log)
