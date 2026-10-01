@@ -147,6 +147,15 @@ defmodule GtfsPlanner.Alerts.Alert do
         }
 
   @doc """
+  Lists the situations an alert can be about.
+
+  The same list orders `AlertScript.situation`, so a script is matched against an
+  alert's situation with one vocabulary rather than two that can drift.
+  """
+  @spec situations() :: [atom()]
+  def situations, do: @situations
+
+  @doc """
   Creates the changeset the editor autosaves and the review step saves.
 
   Casts only the operator's own fields, then each embedded answer through its own

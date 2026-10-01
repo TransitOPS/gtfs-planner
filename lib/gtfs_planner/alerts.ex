@@ -25,6 +25,15 @@ defmodule GtfsPlanner.Alerts do
   nothing and returns `{:error, :stale, current}` for the editor's conflict
   banner (R6). `delete_alert/3` follows the same order and refuses a stale
   revision the same way.
+
+  The script and guidelines commands below hold the same membership lock before
+  the script or settings row, so a revocation that commits while a settings save
+  is waiting refuses that save too (R5, CR-3). They carry no GTFS version: a
+  script and an organization's guidelines are written once and read by every
+  alert the organization writes. Reading them writes nothing - an organization
+  with no settings row reads the built-in defaults at revision 0 - and a
+  built-in script is never edited in place; `copy_built_in_script/2` is the only
+  way a default becomes an organization's own (AC-11).
   """
 
   import Ecto.Changeset
@@ -33,6 +42,9 @@ defmodule GtfsPlanner.Alerts do
   alias Ecto.Changeset
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Alerts.Alert
+  alias GtfsPlanner.Alerts.AlertScript
+  alias GtfsPlanner.Alerts.AlertSettings
+  alias GtfsPlanner.Alerts.BuiltInScripts
   alias GtfsPlanner.Alerts.Completion
   alias GtfsPlanner.Alerts.Listing
   alias GtfsPlanner.Alerts.Recurrence
@@ -55,6 +67,22 @@ defmodule GtfsPlanner.Alerts do
           upcoming: [Listing.row()],
           in_progress: [Listing.row()],
           past: [Listing.row()]
+        }
+
+  @typedoc """
+  One script as `list_scripts/1` returns it: the templates `Alerts.Message`
+  fills, the situation an editor's answer is matched against, and the key
+  `MessageAnswer.script_key` records.
+  """
+  @type script_option :: %{
+          required(:key) => String.t(),
+          required(:name) => String.t(),
+          required(:situation) => atom(),
+          required(:header_template) => String.t(),
+          required(:description_template) => String.t(),
+          required(:built_in?) => boolean(),
+          required(:id) => Ecto.UUID.t() | nil,
+          optional(:position) => integer() | nil
         }
 
   @doc """
@@ -298,6 +326,189 @@ defmodule GtfsPlanner.Alerts do
     end)
   end
 
+  @doc """
+  Lists the message scripts an editor can choose from: this organization's own
+  scripts in their `position` order first, then the read-only built-ins.
+
+  Each option is the shape `Alerts.Message.generate/3` fills, keyed the way
+  `MessageAnswer.script_key` stores it - `"org:<uuid>"` for a stored script,
+  `"builtin:<key>"` for a default - and carrying `built_in?`, which is what the
+  settings table renders as a read-only row with a copy action rather than an
+  editable one (AC-11, AC-24).
+
+  A member without the editor role gets no options at all, including no
+  built-ins, the same fail-closed read the target lookups above use.
+  """
+  @spec list_scripts(AuditContext.t()) :: [script_option()]
+  def list_scripts(%AuditContext{} = audit_context) do
+    with_options(audit_context, fn ->
+      org_scripts =
+        from(s in AlertScript,
+          where: s.organization_id == ^audit_context.organization_id,
+          order_by: [asc_nulls_last: s.position, asc: s.inserted_at]
+        )
+        |> Repo.all()
+        |> Enum.map(&script_option/1)
+
+      Enum.concat(org_scripts, Enum.map(BuiltInScripts.scripts(), &built_in_option/1))
+    end)
+  end
+
+  @doc """
+  Stores one organization's script.
+
+  `organization_id` and, when the caller gives no `position`, the script's place
+  in the list are set here from the audit context, so neither can be cast from a
+  form param (R4, CR-2).
+  """
+  @spec create_script(AuditContext.t(), map()) :: {:ok, AlertScript.t()} | {:error, error()}
+  def create_script(%AuditContext{} = audit_context, attrs) do
+    transaction(fn ->
+      lock_editor_membership!(audit_context)
+
+      %AlertScript{}
+      |> AlertScript.changeset(attrs)
+      |> put_change(:organization_id, audit_context.organization_id)
+      |> put_default_position(audit_context)
+      |> Repo.insert()
+      |> commit()
+    end)
+  end
+
+  @doc """
+  Saves an organization's script at the row the transaction holds.
+
+  The script is loaded by the context's organization, so a UUID from another
+  tenant is `:not_found` rather than a cross-tenant edit, and it is held
+  `FOR UPDATE` before it is read.
+  """
+  @spec update_script(AuditContext.t(), Ecto.UUID.t() | term(), map()) ::
+          {:ok, AlertScript.t()} | {:error, error()}
+  def update_script(%AuditContext{} = audit_context, script_id, attrs) do
+    transaction(fn ->
+      lock_editor_membership!(audit_context)
+      script = lock_script!(audit_context, script_id)
+
+      script
+      |> AlertScript.changeset(attrs)
+      |> Repo.update()
+      |> commit()
+    end)
+  end
+
+  @doc """
+  Deletes one of the organization's own scripts.
+
+  A built-in has no row and no id here: it is copied into the organization with
+  `copy_built_in_script/2` before it can be changed or removed, which is what
+  keeps one tenant's edit out of every other tenant's defaults.
+  """
+  @spec delete_script(AuditContext.t(), Ecto.UUID.t() | term()) ::
+          {:ok, AlertScript.t()} | {:error, error()}
+  def delete_script(%AuditContext{} = audit_context, script_id) do
+    transaction(fn ->
+      lock_editor_membership!(audit_context)
+      script = lock_script!(audit_context, script_id)
+
+      script
+      |> Repo.delete()
+      |> commit()
+    end)
+  end
+
+  @doc """
+  Copies one built-in script into the organization as an editable script.
+
+  The copy carries the built-in's two templates unchanged, so the wording an
+  organization starts from is the recommended wording. Its name is the built-in
+  name, numbered when the organization already has a script by that name, so
+  copying the same default twice is an ordinary second variant rather than a
+  unique-name failure. An unknown key stores nothing and returns
+  `{:error, :unknown_built_in}`.
+  """
+  @spec copy_built_in_script(AuditContext.t(), String.t()) ::
+          {:ok, AlertScript.t()} | {:error, error() | :unknown_built_in}
+  def copy_built_in_script(%AuditContext{} = audit_context, key) do
+    case BuiltInScripts.script(key) do
+      nil -> {:error, :unknown_built_in}
+      built_in -> insert_copy(audit_context, built_in)
+    end
+  end
+
+  @doc """
+  Reads the organization's writing guidelines and the revision they are at.
+
+  Revision 0 is the recommended default: with no stored row this returns
+  `BuiltInScripts.guidelines/0` and writes nothing, so merely opening Settings
+  cannot create a row and cannot move a revision. A member without the editor
+  role reads no text at all, not even the default.
+  """
+  @spec get_guidelines(AuditContext.t()) :: %{text: String.t(), revision: non_neg_integer()}
+  def get_guidelines(%AuditContext{} = audit_context) do
+    case authorize_editor(audit_context) do
+      :ok ->
+        case scoped_settings(audit_context) do
+          %AlertSettings{} = settings ->
+            %{text: settings.guidelines || "", revision: settings.revision}
+
+          nil ->
+            %{text: BuiltInScripts.guidelines(), revision: 0}
+        end
+
+      {:error, :forbidden} ->
+        %{text: "", revision: 0}
+    end
+  end
+
+  @doc """
+  Stores the guidelines at the revision the editor's form was rendered from.
+
+  `expected_revision` 0 means "no row yet", which stores the first revision as
+  1. Any other expectation is compared against the row the transaction holds
+  `FOR UPDATE`, and `optimistic_lock(:revision)` states the same expectation in
+  the `UPDATE`, so a save from a form rendered before another editor's save is
+  refused with `{:error, :stale}` instead of overwriting it (R6, AC-11).
+  """
+  @spec save_guidelines(AuditContext.t(), String.t(), non_neg_integer()) ::
+          {:ok, AlertSettings.t()} | {:error, error() | :stale}
+  def save_guidelines(%AuditContext{} = audit_context, guidelines, expected_revision)
+      when is_binary(guidelines) and is_integer(expected_revision) and expected_revision >= 0 do
+    transaction(fn ->
+      lock_editor_membership!(audit_context)
+
+      case scoped_settings(audit_context, :write) do
+        nil when expected_revision == 0 ->
+          %AlertSettings{}
+          |> AlertSettings.changeset(%{"guidelines" => guidelines})
+          |> put_change(:organization_id, audit_context.organization_id)
+          |> put_change(:revision, 1)
+          |> Repo.insert()
+          |> commit()
+
+        %AlertSettings{} = settings ->
+          assert_settings_revision!(settings, expected_revision)
+
+          # The struct carries the revision being replaced, so
+          # `optimistic_lock/2` filters the `UPDATE` on it and increments it in
+          # the same statement; no separate change is put on the field.
+          %{settings | revision: expected_revision}
+          |> AlertSettings.changeset(%{"guidelines" => guidelines})
+          |> optimistic_lock(:revision)
+          |> Repo.update()
+          |> commit()
+
+        nil ->
+          Repo.rollback(:stale)
+      end
+    end)
+  end
+
+  # A revision that is not a nonnegative integer cannot be any row's revision,
+  # so a forged or mistyped value is refused the same way a stale one is rather
+  # than raising inside the editor.
+  def save_guidelines(%AuditContext{} = _audit_context, _guidelines, _expected_revision),
+    do: {:error, :stale}
+
   # -- Transaction results -------------------------------------------------
 
   # A refused write changes nothing: the command's result leaves the
@@ -395,6 +606,142 @@ defmodule GtfsPlanner.Alerts do
 
   defp assert_current_revision!(%Alert{} = alert, _expected_revision),
     do: Repo.rollback({:stale, alert})
+
+  # -- Scripts and settings ------------------------------------------------
+
+  # A copy is stored through the same transaction and the same changeset as any
+  # other script, so the membership lock, the organization scope and the
+  # template validation are the ones every other write applies.
+  defp insert_copy(%AuditContext{} = audit_context, built_in) do
+    transaction(fn ->
+      lock_editor_membership!(audit_context)
+
+      audit_context
+      |> create_script(copy_attrs(audit_context.organization_id, built_in))
+      |> case do
+        {:ok, script} -> script
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp copy_attrs(organization_id, built_in) do
+    %{
+      "name" => available_name(organization_id, built_in.name),
+      "situation" => Atom.to_string(built_in.situation),
+      "header_template" => built_in.header_template,
+      "description_template" => built_in.description_template
+    }
+  end
+
+  # A script belongs to the organization, not to one version: the same wording
+  # is offered for every alert the organization writes. It is still loaded only
+  # through the context's organization, and `FOR UPDATE` while it is written.
+  defp lock_script!(%AuditContext{organization_id: organization_id}, script_id) do
+    if uuid?(script_id) do
+      from(s in AlertScript,
+        where: s.organization_id == ^organization_id and s.id == ^script_id,
+        lock: "FOR UPDATE"
+      )
+      |> Repo.one()
+    end
+    |> case do
+      %AlertScript{} = script -> script
+      _absent -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp script_option(%AlertScript{} = script) do
+    %{
+      key: "org:#{script.id}",
+      id: script.id,
+      name: script.name,
+      situation: script.situation,
+      header_template: script.header_template,
+      description_template: script.description_template,
+      position: script.position,
+      built_in?: false
+    }
+  end
+
+  defp built_in_option(%{key: key} = built_in) do
+    %{
+      key: "builtin:#{key}",
+      id: nil,
+      name: built_in.name,
+      situation: built_in.situation,
+      header_template: built_in.header_template,
+      description_template: built_in.description_template,
+      built_in?: true
+    }
+  end
+
+  # A script saved without a position is listed after the ones that carry one,
+  # so a newly created script appears where an operator expects to find it
+  # instead of sorting ahead of the list they already arranged.
+  defp put_default_position(%Changeset{} = changeset, audit_context) do
+    case Changeset.get_field(changeset, :position) do
+      nil -> put_change(changeset, :position, next_position(audit_context))
+      _given -> changeset
+    end
+  end
+
+  defp next_position(%AuditContext{organization_id: organization_id}) do
+    from(s in AlertScript, where: s.organization_id == ^organization_id)
+    |> Repo.aggregate(:count)
+    |> Kernel.+(1)
+  end
+
+  # Copying the same built-in twice is a second variant, not a duplicate-name
+  # failure, so the copy is numbered until the name is free.
+  defp available_name(organization_id, name) do
+    if taken?(organization_id, name), do: numbered_name(organization_id, name, 2), else: name
+  end
+
+  defp numbered_name(organization_id, name, attempt) when attempt <= 100 do
+    candidate = "#{name} #{attempt}"
+
+    if taken?(organization_id, candidate) do
+      numbered_name(organization_id, name, attempt + 1)
+    else
+      candidate
+    end
+  end
+
+  defp numbered_name(_organization_id, name, _attempt), do: "#{name} copy"
+
+  defp taken?(organization_id, name) do
+    from(s in AlertScript,
+      where: s.organization_id == ^organization_id and s.name == ^name,
+      select: 1
+    )
+    |> Repo.exists?()
+  end
+
+  # One settings row per organization. A write reads it `FOR UPDATE` before the
+  # revision is compared, so a save that waited for the row sees the revision
+  # that committed rather than the one it started from.
+  defp scoped_settings(%AuditContext{organization_id: organization_id}, lock \\ :read) do
+    query =
+      case lock do
+        :write ->
+          from(s in AlertSettings,
+            where: s.organization_id == ^organization_id,
+            lock: "FOR UPDATE"
+          )
+
+        :read ->
+          from(s in AlertSettings, where: s.organization_id == ^organization_id)
+      end
+
+    Repo.one(query)
+  end
+
+  defp assert_settings_revision!(%AlertSettings{revision: revision}, expected_revision)
+       when revision == expected_revision,
+       do: :ok
+
+  defp assert_settings_revision!(%AlertSettings{}, _expected_revision), do: Repo.rollback(:stale)
 
   # -- Derived and server-owned fields -------------------------------------
 
