@@ -309,6 +309,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                          {value, label}
                        end)
 
+  # The same three settings named the way the Set-all review's "now" column
+  # names what a connection carries today, keyed by the atom
+  # `Blocking.Connections` derives them as. A conflicting pair needs review, so it
+  # reads through that rather than through a setting it does not have.
+  @bulk_setting_labels %{
+    none: "Not stated",
+    stay: "Riders stay on board",
+    reboard: "Riders must re-board"
+  }
+
   # The Plan summary's chart counts the same 15-minute bins as the day load's own
   # `bins`, so the width is one constant rather than two that could drift.
   @bin_secs 900
@@ -488,13 +498,19 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # it was made in, and a reader who opens another group must choose again
   # rather than arrive at a review of the wrong pair.
   def handle_event("open_group", %{"group" => group}, socket) do
-    socket |> assign(:bulk_choice, nil) |> patch(%{group: blank_to_nil(group)})
+    socket
+    |> assign(:bulk_choice, nil)
+    |> assign(:bulk_review, nil)
+    |> patch(%{group: blank_to_nil(group)})
   end
 
   def handle_event("open_group", _params, socket), do: {:noreply, socket}
 
   def handle_event("close_group", _params, socket) do
-    socket |> assign(:bulk_choice, nil) |> patch(%{group: nil})
+    socket
+    |> assign(:bulk_choice, nil)
+    |> assign(:bulk_review, nil)
+    |> patch(%{group: nil})
   end
 
   # The Set-all setting the reader chose in the group panel. It is a choice, not a
@@ -505,11 +521,43 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   def handle_event("bulk_choice", %{"bulk" => choice}, socket) do
     case Map.fetch(@connection_settings, choice) do
       {:ok, _label} when choice in ["none", "stay", "reboard"] ->
-        {:noreply, assign(socket, :bulk_choice, choice)}
+        {:noreply, socket |> assign(:bulk_choice, choice) |> assign(:bulk_review, nil)}
 
       _unknown ->
         {:noreply, socket}
     end
+  end
+
+  # The Set-all review (AC-20). It is a read: one `check_in_seat_connections/3`
+  # call for every pair of the selected group, so the review and the save
+  # re-evaluate the same rule over the same pairs and cannot disagree (CR-2), and
+  # the organization and version come from the socket rather than from the event
+  # (CR-8).
+  #
+  # The review needs both halves the group panel holds: the group the URL
+  # selected and the setting the reader chose for it. Without either there is
+  # nothing to review, which is the state the disabled review button explains.
+  # Choosing a different setting closes the review, so a review never describes a
+  # setting the panel no longer shows.
+  def handle_event("open_bulk_review", _params, socket) do
+    case bulk_review(socket.assigns) do
+      nil -> {:noreply, socket}
+      review -> {:noreply, assign(socket, :bulk_review, review)}
+    end
+  end
+
+  # One row's include box. The id is the connection's own id, and only a row of
+  # the review now open is toggled, so a crafted event naming a connection of
+  # another group changes nothing (CR-8). A row the save would not act on —
+  # already set, or refused by the rule — has no box, so it cannot be toggled.
+  def handle_event("toggle_bulk_row", %{"id" => id}, %{assigns: %{bulk_review: review}} = socket) do
+    {:noreply, assign(socket, :bulk_review, toggle_bulk_row(review, id))}
+  end
+
+  def handle_event("toggle_bulk_row", _params, socket), do: {:noreply, socket}
+
+  def handle_event("close_bulk_review", _params, socket) do
+    {:noreply, assign(socket, :bulk_review, nil)}
   end
 
   def handle_event("bulk_choice", _params, socket), do: {:noreply, socket}
@@ -1845,6 +1893,119 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp connection_setting_atom("reboard"), do: :reboard
   defp connection_setting_atom("review"), do: :review
   defp connection_setting_atom(_value), do: nil
+
+  # The Set-all choice as the atom `Blocking.Connections` names a connection's
+  # setting by. Only the three settings the fieldset offers are named: "Needs
+  # review" is a way of reading the list, not a setting a review could apply.
+  defp bulk_setting_atom("none"), do: :none
+  defp bulk_setting_atom("stay"), do: :stay
+  defp bulk_setting_atom("reboard"), do: :reboard
+
+  defp toggle_bulk_row(review, id) do
+    rows =
+      Enum.map(review.rows, fn row ->
+        if row.id == id and row.result in [:add, :replace, :remove] do
+          %{row | include?: not row.include?}
+        else
+          row
+        end
+      end)
+
+    %{review | rows: rows}
+  end
+
+  # The review of one group's own connections under one chosen setting. Without a
+  # setting, or without the group the URL selected, there is nothing to review.
+  #
+  # The group is resolved through `connections_view/1` rather than read from an
+  # assign, because that view is derived on render: the selected group is a
+  # function of the URL state and the day's own derivation, and reading it here is
+  # what keeps a review of the group the panel is showing (CR-4).
+  defp bulk_review(%{bulk_choice: nil}), do: nil
+  defp bulk_review(%{day: nil}), do: nil
+
+  defp bulk_review(assigns) do
+    case connections_view(assigns) do
+      %{group: nil} ->
+        nil
+
+      %{group: group} ->
+        choice = assigns.bulk_choice
+        pairs = Enum.map(group.connections, &{&1.from.trip_id, &1.to.trip_id})
+
+        rows =
+          Enum.map(group.connections, &bulk_review_row(&1, choice, bulk_checks(assigns, pairs)))
+
+        %{group_token: group.token, choice: choice, group: group, rows: rows}
+    end
+  end
+
+  # A version the rule cannot read is no answer rather than a refusal, so its
+  # pairs stay actionable: the connection drawer leaves its options enabled in
+  # the same state instead of guessing that the rule would refuse them.
+  defp bulk_checks(assigns, pairs) do
+    %{current_organization: organization, current_gtfs_version: version} = assigns
+
+    case Gtfs.check_in_seat_connections(organization.id, version.id, pairs) do
+      {:ok, checks} -> checks
+      {:error, _reason} -> %{}
+    end
+  end
+
+  defp bulk_review_row(connection, choice, checks) do
+    check = Map.get(checks, {connection.from.trip_id, connection.to.trip_id}, :ok)
+
+    %{
+      id: connection.id,
+      connection: connection,
+      result: nil,
+      include?: false,
+      refusal: nil,
+      from: bulk_row_from(connection)
+    }
+    |> bulk_row_result(connection, choice, check)
+  end
+
+  # A refusal only skips a pair the choice would write: removing a record writes
+  # nothing, so the rule cannot refuse it (R7). Everything else reads the
+  # connection's own derivation — its setting, whether it needs review and the
+  # records it already carries — so the review can never describe a connection
+  # differently from the row it was opened from (CR-4).
+  defp bulk_row_result(row, connection, "none", _check) do
+    %{row | result: if(bulk_already_set?(connection, :none), do: :same, else: :remove)}
+  end
+
+  defp bulk_row_result(row, _connection, _choice, {:refused, state}) do
+    %{row | result: :skip, refusal: RiderOutcomes.refusal_text(state)}
+  end
+
+  defp bulk_row_result(row, connection, choice, :ok) do
+    setting = bulk_setting_atom(choice)
+
+    result =
+      cond do
+        bulk_already_set?(connection, setting) -> :same
+        connection.records != [] -> :replace
+        true -> :add
+      end
+
+    %{row | result: result, include?: result != :same}
+  end
+
+  # A connection is already set when its setting is the chosen one and nothing
+  # about it needs review: a stale record or a pair of two records is a write the
+  # reader still has to make, so it counts as a replace.
+  defp bulk_already_set?(connection, setting) do
+    connection.setting == setting and not connection.review?
+  end
+
+  # The "now" side of each row's "now → result": a pair that needs review says so
+  # rather than naming a setting its records disagree about, and a pair with no
+  # record says the fact.
+  defp bulk_row_from(%{review?: true}), do: "Needs review"
+
+  defp bulk_row_from(%{setting: setting}),
+    do: Map.get(@bulk_setting_labels, setting, "Not stated")
 
   # One chip per active filter, in the order the Show, Route and Find controls
   # read. Each carries the value that would clear it, so the panel's remove
@@ -4270,6 +4431,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       # the choice is per group and starts empty, which is why the fieldset's
       # review button is disabled on a panel the reader has just opened.
       bulk_choice: nil,
+      # The Set-all review itself, or nil. It is the page's own state rather than
+      # a URL parameter, so a reload or a shared link opens the group with the
+      # choice to make again rather than a review of a setting nobody picked.
+      bulk_review: nil,
       block_view: nil,
       back_block: nil,
       block_action: nil,
@@ -5059,6 +5224,26 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   discard={@connection_discard}
                 />
               <% end %>
+
+              <%!-- The Set-all review is the page's second non-modal inspector: it
+              sits over the Connections workspace beside the group panel it
+              describes, so the reader can still see the rows they are including
+              and the choice they made.
+
+              The wrapper is what puts it above the map. Leaflet's own controls and
+              attribution are `z-index: 1000` and the map pane establishes no
+              stacking context, so they compete with the drawer's own `z-40`
+              wrapper directly and paint over a non-modal panel's right edge. The
+              wrapper is a fixed, transparent, pointer-transparent layer at
+              `z-[1100]`, so the review is the top surface while it is open and
+              the map beside it keeps working. --%>
+              <div class="pointer-events-none fixed inset-0 z-[1100]">
+                <BlocksComponents.set_all_review
+                  :if={@bulk_review}
+                  review={@bulk_review}
+                  routes={@routes}
+                />
+              </div>
 
               <%= if block = @block_view do %>
                 <BlocksComponents.block_drawer
