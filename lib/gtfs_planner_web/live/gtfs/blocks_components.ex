@@ -7058,8 +7058,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   # A count card's DOM id: its label without the spaces and apostrophe, so a
   # case names the card it means.
-  defp bulk_count_id(label),
-    do: label |> String.downcase() |> String.replace(~r/[^a-z0-9]+/, "-") |> String.trim("-")
+  defp bulk_count_id(label) do
+    label
+    |> String.downcase()
+    |> String.replace("'", "")
+    |> String.replace(~r/[^a-z0-9]+/, "-")
+    |> String.trim("-")
+  end
 
   defp bulk_setting_label("none"), do: "not stated"
   defp bulk_setting_label("stay"), do: "riders stay on board"
