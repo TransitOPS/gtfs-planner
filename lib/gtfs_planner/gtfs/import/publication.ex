@@ -15,6 +15,9 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
        - publishable result -> `ImportRuns.publish_import/4`
        - non-publishable result or import error -> `ImportRuns.fail_import/4`
        - database publication failure -> `ImportRuns.record_publication_failure/5`
+       - run actor no longer an active editor (`{:error, :forbidden}` from
+         `publish_import/4`) -> `record_publication_failure/5` with reason code
+         `"forbidden"`; the version stays `importing`
     4. A lost or renewed-away lease during closure yields a non-publishable
        closure error and never retries inserts.
 
@@ -83,6 +86,22 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
         emit_failure(run, organization_id, run_id, version_id, @importing_status, :lease_lost)
         {:error, read_version(organization_id, version_id), :lease_lost}
 
+      {:error, :forbidden} ->
+        # The run's actor lost editor access while the import ran. Nothing is
+        # published; the run closes publication_failed with reason_code
+        # "forbidden" and stays recoverable for an authorized editor to publish
+        # or discard.
+        record_publication_failure_or_lease_lost(
+          run,
+          organization_id,
+          run_id,
+          version_id,
+          lease_token,
+          result,
+          :forbidden,
+          :forbidden
+        )
+
       {:error, reason} ->
         # A real database publication failure AFTER all asset writes: record the
         # run as publication_failed (version stays importing, externally
@@ -115,6 +134,8 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
       )
   end
 
+  # `code` is the reason persisted on the run; `reason` is the inner term for telemetry
+  # and the returned error.
   defp record_publication_failure_or_lease_lost(
          run,
          organization_id,
@@ -122,14 +143,15 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
          version_id,
          lease_token,
          result,
-         reason
+         reason,
+         code \\ :publication_failed
        ) do
     case ImportRuns.record_publication_failure(
            organization_id,
            run_id,
            lease_token,
            result,
-           :publication_failed
+           code
          ) do
       {:ok, _run} ->
         emit_failure(

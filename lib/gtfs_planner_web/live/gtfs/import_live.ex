@@ -54,6 +54,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   @name_required_message "Enter a name for the new version."
   @name_taken_message "A version with this name already exists"
 
+  @permission_error "You no longer have permission to import GTFS data. " <>
+                      "Ask an organization administrator to restore your access."
+
   @source_options [
     %{
       value: "feed",
@@ -367,7 +370,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         {:noreply, socket}
 
       binary_id ->
-        case ImportRuns.retry_publication(organization_id, binary_id) do
+        case ImportRuns.retry_publication(organization_id, binary_id, socket.assigns.current_user) do
           {:ok, _run, _version} ->
             # Publication retry closes synchronously; enqueue the same durable
             # reload path used by runner broadcasts so the card is removed and
@@ -378,6 +381,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
              socket
              |> assign(:recovery_announce, "Publishing version")
              |> assign(:processing_publish, binary_id)}
+
+          {:error, :forbidden} ->
+            {:noreply,
+             socket
+             |> assign(:processing_publish, nil)
+             |> put_flash(:error, @permission_error)}
 
           {:error, _reason} ->
             {:noreply, assign(socket, :processing_publish, nil)}
@@ -485,10 +494,18 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   def handle_event("start-over-diff", _params, socket) do
     with %ChangeRun{} = run <- socket.assigns[:change_run],
          {:ok, _started_over} <-
-           ChangeRuns.start_over(socket.assigns.current_organization.id, run.id) do
+           ChangeRuns.start_over(
+             socket.assigns.current_organization.id,
+             run.id,
+             socket.assigns.current_user
+           ) do
       handle_event("reset-diff", %{}, socket)
     else
-      _ -> {:noreply, refresh_change_review(socket)}
+      {:error, :forbidden} ->
+        {:noreply, socket |> put_flash(:error, @permission_error) |> refresh_change_review()}
+
+      _ ->
+        {:noreply, refresh_change_review(socket)}
     end
   end
 
@@ -531,7 +548,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     case socket.assigns[:change_run] do
       %ChangeRun{} = run ->
         Phoenix.PubSub.unsubscribe(GtfsPlanner.PubSub, ChangeRuns.topic(run))
-        _ = ChangeRuns.request_cancel(socket.assigns.current_organization.id, run.id)
+
+        _ =
+          ChangeRuns.request_cancel(
+            socket.assigns.current_organization.id,
+            run.id,
+            socket.assigns.current_user
+          )
+
         socket
 
       _ ->
@@ -914,6 +938,11 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       |> assign(:diff_filter, :all)
       |> refresh_change_review()
     else
+      {:error, :forbidden} ->
+        # The files were staged before the run was refused; nothing owns them.
+        _ = ChangeArtifactStorage.remove(organization_id, version_id, run_id)
+        put_flash(socket, :error, @permission_error)
+
       {:error, reason} ->
         socket
         |> assign(:diff_blockers, [%{reason: reason}])
@@ -997,11 +1026,16 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp request_change_apply(socket) do
     with %ChangeRun{} = run <- socket.assigns[:change_run],
          {:ok, pending} <-
-           ChangeRuns.request_apply(socket.assigns.current_organization.id, run.id) do
+           ChangeRuns.request_apply(
+             socket.assigns.current_organization.id,
+             run.id,
+             socket.assigns.current_user
+           ) do
       Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ChangeRuns.topic(pending))
       _ = ChangeRunner.start_apply(socket.assigns.current_organization.id, pending.id)
       socket |> assign(:change_run, pending) |> refresh_change_review()
     else
+      {:error, :forbidden} -> put_flash(socket, :error, @permission_error)
       _ -> socket
     end
   end
@@ -1009,16 +1043,26 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp cancel_change_run(socket) do
     with %ChangeRun{} = run <- socket.assigns[:change_run],
          {:ok, changed} <-
-           ChangeRuns.request_cancel(socket.assigns.current_organization.id, run.id) do
+           ChangeRuns.request_cancel(
+             socket.assigns.current_organization.id,
+             run.id,
+             socket.assigns.current_user
+           ) do
       socket |> assign(:change_run, changed) |> refresh_change_review()
     else
+      {:error, :forbidden} -> put_flash(socket, :error, @permission_error)
       _ -> socket
     end
   end
 
   defp retry_change_run(socket) do
     with %ChangeRun{} = run <- socket.assigns[:change_run],
-         {:ok, retry} <- ChangeRuns.retry(socket.assigns.current_organization.id, run.id) do
+         {:ok, retry} <-
+           ChangeRuns.retry(
+             socket.assigns.current_organization.id,
+             run.id,
+             socket.assigns.current_user
+           ) do
       Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ChangeRuns.topic(retry))
 
       case retry.state do
@@ -1029,6 +1073,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
       socket |> assign(:change_run, retry) |> refresh_change_review()
     else
+      {:error, :forbidden} -> put_flash(socket, :error, @permission_error)
       _ -> socket
     end
   end
@@ -2539,6 +2584,10 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     actor = %{id: socket.assigns.current_user.id, email: socket.assigns.current_user.email}
 
     case ImportRuns.create_pending_target(organization_id, actor, %{name: version_name}) do
+      {:error, :forbidden} ->
+        # Nothing was created. The form and the chosen files stay as they are.
+        {:noreply, put_flash(socket, :error, @permission_error)}
+
       {:error, changeset} ->
         # Pre-consumption changeset error (blank/duplicate name): return to the
         # form, preserve every upload entry, focus/announce the error,

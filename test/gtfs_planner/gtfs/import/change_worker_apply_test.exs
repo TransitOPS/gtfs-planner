@@ -503,7 +503,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
 
     retry_result =
       try do
-        ChangeRuns.retry(organization.id, run.id)
+        ChangeRuns.retry(organization.id, run.id, run_actor(run))
       after
         Application.put_env(:gtfs_planner, :gtfs_task_artifacts_path, artifact_root)
       end
@@ -625,7 +625,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
 
     retry_result =
       try do
-        ChangeRuns.retry(organization.id, run.id)
+        ChangeRuns.retry(organization.id, run.id, run_actor(run))
       after
         Application.put_env(:gtfs_planner, :gtfs_task_artifacts_path, artifact_root)
       end
@@ -675,7 +675,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
                audit_context(run)
              )
 
-    assert {:ok, cancelling} = ChangeRuns.request_cancel(organization.id, run.id)
+    assert {:ok, cancelling} = ChangeRuns.request_cancel(organization.id, run.id, run_actor(run))
 
     assert :ok =
              ChangeWorker.apply(
@@ -852,9 +852,12 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
       end
     end)
 
-    {:ok, pending_apply} = ChangeRuns.request_apply(organization_id, review.id)
+    {:ok, pending_apply} = ChangeRuns.request_apply(organization_id, review.id, actor)
     pending_apply
   end
+
+  # The run's own actor, an active editor created by `review_run!/3`.
+  defp run_actor(run), do: %{id: run.actor_id, email: run.actor_email}
 
   # Approves and applies the removal decisions the way the runner does.
   defp apply_removals!(organization, version, decisions) do

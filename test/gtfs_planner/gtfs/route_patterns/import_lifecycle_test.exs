@@ -91,7 +91,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ImportLifecycleTest do
     organization =
       organization_fixture(%{alias: "route-pattern-import-#{System.system_time(:nanosecond)}"})
 
-    actor = user_fixture()
+    # Creating a target, publishing and claiming a cleanup reauthorize the actor, so the actor is
+    # an active editor.
+    actor = editor_fixture(organization)
 
     %{organization: organization, actor: actor}
   end

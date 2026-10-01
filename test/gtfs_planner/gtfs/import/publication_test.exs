@@ -33,13 +33,16 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
   @levels_content "level_id,level_index,level_name\nL1,0.0,Ground Floor\n"
   @stops_content "stop_id,stop_name,stop_lat,stop_lon,level_id,location_type,wheelchair_boarding\nS1,Main,40.7,-74.0,L1,1,1\n"
 
-  defp actor do
-    %{id: Ecto.UUID.generate(), email: "importer@example.com"}
+  # Creating a target, publishing and claiming a cleanup reauthorize their actor, so the actor
+  # is a real active editor of the organization.
+  defp actor(organization) do
+    editor = editor_fixture(organization)
+    %{id: editor.id, email: editor.email}
   end
 
   defp seed_claimed_run(organization, name) do
     {:ok, %{run: run, version: _version}} =
-      ImportRuns.create_pending_target(organization.id, actor(), %{name: name})
+      ImportRuns.create_pending_target(organization.id, actor(organization), %{name: name})
 
     {:ok, claimed_run, _version, token} =
       ImportRuns.claim_import(organization.id, run.id, run.lease_token)
@@ -567,7 +570,10 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       {:ok, _} = Repo.query(drop_sql)
 
       assert {:ok, retried_run, retried_version} =
-               ImportRuns.retry_publication(organization.id, run.id)
+               ImportRuns.retry_publication(organization.id, run.id, %{
+                 id: run.actor_id,
+                 email: run.actor_email
+               })
 
       assert retried_run.state == "published"
       assert retried_version.publication_status == "published"
@@ -781,7 +787,9 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       # survives the initiating process. Allow the separate runner process DB
       # access (shared sandbox ownership).
       {:ok, %{run: run, version: _version}} =
-        ImportRuns.create_pending_target(organization.id, actor(), %{name: "Runner Feed"})
+        ImportRuns.create_pending_target(organization.id, actor(organization), %{
+          name: "Runner Feed"
+        })
 
       token = run.lease_token
 
@@ -815,7 +823,9 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       # reconcile (no sleeps). No live process holds a connection here, so the
       # reconciliation is deterministic.
       {:ok, %{run: lost_run, version: _lost_version}} =
-        ImportRuns.create_pending_target(organization.id, actor(), %{name: "Lost Executor"})
+        ImportRuns.create_pending_target(organization.id, actor(organization), %{
+          name: "Lost Executor"
+        })
 
       {:ok, _, _, lost_token} =
         ImportRuns.claim_import(organization.id, lost_run.id, lost_run.lease_token)
@@ -871,7 +881,9 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
          %{organization: organization} do
       # Fresh pending target so the runner claims it itself (like ImportLive).
       {:ok, %{run: run, version: _version}} =
-        ImportRuns.create_pending_target(organization.id, actor(), %{name: "Runner Feed"})
+        ImportRuns.create_pending_target(organization.id, actor(organization), %{
+          name: "Runner Feed"
+        })
 
       token = run.lease_token
       files = [%{filename: "levels.txt", content: @levels_content}]
@@ -927,29 +939,25 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       organization: organization
     } do
       {:ok, %{run: run, version: _version}} =
-        ImportRuns.create_pending_target(organization.id, actor(), %{name: "Reuse Race"})
+        ImportRuns.create_pending_target(organization.id, actor(organization), %{
+          name: "Reuse Race"
+        })
 
       {:ok, _, _, token} = ImportRuns.claim_import(organization.id, run.id, run.lease_token)
       {:ok, _, _} = ImportRuns.fail_import(organization.id, run.id, token, make_failure())
 
       parent = self()
+      first_actor = actor(organization)
+      second_actor = actor(organization)
 
       first = fn ->
         Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
-
-        ImportRuns.claim_cleanup(organization.id, run.id, %{
-          id: Ecto.UUID.generate(),
-          email: "a@example.com"
-        })
+        ImportRuns.claim_cleanup(organization.id, run.id, first_actor)
       end
 
       second = fn ->
         Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
-
-        ImportRuns.claim_cleanup(organization.id, run.id, %{
-          id: Ecto.UUID.generate(),
-          email: "b@example.com"
-        })
+        ImportRuns.claim_cleanup(organization.id, run.id, second_actor)
       end
 
       t1 = Task.async(first)

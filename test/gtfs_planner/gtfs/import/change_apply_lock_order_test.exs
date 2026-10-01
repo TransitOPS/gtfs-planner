@@ -268,7 +268,8 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeApplyLockOrderTest do
         )
     end)
 
-    {:ok, pending_apply} = ChangeRuns.request_apply(organization.id, review.id)
+    {:ok, pending_apply} =
+      ChangeRuns.request_apply(organization.id, review.id, %{id: actor.id, email: actor.email})
 
     {:ok, claimed, generation, token} =
       ChangeRuns.claim(organization.id, pending_apply.id, :apply)

@@ -18,8 +18,26 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
 
   import GtfsPlanner.OrganizationsFixtures
 
-  @actor %{id: Ecto.UUID.generate(), email: "operator@example.com"}
-  @cleanup_actor %{id: Ecto.UUID.generate(), email: "cleaner@example.com"}
+  # Creating a target, publishing, retrying a publication and claiming a cleanup all
+  # reauthorize their actor, so the actors are real active editors of the organization.
+  # One editor per role and organization keeps ids stable within a test.
+  defp actor(org), do: editor_actor(org, :operator)
+  defp cleanup_actor(org), do: editor_actor(org, :cleaner)
+
+  defp editor_actor(org, role) do
+    key = {__MODULE__, role, org.id}
+
+    case Process.get(key) do
+      nil ->
+        editor = editor_fixture(org)
+        actor = %{id: editor.id, email: editor.email}
+        Process.put(key, actor)
+        actor
+
+      actor ->
+        actor
+    end
+  end
 
   defp expired_past, do: ~U[2000-01-01 00:00:00.000000Z]
 
@@ -37,14 +55,14 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
       org = organization_fixture()
 
       assert {:ok, %{run: run, version: version}} =
-               ImportRuns.create_pending_target(org.id, @actor, %{name: "Spring 2024"})
+               ImportRuns.create_pending_target(org.id, actor(org), %{name: "Spring 2024"})
 
       assert run.state == "pending"
       assert run.organization_id == org.id
       assert run.version_name == "Spring 2024"
       assert run.gtfs_version_id == version.id
-      assert run.actor_id == @actor.id
-      assert run.actor_email == @actor.email
+      assert run.actor_id == actor(org).id
+      assert run.actor_email == actor(org).email
       assert run.counts_complete == false
       assert not is_nil(run.lease_token)
       assert not is_nil(run.lease_expires_at)
@@ -58,7 +76,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
       org = organization_fixture()
 
       assert {:error, changeset} =
-               ImportRuns.create_pending_target(org.id, @actor, %{name: nil})
+               ImportRuns.create_pending_target(org.id, actor(org), %{name: nil})
 
       assert %{name: ["can't be blank"]} = errors_on(changeset)
     end
@@ -69,7 +87,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
       org = organization_fixture()
 
       {:ok, %{run: run, version: version}} =
-        ImportRuns.create_pending_target(org.id, @actor, %{name: "Feed"})
+        ImportRuns.create_pending_target(org.id, actor(org), %{name: "Feed"})
 
       %{org: org, run: run, version: version, token: run.lease_token}
     end
@@ -126,7 +144,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
   describe "renew_lease/3" do
     setup do
       org = organization_fixture()
-      {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, @actor, %{name: "Feed"})
+      {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, actor(org), %{name: "Feed"})
       %{org: org, run: run, token: run.lease_token}
     end
 
@@ -143,7 +161,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
     test "rejects a terminal run", %{org: org, run: run} do
       # A published run has no lease, so renewal must fail closed.
       {:ok, %{run: pending, version: version}} =
-        ImportRuns.create_pending_target(org.id, @actor, %{name: "Other"})
+        ImportRuns.create_pending_target(org.id, actor(org), %{name: "Other"})
 
       {:ok, _, _, exec_token} = ImportRuns.claim_import(org.id, pending.id, pending.lease_token)
 
@@ -165,7 +183,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
   describe "publish_import/4" do
     setup do
       org = organization_fixture()
-      {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, @actor, %{name: "Feed"})
+      {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, actor(org), %{name: "Feed"})
       {:ok, _, _, token} = ImportRuns.claim_import(org.id, run.id, run.lease_token)
       %{org: org, run: run, token: token}
     end
@@ -283,7 +301,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
   describe "fail_import/4" do
     setup do
       org = organization_fixture()
-      {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, @actor, %{name: "Feed"})
+      {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, actor(org), %{name: "Feed"})
       {:ok, _, _, token} = ImportRuns.claim_import(org.id, run.id, run.lease_token)
       %{org: org, run: run, token: token}
     end
@@ -322,10 +340,10 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
     end
   end
 
-  describe "record_publication_failure/5 and retry_publication/2" do
+  describe "record_publication_failure/5 and retry_publication/3" do
     setup do
       org = organization_fixture()
-      {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, @actor, %{name: "Feed"})
+      {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, actor(org), %{name: "Feed"})
       {:ok, _, _, token} = ImportRuns.claim_import(org.id, run.id, run.lease_token)
       %{org: org, run: run, token: token}
     end
@@ -361,7 +379,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
 
       # retry publishes without invoking import_files
       assert {:ok, published_run, version} =
-               ImportRuns.retry_publication(org.id, run.id)
+               ImportRuns.retry_publication(org.id, run.id, actor(org))
 
       assert published_run.state == "published"
       assert version.publication_status == "published"
@@ -369,7 +387,9 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
     end
 
     test "retry rejects a non-publication_failed run", %{org: org, run: run} do
-      assert {:error, :invalid_transition} = ImportRuns.retry_publication(org.id, run.id)
+      assert {:error, :invalid_transition} =
+               ImportRuns.retry_publication(org.id, run.id, actor(org))
+
       assert Repo.get!(Run, run.id).state == "running"
     end
 
@@ -386,7 +406,8 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
         ImportRuns.fail_import(org.id, run.id, token, incomplete)
 
       # The run is interrupted, not publication_failed; retry must refuse.
-      assert {:error, :invalid_transition} = ImportRuns.retry_publication(org.id, run.id)
+      assert {:error, :invalid_transition} =
+               ImportRuns.retry_publication(org.id, run.id, actor(org))
     end
   end
 
@@ -395,10 +416,10 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
       org = organization_fixture()
 
       {:ok, %{run: pending}} =
-        ImportRuns.create_pending_target(org.id, @actor, %{name: "Pending"})
+        ImportRuns.create_pending_target(org.id, actor(org), %{name: "Pending"})
 
       {:ok, %{run: claimed}} =
-        ImportRuns.create_pending_target(org.id, @actor, %{name: "Running"})
+        ImportRuns.create_pending_target(org.id, actor(org), %{name: "Running"})
 
       {:ok, _, _, _} = ImportRuns.claim_import(org.id, claimed.id, claimed.lease_token)
 
@@ -422,7 +443,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
       org = organization_fixture()
 
       {:ok, %{run: pending}} =
-        ImportRuns.create_pending_target(org.id, @actor, %{name: "Pending"})
+        ImportRuns.create_pending_target(org.id, actor(org), %{name: "Pending"})
 
       pending = set_run_lease_expiry(pending, expired_past())
 
@@ -432,7 +453,9 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
 
     test "refuses reconciliation of a terminal run (AC-8)", %{} do
       org = organization_fixture()
-      {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, @actor, %{name: "Pending"})
+
+      {:ok, %{run: run}} =
+        ImportRuns.create_pending_target(org.id, actor(org), %{name: "Pending"})
 
       # Non-expired; reconciliation must not touch it.
       assert ImportRuns.reconcile_expired(org.id) == []
@@ -444,7 +467,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
       org = organization_fixture()
 
       {:ok, %{run: run, version: version}} =
-        ImportRuns.create_pending_target(org.id, @actor, %{name: "Feed"})
+        ImportRuns.create_pending_target(org.id, actor(org), %{name: "Feed"})
 
       {:ok, _, _, token} = ImportRuns.claim_import(org.id, run.id, run.lease_token)
 
@@ -456,7 +479,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
           make_failure(phase: :phase_2, outcome: :failed)
         )
 
-      {:ok, _, _, cleanup_token} = ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+      {:ok, _, _, cleanup_token} = ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
 
       run = set_run_lease_expiry(Repo.get!(Run, run.id), expired_past())
 
@@ -467,7 +490,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
       # version remains failed
       assert Repo.get!(GtfsVersion, version.id).publication_status == "failed"
       # cleanup_failed is retryable: a fresh claim succeeds and re-issues a lease
-      assert {:ok, reclaimed, _, _} = ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+      assert {:ok, reclaimed, _, _} = ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
       assert reclaimed.state == "cleaning"
       _ = cleanup_token
     end
@@ -478,7 +501,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
       org = organization_fixture()
 
       {:ok, %{run: run, version: version}} =
-        ImportRuns.create_pending_target(org.id, @actor, %{name: "Feed"})
+        ImportRuns.create_pending_target(org.id, actor(org), %{name: "Feed"})
 
       {:ok, _, _, token} = ImportRuns.claim_import(org.id, run.id, run.lease_token)
 
@@ -495,29 +518,27 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
 
     test "grants exactly one cleaning lease", %{org: org, run: run, version: version} do
       assert {:ok, cleaning, claimed_version, cleanup_token} =
-               ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+               ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
 
       assert cleaning.state == "cleaning"
       assert not is_nil(cleaning.cleanup_started_at)
-      assert cleaning.cleanup_actor_id == @cleanup_actor.id
-      assert cleaning.cleanup_actor_email == @cleanup_actor.email
+      assert cleaning.cleanup_actor_id == cleanup_actor(org).id
+      assert cleaning.cleanup_actor_email == cleanup_actor(org).email
       assert claimed_version.id == version.id
       assert not is_nil(cleanup_token)
     end
 
     test "a competitor receives already_claimed", %{org: org, run: run} do
-      {:ok, _, _, _} = ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+      {:ok, _, _, _} = ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
 
-      assert {:error, :already_claimed} =
-               ImportRuns.claim_cleanup(org.id, run.id, %{
-                 id: Ecto.UUID.generate(),
-                 email: "rival@example.com"
-               })
+      rival = editor_actor(org, :rival)
+
+      assert {:error, :already_claimed} = ImportRuns.claim_cleanup(org.id, run.id, rival)
     end
 
     test "rejects a terminal (published) run", %{org: org} do
       {:ok, %{run: run, version: version}} =
-        ImportRuns.create_pending_target(org.id, @actor, %{name: "Pub"})
+        ImportRuns.create_pending_target(org.id, actor(org), %{name: "Pub"})
 
       {:ok, _, _, token} = ImportRuns.claim_import(org.id, run.id, run.lease_token)
 
@@ -531,7 +552,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
         })
 
       assert {:error, :invalid_transition} =
-               ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+               ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
 
       assert Repo.get!(GtfsVersion, version.id).publication_status == "published"
     end
@@ -542,7 +563,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
       org = organization_fixture()
 
       {:ok, %{run: run, version: version}} =
-        ImportRuns.create_pending_target(org.id, @actor, %{name: "Feed"})
+        ImportRuns.create_pending_target(org.id, actor(org), %{name: "Feed"})
 
       {:ok, _, _, token} = ImportRuns.claim_import(org.id, run.id, run.lease_token)
 
@@ -554,7 +575,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
           make_failure(phase: :phase_2, outcome: :failed)
         )
 
-      {:ok, _, _, cleanup_token} = ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+      {:ok, _, _, cleanup_token} = ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
       %{org: org, run: run, version: version, cleanup_token: cleanup_token}
     end
 
@@ -596,7 +617,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
   describe "publish/cleanup race" do
     test "publish and cleanup cannot both win on a publication_failed run (AC-10)", %{} do
       org = organization_fixture()
-      {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, @actor, %{name: "Feed"})
+      {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, actor(org), %{name: "Feed"})
       {:ok, _, _, token} = ImportRuns.claim_import(org.id, run.id, run.lease_token)
 
       {:ok, _} =
@@ -615,15 +636,17 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
         )
 
       parent = self()
+      retrying_actor = actor(org)
+      cleaning_actor = cleanup_actor(org)
 
       publish_fn = fn ->
         Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
-        ImportRuns.retry_publication(org.id, run.id)
+        ImportRuns.retry_publication(org.id, run.id, retrying_actor)
       end
 
       cleanup_fn = fn ->
         Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
-        ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+        ImportRuns.claim_cleanup(org.id, run.id, cleaning_actor)
       end
 
       t1 = Task.async(publish_fn)
@@ -659,7 +682,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
 
       # A failed version that already has a run must be skipped.
       {:ok, %{run: existing, version: ev}} =
-        ImportRuns.create_pending_target(org.id, @actor, %{name: "Has Run"})
+        ImportRuns.create_pending_target(org.id, actor(org), %{name: "Has Run"})
 
       {:ok, _, _, token} = ImportRuns.claim_import(org.id, existing.id, existing.lease_token)
 
@@ -731,8 +754,8 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
 
     test "list_recoverable excludes published and cleaned", %{} do
       org = organization_fixture()
-      {:ok, %{run: pending}} = ImportRuns.create_pending_target(org.id, @actor, %{name: "P"})
-      {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, @actor, %{name: "F"})
+      {:ok, %{run: pending}} = ImportRuns.create_pending_target(org.id, actor(org), %{name: "P"})
+      {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, actor(org), %{name: "F"})
       {:ok, _, _, token} = ImportRuns.claim_import(org.id, run.id, run.lease_token)
 
       {:ok, _, _} =
@@ -743,7 +766,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
           make_failure(phase: :phase_2, outcome: :failed)
         )
 
-      {:ok, _, _, cleanup_token} = ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+      {:ok, _, _, cleanup_token} = ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
       {:ok, _} = ImportRuns.finish_cleanup(org.id, run.id, cleanup_token)
 
       recoverable = ImportRuns.list_recoverable(org.id) |> Enum.map(& &1.id)
@@ -757,7 +780,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
       org = organization_fixture()
 
       {:ok, %{run: run, version: version}} =
-        ImportRuns.create_pending_target(org.id, @actor, %{name: "Doomed"})
+        ImportRuns.create_pending_target(org.id, actor(org), %{name: "Doomed"})
 
       {:ok, _, _, token} = ImportRuns.claim_import(org.id, run.id, run.lease_token)
 
@@ -775,8 +798,8 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
       reloaded = Repo.get!(Run, run.id)
       assert reloaded.gtfs_version_id == version.id
       assert reloaded.version_name == "Doomed"
-      assert reloaded.actor_id == @actor.id
-      assert reloaded.actor_email == @actor.email
+      assert reloaded.actor_id == actor(org).id
+      assert reloaded.actor_email == actor(org).email
       assert reloaded.state == "failed"
     end
   end

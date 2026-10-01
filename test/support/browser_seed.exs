@@ -171,7 +171,8 @@ case Accounts.register_first_admin(%{
         :approved
       )
 
-    {:ok, pending_partial_apply} = ChangeRuns.request_apply(org.id, partial_review.id)
+    {:ok, pending_partial_apply} =
+      ChangeRuns.request_apply(org.id, partial_review.id, export_actor)
 
     {:ok, _applying_partial, partial_apply_generation, partial_apply_token} =
       ChangeRuns.claim(org.id, pending_partial_apply.id, :apply)

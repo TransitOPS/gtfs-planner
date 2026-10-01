@@ -44,7 +44,6 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
   ]
 
   @actor %{id: Ecto.UUID.generate(), email: "operator@example.com"}
-  @cleanup_actor %{id: Ecto.UUID.generate(), email: "cleaner@example.com"}
 
   setup do
     previous = Application.get_env(:gtfs_planner, :uploads_path)
@@ -547,8 +546,14 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
   test "a full imported feed can be failed and cleaned without losing its receipt" do
     org = organization_fixture()
 
+    # Creating a target and claiming a cleanup reauthorize their actor, so both are active editors.
+    operator = editor_fixture(org)
+    cleaner = editor_fixture(org)
+    actor = %{id: operator.id, email: operator.email}
+    cleanup_actor = %{id: cleaner.id, email: cleaner.email}
+
     {:ok, %{run: run, version: version}} =
-      ImportRuns.create_pending_target(org.id, @actor, %{name: "Ownership cleanup"})
+      ImportRuns.create_pending_target(org.id, actor, %{name: "Ownership cleanup"})
 
     {:ok, _, _, token} = ImportRuns.claim_import(org.id, run.id, run.lease_token)
 
@@ -584,7 +589,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
     assert {:ok, _, _} = ImportRuns.fail_import(org.id, run.id, token, failure)
 
     assert {:ok, _, claimed_version, cleanup_token} =
-             ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+             ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor)
 
     assert {:ok, nil} = Recovery.discard_claimed(run, claimed_version, cleanup_token)
     assert is_nil(Repo.get(GtfsVersion, version.id))
@@ -602,8 +607,8 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
     assert receipt.state == "cleaned"
     assert receipt.gtfs_version_id == version.id
     assert receipt.version_name == "Ownership cleanup"
-    assert receipt.actor_id == @actor.id
-    assert receipt.actor_email == @actor.email
+    assert receipt.actor_id == actor.id
+    assert receipt.actor_email == actor.email
   end
 
   defp constraints do

@@ -90,7 +90,8 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ImportTest do
 
   setup do
     organization = organization_fixture()
-    actor = user_fixture()
+    # Creating a target and publishing reauthorize the actor, so the actor is an active editor.
+    actor = editor_fixture(organization)
 
     %{organization: organization, actor: actor}
   end

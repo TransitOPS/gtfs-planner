@@ -20,8 +20,12 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
 
   import GtfsPlanner.OrganizationsFixtures
 
-  @actor %{id: Ecto.UUID.generate(), email: "operator@example.com"}
-  @cleanup_actor %{id: Ecto.UUID.generate(), email: "cleaner@example.com"}
+  # Creating a target and claiming a cleanup reauthorize their actor, so the actor is a real
+  # active editor of the organization.
+  defp editor_actor(org) do
+    editor = editor_fixture(org)
+    %{id: editor.id, email: editor.email}
+  end
 
   # Fake import worker: waits for a control message from the test, then either
   # completes (`:complete`) or dies abnormally (`:die`). It never touches the DB.
@@ -89,7 +93,9 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
 
   test "start_import/4 claims in init/1 and survives initiating-process death" do
     org = organization_fixture()
-    {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, @actor, %{name: "Feed"})
+
+    {:ok, %{run: run}} =
+      ImportRuns.create_pending_target(org.id, editor_actor(org), %{name: "Feed"})
 
     parent = self()
 
@@ -138,7 +144,9 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
 
   test "renews its lease on tick and terminates linked work after lease loss" do
     org = organization_fixture()
-    {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, @actor, %{name: "Feed"})
+
+    {:ok, %{run: run}} =
+      ImportRuns.create_pending_target(org.id, editor_actor(org), %{name: "Feed"})
 
     {:ok, runner_pid} = Runner.start_import(org.id, run.id, run.lease_token, [])
     allow_repo(runner_pid)
@@ -175,7 +183,9 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
 
   test "an abnormal import worker exit is persisted as interrupted and broadcast" do
     org = organization_fixture()
-    {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, @actor, %{name: "Feed"})
+
+    {:ok, %{run: run}} =
+      ImportRuns.create_pending_target(org.id, editor_actor(org), %{name: "Feed"})
 
     {:ok, runner_pid} = Runner.start_import(org.id, run.id, run.lease_token, [])
     allow_repo(runner_pid)
@@ -210,7 +220,9 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
 
   test "an abnormal cleanup worker exit is persisted as cleanup_failed and broadcast" do
     org = organization_fixture()
-    {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, @actor, %{name: "Feed"})
+
+    {:ok, %{run: run}} =
+      ImportRuns.create_pending_target(org.id, editor_actor(org), %{name: "Feed"})
 
     # Move the run into a recoverable state: expire its pending lease and
     # reconcile (pending -> interrupted), which is eligible for cleanup claim.
@@ -219,7 +231,7 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
     assert Repo.get!(Run, run.id).state == "interrupted"
 
     # The runner claims cleanup itself in init/1 (snapshotting the actor).
-    {:ok, runner_pid} = Runner.start_cleanup(org.id, run.id, @cleanup_actor)
+    {:ok, runner_pid} = Runner.start_cleanup(org.id, run.id, editor_actor(org))
     allow_repo(runner_pid)
 
     state = :sys.get_state(runner_pid)
@@ -244,7 +256,9 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
 
   test "an abnormal worker exit after lease loss does not broadcast an unpersisted closure" do
     org = organization_fixture()
-    {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, @actor, %{name: "Feed"})
+
+    {:ok, %{run: run}} =
+      ImportRuns.create_pending_target(org.id, editor_actor(org), %{name: "Feed"})
 
     {:ok, runner_pid} = Runner.start_import(org.id, run.id, run.lease_token, [])
     allow_repo(runner_pid)
@@ -276,7 +290,9 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
 
   test "a stale/wrong-token runner shuts down without overwriting state" do
     org = organization_fixture()
-    {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, @actor, %{name: "Feed"})
+
+    {:ok, %{run: run}} =
+      ImportRuns.create_pending_target(org.id, editor_actor(org), %{name: "Feed"})
 
     # Start a runner with a WRONG token. init/1 must fail the claim and stop
     # without writing. A failed init returns an error tuple from start_child.
@@ -294,7 +310,9 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
 
   test "normal import worker completion broadcasts without a second closure" do
     org = organization_fixture()
-    {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, @actor, %{name: "Feed"})
+
+    {:ok, %{run: run}} =
+      ImportRuns.create_pending_target(org.id, editor_actor(org), %{name: "Feed"})
 
     {:ok, runner_pid} = Runner.start_import(org.id, run.id, run.lease_token, [])
     allow_repo(runner_pid)

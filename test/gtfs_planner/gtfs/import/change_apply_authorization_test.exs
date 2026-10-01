@@ -215,7 +215,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeApplyAuthorizationTest do
         )
     end)
 
-    {:ok, pending_apply} = ChangeRuns.request_apply(organization.id, review.id)
+    {:ok, pending_apply} = ChangeRuns.request_apply(organization.id, review.id, run_actor)
     pending_apply
   end
 

@@ -1761,7 +1761,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
           )
       end)
 
-      {:ok, pending_apply} = ChangeRuns.request_apply(scope.organization.id, review.id)
+      {:ok, pending_apply} = ChangeRuns.request_apply(scope.organization.id, review.id, actor)
 
       {:ok, claimed, generation, token} =
         ChangeRuns.claim(scope.organization.id, pending_apply.id, :apply)
