@@ -1612,7 +1612,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
       # A stale write also changes nothing, but its values are still the ones on
       # screen, so the form keeps them rather than snapping back to the row.
-      {:error, {:stale, current}} ->
+      # `save_draft/4` reports a stale revision as a three-element tuple
+      # (`{:error, :stale, current}`); matching the two-element shape here
+      # instead left a conflict write with no clause at all, which took the
+      # whole LiveView down (R6, AC-11).
+      {:error, :stale, current} ->
         {:noreply,
          socket
          |> assign(:form, draft_form(Alert.draft_changeset(alert, castable(params))))
@@ -1654,7 +1658,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       {:error, %Ecto.Changeset{} = changeset} ->
         {:refused, assign(socket, form: draft_form(changeset), save_state: :error)}
 
-      {:error, {:stale, current}} ->
+      {:error, :stale, current} ->
         {:refused,
          assign(
            socket,

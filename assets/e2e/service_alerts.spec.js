@@ -1556,6 +1556,15 @@ async function captureReasonReference(page, testInfo, state, width) {
   });
 }
 
+// The editor composes every autosave against the base revision in a hidden
+// field, so two edits sent before the first lands are both refused as stale
+// (R6, AC-11). Waiting for that hidden value to move is waiting for the write
+// to have landed, which is what keeps this journey from racing itself.
+async function waitForSave(page) {
+  const before = await page.locator('input[name="alert[revision]"]').inputValue();
+  await expect(page.locator('input[name="alert[revision]"]')).not.toHaveValue(before);
+}
+
 // A delay is the shortest sequence that reaches the reason question: urgency,
 // situation, mode, routes, direction, timing - so this journey walks the
 // editor's own flow and answers the timing question rather than opening a URL
@@ -1567,8 +1576,14 @@ async function openReason(page) {
   // clock time and a check-in, and Continue carries the reader on from there.
   await page.locator("#alert-timing-end-kind-estimated").click();
   await page.locator("#timing-check-in").selectOption({ index: 2 });
+  await waitForSave(page);
+
   await page.locator("#timing-start-date").fill("2026-10-01");
+  await waitForSave(page);
+
   await page.locator("#timing-start-time").fill("08:00");
+  await waitForSave(page);
+
   await page.locator("#alert-timing-continue").click();
 
   await page.waitForSelector("#alert-reason", { timeout: 15_000 });
@@ -1636,6 +1651,7 @@ test.describe("alert reason", () => {
       "a fallen tree across the tracks",
     );
     await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+    await waitForSave(page);
 
     await page.screenshot({
       path: capturePath(testInfo, "reason-other-1440.png"),
