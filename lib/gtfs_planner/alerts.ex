@@ -12,12 +12,17 @@ defmodule GtfsPlanner.Alerts do
 
   Each write runs in one transaction that resolves the actor's *current* active
   membership and holds it `FOR SHARE` before the alert row is locked
-  (`lock_editor_membership/1`, mirroring
-  `Gtfs.Calendars.lock_editor_membership!/1`). A revocation that commits while
-  a save is waiting for that lock therefore refuses the save instead of letting
-  it commit (R5). The alert itself is then loaded `FOR UPDATE` scoped by
-  organization and version, so a forged UUID from another tenant or another
-  version is `:not_found` rather than a leak (R6).
+  (`Authorization.lock_editor!/1`). A revocation that commits while a save is
+  waiting for that lock therefore refuses the save instead of letting it commit
+  (R5). The alert itself is then loaded `FOR UPDATE` scoped by organization and
+  version, so a forged UUID from another tenant or another version is
+  `:not_found` rather than a leak (R6).
+
+  The route, stop and departure identities a write adds are read back through
+  `Alerts.Targets` inside the same transaction, so an answer can only name rows
+  of the context's own organization and version, whichever caller wrote it: the
+  editor's cards, its generic autosave or an assistant's prepared change (R1,
+  CR-4).
 
   `save_draft/4` carries the client's expected revision. At the current revision
   it increments the revision and recomputes `effect`, `complete`, `first_date`
@@ -40,7 +45,6 @@ defmodule GtfsPlanner.Alerts do
   import Ecto.Query, warn: false
 
   alias Ecto.Changeset
-  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Alerts.Alert
   alias GtfsPlanner.Alerts.AlertScript
   alias GtfsPlanner.Alerts.AlertSettings
@@ -50,17 +54,24 @@ defmodule GtfsPlanner.Alerts do
   alias GtfsPlanner.Alerts.Recurrence
   alias GtfsPlanner.Alerts.Targets
   alias GtfsPlanner.Alerts.TimingAnswer
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Repo
 
-  @editor_role "pathways_studio_editor"
+  @type error :: :forbidden | :not_found | Changeset.t()
 
-  @type error ::
-          :forbidden
-          | :not_found
-          | Changeset.t()
-          | {:stale, Alert.t()}
+  @typedoc """
+  A write refused because the client's revision is behind the stored one. It
+  carries the current alert so the editor can offer the conflict banner.
+  """
+  @type stale :: {:error, :stale, Alert.t()}
+
+  @target_messages %{
+    routes: "Choose routes from this version.",
+    stops: "Choose stops from this version.",
+    trips: "Choose departures from this version."
+  }
 
   @type tabs :: %{
           current: [Listing.row()],
@@ -95,7 +106,7 @@ defmodule GtfsPlanner.Alerts do
   @spec get_alert(AuditContext.t(), Ecto.UUID.t() | term()) ::
           {:ok, Alert.t()} | {:error, :forbidden | :not_found}
   def get_alert(%AuditContext{} = audit_context, alert_id) do
-    with :ok <- authorize_editor(audit_context) do
+    with :ok <- Authorization.authorize_editor(audit_context) do
       case scoped_alert(audit_context, alert_id) do
         %Alert{} = alert -> {:ok, alert}
         nil -> {:error, :not_found}
@@ -118,23 +129,24 @@ defmodule GtfsPlanner.Alerts do
   @spec version_name_for(AuditContext.t(), Ecto.UUID.t() | term()) ::
           {:ok, String.t()} | {:error, :forbidden | :not_found}
   def version_name_for(%AuditContext{} = audit_context, alert_id) do
-    with :ok <- authorize_editor(audit_context) do
-      if uuid?(alert_id) do
-        from(a in Alert,
-          join: v in GtfsPlanner.Versions.GtfsVersion,
-          on: v.id == a.gtfs_version_id,
-          where: a.organization_id == ^audit_context.organization_id and a.id == ^alert_id,
-          select: v.name
-        )
-        |> Repo.one()
-        |> case do
-          nil -> {:error, :not_found}
-          name -> {:ok, name}
-        end
-      else
-        {:error, :not_found}
-      end
+    with :ok <- Authorization.authorize_editor(audit_context),
+         true <- uuid?(alert_id),
+         name when is_binary(name) <- version_name(audit_context.organization_id, alert_id) do
+      {:ok, name}
+    else
+      {:error, :forbidden} -> {:error, :forbidden}
+      _not_found -> {:error, :not_found}
     end
+  end
+
+  defp version_name(organization_id, alert_id) do
+    from(a in Alert,
+      join: v in GtfsPlanner.Versions.GtfsVersion,
+      on: v.id == a.gtfs_version_id,
+      where: a.organization_id == ^organization_id and a.id == ^alert_id,
+      select: v.name
+    )
+    |> Repo.one()
   end
 
   @doc """
@@ -149,7 +161,7 @@ defmodule GtfsPlanner.Alerts do
   """
   @spec list_alerts(AuditContext.t(), NaiveDateTime.t()) :: {:ok, tabs()} | {:error, :forbidden}
   def list_alerts(%AuditContext{} = audit_context, %NaiveDateTime{} = local_now) do
-    with :ok <- authorize_editor(audit_context) do
+    with :ok <- Authorization.authorize_editor(audit_context) do
       alerts =
         from(a in Alert,
           where:
@@ -222,7 +234,18 @@ defmodule GtfsPlanner.Alerts do
           optional(Ecto.UUID.t()) => Targets.stop_option()
         }
   def stops_by_id(%AuditContext{} = audit_context, ids) do
-    with_options(audit_context, fn -> Targets.stops_by_id(audit_context, ids) end)
+    with_lookup(audit_context, fn -> Targets.stops_by_id(audit_context, ids) end)
+  end
+
+  @doc """
+  Returns the route rows the given row UUIDs name, keyed by that UUID.
+
+  The route-shaped counterpart of `stops_by_id/2`: a UUID of another version or
+  organization is absent from the result.
+  """
+  @spec routes_by_id(AuditContext.t(), [String.t()]) :: %{optional(Ecto.UUID.t()) => map()}
+  def routes_by_id(%AuditContext{} = audit_context, ids) do
+    with_lookup(audit_context, fn -> Targets.routes_by_id(audit_context, ids) end)
   end
 
   @doc """
@@ -287,7 +310,7 @@ defmodule GtfsPlanner.Alerts do
           trips: %{optional(Ecto.UUID.t()) => String.t()}
         }
   def labels_for(%AuditContext{} = audit_context, %Alert{} = alert) do
-    case authorize_editor(audit_context) do
+    case Authorization.authorize_editor(audit_context) do
       :ok -> Targets.labels_for(audit_context, alert)
       {:error, :forbidden} -> %{routes: %{}, stops: %{}, trips: %{}}
     end
@@ -305,7 +328,7 @@ defmodule GtfsPlanner.Alerts do
   """
   @spec routes_for(AuditContext.t(), [Alert.t()]) :: %{optional(Ecto.UUID.t()) => map()}
   def routes_for(%AuditContext{} = audit_context, alerts) when is_list(alerts) do
-    case authorize_editor(audit_context) do
+    case Authorization.authorize_editor(audit_context) do
       :ok ->
         ids = Enum.flat_map(alerts, &Listing.referenced_ids(&1).routes)
         Targets.routes_by_id(audit_context, ids)
@@ -319,10 +342,15 @@ defmodule GtfsPlanner.Alerts do
   # than locks, exactly as the other reads here do. A member without the editor
   # role reads no options; the refusal is the empty result the caller already
   # renders as "nothing to choose".
-  defp with_options(%AuditContext{} = audit_context, fun) do
-    case authorize_editor(audit_context) do
+  defp with_options(%AuditContext{} = audit_context, fun), do: authorized(audit_context, [], fun)
+
+  # An id lookup answers a map, so a refused member reads the empty map.
+  defp with_lookup(%AuditContext{} = audit_context, fun), do: authorized(audit_context, %{}, fun)
+
+  defp authorized(audit_context, refused, fun) do
+    case Authorization.authorize_editor(audit_context) do
       :ok -> fun.()
-      {:error, :forbidden} -> []
+      {:error, :forbidden} -> refused
     end
   end
 
@@ -334,13 +362,15 @@ defmodule GtfsPlanner.Alerts do
   `Gtfs.DisplayClock.resolve_zone/2` and cannot be cast from a form param, so
   every stored time is read in the agency's own zone (R12).
   """
-  @spec create_alert(AuditContext.t(), map()) :: {:ok, Alert.t()} | {:error, error()}
+  @spec create_alert(AuditContext.t(), map()) ::
+          {:ok, Alert.t()} | {:error, :forbidden | Changeset.t()}
   def create_alert(%AuditContext{} = audit_context, attrs) do
     transaction(fn ->
-      lock_editor_membership!(audit_context)
+      Authorization.lock_editor!(audit_context)
 
       %Alert{}
       |> Alert.draft_changeset(attrs)
+      |> validate_targets(audit_context)
       |> put_change(:organization_id, audit_context.organization_id)
       |> put_change(:gtfs_version_id, audit_context.gtfs_version_id)
       |> put_change(:created_by_id, audit_context.actor_id)
@@ -366,15 +396,16 @@ defmodule GtfsPlanner.Alerts do
   values.
   """
   @spec save_draft(AuditContext.t(), Ecto.UUID.t() | term(), integer(), map()) ::
-          {:ok, Alert.t()} | {:error, error()}
+          {:ok, Alert.t()} | {:error, error()} | stale()
   def save_draft(%AuditContext{} = audit_context, alert_id, expected_revision, attrs) do
     transaction(fn ->
-      lock_editor_membership!(audit_context)
+      Authorization.lock_editor!(audit_context)
       alert = lock_alert!(audit_context, alert_id)
       assert_current_revision!(alert, expected_revision)
 
       %{alert | revision: expected_revision}
       |> Alert.draft_changeset(attrs)
+      |> validate_targets(audit_context)
       |> put_change(:updated_by_id, audit_context.actor_id)
       |> derive()
       |> optimistic_lock(:revision)
@@ -390,25 +421,18 @@ defmodule GtfsPlanner.Alerts do
   `{:error, :stale, current}`.
   """
   @spec delete_alert(AuditContext.t(), Ecto.UUID.t() | term(), integer()) ::
-          {:ok, Alert.t()} | {:error, error()}
+          {:ok, Alert.t()} | {:error, :forbidden | :not_found} | stale()
   def delete_alert(%AuditContext{} = audit_context, alert_id, expected_revision) do
     transaction(fn ->
-      lock_editor_membership!(audit_context)
-      alert = lock_alert!(audit_context, alert_id)
-      assert_current_revision!(alert, expected_revision)
+      Authorization.lock_editor!(audit_context)
 
-      changeset =
-        %{alert | revision: expected_revision}
-        |> change()
-        |> optimistic_lock(:revision, stale_error_field: :revision)
-
-      case Repo.delete(changeset) do
-        {:ok, deleted} -> commit({:ok, deleted})
-        # `stale_error_field` reports a revision that moved under this lock,
-        # which the check above already refuses; the rollback keeps the answer
-        # the same shape either way.
-        {:error, _changeset} -> Repo.rollback({:stale, alert})
-      end
+      # The row is held `FOR UPDATE` and its revision is checked, so nothing can
+      # move the revision between that check and this delete.
+      audit_context
+      |> lock_alert!(alert_id)
+      |> assert_current_revision!(expected_revision)
+      |> Repo.delete()
+      |> commit()
     end)
   end
 
@@ -450,7 +474,7 @@ defmodule GtfsPlanner.Alerts do
   @spec create_script(AuditContext.t(), map()) :: {:ok, AlertScript.t()} | {:error, error()}
   def create_script(%AuditContext{} = audit_context, attrs) do
     transaction(fn ->
-      lock_editor_membership!(audit_context)
+      Authorization.lock_editor!(audit_context)
 
       %AlertScript{}
       |> AlertScript.changeset(attrs)
@@ -472,7 +496,7 @@ defmodule GtfsPlanner.Alerts do
           {:ok, AlertScript.t()} | {:error, error()}
   def update_script(%AuditContext{} = audit_context, script_id, attrs) do
     transaction(fn ->
-      lock_editor_membership!(audit_context)
+      Authorization.lock_editor!(audit_context)
       script = lock_script!(audit_context, script_id)
 
       script
@@ -493,7 +517,7 @@ defmodule GtfsPlanner.Alerts do
           {:ok, AlertScript.t()} | {:error, error()}
   def delete_script(%AuditContext{} = audit_context, script_id) do
     transaction(fn ->
-      lock_editor_membership!(audit_context)
+      Authorization.lock_editor!(audit_context)
       script = lock_script!(audit_context, script_id)
 
       script
@@ -531,7 +555,7 @@ defmodule GtfsPlanner.Alerts do
   """
   @spec get_guidelines(AuditContext.t()) :: %{text: String.t(), revision: non_neg_integer()}
   def get_guidelines(%AuditContext{} = audit_context) do
-    case authorize_editor(audit_context) do
+    case Authorization.authorize_editor(audit_context) do
       :ok ->
         case scoped_settings(audit_context) do
           %AlertSettings{} = settings ->
@@ -560,7 +584,7 @@ defmodule GtfsPlanner.Alerts do
   def save_guidelines(%AuditContext{} = audit_context, guidelines, expected_revision)
       when is_binary(guidelines) and is_integer(expected_revision) and expected_revision >= 0 do
     transaction(fn ->
-      lock_editor_membership!(audit_context)
+      Authorization.lock_editor!(audit_context)
 
       case scoped_settings(audit_context, :write) do
         nil when expected_revision == 0 ->
@@ -569,6 +593,7 @@ defmodule GtfsPlanner.Alerts do
           |> put_change(:organization_id, audit_context.organization_id)
           |> put_change(:revision, 1)
           |> Repo.insert()
+          |> stale_when_first_save_lost()
           |> commit()
 
         %AlertSettings{} = settings ->
@@ -595,6 +620,15 @@ defmodule GtfsPlanner.Alerts do
   def save_guidelines(%AuditContext{} = _audit_context, _guidelines, _expected_revision),
     do: {:error, :stale}
 
+  # With no row, `FOR UPDATE` locks nothing, so two first saves can both reach the
+  # insert. The one that waits on the unique index lost the race: another editor's
+  # first revision is now stored, which is what a stale save means.
+  defp stale_when_first_save_lost({:error, %Changeset{errors: errors} = changeset}) do
+    if Keyword.has_key?(errors, :organization_id), do: {:error, :stale}, else: {:error, changeset}
+  end
+
+  defp stale_when_first_save_lost(result), do: result
+
   # -- Transaction results -------------------------------------------------
 
   # A refused write changes nothing: the command's result leaves the
@@ -610,47 +644,6 @@ defmodule GtfsPlanner.Alerts do
       {:error, reason} -> {:error, reason}
     end
   end
-
-  # -- Authorization -------------------------------------------------------
-
-  defp authorize_editor(%AuditContext{
-         actor_id: actor_id,
-         organization_id: organization_id
-       }) do
-    case membership(actor_id, organization_id) do
-      %UserOrgMembership{deactivated_at: nil, roles: roles} ->
-        if editor_role?(roles), do: :ok, else: {:error, :forbidden}
-
-      _other ->
-        {:error, :forbidden}
-    end
-  end
-
-  # R5: the membership is resolved inside the transaction and held `FOR SHARE`,
-  # before the alert row is locked or its revision read, so a role removal that
-  # commits while this waits refuses the write instead of racing it.
-  defp lock_editor_membership!(%AuditContext{} = audit_context) do
-    case membership(audit_context.actor_id, audit_context.organization_id) do
-      %UserOrgMembership{deactivated_at: nil, roles: roles} ->
-        if editor_role?(roles), do: :ok, else: Repo.rollback(:forbidden)
-
-      _other ->
-        Repo.rollback(:forbidden)
-    end
-  end
-
-  defp membership(actor_id, organization_id) do
-    if uuid?(actor_id) and uuid?(organization_id) do
-      from(m in UserOrgMembership,
-        where: m.user_id == ^actor_id and m.organization_id == ^organization_id,
-        lock: "FOR SHARE"
-      )
-      |> Repo.one()
-    end
-  end
-
-  defp editor_role?(roles) when is_list(roles), do: @editor_role in roles
-  defp editor_role?(_roles), do: false
 
   # -- Scoped reads and locks ----------------------------------------------
 
@@ -674,16 +667,26 @@ defmodule GtfsPlanner.Alerts do
 
   # R1: the load is scoped to the context's organization and version, so an ID
   # from another tenant or another version of the same tenant is not found, and
-  # the row is held `FOR UPDATE` before its revision is read.
-  defp lock_alert!(%AuditContext{} = audit_context, alert_id) do
-    case scoped_alert(audit_context, alert_id) do
-      %Alert{id: id} ->
-        from(a in Alert, where: a.id == ^id, lock: "FOR UPDATE")
-        |> Repo.one!()
+  # the row is held `FOR UPDATE` before its revision is read. It is one query:
+  # a delete that commits while this waits for the lock leaves no row to return,
+  # and that reads as `:not_found` rather than raising.
+  defp lock_alert!(
+         %AuditContext{organization_id: organization_id, gtfs_version_id: gtfs_version_id},
+         alert_id
+       ) do
+    alert =
+      if uuid?(alert_id) do
+        from(a in Alert,
+          where:
+            a.organization_id == ^organization_id and
+              a.gtfs_version_id == ^gtfs_version_id and
+              a.id == ^alert_id,
+          lock: "FOR UPDATE"
+        )
+        |> Repo.one()
+      end
 
-      nil ->
-        Repo.rollback(:not_found)
-    end
+    alert || Repo.rollback(:not_found)
   end
 
   defp assert_current_revision!(%Alert{revision: revision} = alert, expected_revision)
@@ -700,7 +703,7 @@ defmodule GtfsPlanner.Alerts do
   # template validation are the ones every other write applies.
   defp insert_copy(%AuditContext{} = audit_context, built_in) do
     transaction(fn ->
-      lock_editor_membership!(audit_context)
+      Authorization.lock_editor!(audit_context)
 
       audit_context
       |> create_script(copy_attrs(audit_context.organization_id, built_in))
@@ -845,6 +848,47 @@ defmodule GtfsPlanner.Alerts do
     |> put_change(:complete, Completion.complete?(alert))
     |> put_change(:first_date, first_date)
     |> put_change(:last_date, last_date)
+  end
+
+  # The route, stop and departure identities are free strings in the scope
+  # answer, so a write re-reads the ones it adds inside the context's
+  # organization and version and refuses the rest. An identity already on the
+  # stored row is left alone: R8 lets a target deleted from the version stay on
+  # the alert and flags the row instead of rewriting who it is about.
+  defp validate_targets(%Changeset{valid?: false} = changeset, _audit_context), do: changeset
+
+  defp validate_targets(
+         %Changeset{data: %Alert{} = stored} = changeset,
+         %AuditContext{} = audit_context
+       ) do
+    alert = Changeset.apply_changes(changeset)
+    previous = Listing.referenced_ids(stored)
+
+    added =
+      Map.new(Listing.referenced_ids(alert), fn {table, ids} ->
+        {table, ids -- Map.fetch!(previous, table)}
+      end)
+
+    audit_context
+    |> Targets.unresolved_ids(added)
+    |> Enum.reduce(changeset, fn
+      {_table, []}, acc -> acc
+      {table, _ids}, acc -> add_error(acc, :scope, Map.fetch!(@target_messages, table))
+    end)
+    |> validate_mode(audit_context, stored, alert)
+  end
+
+  # `mode_route_type` is the one scope selector that is not a row identity, so it
+  # is checked against the route types the version contains.
+  defp validate_mode(changeset, audit_context, stored, alert) do
+    mode = alert.scope && alert.scope.mode_route_type
+
+    if is_nil(mode) or mode == (stored.scope && stored.scope.mode_route_type) or
+         mode in Targets.route_types(audit_context) do
+      changeset
+    else
+      add_error(changeset, :scope, "Choose a route type this version has.")
+    end
   end
 
   defp put_timing_zone(%Changeset{} = changeset, time_zone) do

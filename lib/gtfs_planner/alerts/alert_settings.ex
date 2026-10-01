@@ -9,9 +9,9 @@ defmodule GtfsPlanner.Alerts.AlertSettings do
   locks, so two editors saving the same text cannot silently overwrite each
   other (R6).
 
-  The guidelines are plain text an organization writes for itself: this
-  changeset casts only `guidelines` and leaves `organization_id` and `revision`
-  to the `Alerts` command (R4, CR-2).
+  The guidelines are plain text an organization writes for itself, at most
+  10,000 characters: this changeset casts only `guidelines` and leaves
+  `organization_id` and `revision` to the `Alerts` command (R4, CR-2).
   """
 
   use Ecto.Schema
@@ -21,6 +21,10 @@ defmodule GtfsPlanner.Alerts.AlertSettings do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
+
+  # Every editor on the Message step and the assistant's `get_guidelines` read the
+  # whole text, so it is bounded well under the assistant's result limit.
+  @max_guidelines_length 10_000
 
   schema "alert_settings" do
     field :guidelines, :string
@@ -54,5 +58,9 @@ defmodule GtfsPlanner.Alerts.AlertSettings do
     settings
     |> cast(attrs, [:guidelines])
     |> ChangesetHelpers.trim_string_fields()
+    |> validate_length(:guidelines, max: @max_guidelines_length)
+    # Two first saves can both reach the insert; the one that waits on this index
+    # loses the race, which `Alerts.save_guidelines/3` reports as stale.
+    |> unique_constraint(:organization_id)
   end
 end

@@ -14,11 +14,17 @@ defmodule GtfsPlanner.Alerts.ConcurrencyTest do
   (bounded to 5 s), and only then does the holder commit.
 
   The proof boundary is one PostgreSQL server at READ COMMITTED with `FOR SHARE`
-  against `FOR UPDATE`: it rejects a membership check made before the lock, made
-  outside the transaction or made after the alert row lock. SERIALIZABLE, REPEATABLE
+  against `FOR UPDATE`: it rejects a membership check made before the lock or made
+  outside the transaction. It does not fix the order of the membership lock and the
+  alert row lock; a version that took the alert row first and the membership second
+  would also wait on the holder and answer `:forbidden`. SERIALIZABLE, REPEATABLE
   READ, a multi-node deployment and a real server-side deadlock are outside this
   test's scope. The focused gate command is deferred to branch review:
   `mix test test/gtfs_planner/alerts/concurrency_test.exs`.
+
+  Two more interleavings use the same structure: a delete that commits while a
+  save waits for the alert row's `FOR UPDATE`, and a second first guidelines save
+  waiting on the settings table's unique index.
   """
 
   use GtfsPlanner.DataCase, async: false
@@ -35,10 +41,10 @@ defmodule GtfsPlanner.Alerts.ConcurrencyTest do
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Alerts
   alias GtfsPlanner.Alerts.Alert
+  alias GtfsPlanner.Alerts.AlertSettings
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
-  alias GtfsPlanner.Versions.GtfsVersion
 
   # Every case holds one lock open and observes another backend's wait, so the test
   # is bounded: EV-6's 120 s command deadline, and a 10 s self-release for any hold
@@ -76,7 +82,7 @@ defmodule GtfsPlanner.Alerts.ConcurrencyTest do
       saver = Task.async(fn -> save_on_own_connection(scope, parent) end)
       assert_receive {:save_pid, save_pid}, @receive_timeout
 
-      # The save's `lock_editor_membership/1` `FOR SHARE` reaches the membership row
+      # The save's `Authorization.lock_editor!/1` `FOR SHARE` reaches the membership row
       # while the holder still owns that row's `FOR UPDATE`, so it is the membership
       # lock the save waits on, not the alert row.
       assert wait_until_locked(save_pid)
@@ -109,6 +115,64 @@ defmodule GtfsPlanner.Alerts.ConcurrencyTest do
       refute after_save.urgency == :planned
       refute after_save.message.header == @refused_save["message"]["header"]
       assert after_save.revision == scope.alert.revision
+    end
+  end
+
+  describe "a save waiting on the alert row" do
+    test "a delete that commits first answers not found and does not raise" do
+      scope = committed_scope()
+      on_exit(fn -> cleanup_committed_scope(scope) end)
+
+      parent = self()
+      holder = Task.async(fn -> hold_alert_deletion(scope, parent) end)
+      assert_receive :alert_row_locked, @receive_timeout
+
+      saver = Task.async(fn -> save_on_own_connection(scope, parent) end)
+      assert_receive {:save_pid, save_pid}, @receive_timeout
+
+      # The save has passed the membership lock and waits on the alert row the
+      # holder has locked and deleted.
+      assert wait_until_locked(save_pid)
+
+      send(holder.pid, :commit)
+      assert Task.await(holder, @task_timeout) == {:ok, :ok}
+
+      assert {:error, :not_found} = Task.await(saver, @task_timeout)
+      assert unboxed(fn -> Repo.get(Alert, scope.alert.id) end) == nil
+    end
+  end
+
+  describe "a first guidelines save waiting on the unique index" do
+    test "the editor who lost the race is told the guidelines are stale" do
+      scope = committed_scope()
+      on_exit(fn -> cleanup_committed_scope(scope) end)
+
+      parent = self()
+      holder = Task.async(fn -> hold_first_guidelines(scope, parent) end)
+      assert_receive :first_guidelines_inserted, @receive_timeout
+
+      saver =
+        Task.async(fn ->
+          on_own_connection(parent, fn ->
+            Alerts.save_guidelines(scope.audit, "The second editor's text.", 0)
+          end)
+        end)
+
+      assert_receive {:save_pid, save_pid}, @receive_timeout
+
+      # The second insert waits on the first editor's uncommitted index entry.
+      assert wait_until_locked(save_pid)
+
+      send(holder.pid, :commit)
+      assert Task.await(holder, @task_timeout) == {:ok, :ok}
+
+      assert {:error, :stale} = Task.await(saver, @task_timeout)
+
+      stored =
+        unboxed(fn -> Repo.get_by!(AlertSettings, organization_id: scope.organization_id) end)
+
+      assert stored.guidelines == "The first editor's text."
+      assert stored.revision == 1
     end
   end
 
@@ -155,18 +219,12 @@ defmodule GtfsPlanner.Alerts.ConcurrencyTest do
 
   # Deletes exactly the rows `committed_scope/1` created, keyed to their own
   # organization, on an own connection so the deletion is not part of the SQL
-  # Sandbox transaction and runs even when the test failed. The alert row and the
-  # membership go before their parents; the agency row cascades from the
-  # organization.
+  # Sandbox transaction and runs even when the test failed. Deleting the
+  # organization removes its versions, agency, alerts, memberships and settings
+  # in one statement; deleting a version on its own would be refused while the
+  # agency row still names it (`agencies_version_owner_fkey`).
   defp cleanup_committed_scope(scope) do
     unboxed(fn ->
-      Repo.delete_all(from(a in Alert, where: a.organization_id == ^scope.organization_id))
-
-      Repo.delete_all(
-        from(m in UserOrgMembership, where: m.organization_id == ^scope.organization_id)
-      )
-
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^scope.organization_id))
       Repo.delete_all(from(o in Organization, where: o.id == ^scope.organization_id))
       Repo.delete_all(from(u in User, where: u.id == ^scope.actor_id))
     end)
@@ -192,24 +250,65 @@ defmodule GtfsPlanner.Alerts.ConcurrencyTest do
             set: [roles: []]
           )
 
-        send(parent, :editor_role_cleared)
-
-        receive do
-          :commit -> :ok
-        after
-          @hold_timeout -> Repo.rollback(:timeout)
-        end
+        hold_until_commit(parent, :editor_role_cleared)
       end)
     end)
+  end
+
+  # Locks the alert row and deletes it on an own connection, holding both
+  # uncommitted, so a save that has passed the membership lock waits on the row.
+  defp hold_alert_deletion(scope, parent) do
+    unboxed(fn ->
+      Repo.transaction(fn ->
+        Repo.one!(from(a in Alert, where: a.id == ^scope.alert.id, lock: "FOR UPDATE"))
+        {1, _} = Repo.delete_all(from(a in Alert, where: a.id == ^scope.alert.id))
+
+        hold_until_commit(parent, :alert_row_locked)
+      end)
+    end)
+  end
+
+  # Inserts the organization's first settings row on an own connection and holds
+  # it uncommitted, so a second first save reaches the unique index and waits.
+  defp hold_first_guidelines(scope, parent) do
+    unboxed(fn ->
+      Repo.transaction(fn ->
+        Repo.insert!(%AlertSettings{
+          organization_id: scope.organization_id,
+          guidelines: "The first editor's text.",
+          revision: 1
+        })
+
+        hold_until_commit(parent, :first_guidelines_inserted)
+      end)
+    end)
+  end
+
+  # Tells the test the holder's change is in place, then keeps it uncommitted
+  # until the test releases it or the hold times out.
+  defp hold_until_commit(parent, ready_message) do
+    send(parent, ready_message)
+
+    receive do
+      :commit -> :ok
+    after
+      @hold_timeout -> Repo.rollback(:timeout)
+    end
   end
 
   # A save on its own connection: its transaction must commit for the membership
   # lock to be released, and it reports the backend pid the test polls.
   defp save_on_own_connection(scope, parent) do
+    on_own_connection(parent, fn ->
+      Alerts.save_draft(scope.audit, scope.alert.id, scope.alert.revision, @refused_save)
+    end)
+  end
+
+  defp on_own_connection(parent, fun) do
     unboxed(fn ->
       {:ok, %{rows: [[backend_pid]]}} = Repo.query("select pg_backend_pid()")
       send(parent, {:save_pid, backend_pid})
-      Alerts.save_draft(scope.audit, scope.alert.id, scope.alert.revision, @refused_save)
+      fun.()
     end)
   end
 

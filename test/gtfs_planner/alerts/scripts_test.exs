@@ -15,7 +15,8 @@ defmodule GtfsPlanner.Alerts.ScriptsTest do
 
   Proof boundary: one local PostgreSQL partition under the SQL Sandbox. It says
   nothing about a second connection racing a save - the guidelines lock and
-  `optimistic_lock/2` are exercised here only against the committed row.
+  `optimistic_lock/2` are exercised here only against the committed row. The
+  first-save race is exercised on two connections in `concurrency_test.exs`.
   """
 
   use GtfsPlanner.DataCase
@@ -103,7 +104,7 @@ defmodule GtfsPlanner.Alerts.ScriptsTest do
         Alerts.create_script(context.audit, Map.put(@detour_script, "name", "Ahead"))
 
       {:ok, ahead} =
-        Alerts.update_script(context.audit, moved_ahead.id, %{"position" => 1})
+        Alerts.update_script(context.audit, moved_ahead.id, %{"position" => 0})
 
       scripts = Alerts.list_scripts(context.audit)
 
@@ -116,7 +117,7 @@ defmodule GtfsPlanner.Alerts.ScriptsTest do
 
       # A saved position is not private state on the row: it is the order the
       # settings table and the message chooser both read.
-      assert ahead.position == 1
+      assert ahead.position == 0
       assert Enum.take(scripts, 3) |> Enum.all?(&(not &1.built_in?))
       assert Enum.drop(scripts, 3) |> Enum.all?(& &1.built_in?)
     end
@@ -140,7 +141,7 @@ defmodule GtfsPlanner.Alerts.ScriptsTest do
       assert unordered.position == 3
 
       assert Alerts.list_scripts(context.audit) |> Enum.map(& &1.name) |> Enum.take(3) ==
-               ["Ahead", "Numbered", "Unordered"]
+               ["Numbered", "Ahead", "Unordered"]
     end
 
     test "a member without the editor role reads no scripts, not even the built-ins", context do
@@ -214,6 +215,41 @@ defmodule GtfsPlanner.Alerts.ScriptsTest do
                "Detour, stops skipped"
     end
 
+    test "stores a description template longer than 255 characters", context do
+      template = String.duplicate("a", 256)
+
+      assert {:ok, script} =
+               Alerts.create_script(
+                 context.audit,
+                 Map.put(@detour_script, "description_template", template)
+               )
+
+      assert Repo.get!(AlertScript, script.id).description_template == template
+    end
+
+    test "stores a description template of exactly 2,000 characters", context do
+      template = String.duplicate("a", 2_000)
+
+      assert {:ok, script} =
+               Alerts.create_script(
+                 context.audit,
+                 Map.put(@detour_script, "description_template", template)
+               )
+
+      assert Repo.get!(AlertScript, script.id).description_template == template
+    end
+
+    test "refuses a description template of more than 2,000 characters", context do
+      assert {:error, changeset} =
+               Alerts.create_script(
+                 context.audit,
+                 Map.put(@detour_script, "description_template", String.duplicate("a", 2_001))
+               )
+
+      assert changeset.errors[:description_template]
+      assert Repo.aggregate(AlertScript, :count) == 0
+    end
+
     test "refuses a template carrying an EEx tag", context do
       assert {:error, changeset} =
                Alerts.create_script(
@@ -235,6 +271,18 @@ defmodule GtfsPlanner.Alerts.ScriptsTest do
 
       assert {message, _options} = changeset.errors[:description_template]
       assert message =~ "\"street\""
+      assert Repo.aggregate(AlertScript, :count) == 0
+    end
+
+    test "refuses a padded placeholder name the fill would never match", context do
+      assert {:error, changeset} =
+               Alerts.create_script(
+                 context.audit,
+                 Map.put(@detour_script, "header_template", "Route [route ] detour")
+               )
+
+      assert {message, _options} = changeset.errors[:header_template]
+      assert message =~ "\"route \""
       assert Repo.aggregate(AlertScript, :count) == 0
     end
 
@@ -353,9 +401,8 @@ defmodule GtfsPlanner.Alerts.ScriptsTest do
     end
 
     test "a built-in cannot be edited or deleted in place", context do
-      built_in = hd(Alerts.list_scripts(context.audit))
+      built_in = Enum.find(Alerts.list_scripts(context.audit), & &1.built_in?)
 
-      assert built_in.built_in?
       assert is_nil(built_in.id)
 
       # A built-in has no row: only its copy is an organization script.
@@ -365,7 +412,10 @@ defmodule GtfsPlanner.Alerts.ScriptsTest do
       assert {:error, :not_found} = Alerts.delete_script(context.audit, built_in.key)
 
       refute Enum.any?(Alerts.list_scripts(context.audit), &(&1.name == "Mine now"))
-      assert Enum.map(Alerts.list_scripts(context.audit), & &1.key) == @built_in_keys
+
+      # The describe's own script leads; the built-ins follow it unchanged.
+      assert Enum.map(Alerts.list_scripts(context.audit), & &1.key) ==
+               ["org:#{context.script.id}"] ++ @built_in_keys
     end
 
     test "delete removes the script and is not repeatable", context do
@@ -404,7 +454,7 @@ defmodule GtfsPlanner.Alerts.ScriptsTest do
 
       assert [%{key: "org:" <> key, built_in?: false} = copied] = Enum.take(scripts, 1)
       assert copied.id == copy.id
-      assert key == "org:#{copy.id}"
+      assert key == copy.id
 
       # Editing the copy leaves the built-in alone.
       assert {:ok, _renamed} = Alerts.update_script(context.audit, copy.id, %{"name" => "Ours"})
@@ -526,8 +576,33 @@ defmodule GtfsPlanner.Alerts.ScriptsTest do
     test "an organization may save its own empty text and read it back", context do
       assert {:ok, settings} = Alerts.save_guidelines(context.audit, "", 0)
 
-      assert settings.guidelines == ""
+      # Ecto casts the empty string to the field's nil; reading answers the text.
+      assert is_nil(settings.guidelines)
       assert Alerts.get_guidelines(context.audit) == %{text: "", revision: 1}
+    end
+
+    test "refuses guidelines of more than 10,000 characters and keeps the stored text",
+         context do
+      assert {:ok, _settings} = Alerts.save_guidelines(context.audit, "Ours.", 0)
+
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Alerts.save_guidelines(context.audit, String.duplicate("a", 10_001), 1)
+
+      assert changeset.errors[:guidelines]
+      assert Alerts.get_guidelines(context.audit) == %{text: "Ours.", revision: 1}
+    end
+
+    test "a second settings row for one organization is a changeset error, not a raise",
+         context do
+      assert {:ok, _settings} = Alerts.save_guidelines(context.audit, "Ours.", 0)
+
+      assert {:error, changeset} =
+               %AlertSettings{}
+               |> AlertSettings.changeset(%{"guidelines" => "Again."})
+               |> Ecto.Changeset.put_change(:organization_id, context.organization.id)
+               |> Repo.insert()
+
+      assert {"has already been taken", _options} = changeset.errors[:organization_id]
     end
 
     test "a member without the editor role reads no text and saves nothing", context do

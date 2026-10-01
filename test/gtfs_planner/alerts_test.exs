@@ -91,7 +91,61 @@ defmodule GtfsPlanner.AlertsTest do
 
       assert {:error, %Ecto.Changeset{} = changeset} = Alerts.create_alert(context.audit, attrs)
 
-      assert Keyword.has_key?(changeset.errors, :message)
+      assert %{message: %{header: [_ | _]}} = nested_errors(changeset)
+      assert Repo.aggregate(Alert, :count) == 0
+    end
+
+    test "refuses a deactivated member and inserts nothing", context do
+      membership = Repo.get_by(GtfsPlanner.Accounts.UserOrgMembership, user_id: context.actor.id)
+      deactivate_membership_fixture(membership)
+
+      assert {:error, :forbidden} = Alerts.create_alert(context.audit, %{"urgency" => "now"})
+      assert Repo.aggregate(Alert, :count) == 0
+    end
+
+    test "refuses a member without the editor role and inserts nothing", context do
+      viewer = user_fixture()
+      organization_membership_fixture(viewer, context.organization, [])
+      audit = audit_context(context.organization, context.version, viewer)
+
+      assert {:error, :forbidden} = Alerts.create_alert(audit, %{"urgency" => "now"})
+      assert Repo.aggregate(Alert, :count) == 0
+    end
+
+    test "refuses an editor of another organization and inserts nothing", context do
+      other_actor = editor_fixture(organization_fixture())
+      audit = audit_context(context.organization, context.version, other_actor)
+
+      assert {:error, :forbidden} = Alerts.create_alert(audit, %{"urgency" => "now"})
+      assert Repo.aggregate(Alert, :count) == 0
+    end
+
+    test "stores a route, stop and departure of the context's own version", context do
+      %{route: route, stop: stop, trip: trip} = version_targets(context)
+
+      attrs = %{
+        "urgency" => "now",
+        "scope" => %{
+          "shape" => "route_stops",
+          "route_ids" => [route.id],
+          "stop_ids" => [stop.id],
+          "trips" => [%{"trip_id" => trip.id, "service_date" => "2026-10-05"}]
+        }
+      }
+
+      assert {:ok, alert} = Alerts.create_alert(context.audit, attrs)
+      assert alert.scope.route_ids == [route.id]
+      assert alert.scope.stop_ids == [stop.id]
+    end
+
+    test "refuses a stop of another version and inserts nothing", context do
+      other_version = gtfs_version_fixture(context.organization.id)
+      stop = stop_fixture(context.organization.id, other_version.id)
+
+      attrs = %{"urgency" => "now", "scope" => %{"stop_ids" => [stop.id]}}
+
+      assert {:error, %Ecto.Changeset{} = changeset} = Alerts.create_alert(context.audit, attrs)
+      assert %{scope: ["Choose stops from this version."]} = nested_errors(changeset)
       assert Repo.aggregate(Alert, :count) == 0
     end
   end
@@ -128,11 +182,9 @@ defmodule GtfsPlanner.AlertsTest do
     test "refuses a member of another organization", context do
       alert = alert_fixture(context.audit)
 
-      other_organization = organization_fixture()
-      other_version = gtfs_version_fixture(other_organization.id)
-      other_actor = editor_fixture(other_organization)
-
-      audit = audit_context(other_organization, other_version, other_actor)
+      # An editor of another organization holds no membership in this one.
+      other_actor = editor_fixture(organization_fixture())
+      audit = audit_context(context.organization, context.version, other_actor)
 
       assert {:error, :forbidden} = Alerts.get_alert(audit, alert.id)
     end
@@ -199,7 +251,7 @@ defmodule GtfsPlanner.AlertsTest do
                  "message" => %{"header" => String.duplicate("a", 121)}
                })
 
-      assert Keyword.has_key?(changeset.errors, :message)
+      assert %{message: %{header: [_ | _]}} = nested_errors(changeset)
 
       reloaded = Repo.get!(Alert, alert.id)
 
@@ -246,6 +298,65 @@ defmodule GtfsPlanner.AlertsTest do
       assert saved.last_date == elem(expected, 1)
     end
 
+    test "refuses a route, stop or departure that is not in the alert's version", context do
+      other_version = gtfs_version_fixture(context.organization.id)
+      foreign_stop = stop_fixture(context.organization.id, other_version.id)
+      foreign_route = route_fixture(context.organization.id, other_version.id)
+      alert = alert_fixture(context.audit)
+      stored = Repo.get!(Alert, alert.id)
+
+      for {scope, message} <- [
+            {%{"stop_ids" => [foreign_stop.id]}, "Choose stops from this version."},
+            {%{"route_ids" => [foreign_route.id]}, "Choose routes from this version."},
+            {%{"route_ids" => ["12"]}, "Choose routes from this version."},
+            {%{"route_ids" => [Ecto.UUID.generate()]}, "Choose routes from this version."},
+            {%{"stretch_from_stop_id" => foreign_stop.id}, "Choose stops from this version."},
+            {%{"route_stop_pairs" => [%{"route_id" => "x", "stop_id" => foreign_stop.id}]},
+             "Choose routes from this version."},
+            {%{"trips" => [%{"trip_id" => Ecto.UUID.generate(), "service_date" => "2026-10-05"}]},
+             "Choose departures from this version."}
+          ] do
+        assert {:error, %Ecto.Changeset{} = changeset} =
+                 Alerts.save_draft(context.audit, alert.id, 1, %{"scope" => scope})
+
+        assert message in nested_errors(changeset).scope
+      end
+
+      reloaded = Repo.get!(Alert, alert.id)
+      assert reloaded.revision == 1
+      assert reloaded.scope == stored.scope
+    end
+
+    test "refuses a route type the version does not contain", context do
+      route_fixture(context.organization.id, context.version.id, %{route_type: 3})
+      alert = alert_fixture(context.audit)
+
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Alerts.save_draft(context.audit, alert.id, 1, %{
+                 "scope" => %{"shape" => "routes", "mode_route_type" => 1}
+               })
+
+      assert %{scope: ["Choose a route type this version has."]} = nested_errors(changeset)
+
+      assert {:ok, saved} =
+               Alerts.save_draft(context.audit, alert.id, 1, %{
+                 "scope" => %{"shape" => "routes", "mode_route_type" => 3}
+               })
+
+      assert saved.scope.mode_route_type == 3
+    end
+
+    test "keeps a target the version has since lost and still saves other answers", context do
+      %{route: route} = version_targets(context)
+      alert = alert_fixture(context.audit, %{"scope" => %{"route_ids" => [route.id]}})
+      Repo.delete!(route)
+
+      assert {:ok, saved} =
+               Alerts.save_draft(context.audit, alert.id, 1, %{"situation" => "delay"})
+
+      assert saved.scope.route_ids == [route.id]
+    end
+
     test "refuses a deactivated member", context do
       alert = alert_fixture(context.audit)
 
@@ -274,11 +385,8 @@ defmodule GtfsPlanner.AlertsTest do
     test "refuses a member of another organization", context do
       alert = alert_fixture(context.audit)
 
-      other_organization = organization_fixture()
-      other_version = gtfs_version_fixture(other_organization.id)
-      other_actor = editor_fixture(other_organization)
-
-      audit = audit_context(other_organization, other_version, other_actor)
+      other_actor = editor_fixture(organization_fixture())
+      audit = audit_context(context.organization, context.version, other_actor)
 
       assert {:error, :forbidden} =
                Alerts.save_draft(audit, alert.id, 1, %{"situation" => "delay"})
@@ -356,11 +464,8 @@ defmodule GtfsPlanner.AlertsTest do
     test "refuses a member of another organization", context do
       alert = alert_fixture(context.audit)
 
-      other_organization = organization_fixture()
-      other_version = gtfs_version_fixture(other_organization.id)
-      other_actor = editor_fixture(other_organization)
-
-      audit = audit_context(other_organization, other_version, other_actor)
+      other_actor = editor_fixture(organization_fixture())
+      audit = audit_context(context.organization, context.version, other_actor)
 
       assert {:error, :forbidden} = Alerts.delete_alert(audit, alert.id, 1)
       assert Repo.get!(Alert, alert.id)
@@ -401,8 +506,6 @@ defmodule GtfsPlanner.AlertsTest do
         "weekdays" => [1, 2, 3, 4, 5],
         "start_time" => "20:00:00",
         "end_time" => "05:00:00",
-        "end_kind" => "confirmed",
-        "end_date" => "2026-10-16",
         "removed_dates" => ["2026-10-09"]
       },
       "message" => %{
@@ -410,6 +513,22 @@ defmodule GtfsPlanner.AlertsTest do
         "description" => "Construction on Main St. Use Route 2 instead."
       }
     }
+  end
+
+  # A route, a stop and a departure of the context's own version, the rows a
+  # scope answer may name.
+  defp version_targets(context) do
+    route = route_fixture(context.organization.id, context.version.id, %{route_id: "r_1"})
+    stop = stop_fixture(context.organization.id, context.version.id, %{stop_id: "s_1"})
+    trip = trip_fixture(context.organization.id, context.version.id, route.route_id)
+
+    %{route: route, stop: stop, trip: trip}
+  end
+
+  # An embedded answer's errors live on its own changeset, not on the parent's
+  # `errors`, so they are read through `traverse_errors/2`.
+  defp nested_errors(changeset) do
+    Ecto.Changeset.traverse_errors(changeset, fn {message, _opts} -> message end)
   end
 
   defp audit_context(organization, version, actor) do
