@@ -43,8 +43,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionsViewLiveTest do
     twenty_four =
       route_fixture(organization.id, version.id, %{route_id: "R24", route_short_name: "24"})
 
-    # A route the version carries but no connection runs on, so a Route filter
-    # can narrow to none without the page clearing an unknown route instead.
+    # A route that runs on the day but ends no connection, so the Route filter
+    # can narrow to none. It has to be a *tripped* route: `day.routes` is built
+    # from the day's trips and `normalize_route/2` clears a route the day does
+    # not carry, so a route with no trip would be dropped rather than filtered
+    # and the page would keep reporting every connection.
     lonely =
       route_fixture(organization.id, version.id, %{route_id: "R50", route_short_name: "50"})
 
@@ -81,6 +84,18 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionsViewLiveTest do
       last_stop: main.stop_id,
       first_arrival: "07:10:00",
       last_arrival: "08:10:00"
+    })
+
+    # Its own block, so R50 ends a gap of its own and joins no connection of
+    # block 101. The Connections list derives a row per gap, not per record.
+    blocked_trip_fixture(organization.id, version.id, lonely.route_id, %{
+      service_id: "W",
+      trip_id: "c",
+      block_id: "202",
+      first_stop: main.stop_id,
+      last_stop: main.stop_id,
+      first_arrival: "09:20:00",
+      last_arrival: "10:20:00"
     })
 
     %{
