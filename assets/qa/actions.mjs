@@ -86,7 +86,11 @@ function target(flags, action) {
     case "fill": {
       const label = present(flags, "label");
       if (!label) return fail("fill needs --label");
-      return ok({ label });
+      // The value is carried into the step, because the driver fills with it and
+      // a trail records it. A fill without one is rejected here rather than left
+      // to fail inside the browser with no reason a tester can act on.
+      if (typeof flags.value !== "string") return fail("fill needs --value");
+      return ok({ label, value: flags.value });
     }
 
     case "select": {

@@ -67,6 +67,28 @@ test("a fill without an intent is rejected", () => {
   expect(result.reason).toContain("--intent");
 });
 
+test("a fill carries its value into the step", () => {
+  const fill = {
+    action: "fill",
+    label: "Version name",
+    value: "QA Import",
+    intent: "name the new version",
+    expect: "the field holds the name"
+  };
+  const result = validateStep(fill, ctx);
+
+  expect(result.ok).toBe(true);
+  expect(result.step).toEqual({ action: "fill", label: "Version name", value: "QA Import" });
+});
+
+test("a fill without a value is rejected with a reason the tester can act on", () => {
+  const fill = { action: "fill", label: "Version name", intent: "name it", expect: "it is named" };
+  const result = validateStep(fill, ctx);
+
+  expect(result.ok).toBe(false);
+  expect(result.reason).toContain("--value");
+});
+
 test("an upload of a file outside the scenario is rejected", () => {
   const upload = {
     action: "upload",

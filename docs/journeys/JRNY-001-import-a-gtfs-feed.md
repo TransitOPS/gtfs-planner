@@ -314,8 +314,9 @@ The four reference actions are the ones after sign-in, waits excluded: press `Im
 dashboard's first-use card; choose `sample-feed.zip` at `Choose a .zip file`; type the version name;
 press `Import feed`. Reading the result and leaving the page are not actions, and neither is the
 `Open new version` link — the terminal outcome is the published version itself, which the check
-observes outside the UI. This count is an estimate until the reference trail for `JRNY-001/import`
-runs, and the executed trail's count replaces it (OQ-006).
+observes outside the UI. This is the executed count, read from `proxies.actions` of the run that
+recorded the reference trail for `JRNY-001/import`, not an estimate; the trail's commands and run
+directory are in `.specs/31-ux-journey-qa/evidence/reference-import.md`.
 
 ## Open questions
 
@@ -335,8 +336,8 @@ runs, and the executed trail's count replaces it (OQ-006).
   editor must invent, and the page offers no default. Whether the harness should type a name or
   whether the product should prefill one is a product decision, not a documentation one. Owner:
   product owner.
-- OQ-006 — `Reference actions: 4` is the estimate counted from the flow, not an executed count. The
-  reference trail's count replaces it. Owner: the reference-trail step.
+- OQ-006 — Resolved. `Reference actions: 4` is now the executed count from the run that recorded the
+  reference trail for `JRNY-001/import`, not an estimate. Owner: the reference-trail step.
 - OQ-007 — No capture of this journey exists, so section 9 cites none. Which states the pilot
   captures must cover — the first-use card, the import form, the result card — is a decision for the
   pilot steps. Owner: product owner.
@@ -346,3 +347,4 @@ runs, and the executed trail's count replaces it (OQ-006).
 | Date | Version | Change | Author |
 |---|---|---|---|
 | 2026-10-01 | 1 | Initial page: stages, seams, examples and the `import` scenario for JRNY-001 | spec step 37 |
+| 2026-10-01 | 2 | Replaced the estimated `Reference actions: 4` with the count the recorded reference trail executed | spec step 62 |
