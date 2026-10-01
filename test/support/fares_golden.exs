@@ -14,6 +14,7 @@
 # importer refuses on this revision is reported and left unrecorded: the C-TRAN
 # excerpt needs the widened `fare_products` key before it can import at all.
 defmodule GtfsPlanner.FaresGolden do
+  alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.FaresFixtures
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Organizations
@@ -27,7 +28,7 @@ defmodule GtfsPlanner.FaresGolden do
     mode = if "--check" in argv, do: :check, else: :write
 
     # `mix run` in the test environment already owns the sandbox connection.
-    case Ecto.Adapters.SQL.Sandbox.checkout(Repo) do
+    case Sandbox.checkout(Repo) do
       {:ok, _pid} -> :ok
       :already_owner -> :ok
       :ok -> :ok

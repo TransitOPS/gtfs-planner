@@ -75,6 +75,20 @@ defmodule GtfsPlanner.Gtfs.Fares.Normalize do
   @pass_kind "pass"
 
   @doc """
+  The `rule_priority` `run!/2` gives a leg rule with these conditions (R3).
+
+  `conditions` is a map or struct carrying `from_timeframe_group_id`,
+  `network_id`, `from_area_id` and `to_area_id`, and an empty value counts as
+  absent. `run!/2` is the only writer of the column (INV-4); this function is
+  the one place its value is worked out, so a caller that has to reason about a
+  leg rule before the row exists — `Fares.Conversion`'s price-equivalence check
+  prices proposed rows that `run!/2` has not written yet — reads it here rather
+  than repeating R3's weights.
+  """
+  @spec priority(map()) :: integer()
+  def priority(conditions), do: conditions_priority(conditions)
+
+  @doc """
   Rewrites the version's implied fare rows and returns `:ok`.
 
   Raises `GtfsPlanner.Gtfs.Fares.InvariantError` when the version's rider
@@ -199,7 +213,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Normalize do
       from_timeframe_group_id: conditions.from_timeframe_group_id,
       to_timeframe_group_id: nil,
       fare_product_id: fare_product_id,
-      rule_priority: conditions_priority(conditions),
+      rule_priority: priority(conditions),
       inserted_at: now,
       updated_at: now
     }
@@ -356,10 +370,6 @@ defmodule GtfsPlanner.Gtfs.Fares.Normalize do
       order_by: [asc: r.network_id, asc: r.from_area_id, asc: r.to_area_id]
     )
     |> Repo.all()
-  end
-
-  defp priority(rule) do
-    conditions_priority(rule)
   end
 
   defp conditions_priority(conditions) do

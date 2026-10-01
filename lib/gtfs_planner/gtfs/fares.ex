@@ -90,12 +90,19 @@ defmodule GtfsPlanner.Gtfs.Fares do
 
   A `setup/2` inverse is applied by `Fares.Conversion.undo_setup/3`, which deletes
   the rows that setup wrote while the version's settings row still names this
-  operation. An inverse no writer of this package produces yet is refused with
+  operation. A `Conversion.apply/3` inverse is applied the same way by
+  `Fares.Conversion.undo_conversion/3`, so undoing a conversion returns the
+  version to unmanaged with its imported `fare_attributes` and `fare_rules` rows
+  untouched. An inverse no writer of this package produces yet is refused with
   `{:error, :unknown_inverse}` rather than guessed at.
   """
   @spec undo(scope(), Ecto.UUID.t(), term()) :: write_result()
   def undo(scope, operation_id, %{setup: _inverse} = inverse) do
     Conversion.undo_setup(scope, operation_id, inverse)
+  end
+
+  def undo(scope, operation_id, %{conversion: _inverse} = inverse) do
+    Conversion.undo_conversion(scope, operation_id, inverse)
   end
 
   def undo(_scope, _operation_id, _inverse), do: {:error, :unknown_inverse}
