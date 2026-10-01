@@ -226,6 +226,26 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # runs is refused, and the outcome is applied when it arrives.
   @save_connection_key :save_connection
 
+  # The Set-all save is the same bounded write applied to a reviewed group, so
+  # it runs under `start_async` for the same reason (R4, INV-4): the review
+  # drawer shows "Saving…", a second click is refused by the pending state, and
+  # the outcome is applied when it arrives.
+  @save_bulk_key :save_bulk
+
+  # The bulk outcomes in the group's own words. A failure keeps the review open
+  # with the included rows and boxes exactly as the editor left them, because the
+  # review is the input to the write and the reader is expected to try again
+  # rather than rebuild it.
+  @bulk_failed_title "Couldn't save."
+  @bulk_failed_message "Nothing changed. Try again."
+
+  # Why one pair of a bulk write was not written. A pair another editor changed
+  # after the review is named as such rather than as a rule failure, because the
+  # rule never refused it (R10, CR-3).
+  @bulk_skip_stale "Changed by another editor after the review."
+  @bulk_skip_not_found "A trip isn't in this version."
+  @bulk_skip_not_restored "Couldn't be restored. Nothing changed for it."
+
   # The save outcomes in the drawer's own words. A stale write keeps the editor's
   # choice and names what the pair now carries; a refusal keeps the drawer and
   # disables the two explicit options, because the rule that refused is the one
@@ -561,6 +581,71 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   def handle_event("bulk_choice", _params, socket), do: {:noreply, socket}
+
+  # The Set-all write: one call to `Gtfs.set_in_seat_connections/3`, the facade
+  # for `InSeatTransfers.set_connections/3`, under the version's own audit
+  # context (R5, CR-8). The organization, version and actor come from the
+  # socket, never from the event, and the editor role is re-read here exactly as
+  # the block writes and the single connection's save do it.
+  #
+  # The pairs and their `expected` rows are the review's own rows, never the
+  # event's, so a crafted `save_bulk` can only write what the review the reader
+  # actually saw left included (R4, INV-4).
+  def handle_event("save_bulk", _params, %{assigns: %{bulk_review: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("save_bulk", _params, socket) do
+    if editor_access?(socket) do
+      case bulk_save_request(socket) do
+        {:ok, request} ->
+          {:noreply,
+           socket
+           |> assign(:bulk_error, nil)
+           |> assign(:bulk_pending, true)
+           |> start_async(@save_bulk_key, fn ->
+             {request,
+              Gtfs.set_in_seat_connections(request.entries, request.choice, request.audit)}
+           end)}
+
+        :error ->
+          {:noreply, socket}
+      end
+    else
+      # The refusal is the page flash rather than the review's own sentence: the
+      # review is a non-modal top-layer `<dialog>`, so the flash behind it is the
+      # page's own answer and the write is the thing that matters here.
+      {:noreply, put_flash(socket, :error, @permission_message)}
+    end
+  end
+
+  # R9's second guarded write, in bulk. Every saved pair's `expected` is the row
+  # the save left rather than the one before it, so a change between the save
+  # and the Undo is skipped with its own reason instead of overwriting another
+  # editor's newer setting.
+  #
+  # The pairs are grouped by the previous choice they are restored to, so the
+  # write is one `set_in_seat_connections/3` call per setting — at most three,
+  # in sequence — rather than one call per pair. The organization, version and
+  # actor still come from the socket's audit context, never from the event.
+  def handle_event(
+        "undo_bulk",
+        _params,
+        %{assigns: %{bulk_result: %{undo?: true} = result}} = socket
+      ) do
+    if editor_access?(socket) do
+      bulk_restored(socket, result)
+    else
+      {:noreply, put_flash(socket, :error, @permission_message)}
+    end
+  end
+
+  def handle_event("undo_bulk", _params, socket), do: {:noreply, socket}
+
+  # The result is the reader's own and it is not a route, so dismissing it
+  # leaves the group, its rows and the day exactly as they are (R10).
+  def handle_event("dismiss_bulk_result", _params, socket) do
+    {:noreply, assign(socket, :bulk_result, nil)}
+  end
 
   def handle_event("set_scale", %{"scale" => "day"}, socket) do
     patch(socket, %{scale: :day})
@@ -1998,6 +2083,103 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp bulk_already_set?(connection, setting) do
     connection.setting == setting and not connection.review?
   end
+
+  # What `save_bulk` writes, taken from the review on screen rather than from
+  # the event: each included pair with the `expected` rows its own review row
+  # listed, so the write is guarded by what the reader actually saw (INV-4). A
+  # review with no choice, or with nothing left included, is not a request.
+  defp bulk_save_request(%{assigns: %{bulk_review: review}} = socket) do
+    choice = bulk_write_choice(review.choice)
+    entries = bulk_entries(review.rows)
+
+    if is_nil(choice) or entries == [] do
+      :error
+    else
+      {:ok,
+       %{
+         group_token: review.group_token,
+         setting: review.choice,
+         choice: choice,
+         entries: entries,
+         # R9: each included pair's previous writable state, captured from the
+         # review's own records before the write, so the Undo restores the
+         # setting the reader actually replaced rather than one read afterwards.
+         previous: bulk_previous(review.rows, entries),
+         # The pairs the review itself could not offer: a rule refusal blocked
+         # them before they were ever written. The result names them with the
+         # review's own refusal sentence, so the answer accounts for every row
+         # the reader saw rather than only the ones that reached the write.
+         blocked: bulk_blocked(review.rows, bulk_connections(socket.assigns.connections_all)),
+         audit: audit_context(socket)
+       }}
+    end
+  end
+
+  defp bulk_save_request(_socket), do: :error
+
+  # The review's own blocked rows, as the result's own skip lines. A row the
+  # rule refused keeps the review's `refusal_text/1` sentence, so the drawer the
+  # reader just left and the result they now read cannot word the same refusal
+  # differently (CR-3).
+  defp bulk_blocked(rows, connections) do
+    for row <- rows, row.result == :skip do
+      %{
+        block: connection_label(Map.get(connections, bulk_pair(row.connection))),
+        reason: row.refusal || @bulk_skip_not_restored
+      }
+    end
+  end
+
+  # The write's own setting atom. Only the three the fieldset offers are named,
+  # and a name outside them is no request at all.
+  defp bulk_write_choice("none"), do: :not_stated
+  defp bulk_write_choice("stay"), do: :stay_on_board
+  defp bulk_write_choice("reboard"), do: :must_reboard
+  defp bulk_write_choice(_other), do: nil
+
+  # One entry per included row, in the review's own order. A row the write would
+  # not act on has no box, so it can never reach here.
+  defp bulk_entries(rows) do
+    for row <- rows, row.include?, row.result in [:add, :replace, :remove] do
+      %{
+        pair: {row.connection.from.trip_id, row.connection.to.trip_id},
+        expected: expected_rows(row.connection.records)
+      }
+    end
+  end
+
+  # R9's Undo input, per included pair: the setting to restore and whether that
+  # previous state was one a single guarded write could put back. The `expected`
+  # rows are not known yet — they are the rows the save is about to write, so
+  # they are read back from the reloaded day once the write has answered.
+  #
+  # A pair whose previous state was no record, or one record whose state R1
+  # matched, is restorable; two disagreeing records or one needing review are
+  # not, and the result says how many such pairs there are rather than offering
+  # an Undo that could restore the wrong thing (AC-9).
+  defp bulk_previous(rows, entries) do
+    records = Map.new(rows, &{bulk_pair(&1.connection), &1.connection.records})
+
+    for entry <- entries, bulk_restorable?(Map.get(records, entry.pair, [])) do
+      %{pair: entry.pair, previous: bulk_previous_choice(records[entry.pair])}
+    end
+  end
+
+  # A pair's previous setting, from its own records: no record restores
+  # `:not_stated`, one type 4 restores `:stay_on_board` and one type 5 restores
+  # `:must_reboard` (R3, R9).
+  defp bulk_previous_choice([]), do: :not_stated
+  defp bulk_previous_choice([%{row: %{transfer_type: 4}}]), do: :stay_on_board
+  defp bulk_previous_choice([%{row: %{transfer_type: 5}}]), do: :must_reboard
+  defp bulk_previous_choice(_records), do: :not_stated
+
+  # The same rule R9 gives a single save's Undo: only no record, or one record
+  # whose state matches, has a single previous setting to restore.
+  defp bulk_restorable?([]), do: true
+  defp bulk_restorable?([%{state: :matches}]), do: true
+  defp bulk_restorable?(_records), do: false
+
+  defp bulk_pair(connection), do: {connection.from.trip_id, connection.to.trip_id}
 
   # The "now" side of each row's "now → result": a pair that needs review says so
   # rather than naming a setting its records disagree about, and a pair with no
@@ -4435,6 +4617,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       # a URL parameter, so a reload or a shared link opens the group with the
       # choice to make again rather than a review of a setting nobody picked.
       bulk_review: nil,
+      # The pending state of the Set-all write, and the sentence a failed one
+      # leaves in the still-open review.
+      bulk_pending: false,
+      bulk_error: nil,
+      # The persistent result of a Set-all save or a bulk Undo (R10, AC-20). It
+      # is page state in its own assign rather than part of the review, so it
+      # survives the review closing, the group being reopened and the filters
+      # changing; only `dismiss_bulk_result` clears it.
+      bulk_result: nil,
       block_view: nil,
       back_block: nil,
       block_action: nil,
@@ -4636,6 +4827,214 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
        connection_pending: false,
        connection_error: %{title: @connection_failed_title, message: @connection_failed_message}
      )}
+  end
+
+  # The Set-all write's own result, in the same group as the page's other
+  # asynchronous work so it too can drop a result that arrives after the reader
+  # has moved on.
+  def handle_async(@save_bulk_key, {:ok, {request, result}}, socket) do
+    if current_bulk_request?(socket, request) do
+      bulk_saved(socket, request, result)
+    else
+      {:noreply, assign(socket, :bulk_pending, false)}
+    end
+  end
+
+  # A task that exited rather than returning wrote nothing the page can report;
+  # the failure sentence is the one a busy write and an audit failure share, and
+  # the review stays open so the reader can try again.
+  def handle_async(@save_bulk_key, {:exit, _reason}, socket) do
+    {:noreply, put_bulk_error(socket)}
+  end
+
+  # The write's result is current while the review it was built from is still the
+  # review on screen. A reader who closed it, chose another setting or opened
+  # another group while the write was in flight gets no result about a review
+  # that is no longer there, and the pending state is simply dropped.
+  defp current_bulk_request?(%{assigns: %{bulk_review: nil}}, _request), do: false
+
+  defp current_bulk_request?(%{assigns: %{bulk_review: review}}, request) do
+    # The review names its setting the way the fieldset does and the write names
+    # it as an atom, so the comparison is against the request's own setting
+    # value rather than its write choice.
+    review.group_token == request.group_token and review.choice == request.setting
+  end
+
+  # R10/AC-20: a successful bulk write closes the review, reloads the day and
+  # leaves a persistent result at the top of the group panel naming the count it
+  # wrote, every pair it skipped with that pair's own reason, and the Undo R9
+  # allows. The reload is what the group's rows and the review's own counts then
+  # read, so the panel describes the write that happened rather than the one
+  # that was reviewed.
+  defp bulk_saved(socket, request, {:ok, result}) do
+    socket =
+      socket
+      |> assign(:bulk_pending, false)
+      |> assign(:bulk_error, nil)
+      |> assign(:bulk_review, nil)
+      |> load_day()
+      |> resolve_drawers()
+      |> assign_page_rows_if_loaded()
+
+    {:noreply,
+     socket
+     |> assign(:bulk_result, bulk_result(request, result, socket.assigns.connections_all))
+     |> focus_within("bulk-result")}
+  end
+
+  # A refusal of the whole batch — `:busy` from the bounded retry, an audit
+  # failure, a rejected batch — keeps the review open with the rows and boxes the
+  # editor left and says that nothing changed, so a retry is one click rather
+  # than a rebuilt review.
+  defp bulk_saved(socket, _request, {:error, _reason}) do
+    {:noreply, put_bulk_error(socket)}
+  end
+
+  defp put_bulk_error(socket) do
+    assign(socket,
+      bulk_pending: false,
+      bulk_error: %{title: @bulk_failed_title, message: @bulk_failed_message}
+    )
+  end
+
+  # The persistent result. Every number here is the write's own: `saved` and
+  # `skipped` are what `set_in_seat_connections/3` answered, and `previous` is
+  # what the review listed before the write, so the Undo restores a setting the
+  # reader actually replaced (R9).
+  #
+  # A skipped pair's line names the block, its arrival and its two trips from
+  # the day's own derivation, because the write answers with a pair and a reason
+  # and the reader needs to know which row it belongs to (CR-4).
+  defp bulk_result(request, %{saved: saved, skipped: skipped}, connections_all) do
+    connections = bulk_connections(connections_all)
+
+    %{
+      group_token: request.group_token,
+      # The review's own value, so the result names the setting the way the
+      # panel and the review named it rather than through the write's atom.
+      setting: request.setting,
+      choice: request.choice,
+      saved: saved,
+      # The write's own skips first, then the review's blocked rows: the pairs
+      # the reader saw and could not change come last, so the count reads as
+      # everything the save did not write.
+      skipped: Enum.map(skipped, &bulk_skip_line(&1, connections)) ++ request.blocked,
+      previous: request.previous,
+      unrestorable: bulk_unrestorable(request, saved),
+      audit: request.audit,
+      undo?: true
+    }
+  end
+
+  # One skipped pair as the result names it: the block, its arrival and its two
+  # trips, then the reason the write gave. A refusal's sentence is
+  # `RiderOutcomes.refusal_text/1`'s own, so the list and the drawer cannot
+  # word the same failure differently (CR-3).
+  defp bulk_skip_line(%{pair: pair, reason: reason}, connections) do
+    connection = Map.get(connections, pair)
+
+    %{block: connection_label(connection), reason: bulk_skip_reason(reason)}
+  end
+
+  defp bulk_skip_reason(:stale), do: @bulk_skip_stale
+  defp bulk_skip_reason(:not_found), do: @bulk_skip_not_found
+  defp bulk_skip_reason(:not_restored), do: @bulk_skip_not_restored
+
+  defp bulk_skip_reason({:refused, state}) do
+    RiderOutcomes.refusal_text(state) ||
+      "These trips are no longer one vehicle on every date they share."
+  end
+
+  defp bulk_skip_reason(_other),
+    do: "This connection could not be saved. Nothing was written for it."
+
+  # "Block {b}, {clock} ({a} → {b})", the row the review showed. A pair the day
+  # no longer derives has no row to name, so it says so rather than printing an
+  # empty label.
+  defp connection_label(nil), do: "Connection"
+
+  defp connection_label(connection) do
+    "Block #{connection.block_id}, #{BlocksComponents.clock(connection.from.last_arrival)} " <>
+      "(#{connection.from.trip_id} → #{connection.to.trip_id})"
+  end
+
+  # R9's exclusions: a saved pair whose previous state was two disagreeing
+  # records or one needing review has no single setting to restore, so the Undo
+  # leaves it and the result says how many pairs that is (AC-9).
+  defp bulk_unrestorable(request, saved) do
+    restorable = MapSet.new(Enum.map(request.previous, & &1.pair))
+
+    saved
+    |> Enum.reject(&MapSet.member?(restorable, &1))
+    |> length()
+  end
+
+  # The day's own connections, keyed by the pair the write names, so a skipped
+  # pair is described by the row the reader saw rather than by a second
+  # derivation of its trips (CR-4).
+  defp bulk_connections(%{connections: connections}) when is_list(connections) do
+    Map.new(connections, &{bulk_pair(&1), &1})
+  end
+
+  defp bulk_connections(_connections_all), do: %{}
+
+  # R9's bulk Undo: one `set_in_seat_connections/3` call per previous setting, in
+  # sequence, so the batch is at most three bounded writes rather than one per
+  # pair. Each call is guarded by the rows the save left, read from the day the
+  # save reloaded, so a pair changed since is skipped rather than overwritten
+  # (INV-4).
+  #
+  # A pair the day no longer derives has no current state to guard against, so
+  # the Undo leaves it alone rather than writing over whatever now stands there.
+  defp bulk_undo_writes(%{previous: previous, audit: audit}, connections) do
+    previous
+    |> Enum.map(&Map.put(&1, :expected, bulk_saved_expected(&1.pair, connections)))
+    |> Enum.reject(&(is_nil(&1.expected) or &1.expected == :missing))
+    |> Enum.group_by(& &1.previous)
+    |> Enum.reduce({0, []}, fn {choice, group}, {restored, skipped} ->
+      call = Enum.map(group, &%{pair: &1.pair, expected: &1.expected})
+
+      case Gtfs.set_in_seat_connections(call, choice, audit) do
+        {:ok, %{saved: saved, skipped: skipped_pairs}} ->
+          {restored + length(saved), skipped ++ skipped_pairs}
+
+        # The whole call failed, so none of its pairs was restored. That is not
+        # another editor's change and the result must not claim it is: the pair
+        # is named as one the Undo could not put back.
+        {:error, _reason} ->
+          {restored, skipped ++ Enum.map(group, &%{pair: &1.pair, reason: :not_restored})}
+      end
+    end)
+  end
+
+  # The rows a pair holds now, which for a pair the save wrote is the row the
+  # save left.
+  defp bulk_saved_expected(pair, connections) do
+    case Map.get(connections, pair) do
+      nil -> :missing
+      connection -> expected_rows(connection.records)
+    end
+  end
+
+  # AC-9/R10: the Undo reports how many connections it restored and how many it
+  # could not, each with its own reason, and offers no Undo of its own. The day
+  # reloads so the group's rows read the restored settings rather than the ones
+  # the Undo replaced.
+  defp bulk_restored(socket, result) do
+    connections = bulk_connections(socket.assigns.connections_all)
+    {restored, skipped} = bulk_undo_writes(result, connections)
+    undo_skipped = Enum.map(skipped, &bulk_skip_line(&1, connections))
+
+    {:noreply,
+     socket
+     |> assign(
+       :bulk_result,
+       Map.merge(result, %{restored: restored, undo_skipped: undo_skipped, undo?: false})
+     )
+     |> load_day()
+     |> resolve_drawers()
+     |> assign_page_rows_if_loaded()
+     |> focus_within("bulk-result")}
   end
 
   # The save's result is current while the drawer is still showing the pair the
@@ -5076,6 +5475,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                 connection_setting_options={@connection_setting_options}
                 connections={@connections}
                 bulk_choice={@bulk_choice}
+                bulk_result={@bulk_result}
                 selected_ids={@selection}
                 selected_block_ids={@block_selection}
                 page_block_ids={@timeline_block_ids}
@@ -5242,6 +5642,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   :if={@bulk_review}
                   review={@bulk_review}
                   routes={@routes}
+                  pending={@bulk_pending}
+                  error={@bulk_error}
                 />
               </div>
 
