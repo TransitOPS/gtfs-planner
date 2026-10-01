@@ -28,7 +28,9 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
 
   use GtfsPlannerWeb, :html
 
-  import GtfsPlannerWeb.PlannerComponents, only: [first_use: 1]
+  import GtfsPlannerWeb.PlannerComponents, only: [first_use: 1, message: 1]
+
+  alias GtfsPlannerWeb.CoreComponents
 
   @weekdays ~w(Mon Tue Wed Thu Fri Sat Sun)
 
@@ -36,6 +38,15 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   # sentence, written once, because the head's `title` and the loading panel's
   # copy are the same fact said to the reader in the two places they look for it.
   @paused_reason "Editing is paused until the roster loads."
+
+  # The same pause after a *failed* read is a different sentence: the roster
+  # loaded once and this version of it is no longer being kept fresh, which is
+  # what the message above the lines says too. One reason, one place it is
+  # written, and the head's `title` and the message body cannot drift apart.
+  @refresh_paused_reason "Editing is paused until the roster refreshes."
+
+  @seconds_per_hour 3_600
+  @seconds_per_minute 60
 
   @doc """
   Renders the page head: the H1, the one subtitle sentence, and the Add line
@@ -64,7 +75,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   def page_head(assigns) do
     assigns =
       assigns
-      |> assign(:paused_reason, @paused_reason)
+      |> assign(:paused_reason, paused_reason(assigns.state))
       |> assign(:locked?, assigns.state in [:loading, :unavailable])
 
     ~H"""
@@ -91,6 +102,373 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
         </:actions>
       </.header>
     </div>
+    """
+  end
+
+  defp paused_reason(:unavailable), do: @refresh_paused_reason
+  defp paused_reason(_state), do: @paused_reason
+
+  @doc """
+  Renders the scope bar: the two controls that set the page's scope, and the one
+  sentence that says what the lines are measured against.
+
+  Both controls are buttons that open a drawer, and both are drawn even while
+  the roster is paused — a disabled control whose panel would hold the very
+  figures the reader is trying to read is worse than the control itself. What a
+  pause takes away is the *editing*, which the head's Add line already owns.
+
+  The figures are the composition's own: the base week comes from
+  `roster.base_week` through `Rosters.BaseWeek.groups/1`'s labels, and the
+  settings are `roster.rules`. Nothing here re-walks the day types to answer a
+  question the composition already answered (INV-15).
+  """
+  attr :roster, :map, required: true
+  attr :operators_count, :integer, required: true
+
+  def scope_bar(assigns) do
+    assigns =
+      assigns
+      |> assign(:groups, scope_groups(assigns.roster))
+      |> assign(:base_week_dates, base_week_dates(assigns.roster.base_week))
+
+    ~H"""
+    <div
+      id="rosters-scope"
+      role="group"
+      aria-label="Roster settings and operators"
+      class="flex flex-wrap items-center gap-x-3 gap-y-3 px-5 py-4"
+    >
+      <button
+        type="button"
+        id="rosters-settings-button"
+        phx-click="open_settings"
+        class="inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-control border border-control bg-white px-3 text-left text-sm text-strong hover:bg-canvas"
+      >
+        <span class="shrink-0 font-[650]">Roster settings</span>
+        <span class="min-w-0 text-muted">
+          · {@groups} · rest {minutes(@roster.rules.min_rest_minutes)} · warn above {@roster.rules.weekly_hours_warn_above} h
+        </span>
+      </button>
+
+      <button
+        type="button"
+        id="rosters-operators-button"
+        phx-click="open_operators"
+        class="inline-flex min-h-11 items-center gap-1.5 rounded-control border border-control bg-white px-3 text-sm text-strong hover:bg-canvas"
+      >
+        <span class="font-[650]">Operators</span>
+        <span class="tabular text-muted">· {@operators_count}</span>
+      </button>
+
+      <p class="ml-auto text-[13px] text-muted">
+        Lines repeat on {@base_week_dates} base-week dates in this version
+      </p>
+    </div>
+    """
+  end
+
+  # "Mon–Fri Weekdays · Sat Saturdays" — the weekday range the composition
+  # grouped by, then that group's day type. A version with no base week at all
+  # has nothing to say here, so the bar names the rule it does know rather than
+  # rendering an empty pair of separators.
+  defp scope_groups(%{groups: []}), do: "No base week"
+
+  defp scope_groups(roster) do
+    Enum.map_join(roster.groups, " · ", &"#{&1.label} #{&1.day_type.label}")
+  end
+
+  # The dates the version's lines actually repeat on: each weekday's own base
+  # day type's dates *on that weekday*, counted from the base week the
+  # composition resolved. The whole number is the only claim this makes.
+  defp base_week_dates(base_week) do
+    Enum.reduce(1..7, 0, fn weekday, total ->
+      case base_week[weekday] do
+        %{day_type: %{dates: dates}} ->
+          total + Enum.count(dates, &(Date.day_of_week(&1) == weekday))
+
+        _other ->
+          total
+      end
+    end)
+  end
+
+  @doc """
+  Renders the count strip: the six figures a planner reads the page by.
+
+  The tiles are `CoreComponents.count_strip/1` in display mode. They are
+  deliberately **not** filters — the filter row owns filtering, and a figure
+  that is also a control is a figure whose meaning changes when it is pressed.
+
+  Every number here is the composition's. `Rosters.Roster.build/1` counted the
+  lines, the run-days, the open work, the weekly paid range and the problems;
+  this function only finds them in the map and formats them, so the strip cannot
+  disagree with the grid it sits above (INV-15).
+  """
+  attr :roster, :map, required: true
+  attr :class, :any, default: nil
+
+  def count_strip(assigns) do
+    ~H"""
+    <CoreComponents.count_strip
+      id="rosters-count-strip"
+      items={count_items(@roster)}
+      class={@class}
+    />
+    """
+  end
+
+  defp count_items(roster) do
+    summary = roster.summary
+    threshold = roster.rules.weekly_hours_warn_above
+    open_total = summary.open_by_weekday |> Map.values() |> Enum.sum()
+
+    [
+      %{
+        key: "lines",
+        label: "Lines",
+        count: summary.lines,
+        tone: :neutral,
+        detail: "#{summary.open_lines} open"
+      },
+      %{
+        key: "run_days",
+        label: "Run-days in lines",
+        count: summary.run_days_in_lines,
+        tone: :neutral,
+        detail: "of #{summary.run_days_total}"
+      },
+      %{
+        key: "open_work",
+        label: "Open work",
+        count: open_total,
+        tone: if(open_total > 0, do: :info, else: :success),
+        detail: open_by_weekday_text(summary.open_by_weekday)
+      },
+      weekly_paid_item(roster, summary, threshold),
+      split_days_off_item(summary),
+      problems_item(roster, summary)
+    ]
+  end
+
+  # "17:07–51:00 · average 38:46 · 2 above 48 h". A version with no paid work
+  # says so in the detail and shows an em dash for the range, because a strip
+  # tile that claims a range of zeroes would read as "every line is free".
+  defp weekly_paid_item(roster, summary, threshold) do
+    case summary.weekly_paid do
+      nil ->
+        %{
+          key: "weekly_paid",
+          label: "Weekly paid",
+          count: 0,
+          tone: :neutral,
+          value: "—",
+          detail: "No line has work yet"
+        }
+
+      paid ->
+        over = paid.above_threshold
+
+        %{
+          key: "weekly_paid",
+          label: "Weekly paid",
+          count: Enum.count(roster.lines, &(&1.paid_secs > 0)),
+          tone: if(over > 0, do: :warning, else: :neutral),
+          value: "#{hours_minutes(paid.min_secs)}–#{hours_minutes(paid.max_secs)}",
+          detail: "average #{hours_minutes(paid.avg_secs)} · #{above_phrase(over, threshold)}"
+        }
+    end
+  end
+
+  # Zero is said in words rather than as a digit: "0 above 48 h" reads as a
+  # figure that is somehow wrong, and the prototype says "none".
+  defp above_phrase(0, threshold), do: "none above #{threshold} h"
+  defp above_phrase(1, threshold), do: "1 above #{threshold} h"
+  defp above_phrase(over, threshold), do: "#{over} above #{threshold} h"
+
+  # The number is the planner's figure; the sentence beside it is what makes
+  # the number mean something, so a split line reads as a problem rather than as
+  # a count of something the planner chose.
+  defp split_days_off_item(summary) do
+    detail =
+      cond do
+        summary.split_days_off > 0 ->
+          "#{summary.split_days_off} " <>
+            if(summary.split_days_off == 1,
+              do: "line without two in a row",
+              else: "lines without two in a row"
+            )
+
+        summary.lines > 0 ->
+          "every line has two in a row"
+
+        true ->
+          nil
+      end
+
+    %{
+      key: "split_days_off",
+      label: "Split days off",
+      count: summary.split_days_off,
+      tone: if(summary.split_days_off > 0, do: :warning, else: :neutral),
+      detail: detail
+    }
+  end
+
+  defp problems_item(roster, summary) do
+    %{
+      key: "problems",
+      label: "Lines with problems",
+      count: summary.lines_with_problems,
+      tone:
+        cond do
+          summary.lines_with_problems == 0 -> :success
+          any_error?(roster.lines) -> :error
+          true -> :warning
+        end
+    }
+  end
+
+  # Error severity is a property of the findings the composition already put on
+  # the lines; reading it here is not a second pass over the runs.
+  defp any_error?(lines) do
+    Enum.any?(lines, fn line ->
+      Enum.any?(line.findings, &(&1.code == :run_has_errors))
+    end)
+  end
+
+  defp open_by_weekday_text(open_by_weekday) do
+    Enum.map_join(1..7, " · ", fn weekday ->
+      "#{Enum.at(@weekdays, weekday - 1)} #{Map.get(open_by_weekday, weekday, 0)}"
+    end)
+  end
+
+  # Service-day seconds as the rest of the page writes them: hours and minutes,
+  # which is what the grid's weekly paid cell and the prototype both use.
+  defp hours_minutes(secs) when is_integer(secs) do
+    "#{div(secs, @seconds_per_hour)}:#{pad(rem(div(secs, @seconds_per_minute), 60))}"
+  end
+
+  defp pad(minutes) when minutes < 10, do: "0#{minutes}"
+  defp pad(minutes), do: "#{minutes}"
+
+  # The minimum rest is stored in minutes and usually read in hours ("rest
+  # 10 h"), because a rule a planner sets between 8 and 12 hours is a rule in
+  # hours. A rule that is not a whole number of hours keeps its minutes.
+  defp minutes(minutes) when rem(minutes, 60) == 0, do: "#{div(minutes, 60)} h"
+  defp minutes(minutes), do: "#{div(minutes, 60)} h #{rem(minutes, 60)} min"
+
+  @doc """
+  Renders the page's messages: the stale-slot warning, the no-operators notice
+  and the failed-refresh error.
+
+  Every message has one next action, which is what makes a message a route out
+  of the state rather than an explanation of it. The failed refresh comes first
+  because it is the one that changes what the reader can do: the lines below are
+  the last ones that loaded, and editing is paused until a refresh succeeds.
+
+  A message never appears for a page that has no roster on screen. With nothing
+  loaded there is nothing stale and nothing to pick, so the loading and no-runs
+  states say their own one thing.
+  """
+  attr :roster, :map, required: true
+  attr :operators_count, :integer, required: true
+  attr :unavailable?, :boolean, default: false
+  attr :version_id, :string, required: true
+
+  def messages(assigns) do
+    assigns =
+      assigns
+      |> assign(:stale, assigns.roster.summary.stale_slots)
+      |> assign(:refresh_paused_reason, @refresh_paused_reason)
+
+    ~H"""
+    <div id="rosters-messages" class="mt-4 grid gap-3 empty:hidden">
+      <.message
+        :if={@unavailable?}
+        id="rosters-unavailable"
+        kind="error"
+        title="The roster could not refresh."
+        class="border-l-4 border-error-line"
+      >
+        You’re seeing the lines loaded a moment ago; nothing has changed. {@refresh_paused_reason}
+        <:action>
+          <.button id="rosters-retry" phx-click="retry_load" variant="secondary" class="min-h-11">
+            Retry loading
+          </.button>
+        </:action>
+      </.message>
+
+      <.message
+        :if={@stale > 0}
+        id="rosters-stale-message"
+        kind="warning"
+        title={stale_title(@stale)}
+        class="border-l-4 border-warning-line"
+      >
+        Stale slots are left out of the operations export. Open each one to choose a run or clear the day.
+        <:action>
+          <.button phx-click="show_stale" variant="secondary" class="min-h-11">
+            Show stale slots
+          </.button>
+        </:action>
+      </.message>
+
+      <.message
+        :if={@operators_count == 0}
+        id="rosters-no-operators-message"
+        kind="info"
+        title="Add operators to record the pick."
+        class="border-l-4 border-cyan-700"
+      >
+        Each operator needs an employee ID and a display name. Nothing else is stored.
+        <:action>
+          <.button
+            id="rosters-add-operator"
+            phx-click="open_operators"
+            variant="secondary"
+            class="min-h-11"
+            disabled={@unavailable?}
+            title={if @unavailable?, do: @refresh_paused_reason}
+          >
+            Add operator
+          </.button>
+        </:action>
+      </.message>
+    </div>
+    """
+  end
+
+  defp stale_title(1),
+    do: "1 slot is stale: its run was removed, changed, or no longer matches the base week."
+
+  defp stale_title(count),
+    do:
+      "#{count} slots are stale: their runs were removed, changed, or no longer match the base week."
+
+  @doc """
+  Renders the first-use state: runs exist, so there is something to build from,
+  and there is no line yet.
+
+  This is not the no-runs state with different words. There the page has nothing
+  to show and the next move is on another page; here the open work below is the
+  next move and it is on this one, so the action goes there.
+
+  The action is an anchor to the open-work region rather than an event, because
+  scrolling to a region on the same page needs no server round trip — and the
+  region it names is the one step 30 fills.
+  """
+  def no_lines(assigns) do
+    ~H"""
+    <.first_use id="rosters-first-use" icon="hero-layers" title="No roster lines yet">
+      A line is one week of work for one operator. Start in Open work below: Create Mon–Fri line
+      turns a weekday run into five days of work with Saturday and Sunday off. Weekend work is
+      added day by day.
+      <:action>
+        <.button id="rosters-go-to-open-work" href="#rosters-open-work" class="min-h-11">
+          Go to open work
+        </.button>
+      </:action>
+    </.first_use>
     """
   end
 

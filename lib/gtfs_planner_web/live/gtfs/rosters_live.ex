@@ -47,6 +47,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   use GtfsPlannerWeb, :live_view
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Operations
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.RostersComponents
@@ -68,8 +69,10 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   # reader has no roster to look at, and the hook's own answer is the one to give.
   @version_not_found "GTFS version not found"
 
-  # A lost connection is a pause, not a state the page moves into: step 25 draws
-  # `#rosters-unavailable` beside the lines that are still on screen.
+  # A lost connection is a pause, not a state the page moves into: the page keeps
+  # the roster it last read and draws `#rosters-unavailable` above it, with the
+  # retry that ends the pause. On a first load there is nothing to keep, so the
+  # flash carries the reason and the loading panel stays.
   @roster_unreadable "The roster could not be read. Reload to try again."
 
   @impl true
@@ -82,6 +85,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
      # agree.
      |> assign(:load_state, :loading)
      |> assign(:roster, nil)
+     |> assign(:operators_count, 0)
      |> assign(:loaded_version_id, nil)
      # The toast is event state, not page state, so it starts empty. Starting it
      # empty is also what makes `RostersComponents.toast/1` render nothing on
@@ -165,6 +169,10 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
       {:ok, view} ->
         socket
         |> assign(:roster, view.roster)
+        # The organization's operator list is not part of the roster
+        # composition (a line's own operator is), so this count is the one
+        # figure the scope bar needs that the composition does not answer.
+        |> assign(:operators_count, length(Operations.list_operators(organization.id)))
         |> assign(:loaded_version_id, to_string(version.id))
         |> assign(:load_state, roster_state(view.roster))
 
@@ -226,6 +234,25 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     end
   end
 
+  # The retry in `#rosters-unavailable`. It is a read, so it is not in
+  # `@write_events` and re-checks no membership: the only thing that can end the
+  # pause is another successful read. A successful one replaces the last roster
+  # and leaves the pause; a failed one keeps the pause, the roster and the
+  # message.
+  def handle_event("retry_load", _params, socket) do
+    {:noreply, load_roster(socket)}
+  end
+
+  # "Show stale slots" is a filter, so it lives in the URL like every other
+  # filter on this page: a reader who shares the link afterwards opens the same
+  # rows. Step 27 adds the filter that reads it.
+  def handle_event("show_stale", _params, socket) do
+    {:noreply,
+     push_patch(socket,
+       to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/rosters?#{[filter: "stale"]}"
+     )}
+  end
+
   def handle_event("dismiss_toast", _params, socket) do
     {:noreply, assign(socket, :toast, nil)}
   end
@@ -256,12 +283,40 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
 
       <div id="rosters-page" class="ds-page" data-load-state={@load_state}>
         <RostersComponents.page_head state={@load_state} />
+        <%!-- The prototype draws the scope bar in every state and hides the count strip and the
+        messages when the version has no runs: there is nothing to count, nothing stale and
+        nothing to pick, and the no-runs panel says all of that in one sentence. --%>
+        <div
+          :if={@roster}
+          class="rounded-card border border-subtle bg-white"
+        >
+          <RostersComponents.scope_bar roster={@roster} operators_count={@operators_count} />
+          <RostersComponents.count_strip
+            :if={@load_state in [:ready, :unavailable]}
+            roster={@roster}
+            class="border-t border-subtle px-5 py-3"
+          />
+        </div>
+
+        <RostersComponents.messages
+          :if={@roster && @load_state in [:ready, :unavailable]}
+          roster={@roster}
+          operators_count={@operators_count}
+          unavailable?={@load_state == :unavailable}
+          version_id={@current_gtfs_version.id}
+        />
 
         <RostersComponents.page_state
           :if={@load_state in [:loading, :no_runs]}
           kind={@load_state}
           version_id={@current_gtfs_version.id}
         />
+
+        <%!-- First use is the version that has runs and no lines. The no-runs state is a
+        different fact with a different next move, and it has already said it. --%>
+        <RostersComponents.no_lines :if={
+          @roster && @load_state == :ready && @roster.summary.lines == 0
+        } />
       </div>
     </Layouts.app>
     """
