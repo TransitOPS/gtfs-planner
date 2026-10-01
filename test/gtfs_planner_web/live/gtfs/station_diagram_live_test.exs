@@ -7260,12 +7260,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
            organization: organization,
            gtfs_version: gtfs_version,
            station: station,
-           unauthorized_pathway: unauthorized_pathway
+           nested_pathway: nested_pathway
          } do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
 
-      render_hook(view, "edit_pathway", %{"id" => unauthorized_pathway.id})
+      view
+      |> element("#pathway-row-#{nested_pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      # The editor's role is revoked after the drawer opened. The write transaction
+      # re-reads the membership and refuses; the cross-station pathway is refused
+      # earlier still, when its drawer is opened.
+      membership = GtfsPlanner.Accounts.get_user_org_membership(user.id, organization.id)
+      deactivate_membership_fixture(membership)
 
       view
       |> form("#pathway-form", %{
@@ -7280,7 +7288,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> render_submit()
 
       assert has_element?(view, "#pathway-form")
-      assert has_element?(view, "#pathway-form-error", "Unauthorized pathway access.")
+
+      assert has_element?(
+               view,
+               "#pathway-outcome",
+               "You no longer have edit access to this organization."
+             )
+
       assert has_element?(view, "#pathway-form input[name='traversal_time'][value='88']")
 
       assert has_element?(
@@ -7292,6 +7306,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                view,
                "#pathway-form select[name='pathway_mode'] option[value='7'][selected]"
              )
+
+      assert Repo.get!(GtfsPlanner.Gtfs.Pathway, nested_pathway.id).traversal_time !=
+               88
     end
 
     test "selecting Exit gate disables the both-directions control and hides reverse signage",
@@ -13636,7 +13653,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+      open_stop_history(view, stop)
       render_async(view, 5_000)
       render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
       assert :sys.get_state(view.pid).socket.assigns.rollback_preview != nil
@@ -13785,7 +13802,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+      open_stop_history(view, stop)
       render_async(view, 5_000)
       render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
       assert :sys.get_state(view.pid).socket.assigns.rollback_preview != nil
@@ -13856,12 +13873,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
+      # The server re-reads the log by ID, so the snapshot is removed from the stored row.
+      Repo.update_all(from(l in GtfsPlanner.Gtfs.ChangeLog, where: l.id == ^log.id),
+        set: [snapshot: nil]
+      )
+
       log_without_snapshot = %{log | snapshot: nil}
 
       preview = %{
         log: log_without_snapshot,
         entity_type: "stop",
         entity_id: stop.id,
+        expected_revision: Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id).lock_version,
         field_changes: []
       }
 
@@ -13937,12 +13960,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
+      # The server re-reads the log by ID, so the stored row becomes a rolled_back log
+      # without a snapshot.
+      Repo.update_all(from(l in GtfsPlanner.Gtfs.ChangeLog, where: l.id == ^log.id),
+        set: [action: "rolled_back", snapshot: nil]
+      )
+
       rolled_back_log = %{log | action: "rolled_back", snapshot: nil}
 
       preview = %{
         log: rolled_back_log,
         entity_type: "stop",
         entity_id: stop.id,
+        expected_revision: Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id).lock_version,
         field_changes: []
       }
 
@@ -15548,7 +15578,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       }
     end
 
-    test "rolling back a stop moved into station A back to station B drops it from current view",
+    test "rolling back a stop moved into station A back to station B is refused and the stop stays",
          %{
            conn: conn,
            user: user,
@@ -15618,16 +15648,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert :sys.get_state(view.pid).socket.assigns.selected_stop_id == stop.id
 
       render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
-      result = render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
 
-      assert result =~ "Change reverted."
-
+      # A station command may not move a stop out of the selected station, so the
+      # rollback is refused: the stop keeps its parent, its drawer stays open and the
+      # preview reports the refusal.
       reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
-      assert reloaded.parent_station == station_b.stop_id
+      assert reloaded.parent_station == station_a.stop_id
 
       state = :sys.get_state(view.pid)
-      assert state.socket.assigns.selected_stop_id == nil
-      assert state.socket.assigns.rollback_preview == nil
+      assert state.socket.assigns.selected_stop_id == stop.id
+      assert state.socket.assigns.rollback_preview.outcome == :not_found
     end
   end
 
@@ -16168,14 +16199,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           location_type: 1
         })
 
+      # A log is refused only when it names another station and its entity is not in
+      # this one: an entity that is currently a member can still be previewed.
+      other_child =
+        child_stop_fixture(organization.id, gtfs_version.id, other_station.stop_id,
+          stop_id: "DIFF_OTHER_CHILD"
+        )
+
       {:ok, foreign_log} =
         Repo.insert(%GtfsPlanner.Gtfs.ChangeLog{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           station_stop_id: other_station.stop_id,
           entity_type: "stop",
-          entity_id: stop.id,
-          entity_external_id: stop.stop_id,
+          entity_id: other_child.id,
+          entity_external_id: other_child.stop_id,
           actor_id: ctx.user.id,
           actor_email: ctx.user.email,
           action: "updated",
@@ -16187,7 +16225,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       open_stop_history(view, stop)
       render_async(view, 5_000)
 
-      before_name = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id).stop_name
+      before_name = Repo.get!(GtfsPlanner.Gtfs.Stop, other_child.id).stop_name
 
       render_hook(view, "preview_rollback_change_log", %{"log-id" => foreign_log.id})
 
@@ -16196,7 +16234,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "confirm_rollback_change_log", %{"log-id" => foreign_log.id})
 
-      assert Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id).stop_name == before_name
+      assert Repo.get!(GtfsPlanner.Gtfs.Stop, other_child.id).stop_name == before_name
     end
   end
 end
