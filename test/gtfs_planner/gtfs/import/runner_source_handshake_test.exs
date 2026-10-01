@@ -67,7 +67,7 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerSourceHandshakeTest do
     } do
       run = pending_run(organization, "Caller Exit Feed")
       stage_directory(organization, run)
-      caller = spawn(fn -> Process.sleep(:infinity) end)
+      caller = spawn_parked_caller()
 
       {:ok, runner} =
         Runner.start_import(organization.id, run.id, run.lease_token, caller: caller)
@@ -210,7 +210,7 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerSourceHandshakeTest do
     test "keeps running when the caller exits, the deadline message arrives late or a second call comes",
          %{organization: organization} do
       run = pending_run(organization, "Installed Feed")
-      caller = spawn(fn -> Process.sleep(:infinity) end)
+      caller = spawn_parked_caller()
       caller_ref = Process.monitor(caller)
 
       {:ok, runner} =
@@ -293,6 +293,16 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerSourceHandshakeTest do
 
   # The actor is an active editor with a collision-proof email: committed rows left by
   # other test files can already hold the sequential `user-N@example.com` addresses.
+  # A caller that stays alive until the test kills it. The bare receive parks it without a
+  # sleep, and nothing ever sends :stop.
+  defp spawn_parked_caller do
+    spawn(fn ->
+      receive do
+        :stop -> :ok
+      end
+    end)
+  end
+
   defp pending_run(organization, name) do
     editor = user_fixture(%{email: "handshake-#{Ecto.UUID.generate()}@example.com"})
     organization_membership_fixture(editor, organization)
