@@ -16,9 +16,9 @@
 
 alias GtfsPlanner.Accounts
 alias GtfsPlanner.Accounts.User
-alias GtfsPlanner.Gtfs.Import
 alias GtfsPlanner.Organizations
 alias GtfsPlanner.Repo
+alias GtfsPlanner.Support.StagedImport
 alias GtfsPlanner.Versions
 
 seed = System.get_env("UX_QA_SEED")
@@ -71,7 +71,7 @@ IO.puts(
 )
 
 if seed == "sample-feed" do
-  case Import.import_files(org.id, version.id, [
+  case StagedImport.import_files(org.id, version.id, [
          %{filename: "sample-feed.zip", content: File.read!(sample_feed)}
        ]) do
     {:ok, _import_result} ->

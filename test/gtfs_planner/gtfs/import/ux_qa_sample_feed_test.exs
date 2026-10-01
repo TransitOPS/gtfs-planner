@@ -19,6 +19,7 @@ defmodule GtfsPlanner.Gtfs.Import.UxQaSampleFeedTest do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Import
+  alias GtfsPlanner.Support.StagedImport
 
   @fixture Path.expand("../../../fixtures/gtfs/ux_qa/sample-feed.zip", __DIR__)
 
@@ -49,7 +50,7 @@ defmodule GtfsPlanner.Gtfs.Import.UxQaSampleFeedTest do
       assert zip_counts == @expected_counts
 
       assert {:ok, %Import.Result{} = result} =
-               Import.import_files(organization.id, gtfs_version.id, [
+               StagedImport.import_files(organization.id, gtfs_version.id, [
                  %{filename: "sample-feed.zip", content: fixture_binary()}
                ])
 
@@ -76,7 +77,7 @@ defmodule GtfsPlanner.Gtfs.Import.UxQaSampleFeedTest do
       gtfs_version: gtfs_version
     } do
       assert {:ok, %Import.Result{}} =
-               Import.import_files(organization.id, gtfs_version.id, [
+               StagedImport.import_files(organization.id, gtfs_version.id, [
                  %{filename: "sample-feed.zip", content: fixture_binary()}
                ])
 
@@ -144,7 +145,7 @@ defmodule GtfsPlanner.Gtfs.Import.UxQaSampleFeedTest do
       assert {:ok, {_name, binary}} = zip
 
       result =
-        Import.import_files(organization.id, gtfs_version.id, [
+        StagedImport.import_files(organization.id, gtfs_version.id, [
           %{filename: "upstream-stop-times.zip", content: binary}
         ])
 
