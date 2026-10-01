@@ -406,11 +406,50 @@ defmodule GtfsPlanner.Alerts.AlertTest do
 
       refused = Alert.draft_changeset(alert, %{"cause" => "aliens", "revision" => 99})
 
-      refute refused.valid?
-      assert Ecto.Changeset.get_change(refused, :revision) == nil
+      assert {:error, %Ecto.Changeset{}} = Repo.update(refused)
 
       assert Repo.get!(Alert, alert.id).situation == :delay
       assert Repo.get!(Alert, alert.id).revision == 1
+    end
+
+    test "a revision sent with an accepted draft is not stored", %{
+      organization: organization,
+      version: version
+    } do
+      alert = insert_alert(organization, version, %{"situation" => "delay"})
+
+      accepted = Alert.draft_changeset(alert, %{"cause" => "weather", "revision" => 99})
+
+      assert {:ok, _alert} = Repo.update(accepted)
+
+      reloaded = Repo.get!(Alert, alert.id)
+      assert reloaded.cause == :weather
+      assert reloaded.revision == 1
+    end
+
+    test "an alert holding 201 pairs is valid when saved again with the same pairs", %{
+      organization: organization,
+      version: version
+    } do
+      pairs = for n <- 1..201, do: %{"route_id" => "r#{n}", "stop_id" => "s#{n}"}
+      alert = insert_alert(organization, version, %{"scope" => %{"route_stop_pairs" => pairs}})
+
+      resent = Alert.draft_changeset(alert, %{"scope" => %{"route_stop_pairs" => pairs}})
+
+      assert resent.valid?
+    end
+
+    test "an alert holding pairs refuses a resent list of more than 400", %{
+      organization: organization,
+      version: version
+    } do
+      pairs = for n <- 1..201, do: %{"route_id" => "r#{n}", "stop_id" => "s#{n}"}
+      alert = insert_alert(organization, version, %{"scope" => %{"route_stop_pairs" => pairs}})
+
+      too_many = for n <- 1..401, do: %{"route_id" => "r#{n}", "stop_id" => "s#{n}"}
+      resent = Alert.draft_changeset(alert, %{"scope" => %{"route_stop_pairs" => too_many}})
+
+      refute resent.valid?
     end
   end
 

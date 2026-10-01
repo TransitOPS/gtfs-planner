@@ -119,9 +119,14 @@ defmodule GtfsPlanner.Alerts.ScopeAnswer do
     |> validate_count(:trips, @max_pairs, @pairs_too_many_message)
   end
 
+  # These embeds have no primary key, so Ecto never matches a submitted entry to a
+  # stored one: the change list holds the submitted entries plus every stored one
+  # as a `:replace` changeset. Only the entries that remain count toward the cap.
   defp validate_count(changeset, field, max, message) do
     validate_change(changeset, field, fn ^field, value ->
-      if length(value) > max, do: [{field, message}], else: []
+      if Enum.count(value, &(&1.action not in [:replace, :delete])) > max,
+        do: [{field, message}],
+        else: []
     end)
   end
 end
