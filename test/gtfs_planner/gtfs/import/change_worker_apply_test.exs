@@ -20,8 +20,6 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
-  @actor %{id: Ecto.UUID.generate(), email: "reviewer@example.com"}
-
   test "applies approved decisions in dependency order and checkpoints the original version" do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
@@ -827,8 +825,11 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
     end
   end
 
+  # Applying reauthorizes the run's actor, so the run belongs to a real active editor.
   defp review_run!(organization_id, version_id, decisions) do
-    {:ok, run} = ChangeRuns.create_pending_compute(organization_id, version_id, @actor, [])
+    editor = editor_fixture(%{id: organization_id})
+    actor = %{id: editor.id, email: editor.email}
+    {:ok, run} = ChangeRuns.create_pending_compute(organization_id, version_id, actor, [])
     {:ok, _computing, generation, token} = ChangeRuns.claim(organization_id, run.id, :compute)
 
     {:ok, review} =

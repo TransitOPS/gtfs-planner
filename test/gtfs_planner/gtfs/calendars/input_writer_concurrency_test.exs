@@ -1728,13 +1728,12 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
     if action, do: where(query, [l], l.action == ^action), else: query
   end
 
-  # One approved stop decision on one fenced apply attempt, as the real worker would hold it.
+  # Approved stop decisions on one fenced apply attempt, as the real worker would hold it. The run
+  # belongs to a real editor because applying reauthorizes the run's actor.
   defp seed_import_run(scope, decisions) do
     unboxed(fn ->
-      actor = %{
-        id: Ecto.UUID.generate(),
-        email: "bulk-stop-#{System.unique_integer([:positive])}@example.test"
-      }
+      editor = editor_fixture(scope.organization)
+      actor = %{id: editor.id, email: editor.email}
 
       {:ok, run} =
         ChangeRuns.create_pending_compute(scope.organization.id, scope.version.id, actor, [])

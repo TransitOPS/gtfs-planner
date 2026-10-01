@@ -9,6 +9,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
 
   import Ecto.Query, warn: false
 
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
@@ -326,7 +327,12 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     {{:error, :incompatible_review}, [expired.id]}
   end
 
-  @doc "Applies one approved decision in the caller-owned mutation/audit/checkpoint transaction."
+  @doc """
+  Applies one approved decision in its own mutation/audit/checkpoint transaction.
+
+  The run's actor must still hold an active editor membership when the transaction
+  starts; otherwise it returns `{:error, :forbidden}` and writes nothing.
+  """
   @spec apply_decision(
           Ecto.UUID.t(),
           Ecto.UUID.t(),
@@ -369,17 +375,29 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
         opts
       )
       when is_binary(decision_id) and is_list(opts) do
-    apply_decision_with_options(
-      organization_id,
-      run_id,
-      decision_id,
-      generation,
-      token,
-      context,
-      opts
-    )
+    # `:before_transaction` lets a test pause between decisions, after the previous one committed.
+    with :ok <- invoke_step(opts, :before_transaction) do
+      apply_decision_with_options(
+        organization_id,
+        run_id,
+        decision_id,
+        generation,
+        token,
+        context,
+        opts
+      )
+    end
   end
 
+  # Applying one decision publishes stop/pathway/level rows of the run's version, a combination
+  # input, so the transaction follows INV-1: the fenced run row first (it also rechecks state,
+  # lease and cancellation after the wait), then the run actor's editor membership `FOR SHARE`,
+  # then the version `FOR SHARE`, then the decision and entity rows. The run is first because
+  # lease renewal and `reconcile_expired/1` lock only the run row, and a run-owned
+  # version-exclusive command takes its run before the version; locking the version first made
+  # that pair a lock cycle. The actor comes from the locked run, never from the caller's audit
+  # context, and `valid_audit_context?/2` then requires the context to match the run. A revoked
+  # actor rolls back with `:forbidden`, so the worker stops without marking the decision failed.
   defp apply_decision_with_options(
          organization_id,
          run_id,
@@ -390,10 +408,13 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
          opts
        ) do
     transaction_with_broadcast(fn ->
-      with gtfs_version_id when is_binary(gtfs_version_id) <-
-             run_version_scope(organization_id, run_id),
-           _version <- Versions.lock_for_input_write!(organization_id, gtfs_version_id),
-           {:ok, run} <- fenced_run(organization_id, run_id, generation, token, [:applying]),
+      with {:ok, run} <- fenced_run(organization_id, run_id, generation, token, [:applying]),
+           _membership <-
+             Authorization.lock_editor!(%{
+               actor_id: run.actor_id,
+               organization_id: run.organization_id
+             }),
+           _version <- Versions.lock_for_input_write!(run.organization_id, run.gtfs_version_id),
            :ok <- valid_audit_context?(run, context),
            %ChangeDecision{} = decision <- lock_decision(run.id, decision_id) do
         apply_or_return_decision(run, decision, generation, token, context, opts)
@@ -410,19 +431,6 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
       else
         reraise(e, __STACKTRACE__)
       end
-  end
-
-  # Applying one decision publishes stop/pathway/level rows of the run's version, a combination
-  # input. The run scope is read without a lock first, then the scoped version share lock is taken
-  # before the fenced run row, the decision row and the entity row, so a concurrent calendar
-  # mutation cannot commit between the fingerprint check and the mutation. `fenced_run/5` then
-  # rechecks the run row and its lease after the lock wait.
-  defp run_version_scope(organization_id, run_id) do
-    from(r in ChangeRun,
-      where: r.id == ^run_id and r.organization_id == ^organization_id,
-      select: r.gtfs_version_id
-    )
-    |> Repo.one()
   end
 
   # Step-6 deletion boundary: a closure inserted after the apply precheck
