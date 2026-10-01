@@ -5260,6 +5260,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     doc:
       "the Set-all setting the reader has chosen in the group panel: one of the three setting values, or `nil` while they have chosen none"
 
+  attr :bulk_result, :any,
+    default: nil,
+    doc:
+      "the persistent result of the last Set-all save or bulk Undo, or `nil` before there is one. It belongs to the group panel rather than to the review, so it outlives the review drawer (R10)"
+
   attr :selected_ids, :any, required: true
   attr :selected_block_ids, :any, required: true, doc: "the block IDs the reader has selected"
   attr :page_block_ids, :any, required: true, doc: "the block IDs the current page holds"
@@ -5387,6 +5392,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               version_id={@state.version_id}
               setting_options={@connection_setting_options}
               bulk_choice={@bulk_choice}
+              bulk_result={@bulk_result}
             />
           <% @state.panel == :pool -> %>
             <p
@@ -5851,6 +5857,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :version_id, :any, required: true
   attr :setting_options, :list, required: true
   attr :bulk_choice, :any, default: nil
+  attr :bulk_result, :any, default: nil
 
   defp connections_panel(assigns) do
     assigns =
@@ -5940,6 +5947,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         <span class="ml-auto text-muted">
           Settings apply to every date both trips run, not only this day type.
         </span>
+      </div>
+
+      <%!-- The Set-all result is page state rather than part of one group's
+      panel, so it is rendered here above the columns and not inside the group
+      panel. A filter change closes the group the save came from, and the result
+      is still the reader's answer to their own write (R10), so it survives that
+      and is cleared only by Dismiss. It is not shown while a different group is
+      open, because it speaks for a group the reader is no longer looking at. --%>
+      <div :if={bulk_result_visible?(@bulk_result, @connections.group)} class="px-5 pt-3">
+        <.bulk_result :if={@bulk_result} result={@bulk_result} />
       </div>
 
       <div
@@ -6552,6 +6569,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :review, :map, required: true
   attr :routes, :map, required: true
 
+  attr :pending, :boolean,
+    default: false,
+    doc: "a Set-all write is in flight, so the footer reports it and the boxes are inert"
+
+  attr :error, :any,
+    default: nil,
+    doc:
+      "a failed Set-all write's own `%{title, message}`, or `nil`. The review stays open with it (AC-20)"
+
   def set_all_review(assigns) do
     group = assigns.review.group
     counts = set_all_review_counts(assigns.review)
@@ -6568,7 +6594,24 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       )
       |> assign(:included, included)
       |> assign(:actionable, actionable)
-      |> assign(:title, "Review: #{bulk_setting_label(assigns.review.choice)}")
+      |> assign(
+        :title,
+        "Review: #{bulk_setting_label(assigns.review.choice)}"
+      )
+      |> assign(
+        :included_label,
+        if(assigns.pending,
+          do: "Saving…",
+          else: "#{included} of #{actionable} included"
+        )
+      )
+      |> assign(
+        :save_label,
+        if(assigns.pending,
+          do: "Saving…",
+          else: "Save #{count_label(included, "connection", "connections")}"
+        )
+      )
 
     ~H"""
     <.drawer
@@ -6590,6 +6633,19 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       </:lede>
 
       <.drawer_scroll>
+        <.message
+          :if={@error}
+          id="set-all-review-error"
+          kind="error"
+          title={@error.title}
+          tabindex="-1"
+          phx-hook="FormErrorFocus"
+          data-focus-on-mount="set-all-review-error"
+          data-role="set-all-review-error"
+        >
+          {@error.message}
+        </.message>
+
         <dl id="set-all-review-counts" class={["grid gap-2", @count_columns]}>
           <div
             :for={{label, value} <- @counts}
@@ -6643,6 +6699,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                       checked={row.include?}
                       phx-click="toggle_bulk_row"
                       phx-value-id={row.id}
+                      disabled={@pending}
                       aria-label={"Include block #{row.connection.block_id}, #{clock(
                         row.connection.from.last_arrival
                       )}"}
@@ -6674,7 +6731,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           role="status"
           aria-live="polite"
         >
-          {@included} of {@actionable} included
+          {@included_label}
         </p>
 
         <button
@@ -6682,6 +6739,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           id="set-all-review-cancel"
           class="btn btn-ghost min-h-11"
           phx-click="close_bulk_review"
+          disabled={@pending}
         >
           Cancel
         </button>
@@ -6689,9 +6747,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           id="set-all-review-save"
           type="button"
           class="min-h-11"
-          disabled={@included == 0}
+          phx-click="save_bulk"
+          phx-disable-with="Saving…"
+          disabled={@included == 0 or @pending}
         >
-          Save {count_label(@included, "connection", "connections")}
+          {@save_label}
         </.button>
       </.drawer_footer>
     </.drawer>
@@ -6756,6 +6816,124 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp bulk_result_label(:add), do: "Adds record"
   defp bulk_result_label(:replace), do: "Replaces record"
   defp bulk_result_label(:remove), do: "Removes record"
+
+  # The persistent result of one Set-all save or bulk Undo, at the top of the
+  # group panel it belongs to (R10, AC-20).
+  #
+  # It is a `PlannerComponents.message/1` rather than a callout of its own because
+  # it answers the same question in the same place, and one component keeps the
+  # tone, the role and the Dismiss affordance identical across both surfaces. A
+  # result with nothing skipped is `success`; one that names skipped pairs is
+  # `warning`, because a partial write is neither a failure nor the whole save
+  # (PM-5).
+  #
+  # It is a polite status rather than an alert: it reports an action the reader
+  # chose, and its own sentence says whether anything went wrong. Focus moves
+  # here when it arrives, so it is focusable and is the drawer's focus target.
+  attr :result, :map, required: true
+
+  def bulk_result(assigns) do
+    assigns =
+      assigns
+      |> assign(:skipped, bulk_result_skipped(assigns.result))
+      |> assign(:restorable, length(assigns.result.previous))
+      |> assign(:unrestorable, Map.get(assigns.result, :unrestorable, 0))
+
+    ~H"""
+    <.message
+      id="bulk-result"
+      kind={if @skipped == [], do: "success", else: "warning"}
+      role="status"
+      title={bulk_result_title(@result)}
+      tabindex="-1"
+      phx-hook="FormErrorFocus"
+      data-focus-on-mount="bulk-result"
+      data-role="bulk-result"
+      class="mt-3"
+    >
+      <ul :if={@skipped != []} id="bulk-result-skipped" class="grid gap-1">
+        <li
+          :for={skip <- @skipped}
+          id={"bulk-result-skip-#{skip_token(skip)}"}
+          data-role="bulk-result-skip"
+          class="text-[13px]"
+        >
+          {skip.block}: {skip.reason}
+        </li>
+      </ul>
+
+      <p
+        :if={@unrestorable > 0}
+        id="bulk-result-unrestorable"
+        data-role="bulk-result-unrestorable"
+        class="mt-1 text-[13px]"
+      >
+        {count_label(@unrestorable, "replaced record", "replaced records")} can’t be restored
+        because {if @unrestorable == 1, do: "it", else: "they"} didn’t match the block.
+      </p>
+
+      <div id="bulk-result-actions" class="mt-3 flex flex-wrap items-center gap-4">
+        <button
+          :if={@result.undo? and @restorable > 0}
+          id="bulk-undo"
+          type="button"
+          phx-click="undo_bulk"
+          class="inline-flex min-h-11 items-center rounded-control px-2 text-sm font-semibold underline underline-offset-4 hover:bg-canvas"
+        >
+          Undo {count_label(@restorable, "change", "changes")}
+        </button>
+        <button
+          id="bulk-dismiss"
+          type="button"
+          phx-click="dismiss_bulk_result"
+          class="inline-flex min-h-11 items-center rounded-control px-2 text-sm font-semibold underline underline-offset-4 hover:bg-canvas"
+        >
+          Dismiss
+        </button>
+      </div>
+    </.message>
+    """
+  end
+
+  # Which pairs this result names as not written: the save's own skips, or the
+  # Undo's once it has run. Both carry the label and reason the write gave.
+  defp bulk_result_skipped(%{undo?: false, undo_skipped: skipped}), do: skipped
+  defp bulk_result_skipped(%{skipped: skipped}), do: skipped
+  defp bulk_result_skipped(_result), do: []
+
+  # A skipped line's own DOM id, from its block label, so a case names the line
+  # it means rather than counting them.
+  defp skip_token(%{block: block}), do: String.replace(block, ~r/[^A-Za-z0-9]+/, "-")
+
+  # "Saved 9 connections: riders stay on board. 2 skipped:", and the Undo's own
+  # sentence once it has run. Both counts are the write's own answer, so the
+  # message cannot claim a connection the write did not touch.
+  defp bulk_result_title(result) do
+    title =
+      if Map.has_key?(result, :restored) do
+        "Restored #{count_label(result.restored, "connection", "connections")}."
+      else
+        "Saved #{count_label(length(result.saved), "connection", "connections")}: " <>
+          "#{bulk_setting_label(result.setting)}."
+      end
+
+    case bulk_result_skipped(result) do
+      [] -> title
+      skipped -> title <> " #{length(skipped)} skipped:"
+    end
+  end
+
+  # The result belongs to the group the save came from, so opening another group
+  # never puts one group's answer above another's rows. With no group open — the
+  # list, or the group a filter change just closed — it stands, because it is the
+  # reader's own answer to their own write and nothing has replaced it (R10).
+  defp bulk_result_visible?(nil, _group), do: false
+
+  defp bulk_result_visible?(%{group_token: token}, %{token: token}) when is_binary(token),
+    do: true
+
+  defp bulk_result_visible?(_result, nil), do: true
+  defp bulk_result_visible?(_result, _group), do: false
 
   defp filtered_empty_text(%{status: :problems, route: route}) when not is_nil(route),
     do: "No block on this route has a problem on this service day."
