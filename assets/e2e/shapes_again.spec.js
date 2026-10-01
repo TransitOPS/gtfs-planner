@@ -909,6 +909,30 @@ const SWAPPED_GEOJSON = JSON.stringify({
   ],
 });
 
+// One line along the seeded corridor's meridian (test/support/browser_seed.exs),
+// written longitude-first, so the single-line path skips the picker and goes
+// straight to the fit preview.
+const SINGLE_LINE_GEOJSON = JSON.stringify({
+  type: "FeatureCollection",
+  features: [
+    {
+      type: "Feature",
+      properties: { name: "Coast Highway" },
+      geometry: {
+        type: "LineString",
+        coordinates: [
+          [-124.049, 44.64],
+          [-124.049, 44.7],
+          [-124.049, 44.76],
+          [-124.049, 44.82],
+          [-124.049, 44.88],
+          [-124.049, 44.93],
+        ],
+      },
+    },
+  ],
+});
+
 test.describe("file import", () => {
   for (const viewport of VIEWPORTS) {
     test(`reads a path file and names its problems at ${viewport.width}×${viewport.height}`, async ({
@@ -1029,6 +1053,35 @@ test.describe("file import", () => {
         await page.goto(`file://${PATTERN_REFERENCE_PATH}?state=err-swapped`);
         await page.waitForLoadState("networkidle");
         await capture(page, `file-import-err-swapped-reference-${viewport.label}`);
+      }
+
+      // Step 30: one line in the file skips the picker, so the map previews
+      // it with direction arrows. The line runs the seeded corridor's own
+      // meridian, so it lands inside the view the editor already has.
+      await page.goto(
+        `/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns/BROWSER-SHAPES-A?task=alignment`,
+      );
+      await waitForLiveView(page);
+      await page.locator("#alignment-open-file-import").click();
+
+      await input.setInputFiles({
+        name: "coast-highway.geojson",
+        mimeType: "application/geo+json",
+        buffer: Buffer.from(SINGLE_LINE_GEOJSON, "utf8"),
+      });
+      await page.locator("#file-import-read").click();
+
+      await expect(page.locator("#file-line-form")).toHaveCount(0);
+      const arrows = page.locator("#alignment-map-root .pa-file-arrow");
+      await expect(arrows.first()).toBeVisible();
+      expect(await arrows.count()).toBeGreaterThan(0);
+
+      await capture(page, `file-import-review-production-${viewport.label}`);
+
+      if (existsSync(PATTERN_REFERENCE_PATH)) {
+        await page.goto(`file://${PATTERN_REFERENCE_PATH}?state=import-review`);
+        await page.waitForLoadState("networkidle");
+        await capture(page, `file-import-review-reference-${viewport.label}`);
       }
 
       expect(problems).toEqual([]);

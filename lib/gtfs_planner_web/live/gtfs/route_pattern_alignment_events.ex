@@ -493,7 +493,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   """
   def open_file_import(socket, _params) do
     if editable?(socket) and not is_nil(socket.assigns[:alignment]) do
-      Component.assign(socket, :map_line_file, %{step: :choose})
+      socket
+      |> Component.assign(:map_line_file, %{step: :choose})
+      # A previous line's fit described a line that is no longer being
+      # checked, so choosing another file drops it.
+      |> Component.assign(:file_fit, nil)
     else
       socket
     end
@@ -545,6 +549,88 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   end
 
   def choose_file_line(socket, _params), do: socket
+
+  @doc """
+  Takes the hook's fit of the file line for this pattern (AC-24, step 30).
+
+  The hook measures the line it was given against the model's own visits and
+  reports what it found; nothing here is measured, drafted or saved (CR-9).
+  The validated fit is stored in `@file_fit`, which is the fit review's data
+  contract and the assign step 31 renders; a forged or misshapen push leaves
+  the previous fit in place rather than describing a line the editor never
+  picked.
+  """
+  def fit_result(socket, params) when is_map(params) do
+    case build_fit_result(params) do
+      {:ok, fit} -> Component.assign(socket, :file_fit, fit)
+      :error -> socket
+    end
+  end
+
+  def fit_result(socket, _params), do: socket
+
+  @fit_directions ~w(same reversed unknown)
+
+  defp build_fit_result(params) do
+    with {:ok, direction} <- fetch_fit_direction(params),
+         {:ok, far} <- fetch_fit_far(params),
+         {:ok, within} <- fetch_fit_count(params, "within"),
+         {:ok, visit_count} <- fetch_fit_count(params, "visit_count"),
+         true <- length(far) + within == visit_count do
+      {:ok,
+       %{
+         direction: direction,
+         reaches_start: params["reaches_start"] == true,
+         reaches_end: params["reaches_end"] == true,
+         far: far,
+         within: within,
+         visit_count: visit_count,
+         length_m: length_m(params["length_m"])
+       }}
+    else
+      _other -> :error
+    end
+  end
+
+  defp fetch_fit_direction(params) do
+    case params["direction"] do
+      direction when direction in @fit_directions -> {:ok, direction}
+      _other -> :error
+    end
+  end
+
+  defp fetch_fit_far(params) do
+    case params["far"] do
+      far when is_list(far) -> with_far(far, [])
+      _other -> :error
+    end
+  end
+
+  defp with_far([], acc), do: {:ok, Enum.reverse(acc)}
+
+  defp with_far([entry | rest], acc) when is_map(entry) do
+    with {:ok, position} <- fetch_fit_count(entry, "position"),
+         true <- entry["stop_id"] == nil or is_binary(entry["stop_id"]),
+         true <- entry["distance_m"] == nil or is_number(entry["distance_m"]) do
+      with_far(rest, [
+        %{position: position, stop_id: entry["stop_id"], distance_m: entry["distance_m"]} | acc
+      ])
+    else
+      _other -> :error
+    end
+  end
+
+  defp with_far(_other, _acc), do: :error
+
+  defp fetch_fit_count(params, key) do
+    case params[key] do
+      count when is_integer(count) and count >= 0 -> {:ok, count}
+      _other -> :error
+    end
+  end
+
+  defp length_m(value) when is_number(value), do: value
+  defp length_m(_value), do: nil
 
   defp read_entry(socket, entry) do
     # The callback's own `{:ok, value}` layer is the signature consuming

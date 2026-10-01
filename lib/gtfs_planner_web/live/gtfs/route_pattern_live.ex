@@ -166,6 +166,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:alignment_simplify_dialog, nil)
      |> assign(:alignment_import_dialog, nil)
      |> assign(:alignment_notice, nil)
+     |> assign(:file_fit, nil)
      |> assign(:alignment_pending, nil)
      |> assign(:alignment_save_notice, nil)
      |> assign(:alignment_forced_local, [])
@@ -273,6 +274,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:alignment_save_notice, nil)
     |> assign(:alignment_forced_local, [])
     |> assign(:alignment_import_dialog, nil)
+    |> assign(:file_fit, nil)
     |> assign(:alignment_generate_dialog, nil)
     |> assign(:alignment_generate_notice, nil)
     |> assign(:alignment_generation, nil)
@@ -1074,6 +1076,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   @impl true
   def handle_event("alignment_file_choose", params, socket) do
     {:noreply, RoutePatternAlignmentEvents.choose_file_line(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_fit_result", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.fit_result(socket, params)}
   end
 
   # The upload form's change event. It only asks for the entry's own errors
