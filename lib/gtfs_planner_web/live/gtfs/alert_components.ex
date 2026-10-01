@@ -35,6 +35,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
     only: [button: 1, callout: 1, icon: 1, input: 1, segmented_control: 1, status_badge: 1]
 
   alias Phoenix.LiveView.JS
+  alias GtfsPlanner.Gtfs.Route
   alias GtfsPlannerWeb.Components.RouteIdentity
 
   # The words a reader recognizes: the situation is what the alert is about and
@@ -70,6 +71,21 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   """
   def situation_label(situation), do: Map.get(@situation_labels, situation)
   def effect_label(effect), do: Map.get(@effect_labels, effect)
+
+  @doc """
+  The name a rider knows a route by: its short name, then its long name, then the
+  feed ID the version gave it.
+
+  The same words `Alerts.Targets` puts on a route option, so a route reads the
+  same in a pick list, in the Rider preview and in a review. A row is a
+  `Gtfs.Route`, so this reads the struct's fields rather than an option map's
+  `:label`.
+  """
+  def route_label(route) do
+    Enum.find_value([route.route_short_name, route.route_long_name], route.route_id, fn value ->
+      if is_binary(value) and String.trim(value) != "", do: String.trim(value)
+    end)
+  end
 
   # -- Editor frame -------------------------------------------------------
 
@@ -414,8 +430,17 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   The body is a slot: each step renders its own controls, and the card only
   frames them. The Back link patches to the previous step in the sequence the
   caller prepared, so Back never leaves the step list.
+
+  Focus follows the question. The heading is the focus target, and it sits
+  inside a wrapper whose id names the step: LiveView keys its DOM patch on an
+  element's `id`, so a new step is a new wrapper, a new wrapper runs
+  `phx-mounted` again, and the focus lands on the question just opened rather
+  than staying on the card the reader pressed (AC-17). Putting `phx-mounted` on
+  the heading itself would run exactly once, on the first question the editor
+  ever showed.
   """
   attr :id, :string, required: true
+  attr :step, :atom, required: true, doc: "the step key, so each question is its own element"
   attr :eyebrow, :string, required: true
   attr :heading, :string, required: true
   attr :hint, :string, default: nil
@@ -424,21 +449,23 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   slot :actions
 
   def question_card(assigns) do
+    assigns = assign(assigns, :title_id, "#{assigns.id}-title")
+
     ~H"""
     <section
       id={@id}
       class="rounded-card border border-subtle bg-white p-4 sm:p-6"
     >
       <p class="mb-1 text-[13px] font-semibold text-muted">{@eyebrow}</p>
-      <h2
-        id={"#{@id}-title"}
-        tabindex="-1"
-        phx-mounted={JS.focus()}
-        class="text-xl font-bold tracking-normal text-strong"
+      <div
+        id={"#{@id}-heading-#{@step}"}
+        phx-mounted={JS.focus(to: "##{@title_id}")}
       >
-        {@heading}
-      </h2>
-      <p :if={@hint} id={"#{@id}-hint"} class="mt-1 text-sm text-muted">{@hint}</p>
+        <h2 id={@title_id} tabindex="-1" class="text-xl font-bold tracking-normal text-strong">
+          {@heading}
+        </h2>
+        <p :if={@hint} id={"#{@id}-hint"} class="mt-1 text-sm text-muted">{@hint}</p>
+      </div>
       <div id="alert-question-body" class="mt-5">
         {render_slot(@inner_block)}
       </div>
@@ -595,45 +622,19 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   which is what makes the first answer the moment the draft row is created. The
   selected answer keeps its check, so a reader who goes back can see what they
   already answered.
-
-  This is the only question body this step renders: the remaining ones belong to
-  the steps that own them, and each renders inside the same `#alert-question`
-  slot.
   """
   attr :alert, :any, required: true
   attr :event, :string, required: true
   attr :name, :string, required: true
 
   def urgency_question(assigns) do
-    assigns = assign(assigns, :choices, urgency_choices(assigns.alert))
-
     ~H"""
-    <div class="grid gap-3 sm:grid-cols-2">
-      <button
-        :for={choice <- @choices}
-        id={"alert-urgency-#{choice.value}"}
-        type="button"
-        phx-click={@event}
-        phx-value-urgency={choice.value}
-        aria-pressed={to_string(choice.selected?)}
-        class={[
-          "group flex min-h-11 items-start gap-3 rounded-control border bg-white p-4 text-left",
-          "hover:border-action hover:bg-selection motion-reduce:transition-none transition-colors",
-          choice.selected? && "border-action bg-selection"
-        ]}
-      >
-        <.icon name={choice.icon} class="mt-0.5 size-5 shrink-0 text-action" />
-        <span class="min-w-0 flex-1">
-          <span class="block text-sm font-bold text-strong">{choice.label}</span>
-          <span class="mt-1 block text-[13px] text-default">{choice.description}</span>
-        </span>
-        <.icon
-          :if={choice.selected?}
-          name="hero-check"
-          class="mt-0.5 size-4 shrink-0 text-action"
-        />
-      </button>
-    </div>
+    <.choice_cards
+      id="alert-urgency"
+      event={@event}
+      name={@name}
+      choices={urgency_choices(assigns.alert)}
+    />
     """
   end
 
@@ -658,6 +659,406 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
       &Map.put(&1, :selected?, alert != nil and alert.urgency == &1.urgency)
     )
   end
+
+  @doc """
+  A question whose whole answer is one choice: a set of cards, each of which
+  saves and moves on by itself.
+
+  This is the prototype's `advanceChoices`, and it is one component because the
+  urgency, situation, change, mode and direction questions differ only in the
+  cards they offer. Each card is a `<button type="button">` carrying its value
+  as `phx-value-<name>`, so Enter and Space activate it the way a reader
+  expects and the value never travels as a typed field.
+
+  `aria-pressed` marks the answer the alert already holds, so a reader who comes
+  back sees which card they pressed; a chosen card keeps its check and an
+  unchosen one shows the chevron the prototype shows.
+  """
+  attr :id, :string, required: true
+  attr :event, :string, required: true
+  attr :name, :string, required: true
+
+  attr :choices, :list,
+    required: true,
+    doc: "maps with :value, :label and optional :description, :icon and :selected?"
+
+  def choice_cards(assigns) do
+    ~H"""
+    <div id={@id} class="grid gap-3 sm:grid-cols-2">
+      <button
+        :for={choice <- @choices}
+        id={"#{@id}-#{choice.value}"}
+        type="button"
+        phx-click={@event}
+        {value_attr(@name, choice.value)}
+        aria-pressed={to_string(Map.get(choice, :selected?, false))}
+        class={[
+          "group flex min-h-11 items-start gap-3 rounded-control border bg-white p-4 text-left",
+          "hover:border-action hover:bg-selection motion-reduce:transition-none transition-colors",
+          Map.get(choice, :selected?, false) && "border-action bg-selection"
+        ]}
+      >
+        <.icon
+          :if={Map.get(choice, :icon)}
+          name={choice.icon}
+          class="mt-0.5 size-5 shrink-0 text-action"
+        />
+        <span class="min-w-0 flex-1">
+          <span class="block text-sm font-bold text-strong">{choice.label}</span>
+          <span :if={Map.get(choice, :description)} class="mt-1 block text-[13px] text-default">
+            {choice.description}
+          </span>
+        </span>
+        <.icon
+          name={if(Map.get(choice, :selected?, false), do: "hero-check", else: "hero-chevron-right")}
+          class="mt-0.5 size-4 shrink-0 text-action"
+        />
+      </button>
+    </div>
+    """
+  end
+
+  @doc """
+  The eight situations an alert can be about, in the prototype's order.
+
+  The wording is the prototype's: a reader picks the sentence that describes
+  their day, and the description tells them what the choice opens up next. The
+  values are `GtfsPlanner.Alerts.Alert`'s own situations, so a card cannot offer
+  a situation the row cannot store.
+  """
+  @situation_choices [
+    %{
+      value: "delay",
+      label: "Delays",
+      description: "Service is running late.",
+      icon: "hero-clock"
+    },
+    %{
+      value: "detour",
+      label: "Detour",
+      description: "A different path, with stops skipped.",
+      icon: "hero-arrow-right"
+    },
+    %{
+      value: "stop_moved",
+      label: "Stop moved",
+      description: "Riders board somewhere else.",
+      icon: "hero-map-pin"
+    },
+    %{
+      value: "stop_closed",
+      label: "Stop closed",
+      description: "A stop cannot be used.",
+      icon: "hero-x-circle"
+    },
+    %{
+      value: "cancelled_trips",
+      label: "Trips cancelled",
+      description: "Specific departures will not run.",
+      icon: "hero-calendar-days"
+    },
+    %{
+      value: "suspension",
+      label: "Service suspended",
+      description: "A route or the whole system is not running.",
+      icon: "hero-pause-circle"
+    },
+    %{
+      value: "accessibility",
+      label: "Accessibility issue",
+      description: "An elevator, entrance or ramp is unavailable.",
+      icon: "hero-chevron-up-down"
+    },
+    %{
+      value: "service_change",
+      label: "Service change",
+      description: "Fewer trips, extra service or rider information.",
+      icon: "hero-information-circle"
+    }
+  ]
+
+  attr :alert, :any, required: true
+  attr :event, :string, required: true
+
+  def situation_question(assigns) do
+    ~H"""
+    <.choice_cards
+      id="situation"
+      event={@event}
+      name="situation"
+      choices={situations_for(assigns.alert)}
+    />
+    """
+  end
+
+  defp situations_for(alert) do
+    Enum.map(@situation_choices, fn choice ->
+      Map.put(
+        choice,
+        :selected?,
+        alert != nil and alert.situation == String.to_atom(choice.value)
+      )
+    end)
+  end
+
+  @doc """
+  The one question a service change asks before its routes: what changes.
+
+  The three answers are the prototype's, in its order, and each is the value
+  `Alert.service_change_kind` stores.
+  """
+  @change_choices [
+    %{
+      value: "fewer_trips",
+      label: "Fewer trips",
+      description: "Riders find some departures missing."
+    },
+    %{
+      value: "extra_service",
+      label: "Extra service",
+      description: "Riders find departures that are not usual."
+    },
+    %{
+      value: "information",
+      label: "Information for riders",
+      description: "Nothing changes; riders should know."
+    }
+  ]
+
+  attr :alert, :any, required: true
+  attr :event, :string, required: true
+
+  def change_question(assigns) do
+    ~H"""
+    <.choice_cards
+      id="change"
+      event={@event}
+      name="kind"
+      choices={changes_for(assigns.alert)}
+    />
+    """
+  end
+
+  defp changes_for(alert) do
+    Enum.map(@change_choices, fn choice ->
+      Map.put(
+        choice,
+        :selected?,
+        alert != nil and alert.service_change_kind == String.to_atom(choice.value)
+      )
+    end)
+  end
+
+  @doc """
+  Which service is affected: one card per route type the version actually runs.
+
+  The question only appears for a version with more than one route type
+  (`steps_for/2`), and the options are that version's own route types rather than
+  the whole GTFS table, so a card is never a service the agency does not run.
+  """
+  attr :alert, :any, required: true
+  attr :event, :string, required: true
+  attr :route_types, :list, required: true, doc: "the version's route types, ascending"
+
+  def mode_question(assigns) do
+    ~H"""
+    <.choice_cards
+      id="mode"
+      event={@event}
+      name="route_type"
+      choices={modes_for(assigns.alert, assigns.route_types)}
+    />
+    """
+  end
+
+  defp modes_for(alert, route_types) do
+    Enum.map(route_types, fn route_type ->
+      %{
+        value: Integer.to_string(route_type),
+        route_type: route_type,
+        label: Route.route_type_label(route_type),
+        description: "Every #{String.downcase(Route.route_type_label(route_type))} route.",
+        icon: "hero-truck"
+      }
+    end)
+    |> Enum.map(fn choice ->
+      Map.put(
+        choice,
+        :selected?,
+        alert != nil and scope_of(alert).mode_route_type == choice.route_type
+      )
+    end)
+  end
+
+  @doc """
+  Which direction is affected: both, or one of the directions the chosen routes
+  run.
+
+  "Both directions" stores no direction at all, which is how the scope answer
+  says "every direction"; a narrower alert stores the direction's own number.
+  """
+  attr :alert, :any, required: true
+  attr :event, :string, required: true
+  attr :directions, :list, required: true, doc: "`Alerts.route_directions/2` options"
+
+  def direction_question(assigns) do
+    ~H"""
+    <.choice_cards
+      id="direction"
+      event={@event}
+      name="direction"
+      choices={directions_for(assigns.alert, assigns.directions)}
+    />
+    """
+  end
+
+  defp directions_for(alert, directions) do
+    chosen = if(alert, do: scope_of(alert).direction_id, else: nil)
+
+    [
+      %{
+        value: "both",
+        direction_id: nil,
+        label: "Both directions",
+        description: "The whole route is affected."
+      }
+      | Enum.map(directions, fn direction ->
+          %{
+            value: Integer.to_string(direction.direction_id),
+            direction_id: direction.direction_id,
+            label: direction.label,
+            description: "One direction of the chosen routes."
+          }
+        end)
+    ]
+    |> Enum.map(&Map.put(&1, :selected?, &1.direction_id == chosen))
+  end
+
+  @doc """
+  Which routes are affected: a search, a multi-select of the matches, and the
+  system-wide choice.
+
+  This is the one question in the sequence that is not self-contained, so it does
+  not advance on a click: a route multi-select needs **Continue**, and Continue
+  with nothing chosen says so inline and stays on the question rather than moving
+  to one the editor cannot answer.
+
+  Each route is a button carrying `aria-pressed`, and each toggle saves at once
+  through `Alerts.save_draft/4`, which is what makes Back lossless: the choices
+  are on the row before Continue is pressed. The search is a plain text input
+  whose keystrokes ask `Alerts.search_routes/2` for the version's matches, so the
+  list never holds a route the editor could not store (CR-4).
+  """
+  attr :id, :string, default: "alert-routes"
+  attr :options, :list, required: true, doc: "`Alerts.search_routes/2` options"
+  attr :selected, :list, required: true, doc: "row UUIDs the alert already names"
+  attr :query, :string, default: ""
+  attr :error, :string, default: nil
+  attr :allow_system?, :boolean, default: true
+  attr :system_selected?, :boolean, default: false
+
+  def routes_question(assigns) do
+    assigns = assign(assigns, :selected, MapSet.new(assigns.selected))
+
+    ~H"""
+    <div id={@id} class="grid gap-4">
+      <div class="flex flex-wrap items-center gap-2">
+        <.button
+          :if={@allow_system?}
+          id="alert-routes-system"
+          type="button"
+          variant={if @system_selected?, do: "secondary", else: "quiet"}
+          phx-click="choose_system_scope"
+        >
+          <.icon name="hero-globe-alt" class="size-4" /> The whole system
+        </.button>
+        <span :if={@system_selected?} class="text-[13px] font-semibold text-muted">
+          Every route in this version is affected.
+        </span>
+      </div>
+
+      <div :if={not @system_selected?} class="grid gap-3">
+        <label for="alert-route-search" class="text-[13px] font-semibold text-strong">
+          Find a route
+        </label>
+        <div class="relative">
+          <.icon
+            name="hero-magnifying-glass"
+            class="pointer-events-none absolute left-3 top-[13px] size-5 text-muted"
+          />
+          <input
+            type="search"
+            id="alert-route-search"
+            name="route_query"
+            value={@query}
+            phx-keyup="search_routes"
+            phx-debounce="200"
+            autocomplete="off"
+            placeholder="Route number or name"
+            class="h-11 w-full rounded-control border border-control bg-white pl-10 pr-3 text-sm text-strong placeholder:text-muted"
+          />
+        </div>
+
+        <div id="alert-route-options" class="grid gap-2 sm:grid-cols-2">
+          <button
+            :for={route <- @options}
+            id={"alert-route-#{route.id}"}
+            type="button"
+            phx-click="toggle_route"
+            phx-value-id={route.id}
+            aria-pressed={to_string(MapSet.member?(@selected, route.id))}
+            class={[
+              "flex min-h-11 items-center gap-2 rounded-control border p-3 text-left text-sm",
+              MapSet.member?(@selected, route.id) && "border-action bg-selection",
+              not MapSet.member?(@selected, route.id) && "border-control hover:bg-canvas"
+            ]}
+          >
+            <span class="min-w-0 flex-1 font-semibold text-strong">{route.label}</span>
+            <.icon
+              :if={MapSet.member?(@selected, route.id)}
+              name="hero-check"
+              class="size-4 shrink-0 text-action"
+            />
+          </button>
+        </div>
+
+        <p :if={@options == []} id="alert-route-empty" class="text-sm text-muted">
+          <%= if @query == "" do %>
+            Type a route number or name to search this version's routes.
+          <% else %>
+            No matching routes. Try a number or another name.
+          <% end %>
+        </p>
+      </div>
+
+      <p id="alert-routes-count" class="text-[13px] text-muted">
+        {count_text(MapSet.size(@selected), @system_selected?)}
+      </p>
+
+      <p
+        :if={@error}
+        id="alert-routes-error"
+        role="alert"
+        tabindex="-1"
+        class="rounded-control bg-error-bg p-3 text-sm font-semibold text-error-fg"
+      >
+        {@error}
+      </p>
+    </div>
+    """
+  end
+
+  defp count_text(_count, true), do: "Every route in this version is selected."
+
+  defp count_text(1, false), do: "1 route selected · Select all affected routes."
+  defp count_text(count, false), do: "#{count} routes selected · Select all affected routes."
+
+  # The choice travels as `phx-value-<name>`, so each card names which answer it
+  # carries rather than every card inventing its own event.
+  defp value_attr(name, value), do: [{:"phx-value-#{name}", value}]
+
+  defp scope_of(%{scope: nil}), do: %GtfsPlanner.Alerts.ScopeAnswer{}
+  defp scope_of(%{scope: scope}), do: scope
 
   @doc """
   The rider message fields: the two pieces of text an alert is made of.

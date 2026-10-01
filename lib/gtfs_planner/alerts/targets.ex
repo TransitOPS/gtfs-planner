@@ -39,6 +39,7 @@ defmodule GtfsPlanner.Alerts.Targets do
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Trip
@@ -272,6 +273,47 @@ defmodule GtfsPlanner.Alerts.Targets do
     )
     |> Repo.all()
     |> Enum.sort()
+  end
+
+  @doc """
+  Lists the directions the given routes run, in the reader's words.
+
+  A GTFS direction is the number `0` or `1`, which names nothing to a rider; the
+  pattern headsign does ("To Lincoln City"), so that is the label when the
+  version carries one and the number is the fallback when it does not. Only
+  directions the version's own patterns run are offered, so the question can
+  never ask for a direction nothing serves.
+  """
+  @type direction_option :: %{direction_id: 0 | 1, label: String.t()}
+
+  @spec route_directions(AuditContext.t(), [term()]) :: [direction_option()]
+  def route_directions(%AuditContext{} = audit_context, route_ids) when is_list(route_ids) do
+    gtfs_route_ids =
+      from(r in Route,
+        where: r.organization_id == ^audit_context.organization_id,
+        where: r.gtfs_version_id == ^audit_context.gtfs_version_id,
+        where: r.id in ^uuids(route_ids),
+        select: r.route_id
+      )
+      |> Repo.all()
+
+    from(p in RoutePattern,
+      where: p.organization_id == ^audit_context.organization_id,
+      where: p.gtfs_version_id == ^audit_context.gtfs_version_id,
+      where: p.route_id in ^gtfs_route_ids,
+      where: p.direction_id in [0, 1],
+      select: {p.direction_id, p.headsign},
+      distinct: true
+    )
+    |> Repo.all()
+    |> Enum.map(fn {direction_id, headsign} ->
+      %{
+        direction_id: direction_id,
+        label: present_name(List.wrap(headsign)) || "Direction #{direction_id}"
+      }
+    end)
+    |> Enum.uniq_by(& &1.direction_id)
+    |> Enum.sort_by(& &1.direction_id)
   end
 
   @doc """

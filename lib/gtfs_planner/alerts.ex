@@ -248,6 +248,18 @@ defmodule GtfsPlanner.Alerts do
   end
 
   @doc """
+  Lists the directions the given routes run, in the reader's words.
+
+  The ids are row UUIDs from this context's version, the same identities the
+  scope answer stores, so the direction question offers directions of the routes
+  the alert already names and nothing else (R1, CR-4).
+  """
+  @spec route_directions(AuditContext.t(), [term()]) :: [Targets.direction_option()]
+  def route_directions(%AuditContext{} = audit_context, route_ids) do
+    with_options(audit_context, fn -> Targets.route_directions(audit_context, route_ids) end)
+  end
+
+  @doc """
   Returns the labels of the routes, stops and trips the alert's scope names,
   keyed by the same row UUIDs the alert stored.
   """

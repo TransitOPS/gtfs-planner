@@ -663,3 +663,237 @@ test.describe("alert autosave", () => {
     });
   });
 });
+
+// The choice questions, as spec 30's step 16 renders them: a card that saves and
+// advances by itself, the heading that takes the focus afterwards, Back that
+// loses nothing, the mode question a single-mode version does not ask, and the
+// one question in the sequence that needs Continue (AC-17).
+
+async function captureChoicesReference(page, testInfo, state, width) {
+  if (!fs.existsSync(REFERENCE_PATH)) return;
+
+  await page.goto(`file://${REFERENCE_PATH}?state=${state}`);
+  await page.waitForLoadState("load");
+
+  await page.screenshot({
+    path: capturePath(testInfo, `choices-ref-${state}-${width}.png`),
+    fullPage: false,
+  });
+}
+
+// `phx-mounted` runs on the client once the LiveView is connected and has
+// rendered, so the question heading taking the focus is the editor's own
+// readiness signal - and the behaviour the choice questions depend on.
+async function waitForEditorMounted(page) {
+  await expect(page.locator("#alert-question-title")).toBeFocused({ timeout: 15_000 });
+}
+
+// The heading the question card moves the focus to, read from the browser rather
+// than from the server: `phx-mounted` fires once per element, so this asserts
+// the behaviour an editor actually gets.
+async function focusedHeading(page) {
+  return page.evaluate(() => {
+    const active = document.activeElement;
+    return active && active.tagName === "H2" ? active.textContent.trim() : null;
+  });
+}
+
+test.describe("alert choice questions", () => {
+  test.describe.configure({ timeout: 120_000 });
+
+  test("Enter on a focused choice advances and focus moves to the next heading @choices", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openNewAlert(page);
+
+    await expect(page.locator("#situation-delay")).toHaveCount(0);
+
+    // The first answer creates the draft and moves to the situation question.
+    await waitForEditorMounted(page);
+    await page.locator("#alert-urgency-now").focus();
+    await page.keyboard.press("Enter");
+    await page.waitForURL(/step=situation/, { timeout: 15_000 });
+    await page.waitForSelector("#situation-detour");
+    expect(await focusedHeading(page)).toBe("What is happening?");
+
+    // A detour advances the same way from the keyboard.
+    await page.locator("#situation-detour").focus();
+    await page.keyboard.press("Enter");
+    await page.waitForSelector("#mode-3", { timeout: 15_000 });
+    expect(await focusedHeading(page)).toBe("Which service is affected?");
+
+    await page.locator("#mode-3").focus();
+    await page.keyboard.press("Enter");
+    await page.waitForSelector("#alert-routes-continue", { timeout: 15_000 });
+    expect(await focusedHeading(page)).toBe("Which routes are affected?");
+
+    expect(await fitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "choices-routes-1440.png"),
+      fullPage: false,
+    });
+    await captureChoicesReference(page, testInfo, "form-where", "1440");
+  });
+
+  test("the situation cards fit the narrow width @choices", async ({ page }, testInfo) => {
+    await page.setViewportSize(NARROW);
+    await openNewAlert(page);
+
+    await waitForEditorMounted(page);
+    await page.locator("#alert-urgency-now").click();
+    await page.waitForURL(/step=situation/, { timeout: 15_000 });
+    await page.waitForSelector("#situation-service_change");
+
+    for (const value of [
+      "delay",
+      "detour",
+      "stop_moved",
+      "stop_closed",
+      "cancelled_trips",
+      "suspension",
+      "accessibility",
+      "service_change",
+    ]) {
+      await expect(page.locator(`#situation-${value}`)).toBeVisible();
+    }
+
+    expect(await fitsViewport(page)).toBe(true);
+    // The narrow viewport is shorter than the question, so this capture is the
+    // whole page: a cropped one would show the header and none of the cards.
+    await page.screenshot({
+      path: capturePath(testInfo, "choices-situation-320.png"),
+      fullPage: true,
+    });
+    await captureChoicesReference(page, testInfo, "form-effect", "320");
+  });
+
+  test("Back returns to the situation with the choice still pressed @choices", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    const url = await openCreatedAlert(page);
+
+    await page.locator("#situation-detour").click();
+    await page.waitForSelector("#mode-3", { timeout: 15_000 });
+
+    await page.locator("#alert-question-back").click();
+    await page.waitForSelector("#situation-detour", { timeout: 15_000 });
+    await expect(page.locator("#situation-detour")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(page.locator("#situation-delay")).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+
+    // Back is navigation: the answer is still on the row behind it.
+    await page.goto(`${url}?mode=form&step=situation`);
+    await page.waitForSelector("#situation-detour", { timeout: 15_000 });
+    await expect(page.locator("#situation-detour")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  test("a multimodal version asks which service, and a service change asks what changes @choices", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openNewAlert(page);
+
+    await page.locator("#alert-urgency-planned").click();
+    await page.waitForURL(/step=situation/, { timeout: 15_000 });
+
+    // The seeded version runs bus and tram, so Mode follows Situation and the
+    // other questions shift down with it.
+    await expect(page.locator("#alert-step-mode")).toHaveCount(0);
+    await page.locator("#situation-service_change").click();
+    await page.waitForSelector("#mode-0", { timeout: 15_000 });
+    await expect(page.locator("#alert-step-mode")).toBeVisible();
+
+    await expect(page.locator("#mode-0")).toContainText("Tram/Light Rail");
+    await expect(page.locator("#mode-3")).toContainText("Bus");
+    await page.screenshot({
+      path: capturePath(testInfo, "choices-mode-1440.png"),
+      fullPage: false,
+    });
+
+    await page.locator("#mode-3").click();
+    await page.waitForSelector("#change-fewer_trips", { timeout: 15_000 });
+    await expect(page.locator("#change-fewer_trips")).toContainText("Fewer trips");
+    await expect(page.locator("#change-extra_service")).toContainText(
+      "Extra service",
+    );
+    await expect(page.locator("#change-information")).toContainText(
+      "Information for riders",
+    );
+
+    // The reference capture navigates the page to the prototype, so it is the
+    // last thing a journey does rather than a step in the middle of one.
+    await captureChoicesReference(page, testInfo, "form-mode", "1440");
+  });
+
+  test("the route multi-select keeps its choices through Continue @choices", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openNewAlert(page);
+
+    await waitForEditorMounted(page);
+    await page.locator("#alert-urgency-now").click();
+    await page.waitForURL(/step=situation/, { timeout: 15_000 });
+    await page.locator("#situation-delay").click();
+    await page.waitForSelector("#mode-3", { timeout: 15_000 });
+    await page.locator("#mode-3").click();
+    await page.waitForSelector("#alert-routes-continue", { timeout: 15_000 });
+
+    // Continue with nothing chosen says so and stays on the question.
+    await page.locator("#alert-routes-continue").click();
+    await expect(page.locator("#alert-routes-error")).toContainText(
+      "Choose at least one route",
+    );
+    await expect(page.locator("#alert-question-title")).toHaveText(
+      "Which routes are affected?",
+    );
+    await page.screenshot({
+      path: capturePath(testInfo, "choices-routes-empty-1440.png"),
+      fullPage: false,
+    });
+
+    // The search answers keystrokes, so the text is typed rather than filled.
+    await page.locator("#alert-route-search").pressSequentially("Route");
+    await page.waitForSelector("#alert-route-options button", { timeout: 15_000 });
+
+    const first_route = page.locator("#alert-route-options button").first();
+    await first_route.click();
+    await expect(first_route).toHaveAttribute("aria-pressed", "true");
+
+    // The choices are on the row before Continue, so Back never loses them.
+    await page.locator("#alert-question-back").click();
+    await page.waitForSelector("#mode-3", { timeout: 15_000 });
+    await page.locator("#mode-3").click();
+    await page.waitForSelector("#alert-routes-continue", { timeout: 15_000 });
+    await page.locator("#alert-route-search").pressSequentially("Route");
+    await page.waitForSelector("#alert-route-options button[aria-pressed='true']", {
+      timeout: 15_000,
+    });
+
+    await page.locator("#alert-routes-continue").click();
+    await page.waitForSelector("#direction-both", { timeout: 15_000 });
+    await expect(page.locator("#alert-question-title")).toHaveText(
+      "Which direction is affected?",
+    );
+
+    // "Both directions" is a choice like any other: it saves and moves on.
+    await expect(page.locator("#direction-both")).toContainText("Both directions");
+    await page.locator("#direction-0").click();
+    await page.waitForSelector("#alert-routes-continue, #alert-question-title", {
+      timeout: 15_000,
+    });
+    await expect(page.locator("#alert-question-title")).toHaveText(
+      "When should this alert end?",
+    );
+  });
+});

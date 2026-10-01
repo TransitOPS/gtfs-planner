@@ -71,13 +71,18 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
   import GtfsPlannerWeb.Gtfs.AlertComponents,
     only: [
+      change_question: 1,
       conflict_banner: 1,
+      direction_question: 1,
       mode_control: 1,
+      mode_question: 1,
       message_fields: 1,
       progress: 1,
       question_card: 1,
       rider_preview: 1,
+      routes_question: 1,
       save_bar: 1,
+      situation_question: 1,
       urgency_question: 1
     ]
 
@@ -173,6 +178,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
      |> assign(:save_state, :idle)
      |> assign(:conflict, nil)
      |> assign(:pending_attrs, nil)
+     |> assign(:route_query, "")
+     |> assign(:route_options, [])
+     |> assign(:route_error, nil)
+     |> assign(:mode_route_types, [])
+     |> assign(:directions, [])
      |> assign(:form, draft_form(%Alert{}))}
   end
 
@@ -234,7 +244,100 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       when is_binary(urgency) do
     case socket.assigns.alert do
       nil -> create_and_advance(socket, urgency)
-      alert -> save_and_advance(socket, alert, %{"urgency" => urgency})
+      alert -> answer_and_advance(socket, :urgency, alert, %{"urgency" => urgency})
+    end
+  end
+
+  # Every self-contained choice is the same two steps: write the answer through
+  # `Alerts.save_draft/4` (INV-1) and patch to the next question `steps_for/2`
+  # puts after this one (INV-2). The values arrive as `phx-value-*` on the card
+  # the reader pressed, so a card names its own answer and nothing here reads a
+  # field the reader could have typed.
+  def handle_event("choose_situation", %{"situation" => situation}, socket)
+      when is_binary(situation) do
+    answer_and_advance(socket, :situation, %{"situation" => situation})
+  end
+
+  def handle_event("choose_change", %{"kind" => kind}, socket) when is_binary(kind) do
+    answer_and_advance(socket, :change, %{"service_change_kind" => kind})
+  end
+
+  def handle_event("choose_mode", %{"route_type" => route_type}, socket)
+      when is_binary(route_type) do
+    case parse_choice(route_type) do
+      :error ->
+        {:noreply, socket}
+
+      route_type ->
+        answer_and_advance(socket, :mode, %{"scope" => %{"mode_route_type" => route_type}})
+    end
+  end
+
+  # "Both directions" stores no direction at all, which is how the scope answer
+  # says "every direction"; the other cards store their own number.
+  def handle_event("choose_direction", %{"direction" => direction}, socket)
+      when is_binary(direction) do
+    case parse_choice(direction) do
+      :error ->
+        {:noreply, socket}
+
+      direction_id ->
+        answer_and_advance(socket, :direction, %{"scope" => %{"direction_id" => direction_id}})
+    end
+  end
+
+  # A route multi-select is not self-contained, so its choices do not advance on a
+  # click: each toggle is written at once, which is what keeps Back lossless, and
+  # Continue is the explicit action that moves on (AC-17).
+  def handle_event("search_routes", params, socket) when is_map(params) do
+    case search_query(params) do
+      nil ->
+        {:noreply, socket}
+
+      query ->
+        {:noreply,
+         socket
+         |> assign(:route_query, query)
+         |> assign(:route_options, Alerts.search_routes(audit_context(socket), query))}
+    end
+  end
+
+  def handle_event("toggle_route", %{"id" => id}, socket) when is_binary(id) do
+    case socket.assigns.alert do
+      nil ->
+        {:noreply, socket}
+
+      alert ->
+        chosen = scope(alert).route_ids || []
+
+        ids =
+          if id in chosen, do: List.delete(chosen, id), else: chosen ++ [id]
+
+        save(socket, alert, %{"scope" => %{"shape" => "routes", "route_ids" => ids}})
+    end
+  end
+
+  # The whole system is one choice, so it saves and advances like the others; the
+  # multi-select below it is what the reader gets when the alert is about routes
+  # instead.
+  def handle_event("choose_system_scope", _params, socket) do
+    answer_and_advance(socket, :routes, %{"scope" => %{"shape" => "system", "route_ids" => []}})
+  end
+
+  def handle_event("continue_routes", _params, socket) do
+    case socket.assigns.alert do
+      nil ->
+        {:noreply, socket}
+
+      alert ->
+        if scope(alert).shape == :system or present?(scope(alert).route_ids) do
+          {:noreply, advance_without_writing(socket, alert, :routes)}
+        else
+          # Nothing is written and nothing moves: the question stays open with the
+          # reason on it, so the reader can answer rather than guess.
+          {:noreply,
+           assign(socket, :route_error, "Choose at least one route, or the whole system.")}
+        end
     end
   end
 
@@ -249,7 +352,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
         {:noreply, socket}
 
       alert ->
-        save(socket, alert, params)
+        # A change carrying nothing but the base revision is the route search
+        # losing focus, not an answer. Writing it would move the row's revision
+        # for no change and hand the next write a base nobody typed at.
+        if castable(params) == %{} do
+          {:noreply, socket}
+        else
+          save(socket, alert, params)
+        end
     end
   end
 
@@ -542,8 +652,30 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> assign(:save_state, if(is_nil(alert), do: :idle, else: :saved))
     |> assign(:conflict, nil)
     |> assign(:pending_attrs, nil)
+    |> assign(:route_query, socket.assigns[:route_query] || "")
+    |> assign(:route_options, socket.assigns[:route_options] || [])
+    |> assign(:route_error, nil)
+    |> assign(:mode_route_types, question_options(socket, alert, step, :mode_route_types))
+    |> assign(:directions, question_options(socket, alert, step, :directions))
     |> assign(:form, draft_form(alert || %Alert{}))
   end
+
+  # The two questions that need more than the alert's own answers read their
+  # options when the editor is actually on them: the mode question offers the
+  # version's route types and the direction question the directions the routes
+  # the alert already names run. Both reads go through the audit context, so
+  # they are the alert's own version's (CR-4).
+  defp question_options(_socket, nil, _step, _kind), do: []
+
+  defp question_options(socket, _alert, :mode, :mode_route_types) do
+    Alerts.route_types(audit_context(socket))
+  end
+
+  defp question_options(socket, alert, :direction, :directions) do
+    Alerts.route_directions(audit_context(socket), scope(alert).route_ids || [])
+  end
+
+  defp question_options(_socket, _alert, _step, _kind), do: []
 
   defp step_from(params, keys, _socket) do
     requested =
@@ -712,22 +844,61 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
   # -- Creating, saving and deleting --------------------------------------
 
-  defp create_and_advance(socket, urgency) do
-    case Alerts.create_alert(audit_context(socket), %{"urgency" => urgency}) do
-      {:ok, alert} ->
-        {:noreply,
-         push_navigate(socket, to: saved_path(socket, alert, advance(alert, :urgency, socket)))}
+  # The next question after an answer, for the answers that were already saved.
+  # Nothing is written here, so it is used by Continue and by the whole-system
+  # choice once the row holds what the reader chose.
+  defp advance_without_writing(socket, alert, answered) do
+    push_patch(socket, to: saved_path(socket, alert, advance(alert, answered, socket)))
+  end
+
+  # The one writer, used by every question step (INV-1). The advance target is
+  # the next question this alert's own sequence puts after the one just answered,
+  # so a choice cannot move a reader into a question that does not exist (INV-2).
+  # A refusal changes nothing, so the editor stays on the question with the
+  # reason rather than advancing over an answer that was not stored.
+  defp answer_and_advance(socket, answered, attrs) do
+    case socket.assigns.alert do
+      nil -> {:noreply, socket}
+      alert -> answer_and_advance(socket, answered, alert, attrs)
+    end
+  end
+
+  defp answer_and_advance(socket, answered, alert, attrs) do
+    case Alerts.save_draft(audit_context(socket), alert.id, alert.revision, attrs) do
+      {:ok, saved} ->
+        {:noreply, advance_without_writing(socket, saved, answered)}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, write_error_message(reason))}
     end
   end
 
-  defp save_and_advance(socket, alert, attrs) do
-    case Alerts.save_draft(audit_context(socket), alert.id, alert.revision, attrs) do
-      {:ok, saved} ->
+  # A card's value is the answer's own value, so a number is read back as the
+
+  # A card's value is the answer's own value, so a number is read back as the
+  # number the row stores rather than as text. Anything else is not one of the
+  # choices this question offered and advances nothing.
+  defp parse_choice(value) do
+    case Integer.parse(value) do
+      {number, ""} -> number
+      _other -> :error
+    end
+  end
+
+  # The route search answers keystrokes, and LiveView sends a `phx-keyup` on a
+  # text field as that field's own `value`, while a form replay - LiveViewTest,
+  # or form recovery after a reconnect - sends the same field by its `name`.
+  # Both name one query, so both are read here rather than one of them quietly
+  # doing nothing.
+  defp search_query(%{"value" => query}) when is_binary(query), do: query
+  defp search_query(%{"route_query" => query}) when is_binary(query), do: query
+  defp search_query(_params), do: nil
+
+  defp create_and_advance(socket, urgency) do
+    case Alerts.create_alert(audit_context(socket), %{"urgency" => urgency}) do
+      {:ok, alert} ->
         {:noreply,
-         push_patch(socket, to: saved_path(socket, saved, advance(saved, :urgency, socket)))}
+         push_navigate(socket, to: saved_path(socket, alert, advance(alert, :urgency, socket)))}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, write_error_message(reason))}
@@ -835,7 +1006,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       route_ids
       |> Enum.map(&Map.get(routes, &1))
       |> Enum.reject(&is_nil/1)
-      |> Enum.map_join(", ", & &1.label)
+      |> Enum.map_join(", ", &AlertComponents.route_label/1)
 
     names = if names == "", do: "Every route in this version", else: names
     names <> stop_phrase(stop_ids)
@@ -872,10 +1043,48 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     Map.fetch!(@questions, step)
   end
 
-  defp eyebrow(nil), do: "Start an alert"
-  defp eyebrow(%Alert{urgency: :now}), do: "Happening now"
-  defp eyebrow(%Alert{urgency: :planned}), do: "Planned alert"
-  defp eyebrow(_alert), do: "Start an alert"
+  # The single-choice questions say what moving on means; the multi-select says
+  # what it needs instead, because Continue is what carries a reader on there.
+  defp question_hint(:routes), do: "Choose at least one route, or the whole system."
+  defp question_hint(_step), do: "Choose an option to move on. You can go back at any time."
+
+  # The questions this step renders. Everything else in the sequence belongs to a
+  # later step and still says so rather than rendering an empty card.
+  @choice_steps [:urgency, :situation, :mode, :change, :routes, :direction, :message]
+
+  defp placeholder_step?(step), do: step not in @choice_steps
+
+  defp selected_route_ids(nil), do: []
+  defp selected_route_ids(alert), do: scope(alert).route_ids || []
+
+  defp system_scope?(nil), do: false
+  defp system_scope?(alert), do: scope(alert).shape == :system
+
+  # The prototype offers a whole-system choice everywhere except a detour and a
+  # cancellation, where naming the routes and the stops is the whole question
+  # (spec 4.3 offers it for a suspension).
+  defp system_scope_offered?(%Alert{situation: situation})
+       when situation in [:detour, :cancelled_trips],
+       do: false
+
+  defp system_scope_offered?(_alert), do: true
+
+  # The prototype's eyebrow: when the alert applies, then what it is about, so a
+  # reader who comes back to a question knows both at a glance.
+  defp eyebrow(alert) do
+    [eyebrow_when(alert), eyebrow_what(alert)]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join(" · ")
+  end
+
+  defp eyebrow_when(nil), do: "Start an alert"
+  defp eyebrow_when(%Alert{urgency: :now}), do: "Happening now"
+  defp eyebrow_when(%Alert{urgency: :planned}), do: "Planned alert"
+  defp eyebrow_when(_alert), do: "Start an alert"
+
+  defp eyebrow_what(nil), do: ""
+  defp eyebrow_what(%Alert{situation: nil}), do: ""
+  defp eyebrow_what(%Alert{situation: situation}), do: AlertComponents.situation_label(situation)
 
   # -- Shared helpers -----------------------------------------------------
 
@@ -977,9 +1186,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
                 <.question_card
                   id="alert-question"
+                  step={@step}
                   eyebrow={eyebrow(@alert)}
                   heading={question_for(@step, @alert)}
-                  hint="Choose an option to move on. You can go back at any time."
+                  hint={question_hint(@step)}
                   back={back_patch(@steps, @step)}
                 >
                   <.urgency_question
@@ -989,17 +1199,67 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
                     name="urgency"
                   />
 
+                  <.situation_question
+                    :if={@step == :situation}
+                    alert={@alert}
+                    event="choose_situation"
+                  />
+
+                  <.mode_question
+                    :if={@step == :mode}
+                    alert={@alert}
+                    event="choose_mode"
+                    route_types={@mode_route_types}
+                  />
+
+                  <.change_question
+                    :if={@step == :change}
+                    alert={@alert}
+                    event="choose_change"
+                  />
+
+                  <.routes_question
+                    :if={@step == :routes}
+                    options={@route_options}
+                    selected={selected_route_ids(@alert)}
+                    query={@route_query}
+                    error={@route_error}
+                    system_selected?={system_scope?(@alert)}
+                    allow_system?={system_scope_offered?(@alert)}
+                  />
+
+                  <.direction_question
+                    :if={@step == :direction}
+                    alert={@alert}
+                    event="choose_direction"
+                    directions={@directions}
+                  />
+
                   <.message_fields
                     :if={@step == :message}
                     form={@form}
                   />
 
-                  <p
-                    :if={@step != :urgency and @step != :message}
-                    class="text-sm text-muted"
-                  >
+                  <p :if={placeholder_step?(@step)} class="text-sm text-muted">
                     This question is still being added. Everything you have already answered is saved.
                   </p>
+
+                  <:actions>
+                    <%!-- The one question in this step that is not self-contained.
+                         Its choices are already saved; Continue is the explicit
+                         action that moves on, and it refuses to move when
+                         nothing is chosen. --%>
+                    <.button
+                      :if={@step == :routes}
+                      id="alert-routes-continue"
+                      type="button"
+                      variant="primary"
+                      class="ml-auto"
+                      phx-click="continue_routes"
+                    >
+                      Continue
+                    </.button>
+                  </:actions>
                 </.question_card>
               </.form>
             </div>
