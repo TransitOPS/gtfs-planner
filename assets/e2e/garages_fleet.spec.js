@@ -408,6 +408,12 @@ test.describe("Garages, Fleet and operations export", () => {
     await page.goto(`/gtfs/${versionId}/settings/fleet`);
     await expect(page.locator("h1")).toContainText("Fleet");
 
+    // The seed's other versions already assign vehicles to the organization, so
+    // the table starts with rows of its own and the journey counts what it adds.
+    await waitForLiveView(page);
+    await expect(page.locator("#vehicles-table")).toBeVisible();
+    const seededVehicles = await page.locator("#vehicles-table tr").count();
+
     // A type with a 10-hour limit: the drawer saves it and the matrix lists it.
     await openDrawer(page, "#add-vehicle-type", "vehicle-type-drawer");
 
@@ -446,14 +452,14 @@ test.describe("Garages, Fleet and operations export", () => {
 
     await page.locator("#vehicle-range-form").getByRole("button", { name: "Add vehicles" }).click();
     await expect(page.locator("#vehicle-notice")).toHaveText("15 vehicles added.");
-    await expect(page.locator("#vehicles-table tr")).toHaveCount(15);
+    await expect(page.locator("#vehicles-table tr")).toHaveCount(seededVehicles + 15);
 
-    const added = await vehicleRows(page);
-    const addedIds = added.map((row) => row.id);
+    const expectedIds = Array.from({ length: 15 }, (_, index) => String(rangeBase + index));
+    const addedIds = (await vehicleRows(page))
+      .map((row) => row.id)
+      .filter((id) => expectedIds.includes(id));
     expect(new Set(addedIds).size).toBe(15);
-    expect(addedIds.sort()).toEqual(
-      Array.from({ length: 15 }, (_, index) => String(rangeBase + index)).sort(),
-    );
+    expect(addedIds.sort()).toEqual(expectedIds.sort());
 
     // Filtering by the type shows exactly the new group.
     await page.selectOption("#vehicle-filters #type", { label: typeName });
