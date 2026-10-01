@@ -6067,13 +6067,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp bounded_reason(reason) when is_binary(reason), do: reason
   defp bounded_reason(_reason), do: "unexpected_error"
 
+  defp mark_editor_refusal(socket, :forbidden), do: assign(socket, :editor_revoked?, true)
+  defp mark_editor_refusal(socket, _reason), do: socket
+
   defp reasons_message(:not_found), do: "That pattern is no longer available."
 
   defp reasons_message(:forbidden),
     do: @forbidden_message
-
-  defp mark_editor_refusal(socket, :forbidden), do: assign(socket, :editor_revoked?, true)
-  defp mark_editor_refusal(socket, _reason), do: socket
 
   defp reasons_message(:stale_review),
     do: "This pattern changed since the page loaded. Reload the pattern and try again."
