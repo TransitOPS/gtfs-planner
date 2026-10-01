@@ -67,6 +67,14 @@ defmodule GtfsPlanner.Gtfs.Stations do
     end
   end
 
+  @doc "Checks whether an entity is currently part of the selected station."
+  def station_member?(%AuditContext{} = audit, type, id) do
+    case station(audit) do
+      %Stop{} = station -> rollback_preview_current_member?(audit, station, type, id)
+      nil -> false
+    end
+  end
+
   @doc "Creates a station-scoped pathway and its change log in one transaction."
   def create_pathway(%AuditContext{} = audit, attrs) when is_map(attrs) do
     run(audit, :share, fn station ->
@@ -497,6 +505,125 @@ defmodule GtfsPlanner.Gtfs.Stations do
       _ -> {:error, :not_found}
     end
   end
+
+  @doc "Reads a scoped rollback preview without taking write locks or changing data."
+  @spec rollback_preview(AuditContext.t(), Ecto.UUID.t()) ::
+          {:ok,
+           %{
+             log: ChangeLog.t(),
+             entity: Stop.t() | Pathway.t() | Level.t(),
+             current: map(),
+             target: map(),
+             expected_revision: pos_integer()
+           }}
+          | {:error, :not_found | :audit_only_entity | :cannot_rollback_create_or_delete | :missing_rollback_snapshot}
+  def rollback_preview(%AuditContext{} = audit, log_id) do
+    with {:ok, log_id} <- Ecto.UUID.cast(log_id),
+         %Stop{} = station <- station(audit),
+         %ChangeLog{} = log <-
+           Audit.get_change_log(audit.organization_id, audit.gtfs_version_id, log_id),
+         :ok <- ensure_rollback_preview_scope(audit, station, log),
+         {:ok, entity} <- rollback_preview_entity(audit, log),
+         {:ok, target} <- rollback_target_snapshot(log) do
+      current =
+        log.entity_type
+        |> Audit.entity_snapshot(entity)
+        |> stringify_rollback_keys()
+
+      current =
+        if log.entity_type == "stop" and Map.has_key?(target, "stop_id"),
+          do: Map.put(current, "stop_id", entity.stop_id),
+          else: current
+
+      {:ok,
+       %{
+         log: log,
+         entity: entity,
+         current: current,
+         target: target,
+         expected_revision: entity.lock_version
+       }}
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp ensure_rollback_preview_scope(audit, station, %ChangeLog{} = log) do
+    if log.entity_type in ["stop", "pathway", "level"] do
+      if log.station_stop_id == station.stop_id or
+           rollback_preview_current_member?(audit, station, log.entity_type, log.entity_id) do
+        :ok
+      else
+        {:error, :not_found}
+      end
+    else
+      current_stop_level? =
+        log.entity_type == "stop_level" and
+          case Ecto.UUID.cast(log.entity_id) do
+            {:ok, id} ->
+              Repo.exists?(
+                from(sl in StopLevel,
+                  where:
+                    sl.id == ^id and sl.organization_id == ^audit.organization_id and
+                      sl.gtfs_version_id == ^audit.gtfs_version_id and sl.stop_id == ^station.id
+                )
+              )
+
+            _ ->
+              false
+          end
+
+      if log.station_stop_id == station.stop_id or current_stop_level?,
+        do: {:error, :audit_only_entity},
+        else: {:error, :not_found}
+    end
+  end
+
+  defp rollback_preview_current_member?(audit, station, type, id) do
+    case rollback_preview_entity(audit, %ChangeLog{entity_type: type, entity_id: id}) do
+      {:ok, %Stop{} = stop} ->
+        stop.stop_id in station_scope_ids(audit, station)
+
+      {:ok, %Pathway{} = pathway} ->
+        ids = station_scope_ids(audit, station)
+        pathway.from_stop_id in ids or pathway.to_stop_id in ids
+
+      {:ok, %Level{} = level} ->
+        Repo.exists?(
+          from(sl in StopLevel,
+            where:
+              sl.level_id == ^level.id and sl.organization_id == ^audit.organization_id and
+                sl.gtfs_version_id == ^audit.gtfs_version_id and sl.stop_id == ^station.id
+          )
+        )
+
+      _ ->
+        false
+    end
+  end
+
+  defp rollback_preview_entity(audit, %ChangeLog{entity_type: type, entity_id: id}) do
+    with {:ok, id} <- Ecto.UUID.cast(id),
+         module when not is_nil(module) <- rollback_preview_module(type),
+         entity when not is_nil(entity) <-
+           Repo.one(
+             from(e in module,
+               where:
+                 e.id == ^id and e.organization_id == ^audit.organization_id and
+                   e.gtfs_version_id == ^audit.gtfs_version_id
+             )
+           ) do
+      {:ok, entity}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp rollback_preview_module("stop"), do: Stop
+  defp rollback_preview_module("pathway"), do: Pathway
+  defp rollback_preview_module("level"), do: Level
+  defp rollback_preview_module(_), do: nil
 
   @doc "Moves a child stop on the station diagram when its revision is current."
   def move_child_stop(%AuditContext{} = audit, id, %{x: x, y: y} = coordinate, expected_revision)

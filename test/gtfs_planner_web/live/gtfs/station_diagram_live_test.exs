@@ -12638,7 +12638,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert stop_name_change.restored == "Original Name"
     end
 
-    test "preview_rollback_change_log filters polluted stop logs to reversible fields",
+    test "preview_rollback_change_log includes a stored stop ID but excludes scope fields",
          %{
            conn: conn,
            user: user,
@@ -12695,11 +12695,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       %{field_changes: field_changes} = state.socket.assigns.rollback_preview
 
       fields = Enum.map(field_changes, & &1.field)
-      assert fields == ["stop_name"]
+      assert fields == ["stop_id", "stop_name"]
+      refute "organization_id" in fields
+      refute "gtfs_version_id" in fields
 
-      [stop_name_change] = field_changes
+      stop_name_change = Enum.find(field_changes, &(&1.field == "stop_name"))
       assert stop_name_change.current == "Changed Name"
       assert stop_name_change.restored == "Original Name"
+
+      stop_id_change = Enum.find(field_changes, &(&1.field == "stop_id"))
+      assert stop_id_change.current == "PREVIEW_POLLUTED_STOP"
+      assert stop_id_change.restored == "bad_stop_id"
     end
 
     test "preview_rollback_change_log shows coordinate-only stop changes",
@@ -12984,7 +12990,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert [%{action: "rolled_back"} | _] = state.socket.assigns.history_entries
     end
 
-    test "confirm_rollback_change_log reverts legacy polluted stop log", %{
+    test "confirm_rollback_change_log restores an explicit historical stop ID without scope fields", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -13043,7 +13049,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert restored.stop_name == "Original Name"
       assert restored.organization_id == organization.id
       assert restored.gtfs_version_id == gtfs_version.id
-      assert restored.stop_id == "CONFIRM_POLLUTED_STOP"
+      assert restored.stop_id == "bad_stop_id"
     end
 
     test "confirm_rollback_change_log restores a moved child stop coordinate and refreshes rollback history",
@@ -13259,7 +13265,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           "log-id" => Ecto.UUID.generate()
         })
 
-      assert result =~ "already been reverted" or result =~ "stale"
+      assert result =~ "entity no longer exists"
 
       after_stop = Gtfs.get_stop!(stop.id)
       assert after_stop.stop_name == "Changed Name"
@@ -13470,21 +13476,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
 
+      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      preview = %{
-        log: log,
-        entity_type: "stop",
-        entity_id: stop.id,
-        field_changes: [
-          %{field: "stop_name", current: "Original Name", restored: "Original Name"}
-        ]
-      }
-
-      install_preview(view, preview)
+      render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+      render_async(view, 5_000)
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+      assert :sys.get_state(view.pid).socket.assigns.rollback_preview != nil
 
       # Delete the entity out from under the preview.
       {:ok, _} = Repo.delete(Gtfs.get_stop!(stop.id))
@@ -13499,14 +13501,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
 
-      assert has_element?(
-               view,
-               "#flash-error",
-               "The target entity no longer exists."
-             )
+      assert has_element?(view, "#rollback-outcome", "The target entity no longer exists.")
 
       state = :sys.get_state(view.pid)
-      assert state.socket.assigns.rollback_preview == nil
+      assert state.socket.assigns.rollback_preview.outcome == :not_found
 
       assert Gtfs.get_stop(stop.id) == nil
 
@@ -13521,7 +13519,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert after_rolled_back == before_rolled_back
     end
 
-    test "confirm_rollback_change_log surfaces :rollback_log_failed and rolls back the entity update",
+    test "confirm_rollback_change_log reloads the stored log instead of trusting a tampered preview",
          %{
            conn: conn,
            user: user,
@@ -13555,21 +13553,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      # Tamper a non-authorization field so insert_rollback_log/3 fails inside
-      # the transaction (validate_required on entity_external_id) without
-      # tripping the cross-org/version guard before the Multi runs.
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+      preview = :sys.get_state(view.pid).socket.assigns.rollback_preview
+
+      # A LiveView assign cannot replace the stored log used by Stations.
       tampered_log = %{log | entity_external_id: nil}
-
-      preview = %{
-        log: tampered_log,
-        entity_type: "stop",
-        entity_id: stop.id,
-        field_changes: [
-          %{field: "stop_name", current: "Changed Name", restored: "Original Name"}
-        ]
-      }
-
-      install_preview(view, preview)
+      install_preview(view, %{preview | log: tampered_log})
 
       before_stop = Gtfs.get_stop!(stop.id)
       before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
@@ -13580,23 +13569,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           :count
         )
 
-      render_hook(view, "confirm_rollback_change_log", %{"log-id" => tampered_log.id})
+      result = render_hook(view, "confirm_rollback_change_log", %{"log-id" => tampered_log.id})
 
-      assert has_element?(
-               view,
-               "#flash-error",
-               "Unable to record the revert."
-             )
+      assert result =~ "Change reverted."
 
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.rollback_preview == nil
 
-      # Transaction should have rolled back the entity update.
       after_stop = Gtfs.get_stop!(stop.id)
-      assert after_stop.stop_name == before_stop.stop_name
-      assert after_stop.stop_name == "Changed Name"
+      assert before_stop.stop_name == "Changed Name"
+      assert after_stop.stop_name == "Original Name"
 
-      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count + 1
 
       after_rolled_back =
         Repo.aggregate(
@@ -13604,10 +13588,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           :count
         )
 
-      assert after_rolled_back == before_rolled_back
+      assert after_rolled_back == before_rolled_back + 1
     end
 
-    test "confirm_rollback_change_log surfaces :already_matches_current and clears stale preview",
+    test "confirm_rollback_change_log keeps a stale preview after a newer matching edit",
          %{
            conn: conn,
            user: user,
@@ -13646,6 +13630,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
+      render_hook(view, "show_history", %{"entity-type" => "stop", "entity-id" => stop.id})
+      render_async(view, 5_000)
       render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
       assert :sys.get_state(view.pid).socket.assigns.rollback_preview != nil
 
@@ -13662,12 +13648,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#flash-error",
-               "This change already matches the current state."
+               "#rollback-outcome",
+               "This item changed after the preview. Review the change again."
              )
 
       state = :sys.get_state(view.pid)
-      assert state.socket.assigns.rollback_preview == nil
+      assert state.socket.assigns.rollback_preview.outcome == :stale
       assert Gtfs.get_stop!(stop.id).diagram_coordinate == original_coordinate
 
       after_rolled_back =
@@ -13915,8 +13901,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       entry =
         build_log(%{
           action: "updated",
-          changed_fields: %{"stop_id" => %{"from" => "OLD", "to" => "NEW"}},
-          snapshot: %{"stop_id" => "OLD"}
+          changed_fields: %{"organization_id" => %{"from" => "OLD", "to" => "NEW"}},
+          snapshot: %{"organization_id" => "OLD"}
         })
 
       html =
@@ -14624,7 +14610,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       }
     end
 
-    test "preview surfaces fields present on entity but absent from snapshot", %{
+    test "preview omits fields absent from the shared rollback target", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -14660,9 +14646,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       # simulate older logs missing keys the current entity now has.
       pruned_snapshot = Map.delete(log.snapshot, "wheelchair_boarding")
 
-      log
-      |> Ecto.Changeset.change(%{snapshot: pruned_snapshot})
-      |> Repo.update!()
+      pruned_log =
+        log
+        |> Ecto.Changeset.change(%{snapshot: pruned_snapshot})
+        |> Repo.update!()
+
+      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Renamed"})
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -14675,10 +14664,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       preview = state.socket.assigns.rollback_preview
       assert is_map(preview)
 
-      wb_change = Enum.find(preview.field_changes, &(&1.field == "wheelchair_boarding"))
-      assert wb_change, "expected wheelchair_boarding in field_changes"
-      assert wb_change.restored == nil
-      assert wb_change.current == 1
+      assert {:ok, target} = GtfsPlanner.Gtfs.Stations.rollback_target_snapshot(pruned_log)
+      refute Map.has_key?(target, "wheelchair_boarding")
+      refute Enum.any?(preview.field_changes, &(&1.field == "wheelchair_boarding"))
     end
   end
 

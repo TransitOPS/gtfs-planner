@@ -1482,7 +1482,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       )
       when entity_type in ["stop", "pathway"] and is_binary(entity_id) do
     if drawer_open_for?(socket, entity_type, entity_id) and
-         entity_belongs_to_current_station?(socket, entity_type, entity_id) do
+         Stations.station_member?(socket.assigns.audit_ctx, entity_type, entity_id) do
       target = draw_map_entity_to_target(entity_type, entity_id)
 
       {:noreply,
@@ -4036,7 +4036,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def handle_event("show_history", %{"entity-type" => type, "entity-id" => id}, socket)
       when type in ["stop", "pathway", "level"] and is_binary(id) do
-    if entity_belongs_to_current_station?(socket, type, id) do
+    if Stations.station_member?(socket.assigns.audit_ctx, type, id) do
       {:noreply,
        socket
        |> cancel_and_reset_drawer_journal()
@@ -4103,13 +4103,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def handle_event("preview_rollback_change_log", %{"log-id" => log_id}, socket)
       when is_binary(log_id) do
-    case Gtfs.get_change_log(log_id) do
-      nil ->
-        {:noreply, put_flash(socket, :error, "Unable to preview rollback: change log not found")}
-
-      log ->
-        handle_rollback_preview_request(socket, log)
-    end
+    handle_rollback_preview_request(socket, log_id)
   end
 
   def handle_event("preview_rollback_change_log", _params, socket) do
@@ -4131,7 +4125,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       when is_binary(log_id) do
     case socket.assigns.rollback_preview do
       %{log: %{id: ^log_id}} = preview ->
-        case Gtfs.rollback_entity(preview.log, socket.assigns.audit_ctx) do
+        case Stations.rollback_entity(
+               socket.assigns.audit_ctx,
+               log_id,
+               Map.get(preview, :expected_revision)
+             ) do
           {:ok, entity} ->
             # The panel takes focus immediately so the destroyed confirm button
             # never strands it on <body>; when the refreshed history arrives,
@@ -4145,6 +4143,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              |> put_flash(:info, "Change reverted.")
              |> focus_history_target("history-#{preview.entity_type}")}
 
+          {:error, {:stale, _revision}} ->
+            {:noreply,
+             socket
+             |> assign(:rollback_preview, Map.put(preview, :outcome, :stale))
+             |> focus_history_target("rollback-outcome")}
+
+          {:error, :not_found} ->
+            {:noreply,
+             socket
+             |> assign(:rollback_preview, Map.put(preview, :outcome, :not_found))
+             |> focus_history_target("rollback-outcome")}
+
           {:error, reason} ->
             {:noreply,
              socket
@@ -4154,12 +4164,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         end
 
       _ ->
+        message =
+          case Stations.rollback_preview(socket.assigns.audit_ctx, log_id) do
+            {:error, :not_found} -> "Unable to revert change: entity no longer exists."
+            _ -> "This change has already been reverted or the preview is stale."
+          end
+
         {:noreply,
          socket
-         |> put_flash(
-           :error,
-           "This change has already been reverted or the preview is stale."
-         )
+         |> put_flash(:error, message)
          |> focus_rollback_fallback(log_id)}
     end
   end
@@ -5780,6 +5793,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp rollback_error_message(:entity_not_found),
     do: "The target entity no longer exists."
 
+  defp rollback_error_message(:not_found),
+    do: "The target entity no longer exists."
+
   defp rollback_error_message(:rollback_log_failed),
     do: "Unable to record the revert. Please try again."
 
@@ -5791,14 +5807,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp rollback_error_message(_), do: "Unable to revert change."
 
-  @spec rollback_preview_for(GtfsPlanner.Gtfs.ChangeLog.t()) :: {:ok, map()} | {:error, atom()}
-  defp rollback_preview_for(log) do
-    with {:ok, entity} <- rollback_preview_entity(log),
-         {:ok, target_snapshot} <- Gtfs.rollback_target_snapshot(log),
-         {:ok, field_changes} <- rollback_preview_field_changes(log, entity, target_snapshot) do
+  @spec rollback_preview_for(map()) :: {:ok, map()} | {:error, atom()}
+  defp rollback_preview_for(
+         %{log: log, entity: entity, current: current, target: target} = scoped
+       ) do
+    with {:ok, field_changes} <- rollback_preview_field_changes(current, target) do
       {:ok,
        %{
          log: log,
+         expected_revision: scoped.expected_revision,
          entity_type: log.entity_type,
          entity_id: log.entity_id,
          entity_name: rollback_entity_name(log.entity_type, entity),
@@ -5827,55 +5844,38 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp rollback_entity_natural_key("level", %Gtfs.Level{} = level), do: level.level_id
   defp rollback_entity_natural_key(_type, _entity), do: nil
 
-  defp handle_rollback_preview_request(socket, log) do
-    if rollback_preview_available?(socket, log) do
-      {:noreply, assign_rollback_preview(socket, log)}
-    else
-      {:noreply, put_flash(socket, :error, "Unable to preview rollback: entity no longer exists")}
+  defp handle_rollback_preview_request(socket, log_id) do
+    case Stations.rollback_preview(socket.assigns.audit_ctx, log_id) do
+      {:ok, scoped} ->
+        case rollback_preview_for(scoped) do
+          {:ok, preview} ->
+            {:noreply, assign(socket, :rollback_preview, preview)}
+
+          {:error, reason} ->
+            {:noreply,
+             socket
+             |> assign(:rollback_preview, nil)
+             |> put_flash(:error, rollback_error_message(reason))}
+        end
+
+      {:error, :not_found} ->
+        {:noreply,
+         socket
+         |> assign(:rollback_preview, nil)
+         |> put_flash(:error, "Unable to preview rollback: entity no longer exists")}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:rollback_preview, nil)
+         |> put_flash(:error, rollback_error_message(reason))}
     end
   end
 
-  defp rollback_preview_available?(socket, log) do
-    rollback_log_in_current_scope?(socket, log) and
-      entity_belongs_to_current_station?(socket, log.entity_type, log.entity_id)
-  end
-
-  defp assign_rollback_preview(socket, log) do
-    case rollback_preview_for(log) do
-      {:ok, preview} ->
-        assign(socket, :rollback_preview, preview)
-
-      {:error, :entity_not_found} ->
-        put_flash(socket, :error, "Unable to preview rollback: entity no longer exists")
-
-      {:error, :already_matches_current} ->
-        socket
-        |> assign(:rollback_preview, nil)
-        |> put_flash(:error, rollback_error_message(:already_matches_current))
-
-      {:error, _reason} ->
-        put_flash(socket, :error, "Unable to preview rollback")
-    end
-  end
-
-  defp rollback_preview_entity(log) do
-    case load_current_entity(log.entity_type, log.entity_id) do
-      nil -> {:error, :entity_not_found}
-      entity -> {:ok, entity}
-    end
-  end
-
-  defp rollback_preview_field_changes(log, entity, target_snapshot) do
-    current_snapshot =
-      log.entity_type
-      |> Gtfs.entity_snapshot(entity)
-      |> stringify_keys()
-
-    target_snapshot = stringify_keys(target_snapshot)
-
+  defp rollback_preview_field_changes(current_snapshot, target_snapshot) do
     field_changes =
-      log
-      |> rollback_preview_keys(current_snapshot, target_snapshot)
+      target_snapshot
+      |> Map.keys()
       |> Enum.reduce([], &rollback_preview_change(&1, current_snapshot, target_snapshot, &2))
       |> Enum.sort_by(& &1.field)
 
@@ -5883,38 +5883,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       {:error, :already_matches_current}
     else
       {:ok, field_changes}
-    end
-  end
-
-  defp rollback_preview_keys(log, current_snapshot, target_snapshot) do
-    previewable_fields = rollback_preview_field_set(log)
-
-    target_snapshot
-    |> Map.keys()
-    |> Kernel.++(Map.keys(current_snapshot))
-    |> Enum.uniq()
-    |> Enum.filter(&MapSet.member?(previewable_fields, &1))
-  end
-
-  defp rollback_preview_field_set(log) do
-    reversible_fields =
-      log.entity_type
-      |> Gtfs.reversible_fields_for()
-      |> MapSet.new()
-
-    changed_fields =
-      log.changed_fields
-      |> Kernel.||(%{})
-      |> Map.keys()
-      |> Enum.map(&to_string/1)
-      |> MapSet.new()
-
-    if MapSet.subset?(changed_fields, reversible_fields) do
-      reversible_fields
-    else
-      log
-      |> Gtfs.rollback_previewable_fields()
-      |> MapSet.new()
     end
   end
 
@@ -5929,65 +5897,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
-  defp load_current_entity("stop", id), do: Gtfs.get_stop(id)
-  defp load_current_entity("pathway", id), do: Gtfs.get_pathway(id)
-  defp load_current_entity("level", id), do: Gtfs.get_level(id)
-  defp load_current_entity(_, _), do: nil
-
-  defp rollback_log_in_current_scope?(socket, log) do
-    log.organization_id == socket.assigns.current_organization.id and
-      log.gtfs_version_id == socket.assigns.current_gtfs_version.id and
-      log.station_stop_id == socket.assigns.station.stop_id
-  end
-
-  defp entity_belongs_to_current_station?(socket, "stop", id) when is_binary(id) do
-    case Gtfs.get_stop(id) do
-      nil ->
-        false
-
-      %Gtfs.Stop{} = stop ->
-        stop.id == socket.assigns.station.id or
-          stop.stop_id == socket.assigns.station.stop_id or
-          stop.parent_station == socket.assigns.station.stop_id or
-          MapSet.member?(socket.assigns.platform_stop_ids, stop.parent_station)
-    end
-  end
-
-  defp entity_belongs_to_current_station?(socket, "pathway", id) when is_binary(id) do
-    case Gtfs.get_pathway(id) do
-      nil ->
-        false
-
-      pathway ->
-        organization_id = socket.assigns.current_organization.id
-        gtfs_version_id = socket.assigns.current_gtfs_version.id
-        station_stop_id = socket.assigns.station.stop_id
-        platform_stop_ids = socket.assigns.platform_stop_ids
-
-        from_stop =
-          Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, pathway.from_stop_id)
-
-        to_stop =
-          Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, pathway.to_stop_id)
-
-        endpoint_matches?(from_stop, station_stop_id, platform_stop_ids) or
-          endpoint_matches?(to_stop, station_stop_id, platform_stop_ids)
-    end
-  end
-
-  defp entity_belongs_to_current_station?(socket, "level", id) when is_binary(id) do
-    Enum.any?(socket.assigns.levels, fn level -> level.id == id end)
-  end
-
-  defp entity_belongs_to_current_station?(_socket, _type, _id), do: false
-
-  defp endpoint_matches?(nil, _station_stop_id, _platform_stop_ids), do: false
-
-  defp endpoint_matches?(%Gtfs.Stop{} = stop, station_stop_id, platform_stop_ids) do
-    stop.parent_station == station_stop_id or
-      MapSet.member?(platform_stop_ids, stop.parent_station)
-  end
-
   defp coords_unchanged?(%{"x" => current_x, "y" => current_y}, parsed_x, parsed_y) do
     coord_equal?(current_x, parsed_x) and coord_equal?(current_y, parsed_y)
   end
@@ -5998,12 +5907,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp coord_equal?(a, b) do
     to_string(a) == to_string(b)
-  end
-
-  defp stringify_keys(nil), do: %{}
-
-  defp stringify_keys(map) when is_map(map) do
-    Map.new(map, fn {k, v} -> {to_string(k), v} end)
   end
 
   defp handle_stop_selection(id, socket) do
