@@ -145,6 +145,225 @@ defmodule GtfsPlanner.Gtfs.ValidatorCliProcessTest do
     end
   end
 
+  describe "parse_report/2 normalization" do
+    test "keeps a grouped report's exact total beside its retained sample", %{dir: dir} do
+      write_report!(dir, %{
+        "notices" => [
+          %{
+            "code" => "missing_required_field",
+            "severity" => "ERROR",
+            "totalNotices" => 170,
+            "sampleNotices" => [
+              %{
+                "code" => "missing_required_field",
+                "filename" => "stops.txt",
+                "csvRowNumber" => 2
+              },
+              %{
+                "code" => "missing_required_field",
+                "filename" => "routes.txt",
+                "csvRowNumber" => 3
+              },
+              %{
+                "code" => "missing_required_field",
+                "filename" => "trips.txt",
+                "csvRowNumber" => 4
+              }
+            ]
+          }
+        ]
+      })
+
+      assert {:ok, %Result{} = result} = Validator.parse_report(dir, now_ms())
+
+      assert [group] = result.notices
+      assert group.code == "missing_required_field"
+      assert group.severity == "ERROR"
+      assert group.total_notices == 170
+      assert group.retained_notices == 3
+      assert group.sample_completeness == :sampled
+      assert length(group.notices) == 3
+      assert result.summary == %{errors: 170, warnings: 0, infos: 0}
+    end
+
+    test "keeps one code reported at two severities as two groups", %{dir: dir} do
+      write_report!(dir, %{
+        "notices" => [
+          %{
+            "code" => "duplicate_key",
+            "severity" => "ERROR",
+            "totalNotices" => 2,
+            "sampleNotices" => [%{"code" => "duplicate_key"}]
+          },
+          %{
+            "code" => "duplicate_key",
+            "severity" => "WARNING",
+            "totalNotices" => 5,
+            "sampleNotices" => [%{"code" => "duplicate_key"}]
+          }
+        ]
+      })
+
+      assert {:ok, %Result{} = result} = Validator.parse_report(dir, now_ms())
+
+      assert Enum.map(result.notices, &{&1.severity, &1.total_notices}) |> Enum.sort() ==
+               [{"ERROR", 2}, {"WARNING", 5}]
+
+      assert result.summary == %{errors: 2, warnings: 5, infos: 0}
+    end
+
+    test "sums repeated grouped reports of the same code and severity", %{dir: dir} do
+      write_report!(dir, %{
+        "notices" => [
+          %{"code" => "a_code", "severity" => "INFO", "totalNotices" => 4, "sampleNotices" => []},
+          %{"code" => "a_code", "severity" => "INFO", "totalNotices" => 6, "sampleNotices" => []}
+        ]
+      })
+
+      assert {:ok, %Result{} = result} = Validator.parse_report(dir, now_ms())
+
+      assert [group] = result.notices
+      assert group.total_notices == 10
+      assert group.retained_notices == 0
+      assert group.sample_completeness == :sampled
+      assert result.summary == %{errors: 0, warnings: 0, infos: 10}
+    end
+
+    test "marks a group whose every instance was retained as complete", %{dir: dir} do
+      write_report!(dir, %{
+        "notices" => [
+          %{
+            "code" => "a_code",
+            "severity" => "INFO",
+            "totalNotices" => 1,
+            "sampleNotices" => [%{"code" => "a_code"}]
+          }
+        ]
+      })
+
+      assert {:ok, %Result{notices: [group]}} = Validator.parse_report(dir, now_ms())
+
+      assert group.sample_completeness == :complete
+      assert group.retained_notices == 1
+    end
+
+    test "keeps an unknown severity visible and out of the summary totals", %{dir: dir} do
+      write_report!(dir, %{
+        "notices" => [
+          %{"code" => "a_code", "severity" => "ALARM", "totalNotices" => 3, "sampleNotices" => []}
+        ]
+      })
+
+      assert {:ok, %Result{} = result} = Validator.parse_report(dir, now_ms())
+
+      assert [group] = result.notices
+      assert group.severity == "ALARM"
+      assert group.total_notices == 3
+      assert result.summary == %{errors: 0, warnings: 0, infos: 0}
+    end
+
+    test "counts flat notices completely, one retained instance per total", %{dir: dir} do
+      write_report!(dir, %{
+        "notices" => [
+          %{"code" => "a_code", "severity" => "WARNING", "filename" => "stops.txt"},
+          %{"code" => "a_code", "severity" => "WARNING", "filename" => "routes.txt"},
+          %{"code" => "b_code", "severity" => "ERROR", "filename" => "trips.txt"}
+        ]
+      })
+
+      assert {:ok, %Result{} = result} = Validator.parse_report(dir, now_ms())
+
+      assert [a_group, b_group] = Enum.sort_by(result.notices, & &1.code)
+      assert a_group.total_notices == 2
+      assert a_group.retained_notices == 2
+      assert a_group.sample_completeness == :complete
+      assert b_group.total_notices == 1
+      assert result.summary == %{errors: 1, warnings: 2, infos: 0}
+    end
+
+    test "accepts an empty flat report as a clean zero-finding result", %{dir: dir} do
+      write_report!(dir, %{"notices" => []})
+
+      assert {:ok, %Result{} = result} = Validator.parse_report(dir, now_ms())
+
+      assert result.notices == []
+      assert result.summary == %{errors: 0, warnings: 0, infos: 0}
+    end
+
+    test "rejects a grouped total smaller than its own sample", %{dir: dir} do
+      write_report!(dir, %{
+        "notices" => [
+          %{
+            "code" => "a_code",
+            "severity" => "ERROR",
+            "totalNotices" => 1,
+            "sampleNotices" => [%{"code" => "a_code"}, %{"code" => "a_code"}]
+          }
+        ]
+      })
+
+      assert {:error, {:invalid_report, {:fewer_totals_than_samples, "a_code", "ERROR"}}} =
+               Validator.parse_report(dir, now_ms())
+    end
+
+    test "rejects a group without an integer nonnegative total", %{dir: dir} do
+      write_report!(dir, %{
+        "notices" => [
+          %{
+            "code" => "a_code",
+            "severity" => "ERROR",
+            "totalNotices" => "170",
+            "sampleNotices" => []
+          }
+        ]
+      })
+
+      assert {:error, {:invalid_report, :malformed_total}} = Validator.parse_report(dir, now_ms())
+    end
+
+    test "rejects a report that mixes grouped and flat notices", %{dir: dir} do
+      write_report!(dir, %{
+        "notices" => [
+          %{
+            "code" => "a_code",
+            "severity" => "ERROR",
+            "totalNotices" => 1,
+            "sampleNotices" => []
+          },
+          %{"code" => "b_code", "severity" => "ERROR"}
+        ]
+      })
+
+      assert {:error, {:invalid_report, :mixed_notice_forms}} =
+               Validator.parse_report(dir, now_ms())
+    end
+
+    test "records the validator version only when the report carries one", %{dir: dir} do
+      write_report!(dir, %{
+        "summary" => %{"validatorVersion" => "8.0.1"},
+        "notices" => []
+      })
+
+      assert {:ok, %Result{validator_version: "8.0.1"}} = Validator.parse_report(dir, now_ms())
+
+      write_report!(dir, %{"notices" => []})
+      assert {:ok, %Result{validator_version: nil}} = Validator.parse_report(dir, now_ms())
+
+      write_report!(dir, %{"summary" => %{"validatorVersion" => "  "}, "notices" => []})
+      assert {:ok, %Result{validator_version: nil}} = Validator.parse_report(dir, now_ms())
+
+      write_report!(dir, %{"summary" => %{"validatorVersion" => "v8"}, "notices" => []})
+      assert {:ok, %Result{validator_version: nil}} = Validator.parse_report(dir, now_ms())
+
+      write_report!(dir, %{
+        "summary" => %{"validatorVersion" => String.duplicate("8", 129)},
+        "notices" => []
+      })
+
+      assert {:ok, %Result{validator_version: nil}} = Validator.parse_report(dir, now_ms())
+    end
+  end
+
   describe "validate/3" do
     setup do
       put_env(:java_path, @fake_java)
@@ -306,6 +525,12 @@ defmodule GtfsPlanner.Gtfs.ValidatorCliProcessTest do
   end
 
   defp now_ms, do: System.monotonic_time(:millisecond)
+
+  defp write_report!(dir, report) do
+    path = Path.join(dir, "report.json")
+    File.write!(path, Jason.encode!(report))
+    path
+  end
 
   defp unique, do: System.unique_integer([:positive])
 
