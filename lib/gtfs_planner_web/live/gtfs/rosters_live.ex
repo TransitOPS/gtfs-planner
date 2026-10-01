@@ -92,8 +92,13 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
      # first paint: a `role="status"` region present with no text announces
      # nothing and still occupies the fixed box at the foot of the viewport.
      |> assign(:toast, nil)
+     |> stream(:roster_lines, [], dom_id: &roster_line_dom_id/1)
      |> attach_hook(:editor_access, :handle_event, &require_editor/3)}
   end
+
+  # The row's DOM id is its line number, not the line's id: a row is addressed
+  # by where it sits in the week, and the line number is what the grid shows.
+  defp roster_line_dom_id(line), do: "rosters-line-#{line.line_number}"
 
   defp require_editor(event, _params, socket) when event in @write_events do
     if editor_access?(socket) do
@@ -129,6 +134,11 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
 
     assign(socket, :toast, %{text: text, kind: kind, token: token})
   end
+
+  # The failed refresh and the grid's disabled controls are one sentence, and it
+  # is written once — by the component that owns it, for the same reason the head
+  # reads it from there.
+  defp paused_reason, do: RostersComponents.refresh_paused_reason()
 
   @impl true
   def handle_info({:dismiss_toast, token}, socket) do
@@ -175,6 +185,11 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
         |> assign(:operators_count, length(Operations.list_operators(organization.id)))
         |> assign(:loaded_version_id, to_string(version.id))
         |> assign(:load_state, roster_state(view.roster))
+        # Re-streamed on every read, keyed by line, so a roster that changed
+        # one line's days patches that row rather than redrawing the week. The
+        # stream is what a step that reorders or filters the grid (step 27)
+        # patches instead of the list it is reading.
+        |> stream(:roster_lines, view.roster.lines, reset: true)
 
       {:error, :not_found} ->
         # The session hook already refused a version that is not this
@@ -188,7 +203,8 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
         |> push_navigate(to: ~p"/")
 
       {:error, :unavailable} ->
-        # `roster` is deliberately untouched, so whatever is on screen stays. A
+        # `roster` is deliberately untouched, so whatever is on screen stays — and
+        # so does the streamed grid, which is part of that same last roster. A
         # first load that fails has nothing on screen, so it keeps the loading
         # panel and says why in the flash rather than leaving a blank region.
         socket
@@ -317,6 +333,21 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
         <RostersComponents.no_lines :if={
           @roster && @load_state == :ready && @roster.summary.lines == 0
         } />
+
+        <%!-- The grid, below the page's own figures. It is drawn only where there are
+        lines to draw: with no runs the no-runs panel has already said so, and with runs
+        and no lines the first-use panel has. --%>
+        <div
+          :if={@roster && @load_state in [:ready, :unavailable] && @roster.summary.lines > 0}
+          class="rounded-card border border-subtle bg-white"
+        >
+          <RostersComponents.grid
+            roster={@roster}
+            rows={@streams.roster_lines}
+            locked?={@load_state == :unavailable}
+            paused_reason={if @load_state == :unavailable, do: paused_reason()}
+          />
+        </div>
       </div>
     </Layouts.app>
     """
