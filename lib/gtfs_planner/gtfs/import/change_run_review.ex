@@ -223,6 +223,19 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
   defp uuid?(_value), do: false
 
   @doc """
+  Whether `run` is a computed station diff whose decisions this projection reads.
+
+  A pending compute, a computing run, a failure or a cancellation holds no
+  decisions a station could read, so a pack that checks its own precondition asks
+  here rather than keeping a second copy of the state list.
+  """
+  @spec computed_review_run?(ChangeRun.t()) :: boolean()
+  def computed_review_run?(%ChangeRun{kind: :station_diff, state: state}),
+    do: state in @computed_review_states
+
+  def computed_review_run?(_run), do: false
+
+  @doc """
   The digest of a run's own base source files.
 
   The base files - their names, sizes and content hashes, and the total - are the

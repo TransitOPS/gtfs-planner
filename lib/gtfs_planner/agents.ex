@@ -62,6 +62,8 @@ defmodule GtfsPlanner.Agents do
     "in_seat" => GtfsPlanner.Agents.Packs.InSeat,
     "runs" => GtfsPlanner.Agents.Packs.Runs,
     "service_queries" => GtfsPlanner.Agents.Packs.ServiceQueries,
+    "station_imports" => GtfsPlanner.Agents.Packs.StationImports,
+    "station_results" => GtfsPlanner.Agents.Packs.StationResults,
     "timetables" => GtfsPlanner.Agents.Packs.Timetables,
     "transfers" => GtfsPlanner.Agents.Packs.Transfers
   }
