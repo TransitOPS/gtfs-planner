@@ -4,6 +4,8 @@ defmodule GtfsPlanner.AccountsFixtures do
   entities via to `GtfsPlanner.Accounts` context.
   """
 
+  alias GtfsPlanner.Accounts.User
+
   @doc """
   Extracts a token from a confirmation/reset email sent to given user.
 
@@ -44,8 +46,8 @@ defmodule GtfsPlanner.AccountsFixtures do
   Generate a user who was invited and has not set a password.
   """
   def invited_user_fixture(attrs \\ %{}) do
-    %GtfsPlanner.Accounts.User{}
-    |> GtfsPlanner.Accounts.User.invite_changeset(Enum.into(attrs, %{email: unique_user_email()}))
+    %User{}
+    |> User.invite_changeset(Enum.into(attrs, %{email: unique_user_email()}))
     |> GtfsPlanner.Repo.insert!()
   end
 

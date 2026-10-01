@@ -113,23 +113,25 @@ defmodule GtfsPlanner.Accounts.FirstAdminConcurrencyTest do
 
     task =
       Task.Supervisor.async_nolink(supervisor, fn ->
-        unboxed(fn ->
-          Repo.transaction(fn ->
-            Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [@lock_key])
-            send(parent, {:setup_locked, self(), backend_pid()})
-
-            receive do
-              :commit -> user_fixture(%{email: email})
-            after
-              @contention_timeout -> raise "setup lock was not released"
-            end
-          end)
-        end)
+        unboxed(fn -> hold_setup_lock(parent, email) end)
       end)
 
     assert_receive {:setup_locked, task_pid, backend}, @contention_timeout
     assert task_pid == task.pid
     %{task: task, backend: backend}
+  end
+
+  defp hold_setup_lock(parent, email) do
+    Repo.transaction(fn ->
+      Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [@lock_key])
+      send(parent, {:setup_locked, self(), backend_pid()})
+
+      receive do
+        :commit -> user_fixture(%{email: email})
+      after
+        @contention_timeout -> raise "setup lock was not released"
+      end
+    end)
   end
 
   defp assert_blocked_by(backend, holder_backend) do
