@@ -66,6 +66,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     default: nil,
     doc: "%{kind: :no_route | :unavailable, failures: [%{position, from, to}]}"
 
+  attr :file_import, :map, default: nil, doc: "the open path-file import panel, or nil"
+
+  attr :map_line_upload, Phoenix.LiveView.UploadConfig,
+    required: true,
+    doc: "the path-file upload"
+
   def alignment_task(assigns) do
     assigns =
       assigns
@@ -387,82 +393,98 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
           aria-label="Alignment sections"
           class="order-2 flex min-h-0 min-w-0 flex-col overflow-y-auto border-subtle max-lg:border-t lg:order-1 lg:border-r"
         >
-          <div class="sticky top-0 z-10 border-b border-subtle bg-white px-4 pb-3 pt-4">
-            <div class="flex flex-wrap items-center justify-between gap-2">
-              <h2 id="alignment-title" class="text-base font-bold text-strong">
-                Path between stops
-              </h2>
-              <.badge id="alignment-status" tone={badge_tone(@header_status.tone)}>
-                {@header_status.text}
-              </.badge>
-            </div>
-            <p class="mt-1 text-[13px] text-muted">
-              <span class="tabular-nums">{@saved_count} of {length(@alignment.sections)}</span>
-              sections saved. Select a section to see its actions.
-            </p>
-            <div class="mt-3 flex flex-wrap gap-2">
-              <%!-- Step 32 all-missing generation for partially drawn patterns:
+          <.file_import_panel
+            :if={@file_import != nil}
+            upload={@map_line_upload}
+            file={@file_import}
+          />
+          <div :if={@file_import == nil} class="flex min-h-0 flex-1 flex-col">
+            <div class="sticky top-0 z-10 border-b border-subtle bg-white px-4 pb-3 pt-4">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <h2 id="alignment-title" class="text-base font-bold text-strong">
+                  Path between stops
+                </h2>
+                <.badge id="alignment-status" tone={badge_tone(@header_status.tone)}>
+                  {@header_status.text}
+                </.badge>
+              </div>
+              <p class="mt-1 text-[13px] text-muted">
+                <span class="tabular-nums">{@saved_count} of {length(@alignment.sections)}</span>
+                sections saved. Select a section to see its actions.
+              </p>
+              <div class="mt-3 flex flex-wrap gap-2">
+                <%!-- Step 32 all-missing generation for partially drawn patterns:
                 the empty-state overlay covers the first-alignment moment only,
                 so this entry point fires the same event while sections remain. --%>
-              <button
-                :if={
-                  @editable? and @missing_count > 0 and @missing_count < length(@alignment.sections)
-                }
-                type="button"
-                id="alignment-generate-missing"
-                phx-click="alignment_generate_paths"
-                data-commit="alignment"
-                disabled={@offline? or @generating? or @save_pending?}
-                title={generate_button_title(@offline?, @generating?, @save_pending?)}
-                class="btn btn-outline min-h-11"
-              >
-                <.icon name="hero-map" class="size-4" /> Generate street paths
-              </button>
-              <button
-                id="alignment-help"
-                type="button"
-                phx-click="alignment_open_help"
-                class="btn btn-ghost min-h-11"
-              >
-                <.icon name="hero-question-mark-circle" class="size-4" /> How to edit
-              </button>
+                <button
+                  :if={
+                    @editable? and @missing_count > 0 and @missing_count < length(@alignment.sections)
+                  }
+                  type="button"
+                  id="alignment-generate-missing"
+                  phx-click="alignment_generate_paths"
+                  data-commit="alignment"
+                  disabled={@offline? or @generating? or @save_pending?}
+                  title={generate_button_title(@offline?, @generating?, @save_pending?)}
+                  class="btn btn-outline min-h-11"
+                >
+                  <.icon name="hero-map" class="size-4" /> Generate street paths
+                </button>
+                <button
+                  :if={@editable?}
+                  type="button"
+                  id="alignment-open-file-import"
+                  phx-click="alignment_open_file_import"
+                  class="btn btn-outline min-h-11"
+                >
+                  <.icon name="hero-arrow-up-tray" class="size-4" /> Import a path file
+                </button>
+                <button
+                  id="alignment-help"
+                  type="button"
+                  phx-click="alignment_open_help"
+                  class="btn btn-ghost min-h-11"
+                >
+                  <.icon name="hero-question-mark-circle" class="size-4" /> How to edit
+                </button>
+              </div>
             </div>
-          </div>
 
-          <div id="alignment-sections" class="grid gap-2 px-4 py-4">
-            <%= for section <- @alignment.sections do %>
-              <.section_row
-                section={section}
-                visits_by_position={@visits_by_position}
-                selected={@selected != nil and section.position == @selected.position}
-                dirty?={section.position in @dirty_positions}
-                flagged?={section.position in @flagged_positions}
-              />
-              <.section_detail
-                :if={@selected != nil and section.position == @selected.position}
-                section={section}
-                visits_by_position={@visits_by_position}
-                editable?={@editable?}
-                offline?={@offline?}
-                generating?={@generating?}
-                save_pending?={@save_pending?}
-                dirty?={section.position in @dirty_positions}
-                flagged?={section.position in @flagged_positions}
-              />
-            <% end %>
-          </div>
-
-          <div
-            id="alignment-footer"
-            class="sticky bottom-0 mt-auto border-t border-subtle bg-white px-4 py-3"
-          >
-            <div class="flex items-center justify-between gap-2">
-              <p class="text-[13px] font-[650] text-strong">
-                In the feed export <span class="font-normal text-muted">(GTFS shapes)</span>
-              </p>
-              <p class="text-[13px] font-semibold text-default">{@footer_status.word}</p>
+            <div id="alignment-sections" class="grid gap-2 px-4 py-4">
+              <%= for section <- @alignment.sections do %>
+                <.section_row
+                  section={section}
+                  visits_by_position={@visits_by_position}
+                  selected={@selected != nil and section.position == @selected.position}
+                  dirty?={section.position in @dirty_positions}
+                  flagged?={section.position in @flagged_positions}
+                />
+                <.section_detail
+                  :if={@selected != nil and section.position == @selected.position}
+                  section={section}
+                  visits_by_position={@visits_by_position}
+                  editable?={@editable?}
+                  offline?={@offline?}
+                  generating?={@generating?}
+                  save_pending?={@save_pending?}
+                  dirty?={section.position in @dirty_positions}
+                  flagged?={section.position in @flagged_positions}
+                />
+              <% end %>
             </div>
-            <p class="mt-0.5 text-[13px] text-muted">{@footer_status.sentence}</p>
+
+            <div
+              id="alignment-footer"
+              class="sticky bottom-0 mt-auto border-t border-subtle bg-white px-4 py-3"
+            >
+              <div class="flex items-center justify-between gap-2">
+                <p class="text-[13px] font-[650] text-strong">
+                  In the feed export <span class="font-normal text-muted">(GTFS shapes)</span>
+                </p>
+                <p class="text-[13px] font-semibold text-default">{@footer_status.word}</p>
+              </div>
+              <p class="mt-0.5 text-[13px] text-muted">{@footer_status.sentence}</p>
+            </div>
           </div>
         </aside>
       </div>
@@ -1095,6 +1117,285 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     </.confirm_dialog>
     """
   end
+
+  # --- Import a path file ------------------------------------------------
+  #
+  # Step 29's panel, in place of the section list while a path file is being
+  # chosen: the prototype's `import-choose`, `import-pick` and `err-*` states
+  # (`.specs/27-shapes-again/references/pattern-path-prototype.html`). The
+  # file is read by the server, so a line is listed by the name, length and
+  # point count the parser found, and each file problem gets its own message
+  # (AC-22). "Check the fit" is the next step and belongs to the fit review
+  # the hook drives, so this panel stops at the chosen line.
+
+  attr :upload, Phoenix.LiveView.UploadConfig, required: true
+  attr :file, :map, default: nil, doc: "%{step: :choose | :pick | :error, name, size} or nil"
+
+  def file_import_panel(assigns) do
+    step = assigns.file && assigns.file.step
+
+    assigns =
+      assigns
+      |> assign(:step, step)
+      |> assign(:lines, Map.get(assigns.file || %{}, :lines) || [])
+      |> assign(:reading?, upload_reading?(assigns.upload))
+      |> assign(:ready?, upload_ready?(assigns.upload))
+      |> assign(:step_index, file_import_step_index(step))
+
+    ~H"""
+    <div id="file-import-panel" class="flex min-h-0 flex-1 flex-col">
+      <div class="border-b border-subtle bg-white px-4 pb-3 pt-4">
+        <button
+          type="button"
+          id="file-import-cancel"
+          phx-click="alignment_close_file_import"
+          class="inline-flex min-h-11 items-center gap-1.5 text-sm font-[650] text-action hover:underline"
+        >
+          <.icon name="hero-arrow-left" class="size-4" /> Map line
+        </button>
+        <h2 id="file-import-title" class="mt-1 text-base font-bold text-strong">
+          Import a path file
+        </h2>
+        <p :if={@step == :choose} class="mt-1 text-[13px] text-muted">
+          Use a line drawn in Google My Maps, Google Earth or QGIS, or a recorded run.
+          You check how it fits this pattern&rsquo;s stops first.
+        </p>
+        <ol class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[13px]" aria-label="Import steps">
+          <li
+            :for={
+              {label, index} <- Enum.with_index(["Choose a file", "Pick the line", "Check the fit"])
+            }
+            class={[
+              "flex items-center gap-1.5",
+              index == @step_index && "font-[650] text-strong",
+              index != @step_index && "text-muted"
+            ]}
+            aria-current={index == @step_index && "step"}
+          >
+            <span class={[
+              "flex size-5 items-center justify-center rounded-full text-[12px] font-bold",
+              index < @step_index && "bg-success-bg text-success-fg",
+              index == @step_index && "bg-inverse text-white",
+              index > @step_index && "bg-canvas text-muted"
+            ]}>
+              {if index < @step_index, do: "✓", else: index + 1}
+            </span>
+            {label}
+          </li>
+        </ol>
+      </div>
+
+      <div class="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <%!-- The chooser is only useful before a file is read: the prototype's
+          `import-pick` shows the file and the choice, not another dropzone. --%>
+        <.form
+          :if={@step != :pick}
+          for={%{}}
+          id="map-line-upload-form"
+          phx-change="alignment_file_validate"
+          phx-submit="alignment_file_consume"
+        >
+          <%!-- A file that has been read does not need a second dropzone: the
+            chooser collapses to a button so the file's lines or its message
+            are what the panel shows. --%>
+          <.upload_field
+            id="map-line-file-upload"
+            upload={@upload}
+            label="Path file"
+            help="GeoJSON, KML, KMZ or GPX, up to 10 MB. Nothing changes until you save the map line."
+            appearance={if @step == :choose, do: :dropzone, else: :button}
+            action_label={
+              if @step == :choose,
+                do: "Choose a file or drag and drop",
+                else: "Choose another file"
+            }
+            cancel_event="alignment_cancel_file"
+            state={file_upload_state(@step, @reading?)}
+          />
+          <button
+            :if={@step == :choose and @ready?}
+            type="submit"
+            id="file-import-read"
+            class="btn btn-primary mt-3 min-h-11 w-full"
+          >
+            Read this file
+          </button>
+        </.form>
+
+        <div
+          :if={@file != nil and @file.step in [:pick, :error]}
+          id="file-import-file-row"
+          class="mt-3 flex items-center gap-3 rounded-card border border-subtle bg-white py-0.5 pl-3 pr-1"
+        >
+          <.icon
+            name={if @file.step == :error, do: "hero-exclamation-triangle", else: "hero-document"}
+            class={[
+              "size-5 shrink-0",
+              if(@file.step == :error, do: "text-error-fg", else: "text-muted")
+            ]}
+          />
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-sm font-[650] text-strong" title={@file.name}>{@file.name}</p>
+            <p class="text-[13px] text-muted">
+              <span class="tabular-nums">{file_import_size(@file)}</span>
+              <span :if={@file.step == :error}>&middot; Not used</span>
+            </p>
+          </div>
+        </div>
+
+        <.message
+          :for={reason <- file_import_error(@file)}
+          id={"file-error-#{reason}"}
+          kind="error"
+          title={file_import_error_title(reason)}
+          class="mt-3"
+        >
+          {file_import_error_body(reason)}
+        </.message>
+
+        <form :if={@step == :pick} id="file-line-form" phx-change="alignment_file_choose" class="mt-4">
+          <fieldset>
+            <legend class="text-sm font-bold text-strong">
+              Which line is this pattern&rsquo;s path?
+            </legend>
+            <p class="mt-0.5 text-[13px] text-muted">
+              The file has {length(@lines)} {if length(@lines) == 1, do: "line", else: "lines"}.
+              Pick the one that follows this pattern&rsquo;s stops.
+            </p>
+            <div class="mt-2 grid gap-2">
+              <.scope_option
+                :for={{line, index} <- Enum.with_index(@lines)}
+                id={"file-line-#{index}"}
+                name="line"
+                value={to_string(index)}
+                checked={false}
+              >
+                <strong class="text-strong">{file_line_name(line, index)}</strong>
+                <span class="mt-0.5 block text-[13px] text-muted">
+                  {file_line_length(line)} &middot; {line.point_count}
+                  {if line.point_count == 1, do: "point", else: "points"}
+                </span>
+                <span :if={line.joined_from > 1} class="mt-0.5 block text-[13px] text-muted">
+                  Joined from {line.joined_from} pieces of the file
+                </span>
+              </.scope_option>
+            </div>
+          </fieldset>
+        </form>
+      </div>
+
+      <div class="border-t border-subtle bg-white px-4 py-3">
+        <p class="text-[13px] text-muted">
+          Nothing is saved until you save the map line.
+        </p>
+        <button
+          :if={@step == :pick}
+          type="button"
+          id="file-import-restart"
+          phx-click="alignment_open_file_import"
+          class="btn btn-outline mt-2 min-h-11 w-full"
+        >
+          Choose another file
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  defp file_upload_state(:error, _reading?), do: :idle
+  defp file_upload_state(_step, true), do: :uploading
+  defp file_upload_state(_step, _reading?), do: :idle
+
+  # The panel names the file's own problems; a missing or unknown reason still
+  # leaves the panel open with an honest message rather than a blank step.
+  defp file_import_error(%{step: :error, error: reason}), do: [reason]
+  defp file_import_error(_file), do: []
+
+  defp file_import_error_title(:unsupported), do: "Shapefiles can’t be imported yet"
+
+  defp file_import_error_title(:network_link),
+    do: "This KMZ links to a map online and has no line in it"
+
+  defp file_import_error_title(:points_only), do: "This file has points, not a line"
+  defp file_import_error_title(:areas_only), do: "This file has areas, not a line"
+
+  defp file_import_error_title(:swapped),
+    do: "This file lists latitude and longitude the wrong way round"
+
+  defp file_import_error_title(:too_large), do: "This file expands to more than the limit allows"
+  defp file_import_error_title(:empty), do: "This file has no line in it"
+  defp file_import_error_title(:unreadable), do: "This file couldn’t be read"
+  defp file_import_error_title(_reason), do: "This file could not be used"
+
+  defp file_import_error_body(:unsupported),
+    do:
+      "Export the line from QGIS or ArcGIS as GeoJSON, or from Google Earth as KML, then choose that file."
+
+  defp file_import_error_body(:network_link),
+    do:
+      "Google My Maps writes a link like this when “Keep data up to date with network link KML” is on. Export again with it off, then choose the new file."
+
+  defp file_import_error_body(:points_only),
+    do:
+      "It looks like a list of stops. A path file needs a line that follows the road. In Google My Maps, export the layer with the driving directions."
+
+  defp file_import_error_body(:areas_only),
+    do:
+      "A map line follows the road from stop to stop. If this is a service area, use it on the Flex pages instead."
+
+  defp file_import_error_body(:swapped),
+    do: "GeoJSON lists longitude first; this file seems to list latitude first."
+
+  defp file_import_error_body(:too_large),
+    do: "It may hold a whole road network. Export only the route’s line, then choose that file."
+
+  defp file_import_error_body(:empty),
+    do: "The file has no line to draw. Export the route’s line, then choose that file."
+
+  defp file_import_error_body(:unreadable),
+    do: "It’s empty or damaged. Export it again, then choose the new file."
+
+  defp file_import_error_body(_reason),
+    do: "Choose the file again. Nothing has changed on this pattern."
+
+  defp file_line_name(%{name: nil}, index), do: "Line #{index + 1}"
+  defp file_line_name(%{name: ""}, index), do: "Line #{index + 1}"
+  defp file_line_name(%{name: name}, _index), do: name
+
+  defp file_line_length(%{length_m: length_m}) when is_number(length_m),
+    do: "#{:erlang.float_to_binary(length_m / 1000, decimals: 1)} km"
+
+  defp file_line_length(_line), do: "—"
+
+  defp file_import_size(%{size: size}) when is_integer(size) and size < 1_000_000,
+    do: "#{Float.round(size / 1_000, 1)} KB"
+
+  defp file_import_size(%{size: size}) when is_integer(size),
+    do: "#{Float.round(size / 1_000_000, 1)} MB"
+
+  defp file_import_size(_file), do: ""
+
+  # The step markers follow the file's own state: the pick is step two, and a
+  # file problem stays on step one because nothing has been chosen yet.
+  defp file_import_step_index(:pick), do: 1
+  defp file_import_step_index(_step), do: 0
+
+  # An entry that has not finished arriving keeps the reading state honest
+  # instead of offering a line; a refused entry never appears here at all.
+  defp upload_reading?(%Phoenix.LiveView.UploadConfig{entries: entries}) when is_list(entries) do
+    Enum.any?(entries, &(not &1.done?))
+  end
+
+  defp upload_reading?(_upload), do: false
+
+  defp upload_ready?(%Phoenix.LiveView.UploadConfig{entries: entries}) when is_list(entries),
+    do: Enum.any?(entries, & &1.done?)
+
+  defp upload_ready?(_upload), do: false
+
+  defp upload_ready?(_upload), do: false
+
+  # --- import dialog (imported shapes) ------------------------------------
 
   attr :dialog, :map, default: nil, doc: "%{shape_id} when the import review dialog is open"
   attr :alignment, :map, default: nil, doc: "the Gtfs.alignment_editor/4 read model"

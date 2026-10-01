@@ -10,9 +10,14 @@ import Config
 # The flex area editor uploads GeoJSON, and `.geojson` is not a suffix MIME
 # knows; registering the RFC 7946 media type is what `allow_upload`'s
 # `accept: ~w(.geojson .json)` needs on both sides (the file input's `accept`
-# attribute and the server's entry validation).
+# attribute and the server's entry validation). The Map line tab's path file
+# upload adds KML, KMZ and GPX, which MIME does not know either: without these
+# the accept list the upload is configured with cannot be built at all.
 config :mime, :types, %{
-  "application/geo+json" => ["geojson"]
+  "application/geo+json" => ["geojson"],
+  "application/vnd.google-earth.kml+xml" => ["kml"],
+  "application/vnd.google-earth.kmz" => ["kmz"],
+  "application/gpx+xml" => ["gpx"]
 }
 
 config :gtfs_planner,

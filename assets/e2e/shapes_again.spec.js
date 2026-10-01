@@ -849,3 +849,189 @@ test.describe("import result", () => {
     expect(problems).toEqual([]);
   });
 });
+
+// ── file import (step 29) ───────────────────────────────────────────────────
+//
+// The Map line tab's "Import a path file" panel, reached through the real
+// upload: a two-line KML whose pieces do not meet offers the pick, and a
+// latitude-first GeoJSON gets the swapped message. The files are buffers
+// written by this block, so nothing on disk is read and the seeded pattern's
+// saved line is untouched — this panel only reads a file, and choosing a line
+// is step 30's preview, not a save.
+//
+// The reference half is the path prototype, which is a different file from the
+// grouping prototype the earlier blocks capture, so it gets its own path.
+// ────────────────────────────────────────────────────────────────────────────
+
+const PATTERN_REFERENCE_PATH =
+  process.env.SHAPES_PATTERN_REFERENCE_PATH ??
+  resolve(
+    REPO_ROOT,
+    ".specs",
+    "27-shapes-again",
+    "references",
+    "pattern-path-prototype.html",
+  );
+
+// Two legs of one route: the first ends 2 km south of where the second begins,
+// so the file offers two lines and the pick is reached.
+const TWO_LINE_KML = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <Placemark>
+      <name>Walking Route</name>
+      <LineString><coordinates>-124.0490,44.6485 -124.0480,44.6600</coordinates></LineString>
+    </Placemark>
+    <Placemark>
+      <name>Walk to the bus</name>
+      <LineString><coordinates>-124.0480,44.6900 -124.0470,44.7000</coordinates></LineString>
+    </Placemark>
+  </Document>
+</kml>
+`;
+
+// Oregon written latitude-first: the second slot carries a latitude no
+// longitude could hold, which is the reversal the parser reports.
+const SWAPPED_GEOJSON = JSON.stringify({
+  type: "FeatureCollection",
+  features: [
+    {
+      type: "Feature",
+      properties: { name: "Coast Highway" },
+      geometry: {
+        type: "LineString",
+        coordinates: [
+          [44.61, -124.05],
+          [44.63, -122.33],
+        ],
+      },
+    },
+  ],
+});
+
+test.describe("file import", () => {
+  for (const viewport of VIEWPORTS) {
+    test(`reads a path file and names its problems at ${viewport.width}×${viewport.height}`, async ({
+      page,
+    }, testInfo) => {
+      testInfo.setTimeout(180_000);
+
+      const problems = collectPageErrors(page);
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+      await stubTiles(page);
+      await logIn(page);
+      const versionId = await getVersionId(page);
+
+      await page.goto(
+        `/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns/BROWSER-SHAPES-A?task=alignment`,
+      );
+      await waitForLiveView(page);
+
+      await page.locator("#alignment-open-file-import").click();
+
+      const panel = page.locator("#file-import-panel");
+      await expect(panel).toBeVisible();
+      await expect(page.locator("#file-import-title")).toHaveText(
+        "Import a path file",
+      );
+      await expect(page.locator("#file-import-panel")).toContainText(
+        "Choose a file",
+      );
+      await expect(page.locator("#file-import-panel")).toContainText(
+        "Pick the line",
+      );
+      await expect(page.locator("#file-import-panel")).toContainText(
+        "Check the fit",
+      );
+      await expect(page.locator("#file-import-read")).toHaveCount(0);
+
+      await capture(page, `file-import-choose-production-${viewport.label}`);
+
+      const chooseReference = existsSync(PATTERN_REFERENCE_PATH);
+      if (chooseReference) {
+        await page.goto(`file://${PATTERN_REFERENCE_PATH}?state=import-choose`);
+        await page.waitForLoadState("networkidle");
+        await capture(page, `file-import-choose-reference-${viewport.label}`);
+      }
+
+      testInfo.annotations.push({
+        type: "reference-captured",
+        description: chooseReference
+          ? `file-import-choose-reference-${viewport.label}.png`
+          : "path prototype absent from this checkout",
+      });
+
+      // Back to the production panel, which the reference capture left behind.
+      await page.goto(
+        `/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns/BROWSER-SHAPES-A?task=alignment`,
+      );
+      await waitForLiveView(page);
+      await page.locator("#alignment-open-file-import").click();
+
+      const input = page.locator("#map-line-file-upload-input input[type=file]");
+      await input.setInputFiles({
+        name: "my-maps.kml",
+        mimeType: "application/vnd.google-earth.kml+xml",
+        buffer: Buffer.from(TWO_LINE_KML, "utf8"),
+      });
+
+      // The file is read when the editor asks for it, so the button appears
+      // once the upload has finished arriving.
+      await page.locator("#file-import-read").click();
+
+      await expect(page.locator("#file-line-0")).toBeVisible();
+      await expect(page.locator("#file-line-1")).toBeVisible();
+      await expect(page.locator("label[for='file-line-0']")).toContainText(
+        "Walking Route",
+      );
+      // The second leg's own piece carries no name, so the panel names it by
+      // its position rather than showing a blank.
+      await expect(page.locator("label[for='file-line-1']")).toContainText("Line 2");
+      await expect(page.locator("#file-import-file-row")).toContainText(
+        "my-maps.kml",
+      );
+      await expect(page.locator("#file-import-restart")).toHaveText(
+        "Choose another file",
+      );
+
+      await capture(page, `file-import-pick-production-${viewport.label}`);
+
+      // The second file replaces the first through the panel's own restart, so
+      // the error state is reached the way an editor reaches it.
+      await page.locator("#file-import-restart").click();
+      await expect(page.locator("#file-line-form")).toHaveCount(0);
+      await expect(page.locator("#file-import-read")).toHaveCount(0);
+
+      await input.setInputFiles({
+        name: "swapped.geojson",
+        mimeType: "application/geo+json",
+        buffer: Buffer.from(SWAPPED_GEOJSON, "utf8"),
+      });
+      await page.locator("#file-import-read").click();
+
+      await expect(page.locator("#file-error-swapped")).toBeVisible();
+      await expect(page.locator("#file-error-swapped")).toContainText(
+        "the wrong way round",
+      );
+      await expect(page.locator("#file-line-form")).toHaveCount(0);
+      await expect(page.locator("#file-import-restart")).toHaveCount(0);
+      // The chooser is the way out of a file problem, so it says so.
+      await expect(page.locator("#map-line-file-upload")).toContainText(
+        "Choose another file",
+      );
+
+      await capture(page, `file-import-err-swapped-production-${viewport.label}`);
+
+      if (existsSync(PATTERN_REFERENCE_PATH)) {
+        await page.goto(`file://${PATTERN_REFERENCE_PATH}?state=err-swapped`);
+        await page.waitForLoadState("networkidle");
+        await capture(page, `file-import-err-swapped-reference-${viewport.label}`);
+      }
+
+      expect(problems).toEqual([]);
+    });
+  }
+});
