@@ -97,13 +97,14 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLiveTest do
       refute has_element?(view, "#coming-soon")
     end
 
-    test "the Rosters placeholder still renders Coming soon", context do
+    test "the Rosters tab opens the Rosters page, not a placeholder", context do
       {conn, world} = signed_in(context)
 
       {:ok, view, html} = live(conn, "/gtfs/#{world.version.id}/rosters")
 
-      assert html =~ "Coming soon", "/rosters stopped being a Coming soon page"
-      assert has_element?(view, "#coming-soon")
+      assert has_element?(view, "#rosters-page")
+      refute html =~ "Coming soon", "/rosters stopped being a Coming soon page"
+      refute has_element?(view, "#coming-soon")
     end
   end
 

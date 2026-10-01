@@ -10,21 +10,10 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
 
   # Literal expectations transcribed from the finalized content table. They are
   # written here rather than read back from the catalog under test. Transfers,
-  # Blocks, Flex, Feed details, Agencies, Export defaults, Fares and Evolutions
-  # are absent: each destination ships as a working page, so it has no catalog
-  # entry.
+  # Blocks, Flex, Feed details, Agencies, Export defaults, Fares, Runs, Rosters
+  # and Evolutions are absent: each destination ships as a working page, so it has
+  # no catalog entry.
   @catalog [
-    rosters: %{
-      title: "Rosters",
-      scope: :version,
-      summary: "Group runs into weekly lines and record which operator holds each line.",
-      section_names: [
-        "Build weekly lines",
-        "Check each line",
-        "Record who picks each line",
-        "Export assignments"
-      ]
-    },
     feed_url: %{
       title: "Published feed URL",
       scope: :all_versions,
@@ -40,10 +29,11 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
 
   describe "feature/1" do
     test "returns the finalized copy for every fixed key" do
-      # Runs is absent: `/gtfs/:version/runs` is `Gtfs.RunsLive`, not a
-      # placeholder. The count is asserted so a removed destination cannot be
+      # Runs and Rosters are absent: `/gtfs/:version/runs` is
+      # `Gtfs.RunsLive` and `/gtfs/:version/rosters` is `Gtfs.RostersLive`, not
+      # placeholders. The count is asserted so a removed destination cannot be
       # re-added by accident.
-      assert length(@catalog) == 2
+      assert length(@catalog) == 1
 
       Enum.each(@catalog, fn {key, expected} ->
         entry = ComingSoon.feature(key)
@@ -99,6 +89,15 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
       end
     end
 
+    test "no longer answers for Rosters, whose Operations page shipped" do
+      # The retired placeholder key must not resolve to plausible placeholder
+      # copy: `/gtfs/:version/rosters` is `Gtfs.RostersLive` and the Operations
+      # sub nav marks that tab current.
+      assert_raise FunctionClauseError, fn ->
+        ComingSoon.feature(Function.identity(:rosters))
+      end
+    end
+
     test "does not convert a string into a catalog key" do
       assert_raise FunctionClauseError, fn ->
         ComingSoon.feature(Function.identity("blocks"))
@@ -122,14 +121,14 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
     end
 
     test "renders the caller's scope label verbatim" do
-      doc = render_doc(ComingSoon.feature(:rosters), "This version: Fall 2026")
+      doc = render_doc(ComingSoon.feature(:feed_url), "This version: Fall 2026")
 
       assert text_of(doc, "#coming-soon-scope") == "This version: Fall 2026"
     end
 
     test "renders exactly one title at the requested level and the outcome list heading one level below" do
       for level <- [1, 2, 3] do
-        doc = render_doc(ComingSoon.feature(:rosters), "All versions", level)
+        doc = render_doc(ComingSoon.feature(:feed_url), "All versions", level)
 
         assert Enum.count(LazyHTML.query(doc, "#coming-soon-title")) == 1
         assert Enum.count(LazyHTML.query(doc, "h#{level}#coming-soon-title")) == 1
@@ -144,7 +143,7 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
 
       html =
         rendered_to_string(~H"""
-        <.coming_soon feature={ComingSoon.feature(:rosters)} scope_label="All versions" />
+        <.coming_soon feature={ComingSoon.feature(:feed_url)} scope_label="All versions" />
         """)
 
       doc = LazyHTML.from_fragment(html)
@@ -153,7 +152,7 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
     end
 
     test "renders a labelled section with a semantic subsection list and no controls" do
-      doc = render_doc(ComingSoon.feature(:rosters), "This version: Fall 2026")
+      doc = render_doc(ComingSoon.feature(:feed_url), "This version: Fall 2026")
 
       assert LazyHTML.attribute(LazyHTML.query(doc, "section#coming-soon"), "aria-labelledby") ==
                ["coming-soon-title"]

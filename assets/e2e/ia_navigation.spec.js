@@ -262,17 +262,16 @@ for (const { width, height, label } of VIEWPORTS) {
         await expect(
           page.locator("#operations-sub-nav a[aria-current='page']"),
         ).toHaveText(title);
-        // Rosters is the one Operations placeholder left; Runs and Blocks are
-        // built pages and must not render it.
-        if (title === "Rosters") {
-          await expect(page.locator("#coming-soon-status")).toHaveText(
-            /Coming soon/,
-          );
-        } else {
-          await expect(page.locator("#coming-soon")).toHaveCount(0);
-        }
+        // Rosters became a real page in spec 09 step 24, so it joins Runs and
+        // Blocks: it must not render the placeholder. This block is now empty
+        // for every title, which is the point — a destination that is not
+        // listed here has no placeholder to assert.
+        await expect(page.locator("#coming-soon")).toHaveCount(0);
         if (title === "Runs") {
           await expect(page.locator("#runs-page")).toBeAttached();
+        }
+        if (title === "Rosters") {
+          await expect(page.locator("#rosters-page")).toBeAttached();
         }
         await expectNoPageOverflow(page);
       }

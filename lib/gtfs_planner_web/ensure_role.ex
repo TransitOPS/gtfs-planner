@@ -180,6 +180,30 @@ defmodule GtfsPlannerWeb.EnsureRole do
   def ensure_role(conn, _role_spec), do: unauthorized(conn)
 
   @doc """
+  Whether this user is an editor of this organization right now.
+
+  This is the write-time check, and it is a separate question from
+  `on_mount/4`'s: a mount guard reads the membership once, when the page opens,
+  so a role revoked while the page is open would otherwise leave the open page
+  able to write until it was reloaded. A page that writes re-reads the
+  membership through this function before each write and refuses the next one.
+
+  A deactivated membership counts as no membership, and a missing user,
+  organization or membership counts as no access, so a caller can hand it
+  whatever the socket holds and get a boolean rather than a match to handle.
+  """
+  @spec editor_member?(Ecto.UUID.t() | nil, Ecto.UUID.t() | nil) :: boolean()
+  def editor_member?(user_id, organization_id) do
+    with %UserOrgMembership{} = membership <-
+           Accounts.get_user_org_membership(user_id, organization_id),
+         true <- is_nil(membership.deactivated_at) do
+      has_role?(membership.roles, :pathways_studio_editor)
+    else
+      _other -> false
+    end
+  end
+
+  @doc """
   Helper function to check if a set of roles matches a role specification.
 
   ## Parameters
