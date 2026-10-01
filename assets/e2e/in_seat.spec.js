@@ -1043,7 +1043,7 @@ test.describe("In-seat connections", () => {
     await expect(page.locator("#connection-save")).toBeEnabled();
     await page.locator("#connection-save").click();
     await expect(page.locator("#connection-result")).toContainText(
-      /Saved: riders stay on board from trip BIS_NEAR_T1 to trip BIS_NEAR_T2\./,
+      /Saved: riders stay on board from trip BIS_NEAR_T1 to BIS_NEAR_T2\./,
     );
     await expect(page.locator("#gap-drawer")).toBeHidden();
 
@@ -1129,6 +1129,13 @@ test.describe("In-seat connections", () => {
     await page.locator("#connections-group-back").click();
     await groupRow(page, SCHOOL_JUNCTION).click();
     await groupTableButton(page, SHARED_PAIR).click();
+    // The refused pair's two cards are rendered greyed out rather than removed,
+    // so the one measured below is on the page before it is measured.
+    await expect(
+      page.locator(
+        '[data-role="connection-choice"][data-choice="stay_on_board"]',
+      ),
+    ).toBeVisible();
 
     const refusedCards = {
       "refused stay card": await computedOpacity(
@@ -1212,9 +1219,12 @@ test.describe("In-seat connections on a phone", () => {
 
     await groupRow(page, FAR_AVENUE).click();
     await groupTableButton(page, "BIS-FA2").click();
+    await expect(page.locator("#gap-drawer")).toBeVisible();
 
     // The drawer is the full width of a phone and everything in it fits: the
-    // pair map, the three choices and the footer's own actions.
+    // pair map, the three choices and the footer's own actions. The width is
+    // rounded first because a full-width box is reported by the browser as
+    // 390.00003…, and 3e-5 of a pixel is not an overflow.
     for (const selector of [
       "#gap-drawer",
       "#connection-pair-map-region",
@@ -1225,9 +1235,10 @@ test.describe("In-seat connections on a phone", () => {
     ]) {
       const box = await targetBox(page, selector);
       expect(box, `${selector} is rendered`).not.toBeNull();
-      expect(box.width, `${selector} fits the viewport`).toBeLessThanOrEqual(
-        PHONE.width,
-      );
+      expect(
+        Math.round(box.width),
+        `${selector} fits the viewport`,
+      ).toBeLessThanOrEqual(PHONE.width);
     }
 
     // Choosing a setting does not widen the page either.
