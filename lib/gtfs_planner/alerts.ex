@@ -36,6 +36,7 @@ defmodule GtfsPlanner.Alerts do
   alias GtfsPlanner.Alerts.Completion
   alias GtfsPlanner.Alerts.Listing
   alias GtfsPlanner.Alerts.Recurrence
+  alias GtfsPlanner.Alerts.Targets
   alias GtfsPlanner.Alerts.TimingAnswer
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.DisplayClock
@@ -115,6 +116,100 @@ defmodule GtfsPlanner.Alerts do
     |> DisplayClock.resolve_zone(gtfs_version_id)
     |> then(&DisplayClock.localize_many([DateTime.utc_now()], &1))
     |> List.first()
+  end
+
+  @doc """
+  Matches the version's routes on short name, long name or `route_id`.
+
+  Every target lookup below resolves inside the context's organization and
+  version, so an alert is always about the schedule it was written against and
+  never about the version the editor happens to be looking at now (R1, CR-4).
+  Like `get_alert/2` and `list_alerts/2`, each lookup resolves the actor's
+  current editor membership first; a member who has lost the role gets no
+  options at all, so a lookup is fail-closed rather than a read past the role
+  check.
+  """
+  @spec search_routes(AuditContext.t(), String.t()) :: [Targets.route_option()]
+  def search_routes(%AuditContext{} = audit_context, query) do
+    with_options(audit_context, fn -> Targets.search_routes(audit_context, query) end)
+  end
+
+  @doc """
+  Matches the version's selectable stops, preferred and excluded as named.
+
+  `:prefer_route_ids` lists the stops those routes serve first and
+  `:exclude_stop_ids` drops the stops the alert already names.
+  """
+  @spec search_stops(AuditContext.t(), String.t(), keyword()) :: [Targets.stop_option()]
+  def search_stops(%AuditContext{} = audit_context, query, opts \\ []) do
+    with_options(audit_context, fn -> Targets.search_stops(audit_context, query, opts) end)
+  end
+
+  @doc """
+  Lists the stops the version's route serves, in the order its trips serve them.
+  """
+  @spec route_stops(AuditContext.t(), Ecto.UUID.t()) :: [Targets.stop_option()]
+  def route_stops(%AuditContext{} = audit_context, route_id) do
+    with_options(audit_context, fn -> Targets.route_stops(audit_context, route_id) end)
+  end
+
+  @doc """
+  Lists the version's routes that serve any of the given stops.
+  """
+  @spec routes_at_stops(AuditContext.t(), [Ecto.UUID.t()]) :: [Targets.route_option()]
+  def routes_at_stops(%AuditContext{} = audit_context, stop_ids) do
+    with_options(audit_context, fn -> Targets.routes_at_stops(audit_context, stop_ids) end)
+  end
+
+  @doc """
+  Lists the version's route's departures on one date, earliest first.
+
+  Only trips whose service is active on that date are offered, exceptions
+  included, so a cancellation step cannot offer a departure the trip does not
+  run.
+  """
+  @spec departures_on(AuditContext.t(), Ecto.UUID.t(), 0 | 1 | nil, Date.t()) :: [
+          Targets.departure()
+        ]
+  def departures_on(%AuditContext{} = audit_context, route_id, direction_id, %Date{} = date) do
+    with_options(audit_context, fn ->
+      Targets.departures_on(audit_context, route_id, direction_id, date)
+    end)
+  end
+
+  @doc """
+  Lists the distinct route types the version contains, ascending.
+  """
+  @spec route_types(AuditContext.t()) :: [integer()]
+  def route_types(%AuditContext{} = audit_context) do
+    with_options(audit_context, fn -> Targets.route_types(audit_context) end)
+  end
+
+  @doc """
+  Returns the labels of the routes, stops and trips the alert's scope names,
+  keyed by the same row UUIDs the alert stored.
+  """
+  @spec labels_for(AuditContext.t(), Alert.t()) :: %{
+          routes: %{optional(Ecto.UUID.t()) => String.t()},
+          stops: %{optional(Ecto.UUID.t()) => String.t()},
+          trips: %{optional(Ecto.UUID.t()) => String.t()}
+        }
+  def labels_for(%AuditContext{} = audit_context, %Alert{} = alert) do
+    case authorize_editor(audit_context) do
+      :ok -> Targets.labels_for(audit_context, alert)
+      {:error, :forbidden} -> %{routes: %{}, stops: %{}, trips: %{}}
+    end
+  end
+
+  # A target lookup takes no lock and writes nothing, so it authorizes rather
+  # than locks, exactly as the other reads here do. A member without the editor
+  # role reads no options; the refusal is the empty result the caller already
+  # renders as "nothing to choose".
+  defp with_options(%AuditContext{} = audit_context, fun) do
+    case authorize_editor(audit_context) do
+      :ok -> fun.()
+      {:error, :forbidden} -> []
+    end
   end
 
   @doc """

@@ -159,10 +159,21 @@ defmodule GtfsPlanner.Alerts.Listing do
 
   # -- Referenced target identities ---------------------------------------
 
-  # Every identity the scope names, wherever the operator entered it. A single
-  # value, a stretch end, a boarding alternative, a route and stop pair and a
-  # cancelled departure are all targets a version edit could remove.
-  defp referenced_ids(%Alert{scope: scope}) do
+  @doc """
+  Returns every route, stop and trip row UUID the alert's scope names.
+
+  The identities are wherever the operator entered them: a single value, a
+  stretch end, a boarding alternative, a route and stop pair and a cancelled
+  departure are all targets a version edit could remove. `Alerts.Targets`
+  labels exactly these identities, so a list row and the alert's own labels
+  read from one reading of the stored scope.
+  """
+  @spec referenced_ids(Alert.t()) :: %{
+          routes: [String.t()],
+          stops: [String.t()],
+          trips: [String.t()]
+        }
+  def referenced_ids(%Alert{scope: scope}) do
     %{
       routes: [
         scope && scope.route_ids,
