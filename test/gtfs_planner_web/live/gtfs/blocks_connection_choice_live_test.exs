@@ -161,18 +161,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionChoiceLiveTest do
 
     test "a trip running between the pair on another day type disables the two explicit options",
          context do
-      {a, b, _main} = same_stop_pair(context)
+      {a, b, main} = same_stop_pair(context)
 
       # `BIS_SH_X`'s shape: a trip of the second service runs between the pair, so
-      # the pair is consecutive on the school day type and not on the other.
+      # the pair is consecutive on the school day type and not on the other. It
+      # has to sit *between* the two, after `a` arrives at 07:00 and before `b`
+      # arrives at 07:10, or it is not the trip that closes the gap.
       trip(context, %{
         trip_id: "X",
         service_id: "NS",
         block_id: "101",
-        first_stop: a.last_stop.stop_id,
-        last_stop: a.last_stop.stop_id,
-        first: "07:12:00",
-        last: "08:12:00"
+        first_stop: main.stop_id,
+        last_stop: main.stop_id,
+        first: "07:02:00",
+        last: "07:08:00"
       })
 
       url = gap_url(blocks_path(context.version.id), a, b, day: DayTypes.key(["W"]))
@@ -187,7 +189,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionChoiceLiveTest do
 
       assert has_element?(view, "#connection-blocked-reason", "Only Not stated is available.")
       assert has_element?(view, "#connection-blocked-reason", "trip X runs next on this vehicle")
-      assert has_element?(view, "#connection-blocked-day-link", "Open Weekday + No school")
+      assert has_element?(view, "#connection-blocked-day-link", "Open No school + Weekday")
     end
 
     test "a pair that is consecutive everywhere leaves both explicit options enabled", context do
@@ -447,8 +449,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionChoiceLiveTest do
       view |> element("#connection-discard-cancel") |> render_click()
 
       refute has_element?(view, "#connection-discard[data-open='true']")
-      assert has_element?(view, "#gap-drawer[data-open='true']")
       assert has_element?(view, "#connection-choice-reboard[checked]")
+
+      # The drawer is still open and the draft is still dirty, so closing again
+      # asks a second time rather than closing silently.
+      view |> element("#gap-drawer-close") |> render_click()
+
+      assert has_element?(view, "#connection-discard[data-open='true']", "Discard this change?")
     end
 
     test "discarding replays the close the confirmation stood in front of", context do
