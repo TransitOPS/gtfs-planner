@@ -438,7 +438,7 @@ defmodule GtfsPlanner.Gtfs.Export.TransfersValidatorTest do
       end_date: ~D[2026-12-31]
     )
 
-    for {index, stop_id} <- Enum.with_index(["BSTOP-1", "BSTOP-2", "BSTOP-3", "BSTOP-4"], 0) do
+    for {stop_id, index} <- Enum.with_index(["BSTOP-1", "BSTOP-2", "BSTOP-3", "BSTOP-4"], 0) do
       stop_fixture(organization_id, version_id,
         stop_id: stop_id,
         stop_name: "Block Stop #{index + 1}",
