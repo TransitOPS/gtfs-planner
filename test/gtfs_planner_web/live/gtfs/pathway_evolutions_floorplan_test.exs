@@ -349,10 +349,12 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsFloorplanTest do
       assert attributes.selected_id == ""
       assert attributes.closed_ids == []
 
-      # Source-derived pre-change value: Phoenix builds this endpoint base from
-      # the configured host and HTTP port (4002); storage added this relative path.
+      # The component adds the endpoint base to the path DiagramStorage returns.
+      # The base follows the endpoint's configured port, which runtime.exs reads
+      # from PORT, so the expectation takes it from Endpoint.url/0.
       expected_image_url =
-        "http://localhost:4002/uploads/diagrams/#{organization.id}/#{version.id}/" <>
+        GtfsPlannerWeb.Endpoint.url() <>
+          "/uploads/diagrams/#{organization.id}/#{version.id}/" <>
           "FLOORPLAN_STATION/floorplan_l1.png"
 
       assert attributes.image_url == expected_image_url

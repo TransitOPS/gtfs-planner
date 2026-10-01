@@ -622,15 +622,11 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
 
       refute path =~ version.id
 
-      url = GtfsPlannerWeb.Endpoint.url() <> path
+      assert path ==
+               "/uploads/diagrams/#{org.id}/" <>
+                 "#{PathSafety.stop_storage_dir(station.stop_id)}/plan.png"
 
-      expected_url =
-        "http://localhost:4002/uploads/diagrams/#{org.id}/" <>
-          "#{PathSafety.stop_storage_dir(station.stop_id)}/plan.png"
-
-      assert url == expected_url
-
-      conn = conn(:get, URI.parse(url).path) |> UploadsPlug.call([])
+      conn = conn(:get, path) |> UploadsPlug.call([])
       assert conn.halted
       assert conn.status == 200
       assert conn.resp_body == "only legacy bytes"

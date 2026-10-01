@@ -635,10 +635,12 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       assert floorplan["center_lon"] == -75.1632
       assert floorplan["scale_mpp"] == 0.05
       assert floorplan["rotation_deg"] == 12.5
-      # Source-derived pre-change value: Phoenix builds Endpoint.url/0 from the
-      # configured host and HTTP port (4002), and DiagramStorage added this path.
+      # The controller adds the endpoint base to the path DiagramStorage returns.
+      # The base follows the endpoint's configured port, which runtime.exs reads
+      # from PORT, so the expectation takes it from Endpoint.url/0.
       expected_floorplan_url =
-        "http://localhost:4002/uploads/diagrams/#{org.id}/#{version.id}/" <>
+        GtfsPlannerWeb.Endpoint.url() <>
+          "/uploads/diagrams/#{org.id}/#{version.id}/" <>
           "#{PathSafety.stop_storage_dir(station.stop_id)}/busway_plan.png"
 
       assert floorplan["url"] == expected_floorplan_url
