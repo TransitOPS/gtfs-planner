@@ -6003,10 +6003,24 @@ defmodule GtfsPlanner.GtfsTest do
           diagram_coordinate: %{x: 60, y: 40}
         })
 
+      assert {:ok, derived} = Gtfs.derive_child_stop_coords(aligned, 1000, 800)
+      derived_by_id = Map.new(derived, &{&1.stop_id, &1})
+
       assert {:ok, 2} = Gtfs.apply_alignment_to_child_stops(aligned, 1000, 800)
 
-      assert Repo.get!(Stop, stop_a.id).stop_lat != stop_a.stop_lat
-      assert Repo.get!(Stop, stop_b.id).stop_lat != stop_b.stop_lat
+      reloaded_a = Repo.get!(Stop, stop_a.id)
+      reloaded_b = Repo.get!(Stop, stop_b.id)
+
+      # Each stop persists exactly the coordinates the preview derives for it.
+      assert_in_delta Decimal.to_float(reloaded_a.stop_lat), derived_by_id[stop_a.id].lat, 1.0e-9
+      assert_in_delta Decimal.to_float(reloaded_a.stop_lon), derived_by_id[stop_a.id].lon, 1.0e-9
+      assert_in_delta Decimal.to_float(reloaded_b.stop_lat), derived_by_id[stop_b.id].lat, 1.0e-9
+      assert_in_delta Decimal.to_float(reloaded_b.stop_lon), derived_by_id[stop_b.id].lon, 1.0e-9
+
+      # Stop A sits ten units below the image's center row, so only its latitude leaves the
+      # fixture value; stop B sits ten units right of the center column, so only its longitude does.
+      refute Decimal.equal?(reloaded_a.stop_lat, stop_a.stop_lat)
+      refute Decimal.equal?(reloaded_b.stop_lon, stop_b.stop_lon)
     end
   end
 
