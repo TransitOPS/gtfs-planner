@@ -543,9 +543,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
         stop_ids: Map.get(stops_by_pattern, pattern.id, []),
         derivation_key: pattern.derivation_key,
         linked_trip_count: Map.get(linked, pattern.route_pattern_id, 0),
-        # Step 13 adds the label owner column; until it exists no pattern is a
-        # label child, and `Grouping` already treats a nil owner as ownerless.
-        label_pattern_id: nil
+        # `Grouping` answers a labelled child's group from its owner, so the
+        # preview has to carry the real owner rather than a placeholder.
+        label_pattern_id: pattern.label_pattern_id
       }
     end)
   end
