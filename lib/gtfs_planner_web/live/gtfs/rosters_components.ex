@@ -640,7 +640,13 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
             />
           </tr>
         </thead>
-        <tbody id="rosters-grid-body">
+        <%!-- `phx-update="stream"` is what LiveView 1.x still honours on a stream
+        container, and the Runs timeline and list both carry it. Without it the
+        rows were rendered as ordinary markup: the first read drew every row and
+        the next re-render of the page — opening any drawer, closing one — removed
+        them all, leaving an empty table until the next roster read re-streamed
+        it. --%>
+        <tbody id="rosters-grid-body" phx-update="stream">
           <.grid_row
             :for={{dom_id, chunk} <- @rows}
             id={dom_id}
@@ -650,7 +656,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
             new_line_id={@new_line_id}
             pick_line_id={@pick_line_id}
           />
-          <tr :if={@shown == 0} class="rosters-no-match">
+          <tr :if={@shown == 0} id="rosters-no-match" class="rosters-no-match">
             <td colspan="12" class="rosters-pad py-6 text-center text-sm text-muted">
               No lines match this filter.
               <button

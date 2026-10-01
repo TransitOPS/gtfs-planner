@@ -223,12 +223,13 @@ defmodule GtfsPlannerWeb.Gtfs.RostersFilterLiveTest do
 
   # The line numbers on screen, in the order the grid drew them. This is the
   # order itself, so a test reads "paid descending" rather than "this row is
-  # above that one".
+  # above that one". The grid's other rows — the pick row and the row a filter
+  # that matched nothing draws — are not line rows and are not counted here.
   defp row_numbers(view) do
     view
     |> render()
     |> LazyHTML.from_document()
-    |> LazyHTML.query("#rosters-grid-body > tr[id]")
+    |> LazyHTML.query("#rosters-grid-body > tr[id^='rosters-line-']")
     |> Enum.map(fn node ->
       id = node |> LazyHTML.attribute("id") |> hd()
       Regex.replace(~r/^rosters-line-/, id, "") |> String.to_integer()
