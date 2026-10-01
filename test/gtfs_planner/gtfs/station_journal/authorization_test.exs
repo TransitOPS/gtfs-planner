@@ -111,7 +111,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal.AuthorizationTest do
 
     test "refuses an author who is an editor only in another organization", context do
       outsider = editor_fixture(organization_fixture())
-      outside_scope = %Scope{context.scope | actor_id: outsider.id}
+      outside_scope = %{context.scope | actor_id: outsider.id}
       new_id = Ecto.UUID.generate()
 
       result = Gtfs.sync_journal_entries(outside_scope, [entry_attrs(new_id, "outsider")])
