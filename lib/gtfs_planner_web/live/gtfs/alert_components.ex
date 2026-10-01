@@ -1982,7 +1982,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
         id="alert-cause"
         event="choose_cause"
         name="cause"
-        choices={selected_choices(@cause_choices, cause_of(@alert))}
+        choices={selected_choices(cause_choices(), cause_of(@alert))}
       />
 
       <div :if={other_cause?(@alert)} id="alert-reason-other">
@@ -2002,21 +2002,28 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   # The prototype's CAUSES list, in its order and in its words: a rider is
   # choosing from what they saw happen, not from the feed's vocabulary. The
   # values are the schema's own enum names.
-  @cause_choices [
-    %{value: "construction", label: "Construction or roadwork"},
-    %{value: "accident", label: "Crash"},
-    %{value: "weather", label: "Weather"},
-    %{value: "police_activity", label: "Police activity"},
-    %{value: "medical_emergency", label: "Medical emergency"},
-    %{value: "demonstration", label: "Demonstration"},
-    %{value: "special_event", label: "Special event"},
-    %{value: "holiday", label: "Holiday"},
-    %{value: "maintenance", label: "Maintenance"},
-    %{value: "technical_problem", label: "Vehicle or equipment problem"},
-    %{value: "strike", label: "Strike"},
-    %{value: "other_cause", label: "Other reason"},
-    %{value: "unknown_cause", label: "Not known yet"}
-  ]
+  #
+  # A function rather than a module attribute because it is read from the
+  # template above, which the compiler does not count as an attribute use - and
+  # a template that reads an attribute the LiveView process never set raises
+  # `KeyError` on every render.
+  defp cause_choices do
+    [
+      %{value: "construction", label: "Construction or roadwork"},
+      %{value: "accident", label: "Crash"},
+      %{value: "weather", label: "Weather"},
+      %{value: "police_activity", label: "Police activity"},
+      %{value: "medical_emergency", label: "Medical emergency"},
+      %{value: "demonstration", label: "Demonstration"},
+      %{value: "special_event", label: "Special event"},
+      %{value: "holiday", label: "Holiday"},
+      %{value: "maintenance", label: "Maintenance"},
+      %{value: "technical_problem", label: "Vehicle or equipment problem"},
+      %{value: "strike", label: "Strike"},
+      %{value: "other_cause", label: "Other reason"},
+      %{value: "unknown_cause", label: "Not known yet"}
+    ]
+  end
 
   @doc """
   The card this question offers for a value, or `nil` for one it never offered.
@@ -2024,7 +2031,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   the reader was never shown.
   """
   def cause_choice(value) when is_binary(value) do
-    Enum.find(@cause_choices, &(&1.value == value))
+    Enum.find(cause_choices(), &(&1.value == value))
   end
 
   def cause_choice(_value), do: nil
@@ -2033,7 +2040,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   The words the editor, the Rider preview and the review use for a stored cause.
   """
   def cause_label(cause) do
-    Enum.find_value(@cause_choices, &(&1.value == Atom.to_string(cause) && &1.label))
+    Enum.find_value(cause_choices(), &(&1.value == Atom.to_string(cause) && &1.label))
   end
 
   defp cause_of(alert), do: alert && alert.cause
