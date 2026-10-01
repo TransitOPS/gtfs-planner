@@ -239,7 +239,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       assert text_of(view, "#fare-zone-assignment-error") ==
                "Changes couldn’t be saved. Your edits are still here."
 
-      assert zone_of(stop_ids["BAY_1"]) == nil
+      assert zone_id_of(stop_ids["BAY_1"]) == nil
     end
 
     test "two selected stops are assigned, the callout reports it and Undo restores them", %{
