@@ -10,18 +10,31 @@
 // prints the scenario the launcher is about to run, `init` creates the run
 // directory and its `session.json`, `set-pid` records a process this run owns,
 // `open` starts the detached driver and waits for its sign-in, `step` acts as
-// the tester and prints the observation, and `close` stops it. The commands
-// that inspect a run afterwards arrive with their own steps.
+// the tester and prints the observation, `note` and `finish` close the tester's
+// side of the run, and `close` stops it. The commands that inspect a run
+// afterwards work from its files and need no driver: `report` prints the
+// proxies, and `finalize` writes `result.json` from the check's exit code.
 
 import { execFileSync, spawn } from "node:child_process";
-import { closeSync, openSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { MAX_STEPS } from "./actions.mjs";
+import { readRecords } from "./driver.mjs";
+import { STUB_PATH_PREFIXES } from "./events.mjs";
+import { computeProxies } from "./metrics.mjs";
 import { loadScenarios, selectScenarios } from "./scenario.mjs";
-import { gitPrimary, readSession, runDirName, runsRoot, socketPathFor, writeSession } from "./session.mjs";
+import {
+  gitPrimary,
+  readSession,
+  resultStatus,
+  runDirName,
+  runsRoot,
+  socketPathFor,
+  writeSession
+} from "./session.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DRIVER = join(HERE, "driver.mjs");
@@ -50,7 +63,11 @@ const USAGE = `usage: node assets/qa/drive.mjs <command> [options]
   set-pid --run DIR --which phoenix|driver --pid N
   open --run DIR [--headed] [--timeout S]
   step --run DIR <action> [target and value flags]
-  close --run DIR [--timeout S]`;
+  note --run DIR [--about N|last] --observed T [--confusion none|mild|blocked]
+  finish --run DIR --claim done|gave-up [--reason T] [--eyes host-vision|codex-relay|source-only]
+  close --run DIR [--timeout S]
+  report --run DIR
+  finalize --run DIR --check-exit N --server-alive yes|no`;
 
 // `--flag value` pairs, `--flag` booleans, and bare words collected as `_`.
 export function parseFlags(argv, booleans = []) {
@@ -143,8 +160,16 @@ async function main(argv) {
       return open(rest);
     case "step":
       return step(rest);
+    case "note":
+      return note(rest);
+    case "finish":
+      return finish(rest);
     case "close":
       return close(rest);
+    case "report":
+      return report(rest);
+    case "finalize":
+      return finalize(rest);
     case undefined:
       throw new Error(USAGE);
     default:
@@ -300,6 +325,31 @@ function step(argv) {
   });
 }
 
+// A note and a finish are the tester's own words: one says what they saw, the
+// other says whether they believe the goal was reached. Both are thin clients;
+// the driver owns the vocabularies and the records they write.
+function note(argv) {
+  return clientCommand(argv, "note", "note needs --run");
+}
+
+function finish(argv) {
+  return clientCommand(argv, "finish", "finish needs --run");
+}
+
+function clientCommand(argv, cmd, usage) {
+  const flags = parseFlags(argv);
+  const { run: runDir } = flags;
+
+  if (runDir === undefined) throw new Error(usage);
+
+  const session = readSession(runDir);
+  // The action is a bare word in `step`; these two carry only flags, so the
+  // collected words are dropped rather than sent as an action.
+  const { run: _run, _: _words, ...rest } = flags;
+
+  return sendCommand(session.socket, { cmd, run: runDir, ...rest });
+}
+
 async function close(argv) {
   const flags = parseFlags(argv);
   const runDir = flags.run;
@@ -354,13 +404,121 @@ export function formatStepReply(reply) {
   return `${lines.join("\n")}\n`;
 }
 
+// The scenario this run was created for, resolved from the journey pages
+// through the run's own `session.json` (contract C-1).
+function scenarioOf(session) {
+  return selectScenarios(loadScenarios(), session.scenario)[0];
+}
+
+function proxiesOf(runDir, scenario) {
+  return computeProxies(readRecords(runDir), {
+    entryRoute: scenario.entryRoute,
+    startPath: scenario.startPath
+  });
+}
+
+// The proxies a rating reads, printed as JSON. It works from the step log, so
+// it answers for a run whose driver is gone.
+function report(argv) {
+  const flags = parseFlags(argv);
+  const { run: runDir } = flags;
+
+  if (runDir === undefined) throw new Error("report needs --run");
+
+  const session = readSession(runDir);
+
+  return { ok: true, code: 0, proxies: proxiesOf(runDir, scenarioOf(session)) };
+}
+
+// The check's own printed JSON, absent when it crashed before printing. Its
+// `pass` is not read here: the exit code and the server decide the outcome
+// (rule R2), so a check that printed `true` and exited 2 is a harness error.
+function readCheck(runDir) {
+  const path = join(runDir, "check.json");
+
+  if (!existsSync(path)) return null;
+
+  return JSON.parse(readFileSync(path, "utf8"));
+}
+
+// `result.json` (contract C-6). The status and the pass come from
+// `resultStatus`; the tester's claim is copied into the file and is never an
+// input to either.
+export function buildResult({ session, scenario, records, check, checkExit, serverAlive, finishedAt }) {
+  const finish = records.find(record => record.kind === "finish") ?? null;
+  const { status, pass } = resultStatus(checkExit, serverAlive);
+
+  return {
+    run: session.run,
+    scenario: session.scenario,
+    status,
+    check: {
+      id: check?.id ?? scenario.successCheck.id,
+      pass,
+      observations: check?.observations ?? []
+    },
+    claim: finish?.claim ?? null,
+    reason: finish?.reason ?? null,
+    eyes: finish?.eyes ?? null,
+    referenceActions: scenario.referenceActions,
+    proxies: computeProxies(records, { entryRoute: scenario.entryRoute, startPath: scenario.startPath }),
+    stubExclusions: [...STUB_PATH_PREFIXES],
+    commit: session.commit,
+    dirty: session.dirty,
+    startedAt: session.startedAt,
+    finishedAt
+  };
+}
+
+function finalize(argv) {
+  const flags = parseFlags(argv);
+  const { run: runDir } = flags;
+
+  if (runDir === undefined || flags["check-exit"] === undefined) {
+    throw new Error("finalize needs --run and --check-exit");
+  }
+
+  const checkExit = Number(flags["check-exit"]);
+  const serverAlive = flags["server-alive"] !== "no";
+  const session = readSession(runDir);
+  const scenario = scenarioOf(session);
+  const records = readRecords(runDir);
+  const result = buildResult({
+    session,
+    scenario,
+    records,
+    check: readCheck(runDir),
+    checkExit,
+    serverAlive,
+    finishedAt: new Date().toISOString()
+  });
+
+  const path = join(runDir, "result.json");
+
+  writeFileSync(path, `${JSON.stringify(result, null, 2)}\n`, "utf8");
+
+  return { ok: true, code: 0, result: path, status: result.status };
+}
+
+// The proxies of `report`, printed as the bare object rather than wrapped in a
+// reply, because that is what the launcher pipes into the rest of the run.
+export function formatReportReply(reply) {
+  return `${JSON.stringify(reply.proxies ?? null, null, 2)}\n`;
+}
+
 const invokedDirectly =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (invokedDirectly) {
   main(process.argv.slice(2))
     .then(reply => {
-      process.stdout.write(process.argv[2] === "step" ? formatStepReply(reply) : `${JSON.stringify(reply)}\n`);
+      process.stdout.write(
+        process.argv[2] === "step"
+          ? formatStepReply(reply)
+          : process.argv[2] === "report"
+            ? formatReportReply(reply)
+            : `${JSON.stringify(reply)}\n`
+      );
       process.exit(typeof reply.code === "number" ? reply.code : reply.ok === true ? 0 : 2);
     })
     .catch(error => {

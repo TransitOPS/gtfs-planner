@@ -17,7 +17,7 @@
 // — the parser, the registry and the command loop — never needs the browser
 // package to be installed.
 
-import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, connect } from "node:net";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -78,6 +78,18 @@ const UPLOAD_ENTRY_TIMEOUT_MS = 5_000;
 
 const CAPTURE_DIGITS = 3;
 
+// The closed vocabularies of the two records a tester writes by hand. An
+// unusable value is refused rather than recorded, because a record the review
+// cannot read is worse than a refused note.
+const CONFUSION = ["none", "mild", "blocked"];
+const CLAIMS = ["done", "gave-up"];
+const EYES = ["host-vision", "codex-relay", "source-only"];
+
+// A run that has finished takes no further step. A step after the finish line
+// would sit in the log after the record that ends it, and the proxies and the
+// elapsed time are both computed from that log.
+const FINISHED_ERROR = "the run has finished";
+
 const DRIVER_USAGE = "usage: node assets/qa/driver.mjs --run <run dir> [--headed]";
 
 // The run's own artifacts, all under the run directory the launcher resolved.
@@ -98,6 +110,18 @@ export function appendRecord(runDir, record) {
 // in is the harness's work and never a scored tester step.
 export function setupRecord(run, ok, at = new Date().toISOString()) {
   return { kind: "setup", run, t: at, action: "sign-in", ok };
+}
+
+// One run's step log, in the order it was written. A log that does not exist
+// yet is an empty one, so `report` and `finalize` work on a run whose driver
+// never started.
+export function readRecords(runDir) {
+  if (!existsSync(stepsPath(runDir))) return [];
+
+  return readFileSync(stepsPath(runDir), "utf8")
+    .split("\n")
+    .filter(line => line.trim() !== "")
+    .map(line => JSON.parse(line));
 }
 
 // `--run` is required and names the run directory; `--headed` shows the window.
@@ -286,6 +310,8 @@ function createState({ session, scenario }) {
     // The page's URL as the driver last read it, so a rejected step records
     // where the run was without asking the page anything.
     url: "",
+    // The finish record, or `null` while the run is still going.
+    finish: null,
     ready: false,
     setupError: null,
     shuttingDown: false
@@ -712,6 +738,11 @@ function capturePath(runDir, n) {
 export async function executeStep(state, { flags, requireIntent = true } = {}) {
   const { page, session, scenario, buffer } = state;
 
+  // A finished run is closed to steps, and nothing is appended when it is.
+  if (state.finish !== null) {
+    return { ok: false, code: 1, error: FINISHED_ERROR, record: null, observation: null };
+  }
+
   state.attempt += 1;
 
   const n = state.attempt;
@@ -826,7 +857,74 @@ export async function executeStep(state, { flags, requireIntent = true } = {}) {
 }
 
 export function registerStep(registry, state) {
-  registry.register("step", command => executeStep(state, { flags: command }));
+  registry.register("step", command => {
+    if (state.finish !== null) return failure(FINISHED_ERROR, 1);
+
+    return executeStep(state, { flags: command });
+  });
+
+  return registry;
+}
+
+// A note says what the tester saw and how confusing the screen was. `about` is
+// a step number or `last`; an omitted `--about` means the same as `last`, so a
+// note taken without naming a step still has a subject.
+export function registerNote(registry, state) {
+  registry.register("note", command => {
+    const observed = typeof command.observed === "string" ? command.observed.trim() : "";
+    const about = command.about ?? "last";
+    const confusion = command.confusion ?? "none";
+
+    if (observed === "") return failure("a note needs --observed", 1);
+    if (about !== "last" && !/^\d+$/.test(String(about))) {
+      return failure("a note's --about is a step number or last", 1);
+    }
+
+    if (!CONFUSION.includes(confusion)) {
+      return failure(`a note's --confusion is one of ${CONFUSION.join(", ")}`, 1);
+    }
+
+    const record = appendRecord(state.session.run, {
+      kind: "note",
+      t: new Date().toISOString(),
+      about: about === "last" ? state.attempt : Number(about),
+      observed,
+      confusion
+    });
+
+    return ok({ record });
+  });
+
+  return registry;
+}
+
+// The finish record carries the tester's own claim and nothing that decides the
+// run's outcome: the check, the server and the step log do that. It is written
+// once, and a second finish is refused the way a late step is.
+export function registerFinish(registry, state) {
+  registry.register("finish", command => {
+    if (state.finish !== null) return failure(FINISHED_ERROR, 1);
+    if (!CLAIMS.includes(command.claim)) {
+      return failure(`--claim is one of ${CLAIMS.join(", ")}`, 1);
+    }
+
+    if (command.eyes !== undefined && !EYES.includes(command.eyes)) {
+      return failure(`--eyes is one of ${EYES.join(", ")}`, 1);
+    }
+
+    const reason = typeof command.reason === "string" ? command.reason.trim() : "";
+    const record = appendRecord(state.session.run, {
+      kind: "finish",
+      t: new Date().toISOString(),
+      claim: command.claim,
+      reason: reason === "" ? null : reason,
+      eyes: command.eyes ?? null
+    });
+
+    state.finish = record;
+
+    return ok({ record });
+  });
 
   return registry;
 }
@@ -885,7 +983,10 @@ export async function run(argv) {
   writeFileSync(join(runDir, "brief.md"), briefText(scenario), "utf8");
 
   const state = createState({ session, scenario });
-  const registry = registerStep(registerBuiltins(createRegistry(), state), state);
+  const registry = registerFinish(
+    registerNote(registerStep(registerBuiltins(createRegistry(), state), state), state),
+    state
+  );
 
   await prepareSocketPath(session.socket);
   state.server = createCommandServer({ socketPath: session.socket, registry });
