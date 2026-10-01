@@ -29,15 +29,22 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   `.PasteLeaveGuard` hook (`leave_guard/1`) that intercepts tab, header
   and version-switcher navigation plus `beforeunload` while the form holds
   text, and the Open Schedules link's dirty-only `data-confirm`.
+
+  Step 3 adds `source_review_step/1`: its own `#timetable-source-form`
+  beside `#paste-form`, the staff-supplied provenance, the inclusive
+  interval, the reviewed date policy, the acceptance confirmation, the
+  unresolved list and the assistant refusal. It reuses the columns step's
+  mapping rather than keeping a second one.
   """
   use GtfsPlannerWeb, :html
 
   alias Phoenix.LiveView.JS
 
   import GtfsPlannerWeb.PlannerComponents,
-    only: [first_use: 1, drawer_scroll: 1, drawer_footer: 1, message: 1]
+    only: [first_use: 1, drawer_scroll: 1, drawer_footer: 1, form_error_summary: 1, message: 1]
 
-  alias GtfsPlanner.Gtfs.GtfsTime
+alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.TimetableSource
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Gtfs.TimetablePasteReview
@@ -775,6 +782,452 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   def column_value(%{target: :trip_headsign}), do: "trip_headsign"
   def column_value(%{target: :ignore}), do: "ignore"
   def column_value(_column), do: ""
+
+  @doc """
+  Renders the reviewed-source card beside the native steps (step 3).
+
+  `#timetable-source-form` is its own form: it cannot nest inside `#paste-form`,
+  and the two are separate pieces of work — the paste decides what is written,
+  this records what the copied table means. Its fields are the staff-supplied
+  provenance (label, revision, notes), the inclusive interval, the reviewed
+  date policy and the acceptance confirmation; the mapping is never a second
+  one here, it is the columns the native review already resolved.
+
+  The card shows, in order, what has been reviewed so far
+  (`#timetable-source-state`), what the paste did not settle
+  (`#timetable-source-unresolved`), an assistant refusal
+  (`#timetable-helper-too-large`) and the refusal summary for a bad submit
+  (`#timetable-source-errors`). Acceptance states the provenance the staff
+  typed and that the source lives in this page only, because it does.
+  """
+  attr :form, :any, required: true, doc: "the reviewed-source form from `to_form`"
+  attr :errors, :map, default: %{}, doc: "field errors from `TimetableSource.normalize/2`"
+  attr :draft, :any, default: nil, doc: "the last normalized, unaccepted source"
+  attr :source, :any, default: nil, doc: "the accepted immutable source, if any"
+  attr :unresolved, :list, default: [], doc: "unresolved reasons to disclose"
+  attr :notice, :atom, default: nil, values: [nil, :draft, :accepted, :unresolved, :invalid]
+  attr :too_large, :boolean, default: false, doc: "the helper refused the source"
+
+  attr :scope, :map,
+    required: true,
+    doc: "the loaded paste scope with patterns, calendar and stops"
+
+  def source_review_step(assigns) do
+    assigns =
+      assigns
+      |> assign(:reviewed, assigns.source || assigns.draft)
+      |> assign(:failures, source_failures(assigns.errors))
+      |> assign(:exclusions, source_exclusions(assigns.source || assigns.draft))
+
+    ~H"""
+    <section
+      id="timetable-source"
+      aria-label="Reviewed source"
+      class="mt-4 overflow-hidden rounded-card border border-subtle bg-white"
+    >
+      <div class="flex flex-wrap items-center gap-3 border-b border-subtle bg-canvas px-5 py-3.5">
+        <div class="min-w-0">
+          <h2 class="text-[17px] font-bold tracking-normal text-strong">Reviewed source</h2>
+          <p class="text-[13px] text-muted">
+            What this copied table means: where it came from and which dates it covers
+          </p>
+        </div>
+      </div>
+      <div class="grid gap-4 px-5 py-5 [&>*]:min-w-0">
+        <!-- The reviewed source's own feedback lives inside its own form, so
+          the page's FormErrorFocus hook can move focus to it: the hook only
+          ever focuses a target it owns. -->
+        <.form
+          for={@form}
+          id="timetable-source-form"
+          phx-change="source_change"
+          phx-submit="source_review"
+          phx-hook="FormErrorFocus"
+          class="grid gap-4"
+        >
+          <.form_error_summary
+            id="timetable-source-errors"
+            title="Nothing was accepted."
+            failures={@failures}
+            class=""
+          />
+          <div id="timetable-source-state" tabindex="-1" role="status" class="outline-none">
+            <.message
+              :if={@notice == :accepted and @source}
+              id="timetable-source-accepted"
+              kind="success"
+              title="Source accepted for comparison."
+            >
+              {source_accepted_text(@source, @scope)}
+            </.message>
+            <.message
+              :if={@notice == :draft and @draft}
+              id="timetable-source-drafted"
+              kind="info"
+              title="Reviewed, not accepted yet."
+            >
+              {source_draft_text(@draft)}
+            </.message>
+            <.message
+              :if={@notice == :invalid}
+              id="timetable-source-invalid"
+              kind="warning"
+              title="Fix the fields below to review this source."
+            >
+              Your notes and dates are still here.
+            </.message>
+            <p :if={is_nil(@notice)} class="text-[13px] text-muted">
+              Comparing this table with the feed needs an accepted source. Fill in the interval and
+              confirm the review below; nothing is written and nothing is stored.
+            </p>
+          </div>
+          <div
+            :if={@unresolved != []}
+            id="timetable-source-unresolved"
+            role="alert"
+            aria-live="assertive"
+            class="rounded-card border border-warning-line bg-warning-bg px-4 py-3 text-sm text-warning-fg"
+          >
+            <p class="font-bold">{unresolved_title(@source, @unresolved)}</p>
+            <ul class="mt-1 list-disc pl-5">
+              <li :for={reason <- @unresolved}>{unresolved_text(reason)}</li>
+            </ul>
+            <p :if={@exclusions != []} class="mt-2">
+              {exclusion_text(@exclusions)}
+            </p>
+          </div>
+          <div
+            :if={@too_large}
+            id="timetable-helper-too-large"
+            role="status"
+            aria-live="polite"
+            class="rounded-card border border-error-line bg-error-bg px-4 py-3 text-sm text-error-fg"
+          >
+            <p class="font-bold">The helper was not given this source.</p>
+            <p class="mt-1">
+              It is larger than the helper accepts, so nothing was attached. Your timetable, its
+              review and this comparison stay here and unchanged.
+            </p>
+          </div>
+          <div class="grid gap-4 sm:grid-cols-2">
+            <.input
+              field={@form[:label]}
+              id="timetable-source-label"
+              label="Source label"
+              errors={@errors["label"] || []}
+              help="Where this table came from, in your words."
+            />
+            <.input
+              field={@form[:revision]}
+              id="timetable-source-revision"
+              label="Revision"
+              errors={@errors["revision"] || []}
+            />
+            <div class="sm:col-span-2">
+              <.input
+                field={@form[:notes]}
+                type="textarea"
+                id="timetable-source-notes"
+                label="Source notes"
+                errors={@errors["notes"] || []}
+                rows="3"
+                class="w-full textarea text-[13px]"
+              />
+            </div>
+            <div class="sm:col-span-2 grid gap-4 sm:grid-cols-2">
+              <.input
+                field={@form[:first_date]}
+                type="date"
+                id="timetable-source-first-date"
+                label="First date"
+                errors={@errors["first_date"] || []}
+              />
+              <.input
+                field={@form[:last_date]}
+                type="date"
+                id="timetable-source-last-date"
+                label="Last date"
+                errors={@errors["last_date"] || []}
+              />
+            </div>
+            <div class="sm:col-span-2">
+              <.input
+                field={@form[:date_policy]}
+                type="select"
+                id="timetable-source-policy"
+                label="Dates are"
+                options={[{"Weekly weekdays", "weekly"}, {"Exact school dates", "school"}]}
+                errors={@errors["date_policy"] || []}
+              />
+            </div>
+            <!-- The boxes stay in the form under a school policy so their
+              choices survive the switch. The wrapper carries the hiding: the
+              daisyUI fieldset class outranks a utility on the fieldset. -->
+            <div class={[
+              "sm:col-span-2",
+              @form[:date_policy].value == "school" && "hidden"
+            ]}>
+              <fieldset
+                id="timetable-source-weekdays"
+                class="fieldset"
+                aria-invalid={to_string(@errors["weekdays"] not in [nil, []])}
+              >
+                <legend class="label text-base">Weekdays</legend>
+                <div class="mt-2 flex flex-wrap gap-x-4 gap-y-2">
+                  <label
+                    :for={{day, number} <- weekday_options()}
+                    class="inline-flex min-h-11 items-center gap-2"
+                  >
+                    <input
+                      type="checkbox"
+                      id={"timetable-source-weekday-#{number}"}
+                      name="source[weekdays][]"
+                      value={number}
+                      checked={number in (@form[:weekdays].value || [])}
+                      class="size-4 accent-action"
+                    />
+                    {day}
+                  </label>
+                </div>
+                <p :if={@errors["weekdays"]} class="mt-1 text-sm text-error">
+                  {Enum.join(@errors["weekdays"], " ")}
+                </p>
+              </fieldset>
+            </div>
+            <.input
+              :if={@form[:date_policy].value == "school"}
+              field={@form[:school_dates]}
+              id="timetable-source-school-dates"
+              label="School dates"
+              errors={@errors["school_dates"] || []}
+              help="Exact dates inside the interval, separated by commas."
+            />
+            <.input
+              field={@form[:added_dates]}
+              id="timetable-source-added-dates"
+              label="Added dates"
+              errors={@errors["added_dates"] || []}
+              help="Service days added inside the interval."
+            />
+            <.input
+              field={@form[:removed_dates]}
+              id="timetable-source-removed-dates"
+              label="Removed dates"
+              errors={@errors["removed_dates"] || []}
+              help="Service days removed inside the interval, such as a holiday."
+            />
+            <div class="sm:col-span-2 rounded-control border border-subtle bg-canvas px-4 py-3">
+              <.input
+                type="checkbox"
+                field={@form[:confirm]}
+                id="timetable-source-confirm"
+                label="I reviewed this mapping and these dates."
+                class="size-4 accent-action"
+              />
+              <p class="mt-1 text-[13px] text-muted">
+                Accepting records a reviewed configuration, not agency approval. It is kept in this
+                page only: leaving, refreshing or re-reading the timetable clears it.
+              </p>
+            </div>
+            <div class="flex flex-wrap items-center justify-between gap-3 border-t border-subtle pt-4 sm:col-span-2">
+              <p class="text-[13px] text-muted">{source_mapping_text(@reviewed, @scope)}</p>
+              <.button
+                id="timetable-source-accept"
+                type="submit"
+                class="min-h-11"
+                phx-disable-with="Reviewing…"
+              >
+                Review source
+              </.button>
+            </div>
+          </div>
+        </.form>
+      </div>
+    </section>
+    """
+  end
+
+  # Every rejection names the field it belongs to, so the summary links into the
+  # control the editor has to change.
+  defp source_failures(errors) when is_map(errors) do
+    Enum.flat_map(errors, fn {field, messages} ->
+      Enum.map(List.wrap(messages), fn message ->
+        %{href: "#" <> source_field_id(field), msg: "#{source_field_label(field)} #{message}."}
+      end)
+    end)
+  end
+
+  defp source_field_id("mapping.columns" <> _rest), do: "columns-table"
+  defp source_field_id(field), do: "timetable-source-" <> String.replace(field, "_", "-")
+
+  defp source_field_label("text"), do: "The timetable"
+  defp source_field_label("first_date"), do: "The first date"
+  defp source_field_label("last_date"), do: "The last date"
+  defp source_field_label("date_policy"), do: "The date policy"
+  defp source_field_label("weekdays"), do: "The weekdays"
+  defp source_field_label("added_dates"), do: "The added dates"
+  defp source_field_label("removed_dates"), do: "The removed dates"
+  defp source_field_label("school_dates"), do: "The school dates"
+  defp source_field_label("notes"), do: "The notes"
+  defp source_field_label("label"), do: "The source label"
+  defp source_field_label("revision"), do: "The revision"
+  defp source_field_label("mapping.columns" <> _rest), do: "The column mapping"
+  defp source_field_label(_field), do: "This field"
+
+  defp source_exclusions(%{exclusions: exclusions}) when is_list(exclusions), do: exclusions
+  defp source_exclusions(_source), do: []
+
+  defp weekday_options do
+    [
+      {"Mon", "1"},
+      {"Tue", "2"},
+      {"Wed", "3"},
+      {"Thu", "4"},
+      {"Fri", "5"},
+      {"Sat", "6"},
+      {"Sun", "7"}
+    ]
+  end
+
+  defp source_accepted_text(source, scope) do
+    provenance =
+      [source.label, source.revision]
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Enum.join(" · ")
+
+    {first, last} = source.interval
+
+    [
+      provenance,
+      source_pattern_name(scope),
+      "#{service_date_count(source)} service dates",
+      "in #{Date.to_iso8601(first)} – #{Date.to_iso8601(last)}",
+      "#{length(source.rows)} mapped rows"
+    ]
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.join(" · ")
+  end
+
+  defp source_draft_text(draft) do
+    "#{service_date_count(draft)} service dates · #{length(draft.rows)} mapped rows"
+  end
+
+  # The interval's own span and the dates the reviewed rules actually produce
+  # are different numbers, and a reader who is told only one of them would
+  # read a 29-day interval as 29 service days.
+  defp service_date_count(%{rows: [row | _rest]}), do: length(row.dates)
+  defp service_date_count(_source), do: 0
+
+  defp source_pattern_name(scope) do
+    case columns_pattern(scope) do
+      %{name: name} when is_binary(name) and name != "" -> "on #{name}"
+      _no_pattern -> ""
+    end
+  end
+
+  defp source_mapping_text(nil, _scope) do
+    "The Columns step decides which pasted column is which stop; this form never maps it again."
+  end
+
+  defp source_mapping_text(reviewed, scope) do
+    "#{map_size(reviewed.mapping.columns)} pasted columns mapped to stops #{source_pattern_name(scope)}."
+  end
+
+  defp unresolved_title(source, unresolved) when is_list(unresolved) do
+    if is_nil(source) or Enum.any?(unresolved, &TimetableSource.blocking_reason?/1) do
+      "This source cannot be accepted yet."
+    else
+      "Accepted with #{length(unresolved)} things this table did not settle."
+    end
+  end
+
+  defp unresolved_text(:missing_school_dates) do
+    "No school dates were supplied. Enter the exact school dates, or choose weekly weekdays."
+  end
+
+  defp unresolved_text(:unreviewed_twelve_hour) do
+    "A trip row uses 12-hour language that has not been reviewed. Choose its reading in the rows above."
+  end
+
+  defp unresolved_text({:unreviewed_twelve_hour, row}) do
+    "Row #{row} uses 12-hour language that has not been reviewed. Choose its reading in the rows above."
+  end
+
+  defp unresolved_text(:missing_mapping) do
+    "A trip row has no feed trip in this calendar and direction. Check its first departure or map the row."
+  end
+
+  defp unresolved_text({:missing_mapping, row}) do
+    "Row #{row} has no feed trip in this calendar and direction. Check its first departure or map the row."
+  end
+
+  defp unresolved_text(:ambiguous_mapping) do
+    "Several feed trips match a trip row. Map that row to the trip it copies."
+  end
+
+  defp unresolved_text({:ambiguous_mapping, row, _count}) do
+    "Several feed trips match row #{row}. Map that row to the trip it copies."
+  end
+
+  defp unresolved_text(:unknown_feed_trip) do
+    "A mapped feed trip is not in this calendar and direction."
+  end
+
+  defp unresolved_text({:unknown_feed_trip, row, trip_id}) do
+    "Row #{row} is mapped to feed trip #{trip_id}, which is not in this calendar and direction."
+  end
+
+  defp unresolved_text(:duplicate_feed_trip) do
+    "Two trip rows are mapped to the same feed trip."
+  end
+
+  defp unresolved_text({:duplicate_feed_trip, trip_id}) do
+    "Two trip rows are mapped to the same feed trip (#{trip_id})."
+  end
+
+  defp unresolved_text(:mapping_conflict) do
+    "A mapped feed trip belongs to another direction or pattern."
+  end
+
+  defp unresolved_text({:mapping_conflict, row, trip_id}) do
+    "Row #{row} is mapped to feed trip #{trip_id}, which belongs to another direction or pattern."
+  end
+
+  defp unresolved_text({:addition_outside_interval, date}) do
+    "The added date #{date} falls outside the interval, so it was excluded."
+  end
+
+  defp unresolved_text({:removal_outside_interval, date}) do
+    "The removed date #{date} falls outside the interval, so it was excluded."
+  end
+
+  defp unresolved_text({:unsupported_clock, col, text}) do
+    "Column #{column_letter(col)} holds #{text}, which the timetable grammar does not read as a time."
+  end
+
+  defp unresolved_text({:unsupported_column, row, col}) do
+    "Row #{row}, column #{column_letter(col)} holds text the grammar does not read. Map or clear that column."
+  end
+
+  defp unresolved_text({:missing_school_dates, interval}) do
+    "#{missing_school_dates_text(interval)} were not supplied, so nothing was assumed."
+  end
+
+  defp unresolved_text(reason) do
+    "This source still carries an unreviewed item: #{inspect(reason)}."
+  end
+
+  defp missing_school_dates_text({first, last}) do
+    "The school dates between #{Date.to_iso8601(first)} and #{Date.to_iso8601(last)}"
+  end
+
+  defp missing_school_dates_text(interval) do
+    "#{inspect(interval)}"
+  end
+
+  defp exclusion_text(exclusions) do
+    "#{length(exclusions)} supplied dates fall outside the interval and were excluded."
+  end
 
   defp columns_pattern(scope) when is_map(scope) do
     patterns = Map.get(scope, :patterns, []) || []

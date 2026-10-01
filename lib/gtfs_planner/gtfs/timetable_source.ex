@@ -349,10 +349,25 @@ defmodule GtfsPlanner.Gtfs.TimetableSource do
   # occurrence with the clock `TimeToken` resolved for that row, so rolling,
   # not-served and unrecognized positions are the native ones; the reviewed row
   # mapping names the feed trip, or exactly one scoped candidate does.
+  #
+  # Only a mapped column carries a clock, exactly like the native row review,
+  # which resolves its stop columns and leaves the trip fields alone. An
+  # unmapped cell stays unrecognized below: it never becomes a clock, and it
+  # cannot roll the first mapped time either. A pasted trip number that reads
+  # as a clock ("1201" is 12:01) therefore never moves a real departure by a
+  # day.
   @spec build_row([{String.t(), non_neg_integer()}], pos_integer(), map(), map()) ::
           {row(), list()}
   defp build_row(cells, row_id, mapping, scope) do
-    tokens = Enum.map(cells, fn {cell, _col} -> TimeToken.classify(cell) end)
+    tokens =
+      Enum.map(cells, fn {cell, col} ->
+        if Map.has_key?(mapping_columns(mapping), col) do
+          TimeToken.classify(cell)
+        else
+          {:error, :unrecognized}
+        end
+      end)
+
     shift = shift_of(mapping, row_id)
     resolved = resolve_tokens(tokens, shift)
     {mapped, cell_unresolved} = mapped_cells(Enum.zip(cells, resolved), mapping)
