@@ -17,9 +17,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternMapLineDownloadTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
+  alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.Shape
-  alias GtfsPlanner.Organizations
   alias GtfsPlanner.Repo
 
   # Five stops on a rising line, so a pattern has four sections and a gap in the
@@ -153,15 +153,21 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternMapLineDownloadTest do
     version = gtfs_version_fixture(organization.id)
 
     {:ok, _membership} =
-      Organizations.add_user_to_organization(user.id, organization.id, ["pathways_studio_editor"])
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
 
     other_user = user_fixture()
     other_organization = organization_fixture(%{alias: "map-line-other-#{Ecto.UUID.generate()}"})
 
     {:ok, _other_membership} =
-      Organizations.add_user_to_organization(other_user.id, other_organization.id, [
-        "pathways_studio_editor"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: other_user.id,
+        organization_id: other_organization.id,
+        roles: ["pathways_studio_editor"]
+      })
 
     %{
       conn: log_in_user(conn, user, organization: organization),

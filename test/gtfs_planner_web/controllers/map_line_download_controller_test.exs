@@ -11,8 +11,8 @@ defmodule GtfsPlannerWeb.MapLineDownloadControllerTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
+  alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs.AlignmentSegment
-  alias GtfsPlanner.Organizations
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
@@ -139,7 +139,13 @@ defmodule GtfsPlannerWeb.MapLineDownloadControllerTest do
     assert redirected_to(logged_out) == "/users/log_in"
 
     user = user_fixture()
-    {:ok, _membership} = Organizations.add_user_to_organization(user.id, organization.id, [])
+
+    {:ok, _membership} =
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: []
+      })
 
     role_conn =
       build_conn()
@@ -178,7 +184,11 @@ defmodule GtfsPlannerWeb.MapLineDownloadControllerTest do
     user = user_fixture()
 
     {:ok, _membership} =
-      Organizations.add_user_to_organization(user.id, organization.id, ["pathways_studio_editor"])
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
 
     %{organization: organization, version: version, user: user}
   end
