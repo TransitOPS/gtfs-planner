@@ -2448,7 +2448,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                       <% else %>
                         <.skeleton
                           id="alignment-loading"
-                          label="Loading alignment"
+                          label="Loading map line"
                           rows={3}
                           aria-busy="true"
                         />
@@ -5621,7 +5621,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     %{
       primary: %{
         id: "alignment-save",
-        label: "Save alignment",
+        label: "Save map line",
         click:
           JS.dispatch("alignment:action", to: "#alignment-map-root", detail: %{action: "save"}),
         commit: "alignment",

@@ -626,7 +626,7 @@ test.describe("generation journeys", () => {
     // The save materializes the now-complete pattern: sections read Saved
     // and the header reads Exported.
     await expect(page.locator("#status")).toContainText(
-      "Alignment saved.",
+      "Map line saved.",
       { timeout: 15000 },
     );
     await expect(page.locator("#alignment-section-status-1")).toContainText(

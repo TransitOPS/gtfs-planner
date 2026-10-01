@@ -795,7 +795,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
   describe "pattern alignment task" do
     setup :editor_scope
 
-    test "an existing pattern lists four ordered tasks and patches to the Alignment shell",
+    test "an existing pattern lists four ordered tasks and patches to the Map line shell",
          %{conn: conn, organization: organization, version: version} do
       route = route(organization, version, "ALIGN1")
       stops = Enum.map(1..3, &stop(organization, version, "ALIGN1", &1))
@@ -816,7 +816,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
       assert has_element?(view, "#pattern-task-stops", "Stops")
       assert has_element?(view, "#pattern-task-timings", "Running times")
-      assert has_element?(view, "#pattern-task-alignment", "Alignment")
+      assert has_element?(view, "#pattern-task-alignment", "Map line")
       assert has_element?(view, "#pattern-task-details", "Details")
 
       render_click(element(view, "#pattern-task-alignment"))
