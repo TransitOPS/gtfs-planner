@@ -42,7 +42,8 @@ defmodule GtfsPlanner.ConcurrencyHelpers do
     blocked =
       Enum.filter(tables, fn table ->
         match?(
-          {:error, %Postgrex.Error{postgres: %{code: :foreign_key_violation}}},
+          {:error, %Postgrex.Error{postgres: %{code: code}}}
+          when code in [:foreign_key_violation, :restrict_violation],
           Repo.query("DELETE FROM #{table} WHERE organization_id = ANY($1)", [organization_ids])
         )
       end)
