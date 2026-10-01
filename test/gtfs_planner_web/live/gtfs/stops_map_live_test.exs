@@ -613,6 +613,81 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLiveTest do
 
       assert has_element?(view, "#stops-map-add-panel")
     end
+
+    test "opening the panel tells the hook to add, and closing it tells the hook to stop", ctx do
+      view = open_map(ctx.editor_conn, ctx.version)
+
+      view |> element("#stops-map-add-stop") |> render_click()
+
+      # The server says which mode the map is in. A browser that decided for
+      # itself would be a map an editor could not place a stop on.
+      assert_push_event(view, "stop_map:mode", %{mode: :add, pin: nil, ghost: nil})
+
+      view |> element("#stops-map-add-cancel") |> render_click()
+
+      assert_push_event(view, "stop_map:mode", %{mode: :browse, pin: nil, ghost: nil})
+    end
+
+    test "a placed point becomes the pin, and the caption moves to dragging it", ctx do
+      view = open_map(ctx.editor_conn, ctx.version)
+
+      view |> element("#stops-map-add-stop") |> render_click()
+
+      render_hook(view, "place", %{"lat" => 44.63561, "lon" => -124.05317})
+
+      assert_push_event(view, "stop_map:mode", %{
+        mode: :browse,
+        pin: %{lat: 44.63561, lon: -124.05317, label: "New stop"},
+        ghost: nil
+      })
+
+      assert has_element?(view, "#stops-map-caption", "Drag the pin to adjust")
+      assert has_element?(view, "#stops-map-caption", "30 ft with Shift")
+    end
+
+    test "a dragged pin is the server's point too, and cancelling drops it", ctx do
+      view = open_map(ctx.editor_conn, ctx.version)
+
+      view |> element("#stops-map-add-stop") |> render_click()
+      render_hook(view, "place", %{"lat" => 44.63561, "lon" => -124.05317})
+
+      render_hook(view, "pin_moved", %{"lat" => 44.63571, "lon" => -124.05317})
+
+      assert_push_event(view, "stop_map:mode", %{
+        mode: :browse,
+        pin: %{lat: 44.63571, lon: -124.05317, label: "New stop"},
+        ghost: nil
+      })
+
+      view |> element("#stops-map-add-cancel") |> render_click()
+
+      assert_push_event(view, "stop_map:mode", %{mode: :browse, pin: nil})
+      # Cancelling is not "go back to placing": it is the browse panel again, so
+      # the add caption goes with it.
+      refute has_element?(view, "#stops-map-caption")
+    end
+
+    # A lat/lon pair is a position on the Earth. A report that does not carry
+    # one is refused rather than believed: a pin drawn at latitude 0 would be a
+    # placement on the equator that nobody chose.
+    for params <- [
+          %{"lat" => "north", "lon" => -124.05317},
+          %{"lat" => 44.63561, "lon" => "west"},
+          %{"lat" => 91.0, "lon" => -124.05317},
+          %{"lat" => 44.63561, "lon" => -181.0},
+          %{}
+        ] do
+      test "a placement that carries no position is refused: #{inspect(params)}", ctx do
+        view = open_map(ctx.editor_conn, ctx.version)
+
+        view |> element("#stops-map-add-stop") |> render_click()
+
+        render_hook(view, "place", unquote(Macro.escape(params)))
+
+        refute_push_event(view, "stop_map:mode", %{pin: %{}})
+        assert has_element?(view, "#stops-map-caption", "Click the curb where riders wait")
+      end
+    end
   end
 
   describe "access" do

@@ -94,8 +94,30 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
     ~H"""
     <div id={@id} class="relative min-h-[320px] overflow-hidden bg-canvas">
       <%!-- The hook's canvas. `phx-update="ignore"` because Leaflet owns every
-             child of it and a diff would take the map out of its hands. --%>
-      <div id="stop-map" phx-hook="StopMap" phx-update="ignore" class="absolute inset-0"></div>
+             child of it and a diff would take the map out of its hands.
+             `z-0` gives the canvas its own stacking context: Leaflet's panes run
+             from z-index 200 to 700, and without this they compete with the
+             caption and the legend — both at z-10 — and win, so a basemap tile
+             paints over the words that explain it. --%>
+      <div
+        id="stop-map"
+        phx-hook="StopMap"
+        phx-update="ignore"
+        class="absolute inset-0 z-0"
+      >
+      </div>
+
+      <%!-- The hook's overlay: the placement pin and the crosshair. It is
+             rendered here and ignored by every diff for the canvas's own
+             reason: the browser owns the elements inside it, and a pin taken
+             away by a diff the editor did not ask for is a placement nobody
+             can finish. --%>
+      <div id="stop-map-overlay" phx-update="ignore" class="stop-map-overlay">
+        <div id="stop-map-crosshair" class="stop-map-crosshair" aria-hidden="true" hidden>
+          <span class="stop-map-crosshair-v"></span>
+          <span class="stop-map-crosshair-h"></span>
+        </div>
+      </div>
 
       <div
         :if={@map_state == :loading}

@@ -20,10 +20,23 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     panel lists the stops inside it, so panning changes the list.
   - `map_unavailable` — Leaflet or the tile proxy failed. The list, the route
     lines and coordinate entry keep working; only the basemap is gone.
+  - `place` — the hook reported a point the editor chose, by click or by Enter
+    on the canvas. The point becomes the draft's position and is echoed back.
+  - `pin_moved` — the editor dragged or nudged the pin. One report per change,
+    and the point is echoed back the same way.
 
   Each of these is idempotent and order-independent: the panel recomputes from
   the whole model rather than from deltas, so a report that arrives twice, or
   after the version changed, is answered from what the server holds now.
+
+  ## The draft position is the server's
+
+  The hook moves its pin the instant a pointer or a key moves it, because a
+  drag that waits for a round trip lags the hand. What it moved to is the
+  server's to answer: `place` and `pin_moved` both write `placement`, and the
+  pin the browser draws is the one `push_map_mode/1` last echoed. A refused
+  write therefore has nothing behind it — the next echo is the position the
+  server still holds, and nothing was saved to leave behind (INV-4).
   """
 
   use GtfsPlannerWeb, :live_view
@@ -72,6 +85,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
      |> assign(:view_bounds, nil)
      |> assign(:selected_stop_id, nil)
      |> assign(:stops_state, :loading)
+     |> assign(:placement, nil)
      |> assign(:scope_error, nil)}
   end
 
@@ -135,8 +149,21 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     {:noreply, socket |> assign(:map_state, :loading) |> then(&push_scene/1)}
   end
 
-  def handle_event("start_add", _params, socket), do: {:noreply, assign(socket, :panel, :add)}
-  def handle_event("cancel_add", _params, socket), do: {:noreply, assign(socket, :panel, :browse)}
+  def handle_event("start_add", _params, socket),
+    do: {:noreply, socket |> assign(:panel, :add) |> assign(:placement, nil) |> push_map_mode()}
+
+  def handle_event("cancel_add", _params, socket),
+    do:
+      {:noreply, socket |> assign(:panel, :browse) |> assign(:placement, nil) |> push_map_mode()}
+
+  # A point the editor chose on the map. It is the draft's position and nothing
+  # else: nothing is written until the add flow is submitted, so a placement
+  # that is abandoned leaves no row behind.
+  def handle_event("place", params, socket),
+    do: {:noreply, assign_placement(socket, params)}
+
+  def handle_event("pin_moved", params, socket),
+    do: {:noreply, assign_placement(socket, params)}
 
   @impl true
   def render(assigns) do
@@ -179,7 +206,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
           <.map_stage
             id="stops-map-stage"
             map_state={@map_state}
-            caption={map_caption(@panel)}
+            caption={map_caption(assigns)}
           />
 
           <%= if @panel == :add do %>
@@ -350,13 +377,78 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     Enum.count(rows, &(&1.location_type == location_type))
   end
 
-  defp map_caption(:add),
-    do: %{
-      title: "Click the curb where riders wait",
-      text: "Zoom in until you can see the street edge."
-    }
+  # The mode, the pin and the ghost are the hook's half of a placement, and the
+  # server decides all three: a point only becomes the pin once the server has
+  # read it, and the pin only moves when the server echoes a new point. Add mode
+  # is the panel asking for a place, so it ends as soon as there is one.
+  defp push_map_mode(socket) do
+    # `push_event/3` answers the socket with the push on it, and that answer is
+    # the socket: dropping it drops the push, silently, and the map goes on
+    # believing it is browsing while the panel is asking for a place.
+    if connected?(socket) do
+      push_event(socket, "stop_map:mode", mode_payload(socket.assigns))
+    else
+      socket
+    end
+  end
 
-  defp map_caption(_panel), do: nil
+  # Add mode is the panel asking for a place, so it ends as soon as there is
+  # one: a placed stop is adjusted by its pin, not by placing it again.
+  defp mode_payload(%{placement: {lat, lon}}),
+    do: %{mode: :browse, pin: %{lat: lat, lon: lon, label: "New stop"}, ghost: nil}
+
+  defp mode_payload(assigns) do
+    mode = if assigns.panel == :add, do: :add, else: :browse
+
+    # `ghost` is the position a stop already has in the database, which no
+    # placement has yet.
+    %{mode: mode, pin: nil, ghost: nil}
+  end
+
+  # A point that cannot be read is refused rather than clamped. A lat/lon pair
+  # is a position on the Earth, and "north" is not one; saving a clamped pair
+  # would put a stop in a place nobody chose.
+  defp assign_placement(socket, params) do
+    case parse_point(params) do
+      {:ok, {lat, lon}} ->
+        socket
+        |> assign(:placement, {lat, lon})
+        |> push_map_mode()
+
+      :error ->
+        socket
+    end
+  end
+
+  defp parse_point(%{"lat" => lat, "lon" => lon}) do
+    with {:ok, lat} <- number(lat),
+         {:ok, lon} <- number(lon),
+         true <- abs(lat) <= 90.0,
+         true <- abs(lon) <= 180.0 do
+      {:ok, {lat, lon}}
+    else
+      _ -> :error
+    end
+  end
+
+  defp parse_point(_params), do: :error
+
+  defp map_caption(%{panel: :add, placement: nil}) do
+    %{
+      title: "Click the curb where riders wait",
+      text:
+        "Zoom in until you can see the street edge. Press Enter to place it at the crosshair. Escape cancels."
+    }
+  end
+
+  defp map_caption(%{panel: :add, placement: {_lat, _lon}}) do
+    %{
+      title: "Drag the pin to adjust",
+      text: "Or focus the pin and use the arrow keys: about 3 ft a press, 30 ft with Shift."
+    }
+  end
+
+  defp map_caption(_assigns), do: nil
 
   # Bounds arrive from the hook as JSON numbers. A view that cannot be read is
   # rejected rather than clamped: a clamped box would quietly list the wrong

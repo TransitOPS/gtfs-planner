@@ -492,3 +492,150 @@ test("the drawn map at both viewports @render", async ({ page }, testInfo) => {
 
   await page.setViewportSize(DESKTOP);
 });
+
+// ── pin (step 25) ─────────────────────────────────────────────────────────
+
+// Add mode and the placement pin: the crosshair the Enter key places at, the
+// pin a click drops, and the drag and nudge that adjust it. The hook reports
+// what a person did and the server decides what it means, so what this asserts
+// is the round trip — a click is a placement, a nudge is a move, and cancelling
+// is the browse panel with no caption left over.
+test("the placement pin @pin", async ({ page }, testInfo) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+  await openMap(page, versionId);
+  await waitForMapReady(page);
+
+  // Closed in first: the seed's extent is a few blocks, and a metre is a third
+  // of a pixel at the fitted zoom — too small to move a pin with.
+  await zoom(page, 3);
+  await waitForMapReady(page);
+
+  await page.locator("#stops-map-add-stop").click();
+
+  // Add mode: the crosshair is there, the pin is not, and the caption says
+  // both ways in — click, and Enter at the crosshair.
+  await expect(page.locator("#stops-map-add-panel")).toBeAttached();
+  await expect(page.locator("#stop-map-crosshair")).toBeVisible();
+  await expect(page.locator("[data-stop-map-pin]")).toHaveCount(0);
+  await expect(page.locator("#stops-map-caption")).toContainText(
+    "Press Enter to place it at the crosshair",
+  );
+
+  await captureBoth(page, testInfo, "add-choose", "pin-");
+
+  // A click on the canvas places the pin where it was clicked. The centre is
+  // clicked because that is a point the assertions can name.
+  const canvas = await page.locator("#stop-map").boundingBox();
+  const centre = {
+    x: canvas.x + canvas.width / 2,
+    y: canvas.y + canvas.height / 2,
+  };
+
+  await page.mouse.click(centre.x, centre.y);
+
+  await expect(page.locator("[data-stop-map-pin]")).toBeAttached();
+  await expect(page.locator("#stop-map-crosshair")).toBeHidden();
+  await expect(page.locator("#stops-map-caption")).toContainText(
+    "Drag the pin to adjust",
+  );
+
+  // The pin is drawn where the click landed, which is what makes the caption's
+  // promise about the crosshair and Enter the same promise the click makes.
+  const placed = await pinPosition(page);
+  expect(Math.abs(placed.x - canvas.width / 2)).toBeLessThan(3);
+  expect(Math.abs(placed.y - canvas.height / 2)).toBeLessThan(3);
+
+  // It is a focusable button that says what its keys do.
+  await expect(page.locator("[data-stop-map-pin]")).toHaveAttribute(
+    "aria-label",
+    /arrow keys to move it about 3 feet, 30 feet with Shift/,
+  );
+
+  await capture(page, testInfo, "pin-add-placed-desktop");
+
+  // The arrow keys nudge the pin and the nudge survives the server's echo.
+  await page.locator("[data-stop-map-pin]").focus();
+  const before = placed;
+  await page.keyboard.press("Shift+ArrowUp");
+
+  await expect
+    .poll(async () => {
+      const now = await pinPosition(page);
+      return Math.round(now.y);
+    })
+    .not.toBe(Math.round(before.y));
+
+  // Dragging it is the same report, once, on pointerup.
+  const pin = await page.locator("[data-stop-map-pin]").boundingBox();
+  await page.mouse.move(pin.x + pin.width / 2, pin.y + pin.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    pin.x + pin.width / 2 + 60,
+    pin.y + pin.height / 2 - 40,
+    {
+      steps: 8,
+    },
+  );
+  await page.mouse.up();
+
+  const dragged = await pinPosition(page);
+  expect(Math.round(dragged.x)).toBeGreaterThan(Math.round(before.x));
+  expect(dragged.y).toBeLessThan(before.y);
+
+  await capture(page, testInfo, "pin-moved-desktop");
+
+  // 390 px stacks the map above the panel, and the pin is still the pin — in
+  // the canvas, not at the pixels a desktop window put it at.
+  await page.setViewportSize(MOBILE);
+  await waitForMapReady(page);
+  await expectFits(page);
+  await expect(page.locator("[data-stop-map-pin]")).toBeAttached();
+  await expect(page.locator("[data-stop-map-pin]")).toBeInViewport();
+  await capture(page, testInfo, "pin-add-placed-mobile");
+
+  await page.setViewportSize(DESKTOP);
+
+  // Escape cancels: the browse panel, no caption, and no pin left on the map.
+  await page.locator("#stops-map-add-stop").click();
+  await expect(page.locator("#stop-map-crosshair")).toBeVisible();
+  await page.locator("#stop-map").focus();
+  await page.keyboard.press("Escape");
+
+  await expect(page.locator("#stops-map-list")).toBeAttached();
+  await expect(page.locator("#stops-map-caption")).toHaveCount(0);
+  await expect(page.locator("[data-stop-map-pin]")).toHaveCount(0);
+
+  // The prototype's three placement states, at both viewports, for the
+  // side-by-side inspection. Taken last: it leaves the browser on the file URL.
+  for (const state of ["add-choose", "add-placed", "move"]) {
+    for (const viewport of [DESKTOP, MOBILE]) {
+      await page.setViewportSize(viewport);
+      await page.goto(`file://${REFERENCE_FILE}?state=${state}`);
+      await page.waitForLoadState("load");
+
+      await capture(page, testInfo, `pin-ref-${state}-${viewport.label}`, {
+        fullPage: false,
+      });
+    }
+  }
+
+  await page.setViewportSize(DESKTOP);
+});
+
+// Where the hook drew the pin, in container pixels. Read from the element's own
+// positioning, because the hook keeps no global to read and the tile URL
+// carries the map's zoom but not the pin's place in it.
+async function pinPosition(page) {
+  return page.evaluate(() => {
+    const button = document.querySelector("[data-stop-map-pin]");
+    return {
+      x: parseFloat(button.style.left),
+      y: parseFloat(button.style.top),
+    };
+  });
+}

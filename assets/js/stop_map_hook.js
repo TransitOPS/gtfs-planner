@@ -23,6 +23,24 @@
  * corner. And the direction tick is a piece of the marker's own markup, rotated
  * by a bearing the scene already carries, instead of a second layer that would
  * have to be kept in step with the first.
+ *
+ * ## Add mode and the pin
+ *
+ * The server owns which mode the map is in: it pushes `stop_map:mode` with the
+ * mode, an optional pin and an optional ghost. That is the same rule the scene
+ * follows — the browser never decides what is being edited, it reports what a
+ * person did with the controls it drew.
+ *
+ * In add mode the canvas is a placement target: a click reports `place` with
+ * the clicked point, and Enter on the focused canvas reports the map's centre
+ * for the keyboard placement the caption promises. A drag or an arrow key on
+ * the pin reports `pin_moved` once per change — on pointerup and on each key,
+ * never on the pointermove stream in between, because a report per pixel is a
+ * round trip per pixel.
+ *
+ * The pin is a real `<button>` in the stage's overlay rather than a `divIcon`,
+ * because it has to take focus and answer the arrow keys. The ghost is drawn by
+ * Leaflet like every other layer, so it follows a pan for free.
  */
 
 import {
@@ -55,6 +73,7 @@ const LINE_BASE_OFFSET_PX = 3;
 const LINE_WEIGHT = 3;
 const LINE_CASING_WEIGHT = 5.5;
 const ROUTE_FALLBACK_COLOR = "#586479";
+const NAVY = "#0f1a3d";
 
 const STOP_RADIUS_PX = 9;
 const STATION_RADIUS_PX = 13;
@@ -80,6 +99,29 @@ const LINE_PANE = "stopMapLines";
 const MARKER_PANE = "stopMapMarkers";
 const MARKER_PANE_Z_INDEX = "450";
 
+// The placement pin's own numbers. The prototype states the nudge in feet
+// because feet are what a rider measures a curb in; the pin answers in metres
+// because that is what a coordinate pair is denominated in, and the caption and
+// the pin's aria-label both say feet so the two never meet.
+const NUDGE_METRES = 1;
+const NUDGE_METRES_SHIFTED = 10;
+const METRES_PER_DEGREE = 111_320;
+const METRES_PER_MILE = 1609.344;
+const FEET_PER_METRE = 0.3048;
+// Below this the ghost is the pin drawn twice, and a distance label reading "0
+// ft" beside a zero-length move is noise.
+const GHOST_MIN_METRES = 0.5;
+
+const NUDGE_STEPS = {
+  ArrowUp: [0, 1],
+  ArrowDown: [0, -1],
+  ArrowLeft: [-1, 0],
+  ArrowRight: [1, 0],
+};
+
+const MODE_BROWSE = "browse";
+const MODE_ADD = "add";
+
 const STATE_INITIALIZING = "initializing";
 const STATE_READY = "ready";
 const STATE_UNAVAILABLE = "unavailable";
@@ -103,6 +145,17 @@ const StopMap = {
     this._state = STATE_INITIALIZING;
     this._announcedBounds = null;
     this._resizeObserver = null;
+    this._mode = MODE_BROWSE;
+    this._pin = null;
+    this._ghost = null;
+    this._pinGroup = null;
+    this._overlay = null;
+    this._crosshair = null;
+    this._pinElement = null;
+    this._onPinDown = null;
+    this._onPinKey = null;
+    this._onMapClick = null;
+    this._onMapKey = null;
 
     const leaflet = window.L;
     if (!leaflet) {
@@ -144,6 +197,9 @@ const StopMap = {
 
     this._lineGroup = leaflet.layerGroup().addTo(map);
     this._stopGroup = leaflet.layerGroup().addTo(map);
+    // Its own group, because the stops and the lines are cleared and rebuilt on
+    // every view change and the pin's layers are cleared with neither of them.
+    this._pinGroup = leaflet.layerGroup().addTo(map);
 
     // Every view change redraws all three: the lines because their per-route
     // offset is a screen-space rule, the stops because what a mark shows depends
@@ -154,6 +210,9 @@ const StopMap = {
       this._redrawLines();
       this._redrawStops();
       this._reportBounds();
+      // The pin is DOM positioned from the view, so a pan leaves it behind
+      // until it is told where it is now.
+      this._positionPin();
     };
     map.on("moveend", this._onViewChange);
     map.on("zoomend", this._onViewChange);
@@ -167,9 +226,13 @@ const StopMap = {
     }
 
     this._bindControls();
+    this._bindPlacement();
 
     this.handleEvent("stop_map:scene", (event) =>
       this._applyScene((event && event.payload) || event),
+    );
+    this.handleEvent("stop_map:mode", (event) =>
+      this._applyMode((event && event.payload) || event),
     );
 
     // Readiness is reported by the push, not written onto the container: LiveView
@@ -182,6 +245,7 @@ const StopMap = {
 
   destroyed() {
     this._unbindControls();
+    this._unbindPlacement();
 
     if (this._resizeObserver) {
       this._resizeObserver.disconnect();
@@ -197,12 +261,348 @@ const StopMap = {
       this._map = null;
     }
 
+    this._removeOverlay();
     this._scene = null;
     this._stopLayers = new Map();
     this._lineLayers = [];
     this._tileLayers = [];
     this._stopGroup = null;
     this._lineGroup = null;
+    this._pinGroup = null;
+    this._pin = null;
+    this._ghost = null;
+  },
+
+  // ── add mode and the placement pin ──────────────────────────────────────
+
+  // Placement is reported, never decided here: the server says which mode the
+  // map is in, and the browser says what a person did with the controls it drew.
+  _bindPlacement() {
+    this._onMapClick = (event) => {
+      if (this._mode !== MODE_ADD) return;
+      const latlng = event && event.latlng;
+      if (!latlng) return;
+
+      // One report per click, whether it placed the first stop or moved the
+      // one the last click placed. The server owns which of the two it was.
+      this.pushEvent("place", { lat: latlng.lat, lon: latlng.lng });
+    };
+    this._onMapKey = (event) => {
+      // The canvas answers only while it is the element under the key. A key
+      // pressed on the pin is the pin's own, handled there.
+      if (event.target !== this.el || this._mode !== MODE_ADD) return;
+
+      if (event.key === "Enter") {
+        event.preventDefault();
+        // Placement without a pointer: the crosshair is at the centre, so the
+        // centre is what gets reported.
+        const centre = this._map.getCenter();
+        this.pushEvent("place", { lat: centre.lat, lon: centre.lng });
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        this.pushEvent("cancel_add", {});
+      }
+    };
+
+    this._map.on("click", this._onMapClick);
+    this.el.addEventListener("keydown", this._onMapKey);
+  },
+
+  _unbindPlacement() {
+    if (this._onMapClick && this._map) {
+      this._map.off("click", this._onMapClick);
+      this._onMapClick = null;
+    }
+    if (this._onMapKey) {
+      this.el.removeEventListener("keydown", this._onMapKey);
+      this._onMapKey = null;
+    }
+  },
+
+  _applyMode(payload) {
+    const data = payload || {};
+
+    this._mode = data.mode === MODE_ADD ? MODE_ADD : MODE_BROWSE;
+    this._pin = readPin(data.pin);
+    // A ghost without a pin is a saved position with nothing to compare it to.
+    this._ghost = this._pin ? readPoint(data.ghost) : null;
+
+    this._ensureOverlay();
+    this._syncModeChrome();
+    this._renderPin();
+  },
+
+  _syncModeChrome() {
+    // A cursor is the whole of what add mode looks like before anything is
+    // placed, and it is the one thing a person can see without a screenshot.
+    this.el.classList.toggle("stop-map-adding", this._mode === MODE_ADD);
+
+    if (!this._crosshair) return;
+    this._crosshair.hidden = !(this._mode === MODE_ADD && !this._pin);
+  },
+
+  // The overlay is the stage's, not the canvas's, for the legend's reason:
+  // Leaflet owns every child of `#stop-map`, and a pin Leaflet threw away on
+  // the next `fitBounds` would be a placement the editor could not adjust.
+  // The stage renders it empty and the hook fills it, so a diff has something
+  // to own and never removes a pin mid-drag.
+  _ensureOverlay() {
+    if (this._overlay) return this._overlay;
+
+    const root = this._controlsRoot();
+    let overlay = root.querySelector("#stop-map-overlay");
+
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.id = "stop-map-overlay";
+      overlay.className = "stop-map-overlay";
+      root.appendChild(overlay);
+    }
+
+    const crosshair =
+      overlay.querySelector("#stop-map-crosshair") || buildCrosshair(overlay);
+
+    this._overlay = overlay;
+    this._crosshair = crosshair;
+    return overlay;
+  },
+
+  _removeOverlay() {
+    this._removePinElement();
+    // The overlay itself is the stage's: it is emptied, not removed, so the
+    // next mount finds the element the server rendered rather than a new one.
+    this._overlay = null;
+    this._crosshair = null;
+    this.el.classList.remove("stop-map-adding");
+  },
+
+  _renderPin() {
+    if (!this._pin) {
+      this._removePinElement();
+      this._drawPinLayers();
+      this._syncModeChrome();
+      return;
+    }
+
+    const button = this._pinElement || this._createPinElement();
+    const label = this._pin.label || "Stop";
+
+    // The nudge is stated where a keyboard user will find it: on the control
+    // itself, not only in the caption the pointer user reads.
+    button.setAttribute(
+      "aria-label",
+      `${label} position. Drag it, or focus it and use the arrow keys to move it about 3 feet, 30 feet with Shift.`,
+    );
+
+    const badge = button.querySelector("[data-stop-map-pin-label]");
+    badge.textContent = this._pin.label || "";
+    badge.hidden = !this._pin.label;
+
+    this._positionPin();
+    this._drawPinLayers();
+    this._syncModeChrome();
+  },
+
+  _createPinElement() {
+    this._ensureOverlay();
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.stopMapPin = "";
+    button.className = "stop-map-pin";
+    button.innerHTML =
+      '<span class="stop-map-pin-ring"></span>' +
+      '<span class="stop-map-pin-body">' +
+      '<svg class="stop-map-pin-glyph" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="8"></circle><path d="M7.5 12h9"></path></svg>' +
+      "</span>" +
+      '<span data-stop-map-pin-label class="stop-map-pin-label"></span>';
+
+    this._onPinDown = (event) => this._startPinDrag(event);
+    this._onPinKey = (event) => this._onPinKeyDown(event);
+    button.addEventListener("pointerdown", this._onPinDown);
+    button.addEventListener("keydown", this._onPinKey);
+
+    this._overlay.appendChild(button);
+    this._pinElement = button;
+    return button;
+  },
+
+  _removePinElement() {
+    const button = this._pinElement;
+    if (!button) return;
+
+    if (this._onPinDown) {
+      button.removeEventListener("pointerdown", this._onPinDown);
+      this._onPinDown = null;
+    }
+    if (this._onPinKey) {
+      button.removeEventListener("keydown", this._onPinKey);
+      this._onPinKey = null;
+    }
+
+    if (button.parentElement) button.parentElement.removeChild(button);
+    this._pinElement = null;
+  },
+
+  _positionPin() {
+    if (!this._pinElement || !this._pin || !this._map) return;
+
+    const point = this._map.latLngToContainerPoint([
+      this._pin.lat,
+      this._pin.lon,
+    ]);
+    this._pinElement.style.left = `${point.x}px`;
+    this._pinElement.style.top = `${point.y}px`;
+  },
+
+  // The saved position a pending move started from, the dashed line between it
+  // and the pin, and how far apart they are. Drawn by Leaflet rather than by
+  // the overlay, so a pan moves all three without anything recomputing them.
+  _drawPinLayers() {
+    if (!this._map || !this._pinGroup) return;
+
+    this._pinGroup.clearLayers();
+    if (!this._pin || !this._ghost) return;
+
+    const saved = [this._ghost.lon, this._ghost.lat];
+    const placed = [this._pin.lon, this._pin.lat];
+    const metres = haversineMetres(saved, placed);
+    if (metres < GHOST_MIN_METRES) return;
+
+    this._leaflet
+      .marker([this._ghost.lat, this._ghost.lon], {
+        icon: this._leaflet.divIcon({
+          className: "stop-map-marker stop-map-ghost-marker",
+          html: '<span class="stop-map-ghost"></span>',
+          iconSize: [MARKER_BOX_PX, MARKER_BOX_PX],
+          iconAnchor: [MARKER_BOX_PX / 2, MARKER_BOX_PX / 2],
+        }),
+        pane: MARKER_PANE,
+        interactive: false,
+        keyboard: false,
+      })
+      .addTo(this._pinGroup);
+
+    this._leaflet
+      .polyline(
+        [
+          [this._ghost.lat, this._ghost.lon],
+          [this._pin.lat, this._pin.lon],
+        ],
+        { color: NAVY, weight: 2, dashArray: "5 4", interactive: false },
+      )
+      .addTo(this._pinGroup);
+
+    this._leaflet
+      .marker(
+        [
+          (this._ghost.lat + this._pin.lat) / 2,
+          (this._ghost.lon + this._pin.lon) / 2,
+        ],
+        {
+          icon: this._leaflet.divIcon({
+            className: "stop-map-marker stop-map-distance-marker",
+            html: `<span class="stop-map-distance">${escapeHtml(
+              formatDistance(metres),
+            )}</span>`,
+            iconSize: [0, 0],
+            iconAnchor: [0, 0],
+          }),
+          pane: MARKER_PANE,
+          interactive: false,
+          keyboard: false,
+        },
+      )
+      .addTo(this._pinGroup);
+  },
+
+  _startPinDrag(event) {
+    if (event.button !== 0 || !this._pin) return;
+    // The drag is the pin's, not the map's: without this a pointerdown on the
+    // pin starts a pan under it.
+    event.preventDefault();
+    event.stopPropagation();
+
+    const button = event.currentTarget;
+    if (typeof button.setPointerCapture === "function") {
+      button.setPointerCapture(event.pointerId);
+    }
+
+    const move = (moveEvent) => {
+      this._setPinLatLng(this._pointerLatLng(moveEvent));
+    };
+
+    // The report is the pointerup, never the pointermove stream: an editor
+    // dragging a pin crosses a hundred points in a second, and a report per
+    // point is a round trip per point for a draft the server already owns.
+    const up = (upEvent) => {
+      button.removeEventListener("pointermove", move);
+      button.removeEventListener("pointerup", up);
+      button.removeEventListener("pointercancel", up);
+
+      const [lon, lat] = this._pointerLatLng(upEvent);
+      this._setPinLatLng([lon, lat]);
+      this.pushEvent("pin_moved", { lat, lon });
+      // Focus returns to the pin so the arrow keys work straight after a drag.
+      button.focus();
+    };
+
+    button.addEventListener("pointermove", move);
+    button.addEventListener("pointerup", up);
+    button.addEventListener("pointercancel", up);
+  },
+
+  _onPinKeyDown(event) {
+    const step = NUDGE_STEPS[event.key];
+    if (!step || !this._pin) return;
+
+    // The pin's own keys: the canvas pans on the arrow keys in browse mode,
+    // and here they would pan the pin off the place it is being set.
+    event.preventDefault();
+    event.stopPropagation();
+
+    const metres = event.shiftKey ? NUDGE_METRES_SHIFTED : NUDGE_METRES;
+    const [lon, lat] = offsetMetres(
+      [this._pin.lon, this._pin.lat],
+      [step[0] * metres, step[1] * metres],
+    );
+
+    this._setPinLatLng([lon, lat]);
+    this.pushEvent("pin_moved", { lat, lon });
+  },
+
+  // The local half of a pin change: the browser shows the move immediately, and
+  // the server's echo of it is what makes it the draft.
+  _setPinLatLng([lon, lat]) {
+    if (!this._pin) return;
+
+    this._pin = { ...this._pin, lat, lon };
+    this._positionPin();
+    this._drawPinLayers();
+  },
+
+  // A mark answers differently in each mode. Browsing, a mark is a stop to
+  // open. Placing, it is a curb with a stop already standing on it, which is
+  // exactly the thing an editor is pointing at — and the marker takes the
+  // click away from the canvas, so a mark that did not place would be one
+  // place on the map where placing is impossible.
+  _clickStop(stop) {
+    if (this._mode === MODE_ADD && stop.point) {
+      this.pushEvent("place", { lat: stop.point[1], lon: stop.point[0] });
+      return;
+    }
+
+    this.pushEvent("select_stop", { stop_id: stop.id });
+  },
+
+  _pointerLatLng(event) {
+    const rect = this.el.getBoundingClientRect();
+    const { lat, lng } = this._map.containerPointToLatLng([
+      event.clientX - rect.left,
+      event.clientY - rect.top,
+    ]);
+
+    return [lng, lat];
   },
 
   _createPanes() {
@@ -423,9 +823,7 @@ const StopMap = {
         })
         .addTo(this._stopGroup);
 
-      marker.on("click", () =>
-        this.pushEvent("select_stop", { stop_id: stop.id }),
-      );
+      marker.on("click", () => this._clickStop(stop));
       this._stopLayers.set(stop.id, marker);
     }
   },
@@ -575,6 +973,12 @@ const StopMap = {
     }
 
     this._map.invalidateSize();
+    // Leaflet repositions its own layers on a resize; the pin is DOM positioned
+    // from the view, so without this a pin placed on a desktop window is left
+    // at those pixels when the workspace stacks for a phone — which is outside
+    // the canvas entirely.
+    this._positionPin();
+
     if (this._wasHidden) {
       // Leaflet sized itself against a zero-width container and kept that view.
       // Fitting again is what makes a rule opened on a phone land on its own
@@ -702,6 +1106,80 @@ function nearestSegmentTo(point, from, to) {
   };
 }
 
+// `[lon, lat]` moved by a number of metres east and north. Longitude degrees
+// are shorter than latitude degrees away from the equator, so the same metres
+// east of a stop and north of it are not the same number of degrees — and at
+// the poles, where that ratio runs away, a stop with no draggable longitude is
+// better than one that jumps to the other side of the world.
+function offsetMetres([lon, lat], [east, north]) {
+  const scale = Math.max(0.05, Math.cos((lat * Math.PI) / 180));
+
+  return [
+    lon + east / (METRES_PER_DEGREE * scale),
+    lat + north / METRES_PER_DEGREE,
+  ];
+}
+
+function haversineMetres([lon1, lat1], [lon2, lat2]) {
+  const radius = 6_371_000;
+  const toRadians = Math.PI / 180;
+  const dLat = (lat2 - lat1) * toRadians;
+  const dLon = (lon2 - lon1) * toRadians;
+
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * toRadians) *
+      Math.cos(lat2 * toRadians) *
+      Math.sin(dLon / 2) ** 2;
+
+  return 2 * radius * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+// Feet under a thousand of them and miles over, on the prototype's own rule:
+// a curb is measured in feet and a move across a neighbourhood is not. Both
+// figures land on a 5-foot step so the label stops flickering as the pin moves.
+function formatDistance(metres) {
+  const feet = metres / FEET_PER_METRE;
+
+  return feet < 1000
+    ? `${Math.round(feet / 5) * 5} ft`
+    : `${(metres / METRES_PER_MILE).toFixed(2)} mi`;
+}
+
+// The crosshair, for a stage that renders an overlay without one.
+function buildCrosshair(overlay) {
+  const crosshair = document.createElement("div");
+  crosshair.id = "stop-map-crosshair";
+  crosshair.className = "stop-map-crosshair";
+  crosshair.setAttribute("aria-hidden", "true");
+  crosshair.hidden = true;
+  crosshair.innerHTML =
+    '<span class="stop-map-crosshair-v"></span><span class="stop-map-crosshair-h"></span>';
+
+  overlay.appendChild(crosshair);
+  return crosshair;
+}
+
+function readPin(value) {
+  const point = readPoint(value);
+  if (!point) return null;
+
+  return { ...point, label: value.label ? String(value.label) : "" };
+}
+
+// A point that cannot be read is dropped rather than clamped. A pin at
+// latitude 0 because the payload said "north" would be drawn on the equator
+// and saved there.
+function readPoint(value) {
+  if (!value || typeof value !== "object") return null;
+
+  const lat = Number(value.lat);
+  const lon = Number(value.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+
+  return { lat, lon };
+}
+
 function sameBounds(first, second) {
   return first.every((value, index) => value === second[index]);
 }
@@ -733,7 +1211,11 @@ export default StopMap;
 export {
   BASEMAP_SATELLITE,
   BASEMAP_STREET,
+  MODE_ADD,
+  MODE_BROWSE,
   STATE_INITIALIZING,
   STATE_READY,
   STATE_UNAVAILABLE,
+  formatDistance,
+  haversineMetres,
 };
