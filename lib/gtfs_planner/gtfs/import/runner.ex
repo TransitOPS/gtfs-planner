@@ -21,11 +21,11 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
   Admission and the claim come before any upload byte is read. `start_import/4` is
   refused at the supervisor's cap before `init/1` runs; once admitted, the runner
   claims the run and waits for the caller (the LiveView) to stage the upload and call
-  `install_source/2`, which starts the worker. The runner closes the run as
-  `source_not_installed`, removes the run's source directory and stops when
-  `:import_source_install_timeout_ms` passes first, when the monitored caller exits
-  first, or when the caller gives up with `cancel_source/1`. The lease keeps renewing
-  while the runner waits.
+  `install_source/2`, which starts the worker. When `:import_source_install_timeout_ms`
+  passes first, when the monitored caller exits first, or when the caller gives up with
+  `cancel_source/1`, the runner closes the run as `source_not_installed` (which deletes
+  its empty version, see `ImportRuns.fail_source_not_installed/3`), removes the run's
+  source directory and stops. The lease keeps renewing while the runner waits.
 
   The child is `restart: :temporary`: replaying non-idempotent source writes is
   unsafe, so a dead runner is never auto-restarted (AC-7). PostgreSQL remains
@@ -345,12 +345,14 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
     %{pid: task.pid, ref: nil}
   end
 
-  # The source never arrived, so no worker started and nothing was imported: the run fails at
-  # the upload phase and subscribers reload it. The directory goes first so the caller sees it
-  # gone when this returns.
+  # The source never arrived, so no worker started and nothing was imported: the run closes as
+  # `source_not_installed` with its empty version deleted, and subscribers reload it. The fence
+  # is the claimed lease token. The directory goes next so the caller sees it gone when this
+  # returns.
   defp close_without_source(state) do
-    failure = Failure.from_error(:source_not_installed, phase: :upload)
-    _ = ImportRuns.fail_import(state.organization_id, state.run_id, state.lease_token, failure)
+    _ =
+      ImportRuns.fail_source_not_installed(state.organization_id, state.run_id, state.lease_token)
+
     remove_source(state)
     broadcast_changed(state)
   end

@@ -105,6 +105,79 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerSourceHandshakeTest do
     end
   end
 
+  describe "closing a run whose source never arrived" do
+    test "deletes the empty version and fails the run under the runner's lease token", %{
+      organization: organization
+    } do
+      {run, token} = claimed_run(organization, "Closed Feed")
+
+      assert {:ok, %Run{state: "failed", reason_code: "source_not_installed", phase: "upload"}} =
+               ImportRuns.fail_source_not_installed(organization.id, run.id, token)
+
+      assert Repo.get(GtfsVersion, run.gtfs_version_id) == nil
+      assert ImportRuns.list_recoverable(organization.id) == []
+    end
+
+    test "leaves a run alone when the token is not the runner's current one", %{
+      organization: organization
+    } do
+      {run, _token} = claimed_run(organization, "Superseded Feed")
+
+      assert {:error, :invalid_transition} =
+               ImportRuns.fail_source_not_installed(organization.id, run.id, run.lease_token)
+
+      assert %Run{state: "running"} = Repo.get!(Run, run.id)
+
+      assert %GtfsVersion{publication_status: "importing"} =
+               Repo.get!(GtfsVersion, run.gtfs_version_id)
+    end
+
+    test "leaves a run alone when its lease has expired", %{organization: organization} do
+      {run, token} = claimed_run(organization, "Expired Feed")
+
+      Repo.update_all(from(r in Run, where: r.id == ^run.id),
+        set: [lease_expires_at: ~U[2000-01-01 00:00:00.000000Z]]
+      )
+
+      assert {:error, :invalid_transition} =
+               ImportRuns.fail_source_not_installed(organization.id, run.id, token)
+
+      assert %Run{state: "running"} = Repo.get!(Run, run.id)
+      assert %GtfsVersion{} = Repo.get!(GtfsVersion, run.gtfs_version_id)
+    end
+
+    test "leaves a run that no runner has claimed alone", %{organization: organization} do
+      run = pending_run(organization, "Unclaimed Feed")
+
+      assert {:error, :invalid_transition} =
+               ImportRuns.fail_source_not_installed(organization.id, run.id, run.lease_token)
+
+      assert %Run{state: "pending"} = Repo.get!(Run, run.id)
+
+      assert %GtfsVersion{publication_status: "staging"} =
+               Repo.get!(GtfsVersion, run.gtfs_version_id)
+    end
+
+    test "leaves another organization's run alone", %{organization: organization} do
+      {run, token} = claimed_run(organization, "Foreign Feed")
+      other = GtfsPlanner.OrganizationsFixtures.organization_fixture()
+
+      assert {:error, :not_found} = ImportRuns.fail_source_not_installed(other.id, run.id, token)
+
+      assert %Run{state: "running"} = Repo.get!(Run, run.id)
+      assert %GtfsVersion{} = Repo.get!(GtfsVersion, run.gtfs_version_id)
+    end
+
+    test "reports an unknown run as not found", %{organization: organization} do
+      assert {:error, :not_found} =
+               ImportRuns.fail_source_not_installed(
+                 organization.id,
+                 Ecto.UUID.generate(),
+                 Ecto.UUID.generate()
+               )
+    end
+  end
+
   describe "a runner that receives its source" do
     setup :hold_workers
 
@@ -235,6 +308,17 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerSourceHandshakeTest do
     run
   end
 
+  # A claimed run: the run as it was created (carrying the single-use preparation token) and
+  # the lease token the claim issued.
+  defp claimed_run(organization, name) do
+    run = pending_run(organization, name)
+
+    {:ok, _claimed, _version, token} =
+      ImportRuns.claim_import(organization.id, run.id, run.lease_token)
+
+    {run, token}
+  end
+
   # Upload entries as LiveView hands them over: a temporary path and the client's name.
   defp uploads(content) do
     directory = Path.join(System.tmp_dir!(), "source-handshake-#{Ecto.UUID.generate()}")
@@ -281,8 +365,8 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerSourceHandshakeTest do
     run_id = run.id
     assert_received {:import_run_changed, ^run_id}
 
-    assert %GtfsVersion{publication_status: "failed"} =
-             Repo.get!(GtfsVersion, run.gtfs_version_id)
+    assert Repo.get(GtfsVersion, run.gtfs_version_id) == nil
+    assert ImportRuns.list_recoverable(organization.id) == []
 
     {:ok, run_dir} = SourceStorage.run_dir(organization.id, run.id)
     refute File.exists?(run_dir)

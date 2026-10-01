@@ -38,6 +38,10 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
   @lease_seconds Application.compile_env(:gtfs_planner, :import_lease_seconds, 300)
   @lease_placeholder ~U[1970-01-01 00:00:00.000000Z]
 
+  # Reason codes of runs that closed before any row was imported, with their staging
+  # version deleted. Neither offers a recovery action.
+  @unimported_reason_codes ~w(busy source_not_installed)
+
   # Macro: applies values to a single run row via `update_all`. DB-time columns
   # use PostgreSQL time: pass `:now` (CURRENT_TIMESTAMP) or `:lease`
   # (CURRENT_TIMESTAMP + configured interval). Plain values pass through.
@@ -213,6 +217,61 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
         finished_at: DateTime.utc_now(),
         reason_code: "busy"
       })
+      |> Repo.update()
+
+    {:ok, Repo.get!(Run, run.id)}
+  end
+
+  @doc """
+  Closes a running import whose runner never received its source: the install deadline
+  passed, the caller that was staging the upload exited, or staging failed.
+
+  The run must be `running` under `lease_token` with an unexpired lease, which proves
+  the calling runner still owns it. No worker started, so the importing version holds no
+  imported rows and the same transaction deletes it; its name can be used again, which
+  lets a person resubmit the files they kept. The run becomes `failed` with phase
+  `upload` and reason `source_not_installed`. Like a run closed by `fail_unstarted/3`,
+  it is not listed by `list_recoverable/1`: it left nothing to recover.
+
+  A superseded owner (stale token or expired lease), a run in any other state, another
+  organization's run and an unknown run return
+  `{:error, :invalid_transition | :not_found}` and change nothing, so a runner that lost
+  the run cannot delete a version another owner is importing into.
+  """
+  @spec fail_source_not_installed(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, Run.t()} | {:error, :not_found | :invalid_transition}
+  def fail_source_not_installed(organization_id, run_id, lease_token) do
+    transaction(fn ->
+      run = lock_run(organization_id, run_id)
+
+      case guard_lease(run, ~w(running), lease_token) do
+        :ok -> close_uninstalled(organization_id, run)
+        :not_found -> {:error, :not_found}
+        _stale -> {:error, :invalid_transition}
+      end
+    end)
+  end
+
+  defp close_uninstalled(organization_id, run) do
+    from(v in GtfsVersion,
+      where:
+        v.id == ^run.gtfs_version_id and v.organization_id == ^organization_id and
+          v.publication_status == "importing"
+    )
+    |> Repo.delete_all()
+
+    failure = Failure.from_error(:source_not_installed, phase: :upload)
+
+    {:ok, _} =
+      run
+      |> Run.system_changeset(
+        Map.merge(Failure.to_run_attrs(failure), %{
+          state: Failure.outcome_to_state(failure),
+          lease_token: nil,
+          lease_expires_at: nil,
+          finished_at: DateTime.utc_now()
+        })
+      )
       |> Repo.update()
 
     {:ok, Repo.get!(Run, run.id)}
@@ -887,8 +946,8 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
   deterministically by `updated_at DESC, id`. This includes both the active
   (pending/running/cleaning) and the recoverable terminal-but-unpublished states
   so the LiveView can render every in-flight and recoverable card. A run closed
-  by `fail_unstarted/3` is not listed: it started nothing and left nothing to
-  recover.
+  by `fail_unstarted/3` or `fail_source_not_installed/3` is not listed: it
+  imported nothing and left nothing to recover.
   """
   @spec list_recoverable(Ecto.UUID.t()) :: [Run.t()]
   def list_recoverable(organization_id) do
@@ -897,7 +956,7 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
     from(r in Run,
       where: r.organization_id == ^organization_id,
       where: r.state in ^display_states,
-      where: r.state != "failed" or coalesce(r.reason_code, "") != "busy",
+      where: r.state != "failed" or coalesce(r.reason_code, "") not in @unimported_reason_codes,
       order_by: [desc: r.updated_at, desc: r.id]
     )
     |> Repo.all()

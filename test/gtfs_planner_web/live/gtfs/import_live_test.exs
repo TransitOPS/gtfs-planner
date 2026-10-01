@@ -702,12 +702,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
     setup :editor_context
     setup :await_idle_runners
 
-    test "an upload set over the storage limit stays selected and the run fails", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: route_version
-    } do
+    test "an upload set over the storage limit stays selected and can be resubmitted under the same name",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: route_version
+         } do
       # A zero root budget makes `SourceStorage.stage/4` refuse every upload.
       put_application_env(:gtfs_task_artifacts_max_total_bytes, 0)
       conn = log_in_user(conn, user, organization: organization)
@@ -719,24 +720,17 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       GtfsPlanner.Support.RunnerSlots.await_idle()
       html = render(view)
 
-      target = version_by_name(organization.id, "Consume Fail")
-      assert target
-      assert target.publication_status == "failed"
-
-      run =
-        from(r in GtfsPlanner.Gtfs.Import.Run,
-          where: r.organization_id == ^organization.id and r.gtfs_version_id == ^target.id
-        )
-        |> GtfsPlanner.Repo.one!()
-
+      # The run is closed with nothing imported, and its empty version is gone.
+      run = Repo.get_by!(Run, organization_id: organization.id, version_name: "Consume Fail")
       assert run.state == "failed"
       assert run.reason_code == "source_not_installed"
       assert is_nil(run.lease_token)
+      refute version_by_name(organization.id, "Consume Fail")
+      refute has_element?(view, "#import-run-#{run.id}")
 
       # No worker started, no rows written to any version, and nothing staged.
       assert Task.Supervisor.children(GtfsPlanner.TaskSupervisor) == []
       refute Gtfs.get_level_by_level_id(organization.id, route_version.id, "L1")
-      refute Gtfs.get_level_by_level_id(organization.id, target.id, "L1")
 
       {:ok, run_dir} = SourceStorage.run_dir(organization.id, run.id)
       refute File.exists?(run_dir)
@@ -746,7 +740,16 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert html =~ "Upload fewer or smaller files."
       refute html =~ "couldn’t read the uploaded files"
       assert has_element?(view, "#gtfs-import-upload-entries", "levels.txt")
-      assert has_element?(view, "#import-run-#{run.id}")
+
+      # With room for the files, the same selection imports under the same name.
+      Application.put_env(:gtfs_planner, :gtfs_task_artifacts_max_total_bytes, 1024 * 1024 * 1024)
+      submit_import(view, "Consume Fail")
+      await_import_task(view)
+
+      target = version_by_name(organization.id, "Consume Fail")
+      assert target.publication_status == "published"
+      assert Gtfs.get_level_by_level_id(organization.id, target.id, "L1")
+      refute has_element?(view, "#gtfs-import-result", "wasn’t imported")
     end
 
     test "storage that cannot be written asks for the files again and drops the selection", %{
@@ -769,8 +772,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       GtfsPlanner.Support.RunnerSlots.await_idle()
       html = render(view)
 
-      target = version_by_name(organization.id, "Unwritable")
-      assert target.publication_status == "failed"
+      run = Repo.get_by!(Run, organization_id: organization.id, version_name: "Unwritable")
+      assert %Run{state: "failed", reason_code: "source_not_installed"} = run
+      refute version_by_name(organization.id, "Unwritable")
       assert has_element?(view, "#gtfs-import-result", "couldn’t read the uploaded files")
       refute html =~ "exceed the import storage limit"
       refute has_element?(view, "#gtfs-import-upload-entries", "levels.txt")
@@ -793,14 +797,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       submit_import(view, "Too Slow")
       html = render(view)
 
-      target = version_by_name(organization.id, "Too Slow")
-      run = Repo.get_by!(Run, organization_id: organization.id, gtfs_version_id: target.id)
+      run = Repo.get_by!(Run, organization_id: organization.id, version_name: "Too Slow")
       assert %Run{state: "failed", reason_code: "source_not_installed"} = run
+      refute version_by_name(organization.id, "Too Slow")
 
       {:ok, run_dir} = SourceStorage.run_dir(organization.id, run.id)
       refute File.exists?(run_dir)
       assert Task.Supervisor.children(GtfsPlanner.TaskSupervisor) == []
-      refute Gtfs.get_level_by_level_id(organization.id, target.id, "L1")
       assert has_element?(view, "#gtfs-import-result", "“Too Slow” wasn’t imported.")
       assert html =~ "couldn’t read the uploaded files"
       refute has_element?(view, "#gtfs-importing-card")

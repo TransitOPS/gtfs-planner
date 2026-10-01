@@ -2726,8 +2726,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         end
 
       {:error, reason} ->
-        # Post-create staging error: the runner closes the exact staging target as
-        # `source_not_installed` and removes whatever was written. No worker starts.
+        # Post-create staging error: the runner closes the run as `source_not_installed`,
+        # deletes the empty staging version and removes whatever was written. No worker
+        # starts, and the same name can be submitted again.
         _ = Runner.cancel_source(runner)
         source_refused(socket, target, reason)
     end
@@ -2740,7 +2741,6 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
     {:noreply,
      socket
-     |> assign(:import_target, target)
      |> assign(:import_result, {:error, target, {:upload_consumption_failed, reason}})
      |> assign(:importing, false)
      |> assign(:import_progress, nil)}
