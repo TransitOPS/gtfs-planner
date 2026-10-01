@@ -539,7 +539,10 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   than as a second convention the reader has to learn on this page.
   """
   attr :roster, :map, required: true
-  attr :rows, :list, required: true, doc: "the streamed `[{dom_id, line}]` rows"
+
+  attr :rows, :list,
+    required: true,
+    doc: "the streamed `[{dom_id, chunk}]` rows — a line, or the open pick"
 
   attr :shown, :integer,
     required: true,
@@ -554,6 +557,10 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
     default: nil,
     doc: "the line a write just created, drawn with the new-line highlight"
 
+  attr :pick, :map,
+    default: nil,
+    doc: "the open pick, streamed as a row of its own under its own line"
+
   def grid(assigns) do
     assigns =
       assigns
@@ -562,6 +569,9 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
       |> assign(:weekdays, @weekdays)
       |> assign(:weekday_names, @weekday_names)
       |> assign(:weekday_titles, weekday_titles(assigns.roster.base_week))
+      # Which line is being picked is one comparison per row, read here rather
+      # than in the sigil where the pick's keys would have to be reached for.
+      |> assign(:pick_line_id, assigns.pick && assigns.pick.line_id)
 
     ~H"""
     <div
@@ -621,37 +631,15 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
           </tr>
         </thead>
         <tbody id="rosters-grid-body">
-          <tr
-            :for={{dom_id, line} <- @rows}
+          <.grid_row
+            :for={{dom_id, chunk} <- @rows}
             id={dom_id}
-            class="rosters-line-row"
-            data-new={to_string(line.id == @new_line_id)}
-            phx-hook=".RosterNewLine"
-          >
-            <th scope="row" class="rosters-line-cell">
-              <.line_cell line={line} locked?={@locked?} />
-            </th>
-            <td :for={weekday <- 1..7} class="rosters-slot-cell">
-              <.slot_cell
-                line={line}
-                weekday={weekday}
-                locked?={@locked?}
-                paused_reason={@paused_reason}
-              />
-            </td>
-            <td class="rosters-pad">
-              <.days_off_cell line={line} />
-            </td>
-            <td class="rosters-pad rosters-num">
-              <.paid_cell line={line} />
-            </td>
-            <td class="rosters-pad">
-              <.problems_cell line={line} />
-            </td>
-            <td class="rosters-pad">
-              <.operator_cell line={line} locked?={@locked?} />
-            </td>
-          </tr>
+            chunk={chunk}
+            locked?={@locked?}
+            paused_reason={@paused_reason}
+            new_line_id={@new_line_id}
+            pick_line_id={@pick_line_id}
+          />
           <tr :if={@shown == 0} class="rosters-no-match">
             <td colspan="12" class="rosters-pad py-6 text-center text-sm text-muted">
               No lines match this filter.
@@ -766,6 +754,79 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
         }
       };
     </script>
+    """
+  end
+
+  @doc """
+  One row of the grid: a line's week, or the pick row under the line it belongs
+  to.
+
+  The grid's stream carries both kinds of row. That is not tidiness — a stream
+  never redraws a row that is already on screen, so a pick row drawn as a plain
+  sibling of the streamed lines would not appear when a pick opens and would not
+  go away when it is saved. As an item of the same stream, keyed separately, it
+  is inserted directly under its line and removed when the pick closes, and the
+  lines around it are left exactly as they were.
+  """
+  attr :id, :string, required: true, doc: "the stream's own key for this row"
+  attr :chunk, :any, required: true, doc: "`{:line, line}` or `{:pick, pick}`"
+  attr :locked?, :boolean, default: false
+  attr :paused_reason, :string, default: nil
+  attr :new_line_id, :string, default: nil
+  attr :pick_line_id, :string, default: nil
+
+  def grid_row(%{chunk: {:line, line}} = assigns) do
+    assigns = assign(assigns, :line, line)
+
+    ~H"""
+    <tr
+      id={@id}
+      class="rosters-line-row"
+      data-new={to_string(@line.id == @new_line_id)}
+      phx-hook=".RosterNewLine"
+    >
+      <th scope="row" class="rosters-line-cell">
+        <.line_cell line={@line} locked?={@locked?} />
+      </th>
+      <td :for={weekday <- 1..7} class="rosters-slot-cell">
+        <.slot_cell
+          line={@line}
+          weekday={weekday}
+          locked?={@locked?}
+          paused_reason={@paused_reason}
+        />
+      </td>
+      <td class="rosters-pad">
+        <.days_off_cell line={@line} />
+      </td>
+      <td class="rosters-pad rosters-num">
+        <.paid_cell line={@line} />
+      </td>
+      <td class="rosters-pad">
+        <.problems_cell line={@line} />
+      </td>
+      <td class="rosters-pad">
+        <.operator_cell
+          line={@line}
+          locked?={@locked?}
+          recording?={@pick_line_id == @line.id}
+        />
+      </td>
+    </tr>
+    """
+  end
+
+  def grid_row(%{chunk: {:pick, pick}} = assigns) do
+    assigns = assign(assigns, :pick, pick)
+
+    ~H"""
+    <.pick_row
+      id={@id}
+      line={@pick.line}
+      operators={@pick.operators}
+      selected={@pick.selected}
+      refusal={@pick.refusal}
+    />
     """
   end
 
@@ -1209,23 +1270,29 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   The button is a link-styled control rather than a `.btn` because it sits in a
   dense row beside a value, and it is the only action in the cell: a picker that
   offered more would be a second page's worth of controls in a 200px column.
+
+  `recording?` is the line whose pick is open. The cell then says so in words
+  rather than offering the control that would reopen the row already under it.
   """
   attr :line, :map, required: true
   attr :locked?, :boolean, default: false
+  attr :recording?, :boolean, default: false
 
   def operator_cell(assigns) do
     ~H"""
     <div class="rosters-operator">
-      <span :if={@line.operator} class="rosters-operator-value">
+      <span :if={@recording?} class="rosters-muted">Recording pick…</span>
+      <span :if={@line.operator && not @recording?} class="rosters-operator-value">
         <span class="rosters-operator-name">{@line.operator.display_name}</span>
         <span class="rosters-operator-id">{@line.operator.employee_id}</span>
       </span>
-      <span :if={is_nil(@line.operator)} class="rosters-muted">Open</span>
+      <span :if={is_nil(@line.operator) && not @recording?} class="rosters-muted">Open</span>
       <button
+        :if={not @recording?}
         type="button"
         id={"rosters-record-pick-#{@line.line_number}"}
         class="rosters-pick-link"
-        phx-click="record_pick"
+        phx-click="open_pick"
         phx-value-line={@line.id}
         disabled={@locked?}
         aria-label={pick_label(@line)}
@@ -1246,6 +1313,109 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   defp pick_label(%{line_number: number, operator: operator}) do
     "Change pick for line #{number}, held by #{operator.display_name}"
   end
+
+  @doc """
+  The pick row: the one form the grid carries, opened under its own line.
+
+  Which operators are on offer is the organization's own list in seniority order
+  (`Operations.list_operators/1`) minus everybody who already holds a line in
+  this version, because one operator holds at most one line here. A line that
+  already has a pick leads with the operator who holds it, marked "current", and
+  "No operator (open)" clears it — a pick is a record, and clearing one is a
+  record too.
+
+  The row is one `<tr>` with a single cell across the whole week, because a form
+  that runs under a line and not inside one of its cells is the only shape in
+  which a 340px select, two buttons and a refusal fit without squeezing the
+  week. `id` is the grid stream's key for the row, so the row is inserted and
+  removed with the lines around it; `#rosters-pick-row` is the cell itself, which
+  is the part a test and a reviewer address.
+
+  The submitted operator id is not this component's business: the writer casts
+  it inside the caller's organization, so a hand-built or stale value cannot
+  reach another tenant's operator (the "Scoped identities" criterion).
+  """
+  attr :id, :string, required: true, doc: "the grid stream's key for this row"
+  attr :line, :map, required: true
+  attr :operators, :list, required: true, doc: "the operators holding no line in this version"
+  attr :selected, :string, default: nil
+  attr :refusal, :string, default: nil
+
+  def pick_row(assigns) do
+    ~H"""
+    <tr id={@id} class="rosters-pick-line">
+      <td id="rosters-pick-row" colspan="12" class="rosters-pick-cell">
+        <form
+          id="rosters-pick-form"
+          class="flex flex-wrap items-end gap-x-4 gap-y-3"
+          phx-submit="save_pick"
+        >
+          <input type="hidden" name="line" value={@line.id} />
+          <div class="w-[340px] max-w-full">
+            <.input
+              type="select"
+              id="rosters-pick-operator"
+              name="operator"
+              label={"Record the pick for line #{@line.line_number}"}
+              options={pick_options(@line, @operators)}
+              value={@selected || ""}
+              help={pick_help(@line, @operators)}
+            />
+          </div>
+          <.button type="button" id="rosters-pick-cancel" variant="secondary" phx-click="cancel_pick">
+            Cancel
+          </.button>
+          <.button type="submit" id="rosters-pick-save" phx-disable-with="Saving…">
+            Save pick
+          </.button>
+          <.message
+            :if={@refusal}
+            id="rosters-pick-error"
+            kind="error"
+            title="Nothing was saved."
+            class="max-w-[720px] border-l-4 border-error-line"
+          >
+            {@refusal}
+          </.message>
+        </form>
+      </td>
+    </tr>
+    """
+  end
+
+  # The line's own operator leads when it has one, so opening the row on a
+  # picked line shows the pick rather than the first name in the list. The
+  # clearing answer is there only in that case: there is nothing to clear on a
+  # line nobody has picked — except that a select with no options at all is a
+  # dead control, which is what a line nobody can offer a name for would be.
+  defp pick_options(%{operator: nil}, []), do: [{"No operator (open)", ""}]
+
+  defp pick_options(%{operator: nil}, operators), do: pick_operator_options(operators)
+
+  defp pick_options(%{operator: current}, operators) do
+    [{"#{pick_option_label(current)} · current", current.id}, {"No operator (open)", ""}] ++
+      pick_operator_options(operators)
+  end
+
+  defp pick_operator_options(operators), do: Enum.map(operators, &{pick_option_label(&1), &1.id})
+
+  # The organization's own operator-list order is the pick's order, so the number
+  # is on the label rather than the label being rebuilt: numbered operators by
+  # number, then operators without one by name (domain rule 11).
+  defp pick_option_label(%{seniority_number: nil, display_name: name, employee_id: id}),
+    do: "#{name} · #{id}"
+
+  defp pick_option_label(%{seniority_number: number, display_name: name, employee_id: id}),
+    do: "##{number} #{name} · #{id}"
+
+  defp pick_help(%{operator: nil}, []),
+    do: "Every operator already holds a line, so there is nobody left to pick it."
+
+  defp pick_help(%{operator: _operator}, []),
+    do: "Every operator already holds a line, so this pick can only be cleared."
+
+  defp pick_help(_line, _operators),
+    do: "Enter the operator who picked this line in the bid."
 
   @doc """
   Renders the page's messages: the stale-slot warning, the no-operators notice

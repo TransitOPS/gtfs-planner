@@ -1272,6 +1272,37 @@ body {
 #rosters-page .rosters-pick-link:hover { color: var(--color-action-hover); }
 #rosters-page .rosters-pick-link:disabled { color: var(--color-control); cursor: not-allowed; }
 
+/* The pick row is the grid's only form: one cell across the whole week, on the
+   canvas ground so it reads as a panel inside the table rather than as another
+   line's week. It sits under the line it belongs to, and its own row height is
+   the content's — the dense 48px row height above is for a week, not for a
+   label, a select, two buttons and a refusal. */
+#rosters-grid tbody tr.rosters-pick-line > td {
+  height: auto;
+  background-color: var(--color-canvas);
+  padding: 12px 16px 14px;
+  text-align: left;
+}
+
+#rosters-grid tbody tr.rosters-pick-line:hover > td { background-color: var(--color-canvas); }
+
+/* The row's form stays with the reader. The grid scrolls sideways at 1280px
+   because the week is wider than the workspace, and the pick cell is as wide as
+   the whole table, so a form pinned to the cell's left edge would begin off
+   screen: the label, the select and the refusal would all be clipped by exactly
+   the amount the reader had scrolled. The form sticks to the left edge of the
+   visible area instead, the way the Line column does — which is also why the
+   form is capped in width: a sticky element can only be shifted as far as its
+   own containing block allows, so a form as wide as the whole cell cannot be
+   shifted at all and the stickiness is exactly what would be lost. The cap is
+   also what keeps a long refusal readable. */
+#rosters-pick-form {
+  position: sticky;
+  left: 0;
+  width: max-content;
+  max-width: min(100%, 860px);
+}
+
 /* ── The slot drawer's week strip and candidate rows ─────────────────────────
    The strip is the prototype's: seven cells at one fraction each, so a planner
    sees the whole week at the width of the drawer rather than seven 94px columns

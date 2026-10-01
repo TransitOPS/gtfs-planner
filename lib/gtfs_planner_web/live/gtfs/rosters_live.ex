@@ -5,8 +5,8 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   Rosters is the version's weekly lines: one operator's week of runs, repeated
   through the service period. This step owns the page shell and the states the
   page can be in before it has any lines — the head, the loading skeleton and the
-  version that has no runs to build from. The grid, the open work, the pick row
-  and the export section arrive with the steps that own them.
+  version that has no runs to build from. The grid, the open work and the export
+  section arrive with the steps that own them.
 
   The page mounts through the ordinary `:gtfs_routes` session, which decides
   whether a request reaches it; the editor guard is declared here because a
@@ -75,6 +75,9 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   # The slot drawer's three actions are writes and are listed with it. Opening
   # the drawer and choosing a candidate are reads of the roster already on the
   # socket, so they re-check no membership.
+  #
+  # The pick row is the same shape: opening and cancelling are reads of the
+  # roster this socket holds, and `save_pick` is the one write.
   @write_events ~w(
     add_line
     create_line_from_run
@@ -84,6 +87,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     add_to_line
     add_to_new_line
     confirm_delete_line
+    save_pick
   )
 
   # A role revoked while the page is open is not an error the reader caused and
@@ -94,6 +98,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   # The write the editor guard refused, so the drawer's own refusal is the one
   # sentence the reader is told rather than a silent nothing.
   @write_refused "Nothing was saved."
+
+  # A pick refused for anything other than a conflict is an id this page never
+  # offered. The submitted id is cast and looked up inside the caller's
+  # organization by the writer, so this sentence says what the page can know and
+  # nothing about another tenant's operator.
+  @operator_not_offered "That operator is not on this organization's list. Choose another operator."
 
   # The full weekday name. The grid's own module has the same list for the same
   # reason: the confirmation toast names the day a planner just changed.
@@ -157,13 +167,21 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
      # `render/1`, for the slot drawer's reason.
      |> assign(:line, nil)
      |> assign(:delete_line, nil)
-     |> stream(:roster_lines, [], dom_id: &roster_line_dom_id/1)
+     # The pick row, the line being picked and the operators on offer for it.
+     # Built by the events that change it, like the drawers, for the same
+     # reason.
+     |> assign(:pick, nil)
+     |> stream(:roster_lines, [], dom_id: &roster_row_dom_id/1)
      |> attach_hook(:editor_access, :handle_event, &require_editor/3)}
   end
 
   # The row's DOM id is its line number, not the line's id: a row is addressed
   # by where it sits in the week, and the line number is what the grid shows.
-  defp roster_line_dom_id(line), do: "rosters-line-#{line.line_number}"
+  # The pick row is a row of the same stream under a key of its own, so opening
+  # and closing a pick inserts and removes one row and leaves the lines around it
+  # exactly as they were.
+  defp roster_row_dom_id({:line, line}), do: "rosters-line-#{line.line_number}"
+  defp roster_row_dom_id({:pick, pick}), do: "rosters-pick-#{pick.line_number}"
 
   defp require_editor(event, _params, socket) when event in @write_events do
     if editor_access?(socket) do
@@ -337,7 +355,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   defp stream_roster_lines(%{assigns: %{roster: nil}} = socket), do: socket
 
   defp stream_roster_lines(socket) do
-    %{roster: roster, filter: filter, sort: sort, dir: dir} = socket.assigns
+    %{roster: roster, filter: filter, sort: sort, dir: dir, pick: pick} = socket.assigns
     lines = roster.lines |> Enum.filter(&visible?(&1, filter)) |> sorted(sort, dir)
 
     # The count is carried rather than read back off the stream: a `LiveStream`
@@ -345,7 +363,20 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     # whether anything was left.
     socket
     |> assign(:shown_count, length(lines))
-    |> stream(:roster_lines, lines, reset: true)
+    |> stream(:roster_lines, grid_rows(lines, pick), reset: true)
+  end
+
+  # The pick row goes into the same stream as the lines, directly after the line
+  # it belongs to. A stream never redraws a row that is already on screen, so a
+  # pick row drawn beside the streamed lines would not appear when the pick
+  # opened; as an item of the stream it is inserted under its line and removed
+  # when the pick closes, and no other row is disturbed.
+  defp grid_rows(lines, nil), do: Enum.map(lines, &{:line, &1})
+
+  defp grid_rows(lines, %{line_number: number} = pick) do
+    Enum.flat_map(lines, fn line ->
+      if line.line_number == number, do: [{:line, line}, {:pick, pick}], else: [{:line, line}]
+    end)
   end
 
   # An open line is a line nobody has picked, so it is a line the reader is
@@ -800,10 +831,246 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     end
   end
 
+  # ── The pick row ──────────────────────────────────────────────────────────
+  #
+  # The pick is a record of what a bid agreed, not a proposal the page decides
+  # anything about: the row offers the organization's operators in seniority
+  # order, `Gtfs.assign_roster_operator/4` records or clears, and the writer's
+  # own refusal is the sentence the row shows.
+  #
+  # Opening a pick and cancelling one are reads of the roster this socket already
+  # holds — the row is the composition's own line and the operator list — so
+  # neither re-checks the membership and neither is in `@write_events`.
+  # `save_pick` is.
+  def handle_event("open_pick", %{"line" => line_id}, socket) do
+    case pick_line(socket, line_id) do
+      # A line this version's roster does not hold is not a choice, so the click
+      # is ignored rather than opening a row describing a line that is not there.
+      nil ->
+        {:noreply, socket}
+
+      line ->
+        {:noreply,
+         socket
+         |> put_pick(open_pick(socket, line))
+         |> focus_pick_operator()}
+    end
+  end
+
+  def handle_event("cancel_pick", _params, socket) do
+    case socket.assigns.pick do
+      nil ->
+        {:noreply, socket}
+
+      pick ->
+        focus_id = pick_focus_id(socket, pick.line_number)
+
+        {:noreply,
+         socket
+         |> put_pick(nil)
+         |> push_event("focus_scoped_target", %{id: focus_id})}
+    end
+  end
+
+  # The line is read off the open row rather than trusted as submitted: a
+  # hand-built event naming another line cannot reach a writer with a line id
+  # the page is not showing, and the row that is open is the row being saved.
+  def handle_event("save_pick", %{"line" => line_id, "operator" => operator}, socket) do
+    case socket.assigns.pick do
+      %{line_id: ^line_id, line_number: number} ->
+        save_pick(socket, line_id, number, operator)
+
+      _no_pick ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("save_pick", _params, socket), do: {:noreply, socket}
+
   # Any other event is ignored. This clause is last among the `handle_event`
   # clauses on purpose: a catch-all placed earlier would shadow the real
   # handlers above it.
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  # The write. On success the roster is re-read and the row closes, so the
+  # Operator column and the open-work count are the composition's own words and
+  # not this page's memory of what it just did. On a refusal the row stays open
+  # with the writer's own sentence and the select takes focus, because a refusal
+  # that closes the row reads as the page having lost the planner's work.
+  defp save_pick(socket, line_id, number, operator) do
+    case Gtfs.assign_roster_operator(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           line_id,
+           pick_operator_id(operator)
+         ) do
+      {:ok, _result} ->
+        # The roster is re-read first and the focus target read off the result:
+        # a pick recorded under the Open filter takes the line off the grid, and
+        # the control that opened the row went with it.
+        saved_pick = socket |> clear_open_work() |> assign(:pick, nil) |> load_roster()
+        focus_id = pick_focus_id(saved_pick, number)
+
+        {:noreply,
+         saved_pick
+         |> put_toast(pick_sentence(saved_pick, number), :done)
+         |> push_event("focus_scoped_target", %{id: focus_id})}
+
+      {:error, {:operator_holds, other_line, name}} ->
+        # The roster is re-read and the row rebuilt with the refusal already in
+        # it, because the refusal is about a line that exists now and this
+        # socket's copy of the roster does not: the operator who was just refused
+        # is no longer on offer, and an offer that still showed them would invite
+        # the same refusal again. The row is built once and streamed once — a
+        # stream never redraws a row that is already on screen, so a refusal
+        # assigned after the row was inserted would never be drawn.
+        refused =
+          socket
+          |> clear_open_work()
+          |> assign(:pick, nil)
+          |> load_roster()
+          |> reopen_pick(number, pick_conflict(name, other_line))
+
+        {:noreply, focus_pick_operator(refused)}
+
+      {:error, :not_found} ->
+        refuse_pick_not_found(socket, number)
+    end
+  end
+
+  # A refusal that is not a conflict is a line that went, or an operator this
+  # page never offered. A line that is still drawn keeps its row and the reason;
+  # a line that is gone takes the row with it, because a row describing work that
+  # is not there is a lie, and the page's own toast carries the fact.
+  defp refuse_pick_not_found(socket, number) do
+    socket = clear_open_work(socket) |> assign(:pick, nil) |> load_roster()
+
+    case pick_line_number(socket, number) do
+      nil ->
+        {:noreply,
+         socket
+         |> put_toast(@line_gone, :refused)
+         |> push_event("focus_scoped_target", %{id: lines_title_id()})}
+
+      _line_still_there ->
+        {:noreply,
+         socket
+         |> reopen_pick(number, @operator_not_offered)
+         |> focus_pick_operator()}
+    end
+  end
+
+  # A line another session recorded while this row was open. The writer's own
+  # refusal names both halves — who holds what, and where — so the sentence does
+  # too, and the select is focused because the next move is choosing again.
+  defp pick_conflict(name, line_number) do
+    "#{name} already holds line #{line_number}. Another session recorded that pick. " <>
+      "Choose another operator."
+  end
+
+  # The row is rebuilt from the roster that was just re-read, so the offer after
+  # a refusal is the one the page would make now rather than the one it made when
+  # the pick was opened. The refusal is part of that build: the row is a stream
+  # item, and a stream item is drawn once, so a refusal assigned after the row
+  # was inserted would never be drawn.
+  defp reopen_pick(socket, number, refusal) do
+    case pick_line_number(socket, number) do
+      nil -> socket
+      line -> put_pick(socket, open_pick(socket, line, refusal))
+    end
+  end
+
+  # The pick row is a row of the grid's stream, so every change to it re-streams
+  # the grid: that is how the row appears under its line and how it goes away
+  # again. `nil` closes the row.
+  defp put_pick(socket, pick), do: socket |> assign(:pick, pick) |> stream_roster_lines()
+
+  # The pick row's whole data, built when the event that opens it runs and never
+  # inside `render/1`, for the slot drawer's reason. The line is the
+  # composition's own, and the offer is `Operations.list_operators/1` — the
+  # organization's single operator order — minus every operator who already
+  # holds a line in this version, because one operator holds at most one line
+  # here. The writer refuses on exactly that rule, so the offer on screen and
+  # the refusal under the lock are one computation (domain rule 11, INV-15).
+  defp open_pick(socket, line, refusal \\ nil) do
+    %{
+      line: line,
+      line_id: line.id,
+      line_number: line.line_number,
+      operators: free_operators(socket),
+      selected: line.operator && line.operator.id,
+      refusal: refusal
+    }
+  end
+
+  defp free_operators(socket) do
+    holders =
+      socket.assigns.roster.lines
+      |> Enum.map(& &1.operator)
+      |> Enum.reject(&is_nil/1)
+      |> MapSet.new(& &1.id)
+
+    socket.assigns.current_organization.id
+    |> Operations.list_operators()
+    |> Enum.reject(&MapSet.member?(holders, &1.id))
+  end
+
+  # An empty value is the row's clearing answer and `nil` is the writer's
+  # clearing answer. Anything else is a submitted id, and the writer is what
+  # casts it inside the caller's organization before it is used.
+  defp pick_operator_id(""), do: nil
+  defp pick_operator_id(operator) when is_binary(operator), do: operator
+  defp pick_operator_id(_not_a_value), do: nil
+
+  # What the pick did, in the words the grid draws it with: the operator is read
+  # off the reloaded composition's own line rather than off what was submitted,
+  # so the toast and the cell cannot describe different picks.
+  defp pick_sentence(socket, number) do
+    case pick_line_number(socket, number) do
+      %{operator: %{display_name: name}} ->
+        "Pick recorded: #{name} holds line #{number}."
+
+      _cleared_or_gone ->
+        "Line #{number} is open."
+    end
+  end
+
+  # Where focus goes once the row is gone. It is the control that opened the row,
+  # unless the row is no longer drawn — recording a pick under the Open filter
+  # takes the line off the grid entirely, and its button went with it. The
+  # section heading is the grid's own focus target for exactly that, the way the
+  # delete's is.
+  defp pick_focus_id(socket, number) do
+    if pick_row_drawn?(socket, number), do: pick_button_id(number), else: lines_title_id()
+  end
+
+  defp pick_row_drawn?(%{assigns: %{roster: nil}}, _number), do: false
+
+  defp pick_row_drawn?(socket, number) do
+    filter = socket.assigns.filter
+
+    Enum.any?(
+      socket.assigns.roster.lines,
+      &(&1.line_number == number and visible?(&1, filter))
+    )
+  end
+
+  defp focus_pick_operator(socket),
+    do: push_event(socket, "focus_scoped_target", %{id: "rosters-pick-operator"})
+
+  defp pick_button_id(number), do: "rosters-record-pick-#{number}"
+
+  defp lines_title_id, do: "rosters-lines-title"
+
+  defp pick_line(%{assigns: %{roster: nil}}, _line_id), do: nil
+
+  defp pick_line(socket, line_id),
+    do: Enum.find(socket.assigns.roster.lines, &(&1.id == line_id))
+
+  defp pick_line_number(%{assigns: %{roster: nil}}, _number), do: nil
+
+  defp pick_line_number(socket, number),
+    do: Enum.find(socket.assigns.roster.lines, &(&1.line_number == number))
 
   defp delete_line(socket, line_id) do
     case Gtfs.delete_roster_line(
@@ -1361,6 +1628,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
             locked?={@load_state == :unavailable}
             paused_reason={if @load_state == :unavailable, do: paused_reason()}
             new_line_id={@new_line_id}
+            pick={@pick}
           />
         </div>
 
