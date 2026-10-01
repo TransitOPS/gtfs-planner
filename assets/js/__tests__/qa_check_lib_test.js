@@ -3,6 +3,7 @@ import { expect, test } from "vitest";
 import { evaluateImport } from "../../qa/checks/import-feed.mjs";
 import { evaluateChangeTimes } from "../../qa/checks/timetable-change-times.mjs";
 import { evaluateAddTrip } from "../../qa/checks/timetable-add-trip.mjs";
+import { evaluateExport } from "../../qa/checks/export-feed.mjs";
 import {
   assertVersionId,
   compareSignatures,
@@ -640,4 +641,163 @@ test("a baseline that does not hold the 1:00 p.m. trip throws instead of judging
   expect(raised?.message).toMatch(/the baseline holds no/);
   // Exit code 2 is the harness's "could not be judged", not a failing run.
   expect(raised?.exitCode).toBe(2);
+});
+
+// The export check compares the downloaded zip with the source feed it came
+// from, so the counts below are the fixture's own: five routes, nine stops,
+// eleven trips and the fixture's stop-time rows. `STARTED` is the run's own
+// start, and the completed run below is stamped after it in the shape `psql`
+// prints a `timestamp without time zone`.
+
+const STARTED = "2026-09-30T20:03:11.000Z";
+
+const SOURCE_COUNTS = {
+  routes: 5,
+  stops: 9,
+  trips: 11,
+  stop_times: 28,
+};
+
+function exported(overrides = {}) {
+  return evaluateExport({
+    downloadCounts: { ...SOURCE_COUNTS },
+    sourceCounts: SOURCE_COUNTS,
+    downloadErrors: [],
+    sourceErrors: [],
+    validationRuns: [{ status: "completed", started_at: "2026-09-30 20:05:02.123456" }],
+    startedAt: STARTED,
+    ...overrides,
+  });
+}
+
+test("a downloaded zip holding the source's rows, with a completed check, passes", () => {
+  const result = exported();
+
+  expect(result.pass).toBe(true);
+  expect(result.observations).toHaveLength(1);
+});
+
+test("a source feed that has errors the download repeats still passes", () => {
+  const result = exported({
+    downloadErrors: ["stop_time_with_arrival_before_previous_departure_time"],
+    sourceErrors: [
+      "missing_required_field",
+      "stop_time_with_arrival_before_previous_departure_time",
+    ],
+  });
+
+  expect(result.pass).toBe(true);
+});
+
+test("no downloaded zip fails, because the goal is to download one", () => {
+  const result = exported({ downloadCounts: null });
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toEqual(["no zip has been downloaded yet"]);
+});
+
+test("a download missing one stop-time row fails, and names the table", () => {
+  const result = exported({ downloadCounts: { ...SOURCE_COUNTS, stop_times: 27 } });
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toEqual([
+    "stop_times: 28 in the source zip, 27 in the download",
+  ]);
+});
+
+test("a download that added a trip fails, because the goal changes no rows", () => {
+  const result = exported({ downloadCounts: { ...SOURCE_COUNTS, trips: 12 } });
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toEqual([
+    "trips: 11 in the source zip, 12 in the download",
+  ]);
+});
+
+test("a validator error the source does not report fails, and names the code", () => {
+  const result = exported({
+    downloadErrors: ["duplicate_route_id", "missing_recommended_field"],
+    sourceErrors: ["missing_recommended_field"],
+  });
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toEqual([
+    "validator error duplicate_route_id is not one the source zip reports",
+  ]);
+});
+
+test("a feed check that is still running fails, because it has not completed", () => {
+  const result = exported({
+    validationRuns: [{ status: "running", started_at: "2026-09-30 20:05:02.123456" }],
+  });
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toEqual([
+    `no completed validation run of the working version started after ${STARTED}`,
+  ]);
+});
+
+test("a feed check that failed fails, because only a completed one counts", () => {
+  const result = exported({
+    validationRuns: [{ status: "failed", started_at: "2026-09-30 20:05:02.123456" }],
+  });
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toHaveLength(1);
+});
+
+test("a completed check that started before the run does not count", () => {
+  const result = exported({
+    validationRuns: [
+      { status: "completed", started_at: "2026-09-30 20:00:00.000000" },
+      { status: "running", started_at: "2026-09-30 20:05:02.123456" },
+    ],
+  });
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toHaveLength(1);
+});
+
+test("no validation run at all fails", () => {
+  const result = exported({ validationRuns: [] });
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toHaveLength(1);
+});
+
+test("a completed check stamped in the run's own ISO form is read the same", () => {
+  const result = exported({
+    validationRuns: [{ status: "completed", started_at: "2026-09-30T20:05:02.123Z" }],
+  });
+
+  expect(result.pass).toBe(true);
+});
+
+test("a run with no readable start time throws instead of judging", () => {
+  let raised = null;
+
+  try {
+    exported({ startedAt: null });
+  } catch (error) {
+    raised = error;
+  }
+
+  expect(raised?.message).toMatch(/no readable start time/);
+  // Exit code 2 is the harness's "could not be judged", not a failing run.
+  expect(raised?.exitCode).toBe(2);
+});
+
+test("every difference is named at once, so one run reports all of them", () => {
+  const result = exported({
+    downloadCounts: { ...SOURCE_COUNTS, stops: 8 },
+    downloadErrors: ["duplicate_route_id"],
+    validationRuns: [],
+  });
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toEqual([
+    "stops: 9 in the source zip, 8 in the download",
+    "validator error duplicate_route_id is not one the source zip reports",
+    `no completed validation run of the working version started after ${STARTED}`,
+  ]);
 });
