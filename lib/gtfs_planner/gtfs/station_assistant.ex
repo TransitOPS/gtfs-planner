@@ -54,8 +54,33 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
       natural key, and every excluded decision is counted rather than projected
       (CL-1, CL-3, INV-2). Reading an import run approves nothing.
 
-  Descriptions and free text are stripped. Counts, identifiers, statuses and
-  recorded reasons are kept verbatim.
+  ## Accepted observations and prepared selection
+
+  `normalize_observations/2` validates and converts the measurements staff have
+  already accepted, and `prepare_import_selection/2` matches them against a
+  fresh read of the same run. Neither writes anything: no GTFS row, no journal
+  entry, no decision status and no run metadata changes (INV-2, AC-8). Preparing
+  a selection is not approving it - only the native confirmation in
+  `ChangeRuns` may do that.
+
+  An observation carries its own provenance: an explicit source reference, the
+  original value and unit, the captured date, the meaning of the measurement and
+  whether staff accepted it or recorded a conflict. Only `min_width` measured as
+  `minimum_clear_width` in `m`, `cm` or `mm` converts, through exact `Decimal`
+  multiplication, so 105 cm is 1.05 m rather than a rounded approximation. A
+  journal-backed source reference is resolved through `StationJournal`'s own
+  scope and frozen as a revision and a digest of identity metadata; the entry's
+  body, its photos and its author never leave the server (AC-13).
+
+  Selection is deliberately narrow. A decision is a candidate only when it is a
+  pending `:modify` pathway whose **complete** changed-field set is exactly
+  `min_width`, whose record still matches its stored fingerprint, whose
+  dependencies are already natively approved or applied, and whose uploaded
+  value equals the accepted measurement exactly. A width acceptance never carries
+  an accompanying endpoint, direction or any other edit into a selection, and a
+  mismatched upload stays mismatched: the answer names it unresolved instead of
+  rewriting the file. A disputed or unaccepted observation is reported, never
+  applied.
   """
 
   alias GtfsPlanner.Agents.Scope
@@ -66,6 +91,7 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
   alias GtfsPlanner.Gtfs.Level
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.ServiceQueries
+  alias GtfsPlanner.Gtfs.StationJournal
   alias GtfsPlanner.Gtfs.StationReport2.Connectivity
   alias GtfsPlanner.Gtfs.StationReport2.DataQuality
   alias GtfsPlanner.Gtfs.Stop
@@ -90,6 +116,22 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
   @narrowing_guidance "This answer is too large for one response. Narrow it by mode, outcome or a single pair index."
   @import_narrowing_guidance "This answer is too large for one response. Ask for a narrower page of the run."
 
+  # One measurement may change exactly one field of one pathway, and only this
+  # width slice converts. Everything else a staff member accepted stays a native
+  # review edit rather than becoming a prepared selection.
+  @observation_field "min_width"
+  @observation_meaning "minimum_clear_width"
+  @observation_keys ~w(source_ref source_revision target field original_value unit captured_date meaning accepted conflict)
+  @observation_units %{
+    "m" => Decimal.new(1),
+    "cm" => Decimal.new("0.01"),
+    "mm" => Decimal.new("0.001")
+  }
+  @max_source_ref_bytes 512
+  @max_source_revision_bytes 128
+  @max_pathway_id_bytes 255
+  @max_original_value_bytes 64
+
   # A computed review and everything that follows it: the run holds decisions a
   # station may read. A pending compute, a computing run, a failure, a
   # cancellation or an expiry holds none.
@@ -102,7 +144,9 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
           gtfs_version_id: Ecto.UUID.t(),
           station_id: Ecto.UUID.t(),
           station_stop_id: String.t(),
-          run_id: Ecto.UUID.t() | nil
+          run_id: Ecto.UUID.t() | nil,
+          actor_id: Ecto.UUID.t() | nil,
+          source_snapshot: map()
         }
 
   @typedoc "Bounded pair filters accepted by `result/2` and `result_pairs/2`."
@@ -116,6 +160,15 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
   @typedoc "Why a read refused, before any recorded row was disclosed."
   @type error ::
           :forbidden | :unavailable | :no_selected_run | :no_computed_review | :invalid_selection
+
+  @typedoc """
+  One validated, converted measurement, as the string-key row it is.
+
+  `normalized_value` is the measurement in metres. `source_revision` and
+  `source_digest` are set only for a journal-backed reference, whose entry's
+  identity metadata is frozen; the entry's body and photos are never part of it.
+  """
+  @type observation :: map()
 
   @doc """
   Projects the recorded result of the scope's selected run.
@@ -274,6 +327,99 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
 
   def import_review(_scope, _filters), do: {:error, :invalid_selection}
 
+  @doc """
+  Validates and converts accepted field observations without persisting them.
+
+  `observations` is the server's own list of string-key rows - the typed
+  observations the host froze into the scope's `station_imports` source
+  snapshot, never a model's. Every row states its source reference, the original
+  value and unit, the captured date, what the measurement means, and whether
+  staff accepted it or recorded a conflict against it.
+
+  Only `min_width` measured as `minimum_clear_width` converts, through exact
+  `Decimal` multiplication by 1, 0.01 or 0.001, so 105 cm is exactly 1.05 m. A
+  missing meaning, an unsupported unit, a nonpositive or unparseable value, a
+  malformed row, a foreign journal reference, or two accepted rows that disagree
+  about the same target fails **that row only**; the other measurements are still
+  reported.
+
+  A `source_ref` that is a UUID is resolved through `StationJournal`'s own
+  station scope and frozen as the entry's revision and a digest of its identity
+  metadata. The entry's body, its photos and its author stay on the server
+  (AC-13), and a later edit to that same entry is a new observation rather than a
+  silent rewrite of this one, so the row is reported as changed instead.
+
+  The answer is a read: nothing is written, and this function approves nothing
+  (INV-2).
+  """
+  @spec normalize_observations(Scope.t(), [map()]) :: {:ok, map(), map()} | {:error, error()}
+  def normalize_observations(%Scope{} = scope, observations) when is_list(observations) do
+    with :ok <- observation_batch(observations),
+         {:ok, selection} <- import_selection(scope),
+         {:ok, run} <- scoped_run(selection) do
+      normalized = normalize_rows(selection, observations)
+
+      {:ok, normalized, observation_evidence(selection, run, normalized)}
+    end
+  end
+
+  def normalize_observations(_scope, _observations), do: {:error, :invalid_selection}
+
+  @doc """
+  The digest a host records beside the observations it freezes.
+
+  A host that stores `observations_digest` in its `station_imports` source
+  snapshot gets that value from here, and `prepare_import_selection/2` refuses
+  observations whose digest no longer matches the snapshot it reads. A snapshot
+  without the key is still bound by `Scope`'s own envelope digest, so the check
+  tightens the frozen evidence rather than replacing it.
+  """
+  @spec observations_digest([map()]) :: String.t()
+  def observations_digest(observations) when is_list(observations), do: digest(observations)
+
+  @doc """
+  Prepares a native review selection from accepted observations, writing nothing.
+
+  `decision_ids` names at most #{@max_rows} distinct decisions of the scope's
+  selected station. The accepted observations come from the scope's **frozen**
+  source snapshot, never from the caller, and they are matched against a fresh
+  read of the same computed import run: an observation captured against a run
+  that has since changed describes a different run.
+
+  A decision is selected only when all of these hold:
+
+    * it is a pending `:modify` **pathway** whose complete changed-field set is
+      exactly `min_width`, so no endpoint, direction or other edit rides along;
+    * its record still matches the stored fingerprint and nobody hand-edited it;
+    * every decision it depends on is already natively approved or applied, and a
+      dependency that is still pending leaves the whole decision unresolved;
+    * an accepted, unconflicted observation targets the same pathway and its
+      converted value equals the uploaded value exactly.
+
+  Everything else is reported, never repaired: a disputed observation, a mixed
+  edit, a tainted or drifted record, a mismatched upload and a decision outside
+  this station all appear in `unresolved` or `excluded` with the reason, and the
+  uploaded file is left exactly as it was. Already approved rows are listed
+  separately under `existing_approved` and are never implicitly selected.
+
+  `input_digest` binds the frozen source snapshot, the fresh import digest, the
+  observations and every requested decision's outcome, so a later confirmation
+  can recompute it and refuse a stale selection. The returned `command` carries
+  no approval operation of any kind: preparing a selection and approving it stay
+  separate native steps (INV-2).
+  """
+  @spec prepare_import_selection(Scope.t(), [String.t()]) ::
+          {:ok, map(), map()} | {:error, error()}
+  def prepare_import_selection(%Scope{} = scope, decision_ids) when is_list(decision_ids) do
+    with {:ok, ids} <- selection_ids(decision_ids),
+         {:ok, selection} <- import_selection(scope),
+         {:ok, snapshot} <- import_snapshot(selection) do
+      prepare_answer(snapshot, ids)
+    end
+  end
+
+  def prepare_import_selection(_scope, _decision_ids), do: {:error, :invalid_selection}
+
   ## Scoping and authorization
 
   defp selection(%Scope{} = scope, run_requirement) do
@@ -282,7 +428,7 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
 
   defp selection_source(%Scope{} = scope, kind, run_key, run_requirement) do
     with :ok <- Scope.authorized_context(scope),
-         %{kind: ^kind, payload: payload} <- Scope.source_snapshot(scope),
+         snapshot = %{kind: ^kind, payload: payload} <- Scope.source_snapshot(scope),
          {:ok, station_id} <- Ecto.UUID.cast(Map.get(payload, "station_id")),
          {:ok, gtfs_version_id} <- Ecto.UUID.cast(scope.gtfs_version_id),
          {:ok, organization_id} <- Ecto.UUID.cast(scope.organization_id),
@@ -295,7 +441,9 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
          gtfs_version_id: gtfs_version_id,
          station_id: station_id,
          station_stop_id: station_stop_id,
-         run_id: run_id
+         run_id: run_id,
+         actor_id: scope.user_id,
+         source_snapshot: snapshot
        }}
     else
       {:error, reason} when reason in [:forbidden, :unavailable, :no_selected_run] ->
@@ -870,6 +1018,22 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
   # A foreign, deleted or uncomputed run is one refusal: this scope has no
   # computed review to read, whatever the run holds.
   defp computed_run(selection) do
+    with {:ok, run} <- scoped_run(selection) do
+      decisions = ChangeRuns.list_decisions(selection.organization_id, run.id)
+
+      {:ok,
+       %{
+         selection: selection,
+         run: run,
+         decisions: decisions,
+         version_total: length(decisions),
+         version_approved: Enum.count(decisions, &(&1.status in @approved_statuses)),
+         world: station_world(selection, decisions)
+       }}
+    end
+  end
+
+  defp scoped_run(selection) do
     case ChangeRuns.get_for_version(
            selection.organization_id,
            selection.gtfs_version_id,
@@ -877,15 +1041,7 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
          ) do
       %ChangeRun{kind: :station_diff, state: state} = run
       when state in @computed_review_states ->
-        decisions = ChangeRuns.list_decisions(selection.organization_id, run.id)
-
-        {:ok,
-         %{
-           selection: selection,
-           run: run,
-           decisions: decisions,
-           world: station_world(selection, decisions)
-         }}
+        {:ok, run}
 
       _other ->
         {:error, :no_computed_review}
@@ -1111,41 +1267,55 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
   ## The answer
 
   defp import_answer(snapshot, offset) do
-    %{selection: selection, run: run, decisions: decisions, world: world} = snapshot
+    %{selection: selection, run: run} = snapshot
+    {station_rows, excluded} = station_rows(snapshot)
+    import_digest = import_digest(run, station_rows)
 
+    result = import_result(snapshot, station_rows, excluded, offset, import_digest)
+
+    bounded_import(result, selection, run, station_rows, offset, import_digest)
+  end
+
+  # The station-attributed rows and the exclusion histogram behind them. Both the
+  # read and the preparation project the same rows from the same snapshot, so a
+  # prepared selection can never describe a different station membership than the
+  # diff a host is looking at.
+  defp station_rows(%{selection: selection, decisions: decisions, world: world}) do
     attributed =
       Enum.map(decisions, &{&1, station_attributed?(&1, world, selection.station_stop_id)})
 
-    station_rows = for {decision, true} <- attributed, do: decision_row(decision, world)
+    rows = for {decision, true} <- attributed, do: decision_row(decision, world)
 
     excluded =
       Enum.frequencies_by(attributed, fn {decision, attributed?} ->
         exclusion_reason(attributed?, decision)
       end)
 
+    {rows, excluded}
+  end
+
+  defp import_result(snapshot, station_rows, excluded, offset, import_digest) do
+    selection = snapshot.selection
+    run = snapshot.run
     rows = Enum.drop(station_rows, offset) |> Enum.take(@max_rows)
     more? = length(station_rows) > offset + length(rows)
-    import_digest = import_digest(run, station_rows)
 
-    result =
-      %{
-        "station_stop_id" => selection.station_stop_id,
-        "run_id" => run.id,
-        "state" => to_string(run.state),
-        "serializer_version" => run.serializer_version,
-        "source_files" => source_files(run.source_manifest),
-        "import_digest" => import_digest,
-        "diagnostics" => run_diagnostics(run),
-        "counts" => import_counts(decisions, station_rows, excluded, length(rows), offset),
-        "excluded" => excluded,
-        "decisions" => rows,
-        "filters" => %{"offset" => offset},
-        "next_offset" => if(more?, do: offset + length(rows), else: nil),
-        "completeness" => if(more?, do: "incomplete", else: "complete"),
-        "notes" => import_notes()
-      }
-
-    bounded_import(result, selection, run, station_rows, offset, import_digest)
+    %{
+      "station_stop_id" => selection.station_stop_id,
+      "run_id" => run.id,
+      "state" => to_string(run.state),
+      "serializer_version" => run.serializer_version,
+      "source_files" => source_files(run.source_manifest),
+      "import_digest" => import_digest,
+      "diagnostics" => run_diagnostics(run),
+      "counts" => import_counts(snapshot, station_rows, excluded, length(rows), offset),
+      "excluded" => excluded,
+      "decisions" => rows,
+      "filters" => %{"offset" => offset},
+      "next_offset" => if(more?, do: offset + length(rows), else: nil),
+      "completeness" => if(more?, do: "incomplete", else: "complete"),
+      "notes" => import_notes()
+    }
   end
 
   defp exclusion_reason(true, _decision), do: :none
@@ -1153,13 +1323,13 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
   defp exclusion_reason(false, %{entity_type: :pathway}), do: :unresolvable_or_other_endpoint
   defp exclusion_reason(false, %{entity_type: :level}), do: :shared_or_unknown_level
 
-  defp import_counts(decisions, station_rows, excluded, returned, offset) do
+  defp import_counts(snapshot, station_rows, excluded, returned, offset) do
     %{
-      "version_total" => length(decisions),
+      "version_total" => snapshot.version_total,
       "station_total" => length(station_rows),
       "excluded_total" => excluded |> Map.delete(:none) |> Map.values() |> Enum.sum(),
       "existing_approved" => Enum.count(station_rows, &approved_status?/1),
-      "version_approved" => Enum.count(decisions, &(&1.status in @approved_statuses)),
+      "version_approved" => snapshot.version_approved,
       "returned_decisions" => returned,
       "offset" => offset
     }
@@ -1394,6 +1564,603 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
   defp blank_to_nil(nil), do: nil
   defp blank_to_nil(""), do: nil
   defp blank_to_nil(value), do: value
+
+  ## Accepted observations
+
+  # A frozen observation list is bounded exactly like a page of decisions: the
+  # whole-context admission already limits the bytes, and this refuses the shape
+  # rather than truncating staff's evidence.
+  defp observation_batch(observations) do
+    if length(observations) <= @max_rows, do: :ok, else: {:error, :invalid_selection}
+  end
+
+  defp normalize_rows(selection, observations) do
+    journal = journal_scope(selection)
+
+    {accepted, rejected} =
+      observations
+      |> Enum.with_index()
+      |> Enum.reduce({[], []}, fn {row, index}, {accepted, rejected} ->
+        case normalize_row(journal, row, index) do
+          {:ok, observation} -> {[observation | accepted], rejected}
+          {:error, rejection} -> {accepted, [rejection | rejected]}
+        end
+      end)
+
+    accepted = accepted |> Enum.reverse()
+    distinct = dedupe_observations(accepted)
+    conflicting = conflicting_rejections(accepted)
+
+    %{
+      "observations" => distinct,
+      "rejected" =>
+        Enum.sort_by(
+          Enum.reverse(rejected) ++ conflicting,
+          &{&1["source_ref"] || "", &1["reason"]}
+        ),
+      "counts" => %{
+        "submitted" => length(observations),
+        "accepted" => length(distinct),
+        "rejected" => length(rejected) + length(conflicting)
+      }
+    }
+  end
+
+  # Two accepted rows that disagree about the same target and field are both
+  # dropped: neither is authoritative, and choosing one would silently resolve a
+  # conflict staff have not resolved. Identical duplicates collapse to one row,
+  # because they say the same thing twice and are not a disagreement.
+  defp dedupe_observations(observations) do
+    observations
+    |> Enum.group_by(&{&1["target"]["pathway_id"], &1["field"], &1["normalized_value"]})
+    |> Enum.map(fn {_key, rows} -> hd(rows) end)
+    |> Enum.reject(&conflicting?(&1, observations))
+  end
+
+  defp conflicting?(observation, observations) do
+    key = {observation["target"]["pathway_id"], observation["field"]}
+
+    observations
+    |> Enum.filter(&({&1["target"]["pathway_id"], &1["field"]} == key))
+    |> Enum.map(& &1["normalized_value"])
+    |> Enum.uniq()
+    |> length() > 1
+  end
+
+  defp conflicting_rejections(observations) do
+    observations
+    |> Enum.filter(&conflicting?(&1, observations))
+    |> Enum.map(&%{"source_ref" => &1["source_ref"], "reason" => "conflicting_duplicate"})
+  end
+
+  defp normalize_row(journal, row, index) when is_map(row) do
+    with :ok <- known_keys(row),
+         {:ok, source_ref} <- source_ref(Map.get(row, "source_ref")),
+         {:ok, target} <- observation_target(Map.get(row, "target")),
+         :ok <- observation_field(Map.get(row, "field")),
+         {:ok, {original_text, original}} <- original_value(Map.get(row, "original_value")),
+         {:ok, unit} <- unit(Map.get(row, "unit")),
+         {:ok, normalized} <- convert(original, unit),
+         {:ok, captured_date} <- captured_date(Map.get(row, "captured_date")),
+         :ok <- meaning(Map.get(row, "meaning")),
+         {:ok, accepted} <- boolean(Map.get(row, "accepted")),
+         {:ok, conflict} <- boolean(Map.get(row, "conflict")),
+         {:ok, revision} <- source_revision(Map.get(row, "source_revision")),
+         {:ok, source} <- source_capture(journal, source_ref, revision) do
+      {:ok,
+       %{
+         "source_ref" => source_ref,
+         "source_revision" => source.revision,
+         "source_digest" => source.digest,
+         "journal_backed" => source.journal_backed,
+         "target" => target,
+         "field" => @observation_field,
+         "original_value" => original_text,
+         "unit" => unit,
+         "normalized_value" => normalized,
+         "captured_date" => captured_date,
+         "meaning" => @observation_meaning,
+         "accepted" => accepted,
+         "conflict" => conflict
+       }}
+    else
+      {:error, reason} when is_atom(reason) -> {:error, reject(index, row, reason)}
+      {:error, reason} when is_binary(reason) -> {:error, reject(index, row, reason)}
+    end
+  end
+
+  defp normalize_row(_journal, row, index),
+    do: {:error, reject(index, row, :not_a_row)}
+
+  defp reject(index, row, reason) do
+    %{
+      "source_ref" => row |> Map.get("source_ref") |> bounded_ref(),
+      "reason" => to_string(reason)
+    }
+    |> Map.put("index", index)
+  end
+
+  defp bounded_ref(ref) when is_binary(ref) and byte_size(ref) <= @max_source_ref_bytes, do: ref
+  defp bounded_ref(_ref), do: nil
+
+  # An unexpected key is a row this reader does not understand, and an
+  # unrecognised field is refused rather than ignored: silently dropping a
+  # measurement attribute would report an acceptance staff did not give.
+  defp known_keys(row) do
+    if Enum.all?(Map.keys(row), &is_binary/1) and
+         Enum.all?(Map.keys(row), &(&1 in @observation_keys)) do
+      :ok
+    else
+      {:error, :unknown_field}
+    end
+  end
+
+  defp source_ref(ref)
+       when is_binary(ref) and byte_size(ref) > 0 and byte_size(ref) <= @max_source_ref_bytes,
+       do: {:ok, ref}
+
+  defp source_ref(_ref), do: {:error, :invalid_source_ref}
+
+  defp source_revision(nil), do: {:ok, nil}
+
+  defp source_revision(revision)
+       when is_binary(revision) and byte_size(revision) <= @max_source_revision_bytes,
+       do: {:ok, revision}
+
+  defp source_revision(_revision), do: {:error, :invalid_source_revision}
+
+  defp observation_target(%{"pathway_id" => pathway_id})
+       when is_binary(pathway_id) and byte_size(pathway_id) > 0 and
+              byte_size(pathway_id) <= @max_pathway_id_bytes,
+       do: {:ok, %{"pathway_id" => pathway_id}}
+
+  defp observation_target(_target), do: {:error, :invalid_target}
+
+  defp observation_field(@observation_field), do: :ok
+  defp observation_field(_field), do: {:error, :unsupported_field}
+
+  defp meaning(@observation_meaning), do: :ok
+  defp meaning(_meaning), do: {:error, :missing_meaning}
+
+  defp original_value(value)
+       when is_binary(value) and byte_size(value) > 0 and
+              byte_size(value) <= @max_original_value_bytes do
+    # The original text is kept verbatim beside the conversion, so the answer
+    # shows what staff measured and not only what it became.
+    case Decimal.parse(value) do
+      {decimal, ""} -> {:ok, {value, decimal}}
+      _other -> {:error, :invalid_value}
+    end
+  end
+
+  defp original_value(_value), do: {:error, :invalid_value}
+
+  defp unit(value) when is_binary(value) do
+    if Map.has_key?(@observation_units, value),
+      do: {:ok, value},
+      else: {:error, :unsupported_unit}
+  end
+
+  defp unit(_value), do: {:error, :unsupported_unit}
+
+  # Exact decimal multiplication, never a float: 105 cm is 1.05 m, and a width
+  # that rounds to the uploaded value is not the width staff measured.
+  defp convert(value, unit) do
+    converted = Decimal.mult(value, Map.fetch!(@observation_units, unit))
+
+    if Decimal.positive?(converted) do
+      {:ok, Decimal.to_string(Decimal.normalize(converted), :normal)}
+    else
+      {:error, :nonpositive_value}
+    end
+  end
+
+  defp captured_date(value) when is_binary(value) do
+    case Date.from_iso8601(value) do
+      {:ok, _date} -> {:ok, value}
+      {:error, _reason} -> {:error, :invalid_captured_date}
+    end
+  end
+
+  defp captured_date(_value), do: {:error, :invalid_captured_date}
+
+  defp boolean(value) when is_boolean(value), do: {:ok, value}
+  defp boolean(_value), do: {:error, :invalid_boolean}
+
+  # A UUID source reference names a journal entry, and it is resolved through
+  # `StationJournal`'s own scoped read. A reference that is not a journal entry
+  # of this station - including one belonging to another station - is refused,
+  # and no other station's entry metadata can be observed through the failure.
+  defp source_capture(journal, source_ref, revision) do
+    if journal_backed?(source_ref) do
+      capture_journal_entry(journal, source_ref, revision)
+    else
+      {:ok, %{revision: revision, digest: nil, journal_backed: false}}
+    end
+  end
+
+  defp capture_journal_entry(journal, source_ref, revision) do
+    with {:ok, scope} <- journal,
+         [entry] <- StationJournal.list_entries(scope, id: source_ref, limit: 1),
+         frozen = freeze_entry(entry),
+         true <- is_nil(revision) or frozen.revision == revision do
+      {:ok, frozen}
+    else
+      _other -> {:error, :foreign_journal_reference}
+    end
+  end
+
+  defp journal_backed?(source_ref) do
+    match?({:ok, _uuid}, Ecto.UUID.cast(source_ref))
+  end
+
+  # Only identity and timing metadata is frozen. The entry's body, its photos
+  # and its author are evidence for a person, not a measurement, and they never
+  # leave the server (AC-13).
+  defp freeze_entry(entry) do
+    %{
+      revision: DateTime.to_iso8601(entry.updated_at),
+      journal_backed: true,
+      digest:
+        digest(%{
+          "entry_id" => entry.id,
+          "target_type" => entry.target_type,
+          "target_id" => entry.target_id,
+          "captured_at" => entry.captured_at,
+          "updated_at" => entry.updated_at
+        })
+    }
+  end
+
+  defp journal_scope(selection) do
+    case selection.actor_id do
+      nil ->
+        {:error, :unavailable}
+
+      actor_id ->
+        StationJournal.resolve_scope(
+          selection.organization_id,
+          selection.gtfs_version_id,
+          selection.station_id,
+          actor_id
+        )
+    end
+  end
+
+  defp observation_evidence(selection, run, normalized) do
+    counts = normalized["counts"]
+
+    %{
+      kind: "station_observation_provenance",
+      title: "Accepted field observations",
+      total: counts["accepted"],
+      total_label: "accepted observations ready to match a decision",
+      completeness: :complete,
+      source_ref: @source_ref,
+      digest: digest(normalized["observations"]),
+      source_revision: nil,
+      scope: scope_field(selection),
+      exclusions: observation_exclusions(normalized, run),
+      resources: import_resources(selection, run),
+      facts: [
+        %{label: "Submitted", value: counts["submitted"]},
+        %{label: "Accepted and converted", value: counts["accepted"]},
+        %{label: "Unresolved rows", value: counts["rejected"]},
+        %{
+          label: "Converted units",
+          value: "m, cm and mm as exact decimals; only min_width minimum clear width converts"
+        },
+        %{
+          label: "Writes",
+          value: "none - reading accepted observations changes no row, status or run"
+        }
+      ]
+    }
+  end
+
+  defp observation_exclusions(normalized, run) do
+    rejected =
+      normalized["rejected"]
+      |> Enum.frequencies_by(& &1["reason"])
+      |> Enum.sort()
+      |> Enum.map(fn {reason, count} -> "#{count} observations unresolved as #{reason}" end)
+
+    rejected ++
+      ["Base source files are bound to run #{run.id}; a changed upload is a different run"]
+  end
+
+  ## Prepared selection
+
+  defp selection_ids(ids) do
+    valid? =
+      length(ids) <= @max_rows and Enum.all?(ids, &selection_id?/1) and
+        length(Enum.uniq(ids)) == length(ids)
+
+    if valid?, do: {:ok, ids}, else: {:error, :invalid_selection}
+  end
+
+  defp selection_id?(id), do: is_binary(id) and byte_size(id) > 0 and byte_size(id) <= 512
+
+  # The accepted observations are the ones the host froze into the source
+  # snapshot, never anything a caller or a model supplied, and their recorded
+  # digest must still match the snapshot's own envelope. They are matched against
+  # a *fresh* read of the run, so an observation captured against a run that has
+  # since changed never selects anything.
+  defp prepare_answer(snapshot, ids) do
+    selection = snapshot.selection
+    run = snapshot.run
+    {station_rows, _excluded} = station_rows(snapshot)
+    {rows_by_id, run_rows_by_id} = decision_indexes(station_rows, snapshot.decisions)
+    observations = frozen_observations(selection)
+    run_digest = import_digest(run, station_rows)
+
+    selected =
+      Enum.flat_map(ids, fn id ->
+        case select_decision(rows_by_id, run_rows_by_id, observations, id) do
+          {:selected, row} -> [row]
+          _other -> []
+        end
+      end)
+
+    unresolved =
+      for id <- ids,
+          reason = unresolved_reason(rows_by_id, run_rows_by_id, observations, id),
+          do: %{"decision_id" => id, "reason" => to_string(reason)}
+
+    # A requested id this station's projection does not contain is reported in
+    # one bucket, whether the run holds it elsewhere or nowhere: this answer must
+    # not become a way to probe another station's decisions.
+    excluded =
+      for id <- ids,
+          not Map.has_key?(rows_by_id, id),
+          do: %{"decision_id" => id, "reason" => "not_a_station_decision"}
+
+    existing_approved =
+      station_rows
+      |> Enum.filter(&approved_status?/1)
+      |> Enum.map(&%{"decision_id" => &1["decision_id"], "status" => &1["status"]})
+
+    input_digest = input_digest(selection, run, run_digest, observations, ids)
+
+    result = %{
+      "station_stop_id" => selection.station_stop_id,
+      "run_id" => run.id,
+      "import_digest" => run_digest,
+      "selected" => selected,
+      "unresolved" => unresolved,
+      "excluded" => excluded,
+      "existing_approved" => existing_approved,
+      "counts" => %{
+        "requested" => length(ids),
+        "selected" => length(selected),
+        "unresolved" => length(unresolved),
+        "excluded" => length(excluded),
+        "existing_approved" => length(existing_approved),
+        "observations" => observations["counts"]
+      },
+      "input_digest" => input_digest,
+      "notes" => selection_notes()
+    }
+
+    {:ok, result, selection_evidence(selection, run, result, input_digest)}
+  end
+
+  defp select_decision(rows_by_id, run_rows_by_id, observations, id) do
+    case Map.fetch(rows_by_id, id) do
+      {:ok, row} -> select_station_row(row, run_rows_by_id, observations)
+      :error -> {:error, :not_a_station_decision}
+    end
+  end
+
+  defp select_station_row(row, run_rows_by_id, observations) do
+    with :ok <- eligible_row?(row, run_rows_by_id),
+         {:ok, observation} <- matching_observation(observations, row) do
+      {:selected,
+       %{
+         "decision_id" => row["decision_id"],
+         "natural_key" => row["natural_key"],
+         "action" => row["action"],
+         "current_value" => row["current_values"]["min_width"],
+         "uploaded_value" => row["uploaded_values"]["min_width"],
+         "field" => @observation_field,
+         "observation" => observation
+       }}
+    end
+  end
+
+  # Every gate a complete, unmodified, still-current width decision has to pass.
+  # The first failure is the reported reason, so a host shows staff the one thing
+  # that is actually blocking the row.
+  defp eligible_row?(row, run_rows_by_id) do
+    cond do
+      row["action"] != "modify" -> {:error, :not_a_modification}
+      row["entity_type"] != "pathway" -> {:error, :not_a_pathway}
+      changed_fields(row) != [@observation_field] -> {:error, :incomplete_field_coverage}
+      row["user_edited"] -> {:error, :user_edited}
+      row["status"] != "pending" -> {:error, :not_pending}
+      row["fingerprint_state"] != "match" -> {:error, :fingerprint_drift}
+      true -> dependencies_approved?(row, run_rows_by_id)
+    end
+  end
+
+  defp changed_fields(row) do
+    row["changed_fields"]
+    |> List.wrap()
+    |> Enum.map(& &1["field"])
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  # A dependency that is still pending makes the whole decision unresolved: an
+  # approval that arrived before its dependency would apply a width change to a
+  # pathway whose endpoints are themselves being changed. A dependency key with
+  # no decision in this run is satisfied by the current record, which is what an
+  # unchanged endpoint produces.
+  defp dependencies_approved?(row, run_rows_by_id) do
+    pending =
+      Enum.find(row["dependency_keys"] || [], fn key ->
+        case Map.fetch(run_rows_by_id, key) do
+          {:ok, dependency} -> dependency.status not in @approved_statuses
+          :error -> false
+        end
+      end)
+
+    if pending, do: {:error, :dependency_not_approved}, else: :ok
+  end
+
+  # Decimal equality, not string equality: the serializer normalizes an uploaded
+  # `1.20` to `1.2`, and an accepted 120 cm is the same width. String comparison
+  # would call a measured width a mismatch and refuse a row staff did accept.
+  defp matching_observation(observations, row) do
+    candidates =
+      Enum.filter(observations["observations"], fn observation ->
+        observation["target"]["pathway_id"] == row["natural_key"] and
+          observation["field"] == @observation_field and observation["accepted"] and
+          not observation["conflict"]
+      end)
+
+    cond do
+      candidates == [] ->
+        {:error, :no_accepted_observation}
+
+      Enum.any?(candidates, &same_width?(&1["normalized_value"], row)) ->
+        {:ok, candidate(candidates, row)}
+
+      true ->
+        {:error, :uploaded_value_mismatch}
+    end
+  end
+
+  defp same_width?(normalized, row) do
+    with {measured, ""} <- Decimal.parse(normalized),
+         {uploaded, ""} <- Decimal.parse(to_string(row["uploaded_values"]["min_width"])) do
+      Decimal.equal?(measured, uploaded)
+    else
+      _other -> false
+    end
+  end
+
+  # The provenancing fields only: what staff measured, in what unit, when, from
+  # which source, and the frozen revision of a journal entry when there is one.
+  defp candidate(candidates, row) do
+    candidates
+    |> Enum.find(&same_width?(&1["normalized_value"], row))
+    |> Map.take([
+      "source_ref",
+      "source_revision",
+      "source_digest",
+      "journal_backed",
+      "original_value",
+      "unit",
+      "normalized_value",
+      "captured_date",
+      "meaning",
+      "field"
+    ])
+  end
+
+  defp unresolved_reason(rows_by_id, run_rows_by_id, observations, id) do
+    case select_decision(rows_by_id, run_rows_by_id, observations, id) do
+      {:selected, _row} -> nil
+      {:error, reason} -> reason
+    end
+  end
+
+  defp decision_indexes(station_rows, decisions) do
+    {Map.new(station_rows, &{&1["decision_id"], &1}), Map.new(decisions, &{&1.decision_id, &1})}
+  end
+
+  # The observations the host froze. Their recorded digest must still match the
+  # snapshot envelope, so a payload edited after admission is refused rather than
+  # read.
+  defp frozen_observations(selection) do
+    payload = Map.get(selection.source_snapshot, :payload, %{})
+    rows = Map.get(payload, "observations", [])
+    digest = Map.get(payload, "observations_digest")
+
+    if is_list(rows) and (is_nil(digest) or digest == digest(rows)) do
+      normalize_rows(selection, rows)
+    else
+      empty_observations()
+    end
+  end
+
+  defp empty_observations do
+    %{
+      "observations" => [],
+      "rejected" => [],
+      "counts" => %{"submitted" => 0, "accepted" => 0, "rejected" => 0}
+    }
+  end
+
+  # The input digest binds everything a later native confirmation must recheck:
+  # the frozen source envelope, the run's own base source files, every projected
+  # decision it might approve and the observations it would approve them with. A
+  # stale selection cannot recompute to the same value.
+  defp input_digest(selection, run, run_digest, observations, ids) do
+    digest(%{
+      "source_snapshot_digest" => Map.get(selection.source_snapshot, :digest),
+      "station_stop_id" => selection.station_stop_id,
+      "run_id" => run.id,
+      "base_source_files" => base_source_files(run.source_manifest),
+      "import_digest" => run_digest,
+      "observations" => observations["observations"],
+      "requested" => ids
+    })
+  end
+
+  defp selection_evidence(selection, run, result, input_digest) do
+    counts = result["counts"]
+
+    %{
+      kind: "station_import_selection",
+      title: "Accepted width decisions prepared for review",
+      total: counts["selected"],
+      total_label: "complete matching decisions prepared for native review",
+      completeness: :complete,
+      source_ref: @source_ref,
+      digest: input_digest,
+      source_revision: nil,
+      scope: scope_field(selection),
+      exclusions: selection_exclusions(counts, result),
+      resources: import_resources(selection, run),
+      facts: [
+        %{label: "Run state", value: to_string(run.state)},
+        %{label: "Requested", value: counts["requested"]},
+        %{label: "Prepared", value: counts["selected"]},
+        %{label: "Unresolved", value: counts["unresolved"]},
+        %{label: "Not this station", value: counts["excluded"]},
+        %{label: "Already approved here", value: counts["existing_approved"]},
+        %{label: "Accepted observations", value: counts["observations"]["accepted"]}
+      ]
+    }
+  end
+
+  defp selection_exclusions(counts, result) do
+    labels =
+      result["unresolved"]
+      |> Enum.frequencies_by(& &1["reason"])
+      |> Enum.sort()
+      |> Enum.map(fn {reason, count} -> "#{count} decisions unresolved as #{reason}" end)
+
+    labels ++
+      if counts["existing_approved"] > 0 do
+        [
+          "#{counts["existing_approved"]} decisions in this station are already approved and are never selected implicitly"
+        ]
+      else
+        []
+      end
+  end
+
+  defp selection_notes do
+    [
+      "This is a preparation, not an approval. No decision status, run metadata, GTFS row or journal entry was changed.",
+      "Only a complete min_width-only pending pathway change whose uploaded value equals an accepted measurement exactly can be prepared.",
+      "A width acceptance never carries an accompanying endpoint, direction or other edit into the prepared set.",
+      "A mismatched uploaded value is reported, never rewritten; correct the upload and compute again instead."
+    ]
+  end
 
   ## Digests and time
 
