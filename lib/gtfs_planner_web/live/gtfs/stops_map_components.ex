@@ -1609,6 +1609,19 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
                 >
                   <.icon name="hero-arrow-top-right-on-square" class="size-4" /> Open stop page
                 </a>
+
+                <%!-- The destructive action sits below a rule and says the
+                     verb and the object, so it reads as different in kind from
+                     the two that only change which panel is showing. --%>
+                <div class="my-1 border-t border-subtle"></div>
+                <button
+                  id="stops-map-edit-delete"
+                  type="button"
+                  phx-click="start_delete"
+                  class="flex min-h-11 w-full items-center rounded-control px-3 text-left text-sm font-semibold text-error-fg hover:bg-error-bg"
+                >
+                  Delete {if @stop.location_type == 1, do: "station", else: "stop"}…
+                </button>
               </div>
             </div>
           </div>
@@ -2411,6 +2424,403 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
       </p>
     </section>
     """
+  end
+
+  @doc """
+  The delete panels: why a stop cannot be deleted yet, and what deleting it
+  would remove when it can.
+
+  One panel with two states, because the question is the same one asked twice.
+  `delete_mode/1` answers which state the review's own contents call for — a
+  blocking row makes the answer "not yet", and its absence makes the answer
+  "here is what goes" — so the panel cannot show a Delete button beside rows
+  that would refuse it, and cannot show a refusal for a stop nothing uses.
+
+  The blocked state has no primary action on purpose: the ways out of it are
+  edits elsewhere in the feed, and offering a button here would invite a
+  deletion that writes nothing.
+  """
+  attr :id, :string, required: true
+  attr :stop, :map, required: true
+  attr :review, :any, default: nil
+  attr :loading?, :boolean, default: false
+  attr :version_id, :any, default: nil
+  attr :saving?, :boolean, default: false
+  attr :outcome, :atom, default: :none
+
+  def delete_panel(assigns) do
+    assigns = assign(assigns, :mode, delete_mode(assigns.review))
+
+    ~H"""
+    <aside
+      id={@id}
+      aria-label="Delete stop"
+      class="flex min-h-0 flex-col border-t border-subtle bg-white lg:border-l lg:border-t-0"
+    >
+      <div class="min-h-0 flex-1 overflow-y-auto">
+        <div class="px-5 py-5">
+          <h2
+            id="stops-map-delete-heading"
+            tabindex="-1"
+            autofocus
+            class="font-display text-[22px] font-semibold text-strong"
+          >
+            {if @mode == :blocked,
+              do: "Can’t delete #{@stop.name} yet",
+              else: "Delete #{@stop.name}?"}
+          </h2>
+          <p class="m-0 mt-1 text-sm text-muted">
+            {delete_subtitle(@stop, @mode)}
+          </p>
+
+          <div :if={@loading?} id="stops-map-delete-loading" role="status" class="mt-5">
+            <.message kind="info" title="Reading what uses this stop">
+              Checking the patterns, runs and rules that name it&hellip;
+            </.message>
+          </div>
+
+          <div :if={@outcome == :refused and @review} id="stops-map-delete-refused" class="mt-5">
+            <.message
+              kind="warning"
+              role="status"
+              title="Nothing was deleted."
+              id="stops-map-delete-refused-message"
+            >
+              What uses this stop changed while the question was open, so the delete was refused
+              rather than removing a row you were not shown. Nothing was changed; here is what uses
+              it now.
+            </.message>
+          </div>
+
+          <div :if={@outcome == :failed} id="stops-map-delete-failed" class="mt-5">
+            <.message
+              kind="error"
+              title="We couldn’t delete this stop"
+              id="stops-map-delete-failed-message"
+            >
+              Nothing was changed. Check your connection and try again.
+            </.message>
+          </div>
+
+          <%= if @mode == :blocked and @review do %>
+            <div id="stops-map-delete-blocked-message" class="mt-5">
+              <.message kind="warning" role="status" title={blocked_title(@review)}>
+                Deleting it would change service, so the stop stays until nothing schedules a visit
+                here.
+              </.message>
+            </div>
+
+            <h3 class="mb-0 mt-6 text-[15px] font-bold text-strong">Still using this stop</h3>
+            <ul
+              id="stops-map-delete-blocked-list"
+              class="m-0 mt-1 list-none divide-y divide-subtle border-y border-subtle p-0 text-sm"
+            >
+              <li
+                :for={row <- delete_blocked_rows(@review, @version_id)}
+                id={row.dom_id}
+                class="flex items-center gap-3 py-2.5"
+              >
+                <span class="w-[76px] shrink-0 text-[13px] text-muted">{row.kind}</span>
+                <.route_badge :if={row.route} route={row.route} />
+                <span class="min-w-0 flex-1">
+                  {row.text}
+                  <span :if={row.sub} class="block text-[13px] text-muted">{row.sub}</span>
+                </span>
+                <.link
+                  :if={row.href}
+                  id={row.link_id}
+                  navigate={row.href}
+                  class="inline-flex min-h-11 items-center text-sm font-semibold text-action no-underline hover:underline"
+                >
+                  Open
+                </.link>
+              </li>
+            </ul>
+
+            <h3 class="mb-0 mt-6 text-[15px] font-bold text-strong">To get unstuck</h3>
+            <ul class="m-0 mt-2 grid list-none gap-3 p-0 text-sm">
+              <li>
+                <span class="font-semibold text-strong">The stop is closing:</span>
+                remove it from each pattern in the pattern editor. Trips then skip it, and you can
+                delete it here.
+              </li>
+              <li>
+                <span class="font-semibold text-strong">Another stop serves the same place:</span>
+                replace it. Patterns, trips and rules move to the other stop in one reviewed step.
+              </li>
+            </ul>
+
+            <p :if={delete_pending_count(@review) > 0} class="m-0 mt-6 text-[13px] text-muted">
+              When it can be deleted, its {count_word(
+                delete_pending_count(@review),
+                "transfer rule",
+                "transfer rules"
+              )}
+              {if delete_pending_count(@review) == 1, do: "is", else: "are"} removed with it.
+            </p>
+          <% end %>
+
+          <%= if @mode == :confirm and @review do %>
+            <p id="stops-map-delete-clear" class="m-0 mt-5 text-[15px] text-strong">
+              No pattern or trip stops here, and no run changes drivers here.
+            </p>
+
+            <%= if delete_removed(@review) != [] do %>
+              <h3 class="mb-0 mt-5 text-[15px] font-bold text-strong">Removed with it</h3>
+              <ul
+                id="stops-map-delete-removed"
+                class="m-0 mt-1 list-disc pl-5 text-sm"
+              >
+                <li :for={row <- delete_removed(@review)} id={row.dom_id} class="py-0.5">
+                  {row.text}
+                </li>
+              </ul>
+            <% end %>
+
+            <p class="m-0 mt-5 text-sm">
+              The deletion is recorded in this version&rsquo;s history. Other versions keep their copy
+              of the stop.
+            </p>
+            <p class="m-0 mt-2 text-sm">
+              Closed only for a season? Keep it instead. With no trips it&rsquo;s already left out of
+              the export, and when service returns it comes back with the same ID and sign number.
+            </p>
+          <% end %>
+        </div>
+      </div>
+
+      <div class="border-t border-subtle px-5 py-4">
+        <div class="flex flex-wrap items-center gap-3">
+          <button
+            id="stops-map-delete-keep"
+            type="button"
+            phx-click="back_to_edit"
+            disabled={@saving?}
+            class="inline-flex min-h-11 items-center rounded-control border border-control bg-white px-4 text-sm font-semibold text-strong hover:bg-canvas disabled:opacity-70"
+          >
+            {if @mode == :blocked, do: "Back to stop", else: "Keep stop"}
+          </button>
+          <button
+            :if={@mode == :blocked}
+            id="stops-map-delete-close"
+            type="button"
+            phx-click="cancel_edit"
+            disabled={@saving?}
+            class="inline-flex min-h-11 items-center rounded-control border border-control bg-white px-4 text-sm font-semibold text-strong hover:bg-canvas disabled:opacity-70"
+          >
+            Close
+          </button>
+
+          <.button
+            :if={@mode == :confirm}
+            id="stops-map-delete-go"
+            type="button"
+            phx-click="delete_stop"
+            variant="danger"
+            disabled={@saving? or @review == nil}
+            class="ml-auto min-h-11"
+          >
+            {if @saving?,
+              do: "Deleting…",
+              else: "Delete #{if @stop.location_type == 1, do: "station", else: "stop"}"}
+          </.button>
+        </div>
+      </div>
+    </aside>
+    """
+  end
+
+  # The state is the review's own answer, not a param: a blocking row means the
+  # delete cannot happen, and the command refuses on exactly those rows, so the
+  # panel asking for a confirmation beside one would be asking for a write the
+  # command would roll back.
+  defp delete_mode(%{blocking: [_ | _]}), do: :blocked
+  defp delete_mode(%{blocking: []}), do: :confirm
+  defp delete_mode(_no_review), do: :blocked
+
+  defp delete_subtitle(stop, :confirm) do
+    if stop.location_type == 1 do
+      "Station · ID #{stop.stop_id}"
+    else
+      "Stop · ID #{stop.stop_id}#{if stop.routes == [], do: " · Not served", else: ""}"
+    end
+  end
+
+  defp delete_subtitle(stop, _mode), do: "Stop · ID #{stop.stop_id}"
+
+  # The message names what blocks it in the editor's terms: the patterns and the
+  # weekday service they carry, which is what stopping here costs.
+  defp blocked_title(review) do
+    patterns = delete_pattern_count(review)
+    trips = delete_weekday_trips(review)
+
+    cond do
+      patterns > 0 and trips > 0 ->
+        "#{patterns} #{pluralize(patterns, "pattern")} and #{trips} weekday trips stop here"
+
+      patterns > 0 ->
+        "#{patterns} #{pluralize(patterns, "pattern")} stop here"
+
+      trips > 0 ->
+        "#{trips} weekday trips stop here"
+
+      true ->
+        "Something else still uses this stop"
+    end
+  end
+
+  defp delete_pattern_count(review) do
+    case Enum.find(review.blocking, &(&1.key == :route_pattern_stops)) do
+      nil -> 0
+      item -> length(item.details)
+    end
+  end
+
+  defp delete_weekday_trips(review) do
+    case Enum.find(review.blocking, &(&1.key == :route_pattern_stops)) do
+      nil ->
+        0
+
+      item ->
+        item.details
+        |> Enum.map(&Map.get(&1, :weekday_trips, 0))
+        |> Enum.sum()
+    end
+  end
+
+  # Every blocking row, one per thing that names the stop, with a link to where
+  # it is edited when there is one place to edit it. A pattern opens in the
+  # pattern editor, a run opens on the runs page, and a station's own structure
+  # is edited on the station page — the three places a reader can act on.
+  defp delete_blocked_rows(review, version_id) do
+    Enum.flat_map(review.blocking, &delete_blocked_item(&1, version_id))
+  end
+
+  defp delete_blocked_item(%{key: :route_pattern_stops, details: details}, version_id) do
+    Enum.map(details, fn detail ->
+      pattern = detail.detail
+
+      %{
+        dom_id: "stops-map-delete-blocked-pattern-#{dom_id(pattern.route_pattern_id)}",
+        link_id: "stops-map-delete-open-pattern-#{dom_id(pattern.route_pattern_id)}",
+        kind: "Pattern",
+        route: pattern_route(pattern),
+        text: "toward #{pattern.headsign || "the end of the line"}",
+        sub: "#{detail.weekday_trips} weekday trips",
+        href: pattern_href(version_id, pattern)
+      }
+    end)
+  end
+
+  defp delete_blocked_item(%{key: :relief_points, details: details}, version_id) do
+    Enum.map(details, fn detail ->
+      %{
+        dom_id: "stops-map-delete-blocked-run-#{dom_id(detail.label)}",
+        link_id: "stops-map-delete-open-run-#{dom_id(detail.label)}",
+        kind: "Runs",
+        route: nil,
+        text: detail.label,
+        sub: nil,
+        href: version_id && "/gtfs/#{version_id}/runs"
+      }
+    end)
+  end
+
+  defp delete_blocked_item(%{key: :child_stops, details: details}, version_id) do
+    Enum.map(details, fn detail ->
+      %{
+        dom_id: "stops-map-delete-blocked-bay-#{dom_id(detail.detail.stop_id)}",
+        link_id: "stops-map-delete-open-bay-#{dom_id(detail.detail.stop_id)}",
+        kind: "Bays",
+        route: nil,
+        text: "#{detail.label} · ID #{detail.detail.stop_id}",
+        sub: nil,
+        href: version_id && "/gtfs/#{version_id}/stops/#{detail.detail.stop_id}"
+      }
+    end)
+  end
+
+  defp delete_blocked_item(%{key: key, label: label, count: count, details: details}, version_id) do
+    if details == [] do
+      [
+        %{
+          dom_id: "stops-map-delete-blocked-#{key}",
+          link_id: nil,
+          kind: "",
+          route: nil,
+          text: "#{count_word(count, "row", "rows")} in #{label}",
+          sub: nil,
+          href: stop_page_href(version_id, key)
+        }
+      ]
+    else
+      Enum.map(details, fn detail ->
+        %{
+          dom_id: "stops-map-delete-blocked-#{key}-#{dom_id(detail.label)}",
+          link_id: nil,
+          kind: "",
+          route: nil,
+          text: "#{label}: #{detail.label}",
+          sub: nil,
+          href: nil
+        }
+      end)
+    end
+  end
+
+  # Only a station's own rows lead somewhere an editor can change them, and even
+  # those are read on the station page rather than edited from here, so a link
+  # that went nowhere useful would be worse than no link.
+  defp stop_page_href(_version_id, _key), do: nil
+
+  defp pattern_href(nil, _pattern), do: nil
+
+  defp pattern_href(version_id, pattern) do
+    "/gtfs/#{version_id}/routes/#{pattern.route_id}/patterns/#{pattern.route_pattern_id}"
+  end
+
+  # What a delete removes, named row by row. A count cannot be read here — "1
+  # translations" tells an editor nothing about the Spanish name that is about to
+  # go — so a kind with details is listed by them.
+  defp delete_removed(review) do
+    Enum.flat_map(review.descriptive, &delete_removed_item/1)
+  end
+
+  defp delete_removed_item(%{key: key, label: label, count: count, details: details}) do
+    cond do
+      key in [:transfers_from, :transfers_to] and details != [] ->
+        Enum.map(details, fn detail ->
+          %{
+            dom_id: "stops-map-delete-removed-#{key}-#{dom_id(detail.label)}",
+            text: "Transfer rule to #{detail.label}"
+          }
+        end)
+
+      details == [] ->
+        [
+          %{
+            dom_id: "stops-map-delete-removed-#{key}",
+            text: "#{count_word(count, "row", "rows")} in #{label}"
+          }
+        ]
+
+      true ->
+        Enum.map(details, fn detail ->
+          %{
+            dom_id: "stops-map-delete-removed-#{key}-#{dom_id(detail.label)}",
+            text: detail.label
+          }
+        end)
+    end
+  end
+
+  defp delete_pending_count(review) do
+    review.descriptive
+    |> Enum.filter(
+      &(&1.key in [:transfers_from, :transfers_to, :fare_leg_join_from, :fare_leg_join_to])
+    )
+    |> Enum.map(& &1.count)
+    |> Enum.sum()
   end
 
   @doc """

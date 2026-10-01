@@ -655,7 +655,7 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
 
   # Which refs get labelled details rather than a bare count. Every other kind
   # reports its count, which is all the delete confirmation needs.
-  @detailed ~w(route_pattern_stops transfers_from transfers_to relief_points flex_hubs flex_first flex_last deadhead_from deadhead_to child_stops stop_areas)a
+  @detailed ~w(route_pattern_stops transfers_from transfers_to relief_points flex_hubs flex_first flex_last deadhead_from deadhead_to child_stops stop_areas translations)a
 
   @type item :: %{
           key: atom(),
@@ -875,6 +875,22 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
     end)
   end
 
+  # A translation is listed by what it says, not by how many rows there are: a
+  # delete confirmation has to name the Spanish name it is about to remove, and
+  # a bare count of "1 translation" cannot.
+  defp detail_query(%{key: :translations} = ref, stop) do
+    ref
+    |> scope_query(stop)
+    |> select([row], %{language: row.language, translation: row.translation})
+    |> Repo.all()
+    |> Enum.map(fn row ->
+      %{
+        label: "#{language_name(row.language)} name: “#{row.translation}”",
+        detail: %{language: row.language, translation: row.translation}
+      }
+    end)
+  end
+
   defp detail_query(%{key: :child_stops} = ref, stop) do
     ref
     |> scope_query(stop)
@@ -906,6 +922,29 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
     |> scope_query(stop)
     |> Repo.all()
     |> Enum.map(fn area_id -> %{label: area_id, detail: %{area_id: area_id}} end)
+  end
+
+  # GTFS language codes are a fixed list in practice and unbounded on paper, so
+  # the codes riders actually see are named and anything else is reported as the
+  # code itself rather than guessed at.
+  defp language_name(language) do
+    Map.get(
+      %{
+        "en" => "English",
+        "es" => "Spanish",
+        "fr" => "French",
+        "de" => "German",
+        "it" => "Italian",
+        "pt" => "Portuguese",
+        "zh" => "Chinese",
+        "ja" => "Japanese",
+        "ko" => "Korean",
+        "ar" => "Arabic",
+        "ru" => "Russian"
+      },
+      language,
+      language
+    )
   end
 
   # Detail helpers. Kept together after the `detail_query/2` clauses so the

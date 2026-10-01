@@ -56,6 +56,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       created_panel: 1,
       edit_panel: 1,
       move_review_panel: 1,
+      delete_panel: 1,
       map_stage: 1,
       page_header: 1,
       search_field: 1,
@@ -181,8 +182,22 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     |> assign(:edit_dirty?, false)
     |> assign(:edit_review_band, nil)
     |> assign_move_state()
+    |> assign_delete_state()
     |> assign(:discard_action, nil)
     |> assign_edit_draft(empty_edit_draft())
+  end
+
+  # Everything the delete panels own, in one place, for the same reason the edit
+  # state's: the review is read when the editor asks what deleting would remove,
+  # and its fingerprint — never a value the browser sends back — is what the
+  # command re-checks, so a reference created while the question was open
+  # refuses the delete rather than cascading a row nobody saw.
+  defp assign_delete_state(socket) do
+    socket
+    |> assign(:delete_review, nil)
+    |> assign(:delete_loading?, false)
+    |> assign(:delete_saving?, false)
+    |> assign(:delete_outcome, :none)
   end
 
   # Everything the move review owns, in one place, for the same reason the edit
@@ -579,6 +594,62 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
      |> assign(:move_outcome, :move_failed)}
   end
 
+  def handle_async(:delete_review, {:ok, {:ok, review}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:delete_loading?, false)
+     |> assign(:delete_review, review)}
+  end
+
+  # A review that could not be read is a failure to say, not an answer: the
+  # panel says so and keeps the stop, rather than offering a delete button that
+  # was asked about nothing.
+  def handle_async(:delete_review, _result, socket) do
+    {:noreply,
+     socket
+     |> assign(:delete_loading?, false)
+     |> assign(:delete_review, nil)
+     |> assign(:delete_outcome, :failed)}
+  end
+
+  # A deleted stop is gone from the panel as well as from the feed: the panel
+  # would otherwise keep rendering a row the model no longer holds.
+  def handle_async(:delete_stop, {:ok, {:ok, result}}, socket) do
+    {:noreply,
+     socket
+     |> put_flash(:info, deleted_message(socket.assigns.edit_stop, result.removed))
+     |> close_edit()
+     |> assign_delete_state()
+     |> start_load()}
+  end
+
+  # A reference appeared while the question was open. Nothing was written, and
+  # the review is read again rather than re-used: the list the editor is looking
+  # at is the one the command saw when it refused.
+  def handle_async(:delete_stop, {:ok, {:error, {:blocked, _items}}}, socket) do
+    {:noreply, restart_delete_review(socket, :refused)}
+  end
+
+  # A reference appeared or vanished: the review's fingerprint no longer
+  # describes the stop. Nothing was written either, and the editor is told so in
+  # the same words as any other refusal.
+  def handle_async(:delete_stop, {:ok, {:error, :stale_review}}, socket) do
+    {:noreply, restart_delete_review(socket, :refused)}
+  end
+
+  def handle_async(:delete_stop, {:ok, {:error, :not_found}}, socket) do
+    {:noreply,
+     socket
+     |> put_flash(:info, "That stop is no longer in this version.")
+     |> close_edit()
+     |> assign_delete_state()
+     |> start_load()}
+  end
+
+  def handle_async(:delete_stop, _result, socket) do
+    {:noreply, socket |> assign(:delete_saving?, false) |> assign(:delete_outcome, :failed)}
+  end
+
   # A move that landed is a move that is over: the review, the pending move and
   # the pin's ghost all belong to the position the stop no longer has.
   defp assign_move_state_after_apply(socket) do
@@ -586,6 +657,71 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     |> assign(:edit_move, nil)
     |> assign(:move_review, nil)
     |> assign(:move_errors, [])
+  end
+
+  # --- deleting --------------------------------------------------------------
+
+  # The review is read in the LiveView process, like the move review: it takes no
+  # locks and asks the reference catalog what names this stop, and the answer is
+  # shown rather than written. The outcome is left alone here, because a refusal
+  # re-reads the review and must keep saying why it refused.
+  defp start_delete_review(socket) do
+    case socket.assigns.edit_stop do
+      nil ->
+        socket
+
+      %{uuid: uuid} ->
+        audit = audit_context(socket.assigns)
+
+        socket = socket |> assign(:delete_loading?, true)
+
+        start_async(socket, :delete_review, fn -> StopEditing.delete_review(uuid, audit) end)
+    end
+  end
+
+  # A refusal re-reads the review rather than reusing the one that was refused,
+  # and keeps the outcome the command reported: the list the editor is reading
+  # is the list the command saw.
+  defp restart_delete_review(socket, outcome) do
+    socket
+    |> assign(:delete_saving?, false)
+    |> assign(:delete_loading?, false)
+    |> assign(:delete_outcome, outcome)
+    |> start_delete_review()
+  end
+
+  # The command is the editor's answer and the panel sends only that. The review
+  # that produced the fingerprint stays in the assign, so a `fingerprint` posted
+  # by the browser cannot name a deletion the editor was never shown (the step-31
+  # rule, applied to the delete).
+  defp start_delete(socket) do
+    with %{delete_review: review} when is_map(review) <- socket.assigns,
+         %{uuid: uuid} <- socket.assigns.edit_stop do
+      audit = audit_context(socket.assigns)
+
+      socket = socket |> assign(:delete_saving?, true) |> assign(:delete_outcome, :none)
+
+      start_async(socket, :delete_stop, fn ->
+        StopEditing.delete_stop(uuid, review.fingerprint, audit)
+      end)
+    else
+      _no_review -> socket
+    end
+  end
+
+  defp deleted_message(nil, _removed), do: "That stop was deleted."
+
+  defp deleted_message(stop, removed) do
+    rows =
+      removed
+      |> Enum.map(fn {kind, count} -> "#{count} #{kind}" end)
+      |> Enum.sort()
+      |> Enum.join(", ")
+
+    case rows do
+      "" -> "#{stop.name} was deleted."
+      rows -> "#{stop.name} was deleted, along with #{rows} that named it."
+    end
   end
 
   # The usage is read from one stop's struct, so the reply has to name the stop
@@ -649,6 +785,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     do: assign(socket, :discard_action, action)
 
   defp guard_edit(socket, {:close}), do: close_edit(socket)
+
+  defp guard_edit(socket, {:delete}),
+    do: socket |> assign(:delete_outcome, :none) |> start_delete_review()
+
   defp guard_edit(socket, _action), do: socket
 
   defp close_edit(socket) do
@@ -987,12 +1127,25 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   def handle_event("back_to_edit", _params, socket) do
     # Back to editing keeps the draft and the pending move: the review is a
     # question about this move, and leaving it does not answer it or discard it.
+    # The delete panels answer the same way — keeping the stop writes nothing.
     {:noreply,
      socket
      |> assign(:move_review, nil)
      |> assign(:move_loading?, false)
      |> assign(:move_outcome, :none)
+     |> assign_delete_state()
      |> push_map_mode()}
+  end
+
+  # Asking what deleting would remove goes through the same guard as every other
+  # exit out of the form: a draft the editor has not saved is theirs, and opening
+  # another question over it is not a reason to lose it.
+  def handle_event("start_delete", _params, socket) do
+    {:noreply, guard_edit(socket, {:delete})}
+  end
+
+  def handle_event("delete_stop", _params, socket) do
+    {:noreply, start_delete(socket)}
   end
 
   def handle_event("save_move", _params, socket) do
@@ -1169,6 +1322,17 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
       {:close} ->
         {:noreply, socket |> assign(:discard_action, nil) |> close_edit()}
+
+      {:delete} ->
+        # The discard is the editor's answer to "lose the draft", and the delete
+        # question is asked from the stop as it is loaded rather than from the
+        # row a save would have left behind.
+        {:noreply,
+         socket
+         |> assign(:discard_action, nil)
+         |> assign(:delete_outcome, :none)
+         |> put_back_edit_move()
+         |> start_delete_review()}
     end
   end
 
@@ -2435,42 +2599,54 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
             />
           <% else %>
             <%= if @panel == :edit do %>
-              <%= if @move_review != nil or @move_loading? do %>
-                <.move_review_panel
-                  id="stops-map-move-panel"
+              <%= if @delete_review != nil or @delete_loading? do %>
+                <.delete_panel
+                  id="stops-map-delete-panel"
                   stop={@edit_stop}
-                  review={@move_review}
-                  loading?={@move_loading?}
-                  distance={@edit_move && @edit_move.distance_m}
-                  lines={@move_lines}
-                  answer={@move_answer}
-                  errors={@move_errors}
-                  saving?={@move_saving?}
-                  outcome={@move_outcome}
-                  saved={@move_saved}
+                  review={@delete_review}
+                  loading?={@delete_loading?}
+                  version_id={@current_gtfs_version.id}
+                  saving?={@delete_saving?}
+                  outcome={@delete_outcome}
                 />
               <% else %>
-                <.edit_panel
-                  id="stops-map-edit-panel"
-                  stop={@edit_stop}
-                  form={@edit_form}
-                  where={edit_where(assigns)}
-                  usage={@edit_usage}
-                  zone_id={@edit_stop && @edit_stop.zone_id}
-                  zone_name={@edit_zone_name}
-                  zone_href={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares"}
-                  errors={@edit_errors}
-                  dirty?={@edit_dirty?}
-                  saving?={@edit_saving}
-                  outcome={@edit_outcome}
-                  move={@edit_move}
-                  move_saved={@move_saved}
-                  pin_off_canvas?={pin_off_canvas?(assigns)}
-                  conflict={@edit_conflict}
-                  more_open?={@edit_more_open?}
-                  tech_open?={@edit_tech_open?}
-                  discard_action={@discard_action}
-                />
+                <%= if @move_review != nil or @move_loading? do %>
+                  <.move_review_panel
+                    id="stops-map-move-panel"
+                    stop={@edit_stop}
+                    review={@move_review}
+                    loading?={@move_loading?}
+                    distance={@edit_move && @edit_move.distance_m}
+                    lines={@move_lines}
+                    answer={@move_answer}
+                    errors={@move_errors}
+                    saving?={@move_saving?}
+                    outcome={@move_outcome}
+                    saved={@move_saved}
+                  />
+                <% else %>
+                  <.edit_panel
+                    id="stops-map-edit-panel"
+                    stop={@edit_stop}
+                    form={@edit_form}
+                    where={edit_where(assigns)}
+                    usage={@edit_usage}
+                    zone_id={@edit_stop && @edit_stop.zone_id}
+                    zone_name={@edit_zone_name}
+                    zone_href={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares"}
+                    errors={@edit_errors}
+                    dirty?={@edit_dirty?}
+                    saving?={@edit_saving}
+                    outcome={@edit_outcome}
+                    move={@edit_move}
+                    move_saved={@move_saved}
+                    pin_off_canvas?={pin_off_canvas?(assigns)}
+                    conflict={@edit_conflict}
+                    more_open?={@edit_more_open?}
+                    tech_open?={@edit_tech_open?}
+                    discard_action={@discard_action}
+                  />
+                <% end %>
               <% end %>
             <% else %>
               <%= if @panel == :created do %>

@@ -1521,6 +1521,109 @@ test("moving a stop @move", async ({ page }, testInfo) => {
   await captureReference(page, testInfo, "move-review", "review", "move-ref-");
 });
 
+test("deleting a stop @delete", async ({ page }, testInfo) => {
+  test.setTimeout(300_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+
+  // A stop the feed serves: the answer is a refusal, and the refusal names
+  // every dependent rather than counting them.
+  await page.goto(`/gtfs/${versionId}/stops/map?stop=1434`);
+  await waitForLiveView(page);
+  await waitForMapReady(page);
+
+  await page.locator("#stops-map-edit-more").click();
+  await expect(page.locator("#stops-map-edit-more-menu")).toBeAttached();
+  await expect(page.locator("#stops-map-edit-delete")).toContainText(
+    "Delete stop",
+  );
+  await capture(page, testInfo, "delete-menu-desktop");
+
+  await page.locator("#stops-map-edit-delete").click();
+  await expect(page.locator("#stops-map-delete-panel")).toBeAttached();
+  await expect(page.locator("#stops-map-delete-heading")).toHaveText(
+    "Can\u2019t delete US 101 & SE 1st St yet",
+  );
+  // The seed's patterns carry no weekday trips, so the message names the
+  // patterns rather than a service count; the ExUnit cases cover the figure.
+  await expect(page.locator("#stops-map-delete-blocked-message")).toContainText(
+    "2 patterns stop here",
+  );
+
+  // Every dependent is named, and the ones that live somewhere else link to it.
+  await expect(
+    page.locator("#stops-map-delete-blocked-list li"),
+  ).not.toHaveCount(0);
+  await expect(page.locator("#stops-map-delete-blocked-list")).toContainText(
+    "toward Lincoln City",
+  );
+  await expect(
+    page.locator("[id^='stops-map-delete-blocked-run-']"),
+  ).toHaveCount(1);
+  await expect(
+    page.locator("[id^='stops-map-delete-open-pattern-']").first(),
+  ).toBeAttached();
+
+  // A refusal has no primary action: there is nothing here to press that would
+  // delete anything.
+  await expect(page.locator("#stops-map-delete-go")).toHaveCount(0);
+  await expect(page.locator("#stops-map-delete-keep")).toHaveText(
+    "Back to stop",
+  );
+
+  await captureBoth(page, testInfo, "blocked", "delete-");
+  await captureReference(
+    page,
+    testInfo,
+    "delete-blocked",
+    "blocked",
+    "delete-ref-",
+  );
+
+  // A stop nothing uses: the answer is a confirmation, and it names the rows
+  // that go with it.
+  await page.goto(`/gtfs/${versionId}/stops/map?stop=1531`);
+  await waitForLiveView(page);
+  await expect(page.locator("#stops-map-edit-panel")).toContainText(
+    "Not served",
+  );
+
+  await page.locator("#stops-map-edit-more").click();
+  await page.locator("#stops-map-edit-delete").click();
+  await expect(page.locator("#stops-map-delete-panel")).toBeAttached();
+  await expect(page.locator("#stops-map-delete-heading")).toHaveText(
+    "Delete SE Bay Blvd & SE Moore Dr?",
+  );
+  await expect(page.locator("#stops-map-delete-clear")).toContainText(
+    "No pattern or trip stops here",
+  );
+  await expect(page.locator("#stops-map-delete-removed")).toContainText(
+    "Spanish name",
+  );
+  await expect(page.locator("#stops-map-delete-go")).toContainText(
+    "Delete stop",
+  );
+
+  await captureBoth(page, testInfo, "confirm", "delete-");
+
+  // Keeping the stop writes nothing and returns to the form. The reference
+  // captures come last because they leave the page on the prototype file.
+  await page.locator("#stops-map-delete-keep").click();
+  await expect(page.locator("#stops-map-edit-panel")).toBeAttached();
+  await expect(page.locator("#stops-map-delete-panel")).toHaveCount(0);
+
+  await captureReference(
+    page,
+    testInfo,
+    "delete-confirm",
+    "confirm",
+    "delete-ref-",
+  );
+});
+
 // A pointer drag on the pin. The hook reports one move per gesture, on pointer
 // up, so the drag is a down, a move and a release — never a click.
 async function dragPinBy(page, dx, dy) {
