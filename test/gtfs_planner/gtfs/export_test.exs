@@ -2,6 +2,7 @@ defmodule GtfsPlanner.Gtfs.ExportTest do
   use GtfsPlanner.DataCase
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.ConcurrencyHelpers
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Operations
@@ -632,9 +633,11 @@ defmodule GtfsPlanner.Gtfs.ExportTest do
     end
   end
 
-  # The race case commits its own rows so a second connection can see them.
+  # The race case commits its own rows so a second connection can see them, including
+  # the editor `garage_fixture/2` creates for the organization.
   defp cleanup_export_fixtures(organization_ids) do
     unboxed(fn ->
+      ConcurrencyHelpers.delete_committed_members!(organization_ids)
       Repo.delete_all(from(v in Vehicle, where: v.organization_id in ^organization_ids))
       Repo.delete_all(from(g in Garage, where: g.organization_id in ^organization_ids))
       Repo.delete_all(from(s in Stop, where: s.organization_id in ^organization_ids))
