@@ -1624,13 +1624,15 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
 
   # Every Fares link is built here, so the zone travels as its own query key
   # through `URI.encode_query/1` and `filter=unassigned` stays a different key
-  # from `zone`. No zone ID reaches a DOM ID.
+  # from `zone`. Each opens the zone workspace's own tab. No zone ID reaches a
+  # DOM ID.
   defp fares_zone_path(gtfs_version_id, nil) do
-    "/gtfs/#{gtfs_version_id}/settings/fares?" <> URI.encode_query(%{"filter" => "unassigned"})
+    "/gtfs/#{gtfs_version_id}/settings/fares/zones?" <>
+      URI.encode_query(%{"filter" => "unassigned"})
   end
 
   defp fares_zone_path(gtfs_version_id, zone_id) do
-    "/gtfs/#{gtfs_version_id}/settings/fares?" <> URI.encode_query(%{"zone" => zone_id})
+    "/gtfs/#{gtfs_version_id}/settings/fares/zones?" <> URI.encode_query(%{"zone" => zone_id})
   end
 
   # The zone as "name · ID", which is how the workspace names a zone; an

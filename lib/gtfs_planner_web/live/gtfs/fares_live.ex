@@ -1,16 +1,18 @@
 defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   @moduledoc """
-  The Fares workspace shell for Settings › This version › Fares, built from the
+  The Fares zone workspace for Settings › This version › Fares, built from the
   TransitOps application design system. The page leads back to Settings with a
-  link, carries the zone, rule and check tabs, and puts its one primary action
-  where the task is: Create zone or Add fare rule in the header, Assign zone in the
-  selection bar while stops are selected, or the empty state's own action.
+  link and puts its one primary action where the task is: Create zone in the
+  header, Assign zone in the selection bar while stops are selected, or the
+  empty state's own action.
 
-  One LiveView serves the workspace's three destinations — `/settings/fares`
-  (`:zones`), `/settings/fares/rules` (`:rules`) and `/settings/fares/checks`
-  (`:checks`). The tabs patch between them, so the Zones tab's query state
-  (`?zone=`, `?filter=`, `?q=`, `?page=`) stays in the URL and a tab change
-  neither remounts the page nor drops it.
+  The Fares section is two LiveViews as of step 32. This one serves only the
+  Zones tab, at `/settings/fares/zones`, and
+  `GtfsPlannerWeb.Gtfs.FareEditorLive` serves Prices, Where fares apply,
+  Transfers and Checks. The shared `fares_tabs/1` strip navigates between them,
+  so a tab change is a real navigation between the two pages rather than a patch
+  within one. The Zones tab's own query state (`?zone=`, `?filter=`, `?q=`,
+  `?page=`) still stays in the URL as the stops are filtered and assigned.
 
   Access is authorized at mount through `EnsureRole`, following the other GTFS
   pages: there is no view-only GTFS role, and `Gtfs.FareZones` enforces the
@@ -592,7 +594,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
     if version_id && version_id != current_version_id &&
          Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
-      {:noreply, push_navigate(socket, to: fares_path(version_id, socket.assigns.live_action))}
+      {:noreply, push_navigate(socket, to: zones_path(version_id))}
     else
       {:noreply, socket}
     end
@@ -604,7 +606,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
     if Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
       socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
-      {:noreply, push_navigate(socket, to: fares_path(version_id, socket.assigns.live_action))}
+      {:noreply, push_navigate(socket, to: zones_path(version_id))}
     else
       {:noreply, socket}
     end
@@ -2097,9 +2099,5 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   defp import_path(version_id), do: "/gtfs/#{version_id}/import"
   defp export_path(version_id), do: "/gtfs/#{version_id}/export"
 
-  defp zones_path(version_id), do: "/gtfs/#{version_id}/settings/fares"
-
-  defp fares_path(version_id, :rules), do: "/gtfs/#{version_id}/settings/fares/rules"
-  defp fares_path(version_id, :checks), do: "/gtfs/#{version_id}/settings/fares/checks"
-  defp fares_path(version_id, _zones), do: zones_path(version_id)
+  defp zones_path(version_id), do: "/gtfs/#{version_id}/settings/fares/zones"
 end

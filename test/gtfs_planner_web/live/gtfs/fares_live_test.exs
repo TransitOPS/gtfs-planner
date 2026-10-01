@@ -36,12 +36,10 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveTest do
 
   @adapter_key :gtfs_catalog_read_adapter
 
-  # `[live action, path]` for the three destinations one LiveView serves.
-  @paths [
-    zones: "/settings/fares",
-    rules: "/settings/fares/rules",
-    checks: "/settings/fares/checks"
-  ]
+  # `[live action, path]` for the one destination this LiveView serves. The
+  # editor owns Prices, Where fares apply, Transfers and Checks from step 32;
+  # `fare_editor_live_test.exs` covers those, and this file keeps the Zones tab.
+  @paths [zones: "/settings/fares/zones"]
 
   setup :verify_on_exit!
 
@@ -241,7 +239,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveTest do
       insert_zone(user, organization, version)
 
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       assert has_element?(view, "#fare-zones-error", "Fares couldn’t load")
 
@@ -276,7 +274,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveTest do
       insert_zone(user, organization, version)
 
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       assert has_element?(view, "#fare-zones-panel")
       refute has_element?(view, "#fare-zones-error")
@@ -298,7 +296,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveTest do
       insert_rule(organization, version, "CITY", "C", "C")
 
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       assert has_element?(view, "#fares-tab-checks #fares-checks-count", "2")
     end
@@ -314,13 +312,13 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveTest do
       other_version = gtfs_version_fixture(organization.id, %{name: "Next version"})
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, switch_view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/rules")
+      {:ok, switch_view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
       render_hook(switch_view, "switch_gtfs_version", %{"version" => other_version.id})
-      assert_redirect(switch_view, "/gtfs/#{other_version.id}/settings/fares/rules")
+      assert_redirect(switch_view, "/gtfs/#{other_version.id}/settings/fares/zones")
 
-      {:ok, loaded_view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/rules")
+      {:ok, loaded_view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
       render_hook(loaded_view, "gtfs_version_loaded", %{"version_id" => other_version.id})
-      assert_redirect(loaded_view, "/gtfs/#{other_version.id}/settings/fares/rules")
+      assert_redirect(loaded_view, "/gtfs/#{other_version.id}/settings/fares/zones")
     end
 
     test "an unpublished selection leaves the workspace where it is", %{
@@ -334,7 +332,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveTest do
       {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staging"})
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/checks")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
       render_hook(view, "switch_gtfs_version", %{"version" => staging.id})
 
       refute_push_event(view, "gtfs_version_selected", %{version_id: _})

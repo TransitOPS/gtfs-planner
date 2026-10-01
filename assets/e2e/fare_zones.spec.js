@@ -114,7 +114,7 @@ async function openFares(page, tab = "zones") {
   await logIn(page);
 
   const versionId = await faresVersionId(page);
-  await page.goto(`/gtfs/${versionId}/settings/fares${TAB_PATH[tab]}`);
+  await page.goto(`/gtfs/${versionId}/settings/fares/zones${TAB_PATH[tab]}`);
   await waitForLiveView(page);
   await expect(page.locator(`#fare-${tab}-panel`)).toBeAttached();
 
@@ -216,10 +216,20 @@ test("settings entry", async ({ page }, testInfo) => {
     });
 
     await entryLink.click();
-    await page.waitForURL(new RegExp(`/gtfs/${versionId}/settings/fares$`));
+    await page.waitForURL(new RegExp(`/gtfs/${versionId}/settings/fares/zones$`));
     await waitForLiveView(page);
 
     await expect(page.locator("h1")).toHaveText("Fares");
+    // The entry opens the section's landing path, the editor's Prices tab; the
+    // Zones tab is one click along the shared strip.
+    await expect(page.locator("#fare-editor-page")).toBeAttached();
+    await expect(page.locator("#fares-tab-prices")).toHaveAttribute("aria-current", "page");
+    await page.locator("#fares-tab-zones").click();
+    await expect(page).toHaveURL(new RegExp(`/gtfs/${versionId}/settings/fares/zones$`), {
+      timeout: 15000,
+    });
+    await waitForLiveView(page);
+
     await expect(page.locator("#fare-zones-panel")).toBeAttached();
     await expect(page.locator("#coming-soon")).toHaveCount(0);
     await expect(page.locator("#settings-back")).toHaveAttribute(
@@ -250,7 +260,7 @@ test("zones inventory", async ({ page }, testInfo) => {
 
   await expect(allStops).toContainText("All stops");
   await expect(page.locator("#fare-zone-row-all-count")).toHaveText("27");
-  await expect(allStops).toHaveAttribute("href", `/gtfs/${versionId}/settings/fares`);
+  await expect(allStops).toHaveAttribute("href", `/gtfs/${versionId}/settings/fares/zones`);
   await expect(allStops).toHaveAttribute("aria-current", "page");
   await expect(page.locator("#fare-zone-stage-title")).toHaveText("All stops");
   await expect(page.locator("#fare-zone-stage-subtitle")).toHaveText(
@@ -273,7 +283,7 @@ test("zones inventory", async ({ page }, testInfo) => {
     await expect(page.locator(`#fare-zone-row-${zone.index}-count`)).toHaveText(zone.count);
     await expect(row).toHaveAttribute(
       "href",
-      `/gtfs/${versionId}/settings/fares?zone=${zone.id}`,
+      `/gtfs/${versionId}/settings/fares/zones?zone=${zone.id}`,
     );
     await expect(row).not.toHaveAttribute("aria-current", "page");
   }
@@ -284,7 +294,7 @@ test("zones inventory", async ({ page }, testInfo) => {
   await expect(page.locator("#fare-zone-row-unassigned-count")).toHaveText("4");
   await expect(unassigned).toHaveAttribute(
     "href",
-    `/gtfs/${versionId}/settings/fares?filter=unassigned`,
+    `/gtfs/${versionId}/settings/fares/zones?filter=unassigned`,
   );
 
   // Selecting a zone keeps the filter in the URL and renames the stage.
@@ -294,7 +304,7 @@ test("zones inventory", async ({ page }, testInfo) => {
   await expect(page.locator("#fare-zone-row-2")).toHaveAttribute("aria-current", "page");
   await expect(page.locator("#fare-zone-row-2")).toHaveAttribute(
     "href",
-    `/gtfs/${versionId}/settings/fares?zone=B`,
+    `/gtfs/${versionId}/settings/fares/zones?zone=B`,
   );
   await expect(allStops).not.toHaveAttribute("aria-current", "page");
   await expect(page.locator("#fare-zone-stage-title")).toHaveText("Eastbank");
@@ -304,7 +314,7 @@ test("zones inventory", async ({ page }, testInfo) => {
 
   for (const viewport of [DESKTOP, NARROW]) {
     await page.setViewportSize(viewport);
-    await page.goto(`/gtfs/${versionId}/settings/fares`);
+    await page.goto(`/gtfs/${versionId}/settings/fares/zones`);
     await waitForLiveView(page);
 
     await expect(page.locator("#fare-zone-row-all")).toBeVisible();
@@ -665,7 +675,7 @@ test("zone drawer", async ({ page }, testInfo) => {
   // ── first use ──
   const emptyVersionId = await versionIdByName(page, "Browser E2E Version");
 
-  await page.goto(`/gtfs/${emptyVersionId}/settings/fares`);
+  await page.goto(`/gtfs/${emptyVersionId}/settings/fares/zones`);
   await waitForLiveView(page);
 
   const firstUse = page.locator("#fare-zone-first-use");
@@ -694,7 +704,7 @@ test("zone drawer", async ({ page }, testInfo) => {
   // ── create drawer ──
   const versionId = await faresVersionId(page);
 
-  await page.goto(`/gtfs/${versionId}/settings/fares`);
+  await page.goto(`/gtfs/${versionId}/settings/fares/zones`);
   await waitForLiveView(page);
   await expect(page.locator("#fare-zone-create")).toBeEnabled();
 
@@ -1439,7 +1449,7 @@ test("stop details", async ({ page }, testInfo) => {
   await expect(page.locator("#stop-fare-zone-link")).toHaveText("View in Fares");
   await expect(page.locator("#stop-fare-zone-link")).toHaveAttribute(
     "href",
-    `/gtfs/${versionId}/settings/fares?zone=A`,
+    `/gtfs/${versionId}/settings/fares/zones?zone=A`,
   );
   await expect(page.locator("#station-platform-fare-zones")).toHaveCount(0);
 
@@ -1454,7 +1464,7 @@ test("stop details", async ({ page }, testInfo) => {
   await expect(page.locator("#platform-fare-zone-0")).toHaveText("Central · A");
   await expect(page.locator("#platform-fare-zone-0")).toHaveAttribute(
     "href",
-    `/gtfs/${versionId}/settings/fares?zone=A`,
+    `/gtfs/${versionId}/settings/fares/zones?zone=A`,
   );
 
   await capture(page, testInfo, "stop-details-station-1440", { fullPage: false });
@@ -1466,7 +1476,7 @@ test("stop details", async ({ page }, testInfo) => {
   await expect(page.locator("#stop-fare-zone")).toHaveText("None");
   await expect(page.locator("#stop-fare-zone-link")).toHaveAttribute(
     "href",
-    `/gtfs/${versionId}/settings/fares?filter=unassigned`,
+    `/gtfs/${versionId}/settings/fares/zones?filter=unassigned`,
   );
 
   await capture(page, testInfo, "stop-details-unassigned-1440", { fullPage: false });
@@ -1491,7 +1501,7 @@ test("stop details", async ({ page }, testInfo) => {
 
   await page.locator("#stop-fare-zone-link").click();
 
-  await expect(page).toHaveURL(new RegExp(`/gtfs/${versionId}/settings/fares\\?zone=A$`));
+  await expect(page).toHaveURL(new RegExp(`/gtfs/${versionId}/settings/fares/zones\\?zone=A$`));
 
   await waitForLiveView(page);
 
@@ -1588,6 +1598,12 @@ test.describe("fare zones journey", () => {
     }).toPass({ timeout: 25000 });
 
     await waitForLiveView(page);
+    await page.locator("#fares-tab-zones").click();
+
+    await expect(page).toHaveURL(new RegExp(`/gtfs/${versionId}/settings/fares/zones$`), {
+      timeout: 15000,
+    });
+    await waitForLiveView(page);
 
     await expect(page.locator("#fares-tab-zones")).toHaveAttribute("aria-current", "page");
     await expect(page.locator("#fare-zones-panel")).toBeAttached();
@@ -1674,7 +1690,7 @@ test.describe("fare zones journey", () => {
 
     const versionId = await enterFaresThroughSettings(page);
 
-    await expect(page).toHaveURL(new RegExp(`/gtfs/${versionId}/settings/fares$`));
+    await expect(page).toHaveURL(new RegExp(`/gtfs/${versionId}/settings/fares/zones$`));
     await expect(page.locator("#fares-tab-zones")).toHaveAttribute("aria-current", "page");
     await expect(page.locator("#fare-zones-panel")).toBeAttached();
     await expect(page.locator("#fare-zone-stage-title")).toHaveText("All stops");
@@ -1982,7 +1998,7 @@ test.describe("fare zones journey", () => {
     const versionId = await selectVersion(page, "Browser Fare Zones Scale Version");
     const startedAt = Date.now();
 
-    await page.goto(`/gtfs/${versionId}/settings/fares`);
+    await page.goto(`/gtfs/${versionId}/settings/fares/zones`);
     await waitForLiveView(page);
 
     const canvas = page.locator("#fare-zone-map [data-map-canvas]");
@@ -1997,7 +2013,7 @@ test.describe("fare zones journey", () => {
       points: 10_000,
       elapsed_ms: elapsedMs,
       method:
-        "Date.now() before page.goto for /gtfs/<id>/settings/fares until #fare-zone-map [data-map-canvas] reported data-map-state=ready",
+        "Date.now() before page.goto for /gtfs/<id>/settings/fares/zones until #fare-zone-map [data-map-canvas] reported data-map-state=ready",
       viewport: `${DESKTOP.width}x${DESKTOP.height}`,
       user_agent: await page.evaluate(() => navigator.userAgent),
       measured_at: new Date().toISOString(),

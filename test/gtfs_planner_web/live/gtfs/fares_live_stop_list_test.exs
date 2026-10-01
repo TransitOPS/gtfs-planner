@@ -107,7 +107,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{version.id}/settings/fares?zone=B&page=2")
+        live(conn, "/gtfs/#{version.id}/settings/fares/zones?zone=B&page=2")
 
       assert search_value(view) == ""
       assert has_element?(view, "#fare-zone-without-location", "0 without map location")
@@ -119,7 +119,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
 
       # The filter and the search both survive, the page does not: a narrowed
       # list starts at its own first page.
-      assert_patched(view, "/gtfs/#{version.id}/settings/fares?zone=B&q=Riverside+150")
+      assert_patched(view, "/gtfs/#{version.id}/settings/fares/zones?zone=B&q=Riverside+150")
 
       assert search_value(view) == "Riverside 150"
       assert visible_stop_ids(view, stop_id_by_row_id) == ["STOP_B_150"]
@@ -138,7 +138,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{version.id}/settings/fares?zone=B&page=2")
+        live(conn, "/gtfs/#{version.id}/settings/fares/zones?zone=B&page=2")
 
       # Pressing Enter in the search field is a form submit. It has to reach this
       # LiveView: a native GET would replace the whole query string and drop the
@@ -147,7 +147,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       |> form("#fare-zone-search-form", %{"q" => "Riverside"})
       |> render_submit()
 
-      assert_patched(view, "/gtfs/#{version.id}/settings/fares?zone=B&q=Riverside")
+      assert_patched(view, "/gtfs/#{version.id}/settings/fares/zones?zone=B&q=Riverside")
 
       assert has_element?(view, "#fare-zone-stage-title", "Eastbank")
       assert has_element?(view, "#fare-zone-row-3[aria-current='page']")
@@ -167,7 +167,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{version.id}/settings/fares?zone=B&page=2")
+        live(conn, "/gtfs/#{version.id}/settings/fares/zones?zone=B&page=2")
 
       # Enter in an untouched field: nothing about the URL state changes, so the
       # list stays on the page the operator was reading.
@@ -190,13 +190,13 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       stop_id_by_row_id: stop_id_by_row_id
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       view
       |> form("#fare-zone-search-form", %{"q" => "50%"})
       |> render_change()
 
-      assert_patched(view, "/gtfs/#{version.id}/settings/fares?q=50%25")
+      assert_patched(view, "/gtfs/#{version.id}/settings/fares/zones?q=50%25")
 
       # `%` reaches the query as the character the operator typed, so it matches
       # "Gate 50%" and not "Gate 500".
@@ -212,13 +212,13 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       stop_id_by_row_id: stop_id_by_row_id
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares?zone=B")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones?zone=B")
 
       view
       |> form("#fare-zone-search-form", %{"q" => "zzzz"})
       |> render_change()
 
-      assert_patched(view, "/gtfs/#{version.id}/settings/fares?zone=B&q=zzzz")
+      assert_patched(view, "/gtfs/#{version.id}/settings/fares/zones?zone=B&q=zzzz")
 
       refute has_element?(view, "#fare-zone-stops")
       assert has_element?(view, "#fare-zone-stops-empty", "No stops match your search")
@@ -231,7 +231,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
 
       # One action leaves both the search and the filter, which is what the
       # operator has to do to see stops again.
-      assert empty_action_href(view) == "/gtfs/#{version.id}/settings/fares"
+      assert empty_action_href(view) == "/gtfs/#{version.id}/settings/fares/zones"
 
       render_patch(view, empty_action_href(view))
 
@@ -252,9 +252,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       stop_id_by_row_id: stop_id_by_row_id
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
-      assert row_href(view, "#fare-zone-row-3") == "/gtfs/#{version.id}/settings/fares?zone=B"
+      assert row_href(view, "#fare-zone-row-3") ==
+               "/gtfs/#{version.id}/settings/fares/zones?zone=B"
+
       render_patch(view, row_href(view, "#fare-zone-row-3"))
 
       assert has_element?(view, "#fare-zone-stop-head", "150 shown")
@@ -268,7 +270,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       |> element("#fare-zone-stops-pagination button[phx-value-page='2']")
       |> render_click()
 
-      assert_patched(view, "/gtfs/#{version.id}/settings/fares?zone=B&page=2")
+      assert_patched(view, "/gtfs/#{version.id}/settings/fares/zones?zone=B&page=2")
 
       page_two = visible_stop_ids(view, stop_id_by_row_id)
 
@@ -282,7 +284,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       |> element("#fare-zone-stops-pagination button[phx-value-page='1']")
       |> render_click()
 
-      assert_patched(view, "/gtfs/#{version.id}/settings/fares?zone=B&page=1")
+      assert_patched(view, "/gtfs/#{version.id}/settings/fares/zones?zone=B&page=1")
       assert List.first(visible_stop_ids(view, stop_id_by_row_id)) == "STOP_B_001"
     end
 
@@ -295,7 +297,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares?zone=B&page=99")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones?zone=B&page=99")
 
       assert has_element?(view, "#fare-zone-stop-head", "150 shown")
       assert has_element?(view, "#fare-zone-stops-pagination", "Showing 101–150 of 150 stops")
@@ -313,7 +315,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       assert has_element?(
                view,
@@ -357,7 +359,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       # The padded zone and the plain one are two zones, so their rows disagree.
       assert has_element?(view, "#stops-#{stop_ids["STOP_PAD"]}", "Padded")
@@ -386,7 +388,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       other_harbor: other_harbor
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       # 156 boardable stops: 150 in Eastbank, 2 in Central, 1 in Padded and 3
       # with no zone. One further stop is a station, which is never listed.
@@ -397,10 +399,10 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
 
       # The shipped links prove the byte-exact IDs and the encoded zone query.
       assert Enum.map(1..4, &row_href(view, "#fare-zone-row-#{&1}")) == [
-               "/gtfs/#{version.id}/settings/fares?zone=+A",
-               "/gtfs/#{version.id}/settings/fares?zone=A",
-               "/gtfs/#{version.id}/settings/fares?zone=B",
-               "/gtfs/#{version.id}/settings/fares?zone=C"
+               "/gtfs/#{version.id}/settings/fares/zones?zone=+A",
+               "/gtfs/#{version.id}/settings/fares/zones?zone=A",
+               "/gtfs/#{version.id}/settings/fares/zones?zone=B",
+               "/gtfs/#{version.id}/settings/fares/zones?zone=C"
              ]
 
       render_patch(view, row_href(view, "#fare-zone-row-1"))
@@ -428,11 +430,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       version: version
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       render_patch(view, row_href(view, "#fare-zone-row-4"))
 
-      assert_patched(view, "/gtfs/#{version.id}/settings/fares?zone=C")
+      assert_patched(view, "/gtfs/#{version.id}/settings/fares/zones?zone=C")
 
       refute has_element?(view, "#fare-zone-stops")
       assert has_element?(view, "#fare-zone-stops-empty", "No stops in this zone yet")
@@ -444,7 +446,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
              )
 
       assert has_element?(view, "#fare-zone-stops-empty-action", "Show all stops")
-      assert empty_action_href(view) == "/gtfs/#{version.id}/settings/fares"
+      assert empty_action_href(view) == "/gtfs/#{version.id}/settings/fares/zones"
 
       render_patch(view, empty_action_href(view))
 
@@ -462,7 +464,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares?filter=unassigned")
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{version.id}/settings/fares/zones?filter=unassigned")
 
       assert has_element?(view, "#fare-zone-stop-head", "3 shown")
       assert has_element?(view, "#fare-zone-without-location", "1 without map location")
@@ -476,8 +479,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
           set: [zone_id: "A"]
         )
 
-      render_patch(view, "/gtfs/#{version.id}/settings/fares?zone=C")
-      render_patch(view, "/gtfs/#{version.id}/settings/fares?filter=unassigned")
+      render_patch(view, "/gtfs/#{version.id}/settings/fares/zones?zone=C")
+      render_patch(view, "/gtfs/#{version.id}/settings/fares/zones?filter=unassigned")
 
       refute has_element?(view, "#fare-zone-stops")
       assert has_element?(view, "#fare-zone-stops-empty", "Every stop has a fare zone")
@@ -500,7 +503,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       insert_zone(organization, empty_version, "A", "Central", "ocean")
 
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{empty_version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{empty_version.id}/settings/fares/zones")
 
       refute has_element?(view, "#fare-zone-stops")
       assert has_element?(view, "#fare-zone-stops-empty", "No stops yet")

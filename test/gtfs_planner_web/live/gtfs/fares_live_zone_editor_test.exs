@@ -320,9 +320,13 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneEditorTest do
                "No stops in this zone yet"
              )
 
-      # Leaving the tab ends it.
-      render_patch(view, zones_path(version, :rules))
-      render_patch(view, zones_path(version))
+      # Leaving the tab ends it. A tab change is now a navigation to another
+      # LiveView, so the notice is proved gone by a fresh mount of the zone tab.
+      fresh_conn =
+        build_conn()
+        |> log_in_user(user, organization: organization)
+
+      {:ok, view, _html} = live(fresh_conn, zones_path(version))
 
       refute has_element?(view, "#fare-zone-notice")
     end
@@ -681,7 +685,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneEditorTest do
     case action do
       :rules -> "/gtfs/#{version.id}/settings/fares/rules"
       :checks -> "/gtfs/#{version.id}/settings/fares/checks"
-      :zones -> "/gtfs/#{version.id}/settings/fares"
+      :zones -> "/gtfs/#{version.id}/settings/fares/zones"
     end
   end
 
