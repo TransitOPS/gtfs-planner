@@ -9736,10 +9736,10 @@ case Accounts.register_first_admin(%{
 
     # One editing status by another user: the board row reads "editing now" and
     # the rail lists priya.n, never this viewer.
-    {:ok, _home_editing_status} =
-      Gtfs.set_station_editing_status(
-        home_pathways_org.id,
-        home_pathways_version.id,
+    _home_editing_status =
+      GtfsPlanner.GtfsFixtures.station_editing_status_fixture(
+        home_pathways_org,
+        home_pathways_version,
         home_uns,
         home_pathways_other
       )

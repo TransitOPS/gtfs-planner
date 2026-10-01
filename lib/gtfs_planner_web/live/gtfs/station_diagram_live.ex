@@ -3353,17 +3353,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("set_station_editing_status", _params, socket) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-
-    case Gtfs.set_station_editing_status(
-           organization_id,
-           gtfs_version_id,
-           socket.assigns.station,
-           socket.assigns.current_user
-         ) do
+    case Gtfs.set_station_editing_status(socket.assigns.audit_ctx, socket.assigns.station) do
       {:ok, status} ->
         {:noreply, assign(socket, :station_editing_status, status)}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         put_flash(socket, :error, "You no longer have edit access to this organization.")}
 
       {:error, _changeset} ->
         {:noreply, put_flash(socket, :error, "Failed to set station editing status")}
@@ -3372,17 +3368,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("clear_station_editing_status", _params, socket) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    case Gtfs.clear_station_editing_status(socket.assigns.audit_ctx, socket.assigns.station.id) do
+      :ok ->
+        {:noreply, assign(socket, :station_editing_status, nil)}
 
-    :ok =
-      Gtfs.clear_station_editing_status(
-        organization_id,
-        gtfs_version_id,
-        socket.assigns.station.id
-      )
+      {:error, :forbidden} ->
+        {:noreply,
+         put_flash(socket, :error, "You no longer have edit access to this organization.")}
 
-    {:noreply, assign(socket, :station_editing_status, nil)}
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to clear station editing status")}
+    end
   end
 
   @impl true

@@ -5,6 +5,7 @@ defmodule GtfsPlanner.GtfsFixtures do
   """
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.CalendarDate
@@ -15,6 +16,7 @@ defmodule GtfsPlanner.GtfsFixtures do
   alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
+  alias GtfsPlanner.Gtfs.StationEditingStatus
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimedPatternStop
@@ -668,4 +670,48 @@ defmodule GtfsPlanner.GtfsFixtures do
       Map.put(attrs, :service_id, service_id)
     end
   end
+
+  @doc """
+  Builds the server-style audit context for an existing user.
+
+  Scoped writers read the actor's current membership, so `user` needs an active editor
+  membership in the organization (`AccountsFixtures.organization_membership_fixture/3`).
+  """
+  def user_audit_fixture(user, organization, version, station \\ nil) do
+    %AuditContext{
+      organization_id: id_of(organization),
+      gtfs_version_id: id_of(version),
+      station_stop_id: station && station.stop_id,
+      actor_id: user.id,
+      actor_email: user.email
+    }
+  end
+
+  @doc """
+  Inserts a station editing status for `user` without authorization or a broadcast.
+
+  Use it to arrange a teammate's earlier session; `Gtfs.set_station_editing_status/2` is the
+  command under test elsewhere.
+  """
+  def station_editing_status_fixture(
+        organization,
+        version,
+        station,
+        user,
+        started_at \\ DateTime.utc_now()
+      ) do
+    %StationEditingStatus{}
+    |> StationEditingStatus.changeset(%{
+      organization_id: id_of(organization),
+      gtfs_version_id: id_of(version),
+      station_id: station.id,
+      user_id: user.id,
+      started_at: started_at
+    })
+    |> Repo.insert!()
+    |> Repo.preload(:user)
+  end
+
+  defp id_of(%{id: id}), do: id
+  defp id_of(id) when is_binary(id), do: id
 end

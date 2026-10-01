@@ -3433,32 +3433,33 @@ defmodule GtfsPlanner.Gtfs do
 
   @doc """
   Creates or replaces the active editing status for a station.
+
+  The editor is the audit context's actor, never a caller-supplied user. Their current
+  editor membership is read inside the transaction, before the station advisory lock, so
+  access revoked after the page mounted returns `{:error, :forbidden}` with no row change
+  and no broadcast.
   """
-  @spec set_station_editing_status(Ecto.UUID.t(), Ecto.UUID.t(), Stop.t(), Accounts.User.t()) ::
-          {:ok, StationEditingStatus.t()} | {:error, Ecto.Changeset.t()}
-  def set_station_editing_status(
-        organization_id,
-        gtfs_version_id,
-        %Stop{} = station,
-        %Accounts.User{} = user
-      ) do
+  @spec set_station_editing_status(AuditContext.t(), Stop.t()) ::
+          {:ok, StationEditingStatus.t()} | {:error, :forbidden | Ecto.Changeset.t()}
+  def set_station_editing_status(%AuditContext{} = audit, %Stop{} = station) do
     started_at = DateTime.utc_now()
 
     attrs = %{
-      organization_id: organization_id,
-      gtfs_version_id: gtfs_version_id,
+      organization_id: audit.organization_id,
+      gtfs_version_id: audit.gtfs_version_id,
       station_id: station.id,
-      user_id: user.id,
+      user_id: audit.actor_id,
       started_at: started_at
     }
 
     Repo.transaction(fn ->
-      lock_station_editing_status!(organization_id, gtfs_version_id, station.id)
+      Authorization.lock_editor!(audit)
+      lock_station_editing_status!(audit.organization_id, audit.gtfs_version_id, station.id)
 
       %StationEditingStatus{}
       |> StationEditingStatus.changeset(attrs)
       |> Repo.insert(
-        on_conflict: [set: [user_id: user.id, started_at: started_at]],
+        on_conflict: [set: [user_id: audit.actor_id, started_at: started_at]],
         conflict_target: [:organization_id, :gtfs_version_id, :station_id],
         returning: true
       )
@@ -3479,29 +3480,36 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Clears the active station editing status for an organization, GTFS version, and station.
+  Clears the active station editing status for the audit context's organization, GTFS
+  version, and the given station.
+
+  Any current editor of the organization may clear a teammate's status. The editor
+  membership is read inside the transaction, before the station advisory lock, so
+  revoked access returns `{:error, :forbidden}` with no row change and no broadcast.
 
   Returns `:ok` on success. A failed transaction or a lost database connection
   returns `{:error, reason}` instead of crashing, so callers can preserve the
   prior status and offer an in-flow retry.
   """
-  @spec clear_station_editing_status(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
-          :ok | {:error, term()}
-  def clear_station_editing_status(organization_id, gtfs_version_id, station_id) do
+  @spec clear_station_editing_status(AuditContext.t(), Ecto.UUID.t()) ::
+          :ok | {:error, :forbidden | term()}
+  def clear_station_editing_status(%AuditContext{} = audit, station_id) do
     Repo.transaction(fn ->
-      lock_station_editing_status!(organization_id, gtfs_version_id, station_id)
+      Authorization.lock_editor!(audit)
+      lock_station_editing_status!(audit.organization_id, audit.gtfs_version_id, station_id)
 
       from(s in StationEditingStatus,
         where:
-          s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+          s.organization_id == ^audit.organization_id and
+            s.gtfs_version_id == ^audit.gtfs_version_id and
             s.station_id == ^station_id
       )
       |> Repo.delete_all()
 
       :ok =
         broadcast_station_editing_status(
-          organization_id,
-          gtfs_version_id,
+          audit.organization_id,
+          audit.gtfs_version_id,
           station_id,
           nil
         )

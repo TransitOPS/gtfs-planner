@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   use GtfsPlannerWeb, :live_view
   require Logger
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Versions
@@ -182,20 +183,18 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
 
   @impl true
   def handle_event("set_station_editing_status", _params, socket) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-
-    case Gtfs.set_station_editing_status(
-           organization_id,
-           gtfs_version_id,
-           socket.assigns.stop,
-           socket.assigns.current_user
-         ) do
+    case Gtfs.set_station_editing_status(editing_audit(socket), socket.assigns.stop) do
       {:ok, status} ->
         {:noreply,
          socket
          |> assign(:station_editing_status, status)
          |> assign(:editing_error, nil)
+         |> focus_editing_button()}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> assign(:editing_error, :forbidden)
          |> focus_editing_button()}
 
       {:error, _changeset} ->
@@ -208,19 +207,18 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
 
   @impl true
   def handle_event("clear_station_editing_status", _params, socket) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-
-    case Gtfs.clear_station_editing_status(
-           organization_id,
-           gtfs_version_id,
-           socket.assigns.stop.id
-         ) do
+    case Gtfs.clear_station_editing_status(editing_audit(socket), socket.assigns.stop.id) do
       :ok ->
         {:noreply,
          socket
          |> assign(:station_editing_status, nil)
          |> assign(:editing_error, nil)
+         |> focus_editing_button()}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> assign(:editing_error, :forbidden)
          |> focus_editing_button()}
 
       {:error, _reason} ->
@@ -274,6 +272,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   # shared `FormErrorFocus` hook on the control's wrapper does the focusing.
   defp focus_editing_button(socket) do
     push_event(socket, "focus_scoped_target", %{id: "station-editing-status-button"})
+  end
+
+  # The actor and organization come from the signed-in session, never from the event.
+  defp editing_audit(socket) do
+    socket.assigns
+    |> Map.put(:station, socket.assigns.stop)
+    |> AuditContext.from_assigns()
   end
 
   defp load_stop(socket) do

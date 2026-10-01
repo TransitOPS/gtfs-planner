@@ -6,7 +6,6 @@ defmodule GtfsPlanner.HomeTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.StationEditingStatus
   alias GtfsPlanner.Home
@@ -240,8 +239,7 @@ defmodule GtfsPlanner.HomeTest do
 
     editor = user_fixture()
 
-    assert {:ok, status} =
-             Gtfs.set_station_editing_status(organization.id, gtfs_version.id, station, editor)
+    status = station_editing_status_fixture(organization, gtfs_version, station, editor)
 
     # Pin the persisted time so the localized assertion does not depend on the clock.
     {1, _} =

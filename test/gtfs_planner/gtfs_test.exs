@@ -1178,12 +1178,15 @@ defmodule GtfsPlanner.GtfsTest do
         })
 
       user = user_fixture(%{email: "editor@example.com"})
+      membership = organization_membership_fixture(user, organization)
 
       %{
         organization: organization,
         gtfs_version: gtfs_version,
         station: station,
-        user: user
+        user: user,
+        membership: membership,
+        audit: user_audit_fixture(user, organization, gtfs_version, station)
       }
     end
 
@@ -1195,19 +1198,14 @@ defmodule GtfsPlanner.GtfsTest do
       assert Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id) == nil
     end
 
-    test "set_station_editing_status/4 returns a status with preloaded user", %{
+    test "set_station_editing_status/2 returns a status with preloaded user", %{
       organization: organization,
       gtfs_version: gtfs_version,
       station: station,
-      user: user
+      user: user,
+      audit: audit
     } do
-      assert {:ok, status} =
-               Gtfs.set_station_editing_status(
-                 organization.id,
-                 gtfs_version.id,
-                 station,
-                 user
-               )
+      assert {:ok, status} = Gtfs.set_station_editing_status(audit, station)
 
       assert status.organization_id == organization.id
       assert status.gtfs_version_id == gtfs_version.id
@@ -1218,28 +1216,20 @@ defmodule GtfsPlanner.GtfsTest do
       assert status.user.email == user.email
     end
 
-    test "set_station_editing_status/4 replaces the previous user for the same station scope", %{
+    test "set_station_editing_status/2 replaces the previous user for the same station scope", %{
       organization: organization,
       gtfs_version: gtfs_version,
       station: station,
-      user: user
+      audit: audit
     } do
-      other_user = user_fixture(%{email: "replacement@example.com"})
+      other_user = editor_fixture(organization)
 
-      assert {:ok, _status} =
-               Gtfs.set_station_editing_status(
-                 organization.id,
-                 gtfs_version.id,
-                 station,
-                 user
-               )
+      assert {:ok, _status} = Gtfs.set_station_editing_status(audit, station)
 
       assert {:ok, replacement} =
                Gtfs.set_station_editing_status(
-                 organization.id,
-                 gtfs_version.id,
-                 station,
-                 other_user
+                 user_audit_fixture(other_user, organization, gtfs_version),
+                 station
                )
 
       assert replacement.user_id == other_user.id
@@ -1251,50 +1241,35 @@ defmodule GtfsPlanner.GtfsTest do
       assert station_editing_status_count(organization.id, gtfs_version.id, station.id) == 1
     end
 
-    test "clear_station_editing_status/3 removes a status and returns ok", %{
+    test "clear_station_editing_status/2 removes a status and returns ok", %{
       organization: organization,
       gtfs_version: gtfs_version,
       station: station,
-      user: user
+      audit: audit
     } do
-      assert {:ok, _status} =
-               Gtfs.set_station_editing_status(
-                 organization.id,
-                 gtfs_version.id,
-                 station,
-                 user
-               )
+      assert {:ok, _status} = Gtfs.set_station_editing_status(audit, station)
 
-      assert :ok = Gtfs.clear_station_editing_status(organization.id, gtfs_version.id, station.id)
+      assert :ok = Gtfs.clear_station_editing_status(audit, station.id)
       assert Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id) == nil
     end
 
-    test "clear_station_editing_status/3 returns ok when no status exists", %{
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station
+    test "clear_station_editing_status/2 returns ok when no status exists", %{
+      station: station,
+      audit: audit
     } do
-      assert :ok = Gtfs.clear_station_editing_status(organization.id, gtfs_version.id, station.id)
+      assert :ok = Gtfs.clear_station_editing_status(audit, station.id)
     end
 
     test "setting and clearing a status does not update the station timestamp", %{
-      organization: organization,
-      gtfs_version: gtfs_version,
       station: station,
-      user: user
+      audit: audit
     } do
       station = Repo.get!(GtfsPlanner.Gtfs.Stop, station.id)
       updated_at = station.updated_at
 
-      assert {:ok, _status} =
-               Gtfs.set_station_editing_status(
-                 organization.id,
-                 gtfs_version.id,
-                 station,
-                 user
-               )
+      assert {:ok, _status} = Gtfs.set_station_editing_status(audit, station)
 
-      assert :ok = Gtfs.clear_station_editing_status(organization.id, gtfs_version.id, station.id)
+      assert :ok = Gtfs.clear_station_editing_status(audit, station.id)
 
       assert Repo.get!(GtfsPlanner.Gtfs.Stop, station.id).updated_at == updated_at
     end
@@ -1303,7 +1278,8 @@ defmodule GtfsPlanner.GtfsTest do
       organization: organization,
       gtfs_version: gtfs_version,
       station: station,
-      user: user
+      user: user,
+      audit: audit
     } do
       assert :ok =
                Gtfs.subscribe_station_editing_status(
@@ -1312,13 +1288,7 @@ defmodule GtfsPlanner.GtfsTest do
                  station.id
                )
 
-      assert {:ok, status} =
-               Gtfs.set_station_editing_status(
-                 organization.id,
-                 gtfs_version.id,
-                 station,
-                 user
-               )
+      assert {:ok, status} = Gtfs.set_station_editing_status(audit, station)
 
       assert_receive {:station_editing_status_updated, %StationEditingStatus{} = broadcast_status}
 
@@ -1326,7 +1296,7 @@ defmodule GtfsPlanner.GtfsTest do
       assert broadcast_status.user.id == user.id
       assert broadcast_status.user.email == user.email
 
-      assert :ok = Gtfs.clear_station_editing_status(organization.id, gtfs_version.id, station.id)
+      assert :ok = Gtfs.clear_station_editing_status(audit, station.id)
       assert_receive {:station_editing_status_updated, nil}
     end
 
@@ -1334,7 +1304,7 @@ defmodule GtfsPlanner.GtfsTest do
       organization: organization,
       gtfs_version: gtfs_version,
       station: station,
-      user: user
+      audit: audit
     } do
       same_version_station =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -1359,43 +1329,35 @@ defmodule GtfsPlanner.GtfsTest do
           location_type: 1
         })
 
-      same_version_user = user_fixture(%{email: "same-version@example.com"})
-      other_version_user = user_fixture(%{email: "other-version@example.com"})
-      other_organization_user = user_fixture(%{email: "other-organization@example.com"})
+      same_version_user = editor_fixture(organization)
+      other_version_user = editor_fixture(organization)
+      other_organization_user = editor_fixture(other_organization)
+
+      assert {:ok, _status} = Gtfs.set_station_editing_status(audit, station)
 
       assert {:ok, _status} =
                Gtfs.set_station_editing_status(
-                 organization.id,
-                 gtfs_version.id,
-                 station,
-                 user
+                 user_audit_fixture(same_version_user, organization, gtfs_version),
+                 same_version_station
                )
 
       assert {:ok, _status} =
                Gtfs.set_station_editing_status(
-                 organization.id,
-                 gtfs_version.id,
-                 same_version_station,
-                 same_version_user
+                 user_audit_fixture(other_version_user, organization, other_version),
+                 other_version_station
                )
 
       assert {:ok, _status} =
                Gtfs.set_station_editing_status(
-                 organization.id,
-                 other_version.id,
-                 other_version_station,
-                 other_version_user
+                 user_audit_fixture(
+                   other_organization_user,
+                   other_organization,
+                   other_organization_version
+                 ),
+                 other_organization_station
                )
 
-      assert {:ok, _status} =
-               Gtfs.set_station_editing_status(
-                 other_organization.id,
-                 other_organization_version.id,
-                 other_organization_station,
-                 other_organization_user
-               )
-
-      assert :ok = Gtfs.clear_station_editing_status(organization.id, gtfs_version.id, station.id)
+      assert :ok = Gtfs.clear_station_editing_status(audit, station.id)
 
       assert Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id) == nil
 
@@ -1418,19 +1380,102 @@ defmodule GtfsPlanner.GtfsTest do
              ).user_id == other_organization_user.id
     end
 
-    test "clear_station_editing_status surfaces connection loss instead of crashing", %{
+    test "a deactivated editor cannot set a status and nothing changes or broadcasts", %{
       organization: organization,
       gtfs_version: gtfs_version,
       station: station,
-      user: user
+      membership: membership,
+      audit: audit
     } do
-      assert {:ok, _status} =
-               Gtfs.set_station_editing_status(
+      assert :ok =
+               Gtfs.subscribe_station_editing_status(
                  organization.id,
                  gtfs_version.id,
-                 station,
-                 user
+                 station.id
                )
+
+      deactivate_membership_fixture(membership)
+
+      assert {:error, :forbidden} = Gtfs.set_station_editing_status(audit, station)
+
+      assert station_editing_status_count(organization.id, gtfs_version.id, station.id) == 0
+      refute_receive {:station_editing_status_updated, _}
+    end
+
+    test "a deactivated editor cannot replace a teammate's status", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      membership: membership,
+      audit: audit
+    } do
+      teammate = editor_fixture(organization)
+      teammate_audit = user_audit_fixture(teammate, organization, gtfs_version)
+      assert {:ok, teammate_status} = Gtfs.set_station_editing_status(teammate_audit, station)
+
+      assert :ok =
+               Gtfs.subscribe_station_editing_status(
+                 organization.id,
+                 gtfs_version.id,
+                 station.id
+               )
+
+      deactivate_membership_fixture(membership)
+
+      assert {:error, :forbidden} = Gtfs.set_station_editing_status(audit, station)
+
+      current = Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id)
+      assert current.id == teammate_status.id
+      assert current.user_id == teammate.id
+      refute_receive {:station_editing_status_updated, _}
+    end
+
+    test "a deactivated editor cannot clear a status and nothing changes or broadcasts", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      membership: membership,
+      audit: audit
+    } do
+      assert {:ok, status} = Gtfs.set_station_editing_status(audit, station)
+
+      assert :ok =
+               Gtfs.subscribe_station_editing_status(
+                 organization.id,
+                 gtfs_version.id,
+                 station.id
+               )
+
+      deactivate_membership_fixture(membership)
+
+      assert {:error, :forbidden} = Gtfs.clear_station_editing_status(audit, station.id)
+
+      assert Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id).id ==
+               status.id
+
+      refute_receive {:station_editing_status_updated, _}
+    end
+
+    test "an actor without an editor membership in the organization is refused", %{
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      outsider = user_fixture()
+      outsider_audit = user_audit_fixture(outsider, organization, gtfs_version, station)
+      other_organization = organization_fixture()
+      organization_membership_fixture(outsider, other_organization)
+
+      assert {:error, :forbidden} = Gtfs.set_station_editing_status(outsider_audit, station)
+      assert {:error, :forbidden} = Gtfs.clear_station_editing_status(outsider_audit, station.id)
+      assert station_editing_status_count(organization.id, gtfs_version.id, station.id) == 0
+    end
+
+    test "clear_station_editing_status surfaces connection loss instead of crashing", %{
+      station: station,
+      audit: audit
+    } do
+      assert {:ok, _status} = Gtfs.set_station_editing_status(audit, station)
 
       # Terminate the database backend so the clear's transaction loses its
       # connection. The widened contract must surface an error outcome instead of
@@ -1448,8 +1493,7 @@ defmodule GtfsPlanner.GtfsTest do
 
       result =
         try do
-          {:returned,
-           Gtfs.clear_station_editing_status(organization.id, gtfs_version.id, station.id)}
+          {:returned, Gtfs.clear_station_editing_status(audit, station.id)}
         catch
           :exit, _ -> :sandbox_connection_exit
         end
