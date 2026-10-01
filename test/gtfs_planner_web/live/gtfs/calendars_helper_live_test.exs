@@ -253,19 +253,29 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsHelperLiveTest do
         identity: "version:#{context.version.id}"
       }
 
+      # An answer read under another scope than the panel now holds is dropped
+      # whole, so no card reaches the screen even as an unlinked one.
+      elsewhere = %{
+        organization_id: context.organization.id,
+        gtfs_version_id: context.version.id,
+        identity: "route:#{Ecto.UUID.generate()}"
+      }
+
       send(
         view.pid,
         {:agent_event, pid,
-         {:entry, entry_with_evidence(50, "Foreign answer", here, "calendar", "SCHOOL_WD")}}
+         {:entry, entry_with_evidence(50, "Foreign answer", elsewhere, "calendar", "SCHOOL_WD")}}
       )
 
       refute has_element?(view, "[data-evidence-kind]")
       assert has_element?(view, "#agent-entry-50", "Foreign answer")
 
+      # A reference kind the panel's allowlist does not name renders as plain text
+      # beside the reason, never as a link that looks trustworthy.
       send(
         view.pid,
         {:agent_event, pid,
-         {:entry, entry_with_evidence(51, "Unlisted reference", here, "route", "R-1")}}
+         {:entry, entry_with_evidence(51, "Unlisted reference", here, "trip", "H8-1800")}}
       )
 
       card = view |> element("#agent-evidence-51-1") |> render()
@@ -444,7 +454,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsHelperLiveTest do
       user_id: context.user.id,
       user_email: context.user.email,
       pack_id: pack_id,
-      version_name: context.version.name
+      version_name: context.version.name,
+      # The Calendars page binds the whole version as the conversation's page.
+      resource_context: Scope.context({:version, context.version.id})
     }
   end
 

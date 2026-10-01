@@ -1229,19 +1229,21 @@ defmodule GtfsPlanner.Gtfs do
   @spec get_route_in_version(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
           {:ok, Route.t()} | {:error, :not_found}
   def get_route_in_version(organization_id, gtfs_version_id, id) do
-    with {:ok, id} <- Ecto.UUID.cast(id) do
-      from(r in Route,
-        where:
-          r.id == ^id and r.organization_id == ^organization_id and
-            r.gtfs_version_id == ^gtfs_version_id
-      )
-      |> Repo.one()
-      |> case do
-        nil -> {:error, :not_found}
-        route -> {:ok, route}
-      end
-    else
-      :error -> {:error, :not_found}
+    case Ecto.UUID.cast(id) do
+      {:ok, id} ->
+        from(r in Route,
+          where:
+            r.id == ^id and r.organization_id == ^organization_id and
+              r.gtfs_version_id == ^gtfs_version_id
+        )
+        |> Repo.one()
+        |> case do
+          nil -> {:error, :not_found}
+          route -> {:ok, route}
+        end
+
+      :error ->
+        {:error, :not_found}
     end
   end
 

@@ -860,28 +860,26 @@ defmodule GtfsPlanner.Gtfs.ServiceQueries do
 
     cond do
       inputs.route.active == false ->
-        {:ok,
-         empty_answer(
-           inputs,
-           scope,
-           selection,
-           nil,
-           :inactive_route,
-           "The route is inactive in this version."
-         )}
+        empty_answer(
+          inputs,
+          scope,
+          selection,
+          nil,
+          :inactive_route,
+          "The route is inactive in this version."
+        )
 
       # No calendar makes the route run on this date: that is an empty answer
       # with a named cause, never a refused occurrence and never an error.
       inputs.active_trips == [] ->
-        {:ok,
-         empty_answer(
-           inputs,
-           scope,
-           selection,
-           nil,
-           :no_active_trip,
-           "No calendar runs this route on that date."
-         )}
+        empty_answer(
+          inputs,
+          scope,
+          selection,
+          nil,
+          :no_active_trip,
+          "No calendar runs this route on that date."
+        )
 
       true ->
         with {:ok, occurrence} <- resolve_occurrence(inputs, selection) do

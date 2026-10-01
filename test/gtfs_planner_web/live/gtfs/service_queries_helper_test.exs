@@ -199,15 +199,16 @@ defmodule GtfsPlannerWeb.Gtfs.ServiceQueriesHelperTest do
       assert element(view, "#schedules-add-trips") |> render() =~ ~s(phx-click)
     end
 
-    test "a provider outage stops the helper as unavailable instead of failing", context do
+    test "a provider outage fails the turn with a retry instead of stopping the helper",
+         context do
       {view, pid} = open_helper(context)
 
       before = schedule_signature(view)
       expect_status(500, %{"error" => "provider unavailable"})
       submit(view, @first_message)
-      assert await_settled(pid).status == :unavailable
+      assert await_settled(pid).status == :failed
 
-      assert render(view) =~ "This route or calendar is no longer available"
+      assert render(view) =~ "The helper is unavailable right now"
       refute has_element?(view, "[data-evidence-kind]")
       assert schedule_signature(view) == before
     end

@@ -97,8 +97,13 @@ defmodule GtfsPlanner.Agents.Turn do
 
   defp authorize_and_request(pack, scope, history, acc, calls_made, notify) do
     case authorized_context(pack, scope) do
-      :ok -> consume_and_request(pack, scope, history, acc, calls_made, notify)
-      {:error, reason} -> {:error, reason, progress(acc)}
+      :ok ->
+        consume_and_request(pack, scope, history, acc, calls_made, notify)
+
+      {:error, reason} ->
+        # Tagged so a context refusal stays distinct from a provider failure
+        # that carries the same reason atom and settles only one turn.
+        {:error, {:context, reason}, progress(acc)}
     end
   end
 
@@ -113,9 +118,8 @@ defmodule GtfsPlanner.Agents.Turn do
   # order: membership, then the server-owned resource context, then the pack's own
   # precondition.
   defp authorized_context(pack, scope) do
-    with :ok <- Scope.authorized_context(scope),
-         :ok <- Pack.authorize_context(pack, scope) do
-      :ok
+    with :ok <- Scope.authorized_context(scope) do
+      Pack.authorize_context(pack, scope)
     end
   end
 
@@ -155,10 +159,10 @@ defmodule GtfsPlanner.Agents.Turn do
 
     case run_tool_calls(pack, scope, reply.tool_calls, acc, notify) do
       {:forbidden, acc, _messages} ->
-        {:error, :forbidden, progress(acc)}
+        {:error, {:context, :forbidden}, progress(acc)}
 
       {:unavailable, acc, _messages} ->
-        {:error, :unavailable, progress(acc)}
+        {:error, {:context, :unavailable}, progress(acc)}
 
       {:ok, acc, tool_messages} ->
         loop(pack, scope, history ++ [assistant | tool_messages], acc, calls_made + 1, notify)

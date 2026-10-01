@@ -132,6 +132,52 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       content =~ ~r/extend/i ->
         tool_calls_reply("prepare_calendar_extension", extension_arguments(content))
 
+      service_question?(content) ->
+        service_question_reply(content)
+
+      calendar_question?(content) ->
+        calendar_question_reply(content)
+
+      true ->
+        text_reply(@generic)
+    end
+  end
+
+  defp calendar_question?(content) do
+    Enum.any?([~r/route/i, ~r/dates|week/i, ~r/school/i], &Regex.match?(&1, content))
+  end
+
+  defp calendar_question_reply(content) do
+    cond do
+      content =~ ~r/route/i ->
+        text_reply(@out_of_scope)
+
+      content =~ ~r/dates|week/i ->
+        tool_calls_reply("get_calendar", get_calendar_arguments())
+
+      content =~ ~r/school/i ->
+        tool_calls_reply("list_calendars", %{"query" => "school"})
+    end
+  end
+
+  defp service_question?(content) do
+    Enum.any?(
+      [
+        ~r/central station/i,
+        ~r/keep service|still run/i,
+        ~r/retired calendar/i,
+        ~r/next two months/i,
+        ~r/depart|leaves? |after \d/i,
+        ~r/board|stops? does/i
+      ],
+      &Regex.match?(&1, content)
+    )
+  end
+
+  # The first matching question wins, so a request that names both a calendar and
+  # a departure still gets the branch the scripted journey expects.
+  defp service_question_reply(content) do
+    cond do
       # The A02 question and its refusals are keyed on Central Station, which no
       # other scripted journey mentions, so the seeded holidays feed only this
       # spec's messages.
@@ -158,18 +204,6 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
         tool_calls_reply("list_boarding_occurrences", %{
           "service_date" => Date.to_iso8601(next_service_date())
         })
-
-      content =~ ~r/route/i ->
-        text_reply(@out_of_scope)
-
-      content =~ ~r/dates|week/i ->
-        tool_calls_reply("get_calendar", get_calendar_arguments())
-
-      content =~ ~r/school/i ->
-        tool_calls_reply("list_calendars", %{"query" => "school"})
-
-      true ->
-        text_reply(@generic)
     end
   end
 
@@ -309,12 +343,20 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   # version's `WEEKDAY` calendar; every other extension message keeps the school
   # calendar the other journeys approve.
   defp extension_arguments(content) do
-    service_id = if content =~ ~r/harbor/i, do: "WEEKDAY", else: "SCHOOL_WD"
-
     %{
-      "service_id" => service_id,
+      "service_id" => extension_service_id(content),
       "end_date" => Date.to_iso8601(Date.add(Date.utc_today(), @extension_days))
     }
+  end
+
+  # Each extension journey approves a calendar of its own, so a second approval
+  # of the same calendar would be refused for extending nothing.
+  defp extension_service_id(content) do
+    cond do
+      content =~ ~r/harbor/i -> "WEEKDAY"
+      content =~ ~r/express/i -> "SCHOOL_EX"
+      true -> "SCHOOL_WD"
+    end
   end
 
   # The seeded holiday question: Central Station is occurrence 2 on every H8

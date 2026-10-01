@@ -122,8 +122,8 @@ defmodule GtfsPlanner.Agents.Scope do
   """
   @spec authorized_context(t()) :: :ok | {:error, :forbidden | :unavailable}
   def authorized_context(%__MODULE__{} = scope) do
-    with :ok <- authorize(scope), :ok <- resolve_context(scope) do
-      :ok
+    with :ok <- authorize(scope) do
+      resolve_context(scope)
     end
   end
 
@@ -131,8 +131,8 @@ defmodule GtfsPlanner.Agents.Scope do
   # caller learns that the page's resource is unavailable, never what another
   # organization or version holds (AC-2).
   defp resolve_context(%__MODULE__{} = scope) do
-    with :ok <- resolve_identity(scope), :ok <- resolve_approved(scope) do
-      :ok
+    with :ok <- resolve_identity(scope) do
+      resolve_approved(scope)
     end
   end
 

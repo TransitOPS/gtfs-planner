@@ -28,6 +28,7 @@ defmodule GtfsPlanner.AgentsTest do
 
   alias GtfsPlanner.Agents
   alias GtfsPlanner.Agents.Packs.Calendars
+  alias GtfsPlanner.Agents.Packs.ServiceQueries
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Agents.SessionSupervisor
   alias GtfsPlanner.Agents.TurnSupervisor
@@ -47,7 +48,7 @@ defmodule GtfsPlanner.AgentsTest do
 
   describe "the pack registry" do
     test "packs/0 maps every shipped pack id to its module" do
-      assert Agents.packs() == %{"calendars" => Calendars}
+      assert Agents.packs() == %{"calendars" => Calendars, "service_queries" => ServiceQueries}
 
       assert Agents.packs() |> Map.keys() |> Enum.sort() ==
                Agents.packs() |> Map.values() |> Enum.map(& &1.id()) |> Enum.sort()
@@ -122,7 +123,8 @@ defmodule GtfsPlanner.AgentsTest do
       active = active_sessions()
 
       assert Agents.open(route_scope(context, foreign_route)) == {:error, :unavailable}
-      assert Agents.open(route_scope(context, Ecto.UUID.generate())) == {:error, :unavailable}
+
+      assert Agents.open(unknown_route_scope(context)) == {:error, :unavailable}
       assert active_sessions() == active
 
       assert {:ok, pid, _snapshot} = Agents.open(route_scope(context, route))
@@ -246,10 +248,14 @@ defmodule GtfsPlanner.AgentsTest do
 
   # The identity a Route schedules page binds for the route it shows.
   defp route_scope(context, route) do
-    %{
-      scope_for(context.organization, context.version, context.user)
-      | resource_context: Scope.context({:route, route.id})
-    }
+    scope_for(context.organization, context.version, context.user)
+    |> Map.put(:resource_context, Scope.context({:route, route.id}))
+  end
+
+  # A route id the current version cannot resolve, so admission cannot bind it.
+  defp unknown_route_scope(context) do
+    scope_for(context.organization, context.version, context.user)
+    |> Map.put(:resource_context, Scope.context({:route, Ecto.UUID.generate()}))
   end
 
   defp registry_key(scope) do

@@ -57,7 +57,7 @@ defmodule GtfsPlanner.Agents.ServiceQueriesPackTest do
   @occurrence_arguments ~s({"service_date":"2026-11-26"})
   @coverage_arguments ~s({"dates":["2026-11-25","2026-11-26"]})
   @calendar_coverage_arguments ~s({"service_id":"REGULAR","dates":["2026-11-25","2026-11-26"],"route_ids":["H8","H12"]})
-  @calendar_usage_arguments ~s({"service_id":"REGULAR","dates":["2026-11-26"]})
+  @calendar_usage_arguments ~s({"service_id":"HOLIDAY","dates":["2026-11-26"]})
   @final_text "Central Station has two departures after 6:00pm on Thanksgiving."
 
   setup {Req.Test, :verify_on_exit!}
@@ -203,8 +203,10 @@ defmodule GtfsPlanner.Agents.ServiceQueriesPackTest do
       assert central["ambiguous"] == true
 
       harbor = Enum.find(occurrences, &(&1["stop_id"] == @harbor))
-      assert harbor["stop_sequences"] == [0]
-      assert harbor["ambiguous"] == false
+      # The loop's later visit and the frequency trip's first stop are both at
+      # Harbor Yards, so this stop is ambiguous too.
+      assert harbor["stop_sequences"] == [0, 5]
+      assert harbor["ambiguous"] == true
 
       assert [evidence] = entry.evidence
       assert evidence.kind == "boarding_occurrences"
@@ -272,14 +274,17 @@ defmodule GtfsPlanner.Agents.ServiceQueriesPackTest do
     end
 
     test "a deleted route refuses the next turn without a provider request", context do
-      expect_reply(text_reply(@final_text))
-
+      # No request is stubbed: a turn admitted on a deleted route must never
+      # reach the provider, so `verify_on_exit!` is the assertion.
       assert {:ok, session, _snapshot} = Agents.open(context.scope)
       Repo.delete!(context.route)
 
+      monitor = Process.monitor(session)
+
       assert {:error, :unavailable} = Agents.send_message(session, "What leaves after 6pm?")
       refute_received {:model_request, _request}
-      assert_receive {:agent_event, ^session, {:entry, %{status: :unavailable}}}, 5_000
+      assert_receive {:agent_event, ^session, {:status, :unavailable}}, 5_000
+      assert_receive {:DOWN, ^monitor, :process, ^session, :normal}, 2_000
     end
   end
 
@@ -322,12 +327,13 @@ defmodule GtfsPlanner.Agents.ServiceQueriesPackTest do
         tool_calls_reply([{"call_1", "get_calendar_usage", @calendar_usage_arguments}])
       )
 
-      expect_reply(text_reply("Regular runs H8 on Thanksgiving."))
+      expect_reply(text_reply("H8 runs on Thanksgiving through Holiday."))
 
-      entry = run_turn(scope(context, "calendars"), "Which routes use Regular on Thanksgiving?")
+      entry = run_turn(scope(context, "calendars"), "Which routes use Holiday on Thanksgiving?")
 
       assert %{"records" => records} = tool_result()
       assert Enum.all?(records, &(&1["date"] == @thanksgiving))
+      assert Enum.all?(records, &(&1["route_id"] == "H8"))
 
       assert [evidence] = entry.evidence
       assert evidence.kind == "calendar_usage"
@@ -381,7 +387,7 @@ defmodule GtfsPlanner.Agents.ServiceQueriesPackTest do
                  ServiceQueries,
                  context.scope,
                  "query_departures",
-                 ~s({"service_date":"2026-11-26"})
+                 ~s({"service_date":"2026-11-26","stop_id":"CENTRAL","after":"18:00"})
                )
 
       assert message =~ "include_after_midnight"
@@ -451,15 +457,21 @@ defmodule GtfsPlanner.Agents.ServiceQueriesPackTest do
   end
 
   # The tool message the turn sent back to the provider is the pack's own result,
-  # decoded, so the assertions read what the model read.
+  # decoded, so the assertions read what the model read. It only exists from the
+  # request after the tool answered, so the earlier requests are drained first.
   defp tool_result do
     assert_receive {:model_request, request}, 5_000
 
-    request["messages"]
-    |> Enum.filter(&(&1["role"] == "tool"))
-    |> List.last()
-    |> Map.fetch!("content")
-    |> Jason.decode!()
+    request
+    |> tool_messages()
+    |> case do
+      [] -> tool_result()
+      messages -> messages |> List.last() |> Map.fetch!("content") |> Jason.decode!()
+    end
+  end
+
+  defp tool_messages(request) do
+    Enum.filter(request["messages"] || [], &(&1["role"] == "tool"))
   end
 
   defp pad(number), do: number |> Integer.to_string() |> String.pad_leading(2, "0")
@@ -636,7 +648,7 @@ defmodule GtfsPlanner.Agents.ServiceQueriesPackTest do
     }
   end
 
-  defp scope(context, pack_id, route \\ nil) do
+  defp scope(context, pack_id, route \\ :version) do
     user = user_fixture()
     organization_membership_fixture(user, context.organization)
 
@@ -647,14 +659,16 @@ defmodule GtfsPlanner.Agents.ServiceQueriesPackTest do
       user_email: user.email,
       pack_id: pack_id,
       version_name: context.version.name,
-      resource_context: route_context(route)
+      resource_context: scope_context(context, route)
     }
   end
 
   defp route_scope(context, route), do: scope(context, "service_queries", route)
 
-  defp route_context(nil), do: Scope.context(nil)
-  defp route_context(route), do: Scope.context({:route, route.id})
+  # A Schedule conversation belongs to one route; a Calendar conversation
+  # belongs to the whole version its page shows.
+  defp scope_context(context, :version), do: Scope.context({:version, context.version.id})
+  defp scope_context(_context, route), do: Scope.context({:route, route.id})
 
   defp track_sessions do
     before = session_pids()

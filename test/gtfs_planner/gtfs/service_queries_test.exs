@@ -38,13 +38,16 @@ defmodule GtfsPlanner.Gtfs.ServiceQueriesTest do
   import GtfsPlanner.VersionsFixtures
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.ServiceQueries
   alias GtfsPlanner.Gtfs.ServiceQueries.Snapshot
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Organizations.Organization
@@ -65,10 +68,11 @@ defmodule GtfsPlanner.Gtfs.ServiceQueriesTest do
   @central "CENTRAL"
   @harbor "HARBOR"
 
+  # `start_supervised!` rather than a linked `Task.Supervisor.start_link/0`: a
+  # linked supervisor is already shutting down by the time `on_exit` runs, so
+  # stopping it there races and fails the test for a reason of its own.
   setup do
-    {:ok, supervisor} = Task.Supervisor.start_link()
-    on_exit(fn -> if Process.alive?(supervisor), do: Supervisor.stop(supervisor) end)
-    {:ok, supervisor: supervisor}
+    {:ok, supervisor: start_supervised!({Task.Supervisor, []})}
   end
 
   describe "departures/2 (AC-5, AC-6, AC-7, AC-8)" do
@@ -204,12 +208,14 @@ defmodule GtfsPlanner.Gtfs.ServiceQueriesTest do
 
       times = Enum.map(with_late.departures, & &1.secs)
 
-      # Ordering is integer service-day seconds, so 24:30 follows 23:50 instead
-      # of sorting first as a display string would.
+      # Ordering is integer service-day seconds, so 24:30 follows the same-day
+      # departures instead of sorting first as a display string would. The
+      # loop's 23:50 visit belongs to the other occurrence, so it is not in
+      # this answer.
       assert times == Enum.sort(times)
       assert secs("24:30:00") in times
 
-      assert Enum.find_index(times, &(&1 == secs("23:50:00"))) <
+      assert Enum.find_index(times, &(&1 == secs("19:10:00"))) <
                Enum.find_index(times, &(&1 == secs("24:30:00")))
     end
 
@@ -229,7 +235,7 @@ defmodule GtfsPlanner.Gtfs.ServiceQueriesTest do
                departures(unusable_zone, departure_selection())
 
       assert {:error, :occurrence_not_found} =
-               departures(scope, %{
+               departures(harbor_scope(), %{
                  departure_selection()
                  | occurrence: %{stop_id: @harbor, stop_sequence: 4}
                })
@@ -362,6 +368,7 @@ defmodule GtfsPlanner.Gtfs.ServiceQueriesTest do
       scope = harbor_scope()
 
       route_fixture(scope.organization.id, scope.version.id, %{route_id: "H8-OLD", active: false})
+      route_fixture(scope.organization.id, scope.version.id, %{route_id: "H14"})
 
       assert {:ok, answer} =
                coverage(scope, %{
@@ -495,7 +502,7 @@ defmodule GtfsPlanner.Gtfs.ServiceQueriesTest do
       assert before_change.active_service_ids == ["HOLIDAY"]
       assert before_change.total == 2
 
-      assert {:ok, {:ok, after_change}} =
+      assert {:ok, after_change} =
                in_task(supervisor, fn -> departures(scope, departure_selection()) end)
 
       # Read wholly after the commit: the removal exception takes the date out
@@ -738,24 +745,33 @@ defmodule GtfsPlanner.Gtfs.ServiceQueriesTest do
   end
 
   # A retained weekly range the shared date evaluator refuses cannot be written
-  # through the changeset, so the row is inserted as persisted source.
+  # through the changeset, so the row is inserted as persisted source. A service
+  # the fixture already created is rewritten in place, because the calendar
+  # itself is unique per organization, version and service.
   defp insert_unreadable_calendar(scope, service_id) do
-    Repo.insert!(
-      struct!(%Calendar{
-        organization_id: scope.organization_id,
-        gtfs_version_id: scope.gtfs_version_id,
-        service_id: service_id,
-        monday: 1,
-        tuesday: 0,
-        wednesday: 0,
-        thursday: 0,
-        friday: 0,
-        saturday: 0,
-        sunday: 0,
-        start_date: ~D[2026-12-31],
-        end_date: ~D[2026-01-01]
-      })
-    )
+    attrs = %{
+      organization_id: scope.organization_id,
+      gtfs_version_id: scope.gtfs_version_id,
+      service_id: service_id,
+      monday: 1,
+      tuesday: 0,
+      wednesday: 0,
+      thursday: 0,
+      friday: 0,
+      saturday: 0,
+      sunday: 0,
+      start_date: ~D[2026-12-31],
+      end_date: ~D[2026-01-01]
+    }
+
+    case Repo.get_by(Calendar,
+           organization_id: scope.organization_id,
+           gtfs_version_id: scope.gtfs_version_id,
+           service_id: service_id
+         ) do
+      nil -> Repo.insert!(struct!(%Calendar{}, attrs))
+      calendar -> Repo.update!(Ecto.Changeset.change(calendar, attrs))
+    end
   end
 
   # The writer commits a conflicting change: the added exception becomes a
@@ -924,6 +940,9 @@ defmodule GtfsPlanner.Gtfs.ServiceQueriesTest do
       Repo.delete_all(from(t in Trip, where: t.organization_id in ^organization_ids))
       Repo.delete_all(from(d in CalendarDate, where: d.organization_id in ^organization_ids))
       Repo.delete_all(from(c in Calendar, where: c.organization_id in ^organization_ids))
+      Repo.delete_all(from(s in Stop, where: s.organization_id in ^organization_ids))
+      Repo.delete_all(from(r in Route, where: r.organization_id in ^organization_ids))
+      Repo.delete_all(from(a in Agency, where: a.organization_id in ^organization_ids))
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
       Repo.delete_all(from(o in Organization, where: o.id in ^organization_ids))
 

@@ -229,7 +229,7 @@ defmodule GtfsPlanner.Agents.TurnTest do
         )
       end)
 
-      assert {:error, :forbidden, progress} =
+      assert {:error, {:context, :forbidden}, progress} =
                Turn.run(Calendars, scope, [user_message("Prepare the date change.")], notify())
 
       assert progress.activity == ["Looked up calendars"]
@@ -333,7 +333,8 @@ defmodule GtfsPlanner.Agents.TurnTest do
         [user_message("Which calendars run Monday?")] ++
           first.messages ++ [user_message("And Tuesday?")]
 
-      assert {:error, :forbidden, progress} = Turn.run(Calendars, scope, history, notify())
+      assert {:error, {:context, :forbidden}, progress} =
+               Turn.run(Calendars, scope, history, notify())
 
       assert progress.activity == []
       assert progress.tools == []
@@ -355,7 +356,7 @@ defmodule GtfsPlanner.Agents.TurnTest do
         send(self(), {:notify, event})
       end
 
-      assert {:error, :forbidden, progress} =
+      assert {:error, {:context, :forbidden}, progress} =
                Turn.run(Calendars, scope, [user_message("Which calendars run Monday?")], notify)
 
       assert progress.activity == ["Looked up calendars"]

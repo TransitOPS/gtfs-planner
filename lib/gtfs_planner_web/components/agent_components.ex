@@ -75,6 +75,10 @@ defmodule GtfsPlannerWeb.AgentComponents do
   attr :notice, :string, default: nil, doc: "a panel-level refusal or advisory"
   attr :entries_empty?, :boolean, required: true, doc: "true before the conversation has an entry"
 
+  attr :review_label, :string,
+    default: "Review prepared change",
+    doc: "the action label for a prepared change, named by the caller that offers it"
+
   attr :composer_hint, :string,
     default: "Review changes before applying.",
     doc: "the rule the composer repeats when it can send; a read-only helper passes its own"
@@ -144,7 +148,13 @@ defmodule GtfsPlannerWeb.AgentComponents do
           </div>
         </div>
 
-        <.agent_entry :for={{dom_id, entry} <- @entries} id={dom_id} entry={entry} title={@title} />
+        <.agent_entry
+          :for={{dom_id, entry} <- @entries}
+          id={dom_id}
+          entry={entry}
+          title={@title}
+          review_label={@review_label}
+        />
       </div>
 
       <p
@@ -246,6 +256,10 @@ defmodule GtfsPlannerWeb.AgentComponents do
   attr :id, :string, required: true, doc: "the stream dom_id for this entry"
   attr :entry, :map, required: true, doc: "one conversation entry"
   attr :title, :string, required: true, doc: "the pack's panel title"
+
+  attr :review_label, :string,
+    default: "Review prepared change",
+    doc: "the action label for a prepared change, named by the caller that offers it"
 
   def agent_entry(assigns) do
     badge = entry_badge(assigns.entry)
@@ -352,7 +366,7 @@ defmodule GtfsPlannerWeb.AgentComponents do
               size="sm"
               class="min-h-11 w-full"
             >
-              {review_label(@entry.prepared.command)}
+              {@review_label}
             </.button>
           </div>
         </section>
@@ -505,13 +519,6 @@ defmodule GtfsPlannerWeb.AgentComponents do
 
   defp composer_locked?(status),
     do: status in [:ended, :forbidden, :unavailable, :limit, :allowance_exhausted]
-
-  # The action names the change the card actually holds, so a calendar extension
-  # is never offered as a generic prepared change. It is read from the server-held
-  # command, never from the model's reply, and it says nothing about an outcome:
-  # whether the change was applied is the entry's own receipt, not this label.
-  defp review_label({:save, _service_id, _attrs}), do: "Review extension"
-  defp review_label(_command), do: "Review prepared change"
 
   defp entry_badge(%{status: :working}), do: {"Working", nil}
 

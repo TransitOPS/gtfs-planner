@@ -110,19 +110,19 @@ defmodule GtfsPlanner.Agents.Dispatch do
     declared = properties(tool.parameters)
 
     with :ok <- validate_required(Map.get(tool.parameters, "required", []), args, declared, nil) do
-      Enum.reduce_while(declared, :ok, fn {key, schema}, :ok ->
-        case Map.fetch(args, key) do
-          :error ->
-            {:cont, :ok}
-
-          {:ok, value} ->
-            case validate_value(value, schema, key) do
-              :ok -> {:cont, :ok}
-              {:tool_error, _message} = error -> {:halt, error}
-            end
-        end
-      end)
+      validate_declared_values(args, declared)
     end
+  end
+
+  # One declared key at a time, so a future key cannot skip its `validate_*`
+  # call: the first bounded failure halts the reduce.
+  defp validate_declared_values(args, declared) do
+    Enum.reduce_while(declared, :ok, fn {key, schema}, :ok ->
+      case Map.fetch(args, key) do
+        :error -> {:cont, :ok}
+        {:ok, value} -> continue_or_halt(validate_value(value, schema, key))
+      end
+    end)
   end
 
   defp properties(schema), do: Map.get(schema, "properties", %{})
@@ -321,13 +321,13 @@ defmodule GtfsPlanner.Agents.Dispatch do
           {:cont, :ok}
 
         {:ok, nested} ->
-          case validate_value(nested, schema, argument_path(path, key)) do
-            :ok -> {:cont, :ok}
-            {:tool_error, _message} = error -> {:halt, error}
-          end
+          continue_or_halt(validate_value(nested, schema, argument_path(path, key)))
       end
     end)
   end
+
+  defp continue_or_halt(:ok), do: {:cont, :ok}
+  defp continue_or_halt({:tool_error, _message} = error), do: {:halt, error}
 
   defp invoke(pack, name, args, scope) do
     case pack.call(name, args, scope) do
@@ -338,12 +338,12 @@ defmodule GtfsPlanner.Agents.Dispatch do
         bounded_evidence({:ok, result, evidence}, result, evidence)
 
       {:prepared, prepared, result} ->
+        # A prepared result may carry its own evidence on the prepared map. It is
+        # lifted into the same four-element transport every other evidence uses,
+        # so the turn reads one shape whatever the pack returned.
         case Map.get(prepared, :evidence) do
-          evidence when is_list(evidence) and evidence != [] ->
-            prepared_with(prepared, result, evidence)
-
-          _none ->
-            bounded_result({:prepared, prepared, result}, result)
+          evidence when is_map(evidence) -> prepared_with(prepared, result, evidence)
+          _none -> bounded_result({:prepared, prepared, result}, result)
         end
 
       {:prepared, prepared, result, evidence} ->

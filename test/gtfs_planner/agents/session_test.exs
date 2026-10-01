@@ -991,7 +991,9 @@ defmodule GtfsPlanner.Agents.SessionTest do
 
       assert entry.text == @unavailable_context_text
       assert entry.prepared == nil
-      assert entry.activity == ["Prepared a change"]
+      # The fence runs before the tool, so the proposal is never prepared and the
+      # activity stays empty; the second provider request is never made.
+      assert entry.activity == []
       assert length(collect_requests()) == 1
       assert_receive {:DOWN, ^monitor, :process, ^session, :normal}, 2_000
     end
@@ -1003,19 +1005,31 @@ defmodule GtfsPlanner.Agents.SessionTest do
       stub_reply(text_reply("I prepared the change."))
 
       assert :ok = Session.send_message(session, "Prepare a change.")
-      assert_receive {:agent_event, ^session, {:entry, %{status: :done} = entry}}, 5_000
+
+      assert_receive {:agent_event, ^session,
+                      {:entry, %{role: :assistant, status: :done} = entry}},
+                     5_000
+
       assert entry.prepared == ContextPack.prepared()
 
       conversation_id = :sys.get_state(session).conversation_id
       assert {:ok, _prepared} = Session.prepared(session, conversation_id, entry.id)
 
+      monitor = Process.monitor(session)
+
+      # A second conversation opened before the withdrawal is refused at
+      # admission, and the refusal happens before any provider request.
+      refused = start_session(context, ContextPack)
+      attach(refused)
+
       ContextPack.refuse(true)
 
       assert {:error, :unavailable} = Session.prepared(session, conversation_id, entry.id)
+      assert_receive {:DOWN, ^monitor, :process, ^session, :normal}, 2_000
 
-      assert {:error, :unavailable} = Session.send_message(session, "Prepare another change.")
+      assert {:error, :unavailable} = Session.send_message(refused, "Prepare another change.")
 
-      # Admission refused the turn, so no request reached the provider for it.
+      # Only the two requests of the first turn reached the provider.
       assert length(collect_requests()) == 2
     end
 
@@ -1033,7 +1047,7 @@ defmodule GtfsPlanner.Agents.SessionTest do
       session = start_scope_session(scope, EchoPack)
 
       assert :sys.get_state(session).scope == scope
-      assert {:ok, _snapshot} = attach(session)
+      assert %{status: :idle} = attach(session)
     end
   end
 

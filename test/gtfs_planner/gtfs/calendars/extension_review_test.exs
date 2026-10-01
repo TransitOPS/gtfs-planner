@@ -95,7 +95,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.ExtensionReviewTest do
                review(context, "ext_dates_only", @extension_attrs, dates_only)
 
       assert weekly_row(context, "ext_dates_only") == nil
-      assert calendar_logs(context, "ext_dates_only") == []
+      assert calendar_logs(context, "ext_dates_only") == created_log(context, "ext_dates_only")
     end
 
     test "a missing or blank approval refuses", context do
@@ -109,13 +109,17 @@ defmodule GtfsPlanner.Gtfs.Calendars.ExtensionReviewTest do
                  source!(context, "ext_no_approval")
                )
 
-      assert {:error, :extension_requires_approval} =
+      # No approval at all is an ordinary save by design, so it reviews without
+      # an extension rather than refusing.
+      assert {:ok, plain} =
                review(
                  context,
                  "ext_no_approval",
                  %{end_date: ~D[2026-03-27]},
                  source!(context, "ext_no_approval")
                )
+
+      assert plain.extension == nil
 
       assert {:error, :extension_approval_too_long} =
                review(
@@ -126,7 +130,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.ExtensionReviewTest do
                )
 
       assert weekly_row(context, "ext_no_approval").end_date == ~D[2026-02-27]
-      assert calendar_logs(context, "ext_no_approval") == []
+      assert calendar_logs(context, "ext_no_approval") == created_log(context, "ext_no_approval")
     end
 
     test "a non-later end date refuses", context do
@@ -143,7 +147,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.ExtensionReviewTest do
       end
 
       assert weekly_row(context, "ext_not_later").end_date == ~D[2026-02-27]
-      assert calendar_logs(context, "ext_not_later") == []
+      assert calendar_logs(context, "ext_not_later") == created_log(context, "ext_not_later")
     end
 
     test "a request beyond 366 added civil days refuses", context do
@@ -202,7 +206,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.ExtensionReviewTest do
       route = route_fixture(context.organization.id, context.version.id, %{route_id: "R1"})
 
       for trip_id <- ["T1", "T2"] do
-        trip_fixture(context.organization.id, context.version.id, route.id, %{
+        trip_fixture(context.organization.id, context.version.id, route.route_id, %{
           trip_id: trip_id,
           service_id: "ext_impact"
         })
@@ -406,13 +410,15 @@ defmodule GtfsPlanner.Gtfs.Calendars.ExtensionReviewTest do
                  source!(context, "ext_exc_change")
                )
 
-      before = row_state(context, "ext_exc_change")
-
       calendar_date_fixture(context.organization.id, context.version.id, %{
         service_id: "ext_exc_change",
         date: ~D[2026-03-13],
         exception_type: 2
       })
+
+      # The snapshot is taken after the competing exception exists, so the
+      # stale apply is measured against the state it refused to write over.
+      before = row_state(context, "ext_exc_change")
 
       assert {:error, :stale_review} =
                apply_change(context, "ext_exc_change", @extension_attrs, reviewed.fingerprint)
@@ -464,7 +470,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.ExtensionReviewTest do
       assert weekly.saturday == 0
 
       assert [attribute] = attribute_rows(context, "ext_apply")
-      assert attribute.service_schedule_name == "Weekday ext_apply"
+      assert attribute.service_description == "Weekly ext_apply"
 
       assert [_created, log] = calendar_logs(context, "ext_apply")
       assert log.action == "updated"
@@ -568,6 +574,14 @@ defmodule GtfsPlanner.Gtfs.Calendars.ExtensionReviewTest do
         order_by: [asc: d.date]
       )
     )
+  end
+
+  # The fixture's own audited creation, which a refused request leaves as the
+  # only event for the service: a refusal writes nothing of its own.
+  defp created_log(context, service_id) do
+    [log] = calendar_logs(context, service_id)
+    assert log.action == "created"
+    [log]
   end
 
   defp calendar_logs(context, service_id) do

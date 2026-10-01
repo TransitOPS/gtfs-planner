@@ -284,10 +284,11 @@ function isoDaysFromNow(days) {
 
 async function approveExtension(
   page,
+  serviceId = "SCHOOL_WD",
   endDate = isoDaysFromNow(EXTENSION_DAYS),
 ) {
   await page.locator("#calendar-extension-approval").scrollIntoViewIfNeeded();
-  await page.selectOption("#calendar-extension-service", "SCHOOL_WD");
+  await page.selectOption("#calendar-extension-service", serviceId);
   await page.fill("#calendar-extension-end-date", endDate);
   await page.fill("#calendar-extension-approval-text", APPROVAL_TEXT);
   await page.locator("#calendar-extension-approve").click();
@@ -297,7 +298,7 @@ async function approveExtension(
   );
 }
 
-async function askForTheExtension(page) {
+async function askForTheExtension(page, calendar = "school weekdays") {
   const panel = page.locator("#agent-panel");
   if (await panel.count()) {
     await expect(panel).toBeVisible();
@@ -310,7 +311,7 @@ async function askForTheExtension(page) {
   await page.locator("#agent-new-conversation").click();
   await page
     .locator("#agent-composer-input")
-    .fill("Can we extend the school weekdays calendar?");
+    .fill(`Can we extend the ${calendar} calendar?`);
   await page.locator("#agent-send").click();
 
   const card = page.locator('[id^="agent-prepared-"]').last();
@@ -441,8 +442,10 @@ test.describe("approved calendar extension", () => {
     await page.setViewportSize({ width: 1440, height: 1000 });
     await openCalendars(page);
 
-    await approveExtension(page);
-    const card = await askForTheExtension(page);
+    // Its own calendar: the exact-command case above already extended
+    // SCHOOL_WD, so a second approval of it would extend nothing.
+    await approveExtension(page, "SCHOOL_EX");
+    const card = await askForTheExtension(page, "school express");
     await page.locator('[id^="agent-review-prepared-"]').last().click();
     await expect(page.locator("#calendar-extension-impact")).toBeVisible();
 
@@ -458,7 +461,7 @@ test.describe("approved calendar extension", () => {
     await page.locator("#calendar-extension-apply").click();
 
     await expect(page.locator("#calendars-extension-status")).toContainText(
-      "Extended SCHOOL_WD",
+      "Extended SCHOOL_EX",
     );
     await expect(page.locator("#agent-notice")).toContainText(
       "The original prepared change was not applied.",

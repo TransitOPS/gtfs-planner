@@ -339,7 +339,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsHelperHandoffTest do
       user_id: context.user.id,
       user_email: context.user.email,
       pack_id: "calendars",
-      version_name: context.version.name
+      version_name: context.version.name,
+      # The Calendars page binds the whole version as the conversation's page.
+      resource_context: Scope.context({:version, context.version.id})
     }
   end
 

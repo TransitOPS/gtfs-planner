@@ -166,7 +166,7 @@ defmodule GtfsPlanner.Agents.DispatchTest.ProbePack do
     prepared = %{
       summary: %{title: "Probe change", detail: "1 date", lines: ["Probe · 1 date"]},
       command: {:probe_change, bytes},
-      evidence: [evidence(bytes)]
+      evidence: evidence(bytes)
     }
 
     {:prepared, prepared, %{"count" => bytes}}
@@ -517,7 +517,7 @@ defmodule GtfsPlanner.Agents.DispatchTest do
       scope = active_scope()
 
       assert Dispatch.call(ProbePack, scope, "probe", ~s|{"query":"ok","dates":[1,2]}|) ==
-               {:tool_error, "Argument dates must contain only string values."}
+               {:tool_error, "Argument dates[0] must be a string."}
 
       assert Dispatch.call(ProbePack, scope, "probe", ~s|{"query":"ok","dates":[]}|) ==
                {:tool_error, "Argument dates must have 1 or more items."}
@@ -734,8 +734,8 @@ defmodule GtfsPlanner.Agents.DispatchTest do
     test "lifts a prepared result's own evidence into the same transport" do
       scope = active_scope()
 
-      assert {:prepared, %{summary: %{title: "Probe change"}, command: {:probe_change, 4}}, %{},
-              [evidence]} =
+      assert {:prepared, %{summary: %{title: "Probe change"}, command: {:probe_change, 4}},
+              %{"count" => 4}, evidence} =
                Dispatch.call(ProbePack, scope, "evidenced_prepare", ~s|{"bytes":4}|)
 
       assert evidence.total == 4

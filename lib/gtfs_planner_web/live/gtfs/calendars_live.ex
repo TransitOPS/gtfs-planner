@@ -3345,6 +3345,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
               form={@agent_form}
               notice={@agent_notice}
               entries_empty?={@agent_entries_empty?}
+              review_label="Review extension"
             />
           </div>
         </div>

@@ -322,9 +322,8 @@ defmodule GtfsPlanner.Agents.Session do
   end
 
   defp check_context(state) do
-    with :ok <- Scope.authorized_context(state.scope),
-         :ok <- Pack.authorize_context(state.pack, state.scope) do
-      :ok
+    with :ok <- Scope.authorized_context(state.scope) do
+      Pack.authorize_context(state.pack, state.scope)
     end
   end
 
@@ -479,12 +478,12 @@ defmodule GtfsPlanner.Agents.Session do
     end
   end
 
-  defp settle_task_result(state, {:error, :forbidden, progress}) do
-    {:stop, settle_forbidden(state, progress)}
-  end
-
-  defp settle_task_result(state, {:error, :unavailable, progress}) do
-    {:stop, settle_unavailable(state, progress)}
+  defp settle_task_result(state, {:error, {:context, reason}, progress})
+       when reason in [:forbidden, :unavailable] do
+    case reason do
+      :forbidden -> {:stop, settle_forbidden(state, progress)}
+      :unavailable -> {:stop, settle_unavailable(state, progress)}
+    end
   end
 
   defp settle_task_result(state, {:error, reason, progress}) do
