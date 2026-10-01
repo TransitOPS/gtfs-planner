@@ -5,6 +5,7 @@ defmodule GtfsPlanner.Gtfs.ReviewedApplyTransaction.RepoTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Accounts.User
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
@@ -377,6 +378,10 @@ defmodule GtfsPlanner.Gtfs.ReviewedApplyTransaction.RepoTest do
 
     Repo.delete_all(from(stop in Stop, where: stop.organization_id == ^organization_id))
     Repo.delete_all(from(level in Level, where: level.organization_id == ^organization_id))
+
+    Repo.delete_all(
+      from(membership in UserOrgMembership, where: membership.organization_id == ^organization_id)
+    )
 
     Repo.delete_all(
       from(version in GtfsVersion, where: version.organization_id == ^organization_id)
