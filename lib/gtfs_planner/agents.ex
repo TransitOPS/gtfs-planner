@@ -38,10 +38,10 @@ defmodule GtfsPlanner.Agents do
   the scope's organization and the active schedule it was opened under, and
   prepare answers for the editor to apply.
 
-  The `blocks` pack is registered here but no host mounts it yet: it reads the
-  frozen operations snapshot its own `authorize_context/1` admits and prepares a
-  suggestion scope without starting one, and the Blocks page opens its panel in
-  the later wiring step.
+  The `blocks` and `runs` packs are registered here but no host mounts them yet:
+  each reads the frozen operations snapshot its own `authorize_context/1` admits
+  and prepares a suggestion scope without starting one, and the Blocks and Runs
+  pages open their panels in the later wiring steps.
   """
 
   alias GtfsPlanner.Agents.Pack
@@ -59,6 +59,7 @@ defmodule GtfsPlanner.Agents do
     "connections" => GtfsPlanner.Agents.Packs.Connections,
     "dated_changes" => GtfsPlanner.Agents.Packs.DatedChanges,
     "in_seat" => GtfsPlanner.Agents.Packs.InSeat,
+    "runs" => GtfsPlanner.Agents.Packs.Runs,
     "service_queries" => GtfsPlanner.Agents.Packs.ServiceQueries,
     "timetables" => GtfsPlanner.Agents.Packs.Timetables,
     "transfers" => GtfsPlanner.Agents.Packs.Transfers
