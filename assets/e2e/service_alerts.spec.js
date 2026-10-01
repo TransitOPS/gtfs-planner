@@ -934,9 +934,11 @@ async function openDetourStops(page) {
 
   await page.locator("#alert-route-search").pressSequentially("Route 1");
   await page.waitForSelector("#alert-route-options button", { timeout: 15_000 });
+  // Match the label span, not the button's text content: the button wraps the
+  // label in whitespace, and "Route 12" and "Route 50" both contain "Route 1".
   await page
     .locator("#alert-route-options button")
-    .filter({ hasText: /^Route 1$/ })
+    .filter({ has: page.locator("span.font-semibold", { hasText: /^Route 1$/ }) })
     .first()
     .click();
   await page.locator("#alert-routes-continue").click();
