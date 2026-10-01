@@ -241,9 +241,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionsListLiveTest do
       sections = section_ids(view)
 
       assert sections == [
-               place_token(context, "Alpha Yard"),
-               place_token(context, "Beta Yard"),
-               place_token(context, "Gamma Yard")
+               "connections-place-#{place_token(context, "Alpha Yard")}",
+               "connections-place-#{place_token(context, "Beta Yard")}",
+               "connections-place-#{place_token(context, "Gamma Yard")}"
              ]
 
       assert has_element?(
@@ -379,7 +379,28 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionsListLiveTest do
     end
 
     test "a Route the version carries but no connection runs on narrows to none", context do
-      three_place_day(context)
+      context = three_place_day(context)
+
+      # R50 runs a trip in the loaded day, so the page offers it and keeps the
+      # filter rather than dropping it as a route the day does not carry, but no
+      # connection does: the filter narrows to none.
+      lonely_stop = place_stop(context, "Lonely Yard", lat: "40.6000", lon: "-74.6000")
+
+      lonely_trip =
+        trip_fixture(
+          context.organization.id,
+          context.version.id,
+          context.route_lonely.route_id,
+          %{service_id: "W", trip_id: "lonely"}
+        )
+
+      stop_time_fixture(
+        context.organization.id,
+        context.version.id,
+        lonely_trip.trip_id,
+        lonely_stop.stop_id,
+        %{stop_sequence: 1, arrival_time: "06:00:00", departure_time: "06:00:00"}
+      )
 
       {:ok, view, _html} =
         mount_connections(context, view: "connections", route: context.route_lonely.route_id)
@@ -524,7 +545,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionsListLiveTest do
 
       {:ok, view, _html} = mount_connections(context, view: "connections", cq: "nowhere at all")
 
-      assert has_element?(view, "#connections-no-match-text", "No connections match")
+      assert has_element?(view, "#connections-list h2", "No connections match")
       assert has_element?(view, "#connections-no-match-text", "nowhere at all")
       assert has_element?(view, "#connections-no-match-clear", "Clear filters")
       refute has_element?(view, "#connections-empty")
@@ -535,9 +556,28 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionsListLiveTest do
       assert has_element?(view, "#connections-summary", "3 of 3 connections at 3 places")
     end
 
-    test "a day holding no connections says so and offers the one step that creates them",
+    test "a day holding no blocks says so and offers the one step that creates them",
          context do
-      place_stop(context, "Nowhere Yard")
+      # A day with trips the Blocks page loaded, but no block to read a
+      # consecutive pair out of. A day with no trips at all is the page's own
+      # first-use state and never reaches the Connections panel.
+      stop = place_stop(context, "Nowhere Yard")
+
+      solo =
+        trip_fixture(
+          context.organization.id,
+          context.version.id,
+          context.route_twelve.route_id,
+          %{service_id: "W", trip_id: "nobody"}
+        )
+
+      stop_time_fixture(
+        context.organization.id,
+        context.version.id,
+        solo.trip_id,
+        stop.stop_id,
+        %{stop_sequence: 1, arrival_time: "06:00:00", departure_time: "06:00:00"}
+      )
 
       {:ok, view, _html} = mount_connections(context, view: "connections")
 
@@ -545,7 +585,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionsListLiveTest do
       assert has_element?(view, "#connections-timeline-link", "Assign trips to blocks")
       refute has_element?(view, "#connections-no-match-text")
 
-      render_click(view, "connections-timeline-link", %{})
+      view |> element("#connections-timeline-link") |> render_click()
 
       assert_patch(view, blocks_path(context.version.id))
     end
@@ -635,6 +675,22 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionsListLiveTest do
   end
 
   # The place sections in DOM order, as their encoded ids.
+  defp attribute(view, selector, name) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query(selector)
+    |> Enum.flat_map(&LazyHTML.attribute(&1, name))
+  end
+
+  defp texts(view, selector) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query(selector)
+    |> Enum.map(&(&1 |> LazyHTML.text() |> String.replace(~r/\s+/, " ") |> String.trim()))
+  end
+
   defp section_ids(view) do
     view
     |> render()
@@ -648,7 +704,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionsListLiveTest do
     |> render()
     |> LazyHTML.from_fragment()
     |> LazyHTML.query("button[id^='connections-group-']")
-    |> length()
+    |> Enum.count()
   end
 
   # Two places whose pairs run on disjoint routes, so a Route filter has
