@@ -61,17 +61,10 @@ defmodule GtfsPlanner.Alerts.Recurrence do
   def occurrences(%TimingAnswer{pattern: :weekly} = timing) do
     with {:ok, first_date} <- fetch_date(timing.first_date),
          {:ok, weeks} <- fetch_weeks(timing.weeks),
-         {:ok, _weekdays} <- fetch_weekdays(timing.weekdays) do
-      last_date = Date.add(first_date, weeks * 7 - 1)
-
-      if span_days(first_date, last_date) > @max_span_days do
-        {:error, :too_many}
-      else
-        case weekly_parts(timing) |> Map.fetch!(:dates) |> limit_occurrences() do
-          {:error, reason} -> {:error, reason}
-          {:ok, dates} -> build_occurrences(timing, dates)
-        end
-      end
+         {:ok, _weekdays} <- fetch_weekdays(timing.weekdays),
+         :ok <- check_span(first_date, weeks),
+         {:ok, dates} <- limit_occurrences(weekly_parts(timing).dates) do
+      build_occurrences(timing, dates)
     end
   end
 
@@ -169,7 +162,8 @@ defmodule GtfsPlanner.Alerts.Recurrence do
 
   A weekly answer reads `Mon–Fri, 8 PM to 5 AM the next day, Oct 5 to Oct 16;
   except Fri Oct 9`, a continuous answer reads `Oct 5 to Oct 7, 8 AM to 6 PM`,
-  and a current answer reads `Oct 5, 8 PM, until further notice`.
+  and a current answer reads `Oct 5, 8 PM, until further notice`, or
+  `Oct 5, 8 AM to Oct 6, 6 PM` when it has a confirmed end.
 
   Returned dates carry no year, because an alert never reaches further ahead than
   the agency can plan; a range that crosses a year shows both years. Summarizing
@@ -199,16 +193,66 @@ defmodule GtfsPlanner.Alerts.Recurrence do
   end
 
   def summary(%TimingAnswer{} = timing) do
-    [date_range_phrase(timing.start_date, timing.start_date), time_phrase(timing)]
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.join(", ")
-    |> case do
+    case current_start_phrase(timing) do
       "" -> ""
-      phrase -> if timing.end_time, do: phrase, else: phrase <> ", until further notice"
+      phrase -> phrase <> current_end_phrase(timing)
     end
   end
 
   def summary(nil), do: ""
+
+  # A current alert reads its start, then the end the operator chose: a
+  # confirmed end names its own date and time, an estimate names the expected
+  # recovery, and anything else leaves the end open.
+  defp current_start_phrase(%TimingAnswer{} = timing) do
+    date =
+      if crosses_year?(timing),
+        do: long_date(timing.start_date),
+        else: date_range_phrase(timing.start_date, timing.start_date)
+
+    join_phrase([date, start_clock(timing)])
+  end
+
+  defp start_clock(%TimingAnswer{all_day: true}), do: "all day"
+  defp start_clock(%TimingAnswer{start_time: nil}), do: ""
+  defp start_clock(%TimingAnswer{start_time: start_time}), do: clock_time(start_time)
+
+  # A confirmed end with no date is still being answered, so it claims nothing.
+  defp current_end_phrase(%TimingAnswer{end_kind: :confirmed, end_date: nil}), do: ""
+
+  defp current_end_phrase(%TimingAnswer{end_kind: :confirmed} = timing) do
+    if timing.end_date == timing.start_date do
+      same_day_end_phrase(timing)
+    else
+      " to " <> join_phrase([end_date_phrase(timing), end_clock(timing)])
+    end
+  end
+
+  defp current_end_phrase(%TimingAnswer{end_kind: :estimated, end_time: %Time{} = end_time}),
+    do: ", expected to clear around " <> clock_time(end_time)
+
+  defp current_end_phrase(%TimingAnswer{}), do: ", until further notice"
+
+  defp same_day_end_phrase(%TimingAnswer{end_time: nil}), do: ""
+  defp same_day_end_phrase(%TimingAnswer{end_time: end_time}), do: " to " <> clock_time(end_time)
+
+  defp end_date_phrase(%TimingAnswer{end_date: end_date} = timing) do
+    if crosses_year?(timing), do: long_date(end_date), else: short_date(end_date)
+  end
+
+  defp end_clock(%TimingAnswer{end_time: nil}), do: ""
+  defp end_clock(%TimingAnswer{end_time: end_time}), do: clock_time(end_time)
+
+  defp crosses_year?(%TimingAnswer{
+         end_kind: :confirmed,
+         start_date: %Date{year: start_year},
+         end_date: %Date{year: end_year}
+       }),
+       do: start_year != end_year
+
+  defp crosses_year?(%TimingAnswer{}), do: false
+
+  defp join_phrase(parts), do: parts |> Enum.reject(&(&1 == "")) |> Enum.join(", ")
 
   # Expands the weekly pattern into the dates it keeps, together with the two
   # exception lists a summary can name. The bounds are not applied here, so a
@@ -256,6 +300,12 @@ defmodule GtfsPlanner.Alerts.Recurrence do
   # so every date list here is ordered by the calendar day count instead.
   defp sort_dates(dates), do: Enum.sort_by(dates, &Date.to_gregorian_days/1)
 
+  defp check_span(first_date, weeks) do
+    last_date = Date.add(first_date, weeks * 7 - 1)
+
+    if span_days(first_date, last_date) > @max_span_days, do: {:error, :too_many}, else: :ok
+  end
+
   defp limit_occurrences(dates) when length(dates) > @max_occurrences, do: {:error, :too_many}
   defp limit_occurrences(dates), do: {:ok, dates}
 
@@ -286,26 +336,23 @@ defmodule GtfsPlanner.Alerts.Recurrence do
          %{
            date: date,
            starts: naive!(date, start_time),
-           ends: end_datetime(end_date, start_time, timing.end_time),
+           ends: end_datetime(date, end_date, start_time, timing.end_time),
            all_day?: false
          }}
       end
     end
   end
 
-  # An open end has no end instant at all. Otherwise the period ends on its end
-  # date, and an end at or before the start belongs to the following civil day
-  # (R12) — so an 8 PM to 5 AM period on one date ends the next morning, and a
-  # continuous period keeps its own last date.
-  defp end_datetime(_end_date, _start_time, nil), do: nil
+  # An open end has no end instant at all. A period that starts and ends on one
+  # date and whose end time is at or before its start time ends the following
+  # civil day (R12), so an 8 PM to 5 AM period ends the next morning. A period
+  # whose end date is later than its start date names its own end day, so Fri
+  # 8 PM to Sun 5 AM ends on Sunday.
+  defp end_datetime(_date, _end_date, _start_time, nil), do: nil
 
-  defp end_datetime(end_date, start_time, end_time) do
-    end_day =
-      if Time.compare(end_time, start_time) != :gt do
-        Date.add(end_date, 1)
-      else
-        end_date
-      end
+  defp end_datetime(date, end_date, start_time, end_time) do
+    overnight? = Date.compare(end_date, date) == :eq and Time.compare(end_time, start_time) != :gt
+    end_day = if overnight?, do: Date.add(end_date, 1), else: end_date
 
     naive!(end_day, end_time)
   end

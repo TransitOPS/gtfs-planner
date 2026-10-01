@@ -54,13 +54,10 @@ defmodule GtfsPlanner.Alerts.RecurrenceTest do
       assert first.all_day? == false
 
       assert Enum.all?(occurrences, fn occurrence ->
-               occurrence.starts.time() == ~T[20:00:00] and occurrence.ends.time() == ~T[05:00:00]
+               NaiveDateTime.to_time(occurrence.starts) == ~T[20:00:00] and
+                 NaiveDateTime.to_time(occurrence.ends) == ~T[05:00:00] and
+                 NaiveDateTime.to_date(occurrence.ends) == Date.add(occurrence.date, 1)
              end)
-
-      assert [first_occurrence | _rest] = occurrences
-
-      assert NaiveDateTime.to_date(first_occurrence.ends) ==
-               Date.add(first_occurrence.date, 1)
     end
 
     test "a removed date never appears, even when it is also added" do
@@ -215,6 +212,35 @@ defmodule GtfsPlanner.Alerts.RecurrenceTest do
              }
     end
 
+    test "a period across several days ends on its own last date, not a day later" do
+      timing =
+        timing(
+          pattern: :continuous,
+          first_date: ~D[2026-10-09],
+          last_date: ~D[2026-10-11],
+          start_time: ~T[20:00:00],
+          end_time: ~T[05:00:00]
+        )
+
+      assert {:ok, [occurrence]} = Recurrence.occurrences(timing)
+      assert occurrence.starts == ~N[2026-10-09 20:00:00]
+      assert occurrence.ends == ~N[2026-10-11 05:00:00]
+    end
+
+    test "a one-day period whose end time is before its start ends the next morning" do
+      timing =
+        timing(
+          pattern: :continuous,
+          first_date: ~D[2026-10-09],
+          last_date: ~D[2026-10-09],
+          start_time: ~T[20:00:00],
+          end_time: ~T[05:00:00]
+        )
+
+      assert {:ok, [occurrence]} = Recurrence.occurrences(timing)
+      assert occurrence.ends == ~N[2026-10-10 05:00:00]
+    end
+
     test "a continuous period of more than 366 days is refused" do
       timing =
         timing(
@@ -300,6 +326,22 @@ defmodule GtfsPlanner.Alerts.RecurrenceTest do
 
       assert {:ok, [occurrence]} = Recurrence.occurrences(timing)
       assert occurrence.starts == ~N[2026-10-05 20:00:00]
+      assert occurrence.ends == ~N[2026-10-06 05:00:00]
+    end
+  end
+
+  describe "occurrences/1 with a current alert across midnight" do
+    test "a confirmed end on a later date at an earlier clock time ends on that date" do
+      timing =
+        timing(
+          start_date: ~D[2026-10-05],
+          start_time: ~T[20:00:00],
+          end_kind: :confirmed,
+          end_date: ~D[2026-10-06],
+          end_time: ~T[05:00:00]
+        )
+
+      assert {:ok, [occurrence]} = Recurrence.occurrences(timing)
       assert occurrence.ends == ~N[2026-10-06 05:00:00]
     end
   end
@@ -476,7 +518,7 @@ defmodule GtfsPlanner.Alerts.RecurrenceTest do
           end_time: ~T[18:00:00]
         )
 
-      assert Recurrence.summary(confirmed) == "Oct 5, 8 AM to 6 PM"
+      assert Recurrence.summary(confirmed) == "Oct 5, 8 AM to Oct 6, 6 PM"
 
       open =
         timing(
@@ -488,6 +530,70 @@ defmodule GtfsPlanner.Alerts.RecurrenceTest do
         )
 
       assert Recurrence.summary(open) == "Oct 5, 8 AM, until further notice"
+    end
+
+    test "reads a current alert whose confirmed end is on its start date as one window" do
+      timing =
+        timing(
+          start_date: ~D[2026-10-05],
+          start_time: ~T[08:00:00],
+          end_kind: :confirmed,
+          end_date: ~D[2026-10-05],
+          end_time: ~T[18:00:00]
+        )
+
+      assert Recurrence.summary(timing) == "Oct 5, 8 AM to 6 PM"
+    end
+
+    test "reads a confirmed end that names a date and no time" do
+      timing =
+        timing(
+          start_date: ~D[2026-10-05],
+          start_time: ~T[08:00:00],
+          end_kind: :confirmed,
+          end_date: ~D[2026-10-07]
+        )
+
+      assert Recurrence.summary(timing) == "Oct 5, 8 AM to Oct 7"
+    end
+
+    test "reads a confirmed end that crosses a year with both years" do
+      timing =
+        timing(
+          start_date: ~D[2026-12-31],
+          start_time: ~T[20:00:00],
+          end_kind: :confirmed,
+          end_date: ~D[2027-01-02],
+          end_time: ~T[05:00:00]
+        )
+
+      assert Recurrence.summary(timing) == "Dec 31, 2026, 8 PM to Jan 2, 2027, 5 AM"
+    end
+
+    test "leaves a confirmed end that has no date unclaimed" do
+      timing =
+        timing(start_date: ~D[2026-10-05], start_time: ~T[08:00:00], end_kind: :confirmed)
+
+      assert Recurrence.summary(timing) == "Oct 5, 8 AM"
+    end
+
+    test "names the expected recovery of an estimated end that has a time" do
+      timing =
+        timing(
+          start_date: ~D[2026-10-05],
+          start_time: ~T[08:00:00],
+          end_kind: :estimated,
+          end_time: ~T[18:00:00]
+        )
+
+      assert Recurrence.summary(timing) == "Oct 5, 8 AM, expected to clear around 6 PM"
+    end
+
+    test "leaves an estimated end with no time open" do
+      timing =
+        timing(start_date: ~D[2026-10-05], start_time: ~T[08:00:00], end_kind: :estimated)
+
+      assert Recurrence.summary(timing) == "Oct 5, 8 AM, until further notice"
     end
 
     test "reads midnight and noon as words" do
