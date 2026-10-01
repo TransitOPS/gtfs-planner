@@ -6073,13 +6073,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   # The setting marks the row shows: the two decided settings the Show filter can
   # keep and the review count, in the order a reader decides them, and only when
-  # the group holds one. The stay and reboard marks are the counts
-  # `Blocking.Connections` reports under the same rule the filter applies, so a
-  # mark never promises a connection the filter would then drop.
+  # the group holds one. The stay and re-board marks count the group's connections
+  # that need no review, the rule the Show filter applies, so a mark never promises
+  # a connection the filter would then drop.
   defp connection_marks(group) do
-    # The stay and re-board marks are the connections the filter kept, so they
-    # count the group's own decidable connections rather than every row the
-    # station holds; a mark never promises a connection the filter would drop.
     decidable = Enum.reject(group.connections, & &1.review?)
 
     [
