@@ -16,7 +16,7 @@ Inputs read:
 
 | Input | Path | State |
 |---|---|---|
-| Feature list | `docs/feature-list.md` | Present. 109 capabilities in 13 groups, read at `afc5ad35`. |
+| Feature list | `docs/feature-list.md` | Present. 109 capabilities in 13 groups, read at `b18c9df3`. |
 | Screen inventory | `docs/screen-inventory.md`, `docs/inventories/*.md` | Present. 57 screens in seven audience inventories, `SCRN-001` to `SCRN-057`, reconciled at `afc5ad35`. No permission model exists, so the partition is unverified. |
 | Journey registry | `docs/journey-registry.md`, `docs/journeys/` | Registry present, read at `5bac78aa`: 58 journeys, 14 seams, 47 E2E lanes mapped. The `docs/journeys/` directory does not exist yet; the pilot journey pages land in the steps after this one. |
 | Job sources | `docs/requirements/*.md`, `docs/manual-test-plan.md`, `docs/information-architecture.md` | Present. Eight requirement documents carry 174 job stories between them; the manual test plan carries 41 test cases; the information-architecture document is dated 2026-09-27 against an earlier commit and marks its own planned and proposed placements. |
@@ -193,7 +193,7 @@ Each of these jobs is stated in a committed document and no screen in the produc
 | Job | Source |
 |---|---|
 | Keep the feed URL at a permanent address so a consumer's registration survives a schedule update | `docs/requirements/system-configuration-requirements.md` JS-CONFIG-016. The settings section for it renders a Coming soon page, so no terminal outcome is reachable. |
-| Author an operator run; the Runs screen reads runs and no surface creates one | `docs/feature-list.md`, section 5, ambiguities |
+| Author an operator run by hand between two chosen trips | `docs/feature-list.md`, section 5, ambiguities. The Runs screen creates a run from an uncovered block segment or from a suggested plan, but no surface places a boundary by hand. |
 | Enter a block's deadhead times, relief points and interlining settings as their own settings | `docs/requirements/schedules-and-blocks-requirements.md`, drawers reachable from Blocks without a screen of their own (`docs/feature-list.md`, section 5) |
 | Build weekly roster lines with operator assignment and a crew export | `docs/information-architecture.md`, Operations area, marked Planned |
 | See which stops no active pattern uses, and which are flagged for issues | `docs/requirements/stops-and-stations-requirements.md` JS-STOP-008, JS-STOP-009. The stops list filters by route, direction, accessibility and search, and carries no unused or flagged view. |

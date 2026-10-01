@@ -243,7 +243,7 @@ organization and actor from the authenticated session rather than from request p
 | Item | Why it is uncertain | What would raise confidence |
 |---|---|---|
 | `/gtfs/:version/rosters` | A registered route serving a placeholder with no implementation behind it | A product decision to build or remove it |
-| Runs | The screen reads runs, but the code gives no clear surface for authoring one | A product statement of whether runs are edited or only derived from blocks |
+| Runs | The screen authors a run from an uncovered segment or a suggested plan, but never from a hand-drawn boundary between two trips | A product statement of whether a reader should be able to place a run boundary by hand |
 | Calendar helper | The panel ships, but answering needs a configured model; without one the surface degrades to an error notice | A configuration and deployment check |
 | Relief points and vehicle export | Reachable from existing surfaces but with no dedicated screen of their own | An operator walkthrough of the drawers |
 | Command-line imports | Cover only stops, levels and pathways; the in-product importer covers the whole feed | A statement of whether the remaining files are intended as CLI tasks |
