@@ -1677,8 +1677,9 @@ test.describe("Other routes context", () => {
 
   // The seeded context total for BROWSER_PATTERNS_READY's viewport: every other
   // route of the version whose geometry falls in it. A seed change that adds or
-  // moves a route in that corner changes this number on purpose.
-  const SEEDED_CONTEXT_TOTAL = 66;
+  // moves a route in that corner changes this number on purpose. It includes the
+  // two headsign routes (BROWSER_HEADSIGNS, BROWSER_HEADSIGNS_20).
+  const SEEDED_CONTEXT_TOTAL = 68;
 
   function pngTile() {
     return Buffer.from(
