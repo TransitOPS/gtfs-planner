@@ -41,7 +41,10 @@ defmodule GtfsPlanner.Agents.Session do
   A session also re-checks its own resource identity (`Scope.authorized_context/1`)
   and the pack's optional `authorize_context/1` at admission, on delivery and on a
   prepared lookup, so a deleted route or version ends the conversation the same way
-  a revoked membership does, with the single `:unavailable` result (INV-1). The
+  a revoked membership does, with the single `:unavailable` result (INV-1). That
+  check covers the admitted source snapshot too: an oversized context or a forged
+  snapshot digest is refused at the same boundary as a foreign resource, so no
+  snapshot content outlives the admission that measured it. The
   server evidence a turn produced settles with its entry and is discarded with it,
   so an answer outlives neither an authorization change nor its turn (INV-2).
   """
