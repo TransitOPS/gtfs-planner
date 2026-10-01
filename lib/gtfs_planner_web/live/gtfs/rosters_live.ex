@@ -83,6 +83,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     clear_day
     add_to_line
     add_to_new_line
+    confirm_delete_line
   )
 
   # A role revoked while the page is open is not an error the reader caused and
@@ -101,6 +102,11 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   # The version went unpublished between the session hook and this read. The
   # reader has no roster to look at, and the hook's own answer is the one to give.
   @version_not_found "GTFS version not found"
+
+  # The line the confirmation named is gone by the time the planner confirms it.
+  # Both overlays close and the page says why in its own toast: there is no
+  # drawer left to own the sentence.
+  @line_gone "That line is no longer on this version."
 
   # A lost connection is a pause, not a state the page moves into: the page keeps
   # the roster it last read and draws `#rosters-unavailable` above it, with the
@@ -145,6 +151,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
      # The add-to-line drawer's data. Like `:slot`, it is built by the event
      # that changes it and never inside `render/1`, for the same reason.
      |> assign(:add_to_line, nil)
+     # The line drawer and the delete confirmation it opens. `:line` is the
+     # composition's own line — the map the grid's row was drawn from — and
+     # `:delete_line` is what the confirmation names. Neither is ever built in
+     # `render/1`, for the slot drawer's reason.
+     |> assign(:line, nil)
+     |> assign(:delete_line, nil)
      |> stream(:roster_lines, [], dom_id: &roster_line_dom_id/1)
      |> attach_hook(:editor_access, :handle_event, &require_editor/3)}
   end
@@ -715,10 +727,122 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     end
   end
 
+  # ── The line drawer ───────────────────────────────────────────────────────
+  #
+  # Opening the drawer and asking to delete the line are reads of the roster
+  # this socket already holds: the drawer draws the composition's own line and
+  # the confirmation's run-day count is that line's own stored days. Neither
+  # re-checks the membership, so neither is in `@write_events`. The delete is.
+  def handle_event("open_line", %{"line" => line_id}, socket) do
+    case socket.assigns.roster do
+      nil ->
+        {:noreply, socket}
+
+      roster ->
+        case Enum.find(roster.lines, &(&1.id == line_id)) do
+          # A line this version's roster does not hold is not a choice, so the
+          # click is ignored rather than opening a drawer describing work that is
+          # not there. Opening this one closes a slot or add-to-line drawer left
+          # open, because the page has a single drawer slot.
+          nil ->
+            {:noreply, socket}
+
+          line ->
+            {:noreply,
+             socket |> assign(:slot, nil) |> assign(:add_to_line, nil) |> assign(:line, line)}
+        end
+    end
+  end
+
+  def handle_event("close_line", _params, socket) do
+    {:noreply, assign(socket, :line, nil)}
+  end
+
+  # The confirmation names the line and its run-days, both read off the drawer
+  # that is open rather than re-read from the page, so the drawer and the
+  # confirmation cannot be describing different lines.
+  def handle_event("ask_delete_line", _params, socket) do
+    case socket.assigns.line do
+      nil ->
+        {:noreply, socket}
+
+      line ->
+        {:noreply,
+         assign(socket, :delete_line, %{
+           line_id: line.id,
+           line_number: line.line_number,
+           run_days: map_size(line.slots),
+           picked?: not is_nil(line.operator)
+         })}
+    end
+  end
+
+  def handle_event("cancel_delete_line", _params, socket) do
+    {:noreply, assign(socket, :delete_line, nil)}
+  end
+
+  # The delete. The line's days go with it through the foreign key, so every run
+  # it held returns to open work; the roster is re-read afterwards, so the grid
+  # and the open-work cards below it redraw from the composition rather than
+  # from a row this page removed itself. The count in the toast is the writer's
+  # own answer, which is what the confirmation named.
+  #
+  # The line's row is gone afterwards, and its link went with it, so focus is
+  # pushed to the grid's own heading through the page's scoped `FormErrorFocus`
+  # hook instead of being dropped at the top of the document.
+  def handle_event("confirm_delete_line", _params, socket) do
+    case socket.assigns.delete_line do
+      %{line_id: line_id} ->
+        delete_line(socket, line_id)
+
+      nil ->
+        {:noreply, socket}
+    end
+  end
+
   # Any other event is ignored. This clause is last among the `handle_event`
   # clauses on purpose: a catch-all placed earlier would shadow the real
   # handlers above it.
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  defp delete_line(socket, line_id) do
+    case Gtfs.delete_roster_line(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           line_id
+         ) do
+      {:ok, %{line_number: number, run_days: run_days}} ->
+        socket =
+          socket
+          |> assign(:delete_line, nil)
+          |> assign(:line, nil)
+          |> clear_open_work()
+          |> load_roster()
+
+        {:noreply,
+         socket
+         |> put_toast(
+           "Line #{number} deleted. Its #{RostersComponents.plural_run_days(run_days)} to open work.",
+           :done
+         )
+         |> push_event("focus_scoped_target", %{id: "rosters-lines-title"})}
+
+      {:error, :not_found} ->
+        # The line went while the confirmation was up: another planner, or a
+        # version that went unpublished. A drawer for a line that is not there
+        # would be a lie, so both overlays close and the roster is re-read, and
+        # the reason is the page's own toast because there is no card and no
+        # drawer left to own it.
+        socket =
+          socket
+          |> assign(:delete_line, nil)
+          |> assign(:line, nil)
+          |> clear_open_work()
+          |> load_roster()
+
+        {:noreply, put_toast(socket, @line_gone, :refused)}
+    end
+  end
 
   defp create_line_for_add(socket, weekday, run_id) do
     case Gtfs.create_roster_line(
@@ -1163,7 +1287,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
 
       <RostersComponents.toast toast={@toast} />
 
-      <div id="rosters-page" class="ds-page" data-load-state={@load_state}>
+      <div id="rosters-page" class="ds-page" data-load-state={@load_state} phx-hook="FormErrorFocus">
         <RostersComponents.page_head state={@load_state} />
         <%!-- The prototype draws the scope bar in every state and hides the count strip and the
         messages when the version has no runs: there is nothing to count, nothing stale and
@@ -1199,6 +1323,21 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
         <RostersComponents.no_lines :if={
           @roster && @load_state == :ready && @roster.summary.lines == 0
         } />
+
+        <%!-- The lines section's own heading, whether the section below it is the
+        grid or the first-use panel. It is kept in the document outside the grid
+        card for focus as much as for the name: deleting a line takes its row and
+        its link with it, and deleting the last line takes the grid card too, so
+        the page hands focus here rather than dropping a reader at the top of the
+        document. --%>
+        <h2
+          :if={@roster && @load_state in [:ready, :unavailable]}
+          id="rosters-lines-title"
+          class="sr-only"
+          tabindex="-1"
+        >
+          Roster lines
+        </h2>
 
         <%!-- The grid, below the page's own figures. It is drawn only where there are
         lines to draw: with no runs the no-runs panel has already said so, and with runs
@@ -1265,6 +1404,22 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
         pending?={@add_to_line.pending?}
         refusal={@add_to_line.refusal}
         min_rest_minutes={@add_to_line.min_rest_minutes}
+      />
+
+      <RostersComponents.line_drawer
+        :if={@line}
+        open
+        line={@line}
+        locked?={@load_state == :unavailable}
+        on_close="close_line"
+      />
+
+      <RostersComponents.delete_line_confirm
+        :if={@delete_line}
+        open
+        line_number={@delete_line.line_number}
+        run_days={@delete_line.run_days}
+        picked?={@delete_line.picked?}
       />
     </Layouts.app>
     """

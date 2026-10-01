@@ -808,6 +808,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
       <button
         type="button"
         id={"rosters-line-#{@line.line_number}-open"}
+        data-line={@line.line_number}
         class="rosters-line-link"
         phx-click="open_line"
         phx-value-line={@line.id}
@@ -2388,4 +2389,271 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
 
   defp plural_open_days(1), do: "1 day"
   defp plural_open_days(count), do: "#{count} days"
+
+  @doc """
+  The line drawer: one line's whole week, and the one destructive action on it.
+
+  Everything drawn here is the composition's own line: its slots, its weekly
+  figures, its days off and its findings. The week table reads the same slot
+  helpers the grid's cells read, so a day says the same thing in the drawer as
+  it does in the row (INV-15).
+
+  ## The problems come first, and in words
+
+  The Problems column names the first finding and hides the rest behind a
+  count; a drawer is where the whole list is read. Each finding is a message
+  whose title is the column's own words and whose body is that column's own
+  sentence, so neither place can describe the same finding differently. A line
+  with no findings says so in words rather than leaving the reader to notice
+  the absence.
+
+  ## The footer holds one action, at the opposite edge
+
+  "Delete line" is destructive to the whole week rather than to one day of it,
+  so it sits at the far end of the footer away from where the primary actions
+  of the other drawers are, and it is the only control here: the week is read
+  from this drawer and changed in the grid.
+  """
+  attr :open, :boolean, required: true
+  attr :line, :map, required: true
+  attr :pending?, :boolean, default: false
+  attr :locked?, :boolean, default: false
+  attr :on_close, :string, default: "close_line"
+
+  def line_drawer(assigns) do
+    ~H"""
+    <.drawer
+      id="rosters-line-drawer"
+      chrome="planner"
+      open={@open}
+      pending={@pending?}
+      on_close={@on_close}
+      title={"Line #{@line.line_number}"}
+      return_focus_id={"rosters-line-#{@line.line_number}-open"}
+    >
+      <:lede>
+        <span id="rosters-line-lede">
+          {if @line.operator, do: "Assigned", else: "Open"} · {plural_days(map_size(@line.slots))}
+        </span>
+      </:lede>
+
+      <.drawer_scroll>
+        <div id="rosters-line-problems" class="grid gap-2">
+          <.message
+            :if={@line.findings == []}
+            id="rosters-line-no-problems"
+            kind="success"
+            title="No problems"
+          />
+          <.message
+            :for={finding <- @line.findings}
+            id={finding_id(finding)}
+            kind={finding_kind(finding)}
+            title={"#{finding_words(finding)}."}
+          >
+            {finding_sentence(finding)}
+          </.message>
+        </div>
+
+        <dl id="rosters-line-facts" class="mt-5 grid grid-cols-3 gap-4">
+          <div>
+            <dt class="text-[13px] text-muted">Operator</dt>
+            <dd :if={@line.operator} class="mt-0.5 text-sm font-semibold text-strong">
+              {@line.operator.display_name}
+              <span class="font-mono text-[13px] font-normal text-muted">
+                {@line.operator.employee_id}
+              </span>
+            </dd>
+            <dd :if={is_nil(@line.operator)} class="mt-0.5 text-sm font-semibold text-strong">
+              Open
+            </dd>
+          </div>
+          <div>
+            <dt class="text-[13px] text-muted">Days off</dt>
+            <dd class="mt-0.5 text-sm font-semibold text-strong">{days_off_text(@line)}</dd>
+          </div>
+          <div>
+            <dt class="text-[13px] text-muted">Weekly paid</dt>
+            <dd class="mt-0.5 text-sm font-semibold text-strong">
+              {paid_text(@line)}
+              <span :if={@line.over_40_secs > 0} class="font-normal text-muted">
+                {over_text(@line)}
+              </span>
+            </dd>
+          </div>
+        </dl>
+
+        <h3 class="mt-6 text-base font-bold">Week</h3>
+        <div class="mt-2 overflow-x-auto rounded-card border border-subtle">
+          <table class="w-full border-separate border-spacing-0 text-sm">
+            <caption class="sr-only">Line {@line.line_number} week</caption>
+            <thead>
+              <tr class="bg-canvas text-left text-[13px] text-muted">
+                <th scope="col" class="px-2 py-2 font-semibold">Day</th>
+                <th scope="col" class="px-2 py-2 font-semibold">Run</th>
+                <th scope="col" class="px-2 py-2 font-semibold">Sign-on–off</th>
+                <th scope="col" class="px-2 py-2 text-right font-semibold">Paid</th>
+              </tr>
+            </thead>
+            <tbody id="rosters-line-week">
+              <tr
+                :for={weekday <- 1..7}
+                id={"rosters-line-week-#{weekday}"}
+                data-day={weekday}
+                data-state={line_day_state(@line, weekday)}
+              >
+                <th scope="row" class="px-2 py-1 text-left font-semibold">
+                  {weekday_name(weekday)}
+                </th>
+                <td :if={is_nil(Map.get(@line.slots, weekday))} class="px-2 py-1 text-muted">
+                  Off
+                </td>
+                <td :if={Map.get(@line.slots, weekday)} class="px-2 py-1">
+                  <span :if={line_day_stale?(@line, weekday)} class="rosters-warning-text">
+                    <span aria-hidden="true">△ </span>
+                    {Map.fetch!(@line.slots, weekday).run_id} · Stale run
+                  </span>
+                  <span :if={not line_day_stale?(@line, weekday)}>
+                    <strong class="text-strong">
+                      {Map.fetch!(@line.slots, weekday).run_id}
+                    </strong>
+                    <span class="text-[13px] text-muted">
+                      {run_type_words(Map.fetch!(@line.slots, weekday).run)}
+                    </span>
+                  </span>
+                </td>
+                <td class="px-2 py-1 tabular-nums">
+                  <span :if={line_day_run(@line, weekday)}>
+                    {slot_span(line_day_run(@line, weekday).work)}
+                  </span>
+                </td>
+                <td class="px-2 py-1 text-right tabular-nums">
+                  <span :if={line_day_run(@line, weekday)}>
+                    {hours_minutes(line_day_run(@line, weekday).work.paid_secs)}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p id="rosters-line-week-hint" class="mt-3 text-[13px] text-muted">
+          Select a day in the grid to change its run.
+        </p>
+      </.drawer_scroll>
+
+      <.drawer_footer>
+        <.button
+          type="button"
+          id="rosters-delete-line"
+          variant="danger"
+          class="mr-auto min-h-11"
+          phx-click="ask_delete_line"
+          phx-disable-with="Deleting…"
+          disabled={@locked?}
+        >
+          <.icon name="hero-trash" class="size-4" />Delete line
+        </.button>
+      </.drawer_footer>
+    </.drawer>
+    """
+  end
+
+  # One message per finding, so the id has to name which one it is: the code,
+  # and the days it is about where the finding places itself in the week. A
+  # finding that names no day — no two days off in a row is about the whole
+  # line — is identified by its code alone.
+  defp finding_id(%{code: code, weekdays: []}), do: "rosters-line-problem-#{code}"
+
+  defp finding_id(%{code: code, weekdays: weekdays}),
+    do: "rosters-line-problem-#{code}-#{Enum.join(weekdays, "-")}"
+
+  # A run with errors is the one finding that is an error rather than a warning,
+  # and it is the composition's own finding that says so — the same code the
+  # Problems column reads its red from.
+  defp finding_kind(%{code: :run_has_errors}), do: "error"
+  defp finding_kind(_finding), do: "warning"
+
+  # A stale slot is a working day the composition will not trust, so it is a
+  # third state rather than either of the two the row can be in.
+  defp line_day_state(line, weekday) do
+    case Map.get(line.slots, weekday) do
+      nil -> "off"
+      slot -> if(is_nil(stale_reason(slot)), do: "work", else: "stale")
+    end
+  end
+
+  defp line_day_stale?(line, weekday) do
+    case Map.get(line.slots, weekday) do
+      nil -> false
+      slot -> not is_nil(stale_reason(slot))
+    end
+  end
+
+  # A stale slot's stored times are untrusted, so it shows its run ID and says
+  # why, rather than printing times the composition has already disowned.
+  defp line_day_run(line, weekday) do
+    case Map.get(line.slots, weekday) do
+      %{run: run} -> if(line_day_stale?(line, weekday), do: nil, else: run)
+      _off -> nil
+    end
+  end
+
+  @doc """
+  The delete-line confirmation: what goes, what comes back, and the two answers.
+
+  `CoreComponents.confirm_dialog/1` in planner chrome, as the Garages delete
+  confirmation is. The title names the line the planner clicked, and the body
+  names the consequence in the same run-days the drawer counts — `run_days` is
+  the number of stored days, which is what returns to open work, and the pick
+  sentence appears only when there is a pick to remove.
+
+  "Keep line" is the cancel and is first, so the reading order puts the safe
+  answer before the destructive one; "Delete line" is the confirm and keeps the
+  dialog's own danger treatment. Focus goes back to the Delete line button that
+  asked, unless the delete happens, and then the page's own focus push takes it
+  to the grid heading.
+  """
+  attr :open, :boolean, required: true
+  attr :line_number, :integer, required: true
+  attr :run_days, :integer, required: true
+  attr :picked?, :boolean, default: false
+  attr :on_confirm, :string, default: "confirm_delete_line"
+  attr :on_cancel, :string, default: "cancel_delete_line"
+
+  def delete_line_confirm(assigns) do
+    ~H"""
+    <.confirm_dialog
+      id="rosters-delete-line-confirm"
+      chrome="planner"
+      open={@open}
+      title={"Delete line #{@line_number}?"}
+      confirm_label="Delete line"
+      cancel_label="Keep line"
+      pending_label="Deleting…"
+      on_confirm={@on_confirm}
+      on_cancel={@on_cancel}
+      return_focus_id="rosters-delete-line"
+    >
+      <p>
+        Its {plural_run_days(@run_days)} to open work.{if @picked?,
+          do: " The pick recorded for this line is removed.",
+          else: ""}
+      </p>
+    </.confirm_dialog>
+    """
+  end
+
+  @doc """
+  The run-day count's words, for a page that has to say them outside this
+  module.
+
+  The confirmation reads this, and so does the toast that reports the delete
+  happened, so the count the planner was warned about and the count they are
+  told afterwards are one string rather than two that can drift. It is the whole
+  clause — the count and the verb it needs — because the count and the verb
+  have to agree in both places.
+  """
+  def plural_run_days(1), do: "1 run-day returns"
+  def plural_run_days(count), do: "#{count} run-days return"
 end
