@@ -34,6 +34,7 @@ defmodule GtfsPlanner.Alerts do
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Alerts.Alert
   alias GtfsPlanner.Alerts.Completion
+  alias GtfsPlanner.Alerts.Listing
   alias GtfsPlanner.Alerts.Recurrence
   alias GtfsPlanner.Alerts.TimingAnswer
   alias GtfsPlanner.Gtfs.AuditContext
@@ -47,6 +48,13 @@ defmodule GtfsPlanner.Alerts do
           | :not_found
           | Changeset.t()
           | {:stale, Alert.t()}
+
+  @type tabs :: %{
+          current: [Listing.row()],
+          upcoming: [Listing.row()],
+          in_progress: [Listing.row()],
+          past: [Listing.row()]
+        }
 
   @doc """
   Reads one alert of the context's organization and version.
@@ -64,6 +72,49 @@ defmodule GtfsPlanner.Alerts do
         nil -> {:error, :not_found}
       end
     end
+  end
+
+  @doc """
+  Returns the alerts list page's four tabs as of `local_now`.
+
+  `local_now` is the agency's own civil time, which `agency_now/1` supplies, so
+  the tabs and the check-in badge are read in the agency's day rather than UTC's
+  and a test can fix the time without a clock override (CR-7). Only the context's
+  version's alerts are read; `Alerts.Listing` derives the tab of each row and
+  its Needs attention and Check-in due badges from the answers stored on it (R1,
+  R8).
+  """
+  @spec list_alerts(AuditContext.t(), NaiveDateTime.t()) :: {:ok, tabs()} | {:error, :forbidden}
+  def list_alerts(%AuditContext{} = audit_context, %NaiveDateTime{} = local_now) do
+    with :ok <- authorize_editor(audit_context) do
+      alerts =
+        from(a in Alert,
+          where:
+            a.organization_id == ^audit_context.organization_id and
+              a.gtfs_version_id == ^audit_context.gtfs_version_id
+        )
+        |> Repo.all()
+
+      {:ok, Listing.rows(alerts, audit_context.gtfs_version_id, local_now)}
+    end
+  end
+
+  @doc """
+  Returns the agency's current civil time for the context's version.
+
+  `Gtfs.DisplayClock.resolve_zone/2` reports the version's agency zone and any
+  disclosed fallback, and `localize_many/2` converts one UTC instant through
+  PostgreSQL, so `list_alerts/2` is given the agency's own time to group by.
+  """
+  @spec agency_now(AuditContext.t()) :: NaiveDateTime.t()
+  def agency_now(%AuditContext{
+        organization_id: organization_id,
+        gtfs_version_id: gtfs_version_id
+      }) do
+    organization_id
+    |> DisplayClock.resolve_zone(gtfs_version_id)
+    |> then(&DisplayClock.localize_many([DateTime.utc_now()], &1))
+    |> List.first()
   end
 
   @doc """
