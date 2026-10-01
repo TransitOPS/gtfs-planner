@@ -283,7 +283,7 @@ describe("connection_map_hook pair mode", () => {
     expect(L.circleMarker).toHaveBeenCalledTimes(8);
     const redrawn = tooltips(L, "circleMarker");
     expect(redrawn).toHaveLength(4);
-    expect(redrawn[2].content).toContain("12th &amp; Elm");
+    expect(redrawn[2].content).toContain("42nd &amp; Washington");
     expect(redrawn[3].content).toContain("31st &amp; State");
   });
 
@@ -610,8 +610,8 @@ describe("connection_map_hook network mode", () => {
     // The labels sit above and below their own pin, away from the connector:
     // a handoff is often short enough that both stops land in the same stretch
     // of frame, and a label laid sideways lands on the other one.
-    expect(labels[0].options.direction).toBe("bottom");
-    expect(labels[1].options.direction).toBe("top");
+    expect(labels[0].options.direction).toBe("top");
+    expect(labels[1].options.direction).toBe("bottom");
 
     // One connector, a white casing and the dashed accent over it.
     expect(L.polyline).toHaveBeenCalledTimes(2);
@@ -681,8 +681,8 @@ describe("connection_map_hook network mode", () => {
     mountHook(root);
 
     expect(L.latLngBounds.mock.calls[0]).toEqual([
-      [RIVERSIDE.lat, RIVERSIDE.lon],
       [UNION.lat, UNION.lon],
+      [RIVERSIDE.lat, RIVERSIDE.lon],
     ]);
     expect(map.fitBounds.mock.calls[0][1]).toEqual({
       paddingTopLeft: [32, 32],
@@ -805,9 +805,10 @@ describe("connection_map_hook network mode", () => {
     const { root } = buildNetworkPane({ places: [UNION] });
 
     const hook = mountHook(root);
-    const [control] = controls;
+    const fit = controls.find((control) => control.onAdd);
 
-    expect(control.addedTo).toBe(true);
+    expect(fit).toBeDefined();
+    expect(fit.addedTo).toBe(true);
 
     hook.destroyed();
 

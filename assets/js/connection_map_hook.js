@@ -469,14 +469,12 @@ const ConnectionMapHook = {
       this._marker(arrival, "Arrives", "left");
       this._marker(departure, "Departs", "right");
 
+      // One connector: a white casing and the dashed accent over it, with the
+      // distance on the dashed line because the casing carries no meaning. A
+      // payload with no distance still draws the connector, without a label.
       const line = [pointTuple(arrival), pointTuple(departure)];
-      this._casedLine(line);
-      // The distance belongs on the connector rather than in the drawer body, so
-      // the picture and the sentence about it cannot drift apart. A payload with
-      // no distance still draws the connector.
-      if (meters !== null) {
-        this._casedLine(line, `${Math.round(meters)} m`, "top");
-      }
+      const label = meters === null ? null : `${Math.round(meters)} m`;
+      this._casedLine(line, label, "top");
     }
 
     this._setReady();
