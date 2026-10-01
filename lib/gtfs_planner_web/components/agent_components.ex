@@ -75,9 +75,10 @@ defmodule GtfsPlannerWeb.AgentComponents do
   attr :notice, :string, default: nil, doc: "a panel-level refusal or advisory"
   attr :entries_empty?, :boolean, required: true, doc: "true before the conversation has an entry"
 
-  attr :review_label, :string,
+  attr :review_label, :any,
     default: "Review prepared change",
-    doc: "the action label for a prepared change, named by the caller that offers it"
+    doc:
+      "the action label for a prepared change, named by the caller that offers it: a string, or a function of the prepared change for a caller that prepares more than one kind"
 
   attr :composer_hint, :string,
     default: "Review changes before applying.",
@@ -257,9 +258,10 @@ defmodule GtfsPlannerWeb.AgentComponents do
   attr :entry, :map, required: true, doc: "one conversation entry"
   attr :title, :string, required: true, doc: "the pack's panel title"
 
-  attr :review_label, :string,
+  attr :review_label, :any,
     default: "Review prepared change",
-    doc: "the action label for a prepared change, named by the caller that offers it"
+    doc:
+      "the action label for a prepared change, named by the caller that offers it: a string, or a function of the prepared change for a caller that prepares more than one kind"
 
   def agent_entry(assigns) do
     badge = entry_badge(assigns.entry)
@@ -271,6 +273,7 @@ defmodule GtfsPlannerWeb.AgentComponents do
       |> assign(:badge_tone, badge && elem(badge, 1))
       |> assign(:prepared_badge, prepared_badge)
       |> assign(:callout_kind, callout_kind(assigns.entry.status))
+      |> assign(:review_label, review_label(assigns.review_label, assigns.entry.prepared))
 
     ~H"""
     <article id={@id} class="text-sm">
@@ -536,6 +539,13 @@ defmodule GtfsPlannerWeb.AgentComponents do
 
   defp prepared_badge(%{applied?: true}), do: {"Applied", "badge-success"}
   defp prepared_badge(_entry), do: {"Ready to review", "badge-info"}
+
+  # The caller names the action in data, and this module names no pack command
+  # (INV-1). A caller that prepares more than one kind of change passes a
+  # function of the prepared change, so each card's label promises what its own
+  # button opens.
+  defp review_label(label, _prepared) when is_binary(label), do: label
+  defp review_label(label, prepared) when is_function(label, 1), do: label.(prepared)
 
   defp callout_kind(:stopped), do: "warning"
   defp callout_kind(:incomplete), do: "warning"

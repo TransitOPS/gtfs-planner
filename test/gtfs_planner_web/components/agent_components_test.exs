@@ -383,6 +383,21 @@ defmodule GtfsPlannerWeb.AgentComponentsTest do
       assert first_attr(LazyHTML.query(entry_doc, "#agent-prepared-1"), "tabindex") == "-1"
     end
 
+    test "takes the caller's own label for the prepared change it is given" do
+      assigns = %{
+        id: "agent-entry-1",
+        entry: entry(%{prepared: prepared()}),
+        title: "Test helper",
+        review_label: fn %{command: {:date_change, _dates, _stop, _run}} ->
+          "Review date change"
+        end
+      }
+
+      entry_doc = rendered_to_string(~H"<AgentComponents.agent_entry {assigns} />") |> doc()
+
+      assert text(LazyHTML.query(entry_doc, "#agent-review-prepared-1")) == "Review date change"
+    end
+
     test "confirms an applied proposal on its stable card and removes the review action" do
       entry_doc = entry_html(%{prepared: prepared(), applied?: true}) |> doc()
 

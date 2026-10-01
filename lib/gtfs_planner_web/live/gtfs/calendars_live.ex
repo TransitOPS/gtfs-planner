@@ -1970,6 +1970,17 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     end
   end
 
+  # This page prepares two kinds of change, so the panel's action label is named
+  # per prepared command rather than once for the page: a button label is a
+  # promise, and an editor who asked to stop service is not reviewing an
+  # extension. The panel itself names no pack command (INV-1).
+  defp agent_review_label(%{command: {:save, _service_id, _attrs}}), do: "Review extension"
+
+  defp agent_review_label(%{command: {:date_change, _dates, _remove_from, _add_to}}),
+    do: "Review date change"
+
+  defp agent_review_label(_prepared), do: "Review prepared change"
+
   defp handoff_prepared_change(socket, entry_id) do
     case Agents.prepared(
            socket.assigns.agent_session,
@@ -3345,7 +3356,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
               form={@agent_form}
               notice={@agent_notice}
               entries_empty?={@agent_entries_empty?}
-              review_label="Review extension"
+              review_label={&agent_review_label/1}
             />
           </div>
         </div>
