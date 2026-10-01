@@ -395,7 +395,7 @@ defmodule GtfsPlannerWeb.Admin.Components do
   password. `GtfsPlanner.Accounts.invite_member/4` creates the user through
   `User.invite_changeset/2`, which sets no password, and
   `Accounts.accept_invite_set_password/2` is the only transition that sets one.
-  `Accounts.resend_user_invite/2` uses the same signal and answers
+  `Accounts.resend_user_invite/4` uses the same signal and answers
   `{:error, :already_accepted}` once a password exists, so deriving the badge
   from `hashed_password` keeps the rendered status and the offered recovery
   action in agreement.

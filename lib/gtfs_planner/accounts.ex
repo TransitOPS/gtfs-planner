@@ -572,7 +572,7 @@ defmodule GtfsPlanner.Accounts do
   The invitation email is delivered only after the transaction commits. A
   delivery failure leaves the committed user, membership, and usable invite
   token in place and returns `{:partial, :delivery_failed, user, reason}`; the
-  safe recovery is `resend_user_invite/2`.
+  safe recovery is `resend_user_invite/4`.
 
   An address that already belongs to an account with a password gets the
   membership only: no invite token is issued, because a set-password link would
@@ -714,39 +714,59 @@ defmodule GtfsPlanner.Accounts do
   end
 
   @doc ~S"""
-  Delivers the user invitation email to the given user.
+  Resends an invitation to a member who has not set a password yet.
+
+  Runs as a member-admin command. One transaction locks the organization,
+  checks that `actor` is currently a system administrator or a usable
+  administrator of it, confirms `user_id` is a member of that organization and
+  still has no password, and inserts a fresh invite token. The email is sent
+  after the transaction commits.
+
+  Returns `{:error, :forbidden}` without writing when the actor's permission was
+  revoked, `{:error, :not_found}` for an unknown organization or a user who is
+  not a member of it, and `{:error, :already_accepted}` when the user has a
+  password. A delivery failure returns the notifier's `{:error, reason}` and
+  leaves the token in place; resending again is the recovery.
 
   ## Examples
 
-      iex> deliver_user_invite(user, &url(~p"/users/accept_invite/#{&1}"))
+      iex> resend_user_invite(admin, org_id, user_id, &url(~p"/users/accept_invite/#{&1}"))
       {:ok, %{to: ..., body: ...}}
 
+      iex> resend_user_invite(revoked_admin, org_id, user_id, &url(~p"/users/accept_invite/#{&1}"))
+      {:error, :forbidden}
+
   """
-  def deliver_user_invite(%User{} = user, invite_url_fun) when is_function(invite_url_fun, 1) do
-    {encoded_token, user_token} = UserToken.build_email_token(user, "invite")
-    Repo.insert!(user_token)
-    UserNotifier.deliver_user_invite(user, invite_url_fun.(encoded_token))
+  def resend_user_invite(actor, organization_id, user_id, invite_url_fun)
+      when is_function(invite_url_fun, 1) do
+    Ecto.Multi.new()
+    |> Ecto.Multi.run(:authorize, fn _repo, _changes ->
+      Authorization.lock_member_admin(actor, organization_id)
+    end)
+    |> Ecto.Multi.run(:invitee, fn repo, _changes ->
+      fetch_pending_member(repo, organization_id, user_id)
+    end)
+    |> Ecto.Multi.run(:token, fn repo, %{invitee: user} -> insert_invite_token(repo, user) end)
+    |> Repo.transaction()
+    |> case do
+      {:ok, %{invitee: user, token: token}} ->
+        UserNotifier.deliver_user_invite(user, invite_url_fun.(token))
+
+      {:error, _operation, reason, _changes} ->
+        {:error, reason}
+    end
   end
 
-  @doc ~S"""
-  Resends an invitation to a user who hasn't set a password yet.
-
-  Returns {:error, :already_accepted} if user has already set a password.
-
-  ## Examples
-
-      iex> resend_user_invite(user, &url(~p"/users/accept_invite/#{&1}"))
-      {:ok, %{to: ..., body: ...}}
-
-      iex> resend_user_invite(accepted_user, &url(~p"/users/accept_invite/#{&1}"))
-      {:error, :already_accepted}
-
-  """
-  def resend_user_invite(%User{} = user, invite_url_fun) when is_function(invite_url_fun, 1) do
-    if user.hashed_password do
-      {:error, :already_accepted}
+  # The user row is locked so an acceptance that commits first is seen here, and
+  # one that commits afterwards deletes the token inserted below.
+  defp fetch_pending_member(repo, organization_id, user_id) do
+    with {:ok, user_id} <- Ecto.UUID.cast(user_id),
+         %UserOrgMembership{} <-
+           repo.get_by(UserOrgMembership, user_id: user_id, organization_id: organization_id),
+         %User{} = user <- repo.one(from u in User, where: u.id == ^user_id, lock: "FOR UPDATE") do
+      if user.hashed_password, do: {:error, :already_accepted}, else: {:ok, user}
     else
-      deliver_user_invite(user, invite_url_fun)
+      _ -> {:error, :not_found}
     end
   end
 

@@ -854,6 +854,24 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       assert view |> element("#member-action-feedback") |> render() =~ "pending@example.com"
     end
 
+    test "resend after the system administrator's access was revoked is refused and sends nothing", %{
+      conn: conn,
+      admin_user: admin_user,
+      organization: organization
+    } do
+      pending = member_fixture(organization, %{email: "pending@example.com", invited?: true})
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations/#{organization.id}")
+
+      deactivate_membership_fixture(membership(admin_user.id, organization.id))
+      view |> element("#resend-invite-#{pending.id}") |> render_click()
+
+      assert view |> element("#member-action-feedback") |> render() =~
+               "Your administrator access has changed."
+
+      refute Repo.get_by(UserToken, user_id: pending.id, context: "invite")
+      assert_no_email_sent()
+    end
+
     test "an outcome says what happens next and tints the member it is about", %{
       conn: conn,
       organization: organization

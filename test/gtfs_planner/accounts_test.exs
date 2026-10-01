@@ -1083,45 +1083,58 @@ defmodule GtfsPlanner.AccountsTest do
     end
   end
 
-  describe "deliver_user_invite/2" do
+  describe "resend_user_invite/4" do
     setup do
-      %{user: user_fixture()}
+      organization = organization_fixture()
+      admin = user_fixture()
+      organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
+      pending = invited_user_fixture()
+      organization_membership_fixture(pending, organization, ["pathways_studio_editor"])
+
+      %{organization: organization, admin: admin, pending: pending}
     end
 
-    test "sends token through notification", %{user: user} do
+    test "sends a token that resolves back to the invited user", %{
+      organization: organization,
+      admin: admin,
+      pending: pending
+    } do
       token =
         extract_user_token(fn url ->
-          Accounts.deliver_user_invite(user, fn token -> "#{url}/users/accept_invite/#{token}" end)
+          Accounts.resend_user_invite(admin, organization.id, pending.id, fn token ->
+            "#{url}/users/accept_invite/#{token}"
+          end)
         end)
 
-      assert user.email == Accounts.get_user_by_invite_token(token).email
+      assert pending.email == Accounts.get_user_by_invite_token(token).email
     end
 
-    test "logs the user id without the invitation URL, token, or email", %{user: user} do
+    test "logs the user id without the invitation URL, token, or email", %{
+      organization: organization,
+      admin: admin,
+      pending: pending
+    } do
       log =
         capture_info_log(fn ->
-          Accounts.deliver_user_invite(user, fn token ->
+          Accounts.resend_user_invite(admin, organization.id, pending.id, fn token ->
             send(self(), {:invite_token, token})
             invite_url(token)
           end)
         end)
 
       assert_received {:invite_token, token}
-      assert log =~ "User invite sent to user #{user.id}"
+      assert log =~ "User invite sent to user #{pending.id}"
       refute log =~ token
       refute log =~ "accept_invite"
-      refute log =~ user.email
+      refute log =~ pending.email
     end
   end
 
   describe "get_user_by_invite_token/1" do
     setup do
-      user = user_fixture()
-
-      token =
-        extract_user_token(fn url ->
-          Accounts.deliver_user_invite(user, fn token -> "#{url}/users/accept_invite/#{token}" end)
-        end)
+      user = invited_user_fixture()
+      {token, user_token} = UserToken.build_email_token(user, "invite")
+      Repo.insert!(user_token)
 
       %{user: user, token: token}
     end

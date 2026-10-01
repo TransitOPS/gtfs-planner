@@ -293,7 +293,12 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
 
   def handle_event("resend_invite", %{"user-id" => user_id}, socket) do
     with_resolved_member(socket, user_id, fn socket, member ->
-      case Accounts.resend_user_invite(member.user, &url(~p"/users/accept_invite/#{&1}")) do
+      case Accounts.resend_user_invite(
+             socket.assigns.current_user,
+             socket.assigns.current_organization.id,
+             member.user.id,
+             &url(~p"/users/accept_invite/#{&1}")
+           ) do
         {:ok, _delivery} ->
           socket
           |> put_feedback(
@@ -313,6 +318,18 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
             member.user.id
           )
           |> load_members()
+
+        {:error, :forbidden} ->
+          put_feedback(
+            socket,
+            "error",
+            "Your administrator access has changed.",
+            "Nothing was changed. Ask a current organization administrator to resend the invitation.",
+            nil
+          )
+
+        {:error, :not_found} ->
+          refuse_stale(socket)
 
         {:error, _reason} ->
           socket
