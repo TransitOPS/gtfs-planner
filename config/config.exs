@@ -24,6 +24,9 @@ config :gtfs_planner,
   ecto_repos: [GtfsPlanner.Repo],
   generators: [timestamp_type: :utc_datetime],
   validator_module: GtfsPlanner.Gtfs.Validator,
+  # Deadline (in milliseconds) for one MobilityData validator CLI run; on expiry
+  # the started process is killed and the run fails with `:timeout`.
+  validator_timeout_ms: 900_000,
   geocoding_service: GtfsPlanner.Geocoding.Geoapify,
   street_routing_service: GtfsPlanner.StreetRouting.Geoapify,
   boundaries_service: GtfsPlanner.Boundaries.Tigerweb,

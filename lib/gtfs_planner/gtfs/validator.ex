@@ -26,6 +26,17 @@ defmodule GtfsPlanner.Gtfs.Validator do
   @pubsub GtfsPlanner.PubSub
   @phases [:exporting, :validating, :processing]
 
+  # The CLI keeps only the last 64 KiB of its output, and `report.json` is read
+  # only up to 64 MiB: a runaway validator cannot grow either without bound.
+  @output_limit 65_536
+  @report_limit 67_108_864
+
+  # How long to wait for the kernel to report a killed process before giving up
+  # on the exit status and closing the port anyway.
+  @kill_wait_ms 5_000
+
+  @cancel_message :gtfs_validator_cancel
+
   @doc """
   Validates GTFS data for a specific organization and version.
 
@@ -36,7 +47,12 @@ defmodule GtfsPlanner.Gtfs.Validator do
 
   ## Returns
     - `{:ok, %Result{}}` on successful validation
-    - `{:error, reason}` on failure
+    - `{:error, reason}` on failure, where `reason` is one of `:timeout` (the CLI
+      outlived `:validator_timeout_ms`), `:cancelled` (see `cancel/1`),
+      `:report_too_large`, `{:invalid_report, term}`, `{:cli_failed, exit_code, output}`,
+      `{:persistence_failed, :mark_running | :mark_completed | :mark_failed}`, or
+      an export or configuration error. A run whose terminal write failed is left
+      `running` and is never reported as completed.
 
   ## Examples
 
@@ -51,65 +67,44 @@ defmodule GtfsPlanner.Gtfs.Validator do
     temp_dir_ref = make_ref()
 
     try do
-      handle_db_operation(
-        "mark validation run as running",
-        fn -> Validations.mark_running(run) end
-      )
+      with :ok <- persist(:mark_running, fn -> Validations.mark_running(run) end) do
+        broadcast_progress(run.id, :exporting, 10, "Generating GTFS export...")
 
-      broadcast_progress(run.id, :exporting, 10, "Generating GTFS export...")
+        result =
+          with {:ok, zip_path, temp_dir} <-
+                 export_to_temp_file(
+                   organization_id,
+                   gtfs_version_id,
+                   export_profile(run.run_type)
+                 ) do
+            # Store temp_dir for cleanup
+            Process.put(temp_dir_ref, temp_dir)
 
-      result =
-        with {:ok, zip_path, temp_dir} <-
-               export_to_temp_file(
-                 organization_id,
-                 gtfs_version_id,
-                 export_profile(run.run_type)
-               ) do
-          # Store temp_dir for cleanup
-          Process.put(temp_dir_ref, temp_dir)
+            broadcast_progress(run.id, :exporting, 30, "Export complete")
+            broadcast_progress(run.id, :validating, 50, "Running MobilityData validator...")
 
-          broadcast_progress(run.id, :exporting, 30, "Export complete")
-          broadcast_progress(run.id, :validating, 50, "Running MobilityData validator...")
+            case run_validator_cli(zip_path, temp_dir) do
+              {:ok, output_dir} ->
+                broadcast_progress(run.id, :validating, 90, "Validation complete")
+                broadcast_progress(run.id, :processing, 95, "Processing results...")
 
-          case run_validator_cli(zip_path, temp_dir) do
-            {:ok, output_dir} ->
-              broadcast_progress(run.id, :validating, 90, "Validation complete")
-              broadcast_progress(run.id, :processing, 95, "Processing results...")
+                with {:ok, _validation_result} = parsed <- parse_report(output_dir, start_time) do
+                  broadcast_progress(run.id, :processing, 100, "Done")
+                  parsed
+                end
 
-              result = parse_report(output_dir, start_time)
-
-              broadcast_progress(run.id, :processing, 100, "Done")
-              {:ok, result}
-
-            {:error, reason} = error ->
-              Logger.error("Validator CLI failed: #{inspect(reason)}")
-              error
+              {:error, reason} = error ->
+                Logger.error("Validator CLI failed: #{inspect(reason)}")
+                error
+            end
           end
-        end
 
-      case result do
-        {:ok, validation_result} ->
-          handle_db_operation(
-            "mark validation run as completed",
-            fn -> Validations.mark_completed(run, validation_result) end
-          )
-
-          {:ok, validation_result}
-
-        {:error, _reason} = error ->
-          handle_db_operation(
-            "mark validation run as failed",
-            fn -> Validations.mark_failed(run, error) end
-          )
-
-          error
+        record_result(run, result)
       end
     rescue
       exception ->
-        handle_db_operation(
-          "mark validation run as failed",
-          fn -> Validations.mark_failed(run, exception) end
-        )
+        # The exception propagates, so a failed write here is only logged.
+        persist(:mark_failed, fn -> Validations.mark_failed(run, exception) end)
 
         reraise exception, __STACKTRACE__
     after
@@ -121,43 +116,50 @@ defmodule GtfsPlanner.Gtfs.Validator do
     end
   end
 
-  @doc false
-  # Executes a database operation and handles any errors gracefully.
-  #
-  # This function ensures that validation can proceed even if database
-  # operations fail due to connection issues or other errors. It logs
-  # all failures but always returns :ok to allow the validation flow
-  # to continue.
-  #
-  # ## Parameters
-  #   - operation_name: A descriptive name for the operation (used in logs)
-  #   - operation_fn: A zero-arity function that performs the database operation
-  #
-  # ## Returns
-  #   Always returns :ok, regardless of success or failure
-  #
-  defp handle_db_operation(operation_name, operation_fn) when is_function(operation_fn, 0) do
-    try do
-      case operation_fn.() do
-        {:ok, _} ->
-          :ok
+  @doc """
+  Stops the validator CLI started by the process `pid` that is running `validate/3`.
 
-        {:error, reason} ->
-          Logger.error("Failed to #{operation_name}: #{inspect(reason)}")
-          :ok
+  If the CLI is running, it is killed and `validate/3` returns `{:error, :cancelled}`.
+  If the CLI has not started yet, it is never launched. The request is consumed by
+  the next CLI launch in `pid`, so call this only for a process that is running or
+  about to run `validate/3`. Only the process the port started is killed.
+  """
+  @spec cancel(pid()) :: :ok
+  def cancel(pid) when is_pid(pid) do
+    send(pid, @cancel_message)
+    :ok
+  end
 
-        unexpected ->
-          Logger.warning(
-            "Unexpected return value while trying to #{operation_name}: #{inspect(unexpected)}"
-          )
-
-          :ok
-      end
-    rescue
-      exception ->
-        Logger.error("Exception while trying to #{operation_name}: #{inspect(exception)}")
-        :ok
+  # Persists the outcome of the pipeline. A failed terminal write returns
+  # `{:persistence_failed, operation}` instead of the pipeline's own result, and
+  # a failed `mark_completed` leaves the run `running` for lease recovery.
+  defp record_result(run, {:ok, validation_result}) do
+    with :ok <-
+           persist(:mark_completed, fn -> Validations.mark_completed(run, validation_result) end) do
+      {:ok, validation_result}
     end
+  end
+
+  defp record_result(run, {:error, _reason} = error) do
+    with :ok <- persist(:mark_failed, fn -> Validations.mark_failed(run, error) end) do
+      error
+    end
+  end
+
+  # Runs one run-status write and turns any failure, including a stale row, into
+  # an explicit error instead of continuing as if it had been saved.
+  defp persist(operation, write) do
+    case write.() do
+      {:ok, _row} -> :ok
+      {:error, reason} -> persistence_failed(operation, reason)
+    end
+  rescue
+    exception -> persistence_failed(operation, exception)
+  end
+
+  defp persistence_failed(operation, reason) do
+    Logger.error("Failed to persist #{operation}: #{inspect(reason)}")
+    {:error, {:persistence_failed, operation}}
   end
 
   @doc false
@@ -213,104 +215,218 @@ defmodule GtfsPlanner.Gtfs.Validator do
   end
 
   @doc false
-  defp run_validator_cli(zip_path, temp_dir) do
-    validator_path = Application.get_env(:gtfs_planner, :gtfs_validator_path)
-    java_path = Application.get_env(:gtfs_planner, :java_path, "java")
+  # Runs `java -jar <validator>` through a port owned by the calling process.
+  #
+  # Options (all default from application config): `:java_path`,
+  # `:validator_path` and `:timeout_ms` (`:validator_timeout_ms`, the deadline
+  # for the whole CLI run). Returns `{:ok, output_dir}` on exit status 0,
+  # `{:error, :timeout}` when the deadline passes, `{:error, :cancelled}` after
+  # `cancel/1`, and `{:error, {:cli_failed, exit_code, last_output}}` otherwise,
+  # where `last_output` holds at most the final 65,536 bytes.
+  def run_validator_cli(zip_path, temp_dir, opts \\ []) do
+    validator_path =
+      Keyword.get(opts, :validator_path, Application.get_env(:gtfs_planner, :gtfs_validator_path))
 
-    unless validator_path do
-      {:error, :validator_path_not_configured}
-    else
-      output_dir = Path.join(temp_dir, "output")
-      File.mkdir_p!(output_dir)
+    java_path =
+      Keyword.get(opts, :java_path, Application.get_env(:gtfs_planner, :java_path, "java"))
 
-      args = [
-        "-jar",
-        validator_path,
-        "-i",
-        zip_path,
-        "-o",
-        output_dir
-      ]
+    timeout_ms =
+      Keyword.get_lazy(opts, :timeout_ms, fn ->
+        Application.fetch_env!(:gtfs_planner, :validator_timeout_ms)
+      end)
 
-      case System.cmd(java_path, args, stderr_to_stdout: true) do
-        {_output, 0} ->
-          {:ok, output_dir}
+    # `:spawn_executable` does not search PATH, so resolve a bare `java` first.
+    case {validator_path, System.find_executable(java_path)} do
+      {nil, _java} ->
+        {:error, :validator_path_not_configured}
 
-        {output, exit_code} ->
-          Logger.error("Validator CLI exited with code #{exit_code}: #{output}")
-          {:error, {:cli_failed, exit_code, output}}
-      end
+      {_validator_path, nil} ->
+        {:error, {:java_not_found, java_path}}
+
+      {validator_path, java} ->
+        if cancel_requested?() do
+          {:error, :cancelled}
+        else
+          output_dir = Path.join(temp_dir, "output")
+          File.mkdir_p!(output_dir)
+
+          args = [
+            "-jar",
+            validator_path,
+            "-i",
+            zip_path,
+            "-o",
+            output_dir,
+            "--skip_validator_update"
+          ]
+
+          deadline = System.monotonic_time(:millisecond) + timeout_ms
+
+          port =
+            Port.open(
+              {:spawn_executable, java},
+              [:binary, :exit_status, :stderr_to_stdout, args: args]
+            )
+
+          await_exit(port, deadline, "", output_dir)
+        end
+    end
+  end
+
+  defp cancel_requested? do
+    receive do
+      @cancel_message -> true
+    after
+      0 -> false
+    end
+  end
+
+  # The deadline is absolute, so output arriving continuously cannot extend it.
+  defp await_exit(port, deadline, output, output_dir) do
+    case deadline - System.monotonic_time(:millisecond) do
+      remaining when remaining <= 0 ->
+        stop_process(port, :timeout)
+
+      remaining ->
+        receive do
+          {^port, {:data, data}} ->
+            await_exit(port, deadline, retain_tail(output, data), output_dir)
+
+          {^port, {:exit_status, 0}} ->
+            {:ok, output_dir}
+
+          {^port, {:exit_status, exit_code}} ->
+            Logger.error("Validator CLI exited with code #{exit_code}: #{output}")
+            {:error, {:cli_failed, exit_code, output}}
+
+          @cancel_message ->
+            stop_process(port, :cancelled)
+        after
+          remaining -> stop_process(port, :timeout)
+        end
+    end
+  end
+
+  # Keeps the last `@output_limit` bytes of everything the CLI wrote.
+  defp retain_tail(output, data) do
+    combined = output <> data
+    excess = byte_size(combined) - @output_limit
+
+    if excess > 0, do: binary_part(combined, excess, @output_limit), else: combined
+  end
+
+  # Kills the process the port started, waits for its exit status so the caller
+  # can rely on it being gone, then closes the port. Descendants of that
+  # process are not tracked: the MobilityData CLI is a single JVM.
+  defp stop_process(port, reason) do
+    with {:os_pid, os_pid} <- Port.info(port, :os_pid) do
+      System.cmd("/bin/sh", ["-c", "kill -KILL " <> Integer.to_string(os_pid)],
+        stderr_to_stdout: true
+      )
+    end
+
+    await_killed(port)
+
+    try do
+      Port.close(port)
+    rescue
+      ArgumentError -> :ok
+    end
+
+    {:error, reason}
+  end
+
+  defp await_killed(port) do
+    receive do
+      {^port, {:exit_status, _status}} -> :ok
+      {^port, {:data, _data}} -> await_killed(port)
+    after
+      @kill_wait_ms -> :ok
     end
   end
 
   @doc false
-  defp parse_report(output_dir, start_time) do
+  # Reads `report.json` from `output_dir` into a `%Result{}`. A report over
+  # `@report_limit` bytes is rejected from its size alone, without being read;
+  # an unreadable, malformed or wrongly shaped report is `{:invalid_report, _}`.
+  def parse_report(output_dir, start_time) do
     report_path = Path.join(output_dir, "report.json")
 
-    with {:ok, report_json} <- File.read(report_path),
-         {:ok, report_data} <- Jason.decode(report_json) do
-      notices =
-        case report_data do
-          %{} -> Map.get(report_data, "notices", [])
-          _ -> []
-        end
-
-      notices =
-        case notices do
-          list when is_list(list) -> list
-          _ -> []
-        end
-
-      # Group notices by code and severity
-      notices_by_code =
-        notices
-        |> Enum.group_by(& &1["code"])
-        |> Enum.reduce([], fn {code, code_notices}, acc ->
-          case code_notices do
-            [%{} = first | _] ->
-              # All notices with same code should have same severity
-              severity = first["severity"]
-
-              notice_group = %{
-                code: code,
-                severity: severity,
-                total_notices: length(code_notices),
-                notices: code_notices
-              }
-
-              [notice_group | acc]
-
-            _ ->
-              acc
-          end
-        end)
-        |> Enum.reverse()
-
-      # Calculate summary by severity
-      summary =
-        notices_by_code
-        |> Enum.reduce(%{errors: 0, warnings: 0, infos: 0}, fn notice_group, acc ->
-          count = notice_group.total_notices
-
-          case String.downcase(notice_group.severity) do
-            "error" -> %{acc | errors: acc.errors + count}
-            "warning" -> %{acc | warnings: acc.warnings + count}
-            "info" -> %{acc | infos: acc.infos + count}
-            _ -> acc
-          end
-        end)
-
-      duration_ms = System.monotonic_time(:millisecond) - start_time
-
-      %Result{
-        summary: summary,
-        notices: notices_by_code,
-        duration_ms: duration_ms,
-        validated_at: DateTime.utc_now()
-      }
+    with :ok <- check_report_size(report_path),
+         {:ok, report_json} <- File.read(report_path),
+         {:ok, report_data} <- Jason.decode(report_json),
+         {:ok, notices} <- report_notices(report_data) do
+      {:ok, build_result(notices, start_time)}
     else
-      {:error, reason} ->
-        {:error, {:invalid_report, reason}}
+      {:error, :report_too_large} = error -> error
+      {:error, reason} -> {:error, {:invalid_report, reason}}
     end
   end
+
+  defp build_result(notices, start_time) do
+    notices_by_code = group_notices(notices)
+
+    %Result{
+      summary: summarize(notices_by_code),
+      notices: notices_by_code,
+      duration_ms: System.monotonic_time(:millisecond) - start_time,
+      validated_at: DateTime.utc_now()
+    }
+  end
+
+  # Group notices by code and severity
+  defp group_notices(notices) do
+    notices
+    |> Enum.group_by(& &1["code"])
+    |> Enum.reduce([], fn {code, code_notices}, acc ->
+      case code_notices do
+        [%{} = first | _] ->
+          # All notices with same code should have same severity
+          severity = first["severity"]
+
+          notice_group = %{
+            code: code,
+            severity: severity,
+            total_notices: length(code_notices),
+            notices: code_notices
+          }
+
+          [notice_group | acc]
+
+        _ ->
+          acc
+      end
+    end)
+    |> Enum.reverse()
+  end
+
+  # Calculate summary by severity
+  defp summarize(notices_by_code) do
+    Enum.reduce(notices_by_code, %{errors: 0, warnings: 0, infos: 0}, fn notice_group, acc ->
+      count = notice_group.total_notices
+
+      case String.downcase(notice_group.severity) do
+        "error" -> %{acc | errors: acc.errors + count}
+        "warning" -> %{acc | warnings: acc.warnings + count}
+        "info" -> %{acc | infos: acc.infos + count}
+        _ -> acc
+      end
+    end)
+  end
+
+  defp check_report_size(report_path) do
+    case File.stat(report_path) do
+      {:ok, %File.Stat{size: size}} when size > @report_limit -> {:error, :report_too_large}
+      {:ok, _stat} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  # A report the validator wrote always has a `notices` list of objects; any
+  # other shape is a broken report, not a clean one.
+  defp report_notices(%{"notices" => notices}) when is_list(notices) do
+    if Enum.all?(notices, &is_map/1), do: {:ok, notices}, else: {:error, :malformed_notices}
+  end
+
+  defp report_notices(_report), do: {:error, :missing_notices}
 end
