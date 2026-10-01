@@ -10594,8 +10594,10 @@ case Accounts.register_first_admin(%{
     #   * ST-NTC is a station with one level and two bays
     #   * 1531 is unserved and carries a Spanish name translation
     #   * garage "1533" makes the next generated stop ID 1534, not 1533
+    # The seed runs without a session, so it uses the explicitly named unchecked
+    # creator rather than the authorized `create_organization/2`.
     {:ok, stops_map_org} =
-      Organizations.create_organization(%{
+      Organizations.create_organization_unchecked(%{
         name: "Stops Map Org",
         alias: "stops-map",
         product: :planner
@@ -10665,13 +10667,23 @@ case Accounts.register_first_admin(%{
     end
 
     # One fare zone, so the read-only fare zone field in the edit panel has a
-    # real value and its Settings link has somewhere to land.
+    # real value and its Settings link has somewhere to land. Since #736 the
+    # write names its actor, so the command takes this organization's own editor.
     {:ok, _stops_map_zone} =
-      FareZones.create_zone(stops_map_org.id, stops_map_version.id, %{
-        zone_id: "NL",
-        name: "Newport local",
-        color: "teal"
-      })
+      FareZones.create_zone(
+        %AuditContext{
+          organization_id: stops_map_org.id,
+          gtfs_version_id: stops_map_version.id,
+          actor_id: stops_map_editor.id,
+          actor_email: stops_map_editor.email,
+          station_stop_id: nil
+        },
+        %{
+          zone_id: "NL",
+          name: "Newport local",
+          color: "teal"
+        }
+      )
 
     # {stop_id, name, desc, stop_code, location_type, lat, lon, parent, level}
     stops_map_stop_rows = [

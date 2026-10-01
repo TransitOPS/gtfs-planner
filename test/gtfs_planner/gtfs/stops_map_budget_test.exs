@@ -307,7 +307,9 @@ defmodule GtfsPlanner.Gtfs.StopsMapBudgetTest do
   # the test low and is deliberately not a `VACUUM`, which cannot run inside the
   # sandbox's transaction.
   defp delete_envelope! do
-    for table <- ~w(route_pattern_stops shapes trips route_patterns stops routes) do
+    # `timed_pattern_stops` names a `route_pattern_stops` row, so it goes first.
+    for table <-
+          ~w(timed_pattern_stops route_pattern_stops shapes trips route_patterns stops routes) do
       Repo.query!("DELETE FROM #{table}")
     end
   end
