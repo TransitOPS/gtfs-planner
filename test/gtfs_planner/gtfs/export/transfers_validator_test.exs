@@ -359,13 +359,16 @@ defmodule GtfsPlanner.Gtfs.Export.TransfersValidatorTest do
 
     # The negative control is the same pair with a `to_stop_id` the to-trip never
     # visits — the drift R2 repairs. It reaches the export whole, so the ERROR
-    # cannot come from an export that dropped the row.
+    # cannot come from an export that dropped the row. The stop has to be a real
+    # exported stop: `BSTOP-1` is one the feed declares and only `BC-0700`
+    # visits, so the row trips the trip-and-stop rule rather than the foreign
+    # key rule, which a stop id the feed never declares would fire instead.
     transfer_fixture(organization.id, version.id, %{
       transfer_type: 4,
       from_trip_id: "BC-0700",
       to_trip_id: "BC-0800",
       from_stop_id: "BSTOP-2",
-      to_stop_id: "NEVER-VISITED"
+      to_stop_id: "BSTOP-1"
     })
 
     drifted_zip = export_zip!(tmp_dir, organization.id, version.id, "in-seat-drifted")
@@ -376,7 +379,7 @@ defmodule GtfsPlanner.Gtfs.Export.TransfersValidatorTest do
     print_block_observation("in-seat-drifted", drifted_report)
 
     assert {_, drifted_rows} = transfers_csv(drifted_zip)
-    assert "BSTOP-2,NEVER-VISITED,,,BC-0700,BC-0800,4," in drifted_rows
+    assert "BSTOP-2,BSTOP-1,,,BC-0700,BC-0800,4," in drifted_rows
 
     notice =
       Enum.find(
@@ -413,7 +416,7 @@ defmodule GtfsPlanner.Gtfs.Export.TransfersValidatorTest do
       |> List.flatten()
       |> Enum.find(fn entry ->
         entry.row.from_trip_id == from_trip_id and entry.row.to_trip_id == to_trip_id and
-          entry.row.to_stop_id == "NEVER-VISITED"
+          entry.row.to_stop_id == "BSTOP-1"
       end)
 
     assert state, "the day load lists no in-seat record for the drifted pair"
