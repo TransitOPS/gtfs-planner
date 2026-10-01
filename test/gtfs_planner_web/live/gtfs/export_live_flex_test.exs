@@ -141,7 +141,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveFlexTest do
       organization: organization,
       gtfs_version: version
     } do
-      {:ok, _defaults} = ExportDefaults.update(organization.id, %{include_flex: false})
+      {:ok, _defaults} =
+        ExportDefaults.update(organization.id, editor_fixture(organization), %{
+          include_flex: false
+        })
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")

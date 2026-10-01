@@ -120,7 +120,11 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerFlexTest do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
     flex_representative_fixture(organization, version)
-    assert {:ok, _defaults} = ExportDefaults.update(organization.id, %{include_flex: false})
+
+    assert {:ok, _defaults} =
+             ExportDefaults.update(organization.id, editor_fixture(organization), %{
+               include_flex: false
+             })
 
     {run, claimed, generation, token} = claim_run(organization, version, :full)
     refute run.include_flex
@@ -301,7 +305,12 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerFlexTest do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
     flex_representative_fixture(organization, version)
-    assert {:ok, _defaults} = ExportDefaults.update(organization.id, %{include_flex: false})
+
+    assert {:ok, _defaults} =
+             ExportDefaults.update(organization.id, editor_fixture(organization), %{
+               include_flex: false
+             })
+
     {run, claimed, generation, token} = claim_run(organization, version, :full)
 
     assert :ok = Worker.build(claimed, generation, token, ExportRuns.topic(run))

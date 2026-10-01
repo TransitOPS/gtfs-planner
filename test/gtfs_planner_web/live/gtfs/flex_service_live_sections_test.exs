@@ -407,7 +407,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLiveSectionsTest do
                "Goes in the flex file, published with your main feed from the same export."
 
       # With flex off, the destination says so.
-      {:ok, _defaults} = ExportDefaults.update(ctx.organization.id, %{include_flex: false})
+      {:ok, _defaults} =
+        ExportDefaults.update(ctx.organization.id, editor_fixture(ctx.organization), %{
+          include_flex: false
+        })
 
       {:ok, view, _html} = live(ctx.conn, service_path(ctx.version, service))
       loaded(view)
@@ -645,7 +648,12 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLiveSectionsTest do
 
       attrs ->
         {:ok, saved} =
-          Flex.save_service(flex_audit_fixture(ctx.organization.id, ctx.version.id), service, attrs, [])
+          Flex.save_service(
+            flex_audit_fixture(ctx.organization.id, ctx.version.id),
+            service,
+            attrs,
+            []
+          )
 
         saved
     end

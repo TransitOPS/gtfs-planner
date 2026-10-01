@@ -203,7 +203,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEstimatesTest do
       version: version,
       route: route
     } do
-      {:ok, _} = ExportDefaults.update(organization.id, %{estimate_missing_times: false})
+      {:ok, _} =
+        ExportDefaults.update(organization.id, editor_fixture(organization), %{
+          estimate_missing_times: false
+        })
 
       {:ok, view, _html} = live(conn, schedules_path(version, route))
       html = render(view)

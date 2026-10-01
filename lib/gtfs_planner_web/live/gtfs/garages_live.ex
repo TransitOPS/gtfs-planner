@@ -17,7 +17,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   A delete is refused while any vehicle, block attribute or route operating
   setting references the garage: the page reads
   `Operations.garage_in_use_counts/2` before opening the confirmation and
-  `Operations.delete_garage/2` still attempts the write, naming the same counts
+  `Operations.delete_garage/3` still attempts the write, naming the same counts
   when a reference appears in between. A garage nothing references is deleted
   with its entered driving times, whose refs are the garage UUID.
 
@@ -68,6 +68,9 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   @garage_address_target ["garage", "address"]
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+
+  @permission_error "You no longer have permission to edit garages. " <>
+                      "Ask an organization administrator to restore your access."
 
   @impl true
   def mount(_params, _session, socket) do
@@ -260,6 +263,12 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
       {:error, :not_found} ->
         # The garage disappeared between opening the drawer and saving.
         {:noreply, socket |> close_garage_drawer() |> refresh_garages()}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> assign(:garage_form, garage_form(garage_base(socket), params))
+         |> put_flash(:error, @permission_error)}
     end
   end
 
@@ -363,8 +372,9 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
     # An exit has no generation payload; a closed and reopened drawer is no
     # longer searching even if LiveView still holds the earlier task reference.
     {:noreply,
-     if(socket.assigns.garage_drawer_open and
-          socket.assigns.address_search_state == :searching,
+     if(
+       socket.assigns.garage_drawer_open and
+         socket.assigns.address_search_state == :searching,
        do: assign(socket, :address_search_state, :failed),
        else: socket
      )}
@@ -385,7 +395,11 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   end
 
   defp delete_garage(socket, garage) do
-    case Operations.delete_garage(socket.assigns.current_organization.id, garage.id) do
+    case Operations.delete_garage(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_user,
+           garage.id
+         ) do
       {:ok, deleted} ->
         {:noreply,
          socket
@@ -402,6 +416,9 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
 
       {:error, :not_found} ->
         {:noreply, socket |> assign(:garage_delete_target, nil) |> refresh_garages()}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, @permission_error)}
     end
   end
 
@@ -1157,6 +1174,9 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
          |> assign(:tods_import_preview, refreshed_preview)
          |> assign(:tods_import_stale?, true)
          |> push_event("focus_scoped_target", %{id: "tods-import-error"})}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, @permission_error)}
     end
   end
 

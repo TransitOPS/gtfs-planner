@@ -133,7 +133,11 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
       feed: feed
     } do
       {:ok, _inactive} =
-        Flex.set_active(flex_audit_fixture(organization.id, version.id), feed.services.detour.id, false)
+        Flex.set_active(
+          flex_audit_fixture(organization.id, version.id),
+          feed.services.detour.id,
+          false
+        )
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -202,7 +206,11 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
       feed: feed
     } do
       {:ok, _inactive} =
-        Flex.set_active(flex_audit_fixture(organization.id, version.id), feed.services.area.id, false)
+        Flex.set_active(
+          flex_audit_fixture(organization.id, version.id),
+          feed.services.area.id,
+          false
+        )
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -298,7 +306,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
       assert has_element?(view, "#flex-exports", "Exports also write a flex file")
       refute has_element?(view, "#flex-exports", "Exports leave flex out")
 
-      {:ok, _defaults} = ExportDefaults.update(organization.id, %{include_flex: false})
+      {:ok, _defaults} =
+        ExportDefaults.update(organization.id, editor_fixture(organization), %{
+          include_flex: false
+        })
 
       {:ok, off_view, _html} = live(conn, flex_path(version))
 
@@ -307,7 +318,9 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
       refute has_element?(off_view, "#flex-exports", "Exports also write a flex file")
 
       # A version with no fixed route publishes the flex file as its only feed (R15).
-      {:ok, _defaults} = ExportDefaults.update(organization.id, %{include_flex: true})
+      {:ok, _defaults} =
+        ExportDefaults.update(organization.id, editor_fixture(organization), %{include_flex: true})
+
       empty_version = gtfs_version_fixture(organization.id)
 
       {:ok, service} =
@@ -337,7 +350,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
     } do
       version = gtfs_version_fixture(organization.id)
 
-      {:ok, _defaults} = ExportDefaults.update(organization.id, %{include_flex: false})
+      {:ok, _defaults} =
+        ExportDefaults.update(organization.id, editor_fixture(organization), %{
+          include_flex: false
+        })
 
       conn = log_in_user(conn, user, organization: organization)
 

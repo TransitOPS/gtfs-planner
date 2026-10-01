@@ -63,7 +63,7 @@ defmodule GtfsPlanner.Operations.GaragesTest do
     test "persists only the caller's organization and records the acting user" do
       organization = organization_fixture()
       other = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
 
       attrs =
         Map.merge(valid_garage_attrs(), %{
@@ -83,7 +83,7 @@ defmodule GtfsPlanner.Operations.GaragesTest do
 
     test "records the acting user even when params omit actor fields" do
       organization = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
 
       assert {:ok, garage} =
                Operations.create_garage(organization.id, actor, valid_garage_attrs())
@@ -95,7 +95,7 @@ defmodule GtfsPlanner.Operations.GaragesTest do
       organization = organization_fixture()
 
       assert {:error, changeset} =
-               Operations.create_garage(organization.id, operations_actor(), %{})
+               Operations.create_garage(organization.id, operations_actor(organization.id), %{})
 
       errors = errors_on(changeset)
       assert errors.name
@@ -110,7 +110,7 @@ defmodule GtfsPlanner.Operations.GaragesTest do
       assert {:error, changeset} =
                Operations.create_garage(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  valid_garage_attrs(%{"garage_id" => "bad id!"})
                )
 
@@ -123,7 +123,7 @@ defmodule GtfsPlanner.Operations.GaragesTest do
       assert {:error, lat_changeset} =
                Operations.create_garage(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  valid_garage_attrs(%{"lat" => "91"})
                )
 
@@ -132,7 +132,7 @@ defmodule GtfsPlanner.Operations.GaragesTest do
       assert {:error, lon_changeset} =
                Operations.create_garage(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  valid_garage_attrs(%{"lon" => "-181"})
                )
 
@@ -146,7 +146,7 @@ defmodule GtfsPlanner.Operations.GaragesTest do
       assert {:error, changeset} =
                Operations.create_garage(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  valid_garage_attrs(%{"garage_id" => "garage_shared"})
                )
 
@@ -164,7 +164,7 @@ defmodule GtfsPlanner.Operations.GaragesTest do
       assert {:ok, garage} =
                Operations.create_garage(
                  other.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  valid_garage_attrs(%{"garage_id" => "garage_shared"})
                )
 
@@ -175,7 +175,7 @@ defmodule GtfsPlanner.Operations.GaragesTest do
   describe "update_garage/4" do
     test "renaming keeps the garage ID and UUID" do
       organization = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
       garage = garage_fixture(organization.id, %{"garage_id" => "garage_main"})
 
       assert {:ok, updated} =
@@ -196,7 +196,7 @@ defmodule GtfsPlanner.Operations.GaragesTest do
       assert {:ok, updated} =
                Operations.update_garage(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  garage.id,
                  %{"garage_id" => "garage_depot"}
                )
@@ -214,7 +214,7 @@ defmodule GtfsPlanner.Operations.GaragesTest do
       assert {:error, changeset} =
                Operations.update_garage(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  second.id,
                  %{"garage_id" => "garage_first"}
                )
@@ -229,16 +229,21 @@ defmodule GtfsPlanner.Operations.GaragesTest do
       foreign = garage_fixture(other.id, %{"name" => "Foreign Garage"})
 
       assert {:error, :not_found} =
-               Operations.update_garage(organization.id, operations_actor(), foreign.id, %{
-                 "name" => "Hijacked"
-               })
+               Operations.update_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 foreign.id,
+                 %{
+                   "name" => "Hijacked"
+                 }
+               )
 
       assert Repo.get(Garage, foreign.id).name == "Foreign Garage"
 
       assert {:error, :not_found} =
                Operations.update_garage(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  Ecto.UUID.generate(),
                  %{
                    "name" => "Missing"
@@ -246,15 +251,20 @@ defmodule GtfsPlanner.Operations.GaragesTest do
                )
 
       assert {:error, :not_found} =
-               Operations.update_garage(organization.id, operations_actor(), "not-a-uuid", %{
-                 "name" => "Missing"
-               })
+               Operations.update_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 "not-a-uuid",
+                 %{
+                   "name" => "Missing"
+                 }
+               )
     end
 
     test "params cannot set organization_id or updated_by_id" do
       organization = organization_fixture()
       other = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
       garage = garage_fixture(organization.id)
 
       assert {:ok, updated} =
@@ -269,12 +279,18 @@ defmodule GtfsPlanner.Operations.GaragesTest do
     end
   end
 
-  describe "delete_garage/2" do
+  describe "delete_garage/3" do
     test "deletes a garage in the organization" do
       organization = organization_fixture()
       garage = garage_fixture(organization.id)
 
-      assert {:ok, %Garage{id: id}} = Operations.delete_garage(organization.id, garage.id)
+      assert {:ok, %Garage{id: id}} =
+               Operations.delete_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 garage.id
+               )
+
       assert id == garage.id
       assert Repo.get(Garage, garage.id) == nil
     end
@@ -284,13 +300,28 @@ defmodule GtfsPlanner.Operations.GaragesTest do
       other = organization_fixture()
       foreign = garage_fixture(other.id)
 
-      assert {:error, :not_found} = Operations.delete_garage(organization.id, foreign.id)
+      assert {:error, :not_found} =
+               Operations.delete_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 foreign.id
+               )
+
       assert Repo.get(Garage, foreign.id)
 
       assert {:error, :not_found} =
-               Operations.delete_garage(organization.id, Ecto.UUID.generate())
+               Operations.delete_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 Ecto.UUID.generate()
+               )
 
-      assert {:error, :not_found} = Operations.delete_garage(organization.id, "not-a-uuid")
+      assert {:error, :not_found} =
+               Operations.delete_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 "not-a-uuid"
+               )
     end
   end
 

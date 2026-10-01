@@ -33,7 +33,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   ADA preset, the export plan with the export-details drawer and the
   organization's realtime answer, and the deactivate/reactivate/delete actions.
   The organization's realtime answer is not part of the service draft: choosing
-  it writes `ExportDefaults.update/2` at once, exactly as the Settings page
+  it writes `ExportDefaults.update/3` at once, exactly as the Settings page
   step 26 will, and the service's own fields stay unsaved until Save.
   """
 
@@ -804,14 +804,21 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   @impl true
   def handle_event("set_realtime", %{"realtime_source" => source}, socket)
       when is_binary(source) do
-    case ExportDefaults.update(socket.assigns.current_organization.id, %{
-           realtime_source: source
-         }) do
+    case ExportDefaults.update(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_user,
+           %{
+             realtime_source: source
+           }
+         ) do
       {:ok, defaults} ->
         {:noreply, assign(socket, :export_defaults, defaults)}
 
       {:error, %Ecto.Changeset{}} ->
         {:noreply, put_flash(socket, :error, "Couldn’t save your realtime answer. Try again.")}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, @permission_error)}
     end
   end
 

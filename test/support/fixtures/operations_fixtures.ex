@@ -4,14 +4,21 @@ defmodule GtfsPlanner.OperationsFixtures do
   `GtfsPlanner.Operations` context.
   """
 
+  import Ecto.Query
+
+  alias GtfsPlanner.Accounts.User
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Operations
+  alias GtfsPlanner.Organizations.Organization
+  alias GtfsPlanner.Repo
+
+  @editor_role "pathways_studio_editor"
 
   @doc """
   Generate a garage in an organization.
 
   `organization_id` is the owning organization's id; `attrs` overrides the
-  generated garage attributes. The acting user is a fresh actor id, which is
-  enough for `updated_by_id` because it is a bare `binary_id`.
+  generated garage attributes. The acting user has a current editor membership.
   """
   def garage_fixture(organization_id, attrs \\ %{}) do
     attrs =
@@ -22,7 +29,9 @@ defmodule GtfsPlanner.OperationsFixtures do
         "lon" => Decimal.new("-74.0060")
       })
 
-    {:ok, garage} = Operations.create_garage(organization_id, actor(), attrs)
+    {:ok, garage} =
+      Operations.create_garage(organization_id, operations_actor(organization_id), attrs)
+
     garage
   end
 
@@ -38,7 +47,9 @@ defmodule GtfsPlanner.OperationsFixtures do
         %{"name" => "Type #{System.unique_integer([:positive])}"}
       )
 
-    {:ok, vehicle_type} = Operations.create_vehicle_type(organization_id, actor(), attrs)
+    {:ok, vehicle_type} =
+      Operations.create_vehicle_type(organization_id, operations_actor(organization_id), attrs)
+
     vehicle_type
   end
 
@@ -55,16 +66,30 @@ defmodule GtfsPlanner.OperationsFixtures do
         %{"vehicle_id" => "vehicle_#{System.unique_integer([:positive])}"}
       )
 
-    {:ok, vehicle} = Operations.create_vehicle(organization_id, actor(), attrs)
+    {:ok, vehicle} =
+      Operations.create_vehicle(organization_id, operations_actor(organization_id), attrs)
+
     vehicle
   end
 
   @doc """
-  Generate an opaque actor map for Operations writes.
+  Return an actor with a current editor membership in the given organization,
+  creating one when the organization has no active editor.
   """
-  def operations_actor, do: actor()
-
-  defp actor, do: %{id: Ecto.UUID.generate()}
+  def operations_actor(organization_id) do
+    Repo.one(
+      from(m in UserOrgMembership,
+        join: user in User,
+        on: user.id == m.user_id,
+        where:
+          m.organization_id == ^organization_id and is_nil(m.deactivated_at) and
+            ^@editor_role in m.roles,
+        order_by: [asc: m.inserted_at],
+        select: user,
+        limit: 1
+      )
+    ) || GtfsPlanner.AccountsFixtures.editor_fixture(Repo.get!(Organization, organization_id))
+  end
 
   defp normalize_keys(attrs), do: Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
 end

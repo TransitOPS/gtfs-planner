@@ -10,7 +10,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
 
   The page saves once. A keystroke re-reads the switch's consequence, the note
   for the chosen realtime answer, and the missing-times consequence from the
-  draft, and Save writes all four settings through `ExportDefaults.update/2`,
+  draft, and Save writes all four settings through `ExportDefaults.update/3`,
   whose changeset casts the four settings only — a submitted organization ID
   is ignored rather than written. The Flex list reads the same row for its
   export-state line, so the two surfaces cannot disagree about whether exports
@@ -36,6 +36,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
   alias Phoenix.LiveView.AsyncResult
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+
+  @permission_error "You no longer have permission to edit export defaults. " <>
+                      "Ask an organization administrator to restore your access."
 
   @impl true
   def mount(_params, _session, socket) do
@@ -72,7 +75,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
 
   @impl true
   def handle_event("save", %{"export_default" => params}, socket) do
-    case ExportDefaults.update(socket.assigns.current_organization.id, params) do
+    case ExportDefaults.update(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_user,
+           params
+         ) do
       {:ok, defaults} ->
         {:noreply,
          socket
@@ -88,6 +95,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
          socket
          |> assign_form(changeset, :insert)
          |> put_flash(:error, "Nothing was saved. Check the highlighted field.")}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> assign_form(ExportDefault.changeset(socket.assigns.defaults, params))
+         |> put_flash(:error, @permission_error)}
     end
   end
 

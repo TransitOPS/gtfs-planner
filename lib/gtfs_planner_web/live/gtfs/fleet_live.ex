@@ -27,7 +27,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   `Operations.VehicleType`, and deletion is refused while any vehicle, block
   attribute or route operating setting requires the type: the page reads
   `Operations.vehicle_type_in_use_counts/2` before opening the confirmation and
-  `Operations.delete_vehicle_type/2` still attempts the write, naming the same
+  `Operations.delete_vehicle_type/3` still attempts the write, naming the same
   counts when a reference appears in between.
 
   `#vehicle-drawer` edits one vehicle and creates a numbered group. Adding uses
@@ -95,6 +95,9 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   @max_vehicle_id_length 255
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+
+  @permission_error "You no longer have permission to edit the fleet. " <>
+                      "Ask an organization administrator to restore your access."
 
   @impl true
   def mount(_params, _session, socket) do
@@ -316,6 +319,12 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
       {:error, :not_found} ->
         # The type disappeared between opening the drawer and saving.
         {:noreply, socket |> close_vehicle_type_drawer() |> load_fleet()}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> assign(:type_form, vehicle_type_form(vehicle_type_base(socket), params))
+         |> put_flash(:error, @permission_error)}
     end
   end
 
@@ -452,6 +461,15 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
       {:error, :not_found} ->
         # The vehicle or one of its assignments disappeared before the save.
         {:noreply, socket |> close_vehicle_drawer() |> load_fleet()}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> assign(
+           :vehicle_form,
+           vehicle_form(socket.assigns.vehicle_entity || %Vehicle{}, params)
+         )
+         |> put_flash(:error, @permission_error)}
     end
   end
 
@@ -484,6 +502,12 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
 
       {:error, :not_found} ->
         {:noreply, socket |> close_vehicle_drawer() |> load_fleet()}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> assign_vehicle_range(params)
+         |> put_flash(:error, @permission_error)}
     end
   end
 
@@ -568,6 +592,12 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
 
         {:error, :not_found} ->
           {:noreply, stale_selection(socket)}
+
+        {:error, :forbidden} ->
+          {:noreply,
+           socket
+           |> assign(:bulk_form, bulk_form(params))
+           |> put_flash(:error, @permission_error)}
       end
     end
   end
@@ -596,7 +626,11 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
     if empty_selection?(socket.assigns.selected_ids) do
       {:noreply, socket}
     else
-      case Operations.delete_vehicles(socket.assigns.current_organization.id, ids) do
+      case Operations.delete_vehicles(
+             socket.assigns.current_organization.id,
+             actor(socket),
+             ids
+           ) do
         {:ok, count} ->
           {:noreply,
            socket
@@ -606,6 +640,9 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
 
         {:error, :not_found} ->
           {:noreply, stale_selection(socket)}
+
+        {:error, :forbidden} ->
+          {:noreply, put_flash(socket, :error, @permission_error)}
       end
     end
   end
@@ -1356,7 +1393,11 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   end
 
   defp delete_vehicle_type(socket, vehicle_type) do
-    case Operations.delete_vehicle_type(socket.assigns.current_organization.id, vehicle_type.id) do
+    case Operations.delete_vehicle_type(
+           socket.assigns.current_organization.id,
+           actor(socket),
+           vehicle_type.id
+         ) do
       {:ok, deleted} ->
         {:noreply,
          socket
@@ -1373,6 +1414,9 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
 
       {:error, :not_found} ->
         {:noreply, socket |> assign(:type_delete_target, nil) |> load_fleet()}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, @permission_error)}
     end
   end
 
@@ -1884,6 +1928,9 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
          |> assign(:tods_import_preview, refreshed_preview)
          |> assign(:tods_import_stale?, true)
          |> push_event("focus_scoped_target", %{id: "tods-import-error"})}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, @permission_error)}
     end
   end
 

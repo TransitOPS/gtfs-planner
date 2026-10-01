@@ -466,9 +466,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       refute has_element?(view, "#export-warning-panel")
 
       assert {:ok, _garage} =
-               Operations.update_garage(organization.id, operations_actor(), garage.id, %{
-                 "garage_id" => "garage_main"
-               })
+               Operations.update_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 garage.id,
+                 %{
+                   "garage_id" => "garage_main"
+                 }
+               )
 
       start_export_and_wait(view, "#retry-export")
 
@@ -695,7 +700,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
            gtfs_version: version
          } do
       seed_estimable_trip(organization, version)
-      assert {:ok, _} = ExportDefaults.update(organization.id, %{estimate_missing_times: false})
+
+      assert {:ok, _} =
+               ExportDefaults.update(organization.id, editor_fixture(organization), %{
+                 estimate_missing_times: false
+               })
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
@@ -772,7 +781,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
 
       refute has_element?(view, "#export-stale-settings")
 
-      assert {:ok, _} = ExportDefaults.update(organization.id, %{estimate_missing_times: false})
+      assert {:ok, _} =
+               ExportDefaults.update(organization.id, editor_fixture(organization), %{
+                 estimate_missing_times: false
+               })
+
       {:ok, stale_view, _html} = live(conn, "/gtfs/#{version.id}/export")
       render_async(stale_view)
 
@@ -796,7 +809,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
            organization: organization,
            gtfs_version: version
          } do
-      assert {:ok, _} = ExportDefaults.update(organization.id, %{estimate_missing_times: false})
+      assert {:ok, _} =
+               ExportDefaults.update(organization.id, editor_fixture(organization), %{
+                 estimate_missing_times: false
+               })
 
       assert {:ok, run} =
                ExportRuns.create_pending(organization.id, version.id, @actor, :full)
