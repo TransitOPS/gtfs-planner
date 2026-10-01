@@ -6,8 +6,8 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
   calendar, trip, time, block, transfer, run or audit row, and it exposes no
   apply, prepared command or execution token (INV-1, AC-10, AC-11). It owns
   intent normalization and acceptance, and the one coherent read those are
-  computed from; the computation steps `partition/2`, `project_times/3` and
-  `prepare/2` belong to later work.
+  computed from; the later computation steps are `project_times/3` and
+  `prepare/2`.
 
   ## Two server-owned steps
 
@@ -77,6 +77,28 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
   sandbox fixture takes its no-op implementation and ordinary use takes the
   production one. `gtfs_dated_change_read_timeout_ms` bounds the read in
   milliseconds; it defaults to 30 seconds.
+
+  ## Original dates, not the requested window
+
+  `partition/2` answers one question: on which of its *original* service dates
+  does each selected service run? It uses the native
+  `GtfsPlanner.Gtfs.Calendars.ServiceDates.active_dates/2`, so D is the whole
+  effective schedule - a multi-year weekly range and additions outside it
+  included - and never the requested window alone. T is D intersected with the
+  inclusive accepted interval, N is D minus T, so `T` and `N` are disjoint and
+  their union is exactly D.
+
+  A date the original service does not run stays absent: a removed holiday is
+  not in D, so it is in neither T nor N and no partition ever proposes it. An
+  unselected trip that shares a calendar keeps D in full, which is why a
+  partition names both its selected trips and the unaffected ones beside them.
+  An empty T is a complete no-op analysis, not a saved change.
+
+  The enumeration is admitted before it runs: the inclusive weekly span of
+  every unique loaded calendar plus one cell per exception row is counted
+  first, and a workload above `@max_date_work_cells` cells is
+  `{:incomplete, reason}` rather than a partial complete answer (AC-5, AC-6,
+  AC-7, CR-3).
   """
 
   import Ecto.Query
@@ -86,6 +108,7 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
   alias GtfsPlanner.Gtfs.BlockingSetting
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarDate
+  alias GtfsPlanner.Gtfs.Calendars.ServiceDates
   alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RouteOperatingSetting
@@ -116,6 +139,7 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
   @max_version_trips 10_000
   @max_stop_times 75_000
   @max_dependency_rows 20_000
+  @max_date_work_cells 200_000
 
   @read_timeout_env :gtfs_dated_change_read_timeout_ms
   @read_timeout_ms 30_000
@@ -277,6 +301,26 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
           source_label: String.t() | nil,
           input_digest: String.t()
         }
+
+  @typedoc """
+  One selected service's original service dates and the two partitions of them.
+
+  `original_dates` is the complete effective D. `temporary_dates` is T, D inside
+  the accepted inclusive interval, and `normal_dates` is N, D minus T.
+  `unaffected_trip_ids` are the version's other trips of the same calendar: they
+  keep all of D and are not part of the change.
+  """
+  @type partition :: %{
+          service_id: String.t(),
+          selected_trip_ids: [Ecto.UUID.t()],
+          unaffected_trip_ids: [Ecto.UUID.t()],
+          original_dates: [Date.t()],
+          temporary_dates: [Date.t()],
+          normal_dates: [Date.t()]
+        }
+
+  @typedoc "One partition per selected service, ordered by `service_id`."
+  @type partitions :: [partition()]
 
   @typedoc "Field-keyed validation messages a host renders on the submitted form."
   @type field_errors :: %{optional(atom()) => [String.t()]}
@@ -805,6 +849,212 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
   end
 
   defp route_identity(%Scope{}), do: {:error, :not_found}
+
+  # -- original date partitions ----------------------------------------------
+
+  @doc """
+  Splits each selected service's complete original service dates into the
+  affected and unaffected partitions.
+
+  `snapshot` is a `load/2` snapshot and `accepted` is the source it was read
+  for; a source that is not the one this snapshot was loaded for is refused, so
+  a partition can never describe a different selection or interval than the
+  data behind it (INV-2).
+
+  D comes from the native `Calendars.ServiceDates.active_dates/2` over the
+  snapshot's own calendar and exception rows, so it is the whole effective
+  schedule: an inclusive multi-year weekly range, additions inside and outside
+  it, and removals subtracted from both. T is D inside the accepted inclusive
+  interval, N is D minus T. `T` and `N` are disjoint and their union is exactly
+  D, which is what keeps a date the original service never ran - a removed
+  holiday - out of both, and what keeps an outside-range addition in N.
+
+  A trip of the same calendar that the editor did not select keeps all of D and
+  is reported beside the selected trips as an unaffected user, so a partition
+  never reads as if the change covered the whole calendar (AC-7).
+
+  An empty T is a complete no-op analysis: it describes a plan that would change
+  nothing, and nothing is saved.
+
+  Failure is `{:error, {:incomplete, reason}}`: the enumeration is refused
+  before it runs when the inclusive weekly spans plus exception rows over the
+  unique loaded calendars exceed `@max_date_work_cells`, when the source does
+  not match the snapshot, when a selected trip is not among the loaded trips, or
+  when calendar data the native evaluator cannot read is present. Exact-boundary
+  equality is admitted (AC-5, CR-3).
+  """
+  @spec partition(snapshot() | map(), accepted() | map()) ::
+          {:ok, partitions()} | {:error, incomplete()}
+  def partition(snapshot, accepted) when is_map(snapshot) and is_map(accepted) do
+    with {:ok, source} <- accepted_source(accepted),
+         :ok <- matched_source(snapshot, source),
+         {:ok, selected} <- selected_trips(snapshot),
+         {:ok, services} <- loaded_calendars(snapshot),
+         :ok <- within_work_cell_cap(services) do
+      build_partitions(snapshot, services, selected, source)
+    end
+  end
+
+  def partition(_snapshot, _accepted), do: {:error, {:incomplete, :invalid_snapshot}}
+
+  # A partition describes the read its accepted source asked for. A source from
+  # another selection or interval is refused instead of being partitioned
+  # against this snapshot's rows.
+  defp matched_source(snapshot, source) do
+    cond do
+      Map.get(snapshot, :input_digest) != source.input_digest ->
+        {:error, {:incomplete, :snapshot_source_mismatch}}
+
+      not interval?(source.first_date, source.last_date) ->
+        {:error, {:incomplete, :invalid_accepted_source}}
+
+      true ->
+        :ok
+    end
+  end
+
+  # An inclusive interval needs two real dates in order. A reversed or
+  # unreadable pair would intersect nothing and look like a complete no-op.
+  defp interval?(first_date, last_date) do
+    match?(%Date{}, first_date) and match?(%Date{}, last_date) and
+      Date.compare(first_date, last_date) != :gt
+  end
+
+  # The selection the snapshot was loaded for, as the snapshot's own trips. A
+  # selected trip the read did not return has no calendar to partition, so it is
+  # incomplete rather than silently absent from the plan, and a snapshot naming
+  # no usable selection is never an empty-but-complete plan.
+  defp selected_trips(snapshot) do
+    trips = snapshot |> Map.get(:trips) |> Enum.filter(&is_map/1)
+    selected = snapshot |> Map.get(:selected_trip_ids) |> readable_selection_ids()
+
+    cond do
+      selected == [] ->
+        {:error, {:incomplete, :invalid_snapshot}}
+
+      Enum.any?(selected, fn id -> not Enum.any?(trips, &(&1.id == id)) end) ->
+        {:error, {:incomplete, {:unselected_trip, hd(selected)}}}
+
+      true ->
+        {:ok, Enum.filter(trips, &(&1.id in selected))}
+    end
+  end
+
+  defp readable_selection_ids(nil), do: []
+
+  defp readable_selection_ids(ids) when is_list(ids) do
+    Enum.filter(ids, &(is_binary(&1) and Ecto.UUID.cast(&1) == {:ok, &1}))
+  end
+
+  defp readable_selection_ids(_selected_trip_ids), do: []
+
+  # One entry per unique loaded calendar, holding the native shapes the date
+  # evaluator consumes: a `Calendar` struct, or `nil` for exception-only
+  # service, plus that service's exception rows.
+  defp loaded_calendars(snapshot) do
+    rows = snapshot |> Map.get(:calendars) |> Enum.filter(&is_map/1)
+    exceptions = snapshot |> Map.get(:calendar_dates) |> Enum.filter(&is_map/1)
+
+    service_ids =
+      Enum.uniq(Enum.map(rows ++ exceptions, & &1.service_id)) |> Enum.sort()
+
+    calendars = Map.new(rows, &{&1.service_id, calendar_row(&1)})
+
+    {:ok,
+     Map.new(service_ids, fn service_id ->
+       {service_id,
+        %{
+          calendar: Map.get(calendars, service_id),
+          exceptions: Enum.filter(exceptions, &(&1.service_id == service_id))
+        }}
+     end)}
+  end
+
+  defp calendar_row(row) do
+    struct(Calendar, row)
+  end
+
+  # The work the enumeration would do, counted before it is done: every civil
+  # day of each inclusive weekly range plus one cell per exception row. Equality
+  # with the cap is admitted; only an over-cap workload is refused.
+  defp within_work_cell_cap(services) do
+    cells =
+      Enum.reduce(services, 0, fn {_service_id, %{calendar: calendar, exceptions: exceptions}},
+                                  total ->
+        total + weekly_span(calendar) + length(exceptions)
+      end)
+
+    if cells > @max_date_work_cells do
+      {:error, {:incomplete, {:date_work_cap_exceeded, cells, @max_date_work_cells}}}
+    else
+      :ok
+    end
+  end
+
+  defp weekly_span(nil), do: 0
+  defp weekly_span(calendar), do: Date.diff(calendar.end_date, calendar.start_date) + 1
+
+  defp build_partitions(snapshot, services, selected, source) do
+    trips = snapshot |> Map.get(:trips) |> Enum.filter(&is_map/1)
+
+    selected
+    |> Enum.map(& &1.service_id)
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Enum.map(fn service_id ->
+      partition_for(service_id, services, selected, trips, source)
+    end)
+    |> Enum.reduce_while({:ok, []}, fn partition, {:ok, acc} ->
+      case partition do
+        {:ok, built} -> {:cont, {:ok, [built | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, partitions} -> {:ok, Enum.reverse(partitions)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp partition_for(service_id, services, selected, trips, source) do
+    service = Map.get(services, service_id, %{calendar: nil, exceptions: []})
+
+    with {:ok, original} <- active_dates(service) do
+      temporary = Enum.filter(original, &inside?(&1, source.first_date, source.last_date))
+
+      {:ok,
+       %{
+         service_id: service_id,
+         selected_trip_ids: trip_ids(selected, service_id),
+         unaffected_trip_ids: trip_ids(trips, service_id) -- trip_ids(selected, service_id),
+         original_dates: original,
+         temporary_dates: temporary,
+         normal_dates: original -- temporary
+       }}
+    end
+  end
+
+  # The native evaluator is the only source of D. `load/2` already refused the
+  # calendar shapes it cannot read, so a raise here is a snapshot that was not
+  # read through the loader; it is incomplete, never a partial partition.
+  defp active_dates(%{calendar: calendar, exceptions: exceptions}) do
+    # `Enum.sort_by/3` with `Date` rather than `Enum.sort/1`: a `%Date{}` is a
+    # struct, and the default `<=` compares its fields, not its chronology.
+    {:ok, calendar |> ServiceDates.active_dates(exceptions) |> Enum.sort_by(& &1, Date)}
+  rescue
+    ArgumentError -> {:error, {:incomplete, {:unreadable_calendar, calendar_label(calendar)}}}
+  end
+
+  defp inside?(date, first_date, last_date) do
+    Date.compare(date, first_date) != :lt and Date.compare(date, last_date) != :gt
+  end
+
+  defp trip_ids(trips, service_id) do
+    trips |> Enum.filter(&(&1.service_id == service_id)) |> Enum.map(& &1.id) |> Enum.sort()
+  end
+
+  defp calendar_label(nil), do: nil
+  defp calendar_label(calendar), do: calendar.service_id
 
   # -- normalization ---------------------------------------------------------
 
