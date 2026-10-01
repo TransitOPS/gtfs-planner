@@ -1537,3 +1537,159 @@ test.describe("alert timing", () => {
     await captureTimingReference(page, testInfo, "form-when-planned", "320");
   });
 });
+
+// The reason question, as spec 30's step 20 renders it: every cause once, Other
+// reason and Not known yet apart, and the optional description that belongs to
+// the other reason (AC-21). Nothing here looks for a publication state or
+// action (R2, CR-1).
+
+// The prototype state this question is compared against.
+async function captureReasonReference(page, testInfo, state, width) {
+  if (!fs.existsSync(REFERENCE_PATH)) return;
+
+  await page.goto(`file://${REFERENCE_PATH}?state=${state}`);
+  await page.waitForLoadState("load");
+
+  await page.screenshot({
+    path: capturePath(testInfo, `reason-ref-${state}-${width}.png`),
+    fullPage: false,
+  });
+}
+
+// A delay is the shortest sequence that reaches the reason question: urgency,
+// situation, mode, routes, direction, timing - so this journey walks the
+// editor's own flow and answers the timing question rather than opening a URL
+// with an alert that never existed.
+async function openReason(page) {
+  await openTiming(page, "now");
+
+  // An estimate keeps the alert live, so the timing answer is a start date, a
+  // clock time and a check-in, and Continue carries the reader on from there.
+  await page.locator("#alert-timing-end-kind-estimated").click();
+  await page.locator("#timing-check-in").selectOption({ index: 2 });
+  await page.locator("#timing-start-date").fill("2026-10-01");
+  await page.locator("#timing-start-time").fill("08:00");
+  await page.locator("#alert-timing-continue").click();
+
+  await page.waitForSelector("#alert-reason", { timeout: 15_000 });
+}
+
+test.describe("alert reason", () => {
+  test.describe.configure({ timeout: 120_000 });
+
+  test("every cause is offered once and the two open-ended ones are apart @reason", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openReason(page);
+
+    const cards = page.locator("#alert-cause button");
+    await expect(cards).toHaveCount(13);
+
+    // Match the label span, not the button's text: the button wraps the label in
+    // whitespace, and "Other reason" and "Not known yet" are different answers
+    // that must not collapse into one.
+    for (const label of [
+      "Construction or roadwork",
+      "Crash",
+      "Weather",
+      "Police activity",
+      "Medical emergency",
+      "Demonstration",
+      "Special event",
+      "Holiday",
+      "Maintenance",
+      "Vehicle or equipment problem",
+      "Strike",
+      "Other reason",
+      "Not known yet",
+    ]) {
+      await expect(
+        cards.filter({
+          has: page.locator("span.font-bold", { hasText: label }),
+        }),
+      ).toHaveCount(1);
+    }
+
+    await page.screenshot({
+      path: capturePath(testInfo, "reason-list-1440.png"),
+      fullPage: false,
+    });
+    await captureReasonReference(page, testInfo, "form-details", "1440");
+  });
+
+  test("the other reason saves its description and it survives a reload @reason", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openReason(page);
+
+    // The description belongs to the other reason, so the field appears with it
+    // and not before.
+    await expect(page.locator("#cause-detail")).toHaveCount(0);
+    await page.locator("#alert-cause-other_cause").click();
+    await expect(page.locator("#cause-detail")).toBeVisible();
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+
+    await page.locator("#cause-detail").fill("a fallen tree across the tracks");
+    await expect(page.locator("#cause-detail")).toHaveValue(
+      "a fallen tree across the tracks",
+    );
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+
+    await page.screenshot({
+      path: capturePath(testInfo, "reason-other-1440.png"),
+      fullPage: false,
+    });
+
+    // The explanation is stored, so it is still on screen after the page comes
+    // back rather than only in this session's memory.
+    await page.reload();
+    await page.waitForSelector("#cause-detail", { timeout: 15_000 });
+    await expect(page.locator("#cause-detail")).toHaveValue(
+      "a fallen tree across the tracks",
+    );
+
+    // Not known yet is a different answer and takes the description with it.
+    await page.locator("#alert-cause-unknown_cause").click();
+    await expect(page.locator("#alert-question-title")).toContainText(
+      "Check the message for riders",
+    );
+
+    await page.reload();
+    await page.goto(page.url().replace(/step=[a-z_]+/, "step=reason"));
+    await page.waitForSelector("#alert-cause", { timeout: 15_000 });
+    await expect(page.locator("#cause-detail")).toHaveCount(0);
+    await expect(page.locator("#alert-cause-unknown_cause")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  test("the reason cards work by keyboard at the narrow width @reason", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(NARROW);
+    await openReason(page);
+
+    expect(await fitsViewport(page)).toBe(true);
+
+    // A card is a button, so Enter on the focused one is the keyboard's own
+    // selection - the same answer a click stores.
+    const other = page.locator("#alert-cause-other_cause");
+    await other.focus();
+    await expect(other).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(other).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator("#cause-detail")).toBeVisible();
+    expect(await fitsViewport(page)).toBe(true);
+
+    // The narrow viewport is shorter than the card, so this capture is the whole
+    // page: a cropped one would show the heading and no causes.
+    await page.screenshot({
+      path: capturePath(testInfo, "reason-other-320.png"),
+      fullPage: true,
+    });
+    await captureReasonReference(page, testInfo, "form-details", "320");
+  });
+});

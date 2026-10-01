@@ -1957,6 +1957,89 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
     end
   end
 
+  @doc """
+  Why this is happening: the reason question, for every question (AC-21).
+
+  The thirteen cards are the thirteen `GtfsPlanner.Alerts.Alert` causes in the
+  prototype's own order and words, each once, so no card can offer a cause the
+  row cannot store and none can go missing without a duplicate beside it. The
+  two the specification keeps apart stay apart in words too: **Other reason**
+  and **Not known yet** are their own cards rather than one "Other" answer.
+
+  Choosing anything but **Other reason** is a self-contained choice and moves
+  on by itself. **Other reason** has a second field, so it saves and reveals
+  "Describe the other reason" instead, and the editor's Continue carries the
+  reader on. That field is optional and never blocks: an alert whose other
+  reason is blank is complete (AC-3).
+  """
+  attr :alert, :any, required: true
+  attr :form, :any, required: true
+
+  def reason_question(assigns) do
+    ~H"""
+    <div id="alert-reason" class="grid gap-4">
+      <.choice_cards
+        id="alert-cause"
+        event="choose_cause"
+        name="cause"
+        choices={selected_choices(@cause_choices, cause_of(@alert))}
+      />
+
+      <div :if={other_cause?(@alert)} id="alert-reason-other">
+        <.input
+          field={@form[:cause_detail]}
+          type="textarea"
+          id="cause-detail"
+          label="Describe the other reason"
+          phx-debounce="450"
+          help="This explanation is included in the rider message. Add only confirmed information."
+        />
+      </div>
+    </div>
+    """
+  end
+
+  # The prototype's CAUSES list, in its order and in its words: a rider is
+  # choosing from what they saw happen, not from the feed's vocabulary. The
+  # values are the schema's own enum names.
+  @cause_choices [
+    %{value: "construction", label: "Construction or roadwork"},
+    %{value: "accident", label: "Crash"},
+    %{value: "weather", label: "Weather"},
+    %{value: "police_activity", label: "Police activity"},
+    %{value: "medical_emergency", label: "Medical emergency"},
+    %{value: "demonstration", label: "Demonstration"},
+    %{value: "special_event", label: "Special event"},
+    %{value: "holiday", label: "Holiday"},
+    %{value: "maintenance", label: "Maintenance"},
+    %{value: "technical_problem", label: "Vehicle or equipment problem"},
+    %{value: "strike", label: "Strike"},
+    %{value: "other_cause", label: "Other reason"},
+    %{value: "unknown_cause", label: "Not known yet"}
+  ]
+
+  @doc """
+  The card this question offers for a value, or `nil` for one it never offered.
+  The handler asks before it writes, so a hand-made event cannot store a cause
+  the reader was never shown.
+  """
+  def cause_choice(value) when is_binary(value) do
+    Enum.find(@cause_choices, &(&1.value == value))
+  end
+
+  def cause_choice(_value), do: nil
+
+  @doc """
+  The words the editor, the Rider preview and the review use for a stored cause.
+  """
+  def cause_label(cause) do
+    Enum.find_value(@cause_choices, &(&1.value == Atom.to_string(cause) && &1.label))
+  end
+
+  defp cause_of(alert), do: alert && alert.cause
+
+  defp other_cause?(alert), do: cause_of(alert) == :other_cause
+
   defp selected_choices(choices, value) do
     Enum.map(choices, fn choice ->
       Map.put(choice, :selected?, Atom.to_string(value) == choice.value)

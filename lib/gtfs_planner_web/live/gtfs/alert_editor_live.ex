@@ -115,6 +115,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       place_question: 1,
       progress: 1,
       question_card: 1,
+      reason_question: 1,
       rider_preview: 1,
       routes_question: 1,
       save_bar: 1,
@@ -341,6 +342,28 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
   def handle_event("choose_change", %{"kind" => kind}, socket) when is_binary(kind) do
     answer_and_advance(socket, :change, %{"service_change_kind" => kind})
+  end
+
+  # The reason question's cards (AC-21). Every cause but one is a self-contained
+  # choice, so it saves and advances like any other; changing cause also drops
+  # any other-reason explanation, because a description of a crash the alert no
+  # longer says is why would otherwise still be in the rider's message.
+  #
+  # "Other reason" is the one card with a second field: it saves and reveals
+  # "Describe the other reason", and Continue is what carries the reader on
+  # (AC-17). The value is checked against the cards this question rendered, so
+  # a hand-made event stores nothing.
+  def handle_event("choose_cause", %{"cause" => cause}, socket) when is_binary(cause) do
+    case AlertComponents.cause_choice(cause) do
+      nil ->
+        {:noreply, socket}
+
+      %{value: "other_cause"} ->
+        write_without_advancing(socket, %{"cause" => cause})
+
+      %{value: chosen} ->
+        answer_and_advance(socket, :reason, %{"cause" => chosen, "cause_detail" => nil})
+    end
   end
 
   def handle_event("choose_mode", %{"route_type" => route_type}, socket)
@@ -615,7 +638,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
         {:noreply, socket}
 
       _alert ->
-        case write_stop(socket, %{"scope" => %{"alternative_stop_id" => nil}}) do
+        case write_without_advancing(socket, %{"scope" => %{"alternative_stop_id" => nil}}) do
           {:noreply, socket} -> {:noreply, assign(socket, :directions_open?, true)}
           other -> other
         end
@@ -632,7 +655,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       chosen = scope(alert).stop_ids || []
       ids = if id in chosen, do: List.delete(chosen, id), else: chosen ++ [id]
 
-      write_stop(socket, %{"scope" => %{"shape" => "route_stops", "stop_ids" => ids}})
+      write_without_advancing(socket, %{"scope" => %{"shape" => "route_stops", "stop_ids" => ids}})
     else
       _not_an_alert_or_not_in_scope -> {:noreply, socket}
     end
@@ -666,7 +689,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       {_alert, stops} ->
         {from_id, to_id} = {List.first(stops), List.last(stops)}
 
-        case write_stop(socket, %{
+        case write_without_advancing(socket, %{
                "scope" => %{
                  "shape" => "route_stops",
                  "stop_ids" => stops,
@@ -841,7 +864,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
           chosen ++ [%{"trip_id" => trip_id, "service_date" => date}]
         end
 
-      write_stop(socket, %{"scope" => %{"shape" => "trips", "trips" => trip_params(trips)}})
+      write_without_advancing(socket, %{
+        "scope" => %{"shape" => "trips", "trips" => trip_params(trips)}
+      })
     else
       _not_offered_on_that_date -> {:noreply, socket}
     end
@@ -998,6 +1023,19 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     end
   end
 
+  # An answer this card cannot carry on by itself: the other-reason explanation
+  # is optional (AC-3), so nothing is refused here and Continue simply carries
+  # the reader on.
+  def handle_event("continue_reason", _params, socket) do
+    case socket.assigns.alert do
+      nil ->
+        {:noreply, socket}
+
+      alert ->
+        {:noreply, advance_without_writing(socket, alert, :reason)}
+    end
+  end
+
   def handle_event(_event, _params, socket), do: {:noreply, socket}
 
   # R7, and the failure EV-16 exists to reject: a label the editor then types
@@ -1059,12 +1097,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # Written directions and a chosen stop are two answers to one question, so
   # either one clearing the other is the rule rather than a special case.
   defp forget_stop(socket, :place, chosen) do
-    write_stop(socket, %{"scope" => %{"stop_ids" => []}})
+    write_without_advancing(socket, %{"scope" => %{"stop_ids" => []}})
     |> clear_combobox(:place, chosen)
   end
 
   defp forget_stop(socket, :alternative, chosen) do
-    write_stop(socket, %{"scope" => %{"alternative_stop_id" => nil}})
+    write_without_advancing(socket, %{"scope" => %{"alternative_stop_id" => nil}})
     |> clear_combobox(:alternative, chosen)
   end
 
@@ -1134,9 +1172,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     end
   end
 
-  # Every stop answer goes through the one writer. A `nil` alert is the new-alert
-  # frame, which writes nothing before the first answer (AC-15, INV-1).
-  defp write_stop(socket, attrs) do
+  # Every answer that is stored without carrying the reader on goes through the
+  # one writer. A `nil` alert is the new-alert frame, which writes nothing
+  # before the first answer (AC-15, INV-1).
+  defp write_without_advancing(socket, attrs) do
     case socket.assigns.alert do
       nil -> {:noreply, socket}
       alert -> save(socket, alert, attrs)
@@ -1382,7 +1421,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     if length(kept) == length(scope(alert).trips) do
       {:noreply, load_departure_dates(socket)}
     else
-      write_stop(socket, %{"scope" => %{"trips" => trip_params(kept)}})
+      write_without_advancing(socket, %{"scope" => %{"trips" => trip_params(kept)}})
     end
   end
 
@@ -2188,7 +2227,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp what_phrase(alert) do
     [
       AlertComponents.effect_label(Completion.effect_for(alert)),
-      alert.cause && alert.cause |> to_string() |> String.replace("_", " ")
+      AlertComponents.cause_label(alert.cause)
     ]
     |> Enum.reject(&(is_nil(&1) or &1 == ""))
     |> Enum.join(" · ")
@@ -2219,6 +2258,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
   defp question_hint(:place), do: "Search this version's stops by name or number."
 
+  defp question_hint(:reason),
+    do: "Choose the reason. Describe it in your own words if it is another one."
+
   defp question_hint(_step), do: "Choose an option to move on. You can go back at any time."
 
   # The questions this step renders. Everything else in the sequence belongs to a
@@ -2236,6 +2278,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     :alternative,
     :departures,
     :timing,
+    :reason,
     :message
   ]
 
@@ -2467,6 +2510,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
                     error={@timing_error}
                   />
 
+                  <.reason_question :if={@step == :reason} alert={@alert} form={@form} />
+
                   <.message_fields
                     :if={@step == :message}
                     form={@form}
@@ -2521,6 +2566,21 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
                       variant="primary"
                       class="ml-auto"
                       phx-click="continue_departures"
+                    >
+                      Continue
+                    </.button>
+
+                    <%!-- The other-reason explanation is the one answer this step
+                         cannot carry a reader on by itself, so Continue is what
+                         moves on once it is stored - or once the reader decides
+                         not to describe the other reason at all. --%>
+                    <.button
+                      :if={@step == :reason}
+                      id="alert-reason-continue"
+                      type="button"
+                      variant="primary"
+                      class="ml-auto"
+                      phx-click="continue_reason"
                     >
                       Continue
                     </.button>
