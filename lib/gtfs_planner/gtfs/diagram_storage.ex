@@ -299,7 +299,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
                filename
              ) do
           {:ok, _legacy_path} ->
-            {:ok, legacy_path(organization_id, station_stop_id, filename)}
+            {:ok, legacy_public_path(organization_id, station_stop_id, filename)}
 
           {:error, reason} ->
             {:error, reason}
@@ -675,7 +675,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
     station_stop_id |> PathSafety.stop_storage_dir() |> URI.encode(&URI.char_unreserved?/1)
   end
 
-  defp legacy_path(organization_id, station_stop_id, filename) do
+  defp legacy_public_path(organization_id, station_stop_id, filename) do
     "/uploads/diagrams/#{organization_id}/#{encoded_station_dir(station_stop_id)}/" <>
       URI.encode(filename, &URI.char_unreserved?/1)
   end
