@@ -7,7 +7,7 @@ owner: gtfs-planner
 last_reviewed: 2026-10-01
 review_interval_days: 90
 verified_against:
-  - gtfs-planner@b18c9df335dc7201a9072a04db858c92409ca08d
+  - gtfs-planner@63d2aa8012b59349aadc618b05449cb2d6437b51
 repos:
   - name: gtfs-planner
     path: /Users/ryanmahoney/.worktrees/gtfs-planner/31-ux-journey-qa
@@ -26,17 +26,21 @@ derived_from:
   - docs/requirements/@b18c9df3
   - docs/manual-test-plan.md@b18c9df3
   - docs/information-architecture.md@b18c9df3
-  - assets/e2e/@b18c9df3
-  - lib/gtfs_planner_web/components/navigation.ex@b18c9df3
-  - lib/gtfs_planner_web/live/gtfs/settings_live.ex@b18c9df3
+  - assets/e2e/@63d2aa8
+  - lib/gtfs_planner_web/components/navigation.ex@63d2aa8
+  - lib/gtfs_planner_web/live/gtfs/settings_live.ex@63d2aa8
+  - lib/gtfs_planner_web/router.ex@63d2aa8
+  - docs/routes-and-access.md@63d2aa8
 journeys: [JRNY-001, JRNY-002, JRNY-003, JRNY-004, JRNY-005, JRNY-006, JRNY-007, JRNY-008, JRNY-009, JRNY-010, JRNY-011, JRNY-012, JRNY-013, JRNY-014, JRNY-015, JRNY-016, JRNY-017, JRNY-018, JRNY-019, JRNY-020, JRNY-021, JRNY-022, JRNY-023, JRNY-024, JRNY-025, JRNY-026, JRNY-027, JRNY-028, JRNY-029, JRNY-030, JRNY-031, JRNY-032, JRNY-033, JRNY-034, JRNY-035, JRNY-036, JRNY-037, JRNY-038, JRNY-039, JRNY-040, JRNY-041, JRNY-042, JRNY-043, JRNY-044, JRNY-045, JRNY-046, JRNY-047, JRNY-048, JRNY-049, JRNY-050, JRNY-051, JRNY-052, JRNY-053, JRNY-054, JRNY-055, JRNY-056, JRNY-057, JRNY-058]
 ---
 
 <a id="scope"></a>
 ## 1. Scope of this run
 
-One repository: gtfs-planner, read at commit `b18c9df3`. Every journey registered here is
-completed by a person inside this application, in this application, on one host. The run
+One repository: gtfs-planner, read at commit `b18c9df3` for the seeds and journeys and re-read
+at `63d2aa8` for the E2E lanes and navigation destinations in sections 5 and 6. Every journey
+registered here is completed by a person inside this application, in this application, on one
+host. The run
 followed the `build-journey-map` single-repository mode: the primary navigation's task
 destinations, the home task board, the settings sections, the export and download endpoints,
 the email templates, the background job runners and the committed requirement documents and
@@ -538,14 +542,137 @@ not applicable rather than left to be invented.
 <a id="e2e-mapping"></a>
 ## 5. E2E lane mapping
 
-None yet — completed by the reconcile step, which maps every `assets/e2e/*.spec.js` file to
-one row above or marks it an internal lane with a reason.
+Every `assets/e2e/*.spec.js` file read at `63d2aa80` appears exactly once below, keyed by spec
+file name. The **E2E ID** column carries the path relative to `assets/e2e/`; the **title** column
+carries the file's own `test.describe` title, or its file-header comment when the file has no
+describe block. A row whose **Journey** column holds a `JRNY-###` names the one registered row
+that lane proves; a row marked `internal-lane` is a contract probe rather than one actor's goal,
+and the **Reason** column says which.
+
+| E2E ID | Title | Journey | Reason |
+|---|---|---|---|
+| `account_design_contracts.spec.js` | account navigation, dashboard, account settings, account motion and reconnect, account password mutation | internal-lane | A contract probe across four surfaces at three viewports. Its one password-mutation case reaches JRNY-008's form but proves session replacement, not the settings journey. |
+| `admin_design_contracts.spec.js` | Administration routing and authorization, Shared member presentation, Organization-admin invitation workflow, Organization-admin member mutations, System-admin organization workflows, Administration layout constraints, Administration reduced motion | internal-lane | A layout, motion and authorization probe over the administration surfaces. The invitation and member cases stage JRNY-009 and JRNY-010, and the organization cases stage JRNY-012. |
+| `authentication.spec.js` | Public auth flows (serial), Public auth accessibility contracts | JRNY-004 | Signs in, recovers from every failure state, and opens each token URL. The reset, confirm and invite token cases are the entries to JRNY-005, JRNY-006 and JRNY-007. |
+| `blocks.spec.js` | Blocks workspace 1440x1000, Blocks page at 375x812, reference prototype captures, qa tour, theme scope against a Routes page | JRNY-043 | Creates, labels, recolours, reads and deletes blocks against the seeded plan. |
+| `blocks_advanced.spec.js` | advanced Blocks page at 1440x1000, advanced Blocks timeline track at 1440x1000, advanced Blocks List view at 375x812, reference prototype captures, qa tour | JRNY-045 | Drives the plan's two seeded problems to resolution through the relief and preview-selected states. |
+| `calendar_combination.spec.js` | calendar combination | JRNY-028 | Combines calendars and reads the merge results. |
+| `calendar_coverage_resources.spec.js` | calendar coverage resources | JRNY-026 | Reads coverage at the sourced 100-calendar scale and asserts the projection's bin and day-cell bounds. |
+| `calendar_helper.spec.js` | helper journey, helper panel layout, drawer review | JRNY-024 | Prepares and applies a service-date change to a period through the helper. |
+| `calendars.spec.js` | calendar list, calendar coverage, calendar coverage details, calendar editor, cross-calendar date change drawer | JRNY-026 | The list, coverage and coverage-detail reading is the bulk of the file; its editor and cross-calendar drawer cases are the period and exception work of JRNY-024 and JRNY-025. |
+| `catalog_design_contracts.spec.js` | Route catalog responsive contracts, Stop catalog responsive contracts, Route detail responsive contracts, Station detail responsive contracts, Route pattern editor responsive contracts, Route schedules contracts, Empty and partial catalog states, Stable ID contracts, Reduced motion contracts | internal-lane | A responsive, motion and empty-state probe over six catalogs at four widths. It proves guarantees that hold for many journeys rather than one goal. |
+| `diagram_keyboard.spec.js` | Diagram keyboard navigation, Diagram mode switching via keyboard, Diagram pan and zoom keyboard accessibility, Diagram focus indicator, Diagram reduced-motion accessibility | JRNY-036 | Adds and connects child stops, switches modes and pans from the keyboard alone. |
+| `fare_zones.spec.js` | fare zones journey | JRNY-053 | Names zones, assigns stops and reads the resulting workspace. |
+| `flex.spec.js` | list, list-map, create, service, service-sections, export-flex, area-editor, area-edit-points, export-defaults, flex journey | JRNY-050 | Defines an on-demand service and its area, then exports it. |
+| `garages_fleet.spec.js` | Garages, Fleet and operations export | JRNY-054 | Records garages and fleet and reads the operations archive; the archive itself ends in JRNY-003. |
+| `headsign_propagation.spec.js` | usage line on details, edit save and undo on details, review drawer renders, exceptions drawer fixes a typo, timing headsign disclosure, riders see column, patterns list headsign column, schedules headsign facts | JRNY-022 | Reads and edits a pattern's headsign and the surfaces that repeat it. |
+| `home.spec.js` | homepage states | JRNY-058 | Measures all seven task-board states an organization can land on. |
+| `ia_navigation.spec.js` | integrated header and destinations at each viewport, header presentation, organization administrator fallback | internal-lane | A navigation probe that opens the two header menus and composes each destination at two viewports. It proves the header moves between areas, not a goal. |
+| `import_export.spec.js` | durable import and export browser journeys | JRNY-001 | Uploads, reviews the diff, applies, exports and downloads. The download case is JRNY-003's terminal stage. |
+| `import_upload_visual.spec.js` | import upload presentation stays usable at desktop and mobile widths, durable diff review remains readable at desktop and mobile widths | JRNY-001 | The presentation and readability conditions on the same upload and diff stages. |
+| `overlays.spec.js` | Closed overlay semantics, Open overlay modality, Dismissal and nesting, Focus behavior, Pending and recovery, Presentation and motion, confirmation dialog defaults, review dialog | internal-lane | A contract probe over drawers, dialogs and focus across every surface that opens one. |
+| `pathway_evolutions.spec.js` | journey, the closure editor, the closure timeline, the station closure list, the range check, the moment access page, authoring, calendars, delete, exchange, floorplan, floorplan deletions, guards, merge-results, preview, range, rendered result | JRNY-039 | Schedules a station closure for a date range and reads the access page it produces. |
+| `pattern_alignment.spec.js` | alignment shell, alignment map, manual editing journeys, point editing, point list, section actions, save dialogs, draft guards, imported shapes | JRNY-021 | Draws, edits and saves a pattern's alignment by hand. |
+| `pattern_alignment_generation.spec.js` | generation journeys, generation, follow streets, bulk generation, patterns list | JRNY-021 | Generates the same alignment from street routing, singly and in bulk. |
+| `pattern_compare.spec.js` | compare shell, compare picker, compare slots, compare relation, compare summary, compare stop table, compare overview, compare map, compare entry, compare journey | JRNY-019 | Compares two patterns and marks their differences. |
+| `product_branding.spec.js` | editor header at each viewport, signed-out login shows both brands at each width | internal-lane | A branding probe over the header and the sign-in frame. It proves two brands render, not a goal. |
+| `reachability_results.spec.js` | Reachability result routes | JRNY-040 | Reads a completed run's station-by-station result and the legacy results behind the read-only boundary. |
+| `route_lifecycle.spec.js` | Complete route lifecycle journey, Create route drawer, Route details workspace, Route details save and merge, Route details dirty navigation, Route details draft preview, Route identity controls, Route color field, Route status actions, Reviewed route deletion, Lifecycle denial and stale review, Other routes context, Route connectivity recovery, Saved route map | JRNY-013 | Creates the route. Its details, status and deletion cases are JRNY-014, JRNY-016 and JRNY-017. |
+| `route_lifecycle_map.spec.js` | Route map workload | internal-lane | A rendering-cost and latency probe on the 500-route workload version. It records measurements for a report and asserts only the local colour-picker bound. |
+| `route_patterns.spec.js` | pattern list, empty and unlinked states, and details navigation, keyboard stop search adds a stop that must be reviewed and acknowledged, a timing save previews next-day clocks and updates only its trips, copy reorder and delete dialogs behave truthfully, a second session's stale review keeps the edits and offers Refresh review, a terminal stop addition collects explicit values before it can be applied, dirty navigation asks before discarding staged edits, a lost connection disables committing and reconnection announces recovery, the downloaded export carries the mutated pattern's exact stop times | JRNY-018 | Creates a pattern with its ordered stops. Its timing-save case is JRNY-020. |
+| `route_schedules.spec.js` | Schedules editing journeys, Schedules read view at each viewport | JRNY-002 | The `change-times` and `add-trip` scenarios: editing one trip's times and creating trips, with an export cross-check. |
+| `route_schedules_bulk.spec.js` | Schedules bulk journeys, Schedules bulk surface captures at each viewport | JRNY-047 | Shifts, copies and deletes several trips in one action, with the deletion's effect shown first. |
+| `route_schedules_grid.spec.js` | Schedules grid geometry at each viewport, Schedules grid keyboard journeys, Schedules grid latency observation | JRNY-002 | Edits times from the grid and by keyboard, and records the grid's render latency. |
+| `runs.spec.js` | Runs page at 1440x1000, reference prototype captures, qa tour | JRNY-046 | Cuts blocks into operator runs and reads the uncovered work. |
+| `runs_keyboard.spec.js` | Runs duty chart roving row | JRNY-046 | Moves along a run's pieces from the keyboard inside the same runs surface. |
+| `settings_agencies_feed.spec.js` | Agencies at each viewport, Feed details at each viewport, `@agencies-list`, `@agencies-create`, `@agencies-edit`, `@agencies-delete`, `@agencies-timezone`, `@feed-page`, `@feed-editor`, `@feed-drafts`, `@import-findings`, `@routes-new-route`, `@routes-onboarding`, mixed timezones, sorting and count links | JRNY-052 | Manages agencies across list, create, edit, delete and timezone. Its feed-details cases are JRNY-051. |
+| `shared_design_contracts.spec.js` | Shell and navigation responsive behavior, Version switcher behavior, Routes list responsive behavior, Organizations trial responsive behavior, Reduced motion behavior, Focus and target sizes, Data view one-representation contract | internal-lane | A shell-wide contract probe over navigation, version switching, target sizes and motion. |
+| `station_details_journal.spec.js` | Station Details Journal Summary | JRNY-037 | Reads the same journal as the floorplan's, opened from the station summary. |
+| `station_diagram_legibility.spec.js` | Station diagram legibility | JRNY-036 | Proves label legibility while zooming. It is a reading condition on the placement surface rather than a separate goal. |
+| `station_diagram_map.spec.js` | Station diagram map alignment, align workspace layout and interaction, assisted alignment, coordinate review | JRNY-035 | Uploads the floorplan and aligns it to its coordinates. |
+| `station_diagram_upload.spec.js` | Station diagram replacement | JRNY-035 | Replaces a level's image, the same alignment journey. |
+| `station_diagram_workspace.spec.js` | Station diagram workspace | JRNY-036 | Proves focus, context and target boundaries at three viewports on the placement workspace. |
+| `station_journal_panel.spec.js` | the production journal shell, marker palette and legend, entries with no status controls, the note carried into the edit drawer, photos in an in-app viewer, focus after Escape, scrolled rows and pending entries, panel scrolling in Add and Connect | JRNY-037 | Adds a journal entry, keeps it with the canvas and reads it back. |
+| `station_reports_and_history.spec.js` | Change history and rollback, Station report stop drawer, Station report keyboard and motion contracts, Station report responsive contracts, Station report print evidence, History tab keyboard contracts | JRNY-038 | Reads the report and reverts an audited edit. |
+| `stop_time_estimates.spec.js` | running times fill stages fills and saves estimates, export defaults explain and persist the estimate choice, export names the missing-times handling with counts, schedules preview the imported trip's estimates | JRNY-020 | Estimates missing stop times and persists the choice as an export default. |
+| `timetable_paste.spec.js` | Paste timetable shell, entry from Schedules, columns step, timetable step, review header, review matrix, row decisions, apply outcomes, Change schedule drawer, leave and version guards, browser journey at 1440px, browser journey at 390px | JRNY-048 | Pastes a spreadsheet timetable, reviews each row's decision and applies it. |
+| `transfers.spec.js` | Transfers | JRNY-041 | Defines transfer rules and reads the conflicts the inspector names. |
+| `version_diff_row_visual.spec.js` | version-diff row remains readable and operable at desktop and mobile widths | internal-lane | A responsive readability probe over one row. It proves a condition on JRNY-001's diff stage, not a goal. |
+
+Forty-seven spec files, fifty-eight registered journeys: thirty-eight files map to a journey row
+and nine are internal lanes. Twenty-nine journeys hold no lane of their own — they are listed in
+finding 7 and ranked in section 9.
 
 <a id="coverage"></a>
 ## 6. Coverage
 
-None yet — completed by the reconcile step, which counts the seeds, journeys, seams, lanes and
-navigation destinations and lists every unowned destination with its source file.
+| Measure | Count |
+|---|---|
+| Seeds collected | 268 |
+| Journeys registered | 58 |
+| Seams recorded | 14 |
+| E2E spec files mapped to a journey | 38 of 47 |
+| E2E spec files internal-lane | 9 of 47 |
+| Navigation destinations owned | 29 |
+| Navigation destinations unowned | 4 — listed below |
+| Journeys documented (page exists) | 0 of 58 — the pilot pages land in the steps after this one |
+
+**Navigation destination reconciliation.** A destination is owned when a registered journey
+starts or passes through it. The primary bar in `lib/gtfs_planner_web/components/navigation.ex`
+declares six task areas and each one's first path family, plus Organizations for system
+administrators, and the account menu declares Settings, Profile settings and Log out.
+
+| Destination | Source | Owner |
+|---|---|---|
+| `/gtfs/:version/routes` | `navigation.ex` `main_tasks/0`; `core_components.ex` route sub-nav | JRNY-015 |
+| `/gtfs/:version/transfers` | `core_components.ex` route sub-nav | JRNY-042 |
+| `/gtfs/:version/calendars` | `navigation.ex` `main_tasks/1` | JRNY-026 |
+| `/gtfs/:version/blocks` | `navigation.ex` `main_tasks/2`; `core_components.ex` operations sub-nav | JRNY-043 |
+| `/gtfs/:version/runs` | `core_components.ex` operations sub-nav | JRNY-046 |
+| `/gtfs/:version/stops` | `navigation.ex` `main_tasks/3` | JRNY-034 |
+| `/gtfs/:version/stops/:stop_id` | `core_components.ex` station sub-nav | JRNY-030 |
+| `/gtfs/:version/stops/:stop_id/diagram` | `core_components.ex` station sub-nav | JRNY-035 |
+| `/gtfs/:version/stops/:stop_id/report` | `core_components.ex` station sub-nav | JRNY-038 |
+| `/gtfs/:version/stops/:stop_id/reachability` | `core_components.ex` station sub-nav | JRNY-040 |
+| `/gtfs/:version/stops/:stop_id/evolutions` | `core_components.ex` station sub-nav | JRNY-039 |
+| `/gtfs/:version/flex` | `navigation.ex` `main_tasks/4` | JRNY-050 |
+| `/gtfs/:version/export` | `navigation.ex` `main_tasks/5`; `core_components.ex` GTFS sub-nav | JRNY-003 |
+| `/gtfs/:version/import` | `core_components.ex` GTFS sub-nav | JRNY-001 |
+| `/admin/organizations` | `navigation.ex` system-administrator link | JRNY-012 |
+| `/admin/users` | `navigation.ex` account menu fallback | JRNY-010 |
+| `/admin/users/invite` | `GtfsPlannerWeb.Admin.Components` `invite_path` | JRNY-009 |
+| `/admin/users/organization-settings` | `GtfsPlannerWeb.SettingsLive` organization entry | JRNY-011 |
+| `/gtfs/:version/settings` | `navigation.ex` account menu, editor branch | JRNY-051 |
+| `/gtfs/:version/settings/feed-details` | `GtfsPlannerWeb.SettingsLive` `@version_pages` | JRNY-051 |
+| `/gtfs/:version/settings/agencies` | `GtfsPlannerWeb.SettingsLive` `@version_pages` | JRNY-052 |
+| `/gtfs/:version/settings/fares` | `GtfsPlannerWeb.SettingsLive` `@version_pages` | JRNY-053 |
+| `/gtfs/:version/settings/garages` | `GtfsPlannerWeb.SettingsLive` `@all_version_pages` | JRNY-054 |
+| `/gtfs/:version/settings/fleet` | `GtfsPlannerWeb.SettingsLive` `@all_version_pages` | JRNY-054 |
+| `/gtfs/:version/settings/export-defaults` | `GtfsPlannerWeb.SettingsLive` `@all_version_pages` | JRNY-055 |
+| `/gtfs/:version/settings/feed-url` | `GtfsPlannerWeb.SettingsLive` `@all_version_sections` | JRNY-056 (Coming soon; see section 7) |
+| `/gtfs/:version/validation/:validation_id` | `GtfsPlannerWeb.Home.ChangeLinks` attention items | JRNY-003 |
+| `/` | `lib/gtfs_planner_web/router.ex` line 84, the signed-in redirect target | JRNY-058 |
+| `/users/settings` | `navigation.ex` account menu | JRNY-008 |
+
+**Unowned destinations.** Each one is reachable and lands on no registered journey's start or
+stage, so no journey row claims it.
+
+| Destination | Source file | Why it is unowned |
+|---|---|---|
+| `/first` | `lib/gtfs_planner_web/router.ex` line 61, `GtfsPlannerWeb.FirstAdminLive` | A first-administrator setup form that names the organization and creates the administrator login. It runs once on an instance with no organization, before any account exists, and the merge ledger carries no seed to it. `SCRN-001` records the screen; no journey owns the outcome. |
+| `/design` and `/design/:page` | `lib/gtfs_planner_web/router.ex` lines 90-91, `GtfsPlannerWeb.Design.DesignSystemLive` | The design-system reference pages (`SCRN-056`, `SCRN-057`). They hold no organization and no product role, so their seeds are internal lanes in section 3.2 rather than journeys. |
+| `/gtfs/:version/rosters` | `lib/gtfs_planner_web/components/core_components.ex` line 1413; `lib/gtfs_planner_web/router.ex` line 174 | The Operations area's third tab. `GtfsPlannerWeb.Gtfs.ComingSoonLive` renders a Coming soon body and no journey row names a goal it reaches, so clicking it ends in a promise the product has not made. `docs/screen-inventory.md` records it as a registered placeholder (`SCRN-030`). |
+| `/admin/organizations/:org_id/invite` | `lib/gtfs_planner_web/router.ex` line 123; `lib/gtfs_planner_web/live/admin/organizations_live.ex` line 970 passes it as `invite_path` | JRNY-009 covers an organization administrator inviting from `/admin/users/invite`. This entry point belongs to a different actor — the system administrator inviting into one organization's member list from that organization's detail page — and ends in a membership in an organization the inviter does not administer. No registered journey starts or passes through it. |
+
+The dashboard task board's resume items are destinations too, and section 3's `JRNY-058` row owns
+the board itself. `GtfsPlannerWeb.Home.ChangeLinks.path/2` resolves each item kind to a route that
+a registered journey owns — schedules to JRNY-002, a calendar to JRNY-024, a route pattern to
+JRNY-020, a station to JRNY-035, a stop to JRNY-030 and transfers to JRNY-042 — and returns `nil`
+for `:none` items, which render their text without a link.
+
+**Validation of this run's rows.** Every journey row in section 3 names one actor and one terminal
+outcome; every seam in section 4 names what crosses and what is lost; and every `SCRN-###` this
+registry cites appears in `docs/screen-inventory.md` or one of the seven audience inventories.
 
 <a id="ambiguous"></a>
 ## 7. Ambiguous boundaries
@@ -561,6 +688,96 @@ navigation destinations and lists every unowned destination with its source file
 | JRNY-058 | The dashboard's task board is a journey: one actor opens it and reads what is next. | It is a navigation surface, not a goal — the user always goes on to a task board item. | A row, because the board has its own terminal state (the filter chosen) and the home page is the destination most journeys start from. | product owner |
 | The organization product field | The planner and Pathways Studio organizations are two products with their own journeys and deserve separate rows. | They are one product with areas hidden from one organization's navigation: nothing denies a route, so a hidden screen is still the same journey. | One set of rows, with the field recorded as a visibility boundary in section 2 rather than as a partition. | product owner |
 | SEAM-012 | The membership notice's login link returns the user to the organization that invited them. | It returns them to a sign-in screen that carries no organization context, so the user with two memberships chooses unaided. | Recorded as lost context on SEAM-012; the seam states what is lost so a journey page can test it. | product owner |
+
+<a id="findings"></a>
+## 8. Findings from this run
+
+| # | Finding | Consequence |
+|---|---|---|
+| 1 | `docs/routes-and-access.md` describes a left sidebar with `Stations`, `Import`, `Export`, `Validate` and `Users` entries for the Pathways Studio editor and administrator views, and an account menu of `Profile, Sign Out`. The shipped header is a horizontal task bar of six areas — Routes, Calendars, Operations, Stops & stations, Flex, GTFS — with Settings, Profile settings and Log out in the account menu and Organizations after a divider for system administrators (`lib/gtfs_planner_web/components/navigation.ex`). | The committed access document is stale against the shipped navigation. Its four editor destinations map to registered journeys only by inference, so a reader following it looks for a Validate entry that does not exist and misses Flex and Calendars. Sections 5 and 6 above are read from the code; the access document needs a re-read against `navigation.ex`. |
+| 2 | The same document's Summary table grants `administrator` neither `/admin/users` nor GTFS routes, and grants `pathways_studio_admin` no GTFS routes. The router admits `/admin/users` on the same scope as `/admin/organizations` and enforces the role inside `GtfsPlannerWeb.Admin.UsersLive`'s `on_mount` (`GtfsPlannerWeb.EnsureRole.require_pathways_studio_admin`), while GTFS routes carry the `:require_gtfs_editor` plug only on the mutating paths. | The document's role matrix cannot be used to predict what a screen does, which is the same reason `OQ-004` holds: no permission model exists to read actors from. Actors in section 3 are read from the mount hooks. |
+| 3 | Four journeys end in email silence: JRNY-005, JRNY-006, JRNY-007 and JRNY-009. Each one's terminal outcome depends on a message the product cannot observe — `GtfsPlanner.Mailer` returns `{:ok, metadata}` and nothing more, as SEAM-011 records. | A journey page for any of the four can only observe that the request was accepted and the token was minted. It must not assert that a message arrived, was opened, or that its link was followed; the honest assertion is the pending row the product does keep. |
+| 4 | `/gtfs/:version/rosters` is a live destination no journey owns. `GtfsPlannerWeb.Gtfs.ComingSoonLive` renders a Coming soon body for it and the operations sub-nav links to it (`lib/gtfs_planner_web/components/core_components.ex` line 1413); `docs/screen-inventory.md` records it as a registered placeholder with no implementation (`SCRN-030`). | A person can click Rosters in the Operations area and reach a page that promises nothing. It is counted as unowned in section 6, and the Operations area's third tab has no terminal outcome. |
+| 5 | `/gtfs/:version/settings/feed-url` is reachable from the settings overview and renders Coming soon, so JRNY-056's registered terminal outcome — a published feed URL at a stable address — is unreachable at this commit. | JRNY-056 has no documentation page until the section ships. `OQ-002` already asks whether the row is kept; until it is answered the page must not be written as if the outcome were observable. |
+| 6 | `/first` names the first organization and creates its administrator login, and no registered journey starts there. The merge ledger carries no seed to it, so it appears in section 6 as unowned. | The one-time setup a new instance depends on has no journey, no lane and therefore no documentation queue entry. Either a journey is registered for it or the screen stays documented as a `SCRN-001` inventory row only. |
+| 7 | Twenty-nine of the 58 registered journeys hold no lane of their own: JRNY-003, JRNY-005, JRNY-006, JRNY-007, JRNY-008, JRNY-009, JRNY-010, JRNY-011, JRNY-012, JRNY-014, JRNY-015, JRNY-016, JRNY-017, JRNY-023, JRNY-025, JRNY-027, JRNY-029, JRNY-030, JRNY-031, JRNY-032, JRNY-033, JRNY-034, JRNY-042, JRNY-044, JRNY-049, JRNY-051, JRNY-055, JRNY-056 and JRNY-057. JRNY-003 is the one case where the work is genuinely exercised: its download case runs inside `assets/e2e/import_export.spec.js`, which section 5 maps to JRNY-001 because that lane's dominant outcome is the published version. The rest are staged only. | These journeys have no lane to draw a page's expectations from, so section 9 ranks them after every journey that has one. Their pages must be written from the merge ledger's reasons and the router rather than from a run, and JRNY-003's page must say which of its cases the shared lane actually proves. |
+| 8 | Nine of the 47 spec files are internal lanes: `account_design_contracts.spec.js`, `admin_design_contracts.spec.js`, `catalog_design_contracts.spec.js`, `ia_navigation.spec.js`, `overlays.spec.js`, `product_branding.spec.js`, `route_lifecycle_map.spec.js`, `shared_design_contracts.spec.js` and `version_diff_row_visual.spec.js`. Each proves a guarantee that holds across many journeys. | No journey page can cite an internal lane as its journey evidence. The guarantees they prove are recorded per journey in section 5's reason column, where a lane stages that journey's work. |
+
+<a id="handoff"></a>
+## 9. Handoff order
+
+The queue for `document-journey`, ordered: the four pilots first, then every journey with an E2E
+lane, then the journeys that have none. Each line names the evidence already in the repository.
+
+| Order | Journey | Scenario | Existing evidence |
+|---|---|---|---|
+| 1 | JRNY-001 | `import` | `assets/e2e/import_export.spec.js`, `assets/e2e/import_upload_visual.spec.js`, the sample feed fixture and step 32's seed |
+| 2 | JRNY-002 | `change-times` | `assets/e2e/route_schedules.spec.js`, `assets/e2e/route_schedules_grid.spec.js` |
+| 3 | JRNY-002 | `add-trip` | `assets/e2e/route_schedules.spec.js` |
+| 4 | JRNY-003 | `export` | `assets/e2e/import_export.spec.js`, `assets/e2e/garages_fleet.spec.js` for the operations archive |
+| 5 | JRNY-018 | — | `assets/e2e/route_patterns.spec.js` |
+| 6 | JRNY-019 | — | `assets/e2e/pattern_compare.spec.js` |
+| 7 | JRNY-020 | — | `assets/e2e/route_patterns.spec.js`, `assets/e2e/stop_time_estimates.spec.js` |
+| 8 | JRNY-021 | — | `assets/e2e/pattern_alignment.spec.js`, `assets/e2e/pattern_alignment_generation.spec.js` |
+| 9 | JRNY-022 | — | `assets/e2e/headsign_propagation.spec.js` |
+| 10 | JRNY-024 | — | `assets/e2e/calendar_helper.spec.js` |
+| 11 | JRNY-026 | — | `assets/e2e/calendars.spec.js`, `assets/e2e/calendar_coverage_resources.spec.js` |
+| 12 | JRNY-028 | — | `assets/e2e/calendar_combination.spec.js` |
+| 13 | JRNY-035 | — | `assets/e2e/station_diagram_map.spec.js`, `assets/e2e/station_diagram_upload.spec.js` |
+| 14 | JRNY-036 | — | `assets/e2e/diagram_keyboard.spec.js`, `assets/e2e/station_diagram_workspace.spec.js` |
+| 15 | JRNY-037 | — | `assets/e2e/station_journal_panel.spec.js`, `assets/e2e/station_details_journal.spec.js` |
+| 16 | JRNY-038 | — | `assets/e2e/station_reports_and_history.spec.js` |
+| 17 | JRNY-039 | — | `assets/e2e/pathway_evolutions.spec.js` |
+| 18 | JRNY-040 | — | `assets/e2e/reachability_results.spec.js` |
+| 19 | JRNY-041 | — | `assets/e2e/transfers.spec.js` |
+| 20 | JRNY-043 | — | `assets/e2e/blocks.spec.js` |
+| 21 | JRNY-045 | — | `assets/e2e/blocks_advanced.spec.js` |
+| 22 | JRNY-046 | — | `assets/e2e/runs.spec.js`, `assets/e2e/runs_keyboard.spec.js` |
+| 23 | JRNY-047 | — | `assets/e2e/route_schedules_bulk.spec.js` |
+| 24 | JRNY-048 | — | `assets/e2e/timetable_paste.spec.js` |
+| 25 | JRNY-050 | — | `assets/e2e/flex.spec.js` |
+| 26 | JRNY-052 | — | `assets/e2e/settings_agencies_feed.spec.js` |
+| 27 | JRNY-053 | — | `assets/e2e/fare_zones.spec.js` |
+| 28 | JRNY-054 | — | `assets/e2e/garages_fleet.spec.js` |
+| 29 | JRNY-058 | — | `assets/e2e/home.spec.js` |
+| 30 | JRNY-013 | — | `assets/e2e/route_lifecycle.spec.js` |
+| 31 | JRNY-004 | — | `assets/e2e/authentication.spec.js` |
+| 32 | JRNY-023 | — | none; the `calendars` lane's editor cases stage it |
+| 33 | JRNY-042 | — | none; the `transfers` lane's overlap and coverage cases stage it |
+| 34 | JRNY-044 | — | none; the `blocks` lane's timeline cases stage it |
+| 35 | JRNY-005 | — | none; write from the seam ledger and `GtfsPlannerWeb.UserAuthController` |
+| 36 | JRNY-006 | — | none; write from the seam ledger and `GtfsPlanner.Accounts` confirmation functions |
+| 37 | JRNY-007 | — | none; write from the seam ledger and `GtfsPlannerWeb.UserAuthController.accept_invite` |
+| 38 | JRNY-008 | — | none beyond the internal lane's password-mutation case |
+| 39 | JRNY-009 | — | none; the invitation is a mail handoff, so assert only the pending member row |
+| 40 | JRNY-010 | — | none; the `admin_design_contracts` internal lane stages both role changes and access removal |
+| 41 | JRNY-011 | — | none |
+| 42 | JRNY-012 | — | none; the `admin_design_contracts` internal lane stages organization create, edit and invite |
+| 43 | JRNY-014 | — | none; the `route_lifecycle` lane's details cases stage it |
+| 44 | JRNY-015 | — | none; the `catalog_design_contracts` internal lane covers the list's responsive states |
+| 45 | JRNY-016 | — | none; the `route_lifecycle` lane's status cases stage it |
+| 46 | JRNY-017 | — | none; the `route_lifecycle` lane's reviewed-deletion cases stage it |
+| 47 | JRNY-025 | — | none; the `calendars` lane's cross-calendar drawer cases stage it |
+| 48 | JRNY-027 | — | none |
+| 49 | JRNY-029 | — | none; the `station_diagram` lanes stage placement, not creation from the list |
+| 50 | JRNY-030 | — | none |
+| 51 | JRNY-031 | — | none |
+| 52 | JRNY-032 | — | none |
+| 53 | JRNY-033 | — | none |
+| 54 | JRNY-034 | — | none; the `catalog_design_contracts` internal lane covers the stop catalog's responsive states |
+| 55 | JRNY-049 | — | none |
+| 56 | JRNY-051 | — | none; the `settings_agencies_feed` lane's `@feed-*` cases stage it |
+| 57 | JRNY-055 | — | none; the `stop_time_estimates` lane stages the export-defaults write |
+| 58 | JRNY-056 | — | blocked by finding 5 until the section ships |
+| 59 | JRNY-057 | — | none; the pathways archive has no lane |
+
+Every one of the 58 registered journeys appears in the queue, and JRNY-002 appears twice because
+its two pilot scenarios are separately addressable.
+
+`JRNY-014` through `JRNY-017` and `JRNY-029` through `JRNY-034` share a lane with the journey
+that created the record rather than holding one of their own. Writing a page for them from that
+lane alone would overstate the evidence, so each line above names the lane as staging rather than
+as proof.
 
 ## Open questions
 
@@ -580,9 +797,18 @@ navigation destinations and lists every unowned destination with its source file
   ascending run, so seed IDs are not contiguous across the whole set. The `JRNY-###` IDs they
   produced are contiguous and are what later steps cite. Owner: none; recorded for readers of
   the merge ledger. Open since 2026-10-01.
+- OQ-006 — `/first` names the first organization and creates its administrator login, and no
+  registered journey starts there (section 8, finding 6). Register a journey for the one-time
+  instance setup, or keep `SCRN-001` as an inventory row with no journey? Owner: product owner.
+  Open since 2026-10-01.
+- OQ-007 — `/admin/organizations/:org_id/invite` is a system administrator inviting into one
+  organization's member list, a different actor and destination from JRNY-009's
+  `/admin/users/invite` (section 6, unowned destinations). Fold it into JRNY-009 as a second
+  entry, or register it as its own journey? Owner: product owner. Open since 2026-10-01.
 
 ## Changelog
 
 | Date | Version | Change | Author |
 |---|---|---|---|
+| 2026-10-01 | 2 | Reconciled the registry with the E2E suite and the shipped navigation: all 47 `assets/e2e/*.spec.js` files mapped to a journey row or an internal lane, 29 navigation destinations owned and 4 unowned with their source files, 8 findings and a 59-row documentation queue covering all 58 journeys | spec step 34 |
 | 2026-10-01 | 1 | Initial registry: 268 seeds merged, split and dispositioned into 58 journeys with the three pilots issued first, 14 seams and the external parties table | spec step 33 |
