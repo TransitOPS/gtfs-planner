@@ -2540,20 +2540,34 @@ async function openJourneyAlert(page) {
 }
 
 // A card or a button is a real button, so Enter on the focused one is the
-// keyboard's own selection and stores exactly what a click stores.
+// keyboard's own selection and stores exactly what a click stores. The focus is
+// retried, because a question is often replaced by the patch that draws it and
+// a node replaced after it was focused loses the focus with it.
 async function pressChoice(page, selector) {
   const control = page.locator(selector);
   await expect(control).toBeVisible();
 
-  // A question is often replaced by the patch that draws it, and a node that
-  // is replaced after it was focused loses the focus with it, so the focus is
-  // retried until the button the reader is aiming at is the one that holds it.
   await expect(async () => {
     await control.focus();
     await expect(control).toBeFocused();
   }).toPass({ timeout: 15_000 });
 
   await page.keyboard.press("Enter");
+}
+
+// A card that writes is a card whose write has to finish before the reader
+// answers again: two writes drawn up together carry the same base revision, so
+// the second is refused as stale and the editor answers with a conflict against
+// the reader's own earlier answer (AC-16, R6).
+async function pressAndSave(page, selector) {
+  const revision = page.locator("input[name='alert[revision]']");
+  const before = await revision.inputValue();
+
+  await pressChoice(page, selector);
+
+  await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+  await expect(revision).not.toHaveValue(before);
+  await expect(page.locator("#alert-conflict")).toHaveCount(0);
 }
 
 // The route search is typed into and the result is chosen with the keyboard,
@@ -2567,7 +2581,7 @@ async function chooseRoute(page, label) {
   await page.waitForSelector("#alert-route-options button", {
     timeout: 15_000,
   });
-  await pressChoice(
+  await pressAndSave(
     page,
     "#alert-route-options button:has(span.font-semibold:text-is('" +
       label +
@@ -2627,16 +2641,14 @@ async function settledWrite(page, write) {
 // A current disruption's own answer: an estimate keeps the alert live, so it
 // asks when staff check back rather than when service recovers.
 async function answerCurrentTiming(page, startTime) {
-  await pressChoice(page, "#alert-timing-end-kind-estimated");
+  await pressAndSave(page, "#alert-timing-end-kind-estimated");
   await expect(page.locator("#timing-check-in")).toBeVisible();
   await settledWrite(page, () =>
     page.locator("#timing-check-in").selectOption({ index: 2 }),
   );
 
   const today = await agencyToday(page);
-  await settledWrite(page, () =>
-    typeDate(page, "#timing-start-date", today),
-  );
+  await settledWrite(page, () => typeDate(page, "#timing-start-date", today));
   await settledWrite(page, () =>
     page.locator("#timing-start-time").fill(startTime),
   );
@@ -2648,12 +2660,12 @@ async function answerCurrentTiming(page, startTime) {
 // The urgency, situation and mode questions every situation starts with, on the
 // seeded version's own three route types.
 async function startJourney(page, urgency, situation) {
-  await pressChoice(page, `#alert-urgency-${urgency}`);
+  await pressAndSave(page, `#alert-urgency-${urgency}`);
   await page.waitForURL(/step=situation/, { timeout: 15_000 });
-  await pressChoice(page, `#situation-${situation}`);
+  await pressAndSave(page, `#situation-${situation}`);
 
   await page.waitForSelector("#mode-3", { timeout: 15_000 });
-  await pressChoice(page, "#mode-3");
+  await pressAndSave(page, "#mode-3");
 }
 
 // The place combobox: typed into, then the keyboard picks from the same list a
@@ -2718,14 +2730,14 @@ test.describe("alert authoring journeys", () => {
     await pressChoice(page, "#alert-routes-continue");
 
     await page.waitForSelector("#direction-0", { timeout: 15_000 });
-    await pressChoice(page, "#direction-0");
+    await pressAndSave(page, "#direction-0");
 
     await page.waitForSelector("#alert-timing", { timeout: 15_000 });
     await answerCurrentTiming(page, "08:00");
 
     // A cause is a self-contained answer, so choosing it is what carries the
     // reader on to the message step, where the wording is generated.
-    await pressChoice(page, "#alert-cause-weather");
+    await pressAndSave(page, "#alert-cause-weather");
     await page.waitForSelector("#alert-message", { timeout: 15_000 });
     await expect(page.locator("#message-origin")).toContainText("Delays");
 
@@ -2799,7 +2811,7 @@ test.describe("alert authoring journeys", () => {
     await page.waitForSelector("#alert-timing", { timeout: 15_000 });
     await answerCurrentTiming(page, "08:00");
 
-    await pressChoice(page, "#alert-cause-weather");
+    await pressAndSave(page, "#alert-cause-weather");
     await page.waitForSelector("#alert-message", { timeout: 15_000 });
     await pressChoice(page, "#alert-message-continue");
     await page.waitForSelector("#alert-review", { timeout: 15_000 });
@@ -2855,7 +2867,7 @@ test.describe("alert authoring journeys", () => {
     await page.waitForSelector("#alert-timing", { timeout: 15_000 });
     await answerCurrentTiming(page, "08:00");
 
-    await pressChoice(page, "#alert-cause-weather");
+    await pressAndSave(page, "#alert-cause-weather");
     await page.waitForSelector("#alert-message", { timeout: 15_000 });
     await pressChoice(page, "#alert-message-continue");
     await page.waitForSelector("#alert-review", { timeout: 15_000 });
@@ -2905,7 +2917,7 @@ test.describe("alert authoring journeys", () => {
     await pressChoice(page, "#alert-departures-continue");
 
     await page.waitForSelector("#alert-reason", { timeout: 15_000 });
-    await pressChoice(page, "#alert-cause-weather");
+    await pressAndSave(page, "#alert-cause-weather");
     await page.waitForSelector("#alert-message", { timeout: 15_000 });
     await pressChoice(page, "#alert-message-continue");
     await page.waitForSelector("#alert-review", { timeout: 15_000 });
@@ -2930,22 +2942,33 @@ test.describe("alert authoring journeys", () => {
     await pressChoice(page, "#alert-routes-continue");
 
     await page.waitForSelector("#direction-0", { timeout: 15_000 });
-    await pressChoice(page, "#direction-0");
+    await pressAndSave(page, "#direction-0");
 
     await page.waitForSelector("#alert-timing", { timeout: 15_000 });
-    await pressChoice(page, "#alert-timing-pattern-weekly");
-    await typeDate(page, "#timing-first-date", "2026-10-05");
-    await page.locator("#timing-weeks").fill("2");
+    await pressAndSave(page, "#alert-timing-pattern-weekly");
+    await settledWrite(page, () =>
+      typeDate(page, "#timing-first-date", "2026-10-05"),
+    );
+    await settledWrite(page, () => page.locator("#timing-weeks").fill("2"));
 
     for (const day of [1, 2, 3, 4, 5]) {
-      await pressChoice(page, `#timing-weekday-${day}`);
+      await pressAndSave(page, `#timing-weekday-${day}`);
     }
 
     // Until is at or before From, so each night ends the next morning.
-    await page.locator("#timing-day-start").fill("20:00");
-    await page.locator("#timing-day-end").fill("05:00");
+    await settledWrite(page, () =>
+      page.locator("#timing-day-start").fill("20:00"),
+    );
+    await settledWrite(page, () =>
+      page.locator("#timing-day-end").fill("05:00"),
+    );
+
+    // The dates the pattern covers are drawn from the answer the row holds, so
+    // the preview arrives with the write that completed the pattern rather than
+    // with the keystroke that ended it.
     await expect(page.locator("#alert-timing-count")).toContainText(
       "10 days: Oct 5 to Oct 16",
+      { timeout: 15_000 },
     );
 
     await typeDate(page, "#timing-date", "2026-10-09");
@@ -2964,7 +2987,7 @@ test.describe("alert authoring journeys", () => {
 
     await pressChoice(page, "#alert-timing-continue");
     await page.waitForSelector("#alert-reason", { timeout: 15_000 });
-    await pressChoice(page, "#alert-cause-construction");
+    await pressAndSave(page, "#alert-cause-construction");
     await page.waitForSelector("#alert-message", { timeout: 15_000 });
     await pressChoice(page, "#alert-message-continue");
     await page.waitForSelector("#alert-review", { timeout: 15_000 });
@@ -3018,7 +3041,7 @@ test.describe("alert authoring journeys", () => {
     await page.waitForSelector("#alert-timing", { timeout: 15_000 });
     await answerCurrentTiming(page, "08:00");
 
-    await pressChoice(page, "#alert-cause-weather");
+    await pressAndSave(page, "#alert-cause-weather");
     await page.waitForSelector("#alert-message", { timeout: 15_000 });
     await pressChoice(page, "#alert-message-continue");
     await page.waitForSelector("#alert-review", { timeout: 15_000 });
@@ -3045,11 +3068,11 @@ test.describe("alert authoring journeys", () => {
     await chooseRoute(page, "Route 1");
     await pressChoice(page, "#alert-routes-continue");
     await page.waitForSelector("#direction-0", { timeout: 15_000 });
-    await pressChoice(page, "#direction-0");
+    await pressAndSave(page, "#direction-0");
 
     await page.waitForSelector("#alert-timing", { timeout: 15_000 });
     await answerCurrentTiming(page, "08:00");
-    await pressChoice(page, "#alert-cause-weather");
+    await pressAndSave(page, "#alert-cause-weather");
     await page.waitForSelector("#alert-message", { timeout: 15_000 });
 
     const url = page.url().split("?")[0];
@@ -3146,7 +3169,7 @@ test.describe("alert authoring journeys", () => {
     await answerCurrentTiming(page, "08:00");
     await assertFits();
 
-    await pressChoice(page, "#alert-cause-weather");
+    await pressAndSave(page, "#alert-cause-weather");
     await page.waitForSelector("#alert-message", { timeout: 15_000 });
     await assertFits();
 

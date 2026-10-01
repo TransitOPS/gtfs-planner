@@ -2526,8 +2526,20 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
         |> MapSet.new()
 
       shared = Enum.filter(stops, &MapSet.member?(served, &1))
-      %{route: route, stops: Map.new(Alerts.stops_by_id(audit, shared), &{&1.id, &1.label})}
+      %{route: route, stops: stop_labels(audit, shared)}
     end)
+  end
+
+  # The labels a shared stop is named by in the question, keyed by the stop's
+  # own id because that is what the answer stores. `Alerts.stops_by_id/2`
+  # already answers a `%{id => stop}` map, so the labels are read off it: mapping
+  # it with `Map.new/2` would run the transform on each `{id, stop}` tuple
+  # instead, which is not a map, and took the editor down on the very question
+  # that needs it (R6).
+  defp stop_labels(audit, ids) do
+    audit
+    |> Alerts.stops_by_id(ids)
+    |> Map.new(fn {id, stop} -> {id, stop.label} end)
   end
 
   # The two questions that need more than the alert's own answers read their
