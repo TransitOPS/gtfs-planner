@@ -52,7 +52,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.AuthorizationTest do
     assert {:error, :forbidden} =
              Gtfs.apply_trip_change("12", command, {:reviewed, review.fingerprint}, scope.audit)
 
-    assert {:error, :forbidden} = Gtfs.apply_paste("12", %{}, %{}, "reviewed", scope.audit)
+    assert {:error, :forbidden} =
+             Gtfs.apply_timetable_paste("12", %{}, %{}, "reviewed", scope.audit)
 
     assert {:ok, _read} = Gtfs.review_trip_change("12", command, scope.audit)
     assert snapshot(scope) == before
