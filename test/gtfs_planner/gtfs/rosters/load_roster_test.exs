@@ -65,9 +65,14 @@ defmodule GtfsPlanner.Gtfs.Rosters.LoadRosterTest do
 
   setup do
     world = runs_version_fixture()
+    assign_runs(world)
 
-    # One run per block, so a run that keeps its ID and loses its last trip is
-    # observable: the derivation follows the stored assignments, not the blocks.
+    %{world: world}
+  end
+
+  # One run per block, so a run that keeps its ID and loses its last trip is
+  # observable: the derivation follows the stored assignments, not the blocks.
+  defp assign_runs(world) do
     for {block_id, run_id} <- [{"101", "2001"}, {"102", "2002"}],
         trip <- world.blocks[block_id] do
       trip_run_fixture(world.organization.id, world.version.id, %{
@@ -76,8 +81,6 @@ defmodule GtfsPlanner.Gtfs.Rosters.LoadRosterTest do
         run_id: run_id
       })
     end
-
-    %{world: world}
   end
 
   describe "load_roster/2" do
@@ -125,7 +128,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.LoadRosterTest do
       run = derived_run(world, "2001")
       slot_line(world, run, @monday)
 
-      assert {:ok, :ok} =
+      assert {:ok, %{undo: [_ | _]}} =
                Runs.rename_run(
                  world.organization.id,
                  world.version.id,
@@ -170,6 +173,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.LoadRosterTest do
       world: world
     } do
       theirs = runs_version_fixture()
+      assign_runs(theirs)
       run = derived_run(theirs, "2001")
       slot_line(theirs, run, @monday)
 
