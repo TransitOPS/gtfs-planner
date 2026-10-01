@@ -674,6 +674,12 @@ test.describe("Route schedules contracts", () => {
     // Every Add, Edit and menu control is labelled for keyboard and assistive use.
     await expect(page.locator("#schedules-add-trips")).toHaveText("Add trips");
     await expect(page.locator("#trip-SM_T1-edit")).toHaveText("Edit");
+    // Each row's Edit names its trip, so two rows' Edit buttons stay tellable
+    // apart by accessible name and not only by position.
+    await expect(page.locator("#trip-SM_T1-edit")).toHaveAttribute(
+      "aria-label",
+      "Edit trip SM_T1",
+    );
     await expect(page.locator("#trip-SM_T1-menu")).toHaveAttribute(
       "aria-label",
       "More actions for trip SM_T1",
