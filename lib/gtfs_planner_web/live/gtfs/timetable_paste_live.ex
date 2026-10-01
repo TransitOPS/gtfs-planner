@@ -84,6 +84,19 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   and shows the reconnected notice. Success push-navigates to Schedules
   with the filters and a flash naming the change.
 
+  Step 3 owns the reviewed source: `#timetable-source-form` carries the
+  staff-supplied provenance, the inclusive interval, the reviewed date
+  policy and the acceptance confirmation beside the native steps, without
+  nesting inside `#paste-form`. Its events normalize the pasted text with
+  the columns the native review already resolved (`TimetableSource`), never
+  a mapping of the host's own: `source_change` restashes the draft and
+  invalidates an accepted source, `source_review` normalizes, and a ticked
+  confirmation accepts. Acceptance attaches the source to the helper
+  context through `Scope.with_source_snapshot/2` and hands it to
+  `AgentPanel.set_context/2`; an oversized source is refused visibly while
+  the native paste and the manual review stay usable. The comparison and
+  report assigns exist from mount and step 8 renders them.
+
   Step 30 owns the leave and version-switch guards. A `switch_gtfs_version`
   with pasted text opens `#paste-switch-confirm` (`Keep reviewing` /
   `Switch version`) and only navigates on confirm, through
@@ -101,12 +114,18 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
   import GtfsPlannerWeb.RouteWorkspace, only: [route_header: 1, route_label: 1]
 
+import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
+
+  alias GtfsPlanner.Agents
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.TimetablePaste
+  alias GtfsPlanner.Gtfs.TimetableSource
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Wording
+  alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.ScheduleComponents
   alias GtfsPlannerWeb.Gtfs.TimetablePasteComponents
@@ -149,6 +168,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
      |> assign(:switch_confirm, nil)
      |> assign(:leave_confirm, nil)
      |> assign(:show_review_errors, false)
+     |> put_timetable_source()
      |> stream_configure(:plan_rows, dom_id: & &1.id)
      |> stream(:plan_rows, [])
      |> assign(:load_state, :loading)}
@@ -478,6 +498,68 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   @impl true
   def handle_event("paste_cell_save", _params, socket), do: {:noreply, socket}
 
+  # Step 3 owns the reviewed source. Both events arrive from
+  # `#timetable-source-form`, which lives beside `#paste-form` rather than
+  # inside it. Neither event invents a mapping: the columns are the ones the
+  # native review already resolved through the columns step's Use-as selects.
+  # A change only restashes the draft and drops an accepted source, because
+  # the accepted digest no longer describes what is on screen.
+  @impl true
+  def handle_event("source_change", %{"source" => params}, socket) when is_map(params) do
+    {:noreply,
+     socket
+     |> put_source_params(params)
+     |> invalidate_timetable_source()}
+  end
+
+  @impl true
+  def handle_event("source_change", _params, socket), do: {:noreply, socket}
+
+  # Reviewing normalizes the pasted text with the reviewed date policy. The
+  # acceptance itself is the confirmation control in the same form: a submit
+  # without it leaves the source a reviewed draft with its unresolved items
+  # listed, and a submit with it asks `TimetableSource.accept/2` for the one
+  # path to an accepted source.
+  @impl true
+  def handle_event("source_review", params, socket) do
+    source_params =
+      case params do
+        %{"source" => source} when is_map(source) -> source
+        _params -> %{}
+      end
+
+    socket =
+      socket
+      |> put_source_params(source_params)
+      |> invalidate_timetable_source()
+
+    case normalize_timetable_source(socket) do
+      {:error, errors} ->
+        {:noreply,
+         socket
+         |> assign(:timetable_source_errors, errors)
+         |> assign(:timetable_source_draft, nil)
+         |> assign(:timetable_source_unresolved, [])
+         |> assign(:timetable_source_notice, :invalid)
+         |> put_source_form()
+         |> push_event("focus_scoped_target", %{id: "timetable-source-errors"})}
+
+      {:ok, draft} ->
+        if source_params["confirm"] == "true" do
+          accept_timetable_source(socket, draft)
+        else
+          {:noreply,
+           socket
+           |> assign(:timetable_source_draft, draft)
+           |> assign(:timetable_source_errors, %{})
+           |> assign(:timetable_source_unresolved, draft.unresolved)
+           |> assign(:timetable_source_notice, :draft)
+           |> put_source_form()
+           |> push_event("focus_scoped_target", %{id: "timetable-source-state"})}
+        end
+    end
+  end
+
   # Review trips with column issues shows the error summary and focuses
   # it; with no issues the review header is already showing.
   @impl true
@@ -560,6 +642,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
      |> assign(:failed_reference, nil)
      |> assign(:replace_confirm, false)
      |> assign(:discard_confirm, false)
+     |> put_timetable_source()
      |> put_plan_rows()}
   end
 
@@ -761,6 +844,18 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
             />
           </.form>
 
+          <TimetablePasteComponents.source_review_step
+            :if={is_nil(setup_reason(@scope)) and @review != nil}
+            form={@timetable_source_form}
+            errors={@timetable_source_errors}
+            draft={@timetable_source_draft}
+            source={@timetable_source}
+            unresolved={@timetable_source_unresolved}
+            notice={@timetable_source_notice}
+            too_large={@timetable_helper_too_large}
+            scope={@scope}
+          />
+
           <TimetablePasteComponents.replace_confirm
             :if={@replace_confirm}
             open={true}
@@ -812,7 +907,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   defp apply_scope(socket, scope, review, params) do
     socket
     |> assign(:route, scope.route)
-    |> assign(:scope, scope)
+    |> put_scope(scope)
     |> assign(:review, review)
     |> assign(:paste_error, nil)
     |> assign(:source_open, is_nil(review))
@@ -841,7 +936,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
       {:ok, %{scope: scope}} ->
         socket
         |> assign(:route, scope.route)
-        |> assign(:scope, scope)
+        |> put_scope(scope)
         |> assign(:review, nil)
         |> assign(:paste_error, reason)
         |> assign(:source_open, true)
@@ -872,7 +967,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
       {:ok, %{scope: scope, review: nil}} ->
         socket
         |> assign(:route, scope.route)
-        |> assign(:scope, scope)
+        |> put_scope(scope)
         |> assign(:review, nil)
         |> assign(:paste_error, :empty)
         |> assign(:source_open, true)
@@ -883,7 +978,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
       {:ok, %{scope: scope, review: review}} ->
         socket
         |> assign(:route, scope.route)
-        |> assign(:scope, scope)
+        |> put_scope(scope)
         |> assign(:review, review)
         |> assign(:paste_error, nil)
         |> assign(:source_open, false)
@@ -1406,7 +1501,11 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
           socket
       end
 
-    socket
+    # Step 3: a pasted-text, column or decision change is a different source,
+    # so an accepted one is released with its helper context here rather than
+    # kept beside an input it no longer describes. A filter or stops-view
+    # change restashes for display only and never reaches this call.
+    invalidate_timetable_source(socket)
   end
 
   defp rebuild_recovered_review(socket, input) do
@@ -1631,6 +1730,387 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   defp direction_param(1), do: "1"
   defp direction_param(_direction), do: nil
 
+  # --- Reviewed source (step 3) ------------------------------------------------
+
+  # Loading a scope replaces the resource the reviewed source was read in, so
+  # an accepted source never survives a calendar, direction or pattern change.
+  # The interval's first draft is seeded from the calendar's own active dates,
+  # which are a real scope fact; every date stays editable before acceptance.
+  defp put_scope(socket, scope) do
+    socket
+    |> assign(:scope, scope)
+    |> seed_source_dates()
+    |> invalidate_timetable_source()
+  end
+
+  @source_snapshot_kind "gtfs_timetable_source"
+
+  @source_text_fields ~w(notes label revision first_date last_date date_policy confirm)
+  @source_date_fields ~w(school_dates added_dates removed_dates)
+
+  defp fresh_source_params do
+    %{
+      "notes" => "",
+      "label" => "",
+      "revision" => "",
+      "first_date" => "",
+      "last_date" => "",
+      "date_policy" => "weekly",
+      "weekdays" => ~w(1 2 3 4 5),
+      "school_dates" => "",
+      "added_dates" => "",
+      "removed_dates" => "",
+      "confirm" => "false"
+    }
+  end
+
+  defp put_timetable_source(socket) do
+    params = fresh_source_params()
+
+    socket
+    |> assign(:timetable_source_params, params)
+    |> put_source_form()
+    |> assign(:timetable_source_draft, nil)
+    |> assign(:timetable_source, nil)
+    |> assign(:timetable_source_errors, %{})
+    |> assign(:timetable_source_unresolved, [])
+    |> assign(:timetable_source_notice, nil)
+    |> assign(:timetable_helper_too_large, false)
+    |> assign(:timetable_source_context, nil)
+    # Step 8 renders the comparison; this step only owns its lifecycle seed so
+    # a source change can drop a report it has not computed yet.
+    |> assign(:timetable_comparison, nil)
+    |> assign(:timetable_comparison_state, :idle)
+  end
+
+  defp put_source_form(socket) do
+    assign(socket, :timetable_source_form, to_form(source_params(socket), as: :source))
+  end
+
+  defp source_params(socket) do
+    case socket.assigns[:timetable_source_params] do
+      params when is_map(params) -> params
+      _missing -> fresh_source_params()
+    end
+  end
+
+  defp seed_source_dates(socket) do
+    params = source_params(socket)
+
+    if blank_source_field?(params["first_date"]) or blank_source_field?(params["last_date"]) do
+      {first, last} = calendar_dates(socket.assigns[:scope])
+
+      params =
+        %{
+          params
+          | "first_date" =>
+              (blank_source_field?(params["first_date"]) && first) || params["first_date"],
+            "last_date" =>
+              (blank_source_field?(params["last_date"]) && last) || params["last_date"]
+        }
+
+      socket |> assign(:timetable_source_params, params) |> put_source_form()
+    else
+      socket
+    end
+  end
+
+  defp calendar_dates(%{calendar: %{} = calendar}) do
+    {iso_date(calendar[:first_active_date]), iso_date(calendar[:last_active_date])}
+  end
+
+  defp calendar_dates(_scope), do: {nil, nil}
+
+  defp iso_date(%Date{} = date), do: Date.to_iso8601(date)
+  defp iso_date(_date), do: nil
+
+  # Only the fields this form owns are read from a submit, so an unrelated
+  # param can never become part of the reviewed source.
+  defp put_source_params(socket, params) when is_map(params) do
+    current = source_params(socket)
+
+    merged =
+      Enum.reduce(@source_text_fields ++ @source_date_fields, current, fn field, acc ->
+        Map.put(acc, field, source_text(params, field, Map.get(acc, field)))
+      end)
+
+    socket
+    |> assign(:timetable_source_params, Map.put(merged, "weekdays", source_weekdays(params)))
+    |> put_source_form()
+  end
+
+  defp put_source_params(socket, _params), do: socket
+
+  defp source_text(params, field, fallback) do
+    case Map.fetch(params, field) do
+      {:ok, value} when is_binary(value) -> value
+      _absent -> fallback
+    end
+  end
+
+  # Unchecked weekday boxes submit nothing, so an absent list is an empty list
+  # rather than the previously checked days.
+  defp source_weekdays(params) do
+    case Map.get(params, "weekdays") do
+      days when is_list(days) -> days |> Enum.map(&to_string_safe/1) |> Enum.uniq()
+      _absent -> []
+    end
+  end
+
+  # A refused write keeps what was typed: the draft, the errors and the
+  # unresolved items are all rendered back into the same form.
+  defp normalize_timetable_source(socket) do
+    with %{} = review when not is_nil(review) <- socket.assigns[:review],
+         %{} = scope when not is_nil(scope) <- socket.assigns[:scope] do
+      TimetableSource.normalize(source_raw_params(socket), source_native_scope(scope))
+    else
+      _no_paste -> {:error, %{"text" => ["read the timetable first"]}}
+    end
+  end
+
+  defp source_raw_params(socket) do
+    input = current_input(socket)
+    params = source_params(socket)
+
+    %{
+      "text" => input.text || "",
+      "layout" => layout_param(input.layout),
+      "header?" => input.header? != false,
+      "notes" => params["notes"] || "",
+      "label" => params["label"] || "",
+      "revision" => Values.presence(params["revision"]),
+      "first_date" => params["first_date"] || "",
+      "last_date" => params["last_date"] || "",
+      "date_policy" => params["date_policy"] || "weekly",
+      "weekdays" => Map.get(params, "weekdays") || [],
+      "school_dates" => source_date_list(params["school_dates"]),
+      "added_dates" => source_date_list(params["added_dates"]),
+      "removed_dates" => source_date_list(params["removed_dates"]),
+      "mapping" => source_mapping(socket.assigns[:review], socket.assigns[:scope])
+    }
+  end
+
+  # Comma, semicolon and whitespace separated ISO dates, so a copied date list
+  # can be pasted in as it stands.
+  defp source_date_list(value) when is_binary(value) do
+    value
+    |> String.split(~r/[,;\s]+/, trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp source_date_list(_value), do: []
+
+  # The reviewed mapping is the native review's own resolved columns, never a
+  # second mapping the host keeps: the Use-as selects the columns step posted
+  # already decided which pasted column is which stop occurrence.
+  defp source_mapping(review, scope) do
+    columns =
+      review
+      |> Map.get(:columns, [])
+      |> Enum.flat_map(&source_column_mapping(&1, scope))
+      |> Map.new()
+
+    %{
+      "direction_id" => scope.direction_id,
+      "pattern_id" => scope.pattern_id,
+      "columns" => columns,
+      "rows" => source_row_mapping(review)
+    }
+  end
+
+  # A twelve-hour clock only becomes exact seconds through the reading the
+  # native row review already applied, so the source reuses that decision per
+  # ready row instead of rolling the text itself. A row the native review left
+  # for a decision carries no shift and stays unresolved here too.
+  defp source_row_mapping(review) do
+    review
+    |> Map.get(:rows, [])
+    |> Enum.flat_map(fn row ->
+      with :ready <- Map.get(row, :status),
+           shift when shift in [0, 43_200, 86_400] <- Map.get(row, :shift),
+           number when is_integer(number) <- Map.get(row, :row) do
+        [{Integer.to_string(number), %{"shift" => shift}}]
+      else
+        _undecided -> []
+      end
+    end)
+    |> Map.new()
+  end
+
+  defp source_column_mapping(%{col: col, target: {:occurrence, occurrence_id, side}}, scope) do
+    case scope_occurrence(scope, occurrence_id) do
+      nil ->
+        []
+
+      occurrence ->
+        [
+          {Integer.to_string(col),
+           %{
+             "stop_id" => occurrence.stop_id,
+             "stop_sequence" => occurrence.position,
+             "side" => source_side(side)
+           }}
+        ]
+    end
+  end
+
+  defp source_column_mapping(_column, _scope), do: []
+
+  defp scope_occurrence(scope, occurrence_id) do
+    scope.patterns
+    |> Enum.flat_map(&List.wrap(&1.occurrences))
+    |> Enum.find(&(&1.id == occurrence_id))
+  end
+
+  # The columns step records which side of the stop a column carries. A column
+  # with no side word is the stop's departure, exactly as native review reads
+  # it, so the source never invents an arrival nobody pasted.
+  defp source_side(:arrival), do: "arrival"
+  defp source_side(_side), do: "departure"
+
+  # The native scope's own projection, with the two field names the source
+  # contract reads: a trip's first departure and the calendar it belongs to.
+  # Nothing is re-derived, so the source resolves rows against exactly the
+  # scope the native review used.
+  defp source_native_scope(scope) do
+    service_id = scope.calendar && scope.calendar.service_id
+
+    pattern_by_natural =
+      Map.new(scope.patterns, fn pattern -> {pattern.route_pattern_id, pattern.id} end)
+
+    %{
+      patterns:
+        Enum.map(scope.patterns, fn pattern ->
+          %{
+            id: pattern.id,
+            occurrences:
+              Enum.map(pattern.occurrences, fn occurrence ->
+                %{stop_id: occurrence.stop_id, stop_sequence: occurrence.position}
+              end)
+          }
+        end),
+      trips:
+        Enum.map(scope.trips, fn trip ->
+          %{
+            id: trip.trip_id,
+            direction_id: trip.direction_id,
+            pattern_id: Map.get(pattern_by_natural, trip.route_pattern_id),
+            first_departure_secs: trip.start_secs,
+            service_id: service_id
+          }
+        end)
+    }
+  end
+
+  defp accept_timetable_source(socket, draft) do
+    case TimetableSource.accept(draft, %{confirmed?: true}) do
+      {:ok, source} ->
+        socket =
+          socket
+          |> assign(:timetable_source, source)
+          |> assign(:timetable_source_draft, draft)
+          |> assign(:timetable_source_errors, %{})
+          |> assign(:timetable_source_unresolved, source.unresolved)
+          |> assign(:timetable_source_notice, :accepted)
+          |> put_source_form()
+          |> attach_source_context(source)
+
+        {:noreply, push_event(socket, "focus_scoped_target", %{id: "timetable-source-state"})}
+
+      {:error, {:unresolved, reasons}} ->
+        socket =
+          socket
+          |> assign(:timetable_source, nil)
+          |> assign(:timetable_source_draft, draft)
+          |> assign(:timetable_source_unresolved, reasons)
+          |> assign(:timetable_source_notice, :unresolved)
+          |> put_source_form()
+          |> push_event("focus_scoped_target", %{id: "timetable-source-unresolved"})
+
+        {:noreply, socket}
+
+      {:error, _reason} ->
+        {:noreply, assign(socket, :timetable_source_notice, :draft)}
+    end
+  end
+
+  # Acceptance attaches the whole reviewed source to the helper context, and
+  # only the shared snapshot contract decides whether it fits. An oversized
+  # source keeps the accepted review, the pasted text and the native steps:
+  # the helper is what is refused, never the paste.
+  defp attach_source_context(socket, source) do
+    case TimetableSource.assistant_payload(source) do
+      {:ok, payload} ->
+        bind_source_context(socket, %{kind: @source_snapshot_kind, payload: payload})
+
+      {:error, :too_large} ->
+        refuse_helper_attachment(socket)
+    end
+  end
+
+  defp bind_source_context(socket, snapshot) do
+    case Scope.with_source_snapshot(source_base_context(socket), snapshot) do
+      {:ok, context} ->
+        socket = assign(socket, :timetable_source_context, context)
+
+        if panel_mounted?(socket), do: AgentPanel.set_context(socket, context), else: socket
+
+      {:error, _reason} ->
+        refuse_helper_attachment(socket)
+    end
+  end
+
+  defp refuse_helper_attachment(socket) do
+    socket
+    |> assign(:timetable_helper_too_large, true)
+    |> assign(:timetable_source_context, nil)
+    |> detach_source_context()
+  end
+
+  # Replacing the context releases the previous source with its transcript and
+  # drops every result read from it, so an edited source can never answer for
+  # the one on screen.
+  defp invalidate_timetable_source(socket) do
+    if socket.assigns[:timetable_source] || socket.assigns[:timetable_source_context] do
+      socket |> clear_timetable_source() |> detach_source_context()
+    else
+      socket
+    end
+  end
+
+  defp clear_timetable_source(socket) do
+    socket
+    |> assign(:timetable_source, nil)
+    |> assign(:timetable_source_draft, nil)
+    |> assign(:timetable_source_unresolved, [])
+    |> assign(:timetable_source_notice, nil)
+    |> assign(:timetable_helper_too_large, false)
+    |> assign(:timetable_source_context, nil)
+    |> assign(:timetable_comparison, nil)
+    |> assign(:timetable_comparison_state, :idle)
+  end
+
+  defp detach_source_context(socket) do
+    if panel_mounted?(socket) do
+      AgentPanel.set_context(socket, source_base_context(socket))
+    else
+      socket
+    end
+  end
+
+  defp source_base_context(socket) do
+    Scope.context({:route, socket.assigns.route_id})
+  end
+
+  # Step 5 mounts the panel with the timetable pack. Until then the host keeps
+  # the admitted context itself, so attaching a source is already correct the
+  # moment the panel exists and never needs a second snapshot call.
+  defp panel_mounted?(socket), do: not is_nil(socket.assigns[:agent_context])
+
+  defp blank_source_field?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank_source_field?(_value), do: true
+
   # --- Apply, confirm and outcomes (step 28) ----------------------------------
 
   # A Replace that would remove trips or drop transfers naming them always
@@ -1780,7 +2260,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
       {:ok, %{scope: scope, review: review}} ->
         socket
         |> assign(:route, scope.route)
-        |> assign(:scope, scope)
+        |> put_scope(scope)
         |> assign(:review, review)
         |> assign(:paste_error, nil)
         |> assign(:source_open, is_nil(review))
