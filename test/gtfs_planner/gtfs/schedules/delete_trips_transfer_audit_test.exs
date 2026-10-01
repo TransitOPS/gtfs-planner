@@ -21,7 +21,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.DeleteTripsTransferAuditTest do
 
   Every case runs through the production composition `Gtfs.delete_trips/4` →
   `Schedules.delete_trips/4`, and the audit failure is the audit layer's own
-  refused changeset, produced by a context whose actor is missing, so the
+  refused changeset, produced by a context whose actor email is missing, so the
   production transaction runs for real.
 
   The focused gate command is deferred to branch review:
@@ -192,13 +192,13 @@ defmodule GtfsPlanner.Gtfs.Schedules.DeleteTripsTransferAuditTest do
 
     stop_times_before = Repo.all(from(st in StopTime, where: st.trip_id == ^trip.trip_id))
 
-    # The audit layer refuses every log for a context whose actor is missing, and
-    # the transfer log is the first one this deletion writes, so the failure is
-    # the transfer's.
+    # The audit layer refuses every log for a context whose actor email is missing,
+    # and the transfer log is the first one this deletion writes, so the failure is
+    # the transfer's. The actor id still names the editor, so authorization passes.
     assert {:error, %Ecto.Changeset{}} =
              Gtfs.delete_trips(ctx.scope.route_id, ctx.scope.service, [trip.id], %{
                ctx.audit
-               | actor_id: nil
+               | actor_email: nil
              })
 
     # The trip, its stop times and its transfer all survive: no row is removed

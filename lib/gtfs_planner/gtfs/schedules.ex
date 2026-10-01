@@ -4512,7 +4512,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   # An audit failure is the caller's rollback: no transfer row is ever removed
   # unaudited (INV-5), and it rolls back the trips with it.
   defp audit_transfer!(audit_context, transfer, action, before, after_snapshot, op, affected) do
-    case Gtfs.record_change_in_transaction(audit_context, :transfer, transfer, action, %{
+    case Audit.record_change_in_transaction(audit_context, :transfer, transfer, action, %{
            before: before,
            after: after_snapshot,
            operation_id: op,
