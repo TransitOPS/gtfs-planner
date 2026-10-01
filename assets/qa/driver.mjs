@@ -987,21 +987,27 @@ export function registerReplay(registry, state, { primary = gitPrimary, isIgnore
       return failure("a replay needs a trail with a steps array", 1);
     }
 
-    // The capture root is proved ignored before the first write, so a replay
-    // can never put a capture into a commit. A root that cannot be proven
-    // ignored is a harness error and no step runs.
-    let root;
-
-    try {
-      root = assertRootIgnored(captureRoot(primary()), isIgnored);
-    } catch (error) {
-      return failure(error);
-    }
-
+    // A local replay (selfcheck's reference trail) keeps its captures in the
+    // run's own folder, because the shared folder holds the recorded
+    // exploration's captures and committed journey pages cite them by step.
+    const local = command.local === true;
     const scenarioId = state.scenario.id ?? state.session.scenario;
-    const folder = dirname(journeyCapturePath(root, scenarioId, 1));
+    let root = null;
+    let folder = null;
 
-    mkdirSync(folder, { recursive: true });
+    if (!local) {
+      // The capture root is proved ignored before the first write, so a replay
+      // can never put a capture into a commit. A root that cannot be proven
+      // ignored is a harness error and no step runs.
+      try {
+        root = assertRootIgnored(captureRoot(primary()), isIgnored);
+      } catch (error) {
+        return failure(error);
+      }
+
+      folder = dirname(journeyCapturePath(root, scenarioId, 1));
+      mkdirSync(folder, { recursive: true });
+    }
 
     // The capture folder is shared with the run before this one, so it is
     // pruned however the loop leaves: a trail that stops partway must not
@@ -1016,7 +1022,7 @@ export function registerReplay(registry, state, { primary = gitPrimary, isIgnore
           flags: step,
           requireIntent: false,
           replay: true,
-          captureTo: journeyCapturePath(root, scenarioId, n)
+          captureTo: local ? null : journeyCapturePath(root, scenarioId, n)
         });
 
         if (reply.ok !== true) {
@@ -1030,7 +1036,9 @@ export function registerReplay(registry, state, { primary = gitPrimary, isIgnore
         }
       }
     } finally {
-      pruned = pruneStaleCaptures(folder, state.scenario.slug, trail.steps.length);
+      if (!local) {
+        pruned = pruneStaleCaptures(folder, state.scenario.slug, trail.steps.length);
+      }
     }
 
     return ok({ steps: trail.steps.length, pruned });

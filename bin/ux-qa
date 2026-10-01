@@ -632,9 +632,10 @@ down() {
 #
 # Prints one line for the scenario — `ok`, `drift at step N`, `check failed` or
 # `harness error` — and returns 0, 1 or 2 for it. A drift is the driver's own
-# line, which already names the step, the error and the screenshot.
+# line, which already names the step, the error and the screenshot. A third
+# argument `--local` keeps the captures in the run folder (see `selfcheck`).
 replay_scenario() {
-  local scenario_id="$1" trail="$2"
+  local scenario_id="$1" trail="$2" local_flag="${3:-}"
   local run_dir='' replay_code=0 down_code=0
 
   # Assets are built once per invocation, not once per scenario; `up` exports
@@ -651,7 +652,7 @@ replay_scenario() {
   run_dir="$up_run"
 
   replay_code=0
-  node assets/qa/drive.mjs replay --run "$run_dir" --trail "$trail" || replay_code=$?
+  node assets/qa/drive.mjs replay --run "$run_dir" --trail "$trail" ${local_flag:+"$local_flag"} || replay_code=$?
 
   down_code=0
   down --run "$run_dir" >/dev/null || down_code=$?
@@ -768,7 +769,8 @@ replay() {
 # reached: the check has to fail it, because a check that passes an untouched
 # stack is not looking at the run. The replay leg runs the authored reference
 # trail, which has to reach the goal. A scenario is explorable only when both
-# legs hold on the current commit.
+# legs hold on the current commit. The reference trail's captures stay in its
+# run folder, so the shared capture folder keeps the recorded exploration's.
 selfcheck_scenario() {
   local scenario_id="$1" trail="$2"
   local run_dir='' check_id='' noop_code=0 replay_code=0 noop_ok=no replay_ok=no
@@ -808,7 +810,7 @@ selfcheck_scenario() {
   fi
 
   replay_code=0
-  replay_scenario "$scenario_id" "$trail" || replay_code=$?
+  replay_scenario "$scenario_id" "$trail" --local || replay_code=$?
 
   case "$replay_code" in
     0) replay_ok=yes ;;

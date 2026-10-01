@@ -88,7 +88,7 @@ const USAGE = `usage: node assets/qa/drive.mjs <command> [options]
   report --run DIR
   finalize --run DIR --check-exit N --server-alive yes|no
   record --run DIR
-  replay --run DIR --trail FILE`;
+  replay --run DIR --trail FILE [--local]`;
 
 // `--flag value` pairs, `--flag` booleans, and bare words collected as `_`.
 export function parseFlags(argv, booleans = []) {
@@ -623,8 +623,11 @@ function record(argv) {
 // `replay` hands a trail to the run's driver. A trail for another scenario is
 // a usage error rather than a drift: the steps would be answered by a page the
 // scenario never visits, so the failure would name a step that never drifted.
+//
+// `--local` keeps the replay's captures in the run folder instead of the shared
+// capture root, for a trail that is not the recorded exploration.
 function replay(argv) {
-  const flags = parseFlags(argv);
+  const flags = parseFlags(argv, ["local"]);
   const { run: runDir } = flags;
 
   if (runDir === undefined || flags.trail === undefined) {
@@ -646,7 +649,7 @@ function replay(argv) {
 
   return sendCommand(
     session.socket,
-    { cmd: "replay", run: runDir, trail },
+    { cmd: "replay", run: runDir, trail, local: flags.local === true },
     { timeoutMs: waits + (trail.steps?.length ?? 0) * STEP_TIMEOUT_SLACK_MS + REPLAY_TIMEOUT_SLACK_MS }
   );
 }

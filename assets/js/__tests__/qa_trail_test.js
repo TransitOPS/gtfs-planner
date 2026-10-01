@@ -345,6 +345,29 @@ test("a shorter trail removes its own stale captures and no other scenario's", a
   ]);
 });
 
+test("a local replay leaves the shared capture folder untouched", async () => {
+  const primary = temporaryDirectory();
+  const folder = dirname(journeyCapturePath(captureRoot(primary), "JRNY-001/import", 1));
+
+  mkdirSync(folder, { recursive: true });
+
+  for (const name of ["import-s001.png", "import-s002.png", "import-s003.png"]) {
+    writeFileSync(join(folder, name), "exploration");
+  }
+
+  const runDir = temporaryDirectory();
+  const registry = replayRegistry(fakePage(), runDir, primary);
+
+  const reply = await handleLine(JSON.stringify({ cmd: "replay", trail: TRAIL, local: true }), registry);
+
+  // The recorded exploration's captures keep their content and their count;
+  // the reference trail's steps are captured in the run folder instead.
+  expect(reply).toEqual({ ok: true, code: 0, steps: 2, pruned: [] });
+  expect(readdirSync(folder).sort()).toEqual(["import-s001.png", "import-s002.png", "import-s003.png"]);
+  expect(readFileSync(join(folder, "import-s001.png"), "utf8")).toBe("exploration");
+  expect(readdirSync(join(runDir, "captures"))).toHaveLength(2);
+});
+
 test("pruning selects only this scenario's files above the new count", () => {
   const removed = [];
   // A folder that does not exist has nothing to prune: the existsSync guard
