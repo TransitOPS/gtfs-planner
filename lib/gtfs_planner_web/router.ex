@@ -195,14 +195,14 @@ defmodule GtfsPlannerWeb.Router do
       # navigation context, as the pages themselves ignore it. Their literal
       # routes are declared ahead of the section route so they are never read as
       # slugs, and there is no redirect from the Blocks paths they used before.
-      # their own settings tabs. Message scripts and writing guidelines are the
-      # organization's alert wording, read by every version's alert editor, and
-      # are declared ahead of the section route so "alerts" is never read as a
-      # section slug.
       live "/settings", Gtfs.SettingsLive, :index
       live "/settings/feed-details", Gtfs.FeedDetailsLive, :index
       live "/settings/agencies", Gtfs.AgenciesLive, :index
       live "/settings/export-defaults", Gtfs.ExportDefaultsLive, :index
+      # Message scripts and writing guidelines are the organization's alert
+      # wording, read by every version's alert editor. The literal route is
+      # declared ahead of the section route so "alerts" is never read as a
+      # section slug.
       live "/settings/alerts", Gtfs.AlertSettingsLive, :index
       live "/settings/garages", Gtfs.GaragesLive, :index
       live "/settings/fleet", Gtfs.FleetLive, :index

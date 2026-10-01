@@ -230,10 +230,9 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
             </:subtitle>
           </.header>
 
-          <.settings_overview
-            groups={overview_groups(@current_gtfs_version, @user_roles, @current_organization)}
-            version_id={@current_gtfs_version.id}
-          />
+          <.settings_overview groups={
+            overview_groups(@current_gtfs_version, @user_roles, @current_organization)
+          } />
         <% end %>
       </div>
     </Layouts.app>
@@ -241,32 +240,6 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
   end
 
   attr :groups, :list, required: true
-  attr :version_id, :any, required: true
-
-  defp settings_overview(%{groups: []} = assigns) do
-    ~H"""
-    <section
-      id="settings-empty"
-      aria-labelledby="settings-empty-title"
-      class="border-t border-subtle py-10"
-    >
-      <div class="max-w-[60ch]">
-        <h2
-          id="settings-empty-title"
-          class="font-display text-2xl font-semibold tracking-[-0.025em] text-strong"
-        >
-          No settings are available for your role
-        </h2>
-        <p class="mt-3 text-[15px]">
-          Pathways Studio organizations don’t have version or fleet settings. Organization settings, such as the name and users, are limited to organization admins.
-        </p>
-        <.button id="settings-empty-action" class="mt-6 min-h-11" navigate={stops_path(@version_id)}>
-          Open stops & stations
-        </.button>
-      </div>
-    </section>
-    """
-  end
 
   defp settings_overview(assigns) do
     ~H"""
@@ -441,7 +414,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
           key: :all_versions,
           title: "All versions",
           note:
-            "Garages and fleet describe your organization, so they stay the same when you switch versions.",
+            "These settings describe your organization, so they stay the same when you switch versions.",
           entries: all_version_entries
         }
       ]
@@ -496,8 +469,6 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
   end
 
   defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
-
-  defp stops_path(version_id), do: "/gtfs/#{version_id}/stops"
 
   defp section_path(version_id, slug), do: "/gtfs/#{version_id}/settings/#{slug}"
 end
