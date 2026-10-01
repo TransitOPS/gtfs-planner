@@ -308,9 +308,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
 
     test "?tab=guidelines shows the recommended text at revision 0", context do
       {:ok, view, _html} = live(context.conn, alerts_path(context.version) <> "?tab=guidelines")
+      doc = LazyHTML.from_fragment(render(view))
 
-      assert has_element?(view, "#guidelines-tab[aria-selected='true']")
-      assert has_element?(view, "#guidelines-revision", "Recommended guidelines, not changed yet")
+      assert has_element?(view, "#alert-settings-tab-guidelines[aria-selected='true']")
+
+      # The recommended text is the form's own value, not a separate preview: a
+      # first-time editor opens the document they will edit.
+      assert LazyHTML.text(LazyHTML.query(doc, "#guidelines-text")) =~ "Lead with the route"
+      assert text_of(doc, "#guidelines-revision") == "Recommended guidelines, not changed yet"
       assert has_element?(view, "#save-guidelines", "Save guidelines")
 
       # Reading settings never writes a row (AC-11).
@@ -422,6 +427,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
 
   # The organization's own scripts only: `Alerts.list_scripts/1` also returns the
   # read-only built-ins, and a refusal here is about the page's own writes.
+  defp text_of(doc, selector) do
+    doc |> LazyHTML.query(selector) |> LazyHTML.text() |> String.trim()
+  end
+
   defp own_script_names(audit) do
     audit
     |> Alerts.list_scripts()

@@ -95,7 +95,21 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    {:noreply, socket |> assign(:tab, tab(params)) |> refresh_scripts()}
+    socket =
+      socket
+      |> assign(:tab, tab(params))
+      |> refresh_scripts()
+
+    {:noreply, load_guidelines(socket)}
+  end
+
+  # The guidelines are read on every arrival, including a tab that does not show
+  # them, so the hidden revision the form carries is always the revision this
+  # page last read rather than one left behind by a previous visit.
+  defp load_guidelines(socket) do
+    %{text: text, revision: revision} = Alerts.get_guidelines(audit_context(socket))
+
+    store_guidelines(socket, text, revision)
   end
 
   @impl true

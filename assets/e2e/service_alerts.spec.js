@@ -2092,7 +2092,10 @@ test.describe("alert settings", () => {
 
     const rows = page.locator("#scripts tr");
     await expect(rows).toHaveCount(9);
-    await expect(rows.first().locator("button")).toContainText("Route detour");
+    // An organization row carries two buttons: the name opens the drawer and
+    // Edit is the same action in the actions column.
+    await expect(rows.first()).toContainText("Route detour");
+    await expect(rows.first().locator("#script-drawer-title")).toHaveCount(0);
 
     await expect(page.locator("#copy-builtin-detour")).toBeVisible();
     await expect(page.locator("#script-for-builtin-detour")).toContainText("Detour");
