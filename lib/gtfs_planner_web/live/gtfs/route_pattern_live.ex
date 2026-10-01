@@ -1015,7 +1015,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   @impl true
   def handle_event("alignment_close_file_import", _params, socket) do
-    {:noreply, Phoenix.Component.assign(socket, :map_line_file, nil)}
+    {:noreply, RoutePatternAlignmentEvents.close_file_import(socket)}
   end
 
   @impl true
@@ -1081,6 +1081,16 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   @impl true
   def handle_event("alignment_fit_result", params, socket) do
     {:noreply, RoutePatternAlignmentEvents.fit_result(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_reverse_file_line", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.reverse_file_line(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_create_file_draft", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.create_file_draft(socket, params)}
   end
 
   # The upload form's change event. It only asks for the entry's own errors
@@ -2427,6 +2437,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                           generate_dialog={@alignment_generate_dialog}
                           generate_notice={@alignment_generate_notice}
                           file_import={@map_line_file}
+                          file_fit={@file_fit}
                           map_line_upload={@uploads.map_line_file}
                         />
                       <% else %>

@@ -504,6 +504,20 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   end
 
   @doc """
+  Leaves the path-file panel, dropping the line it was checking with it.
+
+  The fit described one file line, so it goes when the panel does: a later
+  report describes a line nobody is looking at any more. The hook's own
+  preview is left alone — closing the panel is not a reason to redraw the map
+  (step 30's `open_file_import/2` keeps the same promise).
+  """
+  def close_file_import(socket) do
+    socket
+    |> Component.assign(:map_line_file, nil)
+    |> Component.assign(:file_fit, nil)
+  end
+
+  @doc """
   Reads one uploaded path file and shows what it offers (AC-22, AC-23).
 
   The upload's own limits (`accept`, one entry, 10 MB) refuse a file before
@@ -550,6 +564,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
 
   def choose_file_line(socket, _params), do: socket
 
+  @fit_directions ~w(same reversed unknown)
+
   @doc """
   Takes the hook's fit of the file line for this pattern (AC-24, step 30).
 
@@ -562,14 +578,68 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   """
   def fit_result(socket, params) when is_map(params) do
     case build_fit_result(params) do
-      {:ok, fit} -> Component.assign(socket, :file_fit, fit)
-      :error -> socket
+      {:ok, fit} ->
+        # The panel takes focus when the report lands: the answer arrived
+        # without a click of the editor's own, so the headline is where their
+        # attention belongs.
+        socket
+        |> Component.assign(:file_fit, fit)
+        |> Phoenix.LiveView.push_event("alignment:file_fit", %{})
+
+      :error ->
+        socket
     end
   end
 
   def fit_result(socket, _params), do: socket
 
-  @fit_directions ~w(same reversed unknown)
+  @doc """
+  Asks the hook to report the same line the other way round (AC-24).
+
+  Reversing is geometry, so it is the hook's work exactly like the fit itself
+  (INV-5): the server asks and the hook answers with a fresh
+  `alignment_fit_result` that this panel renders. There is nothing to reverse
+  without a reported line, so a forged click pushes nothing.
+  """
+  def reverse_file_line(socket, _params) do
+    if editable?(socket) and not is_nil(socket.assigns[:file_fit]) do
+      Phoenix.LiveView.push_event(socket, "alignment:reverse_file_line", %{})
+    else
+      socket
+    end
+  end
+
+  @doc """
+  Asks the hook to draft the reviewed file line, then closes the panel (AC-25).
+
+  The draft is the hook's, from the same conversion the imported-shape path
+  uses; the panel closes so the section list and its save bar take over, and
+  nothing is written until that save (CR-9). A reversed fit is refused here
+  as well as in the panel, because drafting it would measure every section
+  against the opposite run. An `"unknown"` direction — the loop case where both
+  end visits land in the same place on the line — cannot say, and is never
+  blocked.
+  """
+  def create_file_draft(socket, _params) do
+    if editable?(socket) and draftable_fit?(socket.assigns[:file_fit]) do
+      socket
+      |> Component.assign(:file_fit, nil)
+      |> Component.assign(:map_line_file, nil)
+      |> Component.assign(
+        :status_message,
+        "Editable draft created. Original shape retained until you save."
+      )
+      |> Phoenix.LiveView.push_event("alignment:file_draft", %{})
+    else
+      socket
+    end
+  end
+
+  defp draftable_fit?(%{direction: "reversed"}), do: false
+
+  defp draftable_fit?(%{direction: direction}) when direction in @fit_directions, do: true
+
+  defp draftable_fit?(_other), do: false
 
   defp build_fit_result(params) do
     with {:ok, direction} <- fetch_fit_direction(params),

@@ -933,6 +933,67 @@ const SINGLE_LINE_GEOJSON = JSON.stringify({
   ],
 });
 
+// The seeded corridor's own meridian run from its last stop to its first, so
+// every stop sits on the line and the line runs the other way from the
+// pattern: the state the review blocks on.
+const REVERSED_LINE_GEOJSON = JSON.stringify({
+  type: "FeatureCollection",
+  features: [
+    {
+      type: "Feature",
+      properties: { name: "Coast Highway, drawn north to south" },
+      geometry: {
+        type: "LineString",
+        coordinates: [
+          [-124.049, 44.936],
+          [-124.049, 44.911],
+          [-124.049, 44.886],
+          [-124.049, 44.861],
+          [-124.049, 44.836],
+          [-124.049, 44.811],
+          [-124.049, 44.786],
+          [-124.049, 44.761],
+          [-124.049, 44.736],
+          [-124.049, 44.711],
+          [-124.049, 44.686],
+          [-124.049, 44.661],
+          [-124.049, 44.636],
+        ],
+      },
+    },
+  ],
+});
+
+// The same corridor the pattern itself runs, first stop to last, so every
+// stop is on the line and in order.
+const GOOD_LINE_GEOJSON = JSON.stringify({
+  type: "FeatureCollection",
+  features: [
+    {
+      type: "Feature",
+      properties: { name: "Coast Highway, first stop to last" },
+      geometry: {
+        type: "LineString",
+        coordinates: [
+          [-124.049, 44.636],
+          [-124.049, 44.661],
+          [-124.049, 44.686],
+          [-124.049, 44.711],
+          [-124.049, 44.736],
+          [-124.049, 44.761],
+          [-124.049, 44.786],
+          [-124.049, 44.811],
+          [-124.049, 44.836],
+          [-124.049, 44.861],
+          [-124.049, 44.886],
+          [-124.049, 44.911],
+          [-124.049, 44.936],
+        ],
+      },
+    },
+  ],
+});
+
 test.describe("file import", () => {
   for (const viewport of VIEWPORTS) {
     test(`reads a path file and names its problems at ${viewport.width}×${viewport.height}`, async ({
@@ -995,7 +1056,9 @@ test.describe("file import", () => {
       await waitForLiveView(page);
       await page.locator("#alignment-open-file-import").click();
 
-      const input = page.locator("#map-line-file-upload-input input[type=file]");
+      const input = page.locator(
+        "#map-line-file-upload-input input[type=file]",
+      );
       await input.setInputFiles({
         name: "my-maps.kml",
         mimeType: "application/vnd.google-earth.kml+xml",
@@ -1013,7 +1076,9 @@ test.describe("file import", () => {
       );
       // The second leg's own piece carries no name, so the panel names it by
       // its position rather than showing a blank.
-      await expect(page.locator("label[for='file-line-1']")).toContainText("Line 2");
+      await expect(page.locator("label[for='file-line-1']")).toContainText(
+        "Line 2",
+      );
       await expect(page.locator("#file-import-file-row")).toContainText(
         "my-maps.kml",
       );
@@ -1047,12 +1112,18 @@ test.describe("file import", () => {
         "Choose another file",
       );
 
-      await capture(page, `file-import-err-swapped-production-${viewport.label}`);
+      await capture(
+        page,
+        `file-import-err-swapped-production-${viewport.label}`,
+      );
 
       if (existsSync(PATTERN_REFERENCE_PATH)) {
         await page.goto(`file://${PATTERN_REFERENCE_PATH}?state=err-swapped`);
         await page.waitForLoadState("networkidle");
-        await capture(page, `file-import-err-swapped-reference-${viewport.label}`);
+        await capture(
+          page,
+          `file-import-err-swapped-reference-${viewport.label}`,
+        );
       }
 
       // Step 30: one line in the file skips the picker, so the map previews
@@ -1082,6 +1153,123 @@ test.describe("file import", () => {
         await page.goto(`file://${PATTERN_REFERENCE_PATH}?state=import-review`);
         await page.waitForLoadState("networkidle");
         await capture(page, `file-import-review-reference-${viewport.label}`);
+      }
+
+      // Step 31: the fit review the hook's report renders. The partial line
+      // above stops short of the pattern's last stop, which is a finding, not
+      // a block: the draft stays enabled.
+      await page.goto(
+        `/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns/BROWSER-SHAPES-A?task=alignment`,
+      );
+      await waitForLiveView(page);
+      await page.locator("#alignment-open-file-import").click();
+      await page
+        .locator("#map-line-file-upload-input input[type=file]")
+        .setInputFiles({
+          name: "coast-highway.geojson",
+          mimeType: "application/geo+json",
+          buffer: Buffer.from(SINGLE_LINE_GEOJSON, "utf8"),
+        });
+      await page.locator("#file-import-read").click();
+
+      await expect(page.locator("#file-fit-headline")).toContainText(
+        "stops within 330 ft",
+      );
+      await expect(page.locator("#fit-end")).toContainText("File Stop 13");
+      await expect(page.locator("#fit-create-draft")).toBeEnabled();
+      await expect(page.locator("#file-import-restart")).toHaveText(
+        "Choose another file",
+      );
+
+      // A line that runs the other way is blocked, and the reason is on
+      // screen beside the button that is disabled because of it.
+      await page.locator("#file-import-restart").click();
+      await page
+        .locator("#map-line-file-upload-input input[type=file]")
+        .setInputFiles({
+          name: "coast-highway-reversed.geojson",
+          mimeType: "application/geo+json",
+          buffer: Buffer.from(REVERSED_LINE_GEOJSON, "utf8"),
+        });
+      await page.locator("#file-import-read").click();
+
+      await expect(page.locator("#fit-direction-reversed")).toContainText(
+        "This line runs the other way",
+      );
+      await expect(page.locator("#fit-reverse")).toHaveText("Reverse line");
+      await expect(page.locator("#fit-create-draft")).toBeDisabled();
+      await expect(page.locator("#fit-footer-note")).toContainText(
+        "Reverse the line to continue",
+      );
+
+      await capture(page, `file-fit-review-production-${viewport.label}`);
+
+      if (existsSync(PATTERN_REFERENCE_PATH)) {
+        await page.goto(`file://${PATTERN_REFERENCE_PATH}?state=import-review`);
+        await page.waitForLoadState("networkidle");
+        await capture(page, `file-fit-review-reference-${viewport.label}`);
+      }
+
+      // Reversing is the hook's geometry: the review clears the block as soon
+      // as the fresh report comes back.
+      await page.goto(
+        `/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns/BROWSER-SHAPES-A?task=alignment`,
+      );
+      await waitForLiveView(page);
+      await page.locator("#alignment-open-file-import").click();
+      await page
+        .locator("#map-line-file-upload-input input[type=file]")
+        .setInputFiles({
+          name: "coast-highway-reversed.geojson",
+          mimeType: "application/geo+json",
+          buffer: Buffer.from(REVERSED_LINE_GEOJSON, "utf8"),
+        });
+      await page.locator("#file-import-read").click();
+      await page.locator("#fit-reverse").click();
+
+      await expect(page.locator("#fit-direction-reversed")).toHaveCount(0);
+      await expect(page.locator("#fit-create-draft")).toBeEnabled();
+
+      await capture(page, `file-fit-reversed-production-${viewport.label}`);
+
+      if (existsSync(PATTERN_REFERENCE_PATH)) {
+        await page.goto(
+          `file://${PATTERN_REFERENCE_PATH}?state=import-review-reversed`,
+        );
+        await page.waitForLoadState("networkidle");
+        await capture(page, `file-fit-reversed-reference-${viewport.label}`);
+      }
+
+      // A line drawn first stop to last puts every stop on it, in order.
+      await page.goto(
+        `/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns/BROWSER-SHAPES-A?task=alignment`,
+      );
+      await waitForLiveView(page);
+      await page.locator("#alignment-open-file-import").click();
+      await page
+        .locator("#map-line-file-upload-input input[type=file]")
+        .setInputFiles({
+          name: "coast-highway-good.geojson",
+          mimeType: "application/geo+json",
+          buffer: Buffer.from(GOOD_LINE_GEOJSON, "utf8"),
+        });
+      await page.locator("#file-import-read").click();
+
+      await expect(page.locator("#file-fit-headline")).toContainText(
+        "13 of 13",
+      );
+      await expect(page.locator("#fit-ok")).toContainText(
+        "Every stop is on the line",
+      );
+      await expect(page.locator("#fit-far")).toHaveCount(0);
+      await expect(page.locator("#fit-create-draft")).toBeEnabled();
+
+      await capture(page, `file-fit-good-production-${viewport.label}`);
+
+      if (existsSync(PATTERN_REFERENCE_PATH)) {
+        await page.goto(`file://${PATTERN_REFERENCE_PATH}?state=import-good`);
+        await page.waitForLoadState("networkidle");
+        await capture(page, `file-fit-good-reference-${viewport.label}`);
       }
 
       expect(problems).toEqual([]);
