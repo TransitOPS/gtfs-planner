@@ -133,7 +133,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
           kind="warning"
           title="The background map couldn't load"
         >
-          Your alignment and stop list are still available.
+          Your map line and stop list are still available.
           <:action>
             <button type="button" phx-click="alignment_retry_tiles" class="btn btn-outline min-h-11">
               <.icon name="hero-arrow-path" class="size-4" /> Retry map
@@ -145,7 +145,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
           :if={@notice == :read_only}
           id="alignment-notice"
           kind="info"
-          title="You can view this alignment"
+          title="You can view this map line"
         >
           An editor can change the vehicle&rsquo;s path.
         </.message>
@@ -183,7 +183,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
           :if={@save_notice == :stale_stops}
           id="alignment-save-notice"
           kind="warning"
-          title="Stops changed since you opened this alignment"
+          title="Stops changed since you opened this map line"
         >
           Your previous saved path is retained until you review the new stop order.
           <:action>
@@ -326,7 +326,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
 
       <div class="grid overflow-hidden rounded-card border border-subtle bg-white lg:h-[clamp(520px,calc(100vh-380px),780px)] lg:grid-cols-[minmax(340px,430px)_minmax(0,1fr)]">
         <section
-          aria-label="Alignment map"
+          aria-label="Map line map"
           class="relative order-1 flex min-h-0 min-w-0 flex-col max-lg:h-[520px] lg:order-2"
         >
           <div
@@ -403,7 +403,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
         </section>
 
         <aside
-          aria-label="Alignment sections"
+          aria-label="Map line sections"
           class="order-2 flex min-h-0 min-w-0 flex-col overflow-y-auto border-subtle max-lg:border-t lg:order-1 lg:border-r"
         >
           <%!-- Step 32: a pattern still on an imported shape reviews that line
@@ -2325,13 +2325,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
   end
 
   defp save_button_title(_alignment, false, _offline?, _applying?, _dirty?, _generating?),
-    do: "Only editors can save alignment."
+    do: "Only editors can save the map line."
 
   defp save_button_title(_alignment, true, true, _applying?, _dirty?, _generating?),
     do: "Reconnect before saving."
 
   defp save_button_title(_alignment, true, _offline?, true, _dirty?, _generating?),
-    do: "Saving your alignment…"
+    do: "Saving your map line…"
 
   defp save_button_title(_alignment, true, _offline?, _applying?, _dirty?, true),
     do: "Finish or cancel generation before saving."

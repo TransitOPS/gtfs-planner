@@ -452,7 +452,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentShellTest do
         )
 
       assert html =~ "alignment-notice"
-      assert html =~ "You can view this alignment"
+      assert html =~ "You can view this map line"
 
       # Save is rendered by the page's save bar from this state.
       save =
@@ -466,7 +466,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentShellTest do
         })
 
       refute save.enabled?
-      assert save.title == "Only editors can save alignment."
+      assert save.title == "Only editors can save the map line."
     end
   end
 end

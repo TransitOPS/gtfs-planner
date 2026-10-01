@@ -739,7 +739,7 @@ test.describe("alignment map", () => {
       { timeout: 20000 },
     );
     await expect(page.locator("#alignment-notice")).toContainText(
-      "Your alignment and stop list are still available.",
+      "Your map line and stop list are still available.",
     );
     // The sections stay usable behind the notice.
     await expect(page.locator("#alignment-section-2")).toBeVisible();
@@ -865,7 +865,7 @@ test.describe("save dialogs", () => {
     await second.locator("#alignment-save-scope-1-shared").check();
     await second.locator("#alignment-save-dialog-confirm").click();
     await expect(second.locator("#status")).toContainText(
-      "Alignment saved.",
+      "Map line saved.",
       { timeout: 15000 },
     );
     await second.close();
@@ -1149,7 +1149,7 @@ test.describe("manual editing journeys", () => {
     ).toBeChecked();
     await page.locator("#alignment-save-dialog-confirm").click();
     await expect(page.locator("#status")).toContainText(
-      "Alignment saved.",
+      "Map line saved.",
       { timeout: 15000 },
     );
   }
@@ -1229,7 +1229,7 @@ test.describe("manual editing journeys", () => {
     await captureViewport(page, "journey-scope-dialog-1440");
     await page.locator("#alignment-save-dialog-confirm").click();
     await expect(page.locator("#status")).toContainText(
-      "Alignment saved.",
+      "Map line saved.",
       { timeout: 15000 },
     );
     await expect(page.locator("#alignment-section-status-3")).toContainText(
@@ -1568,7 +1568,7 @@ test.describe("manual editing journeys", () => {
     );
     await page.locator("#alignment-save").click();
     await expect(page.locator("#status")).toContainText(
-      "Alignment saved.",
+      "Map line saved.",
       { timeout: 15000 },
     );
     await expect(page.locator("#alignment-section-status-2")).toContainText(

@@ -1969,7 +1969,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     |> Component.assign(:alignment_pending, nil)
     |> Component.assign(:alignment_forced_local, [])
     |> Component.assign(:alignment_save_notice, nil)
-    |> Component.assign(:status_message, "Alignment saved. #{trips} #{trip_noun(trips)} updated.")
+    |> Component.assign(:status_message, "Map line saved. #{trips} #{trip_noun(trips)} updated.")
     |> clear_draft_mirror()
     |> reload_alignment_model()
   end

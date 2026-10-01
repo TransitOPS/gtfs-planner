@@ -1996,7 +1996,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
 
         <p :if={not @review.resequenced?} class="mt-3 text-[13px] text-muted">
           Retained stop times keep their absolute clocks; added stop times are what this review
-          applies. The path on the map isn’t redrawn, so check Alignment afterward.
+          applies. The path on the map isn’t redrawn, so check Map line afterward.
         </p>
         <p
           :if={@requires_acknowledgement? and not @ready? and is_nil(@review.error)}
@@ -3058,7 +3058,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
 
   defp task_label(:stops), do: "Stops"
   defp task_label(:timings), do: "Running times"
-  defp task_label(:alignment), do: "Alignment"
+  defp task_label(:alignment), do: "Map line"
   defp task_label(:details), do: "Details"
 
   @doc """

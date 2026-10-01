@@ -1487,3 +1487,74 @@ test.describe("downloads", () => {
     expect(problems).toEqual([]);
   });
 });
+
+// ── map line copy ───────────────────────────────────────────────────────────
+
+// Step 36: the workspace says "Map line" where it used to say "Alignment",
+// while `task=alignment`, the element ids and the events keep their names.
+// The reference half is the path prototype's Map line tab at 1440×900.
+test.describe("map line copy", () => {
+  test("names the alignment task Map line and still routes on task=alignment", async ({
+    page,
+  }, testInfo) => {
+    testInfo.setTimeout(180_000);
+
+    const problems = collectPageErrors(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.goto(
+      `/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns/BROWSER-SHAPES-A?task=alignment`,
+    );
+    await waitForLiveView(page);
+
+    // The tab keeps its id and phx-value-task; only its text changed.
+    const tab = page.locator("#pattern-task-alignment");
+
+    await expect(tab).toHaveText("Map line");
+    await expect(tab).toHaveAttribute("phx-value-task", "alignment");
+    await expect(tab).toHaveAttribute("aria-current", "page");
+    await expect(page.locator("#alignment-task")).toBeVisible();
+    await expect(page.locator("#pattern-save-bar #alignment-save")).toContainText(
+      "Save map line",
+    );
+
+    await capture(page, "map-line-copy-tab-production-1440");
+
+    // No user-visible "Alignment" survives anywhere on the task.
+    await expect(page.locator("body")).not.toContainText("Alignment");
+
+    // The tab still switches tasks and the Map line task still responds to its
+    // own ids.
+    await tab.click();
+    await expect(page.locator("#alignment-task")).toBeVisible();
+
+    await page.locator("#pattern-task-stops").click();
+    await expect(page.locator("#alignment-task")).toHaveCount(0);
+    await expect(page.locator("#pattern-task-stops")).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+
+    await page.locator("#pattern-task-alignment").click();
+    await expect(page.locator("#alignment-task")).toBeVisible();
+    await expect(page.locator("#alignment-sections")).toBeVisible();
+
+    if (existsSync(PATTERN_REFERENCE_PATH)) {
+      await page.goto(`file://${PATTERN_REFERENCE_PATH}`);
+      await page.waitForLoadState("networkidle");
+      await capture(page, "map-line-copy-tab-reference-1440");
+    }
+
+    testInfo.annotations.push({
+      type: "reference-captured",
+      description: existsSync(PATTERN_REFERENCE_PATH)
+        ? "map-line-copy-tab-reference-1440.png"
+        : "path prototype absent from this checkout",
+    });
+
+    expect(problems).toEqual([]);
+  });
+});
