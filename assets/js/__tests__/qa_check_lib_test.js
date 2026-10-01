@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 
 import { evaluateImport } from "../../qa/checks/import-feed.mjs";
+import { evaluateChangeTimes } from "../../qa/checks/timetable-change-times.mjs";
 import {
   assertVersionId,
   compareSignatures,
@@ -421,4 +422,126 @@ test("a version counted before its rows exist fails rather than passing an absen
   expect(result.pass).toBe(false);
   expect(result.observations).toHaveLength(5);
   expect(result.observations[0]).toMatch(/in the version/);
+});
+
+// The timetable check compares the pre-run baseline with only the stated
+// change, so every row below is written out from the fixture's own stop times
+// rather than read from the check or from the application.
+
+const MORNING = "AAMV|WE|0|[(BEATTY_AIRPORT,28800,28800),(AMV,32400,32400)]";
+const OUTBOUND = "AAMV|WE|1|[(AMV,36000,36000),(BEATTY_AIRPORT,39600,39600)]";
+const EVENING = "AAMV|WE|1|[(AMV,54000,54000),(BEATTY_AIRPORT,57600,57600)]";
+
+const TIMETABLE = {
+  signatures: [MORNING, OUTBOUND, EARLY, EVENING],
+};
+
+function timetable(actual) {
+  return evaluateChangeTimes({ baseline: TIMETABLE, actual });
+}
+
+test("moving only the 1:00 p.m. trip 45 minutes later passes the check", () => {
+  const result = timetable([MORNING, OUTBOUND, LATE, EVENING]);
+
+  expect(result.pass).toBe(true);
+  expect(result.observations).toEqual([
+    "only AAMV WE 0 moved from 46800 and 50400 to 49500 and 53100",
+  ]);
+});
+
+test("the untouched timetable fails, because nothing moved", () => {
+  const result = timetable([...TIMETABLE.signatures]);
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toEqual([
+    `missing: ${LATE}`,
+    `unexpected: ${EARLY}`,
+  ]);
+});
+
+test("moving the 8:00 trip instead of the 1:00 p.m. one fails", () => {
+  const morningMoved = "AAMV|WE|0|[(BEATTY_AIRPORT,31500,31500),(AMV,35100,35100)]";
+
+  const result = timetable([morningMoved, OUTBOUND, EARLY, EVENING]);
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toEqual([
+    `missing: ${MORNING}`,
+    `missing: ${LATE}`,
+    `unexpected: ${morningMoved}`,
+    `unexpected: ${EARLY}`,
+  ]);
+});
+
+test("changing only the first stop fails", () => {
+  const firstOnly = "AAMV|WE|0|[(BEATTY_AIRPORT,49500,49500),(AMV,50400,50400)]";
+
+  const result = timetable([MORNING, OUTBOUND, firstOnly, EVENING]);
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toEqual([
+    `missing: ${LATE}`,
+    `unexpected: ${firstOnly}`,
+  ]);
+});
+
+test("moving the second stop by 15 minutes more than the goal fails", () => {
+  const fifteenLate = "AAMV|WE|0|[(BEATTY_AIRPORT,49500,49500),(AMV,54000,54000)]";
+
+  const result = timetable([MORNING, OUTBOUND, fifteenLate, EVENING]);
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toEqual([
+    `missing: ${LATE}`,
+    `unexpected: ${fifteenLate}`,
+  ]);
+});
+
+test("an additional trip fails, because the trip count changed", () => {
+  const added = "AAMV|WE|0|[(BEATTY_AIRPORT,61200,61200),(AMV,64800,64800)]";
+
+  const result = timetable([MORNING, OUTBOUND, LATE, EVENING, added]);
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toEqual([`unexpected: ${added}`]);
+});
+
+test("a moved trip stored with unpadded hours equals the same trip stored padded", () => {
+  const bare = tripSignature({
+    routeId: "AAMV",
+    serviceId: "WE",
+    directionId: 0,
+    stops: [
+      stop("BEATTY_AIRPORT", 1, "13:45:00", "13:45:00"),
+      stop("AMV", 2, "14:45:00", "14:45:00"),
+    ],
+  });
+
+  const padded = tripSignature({
+    routeId: "AAMV",
+    serviceId: "WE",
+    directionId: 0,
+    stops: [
+      stop("BEATTY_AIRPORT", 1, "013:45:00", "013:45:00"),
+      stop("AMV", 2, "014:45:00", "014:45:00"),
+    ],
+  });
+
+  expect(bare).toBe(LATE);
+  expect(padded).toBe(bare);
+  expect(timetable([MORNING, OUTBOUND, bare, EVENING]).pass).toBe(true);
+});
+
+test("a baseline that does not hold the 1:00 p.m. trip throws instead of judging", () => {
+  let raised = null;
+
+  try {
+    evaluateChangeTimes({ baseline: { signatures: [MORNING] }, actual: [MORNING] });
+  } catch (error) {
+    raised = error;
+  }
+
+  expect(raised?.message).toMatch(/the baseline holds no/);
+  // Exit code 2 is the harness's "could not be judged", not a failing run.
+  expect(raised?.exitCode).toBe(2);
 });
