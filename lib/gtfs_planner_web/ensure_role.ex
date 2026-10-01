@@ -193,6 +193,9 @@ defmodule GtfsPlannerWeb.EnsureRole do
   whatever the socket holds and get a boolean rather than a match to handle.
   """
   @spec editor_member?(Ecto.UUID.t() | nil, Ecto.UUID.t() | nil) :: boolean()
+  def editor_member?(nil, _organization_id), do: false
+  def editor_member?(_user_id, nil), do: false
+
   def editor_member?(user_id, organization_id) do
     with %UserOrgMembership{} = membership <-
            Accounts.get_user_org_membership(user_id, organization_id),
