@@ -363,14 +363,26 @@ its backticked ID, never by an image path.
 - **Reference actions:** 4
 - **Entry route:** /gtfs/:version/export
 
-The four reference actions are the ones after sign-in, waits excluded: press `GTFS` in the header
-navigation, which opens the export page directly and needs no second hop through the sub-nav; press
-`Export feed`; press `Check feed`; press `Download file`. The export type is already `Full feed` on
-arrival, so choosing a type is not an action for this goal. Reading the counts, the run band and the
-verdict are observations, not actions.
+The four reference actions are the ones after sign-in, waits excluded, and the executed reference
+trail reaches them: press `GTFS` in the header navigation, which opens the export page directly and
+needs no second hop through the sub-nav; press `Export feed`; press `Check feed`; press
+`Download file`. The export type is already `Full feed` on arrival, so choosing a type is not an
+action for this goal. Reading the counts, the run band and the verdict are observations, not
+actions.
 
-This count is an estimate until the reference trail for `JRNY-003/export` runs, and the executed
-trail's count replaces it (OQ-006).
+The trail's other two steps are `wait`s and are not counted: one for the run band to read
+`Ready to download`, one for the check card to offer `View full results`. The second wait is what a
+tester must do before pressing `Download file`, because the download band and the check card are
+siblings and the check's verdict arrives on its own.
+
+The download step is what the journey's SEAM-010 crossing is: the browser saves
+`gtfs-<run id>.zip` into the run's own `downloads` folder, and the run's `export-feed` check reads
+that file's rows rather than the page. The check's own pass on this seed reads "the download holds
+the source's routes, stops, trips, stop_times rows, reports no validator error the source does not,
+and the feed check completed".
+
+The count is the executed trail's, recorded at
+`.specs/ux-qa/reference-trails/JRNY-003-export.json`; it replaces the traced estimate (OQ-006).
 
 ## Open questions
 
@@ -389,8 +401,9 @@ trail's count replaces it (OQ-006).
 - OQ-005 — The goal says "download the zip", but the file the editor receives is named
   `gtfs-<run id>.zip`, where the run id is a generated UUID rather than the version name. A tester
   told to look for a version-named file will not find one. Owner: product owner.
-- OQ-006 — `Reference actions: 4` is the estimate counted from the traced flow, not an executed
-  count. The reference trail's count replaces it. Owner: the reference-trail step.
+- OQ-006 — `Reference actions: 4` is now the executed count: the authored trail records four counted
+  actions and two waits. The trail is recorded under `.specs/ux-qa/reference-trails/`. Owner: the
+  reference-trail step.
 - OQ-007 — No capture of this journey exists, so section 9 cites none. Which states the pilot
   captures must cover — the export form with its inventory, the ready band, the check's verdict — is
   a decision for the pilot steps. Owner: product owner.
@@ -404,3 +417,4 @@ trail's count replaces it (OQ-006).
 | Date | Version | Change | Author |
 |---|---|---|---|
 | 2026-10-01 | 1 | Initial page: stages, seams, examples and the `export` scenario for JRNY-003 | spec step 39 |
+| 2026-10-01 | 2 | `export`: the executed reference trail's four actions replace the traced estimate, and the two waits it needs are named | spec step 65 |
