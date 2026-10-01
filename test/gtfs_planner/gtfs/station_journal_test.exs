@@ -1549,8 +1549,10 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
 
     Enum.each(tasks, &send(&1, :sync))
 
+    # Each sync reauthorizes its editor and the syncs serialize on the same rows, so allow
+    # more than the default 100 ms for every one to finish.
     Enum.map(tasks, fn task ->
-      assert_receive {:sync_finished, ^task, result}
+      assert_receive {:sync_finished, ^task, result}, 5_000
       result
     end)
   end
