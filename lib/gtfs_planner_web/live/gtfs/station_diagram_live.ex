@@ -2499,9 +2499,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                   end
 
                 {:error, message} ->
+                  # The submitted (blank) stop ID is part of the changeset so the field is
+                  # marked as used and shows the generation error.
                   changeset =
                     stop
-                    |> Stop.changeset(stop_attrs)
+                    |> Stop.changeset(Map.put(stop_attrs, :stop_id, stop_id))
                     |> Ecto.Changeset.add_error(:stop_id, message)
                     |> Map.put(:action, :validate)
 
