@@ -28,6 +28,7 @@ defmodule GtfsPlanner.AgentsTest do
 
   alias GtfsPlanner.Agents
   alias GtfsPlanner.Agents.Packs.Alerts
+  alias GtfsPlanner.Agents.Packs.Blocks
   alias GtfsPlanner.Agents.Packs.Calendars
   alias GtfsPlanner.Agents.Packs.Connections
   alias GtfsPlanner.Agents.Packs.DatedChanges
@@ -56,6 +57,7 @@ defmodule GtfsPlanner.AgentsTest do
     test "packs/0 maps every shipped pack id to its module" do
       assert Agents.packs() == %{
                "alerts" => Alerts,
+               "blocks" => Blocks,
                "calendars" => Calendars,
                "connections" => Connections,
                "dated_changes" => DatedChanges,

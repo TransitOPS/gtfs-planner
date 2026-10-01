@@ -411,14 +411,19 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
     kept_ids = Enum.map(kept, & &1.trip_id)
     trips = trip_ids |> Enum.uniq() |> Enum.reject(&(&1 in kept_ids))
 
+    # A trip-only selection - the editor narrowed to unassigned trips - names no
+    # block at all, so its rows are read from the day's own trips rather than
+    # from a block. Without this the subset would raise on the first trip's row.
+    selected = Enum.filter(all_trips(day), &(&1.trip_id in trips))
+
     %{
       mode: :explicit_subset,
       blocks: blocks,
-      trips: Enum.map(trips, & &1.trip_id),
+      trips: trips,
       excluded_blocks: Enum.map(day.blocks, & &1.summary.block_id) -- blocks,
       excluded_trips:
-        Enum.map(all_trips(day), & &1.trip_id) -- Enum.map(kept ++ trips, & &1.trip_id),
-      trip_ids: Enum.map(kept ++ trips, & &1.id),
+        Enum.map(all_trips(day), & &1.trip_id) -- Enum.map(kept ++ selected, & &1.trip_id),
+      trip_ids: Enum.map(kept ++ selected, & &1.id),
       garages: garages_of(day, blocks)
     }
   end
