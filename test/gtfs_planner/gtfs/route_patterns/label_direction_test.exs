@@ -25,7 +25,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.LabelDirectionTest do
 
     version = gtfs_version_fixture(organization.id)
     route = route_fixture(organization.id, version.id)
-    actor = user_fixture()
+    actor = editor_fixture(organization)
 
     stops =
       for name <- ["A", "B", "C"],

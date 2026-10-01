@@ -33,6 +33,7 @@ defmodule GtfsPlanner.Gtfs.Export.LabelledRoutePatternsExportTest do
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlanner.TaskSupervisor
 
   @label "1-0-A"
@@ -59,11 +60,10 @@ defmodule GtfsPlanner.Gtfs.Export.LabelledRoutePatternsExportTest do
   """
 
   setup do
-    %{
-      organization:
-        organization_fixture(%{alias: "labelled-export-#{System.system_time(:nanosecond)}"}),
-      actor: user_fixture()
-    }
+    organization =
+      organization_fixture(%{alias: "labelled-export-#{System.system_time(:nanosecond)}"})
+
+    %{organization: organization, actor: editor_fixture(organization)}
   end
 
   test "every trip of a labelled pattern exports the owner's ID and the child is not exported",
@@ -313,7 +313,9 @@ defmodule GtfsPlanner.Gtfs.Export.LabelledRoutePatternsExportTest do
       )
 
     {:ok, runner_pid} =
-      Runner.start_import(context.organization.id, run.id, run.lease_token, feed())
+      Runner.start_import(context.organization.id, run.id, run.lease_token,
+        files: StagedImport.stage(feed())
+      )
 
     Sandbox.allow(Repo, self(), runner_pid)
     await_runner(runner_pid)
