@@ -534,16 +534,20 @@ defmodule GtfsPlanner.Gtfs.Rosters do
       }
       |> RosterLineDay.changeset(attrs)
 
+    # A savepoint, so a run-once index refusal does not abort the surrounding
+    # transaction in production. The SQL Sandbox gives every statement a savepoint
+    # of its own, which is why a test would not notice the difference.
     case Repo.insert(changeset,
            on_conflict: {:replace, @replace_day_columns},
-           conflict_target: [:roster_line_id, :weekday]
+           conflict_target: [:roster_line_id, :weekday],
+           mode: :savepoint
          ) do
       {:ok, day} ->
         {:ok, day}
 
-      # Ecto wrapped the statement in a savepoint, so the transaction is still
-      # usable here and the holder is readable: the refusal names the same line
-      # the check above would have named, whichever of the two caught it.
+      # The savepoint rolled back, so the transaction is still usable here and the
+      # holder is readable: the refusal names the same line the check above would
+      # have named, whichever of the two caught it.
       {:error, invalid} ->
         held_run_day(organization_id, gtfs_version_id, invalid, weekday, day_type_key, run)
     end
