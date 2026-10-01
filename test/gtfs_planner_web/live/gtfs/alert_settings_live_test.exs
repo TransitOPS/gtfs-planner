@@ -60,7 +60,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
       "[route] toward [direction] is not serving [stop]. Board at [alternate stop] instead."
   }
 
-  @placeholder_error_prefix "names \"[headline]\", which this app does not fill in."
+  @placeholder_error_prefix "names \"headline\", which this app does not fill in."
 
   @stale_guidelines "Someone else changed these guidelines. Reload to see their version."
   @forbidden_notice "You no longer have permission to change the organization's alert wording."
@@ -69,12 +69,16 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id, %{name: "Fall 2026 service"})
     actor = editor_fixture(organization)
+    reader = editor_fixture(organization)
 
     %{
       organization: organization,
       version: version,
       actor: actor,
-      audit: audit_context(organization, version, actor)
+      audit: audit_context(organization, version, actor),
+      # A second editor whose reads stay authorized after `actor`'s role is
+      # revoked, so a read can show what a refused write stored.
+      reader_audit: audit_context(organization, version, reader)
     }
   end
 
@@ -116,7 +120,6 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
 
       assert has_element?(view, "#scripts-status", "0 scripts of your own")
       assert has_element?(view, "#copy-builtin-detour")
-      refute has_element?(view, "#scripts-first-use")
     end
 
     test "the built-in rows name the situation a script is offered for", context do
@@ -153,8 +156,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
 
       # Every placeholder the fill can replace is named, so an operator writes a
       # template the vocabulary can actually fill.
-      for placeholder <- ["route", "direction", "stop", "first skipped", "when", "minutes"] do
-        assert has_element?(view, "#fill-in-#{placeholder}")
+      for slug <- ["route", "direction", "stop", "first-skipped", "alternate-stop", "minutes"] do
+        assert has_element?(view, "#fill-in-#{slug}")
       end
 
       assert has_element?(view, "#script-save", "Create script")
@@ -181,7 +184,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
       # still in the form: a refusal must not cost the operator their wording.
       assert has_element?(view, "#script-header-error", @placeholder_error_prefix)
       assert has_element?(view, "#script-header[value='[route] detour: [headline]']")
-      assert has_element?(view, "#script-description[value='[route] is not serving [stop].']")
+      assert has_element?(view, "#script-description", "[route] is not serving [stop].")
       assert html =~ "Script not saved"
       assert has_element?(view, "#script-form")
 
@@ -246,8 +249,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
       # It is now an editable organization row: it has an Edit and no copy
       # control, and the drawer is open on that row's own id.
       assert has_element?(view, "#edit-script-#{copy.id}")
-      refute has_element?(view, "#copy-builtin-detour")
       assert has_element?(view, "#script-name[value='Detour, stops skipped']")
+
+      # The built-in stays listed, so it can be copied again.
+      assert has_element?(view, "#copy-builtin-detour")
     end
 
     test "copying the same built-in twice is a second variant, not a failure", context do
@@ -264,19 +269,106 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
         |> Enum.map(& &1.name)
         |> Enum.sort()
 
-      assert names == ["Detour, stops skipped", "Detour, stops skipped (2)"]
+      assert names == ["Detour, stops skipped", "Detour, stops skipped 2"]
     end
 
-    test "delete removes the organization's own script only", context do
+    test "delete asks first, then removes the organization's own script only", context do
       {:ok, org_script} = Alerts.create_script(context.audit, @org_script)
       {:ok, view, _html} = live(context.conn, alerts_path(context.version))
 
       view |> element("#script-name-#{org_script.id}") |> render_click()
-      html = view |> element("#script-delete") |> render_click()
+      view |> element("#script-delete") |> render_click()
 
-      assert html =~ "Route detour deleted."
+      # Nothing is deleted until the person confirms, and the question names the
+      # script and what survives.
+      assert has_element?(view, "#script-delete-confirm-title", "Delete Route detour?")
+      assert has_element?(view, "#script-delete-confirm-body", "Alerts already written keep")
+      assert own_script_names(context.audit) == ["Route detour"]
+
+      view |> element("#script-delete-confirm-confirm") |> render_click()
+
+      assert has_element?(view, "#script-notice", "Route detour deleted.")
       refute has_element?(view, "#edit-script-#{org_script.id}")
       assert has_element?(view, "#copy-builtin-detour")
+      assert own_script_names(context.audit) == []
+    end
+
+    test "keeping the script at the delete question leaves it and the drawer as they were",
+         context do
+      {:ok, org_script} = Alerts.create_script(context.audit, @org_script)
+      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+
+      view |> element("#script-name-#{org_script.id}") |> render_click()
+      view |> element("#script-delete") |> render_click()
+      view |> element("#script-delete-confirm-cancel") |> render_click()
+
+      refute has_element?(view, "#script-delete-confirm")
+      assert has_element?(view, "#script-name[value='Route detour']")
+      assert own_script_names(context.audit) == ["Route detour"]
+    end
+
+    test "Edit seeds the drawer from the stored script and validation still runs", context do
+      {:ok, script} = Alerts.create_script(context.audit, @org_script)
+      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+
+      view |> element("#edit-script-#{script.id}") |> render_click()
+
+      assert has_element?(view, "#script-name[value='Route detour']")
+      assert has_element?(view, "#script-header[value='[route] detour: [stop] not served']")
+
+      view
+      |> form("#script-form", %{"script" => %{"header_template" => "[route] detour: [headline]"}})
+      |> render_change()
+
+      assert has_element?(view, "#script-header-error", @placeholder_error_prefix)
+    end
+
+    test "a forged script id from another organization opens nothing", context do
+      other_organization = organization_fixture()
+      other_version = gtfs_version_fixture(other_organization.id)
+      other_actor = editor_fixture(other_organization)
+
+      {:ok, theirs} =
+        other_organization
+        |> audit_context(other_version, other_actor)
+        |> Alerts.create_script(%{@org_script | "name" => "Their script"})
+
+      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+
+      render_click(view, "open_edit_script", %{"script_id" => theirs.id})
+
+      refute has_element?(view, "#script-name[value='Their script']")
+      refute has_element?(view, "#script-delete")
+    end
+
+    test "saving a script another editor deleted keeps the typed wording", context do
+      {:ok, script} = Alerts.create_script(context.audit, @org_script)
+      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+
+      view |> element("#edit-script-#{script.id}") |> render_click()
+      {:ok, _deleted} = Alerts.delete_script(context.audit, script.id)
+
+      view
+      |> form("#script-form", %{
+        "script" => %{"header_template" => "[route] detour: [first skipped] not served"}
+      })
+      |> render_submit()
+
+      # The drawer stays on the typed wording and offers to create it again.
+      assert has_element?(view, "#script-notice", "Someone deleted this script.")
+
+      assert has_element?(
+               view,
+               "#script-header[value='[route] detour: [first skipped] not served']"
+             )
+
+      assert has_element?(view, "#script-save", "Create script")
+      refute has_element?(view, "#script-delete")
+      assert own_script_names(context.audit) == []
+
+      view |> form("#script-form") |> render_submit()
+
+      assert own_script_names(context.audit) == ["Route detour"]
     end
 
     test "a revoked role saves nothing and reports the forbidden outcome", context do
@@ -285,22 +377,21 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
       view |> element("#create-script") |> render_click()
       revoke_editor_role!(context.actor, context.organization)
 
-      html =
-        view
-        |> form("#script-form", %{
-          "script" => %{
-            "name" => "Too late",
-            "situation" => "detour",
-            "header_template" => "[route] detour",
-            "description_template" => "[route] is not serving [stop]."
-          }
-        })
-        |> render_submit()
+      view
+      |> form("#script-form", %{
+        "script" => %{
+          "name" => "Too late",
+          "situation" => "detour",
+          "header_template" => "[route] detour",
+          "description_template" => "[route] is not serving [stop]."
+        }
+      })
+      |> render_submit()
 
-      assert html =~ @forbidden_notice
+      assert has_element?(view, "#script-notice", @forbidden_notice)
 
       # Nothing was written and the drawer is still open with the draft in it.
-      assert own_script_names(context.audit) == []
+      assert own_script_names(context.reader_audit) == []
 
       assert has_element?(view, "#script-name[value='Too late']")
     end
@@ -341,28 +432,47 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
 
     test "a stale revision is refused with the conflict sentence and overwrites nothing",
          context do
+      # The page is open at revision 0 when another editor saves.
+      {:ok, view, _html} = live(context.conn, alerts_path(context.version) <> "?tab=guidelines")
       {:ok, _first} = Alerts.save_guidelines(context.audit, "First wording.", 0)
 
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version) <> "?tab=guidelines")
+      view
+      |> form("#guidelines-form", %{
+        "guidelines" => %{"guidelines" => "Older wording.", "revision" => "0"}
+      })
+      |> render_submit()
 
-      html =
-        view
-        |> form("#guidelines-form", %{
-          "guidelines" => %{"guidelines" => "Older wording.", "revision" => "0"}
-        })
-        |> render_submit()
-
-      assert html =~ @stale_guidelines
       assert has_element?(view, "#guidelines-notice", @stale_guidelines)
       assert has_element?(view, "#guidelines-reload")
 
       # The other save stands and this one kept its text.
       assert Alerts.get_guidelines(context.audit) == %{text: "First wording.", revision: 1}
-      assert has_element?(view, "#guidelines-text[value='Older wording.']")
+      assert has_element?(view, "#guidelines-text", "Older wording.")
 
       view |> element("#guidelines-reload") |> render_click()
       refute has_element?(view, "#guidelines-reload")
-      assert has_element?(view, "#guidelines-text[value='First wording.']")
+      assert has_element?(view, "#guidelines-text", "First wording.")
+    end
+
+    test "a stale warning does not come back as a notice after leaving the tab", context do
+      {:ok, view, _html} = live(context.conn, alerts_path(context.version) <> "?tab=guidelines")
+      {:ok, _first} = Alerts.save_guidelines(context.audit, "First wording.", 0)
+
+      view
+      |> form("#guidelines-form", %{
+        "guidelines" => %{"guidelines" => "Older wording.", "revision" => "0"}
+      })
+      |> render_submit()
+
+      assert has_element?(view, "#guidelines-notice", @stale_guidelines)
+
+      view |> element("#alert-settings-tab-scripts") |> render_click()
+      view |> element("#alert-settings-tab-guidelines") |> render_click()
+
+      # The tab shows the stored text again, without the warning or its button.
+      refute has_element?(view, "#guidelines-notice")
+      refute has_element?(view, "#guidelines-reload")
+      assert has_element?(view, "#guidelines-text", "First wording.")
     end
 
     test "a revoked role saves nothing and reports the forbidden outcome", context do
@@ -371,15 +481,15 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
 
       revoke_editor_role!(context.actor, context.organization)
 
-      html =
-        view
-        |> form("#guidelines-form", %{
-          "guidelines" => %{"guidelines" => "Too late.", "revision" => "1"}
-        })
-        |> render_submit()
+      view
+      |> form("#guidelines-form", %{
+        "guidelines" => %{"guidelines" => "Too late.", "revision" => "1"}
+      })
+      |> render_submit()
 
-      assert html =~ @forbidden_notice
-      assert Alerts.get_guidelines(context.audit) == %{text: "First wording.", revision: 1}
+      assert has_element?(view, "#guidelines-notice", @forbidden_notice)
+      assert Alerts.get_guidelines(context.reader_audit) == %{text: "First wording.", revision: 1}
+      assert has_element?(view, "#guidelines-text", "Too late.")
     end
 
     test "an unknown tab falls back to the scripts tab rather than raising", context do

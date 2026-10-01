@@ -22,8 +22,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
   a refused save keeps what was typed: `AlertScript.changeset/2`'s errors are
   shown on the field that caused them (an unknown placeholder or a `<%` tag is
   refused there, not by this page) and the entered templates stay in the form.
-  Identity is never cast: the organization and the script's place in the list
-  are owned by the `Alerts` command (R4, CR-2).
+  A script another editor deleted while the drawer was open leaves the typed
+  wording in place and turns the drawer into Create script, so saving again
+  re-creates it. Delete script asks first, because the wording cannot be
+  recovered. Identity is never cast: the organization and the script's place in
+  the list are owned by the `Alerts` command (R4, CR-2).
 
   The guidelines tab is one document in one textarea with a hidden base
   revision, saved through `Alerts.save_guidelines/3`. A save from a form
@@ -59,6 +62,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
   # page opens on.
   @tabs [:scripts, :guidelines]
 
+  @script_fields [:id, :name, :situation, :header_template, :description_template, :position]
+
   @tab_titles [
     scripts: "Message scripts",
     guidelines: "Writing guidelines"
@@ -67,6 +72,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
   @stale_guidelines_message "Someone else changed these guidelines. Reload to see their version."
   @forbidden_message "You no longer have permission to change the organization's alert wording."
   @unknown_built_in_message "That built-in script is not one this app offers."
+  @script_deleted_message "Someone deleted this script. Your changes are still here; create script to save them again."
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -84,6 +90,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
      |> assign(:script_notice, nil)
      |> assign(:script_drawer_open, false)
      |> assign(:script_entity, nil)
+     |> assign(:script_delete_target, nil)
      |> assign(:script_drawer_title, "Create script")
      |> assign(:script_return_focus_id, nil)
      |> assign(:script_form, script_form(%AlertScript{}, %{}))
@@ -216,10 +223,24 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
         {:noreply, assign(socket, :script_form, to_form(changeset, as: :script))}
 
       {:error, :forbidden} ->
-        {:noreply, assign(socket, :script_notice, @forbidden_message)}
+        {:noreply,
+         socket
+         |> assign(:script_form, script_form(script_base(socket.assigns.script_entity), params))
+         |> assign(:script_notice, @forbidden_message)}
 
-      # A built-in has no row, and a script from another tenant is `:not_found`;
-      # neither is a save, so the drawer closes on the refreshed list.
+      # The script is gone: another editor of this organization deleted it while
+      # the drawer was open. The typed wording stays, and saving creates it anew.
+      {:error, :not_found} ->
+        {:noreply,
+         socket
+         |> assign(:script_entity, nil)
+         |> assign(:script_form, script_form(%AlertScript{}, params))
+         |> assign(:script_drawer_title, "Create script")
+         |> assign(:script_notice, @script_deleted_message)
+         |> refresh_scripts()}
+
+      # Any other refusal is not a save, so the drawer closes on the refreshed
+      # list.
       {:error, _reason} ->
         {:noreply, socket |> close_script_drawer() |> refresh_scripts()}
     end
@@ -227,26 +248,33 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
 
   def handle_event("save_script", _params, socket), do: {:noreply, socket}
 
+  # Deleting loses the wording for good, so the drawer asks first.
   @impl true
   def handle_event("delete_script", %{"script_id" => script_id}, socket)
       when is_binary(script_id) do
-    case Alerts.delete_script(audit_context(socket), script_id) do
-      {:ok, script} ->
-        {:noreply,
-         socket
-         |> close_script_drawer()
-         |> refresh_scripts()
-         |> assign(:script_notice, "#{script.name} deleted.")}
+    case socket.assigns.script_entity do
+      %AlertScript{id: ^script_id} = script ->
+        {:noreply, assign(socket, :script_delete_target, script)}
 
-      {:error, :forbidden} ->
-        {:noreply, assign(socket, :script_notice, @forbidden_message)}
-
-      {:error, _reason} ->
-        {:noreply, socket |> close_script_drawer() |> refresh_scripts()}
+      _other ->
+        {:noreply, socket}
     end
   end
 
   def handle_event("delete_script", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("cancel_delete_script", _params, socket) do
+    {:noreply, assign(socket, :script_delete_target, nil)}
+  end
+
+  @impl true
+  def handle_event("confirm_delete_script", _params, socket) do
+    case socket.assigns.script_delete_target do
+      nil -> {:noreply, socket}
+      script -> {:noreply, delete_script(assign(socket, :script_delete_target, nil), script)}
+    end
+  end
 
   @impl true
   def handle_event("copy_built_in_script", %{"key" => key}, socket) when is_binary(key) do
@@ -292,16 +320,19 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
          |> assign(:guidelines_notice, "Guidelines saved.")}
 
       {:error, :stale, _current} ->
-        {:noreply, stale_guidelines(socket)}
+        {:noreply, stale_guidelines(socket, text, revision)}
 
       {:error, :stale} ->
-        {:noreply, stale_guidelines(socket)}
+        {:noreply, stale_guidelines(socket, text, revision)}
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, assign(socket, :guidelines_form, to_form(changeset, as: :guidelines))}
 
       {:error, :forbidden} ->
-        {:noreply, assign(socket, :guidelines_notice, @forbidden_message)}
+        {:noreply,
+         socket
+         |> assign(:guidelines_form, guidelines_form(text, revision))
+         |> assign(:guidelines_notice, @forbidden_message)}
     end
   end
 
@@ -311,10 +342,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
   def handle_event("reload_guidelines", _params, socket) do
     %{text: text, revision: revision} = Alerts.get_guidelines(audit_context(socket))
 
-    {:noreply,
-     socket
-     |> store_guidelines(text, revision)
-     |> assign(:guidelines_notice, nil)}
+    {:noreply, store_guidelines(socket, text, revision)}
   end
 
   # The stored document becomes the form's source, so a save or a reload shows
@@ -326,12 +354,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
     |> assign(:guidelines, %{text: text, revision: revision})
     |> assign(:guidelines_form, guidelines_form(text, revision))
     |> assign(:guidelines_stale?, false)
+    |> assign(:guidelines_notice, nil)
   end
 
   # A refused save keeps the entered text and the hidden revision the form was
   # rendered from, so the reader's words are not lost by a conflict (R6).
-  defp stale_guidelines(socket) do
+  defp stale_guidelines(socket, text, revision) do
     socket
+    |> assign(:guidelines_form, guidelines_form(text, revision))
     |> assign(:guidelines_stale?, true)
     |> assign(:guidelines_notice, @stale_guidelines_message)
   end
@@ -373,15 +403,37 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
 
   # `list_scripts/1` returns organization scripts first, so the first matching one
   # for an organization script's UUID is that script. A forged id is another
-  # organization's script, which is not in this list at all.
+  # organization's script, which is not in this list at all. The drawer's form
+  # is a changeset, so the listed option becomes the struct it describes.
   defp find_script(socket, script_id) do
     audit_context(socket)
     |> Alerts.list_scripts()
     |> Enum.find(&(not &1.built_in? and &1.id == script_id))
+    |> case do
+      nil -> nil
+      script -> struct(AlertScript, Map.take(script, @script_fields))
+    end
   end
 
   defp script_base(nil), do: %AlertScript{}
   defp script_base(script), do: script
+
+  defp delete_script(socket, script) do
+    case Alerts.delete_script(audit_context(socket), script.id) do
+      {:ok, deleted} ->
+        socket
+        |> close_script_drawer()
+        |> refresh_scripts()
+        |> assign(:script_notice, "#{deleted.name} deleted.")
+
+      {:error, :forbidden} ->
+        assign(socket, :script_notice, @forbidden_message)
+
+      # A missing row is the outcome the person asked for.
+      {:error, _reason} ->
+        socket |> close_script_drawer() |> refresh_scripts()
+    end
+  end
 
   # The opener id survives the close so the shipped OverlayDialog hook can still
   # return focus to the control that opened the drawer.
@@ -617,6 +669,26 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
           form={@script_form}
           return_focus_id={@script_return_focus_id}
         />
+
+        <.confirm_dialog
+          :if={@script_delete_target}
+          id="script-delete-confirm"
+          chrome="planner"
+          open={true}
+          title={"Delete #{@script_delete_target.name}?"}
+          confirm_label="Delete script"
+          cancel_label="Keep script"
+          pending_label="Deleting…"
+          on_confirm="confirm_delete_script"
+          on_cancel="cancel_delete_script"
+          described_by="script-delete-confirm-body"
+          return_focus_id="script-delete"
+        >
+          <p>
+            This removes the script for everyone in {@current_organization.name}. Alerts already
+            written keep their text. You can't undo it.
+          </p>
+        </.confirm_dialog>
       </div>
     </Layouts.app>
     """
@@ -814,7 +886,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
             <ul class="mt-2 flex flex-wrap gap-1.5">
               <li :for={placeholder <- Message.placeholders()}>
                 <span
-                  id={"fill-in-#{placeholder}"}
+                  id={"fill-in-#{String.replace(placeholder, " ", "-")}"}
                   class="inline-flex min-h-11 items-center rounded-control border border-control bg-white px-2.5 text-[13px] font-semibold text-cyan-800"
                 >
                   [{placeholder}]
