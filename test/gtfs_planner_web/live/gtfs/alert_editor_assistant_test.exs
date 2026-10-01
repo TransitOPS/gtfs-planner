@@ -99,7 +99,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
 
       assert has_element?(view, "#alert-assistant-start-intro", "tell me what happened")
       assert has_element?(view, "#alert-assistant-note")
-      assert has_element?(view, "#alert-assistant-start", "Send note")
+      assert has_element?(view, "#alert-assistant-send", "Send note")
 
       # There is no draft and no conversation yet, so nothing is rendered but the
       # card (AC-15, FH-15).

@@ -2339,7 +2339,7 @@ test.describe("alert editor assistant", () => {
         "tell me what happened",
       );
       await expect(page.locator("#alert-assistant-note")).toBeVisible();
-      await expect(page.locator("#alert-assistant-start")).toBeEnabled();
+      await expect(page.locator("#alert-assistant-send")).toBeEnabled();
       await expect(page.locator("#alert-assistant-example-1")).toBeVisible();
       await expect(page.locator("#alert-save-bar")).toBeVisible();
 

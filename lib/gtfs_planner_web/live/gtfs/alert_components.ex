@@ -2777,7 +2777,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
             <p id="alert-assistant-start-note" class="text-[12px] text-muted">
               Your draft is kept either way.
             </p>
-            <.button id="alert-assistant-start" type="submit" variant="primary" class="min-h-11">
+            <.button id="alert-assistant-send" type="submit" variant="primary" class="min-h-11">
               Send note
             </.button>
           </div>
