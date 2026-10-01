@@ -55,7 +55,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.AuditTest do
 
     assert Gtfs.reversible_fields_for("calendar") == []
     assert Gtfs.reversible_fields_for(:calendar) == []
-    assert GtfsPlanner.Gtfs.Audit.reversible_fields_for(created) == []
+    assert GtfsPlanner.Gtfs.Audit.reversible_fields_for(created.entity_type) == []
 
     assert {:error, :audit_only_entity} =
              GtfsPlanner.Gtfs.Stations.rollback_target_snapshot(created)

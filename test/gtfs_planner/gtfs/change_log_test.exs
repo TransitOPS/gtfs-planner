@@ -515,7 +515,13 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
       }
 
       assert {:ok, target_snapshot} = GtfsPlanner.Gtfs.Stations.rollback_target_snapshot(log)
-      assert target_snapshot == %{"stop_desc" => "Old desc", "stop_name" => "Old Name"}
+      # The organization and version IDs are dropped; a historical stop ID is the one
+      # identity field the stop target keeps.
+      assert target_snapshot == %{
+               "stop_desc" => "Old desc",
+               "stop_id" => "old_stop",
+               "stop_name" => "Old Name"
+             }
     end
   end
 
