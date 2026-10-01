@@ -14,8 +14,9 @@
 # `git rev-parse --git-common-dir`.
 #
 # The subcommands and their exit codes are contract C-2, defined once in the
-# journey-qa skill's `references/harness-contract.md`. This step implements
-# `up`; the others arrive with the steps that own them.
+# journey-qa skill's `references/harness-contract.md`. `up`, the four tester
+# subcommands and `down` are here; `replay` and `selfcheck` arrive with the
+# step that owns them.
 #
 #   bin/ux-qa up <JRNY-###/slug> [--headed]
 #
@@ -37,6 +38,14 @@
 # background and wait on `/health`, then open the resident driver and print the
 # run directory and the tester's brief. `--keep` is deliberately not offered:
 # the checks run inside `down`, so nothing needs a lingering server.
+#
+# What `down` does, in order: read the stored result and return its status if
+# the run was already finalized, otherwise run the scenario's check, judge the
+# run from the check's exit code and whether the server is still alive, write
+# `<run>/result.json`, optionally record the replay trail of a passing run,
+# stop only the pids `session.json` names and print the result. The database is
+# the harness's own throwaway server and is left to its own timeout, so a
+# result can be re-read after `down` has exited.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -52,8 +61,20 @@ HEALTH_TIMEOUT=180
 # The poll interval of that wait. An interval is not a deadline.
 HEALTH_POLL=1
 
+# How long a signalled process may take to stop before `down` kills it, and the
+# poll interval of that wait. An interval is not a deadline.
+STOP_TIMEOUT=10
+STOP_POLL=1
+
 usage() {
-  echo "usage: bin/ux-qa up <JRNY-###/slug> [--headed]" >&2
+  {
+    echo "usage: bin/ux-qa up <JRNY-###/slug> [--headed]"
+    echo "       bin/ux-qa step --run DIR <action> [target flags] [--intent T] [--expect T]"
+    echo "       bin/ux-qa note --run DIR [--about N|last] --observed T [--confusion none|mild|blocked]"
+    echo "       bin/ux-qa finish --run DIR --claim done|gave-up [--reason T] [--eyes MODE]"
+    echo "       bin/ux-qa report --run DIR"
+    echo "       bin/ux-qa down --run DIR [--record]"
+  } >&2
 }
 
 # The environment every subcommand runs in (contract C-2). The database
@@ -93,6 +114,22 @@ field() {
 # would need another dependency.
 url_host() {
   node -e 'process.stdout.write(new URL(process.argv[1]).hostname)' "$1"
+}
+
+# Homebrew's PostgreSQL first on PATH, the same choice `start_database` makes so
+# the server and the client are the same build. A check reads the run's database
+# with `psql`, and `down` runs in its own shell, so the path it needs is set
+# here rather than inherited from whichever invocation brought the stack up.
+prefer_homebrew_postgres() {
+  local dir
+
+  for dir in /opt/homebrew/opt/postgresql@18/bin /usr/local/opt/postgresql@18/bin; do
+    if [ -x "$dir/psql" ]; then
+      PATH="$dir:$PATH"
+      export PATH
+      return
+    fi
+  done
 }
 
 # Waits for the server to answer /health, or fails the run. A Phoenix that has
@@ -262,6 +299,170 @@ up() {
   echo "Phoenix: http://127.0.0.1:${port}"
 }
 
+# The exit code a `result.json` status returns (contract C-6): a completed goal
+# is 0, an unreached one is 1, and a run that could not be judged is 2.
+status_code() {
+  case "$1" in
+    completed) echo 0 ;;
+    not-completed) echo 1 ;;
+    *) echo 2 ;;
+  esac
+}
+
+# A check's id is declared by the scenario, not by this script, so it is read
+# from the run's own session rather than assumed.
+check_id_of() {
+  local run_dir="$1" scenario_id
+
+  scenario_id=$(jq -r '.scenario' "$run_dir/session.json")
+  node assets/qa/drive.mjs scenario --id "$scenario_id" | jq -r '.scenario.successCheck.id'
+}
+
+# TERM one pid, then KILL it if it is still there after STOP_TIMEOUT. A pid that
+# has already gone is not an error, which is what makes `down` repeatable.
+stop_pid() {
+  local pid="$1" waited=0
+
+  if ! kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+
+  kill "$pid" 2>/dev/null || true
+
+  while [ "$waited" -lt "$STOP_TIMEOUT" ]; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+
+    sleep "$STOP_POLL"
+    waited=$((waited + STOP_POLL))
+  done
+
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "pid ${pid} ignored TERM for ${STOP_TIMEOUT}s; killing it" >&2
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+}
+
+down() {
+  local run_dir='' record='' status=0
+  local phoenix_pid='' driver_pid='' check_exit=0 server_alive=no
+  local check_id='' finalize_json='' result_path=''
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --run)
+        if [ $# -lt 2 ]; then
+          echo "down: --run needs a run directory" >&2
+          exit 2
+        fi
+        run_dir="$2"
+        shift
+        ;;
+      --record)
+        record=1
+        ;;
+      -*)
+        echo "unknown option for down: $1" >&2
+        usage
+        exit 2
+        ;;
+      *)
+        echo "down takes --run DIR and an optional --record" >&2
+        usage
+        exit 2
+        ;;
+    esac
+    shift
+  done
+
+  if [ -z "$run_dir" ] || [ ! -f "$run_dir/session.json" ]; then
+    echo "down needs --run DIR, the run directory 'up' printed; ${run_dir:-no run} has no session.json" >&2
+    exit 2
+  fi
+
+  result_path="$run_dir/result.json"
+
+  # A run that was already finalized keeps its first answer. Re-running the
+  # check over a stopped stack would rewrite a result that was already true, so
+  # a second `down` is a read.
+  if [ -f "$result_path" ]; then
+    cat "$result_path"
+    status=$(jq -r '.status' "$result_path")
+    exit "$(status_code "$status")"
+  fi
+
+  # From here on the run owns real processes, so a failure below stops exactly
+  # the pids `session.json` names, through the same trap `up` arms.
+  phoenix_pid=$(jq -r '.pids.phoenix // empty' "$run_dir/session.json")
+  driver_pid=$(jq -r '.pids.driver // empty' "$run_dir/session.json")
+  owned_pids=()
+
+  if [ -n "$phoenix_pid" ]; then
+    owned_pids+=("$phoenix_pid")
+  fi
+
+  if [ -n "$driver_pid" ]; then
+    owned_pids+=("$driver_pid")
+  fi
+
+  # The server's own state is half the rating: a run whose server died cannot be
+  # judged from its check alone.
+  if [ -n "$phoenix_pid" ] && kill -0 "$phoenix_pid" 2>/dev/null; then
+    server_alive=yes
+  fi
+
+  if ! check_id=$(check_id_of "$run_dir"); then
+    echo "down: the scenario this run was created for could not be read, so no check was run" >&2
+    exit 2
+  fi
+
+  if [ -z "$check_id" ] || [ ! -f "assets/qa/checks/${check_id}.mjs" ]; then
+    echo "no check script for the scenario check: assets/qa/checks/${check_id:-unknown}.mjs" >&2
+    exit 2
+  fi
+
+  prefer_homebrew_postgres
+
+  # The check prints its own JSON and nothing else, so the file it writes is the
+  # check's whole answer. Its exit code is the rating, not what it printed: a
+  # check that printed a pass and then crashed is a harness error.
+  node "assets/qa/checks/${check_id}.mjs" --run "$run_dir" >"$run_dir/check.json" || check_exit=$?
+
+  # A check that crashed before printing leaves an empty file, and `finalize`
+  # reads the printed JSON or nothing at all.
+  if [ ! -s "$run_dir/check.json" ]; then
+    rm -f "$run_dir/check.json"
+  fi
+
+  if ! finalize_json=$(node assets/qa/drive.mjs finalize --run "$run_dir" \
+    --check-exit "$check_exit" --server-alive "$server_alive"); then
+    echo "down: result.json could not be written: ${finalize_json}" >&2
+    exit 2
+  fi
+
+  status=$(field "$finalize_json" .status)
+
+  # Only a run that reached its goal has a path worth replaying, so `--record`
+  # is honoured exactly when the result is `completed`.
+  if [ -n "$record" ] && [ "$status" = "completed" ]; then
+    node assets/qa/drive.mjs record --run "$run_dir" || echo "down: no replay trail was recorded" >&2
+  fi
+
+  # The driver is asked to close first so its browser shuts down cleanly; a
+  # driver that cannot answer is stopped by pid below like any other process.
+  node assets/qa/drive.mjs close --run "$run_dir" >/dev/null 2>&1 || true
+
+  local pid
+  for pid in ${owned_pids[@]+"${owned_pids[@]}"}; do # shellcheck disable=SC2086
+    stop_pid "$pid"
+  done
+  owned_pids=()
+
+  cat "$result_path"
+  exit "$(status_code "$status")"
+}
+
 # Stops only the pids this invocation started. A pid that has already gone is
 # ignored, so the trap is safe to run twice.
 stop_owned() {
@@ -282,6 +483,19 @@ case "${1:-}" in
   up)
     shift
     up "$@"
+    ;;
+  step | note | finish | report)
+    # The tester's own words: the driver client owns the vocabularies and
+    # prints the observation, and its exit code is the launcher's.
+    delegate="$1"
+    shift
+    code=0
+    node assets/qa/drive.mjs "$delegate" "$@" || code=$?
+    exit "$code"
+    ;;
+  down)
+    shift
+    down "$@"
     ;;
   *)
     usage
