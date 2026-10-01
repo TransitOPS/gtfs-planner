@@ -18,6 +18,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
   import GtfsPlannerWeb.RouteWorkspace, only: [badge: 1]
 
   attr :alignment, :map, default: nil, doc: "the Gtfs.alignment_editor/4 read model"
+  attr :version_id, :string, default: nil, doc: "the published version the download is scoped to"
   attr :state, :map, required: true, doc: "alignment UI state (selected section first)"
   attr :notice, :atom, default: nil, doc: ":read_only, :out_of_date, :imported_shape or nil"
   attr :dialog_open, :boolean, default: false, doc: "opens the help dialog"
@@ -433,9 +434,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
                 <h2 id="alignment-title" class="text-base font-bold text-strong">
                   Path between stops
                 </h2>
-                <.badge id="alignment-status" tone={badge_tone(@header_status.tone)}>
-                  {@header_status.text}
-                </.badge>
+                <div class="ml-auto flex flex-wrap items-center gap-2">
+                  <.badge id="alignment-status" tone={badge_tone(@header_status.tone)}>
+                    {@header_status.text}
+                  </.badge>
+                  <.import_export_menu
+                    alignment={@alignment}
+                    version_id={@version_id}
+                    editable?={@editable?}
+                    dirty?={@dirty_positions != []}
+                  />
+                </div>
               </div>
               <p class="mt-1 text-[13px] text-muted">
                 <span class="tabular-nums">{@saved_count} of {length(@alignment.sections)}</span>
@@ -534,12 +543,201 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
         version_name={@version_name}
         organization_name={@organization_name}
       />
-      
+
       <.generate_replace_dialog dialog={@generate_dialog} />
       <.blocked_dialog pending={@pending} />
       <.conflict_dialog pending={@pending} visits_by_position={@visits_by_position} />
     </div>
     """
+  end
+
+  @doc """
+  The "Import or export" disclosure on the Map line tab (step 35).
+
+  It carries the two file downloads for this one pattern, linking straight at
+  the step 34 route (`MapLineDownloadController`) as `<a download>` elements, and
+  says what the file will contain before it is fetched. The note is derived from
+  the read model the task already has: a pattern with no saved section falls back
+  to its imported shape, a pattern with gaps downloads its line in pieces, and a
+  pattern with a saved line downloads one line. Unsaved drafts are named as not
+  included, because the download reads the saved line.
+  """
+  attr :alignment, :map, required: true, doc: "the Gtfs.alignment_editor/4 read model"
+
+  attr :version_id, :string,
+    required: true,
+    doc: "the published version the download is scoped to"
+
+  attr :editable?, :boolean,
+    default: false,
+    doc: "false labels the disclosure Download, because a viewer cannot import"
+
+  attr :dirty?, :boolean, default: false, doc: "an unsaved draft is not in the file"
+
+  def import_export_menu(assigns) do
+    ~H"""
+    <details id="map-line-files" class="relative">
+      <summary
+        id="map-line-files-toggle"
+        class="flex min-h-11 cursor-pointer list-none items-center gap-1.5 rounded-control border border-control bg-white px-3 text-sm font-[650] text-strong hover:bg-canvas [&::-webkit-details-marker]:hidden"
+      >
+        {if @editable?, do: "Import or export", else: "Download"}
+        <.icon name="hero-chevron-down" class="size-4 text-muted" />
+      </summary>
+      <div
+        role="menu"
+        aria-label="Map line files"
+        class="absolute right-0 top-full z-30 mt-2 w-[min(320px,calc(100vw-48px))] rounded-card border border-subtle bg-white p-2 shadow-float"
+      >
+        <button
+          :if={@editable?}
+          type="button"
+          id="map-line-import-file"
+          role="menuitem"
+          phx-click="alignment_open_file_import"
+          class="flex min-h-11 w-full items-start gap-2 rounded-control px-3 py-2 text-left hover:bg-canvas"
+        >
+          <.icon name="hero-arrow-up-tray" class="mt-0.5 size-4 shrink-0 text-muted" />
+          <span class="min-w-0">
+            <span class="block font-[650] text-strong">Import a path file&hellip;</span>
+            <span class="block text-[13px] text-muted">
+              GeoJSON, KML, KMZ or GPX. You check the fit before anything changes.
+            </span>
+          </span>
+        </button>
+        <div :if={@editable?} class="my-1 border-t border-subtle"></div>
+        <p class="px-3 pb-1 pt-2 text-[13px] font-[650] text-default">Download this map line</p>
+        <.download_item
+          id="map-line-download-kml"
+          href={download_path(@version_id, @alignment.route_id, @alignment.route_pattern_id, "kml")}
+          title="KML file"
+          subtitle="For Google Earth and Google My Maps"
+        />
+        <.download_item
+          id="map-line-download-geojson"
+          href={
+            download_path(@version_id, @alignment.route_id, @alignment.route_pattern_id, "geojson")
+          }
+          title="GeoJSON file"
+          subtitle="For QGIS, ArcGIS and geojson.io"
+        />
+        <p
+          id="map-line-download-note"
+          class="mx-1 mt-1 rounded-control bg-canvas px-3 py-2 text-[13px] text-default"
+        >
+          {download_note(@alignment, @dirty?)}
+        </p>
+      </div>
+    </details>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :href, :string, required: true
+  attr :title, :string, required: true
+  attr :subtitle, :string, required: true
+
+  defp download_item(assigns) do
+    ~H"""
+    <a
+      id={@id}
+      role="menuitem"
+      href={@href}
+      download
+      class="flex min-h-11 w-full items-start gap-2 rounded-control px-3 py-2 text-left hover:bg-canvas"
+    >
+      <.icon name="hero-arrow-down-tray" class="mt-0.5 size-4 shrink-0 text-muted" />
+      <span class="min-w-0">
+        <span class="block font-[650] text-strong">{@title}</span>
+        <span class="block text-[13px] text-muted">{@subtitle}</span>
+      </span>
+    </a>
+    """
+  end
+
+  # Step 34's route, named for one pattern. `?format=` is required there, so it
+  # is always written; `?pattern=` names this pattern rather than the route.
+  defp download_path(version_id, route_id, route_pattern_id, format) do
+    ~p"/gtfs/#{version_id}/routes/#{route_id}/map-lines?#{%{pattern: route_pattern_id, format: format}}"
+  end
+
+  # What the file holds, in the pattern's own stops. A pattern whose sections all
+  # resolve to gaps has no saved line to draw, so the download falls back to the
+  # imported shape the feed already uses; a pattern with some gaps keeps its
+  # saved runs and downloads them as separate pieces rather than straight lines
+  # across the gaps.
+  defp download_note(alignment, dirty?) do
+    pieces = line_pieces(alignment)
+    missing = Enum.count(alignment.sections, &(&1.kind in [:missing, :blocked]))
+
+    text =
+      cond do
+        pieces == [] and imported_note(alignment) != nil ->
+          imported_note(alignment)
+
+        missing > 0 ->
+          "#{section_count(missing)} no saved path, so the file has the line in " <>
+            "#{length(pieces)} #{piece_word(length(pieces))}: " <>
+            Enum.map_join(Enum.map(pieces, &piece_span(&1, alignment)), ", and ", &"#{&1}.")
+
+        pieces == [] ->
+          "The file has the #{length(alignment.visits)} stops only, so far."
+
+        true ->
+          "The file has the saved map line and the #{length(alignment.visits)} stops."
+      end
+
+    if dirty?, do: text <> " Unsaved changes aren\u2019t included.", else: text
+  end
+
+  # `2 sections have` / `1 section has`
+  defp section_count(count) do
+    if count == 1, do: "1 section has", else: "#{count} sections have"
+  end
+
+  # `2 pieces` / `1 piece`
+  defp piece_word(count), do: if(count == 1, do: "piece", else: "pieces")
+
+  # `Lincoln City to Depoe Bay`, the two stops a run of saved sections joins.
+  defp piece_span({first, last}, alignment) do
+    from = Enum.at(alignment.visits, first)
+    to = Enum.at(alignment.visits, last + 1)
+
+    "#{visit_name(from)} to #{visit_name(to)}"
+  end
+
+  defp visit_name(%{name: name}) when is_binary(name), do: name
+  defp visit_name(_visit), do: "the next stop"
+
+  # `The file has the imported line (shape 1045) and the 13 stops.`
+  defp imported_note(alignment) do
+    case Enum.find(alignment.imported_shapes, &(&1.points != [])) do
+      nil ->
+        nil
+
+      shape ->
+        "The file has the imported line (shape #{shape.shape_id}) and the " <>
+          "#{length(alignment.visits)} stops."
+    end
+  end
+
+  # The runs of consecutive sections that carry a saved path, as inclusive
+  # `{first, last}` section indices. Mirrors `Alignments.line_file/4`'s split, so
+  # the note never promises fewer pieces than the file draws.
+  defp line_pieces(%{sections: sections}) do
+    sections
+    |> Enum.with_index()
+    |> Enum.reduce([], fn {section, index}, runs ->
+      if section.kind in [:missing, :blocked] do
+        runs
+      else
+        case List.last(runs) do
+          {^index, _} = _ -> runs
+          {first, last} when last == index - 1 -> List.replace_at(runs, -1, {first, index})
+          _ -> runs ++ [{index, index}]
+        end
+      end
+    end)
   end
 
   @doc """
@@ -1666,16 +1864,23 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
       |> assign(:blocked?, assigns[:fit] != nil and assigns[:fit].direction == "reversed")
 
     ~H"""
-    <div :if={@shape} id="imported-line-card" class="mx-4 mt-4 rounded-card border border-subtle bg-white">
+    <div
+      :if={@shape}
+      id="imported-line-card"
+      class="mx-4 mt-4 rounded-card border border-subtle bg-white"
+    >
       <div class="px-4 py-3">
         <h3 id="imported-line-card-title" class="text-sm font-bold text-strong">
           Imported shape {@shape.shape_id}
         </h3>
         <p class="mt-0.5 text-[13px] text-muted">
-          <span class="tabular-nums">{import_shape_km(@shape)}</span> &middot;
-          <span class="tabular-nums">{length(@shape.points || [])}</span> points &middot; used by the
-          {@shape.trip_count} {if @shape.trip_count == 1, do: "trip", else: "trips"} on this pattern &middot;
-          {@visit_count} {if @visit_count == 1, do: "visit", else: "visits"}
+          <span class="tabular-nums">{import_shape_km(@shape)}</span>
+          &middot; <span class="tabular-nums">{length(@shape.points || [])}</span>
+          points &middot; used by the {@shape.trip_count} {if @shape.trip_count == 1,
+            do: "trip",
+            else: "trips"} on this pattern &middot; {@visit_count} {if @visit_count == 1,
+            do: "visit",
+            else: "visits"}
         </p>
       </div>
 
@@ -2180,8 +2385,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
 
   defp import_visit_count(%{visits: visits}) when is_list(visits), do: length(visits)
   defp import_visit_count(_alignment), do: 0
-
-  
 
   defp import_shape_km(%{length_m: length_m}) when is_number(length_m) do
     "#{:erlang.float_to_binary(length_m / 1000, decimals: 1)} km"

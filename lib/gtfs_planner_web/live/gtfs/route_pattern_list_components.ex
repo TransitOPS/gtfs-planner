@@ -89,6 +89,83 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
     %{id: summary.id, kind: :pattern, summary: summary, label: label}
   end
 
+  @doc """
+  The Patterns list's "Download map lines" menu (step 35).
+
+  One download for the whole route: both links name `pattern=all`, so the file
+  holds every pattern of this route with its stops, in either format. It links
+  straight at step 34's `MapLineDownloadController` as `<a download>` elements, so
+  the browser saves the file without a LiveView event.
+  """
+  attr :version, :map, required: true, doc: "the current published GTFS version"
+  attr :route, :map, required: true, doc: "the route whose patterns are listed"
+
+  def map_lines_menu(assigns) do
+    ~H"""
+    <details id="patterns-download-map-lines" class="relative">
+      <summary
+        id="patterns-download-map-lines-toggle"
+        class="flex min-h-11 cursor-pointer list-none items-center gap-1.5 rounded-control border border-control bg-white px-3 text-sm font-[650] text-strong hover:bg-canvas [&::-webkit-details-marker]:hidden"
+      >
+        <.icon name="hero-arrow-down-tray" class="size-4" /> Download map lines
+        <.icon name="hero-chevron-down" class="size-4 text-muted" />
+      </summary>
+      <div
+        role="menu"
+        aria-label="Map line files"
+        class="absolute right-0 top-full z-30 mt-2 w-[min(320px,calc(100vw-48px))] rounded-card border border-subtle bg-white p-2 shadow-float"
+      >
+        <p class="px-3 pb-1 pt-2 text-[13px] font-[650] text-default">
+          Download every pattern on this route
+        </p>
+        <.map_lines_menu_item
+          id="patterns-download-map-lines-kml"
+          href={
+            ~p"/gtfs/#{@version.id}/routes/#{@route.route_id}/map-lines?#{%{pattern: "all", format: "kml"}}"
+          }
+          title="KML file"
+          subtitle="For Google Earth and Google My Maps. A folder per direction."
+        />
+        <.map_lines_menu_item
+          id="patterns-download-map-lines-geojson"
+          href={
+            ~p"/gtfs/#{@version.id}/routes/#{@route.route_id}/map-lines?#{%{pattern: "all", format: "geojson"}}"
+          }
+          title="GeoJSON file"
+          subtitle="For QGIS, ArcGIS and geojson.io. One feature per pattern."
+        />
+        <p class="mx-1 mt-1 rounded-control bg-canvas px-3 py-2 text-[13px] text-default">
+          Each pattern&rsquo;s map line and its stops, named as on this list. A pattern with
+          no path in some sections downloads its line in pieces.
+        </p>
+      </div>
+    </details>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :href, :string, required: true
+  attr :title, :string, required: true
+  attr :subtitle, :string, required: true
+
+  defp map_lines_menu_item(assigns) do
+    ~H"""
+    <a
+      id={@id}
+      role="menuitem"
+      href={@href}
+      download
+      class="flex min-h-11 w-full items-start gap-2 rounded-control px-3 py-2 text-left hover:bg-canvas"
+    >
+      <.icon name="hero-arrow-down-tray" class="mt-0.5 size-4 shrink-0 text-muted" />
+      <span class="min-w-0">
+        <span class="block font-[650] text-strong">{@title}</span>
+        <span class="block text-[13px] text-muted">{@subtitle}</span>
+      </span>
+    </a>
+    """
+  end
+
   attr :load_state, :atom, required: true, values: [:loading, :unavailable, :ready]
   attr :route, :map, default: nil
   attr :version, :map, required: true, doc: "the current GTFS version"
@@ -231,6 +308,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
             Stop patterns
           </h2>
           <div class="flex flex-wrap items-center gap-2">
+            <.map_lines_menu :if={@pattern_count > 0} version={@version} route={@route} />
             <.button
               :if={@pattern_count > 0}
               id="patterns-compare"
