@@ -13,7 +13,6 @@ defmodule GtfsPlanner.Gtfs.FeedSettings.AgencyReferenceLockTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Accounts.User
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FeedSettings
@@ -37,7 +36,7 @@ defmodule GtfsPlanner.Gtfs.FeedSettings.AgencyReferenceLockTest do
     }
   end
 
-  describe "create_version_route/3 agency resolution (R4, INV-1)" do
+  describe "route insert under lock_agency_for_reference!/3 (R4, INV-1)" do
     test "refuses a route when the version has no agency", context do
       assert {:error, :agency_required} =
                insert_version_route(context, route_attrs("r1", nil))
@@ -132,104 +131,6 @@ defmodule GtfsPlanner.Gtfs.FeedSettings.AgencyReferenceLockTest do
       assert {:ok, route} = insert_version_route(context, route_attrs("r1", nil))
       assert route.agency_id == "B"
       assert Repo.get(Agency, alpha.id) == nil
-      assert route_count(context.version) == 1
-    end
-
-    test "ignores scope attrs and refuses a version outside the scope", context do
-      agency_fixture(
-        context.organization.id,
-        context.version.id,
-        agency_attrs("NCT", "North County Transit")
-      )
-
-      other_organization = organization_fixture()
-      other_version = gtfs_version_fixture(other_organization.id)
-
-      attrs =
-        route_attrs("r1", "NCT")
-        |> Map.merge(%{
-          "organization_id" => other_organization.id,
-          "gtfs_version_id" => other_version.id
-        })
-
-      assert {:ok, route} = insert_version_route(context, attrs)
-      assert route.organization_id == context.organization.id
-      assert route.gtfs_version_id == context.version.id
-      assert route.agency_id == "NCT"
-      assert route_count(other_version) == 0
-
-      {:ok, staging} =
-        Versions.create_staging_gtfs_version(context.organization.id, %{name: "Staging"})
-
-      assert {:error, :not_found} =
-               Gtfs.create_version_route(
-                 context.organization.id,
-                 staging.id,
-                 route_attrs("r2", nil)
-               )
-
-      assert {:error, :not_found} =
-               Gtfs.create_version_route(
-                 other_organization.id,
-                 context.version.id,
-                 route_attrs("r3", nil)
-               )
-
-      assert {:error, :not_found} =
-               Gtfs.create_version_route(
-                 context.organization.id,
-                 Ecto.UUID.generate(),
-                 route_attrs("r4", nil)
-               )
-
-      assert {:error, :not_found} =
-               Gtfs.create_version_route(
-                 context.organization.id,
-                 "not-a-uuid",
-                 route_attrs("r5", nil)
-               )
-
-      assert route_count(context.version) == 1
-      assert route_count(staging) == 0
-    end
-
-    test "accepts atom-keyed attrs and resolves the agency the same way", context do
-      agency_fixture(
-        context.organization.id,
-        context.version.id,
-        agency_attrs("NCT", "North County Transit")
-      )
-
-      assert {:ok, route} =
-               Gtfs.create_version_route(context.organization.id, context.version.id, %{
-                 route_id: "r1",
-                 route_type: 3,
-                 route_short_name: "1",
-                 agency_id: nil
-               })
-
-      assert route.agency_id == "NCT"
-      assert route.organization_id == context.organization.id
-      assert route.gtfs_version_id == context.version.id
-    end
-
-    test "returns the route changeset for an invalid route and writes nothing", context do
-      agency_fixture(
-        context.organization.id,
-        context.version.id,
-        agency_attrs("NCT", "North County Transit")
-      )
-
-      assert {:error, %Ecto.Changeset{} = changeset} =
-               Gtfs.create_version_route(context.organization.id, context.version.id, %{
-                 "route_id" => "r1",
-                 "route_short_name" => "1"
-               })
-
-      assert %{route_type: [_ | _]} = errors_on(changeset)
-      assert route_count(context.version) == 0
-
-      assert {:ok, _route} = insert_version_route(context, route_attrs("r1", nil))
       assert route_count(context.version) == 1
     end
   end
@@ -360,14 +261,14 @@ defmodule GtfsPlanner.Gtfs.FeedSettings.AgencyReferenceLockTest do
       try do
         scope = seed_committed_scope(token)
 
-        # Task 1 inserts through the production entrypoint and keeps its transaction open, so
-        # the share lock and the uncommitted route row are both outstanding.
+        # Task 1 resolves the agency and inserts the route in one transaction and keeps it open,
+        # so the share lock and the uncommitted route row are both outstanding.
         insert_task =
           Task.Supervisor.async_nolink(__MODULE__.TaskSupervisor, fn ->
             unboxed(fn ->
               Repo.transaction(fn ->
                 assert {:ok, route} =
-                         Gtfs.create_version_route(
+                         insert_route_under_reference_lock(
                            scope.organization.id,
                            scope.version.id,
                            route_attrs("x1", "X")
@@ -636,7 +537,28 @@ defmodule GtfsPlanner.Gtfs.FeedSettings.AgencyReferenceLockTest do
   end
 
   defp insert_version_route(context, attrs) do
-    Gtfs.create_version_route(context.organization.id, context.version.id, attrs)
+    insert_route_under_reference_lock(context.organization.id, context.version.id, attrs)
+  end
+
+  # The route insert the reference lock exists for: the agency is resolved under the version
+  # share lock and the route is inserted in the same transaction.
+  defp insert_route_under_reference_lock(organization_id, gtfs_version_id, attrs) do
+    Repo.transaction(fn ->
+      agency_id =
+        FeedSettings.lock_agency_for_reference!(
+          organization_id,
+          gtfs_version_id,
+          attrs["agency_id"]
+        )
+
+      %Route{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
+      |> Route.changeset(Map.put(attrs, "agency_id", agency_id))
+      |> Repo.insert()
+      |> case do
+        {:ok, route} -> route
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
   end
 
   defp route_attrs(route_id, agency_id) do

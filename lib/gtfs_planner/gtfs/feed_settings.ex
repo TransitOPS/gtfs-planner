@@ -56,10 +56,10 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
   A route insert resolves its agency under the same version row lock (R4, INV-1).
   `lock_agency_for_reference!/3` share-locks the published version and then returns the
   version's single agency for a blank choice, or the listed agency for a provided choice,
-  rolling back `:agency_required` or `:agency_not_found` instead. Every route write calls
-  it inside the insert's own transaction through `Gtfs.create_version_route/3`, so an
-  insert serializes against an agency deletion and can never commit against an agency
-  that no longer exists (AC-26).
+  rolling back `:agency_required` or `:agency_not_found` instead. A route insert that
+  calls it inside its own transaction serializes against an agency deletion and cannot
+  commit against an agency that no longer exists (AC-26); `Routes.create_editor_route/3`
+  gets the same guarantee by resolving the agency under the version's `FOR UPDATE` lock.
 
   Outside import and test fixtures this module is the application's writer of `agencies`
   and `feed_info` rows and of the agency columns they own (INV-5).

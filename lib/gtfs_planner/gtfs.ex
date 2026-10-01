@@ -34,7 +34,6 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.FareRule
   alias GtfsPlanner.Gtfs.FareTransferRule
   alias GtfsPlanner.Gtfs.FeedInfo
-  alias GtfsPlanner.Gtfs.FeedSettings
   alias GtfsPlanner.Gtfs.FloorplanTransform
   alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.Level
@@ -1125,11 +1124,6 @@ defmodule GtfsPlanner.Gtfs do
   def create_journal_photo(%Scope{} = scope, attrs, upload),
     do: StationJournal.create_photo(scope, attrs, upload)
 
-  @spec refresh_pin_coordinates_for_stop_level(StopLevel.t(), pos_integer(), pos_integer()) ::
-          {:ok, non_neg_integer()} | {:error, term()}
-  def refresh_pin_coordinates_for_stop_level(%StopLevel{} = stop_level, image_w, image_h),
-    do: StationJournal.refresh_pin_coordinates_for_stop_level(stop_level, image_w, image_h)
-
   @doc """
   Normalizes a route status filter to its canonical URL presentation.
 
@@ -1240,78 +1234,6 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Creates a route.
-
-  ## Examples
-
-      iex> create_route(%{organization_id: org_id, gtfs_version_id: version_id, route_id: "R1", route_type: 3, route_short_name: "1"})
-      {:ok, %Route{}}
-
-      iex> create_route(%{route_id: nil})
-      {:error, %Ecto.Changeset{}}
-  """
-  def create_route(attrs \\ %{}) do
-    %Route{}
-    |> Route.changeset(attrs)
-    |> Repo.insert()
-  end
-
-  @doc """
-  Creates a route in a GTFS version, resolving its agency under the version row lock (R4,
-  INV-1).
-
-  `organization_id` and `gtfs_version_id` scope the insert and are never taken from
-  `attrs`; `attrs` carry the route fields and may name an `agency_id`, as a string or atom
-  key. One transaction share-locks the published version row and resolves the agency
-  through `GtfsPlanner.Gtfs.FeedSettings.lock_agency_for_reference!/3`, so the insert
-  serializes against an agency deletion, creation or timezone change for the same version
-  (INV-2, AC-26) and a route can never commit against an agency that no longer exists.
-
-  ## Returns
-
-  - `{:ok, %Route{}}` with the resolved `agency_id`
-  - `{:error, %Ecto.Changeset{}}` for attrs the route changeset refuses
-  - `{:error, :not_found}` when the scope is not a published version of the organization
-  - `{:error, :agency_required}` when the version has no agency
-  - `{:error, :agency_not_found}` when the choice is not one of the version's agencies
-
-  ## Examples
-
-      iex> create_version_route(org_id, version_id, %{route_id: "R1", route_type: 3, route_short_name: "1"})
-      {:ok, %Route{}}
-  """
-  @spec create_version_route(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
-          {:ok, Route.t()}
-          | {:error, Ecto.Changeset.t() | :not_found | :agency_required | :agency_not_found}
-  def create_version_route(organization_id, gtfs_version_id, attrs) when is_map(attrs) do
-    # String keys, so the scope and the resolved agency override any key form the caller
-    # sent and the changeset reads one shape.
-    attrs = Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
-
-    Repo.transaction(fn ->
-      agency_id =
-        FeedSettings.lock_agency_for_reference!(
-          organization_id,
-          gtfs_version_id,
-          attrs["agency_id"]
-        )
-
-      attrs
-      |> Map.merge(%{
-        "organization_id" => organization_id,
-        "gtfs_version_id" => gtfs_version_id,
-        "agency_id" => agency_id
-      })
-      |> then(&Route.changeset(%Route{}, &1))
-      |> Repo.insert()
-      |> case do
-        {:ok, route} -> route
-        {:error, changeset} -> Repo.rollback(changeset)
-      end
-    end)
-  end
-
-  @doc """
   Reads the version-scoped agency options and mode counts the create drawer
   presents (R3, R2).
 
@@ -1344,8 +1266,7 @@ defmodule GtfsPlanner.Gtfs do
 
   See `GtfsPlanner.Gtfs.Routes.create_editor_route/3` for the attempt contract
   and error surface. The public facade signature is the seam-`S-2` contract:
-  the insert stays inside `Routes.create_editor_route/3` until package 13's
-  `Gtfs.create_version_route/3` lands.
+  the insert stays inside `Routes.create_editor_route/3`.
   """
   @spec create_editor_route(map(), map(), AuditContext.t()) :: {:ok, map()} | {:error, term()}
   def create_editor_route(attrs, attempt, %AuditContext{} = audit_context),
@@ -1751,84 +1672,6 @@ defmodule GtfsPlanner.Gtfs do
           l.level_id == ^level_id
     )
     |> Repo.one()
-  end
-
-  @doc """
-  Creates a level.
-
-  ## Examples
-
-      iex> create_level(%{organization_id: org_id, gtfs_version_id: version_id, level_id: "L1", level_index: 0.0})
-      {:ok, %Level{}}
-
-      iex> create_level(%{level_id: nil})
-      {:error, %Ecto.Changeset{}}
-  """
-  def create_level(attrs \\ %{}) do
-    %Level{}
-    |> Level.changeset(attrs)
-    |> Repo.insert()
-  end
-
-  @doc """
-  Deletes a stop_level association.
-  """
-  def delete_stop_level(%StopLevel{} = stop_level) do
-    Repo.delete(stop_level)
-  end
-
-  @doc """
-  Updates a stop_level's diagram filename.
-  """
-  def update_stop_level_diagram(%StopLevel{} = stop_level, filename) do
-    stop_level
-    |> StopLevel.changeset(%{
-      diagram_filename: filename,
-      scale_point_a: nil,
-      scale_point_b: nil,
-      scale_distance_meters: nil,
-      scale_meters_per_unit: nil
-    })
-    |> Repo.update()
-  end
-
-  @doc """
-  Updates a stop_level's diagram calibration.
-  """
-  def update_stop_level_scale(%StopLevel{} = stop_level, attrs) do
-    stop_level
-    |> StopLevel.scale_changeset(attrs)
-    |> Repo.update()
-  end
-
-  @doc """
-  Updates a stop_level's floorplan alignment.
-  """
-  def update_stop_level_alignment(%StopLevel{} = stop_level, attrs) do
-    stop_level
-    |> StopLevel.alignment_changeset(attrs)
-    |> Repo.update()
-  end
-
-  @doc """
-  Saves a stop_level's floorplan alignment.
-  """
-  def save_stop_level_alignment(%StopLevel{} = stop_level, attrs) do
-    stop_level
-    |> StopLevel.alignment_changeset(attrs)
-    |> Repo.update()
-  end
-
-  @doc """
-  Clears a stop_level's floorplan alignment.
-  """
-  def clear_stop_level_alignment(%StopLevel{} = stop_level) do
-    update_stop_level_alignment(stop_level, %{
-      floorplan_center_lat: nil,
-      floorplan_center_lon: nil,
-      floorplan_scale_mpp: nil,
-      floorplan_rotation_deg: nil
-    })
   end
 
   @doc """
@@ -2688,76 +2531,6 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Applies the saved floorplan alignment to persist `stop_lat`/`stop_lon` on every
-  eligible child stop of `stop_level`.
-
-  Derives coordinates via `derive_child_stop_coords/3`, then updates all derived
-  stops atomically in a single `Repo.transaction`. A single failed changeset
-  rolls back every write in the call.
-
-  Returns `{:ok, count}` with the number of updated stops, `{:ok, 0}` when no
-  eligible stops exist, or `{:error, reason}` on derivation or persistence failure.
-  """
-  @spec apply_alignment_to_child_stops(StopLevel.t(), pos_integer(), pos_integer()) ::
-          {:ok, non_neg_integer()}
-          | {:error, :alignment_missing | :invalid_image_dims | {:transform, atom()} | term()}
-  def apply_alignment_to_child_stops(%StopLevel{} = stop_level, image_w, image_h) do
-    with {:ok, derived} <- derive_child_stop_coords(stop_level, image_w, image_h) do
-      persist_derived_coords(derived, stop_level)
-    end
-  end
-
-  defp persist_derived_coords([], _stop_level), do: {:ok, 0}
-
-  defp persist_derived_coords(derived, %StopLevel{} = stop_level) when is_list(derived) do
-    transaction_result =
-      Repo.transaction(fn ->
-        # Derived child coordinates are a reviewed combination input, so the version share lock is
-        # the first statement of this transaction, before the child stop rows are read or updated.
-        Versions.lock_for_input_write!(stop_level.organization_id, stop_level.gtfs_version_id)
-
-        Enum.map(derived, fn entry ->
-          case update_derived_stop_coords(entry) do
-            {:ok, updated_stop} -> updated_stop
-            {:error, reason} -> Repo.rollback(reason)
-          end
-        end)
-      end)
-
-    case transaction_result do
-      {:ok, updated_stops} ->
-        {:ok, length(updated_stops)}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp update_derived_stop_coords(%{stop: %Stop{} = stop, new_lat: lat, new_lon: lon}) do
-    stop
-    |> Stop.changeset(%{
-      stop_lat: Decimal.from_float(lat),
-      stop_lon: Decimal.from_float(lon)
-    })
-    |> Repo.update()
-  end
-
-  defp update_derived_stop_coords(%{stop_id: stop_id, lat: lat, lon: lon}) do
-    case Repo.get(Stop, stop_id) do
-      nil ->
-        {:error, :stop_not_found}
-
-      %Stop{} = stop ->
-        stop
-        |> Stop.changeset(%{
-          stop_lat: Decimal.from_float(lat),
-          stop_lon: Decimal.from_float(lon)
-        })
-        |> Repo.update()
-    end
-  end
-
-  @doc """
   Infers floorplan alignment for `stop_level` from anchored child stops and
   eligible cross-level elevator pathways.
 
@@ -2806,43 +2579,6 @@ defmodule GtfsPlanner.Gtfs do
       {:error, :invalid_image_dims} -> {:error, :invalid_input}
       other -> other
     end
-  end
-
-  @doc """
-  Infers and persists floorplan alignment for `stop_level`.
-
-  Calls `infer_level_alignment/3` and, on success, writes the inferred
-  `floorplan_*` fields via `StopLevel.alignment_changeset/2`.
-  """
-  @spec save_inferred_level_alignment(StopLevel.t(), pos_integer(), pos_integer()) ::
-          {:ok, StopLevel.t(), map()}
-          | {:error,
-             :alignment_prerequisites_missing
-             | :insufficient_anchors
-             | :degenerate_geometry
-             | :high_residual
-             | :invalid_input
-             | :not_found
-             | Ecto.Changeset.t()}
-  def save_inferred_level_alignment(%StopLevel{} = stop_level, image_w, image_h) do
-    with {:ok, %{inferred_alignment: inferred} = result} <-
-           infer_level_alignment(stop_level, image_w, image_h),
-         {:ok, updated} <- persist_inferred_alignment(stop_level, inferred) do
-      {:ok, updated, result}
-    end
-  end
-
-  def save_inferred_level_alignment(nil, _image_w, _image_h), do: {:error, :not_found}
-
-  defp persist_inferred_alignment(%StopLevel{} = stop_level, inferred) do
-    stop_level
-    |> StopLevel.alignment_changeset(%{
-      floorplan_center_lat: inferred.center_lat,
-      floorplan_center_lon: inferred.center_lon,
-      floorplan_scale_mpp: inferred.scale_mpp,
-      floorplan_rotation_deg: inferred.rotation_deg
-    })
-    |> Repo.update()
   end
 
   defp direct_candidates_for(%StopLevel{} = stop_level) do
@@ -3050,66 +2786,6 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Saves stop-level calibration and recalculates the pathway lengths derived from the
-  previous scale atomically, recording a change log for each recalculated pathway.
-
-  Returns `{:ok, %{stop_level:, recalculated_count:, kept_count:}}`; see
-  `recalculate_pathway_lengths_for_level/7` for which lengths are kept.
-  """
-  def save_scale_and_recalculate(
-        %StopLevel{} = stop_level,
-        scale_attrs,
-        organization_id,
-        gtfs_version_id,
-        level_id,
-        parent_station_id,
-        %AuditContext{} = audit_ctx
-      ) do
-    transaction_result =
-      Repo.transaction(fn ->
-        with {:ok, updated_stop_level} <-
-               stop_level
-               |> StopLevel.scale_changeset(scale_attrs)
-               |> Repo.update(),
-             {:ok, counts} <-
-               recalculate_pathway_lengths_for_level(
-                 stop_level,
-                 updated_stop_level,
-                 organization_id,
-                 gtfs_version_id,
-                 level_id,
-                 parent_station_id,
-                 audit_ctx
-               ) do
-          Map.put(counts, :stop_level, updated_stop_level)
-        else
-          {:error, reason} ->
-            Repo.rollback(reason)
-        end
-      end)
-
-    case transaction_result do
-      {:ok, result} ->
-        {:ok, result}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  @doc """
-  Clears a stop_level's diagram calibration.
-  """
-  def clear_stop_level_scale(%StopLevel{} = stop_level) do
-    update_stop_level_scale(stop_level, %{
-      scale_point_a: nil,
-      scale_point_b: nil,
-      scale_distance_meters: nil,
-      scale_meters_per_unit: nil
-    })
-  end
-
-  @doc """
   Calculates a pathway length in meters from two stops and a calibrated stop_level.
   Returns nil when calibration or coordinates are unavailable.
   """
@@ -3131,21 +2807,6 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   def calculate_pathway_length(_, _, _), do: nil
-
-  @doc """
-  Deletes a level.
-
-  ## Examples
-
-      iex> delete_level(level)
-      {:ok, %Level{}}
-
-      iex> delete_level(level)
-      {:error, %Ecto.Changeset{}}
-  """
-  def delete_level(%Level{} = level) do
-    Repo.delete(level)
-  end
 
   @doc """
   Returns an `%Ecto.Changeset{}` for tracking level changes.
@@ -3826,23 +3487,6 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Creates a stop.
-
-  ## Examples
-
-      iex> create_stop(%{organization_id: org_id, gtfs_version_id: version_id, stop_id: "stop_123", stop_name: "Central Station"})
-      {:ok, %Stop{}}
-
-      iex> create_stop(%{stop_id: nil})
-      {:error, %Ecto.Changeset{}}
-  """
-  def create_stop(attrs \\ %{}) do
-    %Stop{}
-    |> Stop.changeset(attrs)
-    |> insert_with_input_write_lock()
-  end
-
-  @doc """
   Creates a stop for import workflows using permissive parent/level validation.
   """
   def import_create_stop(attrs \\ %{}) do
@@ -3858,172 +3502,6 @@ defmodule GtfsPlanner.Gtfs do
     stop
     |> Stop.import_changeset(attrs)
     |> update_with_input_write_lock()
-  end
-
-  @doc """
-  Deletes a child stop and its connected pathways in a single transaction.
-
-  Scopes the lookup to the given organization, version, and parent station
-  to prevent cross-tenant mutations.
-  """
-  @spec delete_child_stop(integer(), integer(), String.t(), integer()) ::
-          {:ok, Stop.t()} | {:error, :not_found | term()}
-  def delete_child_stop(organization_id, gtfs_version_id, station_stop_id, stop_id) do
-    descendants = descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id)
-
-    stop_query =
-      from(s in Stop,
-        where:
-          s.id == ^stop_id and
-            s.organization_id == ^organization_id and
-            s.gtfs_version_id == ^gtfs_version_id and
-            s.stop_id in subquery(descendants)
-      )
-
-    case Repo.one(stop_query) do
-      nil ->
-        {:error, :not_found}
-
-      stop ->
-        with :ok <-
-               check_pathways_closure_free(organization_id, gtfs_version_id, stop.stop_id) do
-          delete_child_stop_transaction(organization_id, gtfs_version_id, stop)
-        end
-    end
-  end
-
-  # The delete and the pathway cleanup commit together under the published
-  # version's write lock; the composite-reference refusal becomes
-  # `:pathway_in_use` and any other constraint failure is re-raised.
-  defp delete_child_stop_transaction(organization_id, gtfs_version_id, stop) do
-    Ecto.Multi.new()
-    |> lock_input_write_multi(organization_id, gtfs_version_id)
-    |> delete_pathways_for_stop_multi(organization_id, gtfs_version_id, stop.stop_id)
-    |> Ecto.Multi.delete(:stop, stop)
-    |> Repo.transaction()
-    |> case do
-      {:ok, %{stop: deleted_stop}} ->
-        {:ok, deleted_stop}
-
-      {:error, _step, reason, _changes} ->
-        {:error, reason}
-    end
-  rescue
-    e in [Ecto.ConstraintError, Postgrex.Error] ->
-      pathway_in_use_or_reraise(e, __STACKTRACE__)
-  end
-
-  @doc """
-  Removes a child stop from the station diagram by clearing its
-  `diagram_coordinate` and `level_id`, and deletes connected pathways
-  so no dangling references remain.
-
-  Records an "updated" change log for the stop and a "deleted" one for each
-  deleted pathway in the same transaction, so a failed log rolls the removal back.
-
-  Scopes the update to the given organization, version, and parent station
-  to prevent cross-tenant mutations.
-  """
-  @spec remove_child_stop_from_diagram(
-          integer(),
-          integer(),
-          String.t(),
-          integer(),
-          AuditContext.t()
-        ) :: {:ok, Stop.t()} | {:error, :not_found | term()}
-  def remove_child_stop_from_diagram(
-        organization_id,
-        gtfs_version_id,
-        station_stop_id,
-        stop_id,
-        %AuditContext{} = audit_ctx
-      ) do
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
-    descendants = descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id)
-
-    stop_query =
-      from(s in Stop,
-        where:
-          s.id == ^stop_id and
-            s.organization_id == ^organization_id and
-            s.gtfs_version_id == ^gtfs_version_id and
-            s.stop_id in subquery(descendants)
-      )
-
-    case Repo.one(stop_query) do
-      nil ->
-        {:error, :not_found}
-
-      stop ->
-        with :ok <-
-               check_pathways_closure_free(organization_id, gtfs_version_id, stop.stop_id) do
-          remove_child_stop_transaction(organization_id, gtfs_version_id, stop, now, audit_ctx)
-        end
-    end
-  end
-
-  # The diagram clearing and the pathway cleanup commit together, under the
-  # same composite-reference guard as the delete.
-  defp remove_child_stop_transaction(organization_id, gtfs_version_id, stop, now, audit_ctx) do
-    update_query = from(s in Stop, where: s.id == ^stop.id)
-
-    Ecto.Multi.new()
-    |> delete_pathways_for_stop_multi(organization_id, gtfs_version_id, stop.stop_id)
-    |> Ecto.Multi.update_all(:stop, update_query,
-      set: [diagram_coordinate: nil, level_id: nil, updated_at: now]
-    )
-    |> Ecto.Multi.run(:audit, fn _repo, %{pathways: {_count, deleted_pathways}} ->
-      record_diagram_removal(audit_ctx, stop, deleted_pathways)
-    end)
-    |> Repo.transaction()
-    |> case do
-      {:ok, _} ->
-        Repo.get!(Stop, stop.id)
-        |> then(&{:ok, &1})
-
-      {:error, _step, reason, _changes} ->
-        {:error, reason}
-    end
-  rescue
-    e in [Ecto.ConstraintError, Postgrex.Error] ->
-      pathway_in_use_or_reraise(e, __STACKTRACE__)
-  end
-
-  # A composite pathway reference refused the mutation while a closure still
-  # names the pathway; every other constraint failure keeps its own error.
-  defp pathway_in_use_or_reraise(exception, stacktrace) do
-    if closure_reference_violation?(exception) do
-      {:error, :pathway_in_use}
-    else
-      reraise(exception, stacktrace)
-    end
-  end
-
-  defp record_diagram_removal(audit_ctx, %Stop{} = stop, deleted_pathways) do
-    with {:ok, _} <- record_diagram_clear(audit_ctx, stop) do
-      record_pathway_deletions(audit_ctx, deleted_pathways)
-    end
-  end
-
-  # Skipped when the stop had neither a level nor a coordinate to clear, so History
-  # never shows an update with no changed fields.
-  defp record_diagram_clear(_audit_ctx, %Stop{level_id: nil, diagram_coordinate: nil}),
-    do: {:ok, :unchanged}
-
-  defp record_diagram_clear(audit_ctx, %Stop{} = stop) do
-    record_change_in_transaction(audit_ctx, :stop, stop, "updated", %{
-      diagram_coordinate: nil,
-      level_id: nil
-    })
-  end
-
-  defp record_pathway_deletions(audit_ctx, pathways) do
-    Enum.reduce_while(pathways, {:ok, :recorded}, fn pathway, acc ->
-      case record_change_in_transaction(audit_ctx, :pathway, pathway, "deleted") do
-        {:ok, _log} -> {:cont, acc}
-        {:error, _changeset} = error -> {:halt, error}
-      end
-    end)
   end
 
   @doc """
@@ -4254,76 +3732,6 @@ defmodule GtfsPlanner.Gtfs do
           sl.stop_id != ^station_id
     )
     |> Repo.exists?()
-  end
-
-  @doc """
-  Removes a level association from a station while preserving the shared level record.
-
-  Stops of the station on that level lose their level and diagram coordinate, within the given
-  organization and version only. That covers direct children and the boarding areas under its
-  platforms, so no stop keeps a level the station no longer has. Returns `{:error, :not_found}`
-  when `level_id` is not a level of that organization and version.
-  """
-  def remove_level_from_station(
-        organization_id,
-        gtfs_version_id,
-        station_id,
-        station_stop_id,
-        level_id
-      ) do
-    Repo.transaction(fn ->
-      level =
-        Repo.get_by(Level,
-          id: level_id,
-          organization_id: organization_id,
-          gtfs_version_id: gtfs_version_id
-        ) || Repo.rollback(:not_found)
-
-      descendants = descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id)
-
-      from(s in Stop,
-        where:
-          s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
-            s.stop_id in subquery(descendants) and s.level_id == ^level.level_id
-      )
-      |> Repo.update_all(set: [level_id: nil, diagram_coordinate: nil])
-
-      with %StopLevel{} = stop_level <-
-             get_stop_level(organization_id, gtfs_version_id, station_id, level_id),
-           {:ok, _deleted_stop_level} <- Repo.delete(stop_level) do
-        :removed
-      else
-        nil -> :removed
-        {:error, reason} -> Repo.rollback(reason)
-      end
-    end)
-    |> case do
-      {:ok, :removed} -> {:ok, :removed}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  @doc """
-  Creates a stop_level association.
-  """
-  def create_stop_level(attrs \\ %{}) do
-    %StopLevel{}
-    |> StopLevel.changeset(attrs)
-    |> Repo.insert()
-  end
-
-  @doc """
-  Updates a stop's diagram coordinate.
-
-  ## Examples
-
-      iex> update_stop_diagram_coordinate(stop, %{x: 50.5, y: 25.0})
-      {:ok, %Stop{}}
-  """
-  def update_stop_diagram_coordinate(%Stop{} = stop, %{x: _, y: _} = coordinate) do
-    stop
-    |> Stop.changeset(%{diagram_coordinate: coordinate})
-    |> Repo.update()
   end
 
   @doc """
@@ -4642,23 +4050,6 @@ defmodule GtfsPlanner.Gtfs do
           a.agency_id == ^agency_id
     )
     |> Repo.one()
-  end
-
-  @doc """
-  Creates an agency.
-
-  ## Examples
-
-      iex> create_agency(%{organization_id: org_id, gtfs_version_id: version_id, agency_name: "Transit Agency"})
-      {:ok, %Agency{}}
-
-      iex> create_agency(%{agency_name: nil})
-      {:error, %Ecto.Changeset{}}
-  """
-  def create_agency(attrs \\ %{}) do
-    %Agency{}
-    |> Agency.changeset(attrs)
-    |> insert_with_input_write_lock()
   end
 
   # Display clock functions
@@ -5293,15 +4684,6 @@ defmodule GtfsPlanner.Gtfs do
     |> Repo.aggregate(:count)
   end
 
-  @doc """
-  Creates a trip.
-  """
-  def create_trip(attrs \\ %{}) do
-    %Trip{}
-    |> Trip.changeset(attrs)
-    |> insert_with_input_write_lock()
-  end
-
   # StopTime functions
 
   @doc """
@@ -5312,15 +4694,6 @@ defmodule GtfsPlanner.Gtfs do
       where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id
     )
     |> Repo.aggregate(:count)
-  end
-
-  @doc """
-  Creates a stop time.
-  """
-  def create_stop_time(attrs \\ %{}) do
-    %StopTime{}
-    |> StopTime.changeset(attrs)
-    |> insert_with_input_write_lock()
   end
 
   # Calendar functions
@@ -5664,54 +5037,6 @@ defmodule GtfsPlanner.Gtfs do
 
   defp paginate(query, _page, _per_page), do: paginate(query, 1, 25)
 
-  defp delete_pathways_for_stop_multi(multi, organization_id, gtfs_version_id, stop_id) do
-    pathway_query =
-      organization_id
-      |> pathways_for_stop_query(gtfs_version_id, stop_id)
-      |> select([p], p)
-
-    Ecto.Multi.delete_all(multi, :pathways, pathway_query)
-  end
-
-  # Step-6 precheck (R1-F4) shared by delete_child_stop/4 and
-  # remove_child_stop_from_diagram/4. It runs before the Multi because a
-  # failing Multi.run step rolls back the ambient outer transaction. A
-  # closure inserted after this check still surfaces as :pathway_in_use
-  # through the named-FK rescue at the outer boundary.
-  defp check_pathways_closure_free(organization_id, gtfs_version_id, stop_id) do
-    pathway_ids =
-      Repo.all(
-        from(p in Pathway,
-          where:
-            p.organization_id == ^organization_id and
-              p.gtfs_version_id == ^gtfs_version_id and
-              (p.from_stop_id == ^stop_id or p.to_stop_id == ^stop_id),
-          select: p.pathway_id
-        )
-      )
-
-    closure_exists? =
-      pathway_ids != [] and
-        Repo.exists?(
-          from(e in PathwayEvolution,
-            where:
-              e.organization_id == ^organization_id and
-                e.gtfs_version_id == ^gtfs_version_id and e.pathway_id in ^pathway_ids
-          )
-        )
-
-    if closure_exists?, do: {:error, :pathway_in_use}, else: :ok
-  end
-
-  defp pathways_for_stop_query(organization_id, gtfs_version_id, stop_id) do
-    from(p in Pathway,
-      where:
-        p.organization_id == ^organization_id and
-          p.gtfs_version_id == ^gtfs_version_id and
-          (p.from_stop_id == ^stop_id or p.to_stop_id == ^stop_id)
-    )
-  end
-
   defp pathway_closure_exists?(organization_id, gtfs_version_id, pathway_id) do
     from(e in PathwayEvolution,
       where:
@@ -5731,28 +5056,6 @@ defmodule GtfsPlanner.Gtfs do
         false
     end)
   end
-
-  # Matches only the step-1 closure FK after the owning transaction has
-  # rolled back. Any other constraint or driver error is reraised. The code
-  # allowlist covers both historic 23503 and the newer 23001
-  # restrict_violation that ON DELETE RESTRICT now reports.
-  defp closure_reference_violation?(%Ecto.ConstraintError{
-         type: :foreign_key,
-         constraint: constraint
-       }),
-       do: to_string(constraint) == "pathway_evolutions_pathway_fkey"
-
-  defp closure_reference_violation?(%Postgrex.Error{postgres: postgres}),
-    do:
-      Map.get(postgres, :constraint) == "pathway_evolutions_pathway_fkey" and
-        to_string(Map.get(postgres, :code)) in [
-          "restrict_violation",
-          "foreign_key_violation",
-          "23001",
-          "23503"
-        ]
-
-  defp closure_reference_violation?(_other), do: false
 
   # ============================================================================
   # Blocks
@@ -6713,14 +6016,6 @@ defmodule GtfsPlanner.Gtfs do
       {:ok, row} -> row
       {:error, changeset} -> Repo.rollback(changeset)
     end
-  end
-
-  # The stop cascade and the child-deletion transaction lock the version as their first step,
-  # before the `FOR UPDATE` on the referenced rows and before any stop_id rewrite.
-  defp lock_input_write_multi(multi, organization_id, gtfs_version_id) do
-    Ecto.Multi.run(multi, :lock_version, fn _repo, _changes ->
-      {:ok, Versions.lock_for_input_write!(organization_id, gtfs_version_id)}
-    end)
   end
 
   defp lock_changeset_version!(changeset) do
