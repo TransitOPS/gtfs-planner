@@ -269,6 +269,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   @remove_record_changed "This record changed. Nothing was removed."
   @remove_record_failed "Couldn't remove the record. Nothing changed. Try again."
 
+  # The Checks drawer's two removals (R7, R8, AC-21). Both delete the rows the
+  # drawer listed and nothing else, so the answer names how many records went;
+  # a row another editor has since changed refuses the whole command with
+  # nothing deleted, and every other refusal says the same thing.
+  @remove_batch_changed "Records changed. Nothing was removed."
+  @remove_batch_failed "Couldn't remove the records. Nothing changed. Try again."
+
   # The three answers in the page's own words. A stale plan is named
   # by what the reader must do about it rather than by an input the page cannot
   # see: `apply_block_plan/3` reports `:stale_plan` without saying which setting,
@@ -314,6 +321,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # A day with no blocks still carries the derivation's shape, so the timeline's
   # per-gap lookup has the same keys it has on a loaded day.
   @empty_connections %{connections: [], groups: []}
+
+  # The Checks drawer's day-type section before a day is loaded: nothing needs
+  # review and nothing can be removed.
+  @empty_in_seat_review %{entries: [], stale: []}
 
   # The Connections view pages its groups 50 at a time, so a busy agency's page
   # is readable without paging, and one chip is built per active filter.
@@ -999,8 +1010,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
       key ->
         case Map.fetch(@drawers, key) do
-          {:ok, drawer} -> {:noreply, assign(socket, :open_drawer, drawer)}
-          :error -> {:noreply, socket}
+          {:ok, drawer} ->
+            socket = assign(socket, :open_drawer, drawer)
+
+            # The Checks drawer reads the version's unmatched in-seat records
+            # (R8), so they are read when it opens rather than on every render.
+            {:noreply,
+             if drawer == :checks do
+               load_unmatched_in_seat(socket)
+             else
+               socket
+             end}
+
+          :error ->
+            {:noreply, socket}
         end
     end
   end
@@ -1334,6 +1357,57 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
        |> assign(:remove_record, nil)
        |> put_flash(:error, @permission_message)}
     end
+  end
+
+  # The Checks drawer's two removals, in the same ask/cancel/confirm shape as the
+  # trip drawer's one.
+  #
+  # Neither event carries the rows to delete. Asking re-derives them from what
+  # the drawer is showing right now — the day type's stale rows, or the version's
+  # unmatched listing — so a crafted event can never name a record the reader
+  # was not looking at, and a confirmation always carries the `updated_at` the
+  # list showed, which is what `remove_records/2` compares under its row locks
+  # (R7, INV-4).
+  def handle_event("request_remove_stale", _params, socket) do
+    case stale_removal(socket) do
+      nil -> {:noreply, socket}
+      removal -> {:noreply, assign(socket, remove_stale: removal, remove_pending: false)}
+    end
+  end
+
+  def handle_event("request_remove_unmatched", _params, socket) do
+    case unmatched_removal(socket) do
+      nil -> {:noreply, socket}
+      removal -> {:noreply, assign(socket, remove_unmatched: removal, remove_pending: false)}
+    end
+  end
+
+  # Cancelling keeps every record and the drawer's own counts exactly as they
+  # were.
+  def handle_event("cancel_remove_in_seat", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:remove_stale, nil)
+     |> assign(:remove_unmatched, nil)
+     |> assign(:remove_pending, false)}
+  end
+
+  def handle_event("confirm_remove_stale", _params, %{assigns: %{remove_stale: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("confirm_remove_stale", _params, socket) do
+    remove_in_seat_batch(socket, socket.assigns.remove_stale, :remove_stale)
+  end
+
+  def handle_event(
+        "confirm_remove_unmatched",
+        _params,
+        %{assigns: %{remove_unmatched: nil}} = socket
+      ),
+      do: {:noreply, socket}
+
+  def handle_event("confirm_remove_unmatched", _params, socket) do
+    remove_in_seat_batch(socket, socket.assigns.remove_unmatched, :remove_unmatched)
   end
 
   # The two writes in the Block rules drawer. The drawer only
@@ -2490,8 +2564,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         |> assign(:trip_view, trip)
         # A removal question belongs to the trip that raised it, so any re-resolve
         # — a closed drawer, another trip, a reloaded day — drops it rather than
-        # reopening the same question over a different trip's records.
+        # reopening the same question over a different trip's records. The Checks
+        # drawer's two batch questions are dropped the same way: a question over
+        # a listing the day reload has replaced would delete the new rows.
         |> assign(:remove_record, nil)
+        |> assign(:remove_stale, nil)
+        |> assign(:remove_unmatched, nil)
         |> assign(:gap_view, gap_view)
         |> assign(:block_view, if(is_nil(trip) and is_nil(gap), do: block))
         |> resolve_connection(day, gap_view)
@@ -2505,6 +2583,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         |> resolve_driving_times(day, Map.get(@drawers, state.drawer))
         |> resolve_operator_changes(day, Map.get(@drawers, state.drawer))
         |> resolve_suggest(Map.get(@drawers, state.drawer))
+        |> resolve_unmatched(Map.get(@drawers, state.drawer))
 
       _other ->
         assign(socket,
@@ -4505,6 +4584,179 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp removed_record_text(row),
     do: "Removed the record for trip #{row.from_trip_id} → #{row.to_trip_id}."
 
+  # The Checks drawer's day-type section (AC-21): the day's records that need
+  # review, derived from the connections the rest of the page reads and from the
+  # day's own record listing, so no surface re-derives a state (CR-2, CR-4).
+  #
+  # Three shapes come out of it, in the order the reader scans them: a
+  # conflicting pair, which needs a choice rather than a deletion; a stale record
+  # on a connection, which opens that connection; and a stale record no gap of
+  # this day hosts, which opens one of its own trips instead. `stale` is the
+  # removal set - the distinct stale records, whatever they are listed under -
+  # and a conflict contributes to it only through a record of its own that is
+  # itself stale.
+  defp in_seat_review(%{connections: connections}, day) do
+    {entries, stale} =
+      Enum.reduce(connections, {[], []}, fn connection, {entries, stale} ->
+        conflict = if connection.setting == :conflict, do: [connection], else: []
+
+        rows = Enum.filter(connection.records, &stale_record?(&1.state))
+
+        listed =
+          Enum.map(rows, fn entry ->
+            %{
+              kind: :stale,
+              row: entry.row,
+              state: entry.state,
+              connection: connection
+            }
+          end)
+
+        conflict_entries =
+          Enum.map(conflict, fn connection ->
+            %{kind: :conflict, connection: connection, records: connection.records}
+          end)
+
+        {[conflict_entries ++ listed | entries], [Enum.map(rows, & &1.row) | stale]}
+      end)
+
+    entries = entries |> Enum.reverse() |> List.flatten()
+    stale = stale |> Enum.reverse() |> List.flatten() |> Enum.uniq_by(& &1.id)
+
+    %{entries: entries ++ unhosted_entries(connections, day), stale: stale}
+  end
+
+  # The day's stale records that no connection carries. A record whose pair is
+  # not a gap of this day - a trip with no block, a trip that left the version,
+  # two trips that never share a date - is stale with no connection to open, so
+  # its row offers the trip drawer instead of a connection that does not exist.
+  defp unhosted_entries(connections, day) do
+    hosted =
+      connections
+      |> Enum.flat_map(& &1.records)
+      |> MapSet.new(& &1.row.id)
+
+    day.in_seat
+    |> Map.values()
+    |> List.flatten()
+    |> Enum.uniq_by(& &1.row.id)
+    |> Enum.reject(&MapSet.member?(hosted, &1.row.id))
+    |> Enum.filter(&stale_record?(&1.state))
+    |> Enum.map(fn entry ->
+      %{kind: :stale, row: entry.row, state: entry.state, connection: nil}
+    end)
+  end
+
+  # The removal question's copy is the component's; here are the two questions
+  # the Checks drawer asks and the batch write behind both.
+  #
+  # Like the trip drawer's one removal, a batch is a bounded set of locked rows,
+  # its audit and a reload, so it runs in the event itself. Both the success and
+  # the `:stale` refusal reload the day and the version's unmatched listing, so
+  # no surface keeps listing a record the store has moved on from.
+  defp remove_in_seat_batch(%{assigns: %{day: nil}} = socket, _removal, _key),
+    do: {:noreply, socket}
+
+  defp remove_in_seat_batch(socket, removal, key) do
+    if editor_access?(socket) do
+      do_remove_in_seat_batch(socket, removal, key)
+    else
+      {:noreply,
+       socket
+       |> assign(key, nil)
+       |> assign(:remove_pending, false)
+       |> put_flash(:error, @permission_message)}
+    end
+  end
+
+  defp do_remove_in_seat_batch(socket, %{rows: rows}, key) do
+    case Gtfs.remove_in_seat_records(rows, audit_context(socket)) do
+      {:ok, removed} ->
+        {:noreply,
+         socket
+         |> assign(key, nil)
+         |> assign(:remove_pending, false)
+         |> load_day()
+         |> resolve_drawers()
+         |> load_unmatched_in_seat()
+         |> assign_page_rows_if_loaded()
+         |> put_flash(:info, "Removed #{removed} in-seat records.")}
+
+      {:error, :stale} ->
+        {:noreply,
+         socket
+         |> assign(key, nil)
+         |> assign(:remove_pending, false)
+         |> load_day()
+         |> resolve_drawers()
+         |> load_unmatched_in_seat()
+         |> assign_page_rows_if_loaded()
+         |> put_flash(:error, @remove_batch_changed)}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> assign(key, nil)
+         |> assign(:remove_pending, false)
+         |> put_flash(:error, @remove_batch_failed)}
+    end
+  end
+
+  # The day type's removal question: exactly the rows the drawer listed as
+  # stale. A conflicting pair is not among them — it needs a choice, not a
+  # deletion — so a conflict never contributes to the count the confirm names.
+  defp stale_removal(socket) do
+    rows =
+      socket.assigns.in_seat_review.stale
+      |> Enum.map(&{&1.id, &1.updated_at})
+      |> Enum.uniq()
+
+    removal(rows)
+  end
+
+  # The version's removal question: exactly the rows the unmatched listing
+  # returned, in its own order.
+  defp unmatched_removal(socket) do
+    removal(Enum.map(socket.assigns.unmatched_in_seat, &{&1.id, &1.updated_at}))
+  end
+
+  defp removal([]), do: nil
+  defp removal(rows), do: %{rows: rows, count: length(rows)}
+
+  # The version-level read the Checks drawer's second section lists (R8). It is
+  # read when that drawer opens and after every removal, never on a render, and
+  # a failure leaves the section empty rather than raising.
+  defp load_unmatched_in_seat(socket) do
+    case Gtfs.unmatched_in_seat_records(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id
+         ) do
+      {:ok, records} ->
+        assign(socket,
+          unmatched_in_seat: records,
+          unmatched_in_seat_key: {:unmatched, socket.assigns.current_gtfs_version.id}
+        )
+
+      {:error, _reason} ->
+        assign(socket,
+          unmatched_in_seat: [],
+          unmatched_in_seat_key: {:unmatched, socket.assigns.current_gtfs_version.id}
+        )
+    end
+  end
+
+  # `resolve_drawers/1` runs on every patch, so the version-level read is guarded
+  # by its own key exactly as the day-type drawers' reads are: a page that never
+  # opens the Checks drawer never reads the version's unmatched records.
+  defp resolve_unmatched(%{assigns: %{unmatched_in_seat_key: key}} = socket, :checks)
+       when not is_nil(key),
+       do: socket
+
+  defp resolve_unmatched(%{assigns: %{day: day}} = socket, :checks) when not is_nil(day),
+    do: load_unmatched_in_seat(socket)
+
+  defp resolve_unmatched(socket, _drawer), do: socket
+
   defp audit_context(socket) do
     %AuditContext{
       organization_id: socket.assigns.current_organization.id,
@@ -4595,6 +4847,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       routes: day.routes,
       findings: day.findings,
       in_seat: day.in_seat,
+      # The Checks drawer's day-type section: the day's records that need
+      # review, derived from the same connections the timeline and the drawers
+      # read rather than from a second pass over the store (CR-4).
+      in_seat_review: in_seat_review(connections, day),
       mixed_timezones?: day.mixed_timezones?,
       trip_labels: trip_labels(day),
       findings_by_trip: findings_by_trip(day.findings),
@@ -4722,6 +4978,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       # entry, so the confirmation names the row and the timestamp the editor saw.
       remove_record: nil,
       remove_pending: false,
+      # The Checks drawer's two batch removals and the version-level listing
+      # behind its second section. Both questions name the rows the drawer
+      # listed, so a confirmation carries the `updated_at` each list showed.
+      remove_stale: nil,
+      remove_unmatched: nil,
+      in_seat_review: @empty_in_seat_review,
+      unmatched_in_seat: [],
+      unmatched_in_seat_key: nil,
       # The Set-all setting chosen in the group panel, and no group open with it:
       # the choice is per group and starts empty, which is why the fieldset's
       # review button is disabled on a panel the reader has just opened.
@@ -5608,6 +5872,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                 day_type={@day_type}
                 findings={@findings}
                 trip_labels={@trip_labels}
+                in_seat_review={@in_seat_review}
+                unmatched={@unmatched_in_seat}
+                remove_stale={@remove_stale}
+                remove_unmatched={@remove_unmatched}
+                remove_pending={@remove_pending}
               />
               <BlocksComponents.plan_summary_drawer
                 open={@open_drawer == :plan_summary}

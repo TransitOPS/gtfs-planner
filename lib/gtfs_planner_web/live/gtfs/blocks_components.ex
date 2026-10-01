@@ -535,17 +535,42 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   and “Open trip” carry the reader to the drawer for that block or trip. A
   finding whose trip is outside the loaded day prints the stored ID without an
   action, because the service-day view does not hold the trips to open.
+
+  Below the day's problems and notices sit the two in-seat cleanup sections
+  (AC-21). The first is this day type's records that need review: a stale row
+  opens the connection holding it, or one of its own trips when no gap of this
+  day hosts it, and a conflicting pair says so and offers the connection to
+  settle it in. Its removal is one question over exactly the stale rows - a
+  conflict needs a choice, not a deletion, so it never counts. The second is the
+  version's records no block of any day type can reach, which no Blocks view can
+  show, with its own question over exactly those rows.
   """
   attr :open, :boolean, required: true
   attr :day_type, :map, required: true
   attr :findings, :list, required: true
   attr :trip_labels, :map, required: true
+  attr :in_seat_review, :map, default: %{entries: [], stale: []}
+  attr :unmatched, :list, default: []
+  attr :remove_stale, :map, default: nil
+  attr :remove_unmatched, :map, default: nil
+  attr :remove_pending, :boolean, default: false
 
   def checks_drawer(assigns) do
     problems = Enum.filter(assigns.findings, &(&1.severity in [:error, :warning]))
     notices = Enum.filter(assigns.findings, &(&1.severity == :notice))
 
-    assigns = assign(assigns, problems: problems, notices: notices)
+    assigns =
+      assigns
+      |> assign(problems: problems, notices: notices)
+      |> assign(
+        stale_count: length(assigns.in_seat_review.stale),
+        stale_copy:
+          removal_copy(
+            "#{assigns.day_type.label} blocks",
+            length(assigns.in_seat_review.stale)
+          ),
+        unmatched_copy: removal_copy("any block of this version", length(assigns.unmatched))
+      )
 
     ~H"""
     <.drawer
@@ -578,10 +603,197 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             <p :if={@notices == []} class="text-sm text-muted">None on this service day.</p>
           </div>
         </section>
+
+        <%!-- The day type's own in-seat records that need review, and the one
+        question that removes the ones no block reaches. --%>
+        <section id="checks-in-seat" class="border-t border-subtle pt-5">
+          <h3 class="text-[15px] font-bold text-strong">
+            In-seat records that need review · {length(@in_seat_review.entries)}
+          </h3>
+
+          <ul id="checks-in-seat-entries" class="mt-3">
+            <li
+              :for={entry <- @in_seat_review.entries}
+              id={"checks-in-seat-#{checks_entry_id(entry)}"}
+              data-role="checks-in-seat-entry"
+              data-kind={entry.kind}
+              class="border-t border-subtle py-2.5 text-sm first:border-t-0"
+            >
+              <.checks_in_seat_entry entry={entry} />
+            </li>
+          </ul>
+          <p :if={@in_seat_review.entries == []} class="text-sm text-muted">
+            None on this service day.
+          </p>
+
+          <div :if={@stale_count > 0} class="mt-3">
+            <.button
+              id="checks-remove-stale"
+              type="button"
+              variant="danger"
+              class="min-h-11"
+              phx-click="request_remove_stale"
+            >
+              Remove {@stale_count} records that no longer match
+            </.button>
+            <p class="mt-1 text-[13px] text-muted">
+              Removes records whose trips aren't consecutive or whose stops changed. The
+              disagreeing pair needs a choice instead.
+            </p>
+          </div>
+        </section>
+
+        <%!-- The version's in-seat records that no block reaches. No Blocks view
+        can show these, so this section is the only place on the page that names
+        them. --%>
+        <section id="checks-in-seat-version" class="border-t border-subtle pt-5">
+          <h3 class="text-[15px] font-bold text-strong">
+            This version · {length(@unmatched)} in-seat records don't match any block
+          </h3>
+          <p class="mt-1 text-[13px] text-muted">
+            No Blocks view can show these connections. Routes › Transfers lists them under
+            In-seat.
+          </p>
+
+          <ul :if={@unmatched != []} id="checks-in-seat-unmatched" class="mt-3">
+            <li
+              :for={record <- @unmatched}
+              id={"checks-unmatched-#{record.id}"}
+              data-role="checks-unmatched"
+              data-reason={record.reason}
+              class="border-t border-subtle py-2 text-sm first:border-t-0"
+            >
+              Trip {record.from_trip_id} → {record.to_trip_id} · {remove_record_setting(
+                record.transfer_type
+              )}
+              <p class="text-[13px] text-muted">{unmatched_reason_text(record.reason)}</p>
+            </li>
+          </ul>
+          <p :if={@unmatched == []} class="mt-2 text-sm text-muted">None left.</p>
+
+          <.button
+            :if={@unmatched != []}
+            id="checks-remove-unmatched"
+            type="button"
+            variant="danger"
+            class="mt-3 min-h-11"
+            phx-click="request_remove_unmatched"
+          >
+            Remove {length(@unmatched)} records
+          </.button>
+        </section>
       </.drawer_scroll>
     </.drawer>
+
+    <%!-- The two removal questions. They are the shared `confirm_dialog` rather
+    than drawers of their own: a batch of records the editor may still want is a
+    question, not a page, and each names the count it deletes so the number a
+    reader confirms is the number the list showed. --%>
+    <.confirm_dialog
+      id="remove-stale-dialog"
+      chrome="planner"
+      open={not is_nil(@remove_stale)}
+      title={@stale_copy.title}
+      confirm_label={@stale_copy.confirm}
+      pending_label="Removing…"
+      pending={@remove_pending}
+      on_confirm="confirm_remove_stale"
+      on_cancel="cancel_remove_in_seat"
+      described_by="remove-stale-dialog-body"
+      return_focus_id="checks-remove-stale"
+    >
+      <p id="remove-stale-dialog-body">{@stale_copy.body}</p>
+    </.confirm_dialog>
+
+    <.confirm_dialog
+      id="remove-unmatched-dialog"
+      chrome="planner"
+      open={not is_nil(@remove_unmatched)}
+      title={@unmatched_copy.title}
+      confirm_label={@unmatched_copy.confirm}
+      pending_label="Removing…"
+      pending={@remove_pending}
+      on_confirm="confirm_remove_unmatched"
+      on_cancel="cancel_remove_in_seat"
+      described_by="remove-unmatched-dialog-body"
+      return_focus_id="checks-remove-unmatched"
+    >
+      <p id="remove-unmatched-dialog-body">{@unmatched_copy.body}</p>
+    </.confirm_dialog>
     """
   end
+
+  # One row of the day type's review list. A stale record is a link to the
+  # connection that holds it, or to one of its own trips when this day has no
+  # gap for it; a conflicting pair is a link to the connection to settle in,
+  # because two records disagree and the page cannot pick between them.
+  attr :entry, :map, required: true
+
+  defp checks_in_seat_entry(assigns) do
+    ~H"""
+    <%= if entry = @entry.connection do %>
+      <button
+        type="button"
+        phx-click="open_gap"
+        phx-value-from={entry.from.id}
+        phx-value-to={entry.to.id}
+        phx-value-block={entry.block_id}
+        class={link_class()}
+      >
+        Block {entry.block_id} · trip {entry.from.trip_id} → {entry.to.trip_id}
+      </button>
+    <% else %>
+      <%!-- No gap of this day hosts the pair, so the row opens one of its own
+      trips rather than a connection that does not exist. --%>
+      <button
+        type="button"
+        phx-click="open_trip"
+        phx-value-trip={@entry.row.from_trip_id}
+        class={link_class()}
+      >
+        Trip {@entry.row.from_trip_id} → {@entry.row.to_trip_id}
+      </button>
+    <% end %>
+    <p data-role="checks-in-seat-state" class="text-[13px] text-muted">
+      {if @entry.kind == :conflict,
+        do: "Two records disagree · choose one setting",
+        else: in_seat_state_text(@entry.state)}
+    </p>
+    """
+  end
+
+  # Each listed row's own DOM id, so the row a reader is looking at can be
+  # addressed directly. A conflict is named by the pair it is, a stale record by
+  # its own row id.
+  defp checks_entry_id(%{kind: :conflict, connection: connection}),
+    do: "conflict-" <> String.replace(connection.id, "|", "-")
+
+  defp checks_entry_id(%{kind: :stale, row: row}), do: "stale-" <> row.id
+
+  # R8's three reasons, in the page's own words. A row is listed only because no
+  # block in the version reaches it, so each sentence says which of those three
+  # it is rather than repeating the day drawer's longer explanation.
+  defp unmatched_reason_text(:no_block), do: "Neither trip has a block."
+  defp unmatched_reason_text(:trip_missing), do: "A trip isn't in this version."
+  defp unmatched_reason_text(:no_shared_date), do: "The trips share no date."
+
+  defp unmatched_reason_text(_reason), do: "No block in this version reaches this record."
+
+  # The removal question's copy, built from the count the drawer is showing and
+  # the scope it is about, so the number a reader confirms is the number the list
+  # named and the two questions cannot read as the same one. A count of zero has
+  # no question, which the caller checks before it renders a button asking it.
+  defp removal_copy(scope, count) when count > 0 do
+    %{
+      title: "Remove #{count} in-seat records?",
+      body:
+        "These records no longer match #{scope}. Trips and blocks don't change. " <>
+          "Each deletion is audited; riders will see whatever apps infer from the blocks.",
+      confirm: "Remove #{count} records"
+    }
+  end
+
+  defp removal_copy(_scope, 0), do: %{title: "", body: "", confirm: "Remove records"}
 
   attr :finding, :map, required: true
   attr :trip_labels, :map, required: true
