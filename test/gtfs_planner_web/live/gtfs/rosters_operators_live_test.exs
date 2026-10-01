@@ -632,6 +632,44 @@ defmodule GtfsPlannerWeb.Gtfs.RostersOperatorsLiveTest do
       assert has_element?(view, "#rosters-toast", "Ines Duarte saved.")
     end
 
+    test "clearing the seniority number stores none, and validation does not bring the old one back",
+         context do
+      {conn, world} = signed_in(context)
+
+      ines =
+        operator(world.organization.id, %{
+          "employee_id" => "E4157",
+          "display_name" => "Ines Duarte",
+          "seniority_number" => 10
+        })
+
+      {:ok, view, _html} = live(conn, path(world))
+      view |> element("#rosters-operators-button") |> render_click()
+      view |> element("#rosters-edit-operator-#{ines.id}") |> render_click()
+      assert has_element?(view, "#operator_seniority_number[value='10']")
+
+      # Leaving the cleared field validates the form. The field has to stay
+      # empty: a form that re-rendered the stored 10 would submit it back.
+      view
+      |> form("#rosters-operator-form", operator: %{seniority_number: ""})
+      |> render_change(%{"_target" => ["operator", "seniority_number"]})
+
+      refute has_element?(view, "#operator_seniority_number[value='10']")
+
+      view
+      |> form("#rosters-operator-form",
+        operator: %{employee_id: "E4157", display_name: "Ines Duarte", seniority_number: ""}
+      )
+      |> render_submit()
+
+      assert stored_operator(world.organization.id, "E4157").seniority_number == nil
+      assert has_element?(view, "#rosters-toast", "Ines Duarte saved.")
+
+      # Opened again, the form carries the stored absence rather than the old number.
+      view |> element("#rosters-edit-operator-#{ines.id}") |> render_click()
+      refute has_element?(view, "#operator_seniority_number[value='10']")
+    end
+
     test "an operator holding a line in this version is told which one", context do
       {conn, world} = signed_in(context)
 

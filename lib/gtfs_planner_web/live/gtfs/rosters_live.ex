@@ -1688,17 +1688,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   # the same changeset says it is valid, so there is one set of rules on the page
   # and in the write (the "One owner for roster storage" criterion, domain rule
   # 13).
+  #
+  # A blank seniority reaches the changeset as `""`, which `cast/3` reads as an
+  # absent value. It must not be dropped from the params first: on an edit, a
+  # missing key leaves the stored number in place, and the form would put it back.
   defp operator_changeset(base, params, action),
-    do: Operator.changeset(base, normalize_operator_params(params)) |> Map.put(:action, action)
-
-  # A blank seniority is an absent one, not zero. `Operator`'s changeset casts
-  # `seniority_number` as an integer, and an empty text input submits `""`, which
-  # is not one — so the blank is dropped here rather than in the writer, whose
-  # contract takes a map from an import as well as from this form.
-  defp normalize_operator_params(%{"seniority_number" => ""} = params),
-    do: Map.delete(params, "seniority_number")
-
-  defp normalize_operator_params(params), do: params
+    do: Operator.changeset(base, params) |> Map.put(:action, action)
 
   # A write with no form open is not a write, and neither is one whose operator
   # this socket no longer holds: the form carries the id it was opened for, and
