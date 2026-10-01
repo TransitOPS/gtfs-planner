@@ -1541,6 +1541,15 @@ defmodule GtfsPlanner.AccountsTest do
   end
 
   describe "register_first_admin/1" do
+    setup do
+      leftover = Repo.all(from(u in User, order_by: u.email, select: u.email))
+
+      assert leftover == [],
+             "first-admin registration tests need a database with no committed users; found #{inspect(leftover)}"
+
+      :ok
+    end
+
     test "exports no arity-two registration function" do
       Code.ensure_loaded!(Accounts)
       refute function_exported?(Accounts, :register_first_admin, 2)

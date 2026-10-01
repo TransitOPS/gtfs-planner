@@ -14,8 +14,10 @@ defmodule GtfsPlanner.Accounts.FirstAdminConcurrencyTest do
   @collect_timeout 15_000
 
   setup do
-    assert unboxed(fn -> Accounts.count_users() end) == 0,
-           "first-admin setup tests need a database with no committed users"
+    leftover = unboxed(fn -> Repo.all(from(u in User, order_by: u.email, select: u.email)) end)
+
+    assert leftover == [],
+           "first-admin setup tests need a database with no committed users; found #{inspect(leftover)}"
 
     supervisor = start_supervised!({Task.Supervisor, name: __MODULE__.TaskSupervisor})
     uniq = Ecto.UUID.generate()
