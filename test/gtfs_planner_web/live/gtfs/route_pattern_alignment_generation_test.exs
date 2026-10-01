@@ -218,8 +218,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentGenerationTest do
   # Holds the routing request open until the test sends `:release` to the
   # stub process named in the `{:routing_held, stub}` message. A test that
   # cancels or supersedes the flight waits for that message first, so the
-  # kill never lands mid-query on the shared sandbox connection, and never
-  # releases the stub.
+  # kill never lands mid-query on the shared sandbox connection, and
+  # releases the stub only afterwards through `release_and_settle/2`.
   defp stub_held_routing(leg) do
     test_pid = self()
 
@@ -238,6 +238,24 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentGenerationTest do
         Jason.encode!(routing_response([leg]))
       )
     end)
+  end
+
+  # Lets the held stub answer, waits for its process to exit, then waits for
+  # the view to handle whatever that process sent. A cancelled or superseded
+  # flight is already dead, so the release changes nothing; a flight that
+  # outlived the cancel answers here, and the caller checks its late result.
+  defp release_and_settle(view, stub) do
+    ref = Process.monitor(stub)
+    send(stub, :release)
+    assert_receive {:DOWN, ^ref, :process, ^stub, _reason}, 5_000
+
+    # The stub's result reached the view before the stub exited, so a
+    # synchronous call to the view returns once the view has handled it, and
+    # `render/1` then returns once the client proxy has forwarded its pushes.
+    _ = :sys.get_state(view.pid)
+    _ = render(view)
+
+    :ok
   end
 
   defp four_stops(organization, version, prefix) do
@@ -414,13 +432,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentGenerationTest do
 
       view |> element("#alignment-generate-section") |> render_click()
       assert has_element?(view, "#alignment-generating", "Finding a street path…")
-      assert_receive {:routing_held, _stub}, 10_000
+      assert_receive {:routing_held, stub}, 10_000
 
       view |> element("#alignment-cancel-generation") |> render_click()
       refute has_element?(view, "#alignment-generating")
 
-      # The stub is never released; the cancelled flight must push and write nothing.
-      refute_push_event(view, "alignment:suggestions", %{}, 1_500)
+      # Releasing the stub lets a flight that outlived the cancel answer; the
+      # cancelled flight must push, render and write nothing.
+      release_and_settle(view, stub)
+
+      refute_push_event(view, "alignment:suggestions", %{}, 0)
+      refute has_element?(view, "#alignment-generating")
+      refute has_element?(view, "#status", "Suggested path ready")
       assert segments_count(organization, version) == 0
     end
 
@@ -444,7 +467,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentGenerationTest do
 
       view |> element("#alignment-generate-section") |> render_click()
       assert has_element?(view, "#alignment-generating", "Finding a street path…")
-      assert_receive {:routing_held, _stub}, 10_000
+      assert_receive {:routing_held, stub}, 10_000
 
       render_patch(view, pattern_path(version, route, second_pattern))
       assert has_element?(view, "#alignment-title", "Path between stops")
@@ -452,8 +475,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentGenerationTest do
       assert has_element?(view, "#alignment-section-1", "Gen Switch D")
       assert has_element?(view, "#alignment-detail[data-position='1']")
 
-      # The first pattern's late result must never land on the second pattern.
-      refute_push_event(view, "alignment:suggestions", %{}, 1_500)
+      # Releasing the stub lets a flight that outlived the switch answer; the
+      # first pattern's late result must never land on the second pattern.
+      release_and_settle(view, stub)
+
+      refute_push_event(view, "alignment:suggestions", %{}, 0)
+      refute has_element?(view, "#alignment-generating")
+      refute has_element?(view, "#status", "Suggested path ready")
+      assert has_element?(view, "#alignment-section-1", "Gen Switch C")
       assert segments_count(organization, version) == 0
     end
 
