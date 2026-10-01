@@ -8,7 +8,6 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.UserToken
-  alias GtfsPlanner.Organizations
   alias GtfsPlanner.OrganizationsFixtures
   alias GtfsPlanner.Repo
 
@@ -94,9 +93,13 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
       user = user_fixture()
 
       {:ok, _} =
-        Organizations.add_user_to_organization(user.id, organization.id, [
-          "pathways_studio_editor"
-        ])
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: organization.id,
+          roles: [
+            "pathways_studio_editor"
+          ]
+        })
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -123,10 +126,14 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
       user = user_fixture()
 
       {:ok, _} =
-        Organizations.add_user_to_organization(user.id, organization.id, [
-          "pathways_studio_editor",
-          "pathways_studio_admin"
-        ])
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: organization.id,
+          roles: [
+            "pathways_studio_editor",
+            "pathways_studio_admin"
+          ]
+        })
 
       {:ok, view, _html} =
         live(log_in_user(conn, user, organization: organization), ~p"/users/settings")
@@ -889,9 +896,13 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
     organization = OrganizationsFixtures.organization_fixture()
 
     {:ok, _} =
-      Organizations.add_user_to_organization(user.id, organization.id, [
-        "pathways_studio_editor"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: [
+          "pathways_studio_editor"
+        ]
+      })
 
     %{user: user, organization: organization}
   end

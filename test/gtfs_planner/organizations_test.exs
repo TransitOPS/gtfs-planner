@@ -285,49 +285,6 @@ defmodule GtfsPlanner.OrganizationsTest do
     end
   end
 
-  describe "add_user_to_organization/3" do
-    test "adds user with roles" do
-      user = user_fixture()
-      organization = organization_fixture()
-
-      assert {:ok, membership} =
-               Organizations.add_user_to_organization(
-                 user.id,
-                 organization.id,
-                 ["administrator"]
-               )
-
-      assert membership.user_id == user.id
-      assert membership.organization_id == organization.id
-      assert membership.roles == ["administrator"]
-    end
-
-    test "adds user without roles" do
-      user = user_fixture()
-      organization = organization_fixture()
-
-      assert {:ok, membership} =
-               Organizations.add_user_to_organization(user.id, organization.id)
-
-      assert membership.user_id == user.id
-      assert membership.organization_id == organization.id
-      assert membership.roles == []
-    end
-
-    test "returns error when user already in organization" do
-      user = user_fixture()
-      organization = organization_fixture()
-
-      {:ok, _membership1} =
-        Organizations.add_user_to_organization(user.id, organization.id)
-
-      assert {:error, changeset} =
-               Organizations.add_user_to_organization(user.id, organization.id)
-
-      assert "has already been taken" in errors_on(changeset).user_id
-    end
-  end
-
   describe "remove_user_from_organization/3" do
     setup do
       user = user_fixture()
@@ -335,7 +292,11 @@ defmodule GtfsPlanner.OrganizationsTest do
       actor = system_admin_fixture(organization_fixture())
 
       {:ok, membership} =
-        Organizations.add_user_to_organization(user.id, organization.id)
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: organization.id,
+          roles: []
+        })
 
       %{user: user, actor: actor, organization: organization, membership: membership}
     end
@@ -366,7 +327,13 @@ defmodule GtfsPlanner.OrganizationsTest do
       user = user_fixture()
       organization = organization_fixture()
       actor = system_admin_fixture(organization_fixture())
-      {:ok, _membership} = Organizations.add_user_to_organization(user.id, organization.id)
+
+      {:ok, _membership} =
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: organization.id,
+          roles: []
+        })
 
       %{user: user, actor: actor, organization: organization}
     end
@@ -550,11 +517,11 @@ defmodule GtfsPlanner.OrganizationsTest do
       actor = system_admin_fixture(organization_fixture())
 
       {:ok, _membership} =
-        Organizations.add_user_to_organization(
-          user.id,
-          organization.id,
-          ["pathways_studio_editor"]
-        )
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: organization.id,
+          roles: ["pathways_studio_editor"]
+        })
 
       %{user: user, actor: actor, organization: organization}
     end
@@ -591,10 +558,18 @@ defmodule GtfsPlanner.OrganizationsTest do
       org2 = organization_fixture()
 
       {:ok, _} =
-        Organizations.add_user_to_organization(user.id, org1.id, ["pathways_studio_admin"])
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: org1.id,
+          roles: ["pathways_studio_admin"]
+        })
 
       {:ok, _} =
-        Organizations.add_user_to_organization(user.id, org2.id, ["pathways_studio_editor"])
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: org2.id,
+          roles: ["pathways_studio_editor"]
+        })
 
       orgs = Organizations.list_organizations_for_user(user.id)
 
@@ -623,10 +598,18 @@ defmodule GtfsPlanner.OrganizationsTest do
       user2 = user_fixture()
 
       {:ok, _} =
-        Organizations.add_user_to_organization(user1.id, org.id, ["pathways_studio_admin"])
+        Accounts.create_user_org_membership(%{
+          user_id: user1.id,
+          organization_id: org.id,
+          roles: ["pathways_studio_admin"]
+        })
 
       {:ok, _} =
-        Organizations.add_user_to_organization(user2.id, org.id, ["pathways_studio_editor"])
+        Accounts.create_user_org_membership(%{
+          user_id: user2.id,
+          organization_id: org.id,
+          roles: ["pathways_studio_editor"]
+        })
 
       users = Organizations.list_users_in_organization(org.id)
 
@@ -652,7 +635,13 @@ defmodule GtfsPlanner.OrganizationsTest do
       org2 = organization_fixture()
 
       user = user_fixture()
-      {:ok, _} = Organizations.add_user_to_organization(user.id, org1.id)
+
+      {:ok, _} =
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: org1.id,
+          roles: []
+        })
 
       users_in_org2 = Organizations.list_users_in_organization(org2.id)
 
@@ -665,8 +654,19 @@ defmodule GtfsPlanner.OrganizationsTest do
       user1 = user_fixture(%{email: "zulu@example.com"})
       user2 = user_fixture(%{email: "alpha@example.com"})
 
-      {:ok, _} = Organizations.add_user_to_organization(user1.id, org.id)
-      {:ok, _} = Organizations.add_user_to_organization(user2.id, org.id)
+      {:ok, _} =
+        Accounts.create_user_org_membership(%{
+          user_id: user1.id,
+          organization_id: org.id,
+          roles: []
+        })
+
+      {:ok, _} =
+        Accounts.create_user_org_membership(%{
+          user_id: user2.id,
+          organization_id: org.id,
+          roles: []
+        })
 
       users = Organizations.list_users_in_organization(org.id)
 
@@ -718,7 +718,11 @@ defmodule GtfsPlanner.OrganizationsTest do
       user = user_fixture(%{email: "alpha@example.com"})
 
       {:ok, _} =
-        Organizations.add_user_to_organization(user.id, org.id, ["pathways_studio_admin"])
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: org.id,
+          roles: ["pathways_studio_admin"]
+        })
 
       assert {:ok, [member]} = Organizations.list_users_for_admin(org.id)
       assert %{user: %GtfsPlanner.Accounts.User{}, roles: _, deactivated_at: _} = member
@@ -733,8 +737,20 @@ defmodule GtfsPlanner.OrganizationsTest do
       zulu = user_fixture(%{email: "zulu@example.com"})
       alpha = user_fixture(%{email: "alpha@example.com"})
 
-      {:ok, _} = Organizations.add_user_to_organization(zulu.id, org.id)
-      {:ok, _} = Organizations.add_user_to_organization(alpha.id, org.id)
+      {:ok, _} =
+        Accounts.create_user_org_membership(%{
+          user_id: zulu.id,
+          organization_id: org.id,
+          roles: []
+        })
+
+      {:ok, _} =
+        Accounts.create_user_org_membership(%{
+          user_id: alpha.id,
+          organization_id: org.id,
+          roles: []
+        })
+
       actor = system_admin_fixture(organization_fixture())
       {:ok, _} = Organizations.deactivate_user_in_organization(actor, zulu.id, org.id)
 
@@ -824,9 +840,13 @@ defmodule GtfsPlanner.OrganizationsTest do
       user = user_fixture()
 
       {:ok, _} =
-        Organizations.add_user_to_organization(user.id, organization.id, [
-          "pathways_studio_admin"
-        ])
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: organization.id,
+          roles: [
+            "pathways_studio_admin"
+          ]
+        })
 
       assert organization in Organizations.list_organizations()
       assert Organizations.get_organization(organization.id) == organization

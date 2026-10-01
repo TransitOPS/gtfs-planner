@@ -1368,6 +1368,17 @@ defmodule GtfsPlanner.AccountsTest do
       assert {:error, %Ecto.Changeset{}} =
                Accounts.create_user_org_membership(%{user_id: nil, organization_id: nil})
     end
+
+    test "rejects a second membership for the same user and organization" do
+      user = user_fixture()
+      org = organization_fixture()
+      attrs = %{user_id: user.id, organization_id: org.id, roles: []}
+
+      {:ok, _first} = Accounts.create_user_org_membership(attrs)
+
+      assert {:error, changeset} = Accounts.create_user_org_membership(attrs)
+      assert "has already been taken" in errors_on(changeset).user_id
+    end
   end
 
   describe "update_user_org_membership/2" do

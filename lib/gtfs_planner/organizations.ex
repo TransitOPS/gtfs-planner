@@ -155,28 +155,6 @@ defmodule GtfsPlanner.Organizations do
   end
 
   @doc """
-  Adds a user to an organization with specified roles.
-
-  ## Examples
-
-      iex> add_user_to_organization(user_id, organization_id, [:administrator])
-      {:ok, %UserOrgMembership{}}
-
-      iex> add_user_to_organization(user_id, organization_id, [])
-      {:ok, %UserOrgMembership{}}
-  """
-  def add_user_to_organization(user_id, organization_id, roles \\ []) do
-    %UserOrgMembership{
-      user_id: user_id,
-      organization_id: organization_id,
-      roles: roles
-    }
-    |> UserOrgMembership.changeset(%{})
-    |> Repo.insert()
-    |> broadcast([:memberships, :created])
-  end
-
-  @doc """
   Removes a user from an organization.
 
   ## Examples

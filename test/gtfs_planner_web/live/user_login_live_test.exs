@@ -4,6 +4,7 @@ defmodule GtfsPlannerWeb.UserLoginLiveTest do
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
 
+  alias GtfsPlanner.Accounts
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.OrganizationsFixtures
 
@@ -262,9 +263,13 @@ defmodule GtfsPlannerWeb.UserLoginLiveTest do
     organization = OrganizationsFixtures.organization_fixture()
 
     {:ok, _} =
-      Organizations.add_user_to_organization(user.id, organization.id, [
-        "pathways_studio_editor"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: [
+          "pathways_studio_editor"
+        ]
+      })
 
     %{user: user, organization: organization}
   end

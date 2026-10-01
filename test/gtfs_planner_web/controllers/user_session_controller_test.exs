@@ -30,7 +30,11 @@ defmodule GtfsPlannerWeb.UserSessionControllerTest do
       organization = OrganizationsFixtures.organization_fixture()
 
       {:ok, _} =
-        Organizations.add_user_to_organization(user.id, organization.id, ["administrator"])
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: organization.id,
+          roles: ["administrator"]
+        })
 
       conn = log_in_through_pipeline(user)
 
@@ -356,9 +360,13 @@ defmodule GtfsPlannerWeb.UserSessionControllerTest do
     organization = OrganizationsFixtures.organization_fixture()
 
     {:ok, _} =
-      Organizations.add_user_to_organization(user.id, organization.id, [
-        "pathways_studio_editor"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: [
+          "pathways_studio_editor"
+        ]
+      })
 
     %{user: user, organization: organization}
   end

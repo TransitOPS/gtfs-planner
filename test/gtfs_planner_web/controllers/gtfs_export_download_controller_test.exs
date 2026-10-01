@@ -6,6 +6,7 @@ defmodule GtfsPlannerWeb.GtfsExportDownloadControllerTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
+  alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs.Export.ArtifactStorage
   alias GtfsPlanner.Gtfs.Export.Run
   alias GtfsPlanner.Gtfs.ExportRuns
@@ -132,7 +133,13 @@ defmodule GtfsPlannerWeb.GtfsExportDownloadControllerTest do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
     user = user_fixture()
-    {:ok, _membership} = Organizations.add_user_to_organization(user.id, organization.id, [])
+
+    {:ok, _membership} =
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: []
+      })
 
     role_conn =
       conn
@@ -232,7 +239,11 @@ defmodule GtfsPlannerWeb.GtfsExportDownloadControllerTest do
     user = user_fixture()
 
     {:ok, _membership} =
-      Organizations.add_user_to_organization(user.id, organization.id, ["pathways_studio_editor"])
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
 
     %{organization: organization, version: version, user: user}
   end

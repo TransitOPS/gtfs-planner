@@ -5,6 +5,7 @@ defmodule GtfsPlanner.HomeTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
+  alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.StationEditingStatus
@@ -22,24 +23,40 @@ defmodule GtfsPlanner.HomeTest do
     zulu_admin = user_fixture(%{email: "zulu-admin@example.test"})
 
     {:ok, _} =
-      Organizations.add_user_to_organization(editor.id, organization.id, [
-        "pathways_studio_editor"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: editor.id,
+        organization_id: organization.id,
+        roles: [
+          "pathways_studio_editor"
+        ]
+      })
 
     {:ok, _} =
-      Organizations.add_user_to_organization(deactivated_admin.id, organization.id, [
-        "pathways_studio_admin"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: deactivated_admin.id,
+        organization_id: organization.id,
+        roles: [
+          "pathways_studio_admin"
+        ]
+      })
 
     {:ok, _} =
-      Organizations.add_user_to_organization(zulu_admin.id, organization.id, [
-        "pathways_studio_admin"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: zulu_admin.id,
+        organization_id: organization.id,
+        roles: [
+          "pathways_studio_admin"
+        ]
+      })
 
     {:ok, _} =
-      Organizations.add_user_to_organization(alpha_admin.id, organization.id, [
-        "pathways_studio_admin"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: alpha_admin.id,
+        organization_id: organization.id,
+        roles: [
+          "pathways_studio_admin"
+        ]
+      })
 
     # Deactivated last, so the organization always keeps another active admin.
     {:ok, _} =
@@ -53,9 +70,13 @@ defmodule GtfsPlanner.HomeTest do
     foreign_admin = user_fixture()
 
     {:ok, _} =
-      Organizations.add_user_to_organization(foreign_admin.id, other_organization.id, [
-        "pathways_studio_admin"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: foreign_admin.id,
+        organization_id: other_organization.id,
+        roles: [
+          "pathways_studio_admin"
+        ]
+      })
 
     assert Home.organization_admins(organization.id) == [
              "alpha-admin@example.test",
@@ -71,16 +92,29 @@ defmodule GtfsPlanner.HomeTest do
     deactivated_member = user_fixture()
 
     {:ok, _} =
-      Organizations.add_user_to_organization(active_editor.id, organization.id, [
-        "pathways_studio_editor"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: active_editor.id,
+        organization_id: organization.id,
+        roles: [
+          "pathways_studio_editor"
+        ]
+      })
 
     {:ok, _} =
-      Organizations.add_user_to_organization(active_admin.id, organization.id, [
-        "pathways_studio_admin"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: active_admin.id,
+        organization_id: organization.id,
+        roles: [
+          "pathways_studio_admin"
+        ]
+      })
 
-    {:ok, _} = Organizations.add_user_to_organization(deactivated_member.id, organization.id, [])
+    {:ok, _} =
+      Accounts.create_user_org_membership(%{
+        user_id: deactivated_member.id,
+        organization_id: organization.id,
+        roles: []
+      })
 
     {:ok, _} =
       Organizations.deactivate_user_in_organization(
@@ -227,9 +261,13 @@ defmodule GtfsPlanner.HomeTest do
     admin = user_fixture()
 
     {:ok, _} =
-      Organizations.add_user_to_organization(admin.id, organization.id, [
-        "pathways_studio_admin"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: admin.id,
+        organization_id: organization.id,
+        roles: [
+          "pathways_studio_admin"
+        ]
+      })
 
     assert HomeSourceStub.organization_admins(organization.id) == [admin.email]
     assert HomeSourceStub.member_count(organization.id) == 1
