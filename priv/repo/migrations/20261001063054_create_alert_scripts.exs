@@ -11,7 +11,8 @@ defmodule GtfsPlanner.Repo.Migrations.CreateAlertScripts do
       add :name, :string
       add :situation, :string
       add :header_template, :string
-      add :description_template, :string
+      # `:string` is `varchar(255)`; the changeset allows 2,000 characters.
+      add :description_template, :text
       add :position, :integer
 
       timestamps(type: :utc_datetime_usec)

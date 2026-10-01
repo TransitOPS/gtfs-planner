@@ -1,8 +1,9 @@
 defmodule GtfsPlanner.Alerts.MigrationTest do
   @moduledoc """
   Step 1: the alert migrations' table shape, defaults, constraints and foreign
-  key actions. Schemas do not exist yet, so rows are written by table name with
-  explicit ids and timestamps.
+  key actions. Rows are written by table name with explicit ids and timestamps,
+  and every uuid is dumped to its 16-byte form because a schemaless insert has
+  no field type to do it.
 
   Each expected constraint violation aborts the sandbox transaction, so every
   `assert_raise` sits in its own test (docs/engineering-standards.md, SQL Sandbox).
@@ -59,6 +60,17 @@ defmodule GtfsPlanner.Alerts.MigrationTest do
       assert Exception.message(error) =~ "service_alerts_revision_positive"
     end
 
+    test "rejects an alert whose organization does not own the version", %{version: version} do
+      other_organization = organization_fixture()
+
+      error =
+        assert_raise Postgrex.Error, fn ->
+          insert_alert(other_organization, version)
+        end
+
+      assert Exception.message(error) =~ "service_alerts_version_owner_fkey"
+    end
+
     test "deleting the gtfs_version deletes its alerts", %{
       organization: organization,
       version: version
@@ -75,7 +87,8 @@ defmodule GtfsPlanner.Alerts.MigrationTest do
       version: version
     } do
       user = user_fixture()
-      id = insert_alert(organization, version, %{created_by_id: user.id, updated_by_id: user.id})
+      user_id = Ecto.UUID.dump!(user.id)
+      id = insert_alert(organization, version, %{created_by_id: user_id, updated_by_id: user_id})
 
       Repo.delete_all(from(u in GtfsPlanner.Accounts.User, where: u.id == ^user.id))
 
@@ -99,7 +112,7 @@ defmodule GtfsPlanner.Alerts.MigrationTest do
                  SELECT id FROM service_alerts
                  WHERE organization_id = $1 AND gtfs_version_id = $2 AND last_date = $3
                  """,
-                 [organization.id, version.id, last_date]
+                 [Ecto.UUID.dump!(organization.id), Ecto.UUID.dump!(version.id), last_date]
                )
 
       assert listed_id == id
@@ -107,15 +120,19 @@ defmodule GtfsPlanner.Alerts.MigrationTest do
   end
 
   describe "users.alert_authoring_mode" do
-    # The column's `NOT NULL DEFAULT 'form'` is the database's own guarantee for
-    # any writer that does not name it; the `User` schema default agrees.
-    test "defaults to \"form\" for a user written without the column" do
-      user = user_fixture()
+    # The `User` schema carries its own default, so a row written through it would
+    # pass without the migration's. The column's catalog entry is what a writer
+    # that does not name the column, and every existing user, gets.
+    test "the column is NOT NULL and defaults to \"form\"" do
+      assert %{rows: [[default, nullable]]} =
+               Repo.query!("""
+               SELECT column_default, is_nullable FROM information_schema.columns
+               WHERE table_schema = 'public' AND table_name = 'users'
+                 AND column_name = 'alert_authoring_mode'
+               """)
 
-      assert %{rows: [[mode]]} =
-               Repo.query!("SELECT alert_authoring_mode FROM users WHERE id = $1", [user.id])
-
-      assert mode == "form"
+      assert default == "'form'::character varying"
+      assert nullable == "NO"
     end
   end
 
@@ -219,8 +236,8 @@ defmodule GtfsPlanner.Alerts.MigrationTest do
 
     defaults = %{
       id: id,
-      organization_id: organization.id,
-      gtfs_version_id: version.id,
+      organization_id: Ecto.UUID.dump!(organization.id),
+      gtfs_version_id: Ecto.UUID.dump!(version.id),
       revision: 1,
       complete: false,
       inserted_at: now(),
@@ -237,7 +254,7 @@ defmodule GtfsPlanner.Alerts.MigrationTest do
     Repo.insert_all("alert_scripts", [
       %{
         id: id,
-        organization_id: organization.id,
+        organization_id: Ecto.UUID.dump!(organization.id),
         name: name,
         inserted_at: now(),
         updated_at: now()
@@ -253,7 +270,7 @@ defmodule GtfsPlanner.Alerts.MigrationTest do
     Repo.insert_all("alert_settings", [
       %{
         id: id,
-        organization_id: organization.id,
+        organization_id: Ecto.UUID.dump!(organization.id),
         revision: 1,
         inserted_at: now(),
         updated_at: now()
