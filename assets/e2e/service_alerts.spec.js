@@ -1041,26 +1041,25 @@ test.describe("alert stop questions", () => {
     const search = page.locator("#alternative_stop_id_text_input");
     await search.click();
     await search.pressSequentially("N Coast");
-    await page.waitForSelector(
-      "#alert-boarding-stop ul li div[data-idx]",
-      { timeout: 15_000 },
-    );
-
-    // The affected stop is not offered to itself, and the keyboard drives the
-    // same list a pointer does.
-    await search.press("ArrowDown");
-    await search.press("Enter");
-    await page.waitForSelector("#alert-alternative", { timeout: 15_000 });
+    await page.waitForSelector("#alert-boarding-stop ul li div[data-idx]", {
+      timeout: 15_000,
+    });
 
     await page.screenshot({
       path: capturePath(testInfo, "stops-boarding-1440.png"),
       fullPage: false,
     });
 
-    // Escape closes the list without changing the answer.
-    await search.click();
+    // Escape closes the list without changing the answer...
     await search.press("Escape");
     await expect(page.locator("#alert-boarding-stop ul")).toHaveCount(0);
+    await expect(page.locator("#alert-save-status")).not.toHaveText("Saving…");
+
+    // ...and the keyboard picks from the same list a pointer does.
+    await search.press("ArrowDown");
+    await search.press("Enter");
+    await expect(page.locator("#alternative_stop_id")).not.toHaveValue("");
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
 
     // Written directions replace the chosen stop rather than joining it.
     await page.locator("#write-directions").click();

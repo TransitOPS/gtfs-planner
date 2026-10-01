@@ -45,7 +45,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
     setup :editor_conn
 
     test "a chosen stop is stored by its row UUID and names the routes that serve it", context do
-      %{depot: depot, harbor: harbor} = stops(context)
+      %{depot: depot} = stops(context)
       _route_1 = pattern(context, "R1", [{"S_DEPOT", 0}, {"S_HARBOR", 600}])
       _route_12 = pattern(context, "R12", [{"S_DEPOT", 0}, {"S_NYE", 600}])
 
@@ -70,9 +70,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       assert Enum.sort(saved.scope.route_ids) == Enum.sort(Enum.map(serving, & &1.id))
       assert length(serving) == 2
 
-      # The stops a reader would not have searched for are not offered, and the
-      # one that is stored is the one that was chosen.
-      assert not has_element?(view, "#alert-place-stop[data-stop='#{harbor.id}']")
+      # The widget's own field holds the chosen identity, and the summary says
+      # the place by name rather than by what was searched for.
+      assert has_element?(view, "input#place_stop_id[value='#{depot.id}']")
+      assert render(view) =~ depot.name
     end
 
     test "typed text alone never becomes a stop", context do

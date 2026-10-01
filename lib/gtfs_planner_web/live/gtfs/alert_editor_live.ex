@@ -917,7 +917,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   end
 
   defp chosen_stop_id(nil, _kind), do: nil
-  defp chosen_stop_id(alert, :place), do: List.first(scope(alert).stop_ids)
+  defp chosen_stop_id(alert, :place), do: (scope(alert).stop_ids || []) |> List.first()
   defp chosen_stop_id(alert, :alternative), do: scope(alert).alternative_stop_id
 
   # The label the stored stop renders, read through the same scoped lookup a pick
