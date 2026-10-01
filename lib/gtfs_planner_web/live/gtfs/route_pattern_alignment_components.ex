@@ -1383,7 +1383,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
       |> assign(:step_index, file_import_step_index(step))
 
     ~H"""
-    <div id="file-import-panel" class="flex min-h-0 flex-1 flex-col">
+    <div id="file-import-panel" phx-hook=".FileImportFocus" class="flex min-h-0 flex-1 flex-col">
       <div class="border-b border-subtle bg-white px-4 pb-3 pt-4">
         <button
           type="button"
