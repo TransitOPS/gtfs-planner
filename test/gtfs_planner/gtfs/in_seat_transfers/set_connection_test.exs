@@ -321,21 +321,26 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers.SetConnectionTest do
 
   defp save(scope, from_trip, to_trip, choice, expected) do
     Gtfs.set_in_seat_connection(
-      from_trip.trip_id,
-      to_trip.trip_id,
+      trip_id(from_trip),
+      trip_id(to_trip),
       choice,
       expected,
       scope.audit
     )
   end
 
+  # A pair may name a trip this version does not hold, so the id is passed as a
+  # bare string there while every other case passes the trip row.
+  defp trip_id(%{trip_id: trip_id}), do: trip_id
+  defp trip_id(trip_id) when is_binary(trip_id), do: trip_id
+
   defp pair_rows(scope, from_trip, to_trip) do
     Repo.all(
       from(t in Transfer,
         where:
           t.organization_id == ^scope.organization.id and
-            t.gtfs_version_id == ^scope.version.id and t.from_trip_id == ^from_trip.trip_id and
-            t.to_trip_id == ^to_trip.trip_id,
+            t.gtfs_version_id == ^scope.version.id and
+            t.from_trip_id == ^trip_id(from_trip) and t.to_trip_id == ^trip_id(to_trip),
         order_by: [asc: t.id]
       )
     )
@@ -363,8 +368,8 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers.SetConnectionTest do
 
     entry =
       Enum.find(entries, fn candidate ->
-        candidate.row.from_trip_id == from_trip.trip_id and
-          candidate.row.to_trip_id == to_trip.trip_id
+        candidate.row.from_trip_id == trip_id(from_trip) and
+          candidate.row.to_trip_id == trip_id(to_trip)
       end)
 
     assert entry, "the day load lists no in-seat record for the pair"
@@ -378,7 +383,7 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers.SetConnectionTest do
     Repo.all(
       from(l in ChangeLog,
         where: l.organization_id == ^scope.organization.id and l.entity_type == "transfer",
-        order_by: [asc: l.id],
+        order_by: [asc: l.inserted_at, asc: l.id],
         select: l.changed_fields
       )
     )
@@ -388,7 +393,7 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers.SetConnectionTest do
     Repo.all(
       from(l in ChangeLog,
         where: l.organization_id == ^scope.organization.id and l.entity_type == "transfer",
-        order_by: [asc: l.id],
+        order_by: [asc: l.inserted_at, asc: l.id],
         select: l.action
       )
     )

@@ -96,11 +96,15 @@ defmodule GtfsPlanner.Gtfs.Schedules.DeleteTripsTransferAuditTest do
     assert Repo.get(Transfer, outbound.id) == nil
     assert Repo.get(Trip, trip.id) == nil
 
-    assert [inbound_log, outbound_log] = transfer_logs(ctx)
+    # The two logs are matched by the row they name, not by write order: the
+    # cleanup removes the rows the deleted trip names, and a change log's own id
+    # is not an ordering.
+    logs = Map.new(transfer_logs(ctx), &{&1.entity_id, &1})
+    inbound_log = Map.fetch!(logs, inbound.id)
+    outbound_log = Map.fetch!(logs, outbound.id)
+
     assert inbound_log.action == "deleted"
     assert outbound_log.action == "deleted"
-    assert inbound_log.entity_id == inbound.id
-    assert outbound_log.entity_id == outbound.id
     assert Enum.all?([inbound_log, outbound_log], &(&1.entity_type == "transfer"))
 
     # Each log reconstructs its own row, and names every affected row.
@@ -227,8 +231,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.DeleteTripsTransferAuditTest do
   defp transfer_logs(ctx) do
     Repo.all(
       from(l in ChangeLog,
-        where: l.organization_id == ^ctx.organization_id and l.entity_type == "transfer",
-        order_by: [asc: l.id]
+        where: l.organization_id == ^ctx.organization.id and l.entity_type == "transfer",
+        order_by: [asc: l.inserted_at, asc: l.id]
       )
     )
   end
@@ -236,8 +240,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.DeleteTripsTransferAuditTest do
   defp trip_logs(ctx) do
     Repo.all(
       from(l in ChangeLog,
-        where: l.organization_id == ^ctx.organization_id and l.entity_type == "trip",
-        order_by: [asc: l.id]
+        where: l.organization_id == ^ctx.organization.id and l.entity_type == "trip",
+        order_by: [asc: l.inserted_at, asc: l.id]
       )
     )
   end

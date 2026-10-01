@@ -81,15 +81,19 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers.RemoveRecordsTest do
       assert Repo.get(Transfer, kept.id) == kept
       assert transfer_row_count(ctx) == rows_before - 2
 
-      assert [first_log, second_log] = transfer_logs(ctx)
+      # The logs are matched by the row they name, not by write order: the
+      # command removes the rows it was given, and the change log's own id is
+      # not an ordering.
+      logs = Map.new(transfer_logs(ctx), &{&1.entity_id, &1})
+      first_log = Map.fetch!(logs, first.id)
+      second_log = Map.fetch!(logs, second.id)
 
       assert first_log.action == "deleted"
-      assert first_log.entity_id == first.id
       assert first_log.entity_type == "transfer"
       assert first_log.changed_fields["before"] == Transfer.audit_snapshot(first)
       assert first_log.changed_fields["after"] == nil
       assert second_log.action == "deleted"
-      assert second_log.entity_id == second.id
+      assert second_log.changed_fields["before"] == Transfer.audit_snapshot(second)
 
       # One operation id for the command, and both affected ids named by each log,
       # so one log reconstructs the whole removal (INV-5).
@@ -232,7 +236,7 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers.RemoveRecordsTest do
     Repo.all(
       from(l in ChangeLog,
         where: l.organization_id == ^ctx.organization.id and l.entity_type == "transfer",
-        order_by: [asc: l.id]
+        order_by: [asc: l.inserted_at, asc: l.id]
       )
     )
   end

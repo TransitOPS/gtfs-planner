@@ -29,7 +29,7 @@ defmodule GtfsPlannerWeb.DrawerModalTest do
       <:header_actions>
         <span id="inspector-chip" class="text-[13px]">Riders stay on board</span>
       </:header_actions>
-      <p id="inspector-body">Body</p>
+      <p id="inspector-slot">Body</p>
     </.drawer>
     """)
   end
@@ -122,8 +122,12 @@ defmodule GtfsPlannerWeb.DrawerModalTest do
       assert Enum.count(LazyHTML.query(doc, "#inspector-body")) == 1
       assert Enum.count(LazyHTML.query(doc, "#inspector-chip")) == 1
 
-      assert LazyHTML.text(doc, "#inspector-body") == "Body"
-      assert LazyHTML.text(doc, "#inspector-title") =~ "Connection"
+      # `LazyHTML.text/1` reads one fragment, so each node is queried first; the
+      # drawer's own body wrapper carries `#inspector-body`, which is why the slot
+      # paragraph above is named `#inspector-slot`.
+      assert LazyHTML.text(LazyHTML.query(doc, "#inspector-body")) =~ "Body"
+      assert LazyHTML.text(LazyHTML.query(doc, "#inspector-slot")) == "Body"
+      assert LazyHTML.text(LazyHTML.query(doc, "#inspector-title")) =~ "Connection"
     end
 
     test "keeps the focus, pending and backdrop policy attributes" do

@@ -175,7 +175,7 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers.SetConnectionsTest do
 
       expected = [expected_row(stopless), expected_row(drift)]
 
-      assert {:ok, %{saved: [{_, _}], skipped: [], operation_id: operation_id}} =
+      assert {:ok, %{saved: [{_, _}, {_, _}], skipped: [], operation_id: operation_id}} =
                save_all(scope, [entry(c, d, expected), entry(g, h, [])], :must_reboard)
 
       assert operation_id
@@ -263,7 +263,12 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers.SetConnectionsTest do
   # -- Observation helpers --------------------------------------------------
 
   defp entry(from_trip, to_trip, expected),
-    do: %{pair: {from_trip.trip_id, to_trip.trip_id}, expected: expected}
+    do: %{pair: {trip_id(from_trip), trip_id(to_trip)}, expected: expected}
+
+  # A pair may name a trip this version does not hold, so the id is passed as a
+  # bare string there while every other case passes the trip row.
+  defp trip_id(%{trip_id: trip_id}), do: trip_id
+  defp trip_id(trip_id) when is_binary(trip_id), do: trip_id
 
   defp save_all(scope, entries, choice),
     do: Gtfs.set_in_seat_connections(entries, choice, scope.audit)
@@ -306,7 +311,7 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers.SetConnectionsTest do
     Repo.all(
       from(l in ChangeLog,
         where: l.organization_id == ^scope.organization.id and l.entity_type == "transfer",
-        order_by: [asc: l.id],
+        order_by: [asc: l.inserted_at, asc: l.id],
         select: l.changed_fields
       )
     )
@@ -316,7 +321,7 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers.SetConnectionsTest do
     Repo.all(
       from(l in ChangeLog,
         where: l.organization_id == ^scope.organization.id and l.entity_type == "transfer",
-        order_by: [asc: l.id],
+        order_by: [asc: l.inserted_at, asc: l.id],
         select: l.action
       )
     )

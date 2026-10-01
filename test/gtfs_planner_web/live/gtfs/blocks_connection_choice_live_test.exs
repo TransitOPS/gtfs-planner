@@ -118,8 +118,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionChoiceLiveTest do
 
     a =
       trip(context, %{
-        trip_id: Map.get(opts, :from_id, "a"),
-        block_id: Map.get(opts, :block_id, "101"),
+        trip_id: Keyword.get(opts, :from_id, "a"),
+        block_id: Keyword.get(opts, :block_id, "101"),
         first_stop: main.stop_id,
         last_stop: main.stop_id,
         first: "06:00:00",
@@ -129,8 +129,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionChoiceLiveTest do
     b =
       trip(context, %{
         route: context.twenty_four.route_id,
-        trip_id: Map.get(opts, :to_id, "b"),
-        block_id: Map.get(opts, :block_id, "101"),
+        trip_id: Keyword.get(opts, :to_id, "b"),
+        block_id: Keyword.get(opts, :block_id, "101"),
         first_stop: main.stop_id,
         last_stop: main.stop_id,
         first: "07:10:00",

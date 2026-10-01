@@ -110,8 +110,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionsGroupLiveTest do
     stop_fixture(context.organization.id, context.version.id, %{
       stop_id: "CONN_GROUP_#{System.unique_integer([:positive])}",
       stop_name: name,
-      stop_lat: Decimal.new(Map.get(opts, :lat, "40.0000")),
-      stop_lon: Decimal.new(Map.get(opts, :lon, "-74.0000"))
+      stop_lat: Decimal.new(Keyword.get(opts, :lat, "40.0000")),
+      stop_lon: Decimal.new(Keyword.get(opts, :lon, "-74.0000"))
     })
   end
 
