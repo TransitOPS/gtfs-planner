@@ -24,7 +24,7 @@ defmodule GtfsPlanner.Alerts.CompletionTest do
 
   describe "effect_for/1" do
     test "no situation derives no effect" do
-      assert Completion.effect_for(alert()) == nil
+      assert Completion.effect_for(alert(situation: nil)) == nil
     end
 
     test "a detour with skipped stops is a detour" do
@@ -122,6 +122,13 @@ defmodule GtfsPlanner.Alerts.CompletionTest do
       assert :alternative not in steps(Completion.errors(alert))
     end
 
+    test "a moved stop with no scope answer yet is reported without raising" do
+      alert = alert(situation: :stop_moved, scope: nil)
+
+      assert {:place, :stop_ids, _message} = error_on(alert, :place)
+      assert {:alternative, :alternative_stop_id, _message} = error_on(alert, :alternative)
+    end
+
     test "a moved stop with written directions has no alternative error" do
       alert =
         alert(
@@ -200,6 +207,28 @@ defmodule GtfsPlanner.Alerts.CompletionTest do
       assert {:place, :stop_ids, _message} = error_on(alert, :place)
     end
 
+    test "a closed stop holding only routes is still reported on its place step" do
+      alert = alert(situation: :stop_closed, scope: scope(route_ids: [@route_id]))
+
+      assert {:place, :stop_ids, _message} = error_on(alert, :place)
+    end
+
+    test "a delay holding only stops is still reported on its routes step" do
+      alert =
+        alert(
+          situation: :delay,
+          scope: scope(shape: :stop_all_routes, route_ids: nil, stop_ids: [@stop_id])
+        )
+
+      assert {:routes, :route_ids, _message} = error_on(alert, :routes)
+    end
+
+    test "a delay for every route of one mode needs no route list" do
+      alert = alert(situation: :delay, scope: scope(route_ids: nil, mode_route_type: 3))
+
+      assert :routes not in steps(Completion.errors(alert))
+    end
+
     test "a whole-system suspension needs no route answer" do
       alert = alert(situation: :suspension, scope: scope(shape: :system))
 
@@ -227,6 +256,37 @@ defmodule GtfsPlanner.Alerts.CompletionTest do
         )
 
       assert :timing not in steps(Completion.errors(alert))
+    end
+
+    test "a planned weekly alert holding only the answers the card collects is complete" do
+      alert =
+        alert(
+          urgency: :planned,
+          timing:
+            struct(planned_timing(),
+              pattern: :weekly,
+              first_date: ~D[2026-10-05],
+              weeks: 2,
+              weekdays: [1, 2, 3, 4, 5]
+            )
+        )
+
+      assert Completion.errors(alert) == []
+    end
+
+    test "a planned continuous alert holding only the answers the card collects is complete" do
+      alert =
+        alert(
+          urgency: :planned,
+          timing:
+            struct(planned_timing(),
+              pattern: :continuous,
+              first_date: ~D[2026-10-05],
+              last_date: ~D[2026-10-07]
+            )
+        )
+
+      assert Completion.errors(alert) == []
     end
 
     test "a continuous planned period without a last date is reported on the timing step" do
@@ -283,7 +343,7 @@ defmodule GtfsPlanner.Alerts.CompletionTest do
 
   defp steps(errors), do: Enum.map(errors, fn {step, _field, _message} -> step end)
 
-  defp alert(overrides \\ %{}) do
+  defp alert(overrides) do
     defaults = %{
       urgency: :now,
       situation: :delay,
@@ -292,11 +352,14 @@ defmodule GtfsPlanner.Alerts.CompletionTest do
       message: message()
     }
 
-    struct!(Alert, Map.merge(defaults, overrides))
+    struct!(Alert, Map.merge(defaults, Map.new(overrides)))
   end
 
   defp scope(overrides \\ %{}) do
-    struct!(ScopeAnswer, Map.merge(%{shape: :route_direction, route_ids: [@route_id]}, overrides))
+    struct!(
+      ScopeAnswer,
+      Map.merge(%{shape: :route_direction, route_ids: [@route_id]}, Map.new(overrides))
+    )
   end
 
   defp now_timing do
@@ -309,7 +372,7 @@ defmodule GtfsPlanner.Alerts.CompletionTest do
   end
 
   defp planned_timing do
-    %TimingAnswer{start_time: ~T[20:00:00], end_kind: :confirmed, end_date: ~D[2026-10-16]}
+    %TimingAnswer{start_time: ~T[20:00:00]}
   end
 
   defp message do

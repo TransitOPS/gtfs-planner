@@ -132,14 +132,20 @@ defmodule GtfsPlanner.Alerts.Completion do
   defp situation_errors(%Alert{}), do: []
 
   # Every situation except a whole-system suspension names who it is about, and
-  # each names it on a different step.
+  # each names it on a different step. The step decides which field answers it:
+  # a place question is answered by a stop, a routes question by a route, so a
+  # stop closure holding only routes still has to name its place.
   defp scope_errors(%Alert{situation: situation} = alert) do
-    with true <- Map.has_key?(@scope_step, situation),
-         false <- scope_answered?(scope(alert)) do
-      step = Map.fetch!(@scope_step, situation)
-      [{step, Map.fetch!(@scope_field, step), Map.fetch!(@scope_message, step)}]
-    else
-      _answered_or_unscoped -> []
+    case Map.fetch(@scope_step, situation) do
+      {:ok, step} ->
+        if scope_answered?(scope(alert), step) do
+          []
+        else
+          [{step, Map.fetch!(@scope_field, step), Map.fetch!(@scope_message, step)}]
+        end
+
+      :error ->
+        []
     end
   end
 
@@ -180,11 +186,14 @@ defmodule GtfsPlanner.Alerts.Completion do
       end_errors(timing)
   end
 
+  # A planned alert is asked Once or Repeats each week, not how it ends: its end
+  # is the last date of a continuous period or the weeks and weekdays of a
+  # weekly one, which `pattern_errors/1` checks. Only a current alert answers an
+  # end kind, so `end_errors/1` belongs to the clause above.
   defp timing_errors(%Alert{timing: timing}) do
     timing_error(timing, is_nil(timing.pattern), :pattern, @pattern_message) ++
       timing_error(timing, is_nil(timing.first_date), :first_date, @first_date_message) ++
       time_of_day_errors(timing) ++
-      end_errors(timing) ++
       pattern_errors(timing)
   end
 
@@ -241,9 +250,10 @@ defmodule GtfsPlanner.Alerts.Completion do
          not is_nil(answer && answer.stretch_to_stop_id))
   end
 
+  defp alternative_answered?(nil), do: false
+
   defp alternative_answered?(answer) do
-    (answer && not is_nil(answer.alternative_stop_id)) or
-      present?(answer && answer.alternative_directions)
+    not is_nil(answer.alternative_stop_id) or present?(answer.alternative_directions)
   end
 
   defp cancelled_departures(%Alert{} = alert) do
@@ -253,13 +263,14 @@ defmodule GtfsPlanner.Alerts.Completion do
     end
   end
 
-  defp scope_answered?(nil), do: false
+  defp scope_answered?(nil, _step), do: false
 
-  defp scope_answered?(answer) do
+  defp scope_answered?(answer, :routes) do
     answer.shape == :system or not is_nil(answer.mode_route_type) or
-      present?(answer.route_ids) or present?(answer.stop_ids) or
-      answer.route_stop_pairs != [] or answer.trips != []
+      present?(answer.route_ids)
   end
+
+  defp scope_answered?(answer, :place), do: present?(answer.stop_ids)
 
   defp scope(%Alert{scope: answer}), do: answer
 
