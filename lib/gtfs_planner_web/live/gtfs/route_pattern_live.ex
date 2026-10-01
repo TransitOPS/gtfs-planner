@@ -2423,6 +2423,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                       <%= if @alignment do %>
                         <RoutePatternAlignmentComponents.alignment_task
                           alignment={@alignment}
+                          version_id={@current_gtfs_version.id}
                           state={@alignment_state}
                           notice={@alignment_notice}
                           dialog_open={@alignment_dialog == :help}

@@ -1359,3 +1359,131 @@ test.describe("imported shape", () => {
     expect(problems).toEqual([]);
   });
 });
+
+// Step 35: the two map-line download menus. The prototype's `?state=export-menu`
+// (the Map line tab's Import or export disclosure), `?state=export-partial` (a
+// pattern with gaps) and `?state=export-route` (the Patterns list's Download map
+// lines) at 1440×900. Each menu item is a real `<a download>`, so the block also
+// asserts the file the browser actually saves.
+test.describe("downloads", () => {
+  test("offers this pattern's map line and the route's from the two menus", async ({
+    page,
+  }, testInfo) => {
+    testInfo.setTimeout(180_000);
+
+    const problems = collectPageErrors(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    // `export-menu`: the Map line tab's disclosure, on a pattern whose every
+    // section has a saved path, so the note promises one line and its stops.
+    await page.goto(
+      `/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns/BROWSER-SHAPES-A?task=alignment`,
+    );
+    await waitForLiveView(page);
+
+    await expect(page.locator("#map-line-files-toggle")).toHaveText(
+      "Import or export",
+    );
+
+    await page.locator("#map-line-files-toggle").click();
+
+    const menu = page.locator("#map-line-files");
+    await expect(menu).toBeVisible();
+    await expect(page.locator("#map-line-download-kml")).toBeVisible();
+    await expect(page.locator("#map-line-download-geojson")).toBeVisible();
+    await expect(page.locator("#map-line-download-note")).toContainText(
+      "The file has the saved map line",
+    );
+
+    await expect(page.locator("#map-line-download-kml")).toHaveAttribute(
+      "href",
+      `/gtfs/${versionId}/routes/${SHAPES_ROUTE}/map-lines?format=kml&pattern=BROWSER-SHAPES-A`,
+    );
+
+    await capture(page, "downloads-export-menu-production-1440");
+
+    // The KML link is a real download of this pattern's line and its stops.
+    const [kml] = await Promise.all([
+      page.waitForEvent("download"),
+      page.locator("#map-line-download-kml").click(),
+    ]);
+
+    expect(kml.suggestedFilename()).toBe("BROWSER_SHAPES-BROWSER-SHAPES-A.kml");
+
+    const [geojson] = await Promise.all([
+      page.waitForEvent("download"),
+      page.locator("#map-line-download-geojson").click(),
+    ]);
+
+    expect(geojson.suggestedFilename()).toBe(
+      "BROWSER_SHAPES-BROWSER-SHAPES-A.geojson",
+    );
+
+    // `export-partial`: the same menu on a pattern whose only line is the
+    // imported shape, so the note names the shape the file will carry.
+    await page.goto(
+      `/gtfs/${versionId}/routes/${IMPORTED_ROUTE}/patterns/${IMPORTED_PATTERN}?task=alignment`,
+    );
+    await waitForLiveView(page);
+    await page.locator("#map-line-files-toggle").click();
+
+    await expect(page.locator("#map-line-download-note")).toContainText(
+      "The file has the imported line (shape BROWSER_IMPORTED_SHAPE)",
+    );
+
+    await capture(page, "downloads-export-partial-production-1440");
+
+    if (existsSync(PATTERN_REFERENCE_PATH)) {
+      await page.goto(`file://${PATTERN_REFERENCE_PATH}?state=export-partial`);
+      await page.waitForLoadState("networkidle");
+      await capture(page, "downloads-export-partial-reference-1440");
+    }
+
+    // `export-route`: the Patterns list's toolbar menu, one file for the route.
+    await page.goto(`/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns`);
+    await waitForLiveView(page);
+
+    await page.locator("#patterns-download-map-lines-toggle").click();
+
+    await expect(
+      page.locator("#patterns-download-map-lines-kml"),
+    ).toHaveAttribute(
+      "href",
+      `/gtfs/${versionId}/routes/${SHAPES_ROUTE}/map-lines?format=kml&pattern=all`,
+    );
+
+    await expect(
+      page.locator("#patterns-download-map-lines-geojson"),
+    ).toHaveAttribute(
+      "href",
+      `/gtfs/${versionId}/routes/${SHAPES_ROUTE}/map-lines?format=geojson&pattern=all`,
+    );
+
+    await capture(page, "downloads-export-route-production-1440");
+
+    const [routeKml] = await Promise.all([
+      page.waitForEvent("download"),
+      page.locator("#patterns-download-map-lines-kml").click(),
+    ]);
+
+    expect(routeKml.suggestedFilename()).toBe("BROWSER_SHAPES-all.kml");
+
+    if (existsSync(PATTERN_REFERENCE_PATH)) {
+      await page.goto(`file://${PATTERN_REFERENCE_PATH}?state=export-route`);
+      await page.waitForLoadState("networkidle");
+      await capture(page, "downloads-export-route-reference-1440");
+    }
+
+    testInfo.annotations.push({
+      type: "reference-captured",
+      description: existsSync(PATTERN_REFERENCE_PATH)
+        ? "downloads-export-partial-reference-1440.png, downloads-export-route-reference-1440.png"
+        : "path prototype absent from this checkout",
+    });
+
+    expect(problems).toEqual([]);
+  });
+});
