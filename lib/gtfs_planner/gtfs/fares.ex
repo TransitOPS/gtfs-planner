@@ -27,6 +27,12 @@ defmodule GtfsPlanner.Gtfs.Fares do
   the apply writes exactly those rows through the same fenced path
   `save_prices/2` uses, with each row's `now` as the amount it reviewed.
 
+  `save_fare/2` and `delete_fare/4` are the fare drawer's pair (AC-16). A fare is
+  one `fare_product_id` whose rows are one per rider type and payment method,
+  which is what this module's own read model already treats as a grid row, so
+  creating, renaming, pricing, re-selling and removing a fare is one write here
+  rather than a sequence of price cells.
+
   ## How a write is fenced
 
   Every writer in this module runs through the private `write/4` helper, so
@@ -86,6 +92,13 @@ defmodule GtfsPlanner.Gtfs.Fares do
   @price_inverse :prices
 
   @undo_price_summary "Restored the prices a price change replaced"
+
+  # The key a fare save's or fare delete's inverse is named under, which is what
+  # `undo/3` matches on to tell a fare change from a price change, a setup or a
+  # conversion.
+  @fare_inverse :fare
+
+  @undo_fare_summary "Restored the fare a fare change replaced"
 
   @typedoc """
   The arguments every writer of this package takes: the organization and version
@@ -154,6 +167,16 @@ defmodule GtfsPlanner.Gtfs.Fares do
       ) do
     write(scope, @undo_price_summary, @price_inverse, fn setting ->
       undo_prices(organization_id, gtfs_version_id, operation_id, setting, inverse)
+    end)
+  end
+
+  def undo(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        operation_id,
+        %{fare: _inverse} = inverse
+      ) do
+    write(scope, @undo_fare_summary, @fare_inverse, fn _setting ->
+      undo_fare(organization_id, gtfs_version_id, operation_id, inverse.fare)
     end)
   end
 
@@ -1131,7 +1154,900 @@ defmodule GtfsPlanner.Gtfs.Fares do
     }
   end
 
-  # -- Prices --------------------------------------------------------------------
+  # -- Creating, editing and deleting fares ---------------------------------------
+
+  # The kinds `save_fare/2` writes. A transfer fee is `Fares.Transfers`' own row
+  # (R5) and only that writer may store a negative amount (R9), so a fare
+  # written here is a single ride or a pass and nothing else.
+  @fare_kinds ["single", "pass"]
+
+  # R4's name for the leg rules whose `network_id` is nil. It is also the one
+  # value a pass may accept that is not a network of the version, because R4
+  # reads an empty list as "accepted nowhere" and this string as "accepted where
+  # the rules name no network".
+  @all_routes_accepted "all_routes"
+
+  @doc """
+  Creates or updates one fare: its name, its kind, the payment methods it is
+  sold on, its prices for each rider type, and — for a pass — the route groups
+  that accept it (AC-16).
+
+  `params` is the fare drawer's own form:
+
+      %{name: String.t(),
+        fare_product_id: String.t() | nil,
+        kind: "single" | "pass",
+        media_ids: [String.t()],
+        prices: %{rider_category_id => Decimal.t() | String.t() | nil},
+        media_prices: %{fare_media_id => %{rider_category_id => Decimal.t() | String.t() | nil}},
+        accepted_network_ids: [String.t()],
+        position: integer() | nil,
+        reviewed: [map()] | nil}
+
+  A form with no `fare_product_id` creates a fare, whose GTFS id is its name as
+  an id — `Summer beach shuttle` is `summer_beach_shuttle` — and a name whose id
+  this version already holds answers `{:error, :duplicate_fare}`, because an
+  operator creating a second fare is not editing the first. A form naming a
+  `fare_product_id` updates that fare and answers `{:error, :not_found}` when
+  this version holds no such fare, which is what another organization's or
+  version's fare id is here (AC-26, INV-5).
+
+  The form is the whole fare: one `fare_products` row per rider type and payment
+  method it names, and a row of this fare that it does not name is deleted,
+  because blank means not sold and not sold is a missing row rather than a zero
+  (R9). `prices` is the fare's price for each rider type, `media_prices` the
+  price for one method where it differs, and an amount is read by the same
+  `Fares.Money.parse/1` every other price on this page is read by, so a
+  mistyped price refuses the whole save rather than storing something else.
+
+  A payment method or a rider type that this version does not hold answers
+  `{:error, :not_found}`, so nothing of another version can be written through
+  this writer. A blank or unreadable price answers `{:error, :invalid_price}`.
+
+  The fare's operator facts — its kind, its place in the editor's order, and for
+  a pass the route groups that accept it — go to `fare_product_details`, which
+  is where the Fares v2 files have no place for them. `Fares.Normalize.run!/2`
+  then rebuilds the rows that kind implies, so a pass saved with
+  `accepted_network_ids` leaves one leg rule per condition set of the single
+  rides it stands in for (R4, INV-4); a pass accepts a network of this version or
+  `"all_routes"`, and anything else answers `{:error, :not_found}`.
+
+  A blank name answers `{:error, changeset}` with an error on `:name`, because a
+  fare with no name is not one an operator can find again, even though the
+  stored column itself may hold nothing for an imported row (AC-1).
+
+  `reviewed` is the fence, and is the same cell shape `save_prices/2` takes. It
+  is the fare's price list as the editor saw it: a cell whose stored amount has
+  moved answers `{:error, {:stale, cells}}` naming it, and writes nothing
+  (R15, AC-26).
+  """
+  @spec save_fare(scope(), map()) :: write_result()
+  def save_fare(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        params
+      )
+      when is_map(params) do
+    case trimmed_name(params) do
+      {:ok, name} ->
+        write(scope, fare_save_summary(params, name), @fare_inverse, fn _setting ->
+          apply_fare(organization_id, gtfs_version_id, name, params)
+        end)
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  @doc """
+  Deletes one fare and settles the rules that named it (AC-16).
+
+  `replacement` is what those rules are pointed at instead:
+
+  - a `fare_product_id` of this version moves them there, which answers
+    `{:error, :not_found}` when this version holds no such fare and
+    `{:error, :conflicting_rule}` when a rule of the replacement already states
+    the same conditions — GTFS has one rule per set of conditions and fare;
+  - `:remove_rules` deletes them, leaving the cells they priced with no fare,
+    which the Where tab reports as a gap;
+  - `nil` answers `{:error, :replacement_required}` whenever the fare is named by
+    any rule, because deleting a priced fare is not something an operator can
+    mean by accident.
+
+  A fare named by no rule at all is deleted with any of the three. The rules in
+  question are the version's `fare_leg_rules` rows naming the fare and its
+  `fare_transfer_rules` rows naming it, so a deleted fare leaves nothing
+  pointing at it (FH-17). The fare's own rows are deleted whole, with the ids
+  they had, so `undo/3` puts them back as they were.
+
+  `expected` is the fence, and carries the facts the editor reviewed: `:name`,
+  `:kind` and `:prices` (the cell shape `save_prices/2` takes). Anything that has
+  moved answers `{:error, {:stale, details}}` and deletes nothing.
+
+  A fare of another organization or another version answers
+  `{:error, :not_found}`, a version that is not published answers the same, and
+  an unmanaged version answers `{:error, :unmanaged}` — its fares are edited by
+  converting it (R12).
+  """
+  @spec delete_fare(scope(), String.t(), String.t() | :remove_rules | nil, map()) ::
+          write_result()
+  def delete_fare(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        fare_product_id,
+        replacement,
+        expected
+      )
+      when is_binary(fare_product_id) and is_map(expected) do
+    name = fare_display_name(organization_id, gtfs_version_id, fare_product_id)
+    summary = "Deleted the fare \"#{name || fare_product_id}\""
+
+    write(scope, summary, @fare_inverse, fn _setting ->
+      remove_fare(organization_id, gtfs_version_id, fare_product_id, replacement, expected)
+    end)
+  end
+
+  # -- Writing one fare ------------------------------------------------------------
+
+  defp apply_fare(organization_id, gtfs_version_id, name, params) do
+    products = version_products(organization_id, gtfs_version_id)
+
+    with {:ok, product_id} <- fare_product_id(products, name, params),
+         {:ok, media_ids} <- fare_media_ids(organization_id, gtfs_version_id, params),
+         {:ok, riders} <-
+           fare_rider_ids(organization_id, gtfs_version_id, products, product_id, params),
+         {:ok, kind} <- fare_kind(params),
+         {:ok, accepted} <-
+           fare_accepted_networks(organization_id, gtfs_version_id, kind, params),
+         {:ok, changes} <-
+           fare_changes(product_id, media_ids, riders, params, name, currency(products)) do
+      # A fare the version did not hold before this write is a create, and its
+      # entry says so the way every other entity type's does.
+      write_fare_rows(
+        organization_id,
+        gtfs_version_id,
+        %{
+          product_id: product_id,
+          name: name,
+          kind: kind,
+          accepted: accepted,
+          params: params,
+          changes: changes,
+          # A fare the version did not hold before this write is a create, and
+          # its entry says so the way every other entity type's does.
+          action: if(known_fare?(products, product_id), do: "updated", else: "created")
+        },
+        products
+      )
+    end
+  end
+
+  # The fence runs before anything is written, so a reviewed price that has moved
+  # refuses the whole save rather than half of it (R15). Everything below it shares
+  # `write_prices/4` with the grid's own writer, so R9's parsing, rounding, blank
+  # and inverse rules are this writer's rules rather than a second set of them.
+  defp write_fare_rows(organization_id, gtfs_version_id, fare, products) do
+    case fare_stale(fare.product_id, fare.params, products) do
+      [] ->
+        write_fare_prices(organization_id, gtfs_version_id, fare, products)
+
+      stale ->
+        {:error, {:stale, stale}}
+    end
+  end
+
+  defp write_fare_prices(organization_id, gtfs_version_id, fare, products) do
+    %{product_id: product_id, name: name, changes: changes} = fare
+
+    with {:ok, written} <- write_prices(organization_id, gtfs_version_id, changes, products),
+         {:ok, renamed} <-
+           rename_fare(organization_id, gtfs_version_id, product_id, products, name),
+         {:ok, detail} <- write_fare_detail(organization_id, gtfs_version_id, fare) do
+      {:ok,
+       %{
+         before: written.before,
+         after: written.after,
+         action: fare.action,
+         inverse: %{
+           operation: :save,
+           fare_product_id: product_id,
+           fare_products: written.inverse.fare_products,
+           name: renamed,
+           detail: detail
+         }
+       }}
+    end
+  end
+
+  # Whether this version already held a fare under this id, which is what tells
+  # a fare save's create from its update.
+  defp known_fare?(products, product_id) do
+    Enum.any?(products, &(&1.fare_product_id == product_id))
+  end
+
+  # The price cells the form names, one per rider type and payment method, in
+  # the order the grid reads them. A cell the form leaves blank carries a `nil`
+  # amount, which is the row this fare no longer has for that rider type and
+  # method: blank means not sold (R9). A blank cell is kept in the list rather
+  # than dropped, because that is what deletes the row it stands for.
+  defp fare_changes(product_id, media_ids, riders, params, name, code) do
+    prices = fare_param(params, :prices) || %{}
+    media_prices = fare_param(params, :media_prices) || %{}
+
+    parsed =
+      for rider <- riders, medium <- media_ids do
+        cell = %{
+          key: {product_id, rider, medium},
+          reviewed: nil,
+          amount: fare_cell_amount(prices, media_prices, medium, rider),
+          name: name,
+          currency: code
+        }
+
+        case parse_amount(cell, code) do
+          {:ok, amount} -> {:ok, %{cell | amount: amount}}
+          {:error, reason} -> {:error, reason}
+        end
+      end
+
+    case Enum.find(parsed, &match?({:error, _reason}, &1)) do
+      nil -> {:ok, Enum.map(parsed, &elem(&1, 1))}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # The reviewed cells of a fare, checked against what is stored before anything
+  # is written. `reviewed` is optional: a form that did not review the fare's
+  # prices has no fence to trip, which is the case a create always is.
+  defp fare_stale(_product_id, params, products) do
+    case fare_param(params, :reviewed) do
+      reviewed when is_list(reviewed) ->
+        changes =
+          Enum.map(reviewed, fn cell ->
+            %{
+              key: cell_key(cell),
+              reviewed: cell[:reviewed] || cell[:amount],
+              amount: cell[:amount]
+            }
+          end)
+
+        stale_cells(changes, products)
+
+      _other ->
+        []
+    end
+  end
+
+  # A method's own price where the form gave one, the fare's price for that
+  # rider type otherwise. A blank is `nil`, which is the row this fare no longer
+  # has for that rider type and method (R9).
+  defp fare_cell_amount(prices, media_prices, medium, rider) do
+    case Map.fetch(Map.get(media_prices, medium) || %{}, rider) do
+      {:ok, amount} -> amount
+      :error -> Map.get(prices, rider)
+    end
+  end
+
+  # The rider types the form prices: every rider type it names a price for, on
+  # the fare or on one of its methods, beside every rider type this fare already
+  # has a row for, so a rider type the editor blanked is deleted rather than
+  # kept. A rider type this version does not hold answers `:not_found` (INV-5).
+  defp fare_rider_ids(organization_id, gtfs_version_id, products, product_id, params) do
+    prices = fare_param(params, :prices) || %{}
+    media_prices = fare_param(params, :media_prices) || %{}
+
+    named =
+      Map.keys(prices) ++
+        Enum.flat_map(Map.values(media_prices), &Map.keys/1) ++
+        for(row <- products, row.fare_product_id == product_id, do: row.rider_category_id)
+
+    known = version_rider_ids(organization_id, gtfs_version_id)
+    riders = named |> Enum.reject(&is_nil/1) |> Enum.uniq() |> Enum.sort()
+
+    if Enum.all?(riders, &MapSet.member?(known, &1)) do
+      {:ok, riders}
+    else
+      {:error, :not_found}
+    end
+  end
+
+  defp version_rider_ids(organization_id, gtfs_version_id) do
+    RiderCategory
+    |> scoped(organization_id, gtfs_version_id)
+    |> select([rider], rider.rider_category_id)
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
+  # The payment methods the form names, each of which must be a method this
+  # version holds. A fare sold no way at all cannot be priced, so a form naming
+  # none answers `:no_payment_methods` rather than writing nothing.
+  defp fare_media_ids(organization_id, gtfs_version_id, params) do
+    case params |> fare_param(:media_ids) |> List.wrap() |> Enum.map(&to_string/1) do
+      [] ->
+        {:error, :no_payment_methods}
+
+      media_ids ->
+        known = version_media_ids(organization_id, gtfs_version_id)
+
+        if media_ids |> Enum.uniq() |> Enum.all?(&MapSet.member?(known, &1)) do
+          {:ok, media_ids}
+        else
+          {:error, :not_found}
+        end
+    end
+  end
+
+  defp version_media_ids(organization_id, gtfs_version_id) do
+    FareMedia
+    |> scoped(organization_id, gtfs_version_id)
+    |> select([medium], medium.fare_media_id)
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
+  defp fare_kind(params) do
+    case fare_param(params, :kind) || "single" do
+      kind when kind in @fare_kinds -> {:ok, kind}
+      _other -> {:error, :invalid_kind}
+    end
+  end
+
+  # R4: a pass's accepted networks are the leg groups it stands in for, and an
+  # empty list means it is accepted nowhere. Anything else has to be a network of
+  # this version or R4's name for the rules that name none.
+  defp fare_accepted_networks(_organization_id, _gtfs_version_id, kind, _params)
+       when kind != "pass",
+       do: {:ok, []}
+
+  defp fare_accepted_networks(organization_id, gtfs_version_id, "pass", params) do
+    accepted =
+      params
+      |> fare_param(:accepted_network_ids)
+      |> List.wrap()
+      |> Enum.map(&to_string/1)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    known =
+      Network
+      |> scoped(organization_id, gtfs_version_id)
+      |> select([network], network.network_id)
+      |> Repo.all()
+
+    allowed = MapSet.new([@all_routes_accepted | known])
+
+    if Enum.all?(accepted, &MapSet.member?(allowed, &1)) do
+      {:ok, accepted}
+    else
+      {:error, :not_found}
+    end
+  end
+
+  defp fare_product_id(products, name, params) do
+    case fare_param(params, :fare_product_id) do
+      nil ->
+        id = fare_slug(name)
+
+        cond do
+          id == "" -> {:error, name_changeset(name, "must have a letter or a number")}
+          Enum.any?(products, &(&1.fare_product_id == id)) -> {:error, :duplicate_fare}
+          true -> {:ok, id}
+        end
+
+      "" ->
+        {:error, :not_found}
+
+      id when is_binary(id) ->
+        if Enum.any?(products, &(&1.fare_product_id == id)) do
+          {:ok, id}
+        else
+          {:error, :not_found}
+        end
+
+      _other ->
+        {:error, :not_found}
+    end
+  end
+
+  # A fare's GTFS id is its name the way `Fares.Conversion` writes a route
+  # group's: lower case, with every run of other characters one underscore.
+  defp fare_slug(name) do
+    name
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9]+/, "_")
+    |> String.trim("_")
+  end
+
+  # Every row of one fare carries its name, so a rename writes all of them and
+  # the inverse carries the name they held.
+  defp rename_fare(organization_id, gtfs_version_id, product_id, products, name) do
+    stored =
+      products
+      |> Enum.filter(&(&1.fare_product_id == product_id))
+      |> Enum.map(& &1.fare_product_name)
+      |> Enum.uniq()
+
+    previous = List.first(stored)
+
+    cond do
+      stored == [] ->
+        {:ok, %{before: nil, after: name}}
+
+      stored == [name] ->
+        {:ok, %{before: name, after: name}}
+
+      true ->
+        now = DateTime.utc_now()
+
+        Repo.update_all(
+          from(row in FareProduct,
+            where:
+              row.organization_id == ^organization_id and
+                row.gtfs_version_id == ^gtfs_version_id and
+                row.fare_product_id == ^product_id
+          ),
+          set: [fare_product_name: name, updated_at: now]
+        )
+
+        {:ok, %{before: previous, after: name}}
+    end
+  end
+
+  # The one `fare_product_details` row of a fare, written through its own
+  # changeset so `kind` passes the same check every other writer of that column
+  # passes. A fare with no row yet gets one, and a new fare's place in the
+  # editor's order is after the fares already there unless the form names one.
+  defp write_fare_detail(organization_id, gtfs_version_id, fare) do
+    %{
+      product_id: product_id,
+      kind: kind,
+      accepted: accepted,
+      params: params
+    } = fare
+
+    case detail_row(organization_id, gtfs_version_id, product_id) do
+      nil ->
+        attrs = %{
+          fare_product_id: product_id,
+          kind: kind,
+          position: fare_position(organization_id, gtfs_version_id, params, nil),
+          accepted_network_ids: accepted
+        }
+
+        row = fare_detail_changeset(%FareProductDetail{}, organization_id, gtfs_version_id, attrs)
+
+        case Repo.insert(row) do
+          {:ok, detail} -> {:ok, %{id: detail.id, before: nil, after: detail_attrs(detail)}}
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+
+      detail ->
+        attrs = %{
+          kind: kind,
+          position: fare_position(organization_id, gtfs_version_id, params, detail),
+          accepted_network_ids: accepted
+        }
+
+        case detail |> FareProductDetail.changeset(attrs) |> Repo.update() do
+          {:ok, updated} ->
+            {:ok, %{id: detail.id, before: detail_attrs(detail), after: detail_attrs(updated)}}
+
+          {:error, changeset} ->
+            Repo.rollback(changeset)
+        end
+    end
+  end
+
+  defp fare_detail_changeset(
+         %FareProductDetail{} = detail,
+         organization_id,
+         gtfs_version_id,
+         attrs
+       ) do
+    FareProductDetail.changeset(
+      Map.merge(detail, %{organization_id: organization_id, gtfs_version_id: gtfs_version_id}),
+      attrs
+    )
+  end
+
+  defp fare_position(organization_id, gtfs_version_id, params, nil) do
+    case fare_param(params, :position) do
+      position when is_integer(position) -> position
+      _other -> detail_count(organization_id, gtfs_version_id)
+    end
+  end
+
+  defp fare_position(_organization_id, _gtfs_version_id, params, detail) do
+    case fare_param(params, :position) do
+      position when is_integer(position) -> position
+      _other -> detail.position
+    end
+  end
+
+  # A new fare's place in the editor's own order is after the fares this version
+  # already has, which is scoped to the version rather than counted across every
+  # organization (INV-5).
+  defp detail_count(organization_id, gtfs_version_id) do
+    FareProductDetail
+    |> scoped(organization_id, gtfs_version_id)
+    |> select([detail], count())
+    |> Repo.one()
+    |> Kernel.||(0)
+  end
+
+  defp detail_row(organization_id, gtfs_version_id, product_id) do
+    FareProductDetail
+    |> scoped(organization_id, gtfs_version_id)
+    |> where([detail], detail.fare_product_id == ^product_id)
+    |> Repo.one()
+  end
+
+  defp detail_attrs(detail) do
+    %{
+      kind: detail.kind,
+      position: detail.position,
+      accepted_network_ids: detail.accepted_network_ids
+    }
+  end
+
+  # The fare's own name, for the summary a delete records. A fare this version
+  # does not hold answers `nil`, which the caller turns into the id it named —
+  # the write refuses a fare it cannot find, so nothing else depends on it.
+  defp fare_display_name(organization_id, gtfs_version_id, product_id) do
+    organization_id
+    |> version_products(gtfs_version_id)
+    |> Enum.filter(&(&1.fare_product_id == product_id))
+    |> fare_rows_name()
+  end
+
+  defp trimmed_name(params) do
+    case fare_param(params, :name) do
+      name when is_binary(name) ->
+        case String.trim(name) do
+          "" -> {:error, name_changeset(name, "can't be blank")}
+          trimmed -> {:ok, trimmed}
+        end
+
+      _other ->
+        {:error, name_changeset(nil, "can't be blank")}
+    end
+  end
+
+  # A blank or unreadable name answers a changeset with an error on `:name`, so
+  # the drawer renders the same summary and the same inline message it renders
+  # for every other invalid field. This is the one place a name is refused: a
+  # stored `fare_product_name` may still hold nothing for an imported row
+  # (AC-1), because that row is not one an operator is looking at.
+  defp name_changeset(name, message) do
+    %FareProduct{}
+    |> Ecto.Changeset.change(%{fare_product_name: name})
+    |> Map.put(:action, :insert)
+    |> Ecto.Changeset.add_error(:name, message)
+  end
+
+  defp fare_save_summary(params, name) do
+    if fare_param(params, :fare_product_id) do
+      "Updated the fare \"#{name}\""
+    else
+      "Created the fare \"#{name}\""
+    end
+  end
+
+  # A drawer hands over atom keys, and a form that did not send an optional field
+  # leaves it out rather than sending `nil`, so every reader of the form's own
+  # keys goes through here.
+  defp fare_param(params, key) do
+    case params do
+      %{^key => value} -> value
+      _other -> Map.get(params, Atom.to_string(key))
+    end
+  end
+
+  # -- Deleting one fare -----------------------------------------------------------
+
+  defp remove_fare(organization_id, gtfs_version_id, product_id, replacement, expected) do
+    products = version_products(organization_id, gtfs_version_id)
+    rows = Enum.filter(products, &(&1.fare_product_id == product_id))
+    detail = detail_row(organization_id, gtfs_version_id, product_id)
+
+    case delete_stale(rows, detail, expected, products) do
+      [] when rows != [] or not is_nil(detail) ->
+        settle_fare_rules(organization_id, gtfs_version_id, product_id, replacement, rows, detail)
+
+      [] ->
+        {:error, :not_found}
+
+      stale ->
+        {:error, {:stale, stale}}
+    end
+  end
+
+  # The facts the editor reviewed before confirming the delete. `:name` is the
+  # fare's own name, `:kind` and `:accepted_network_ids` its detail row's, and
+  # `:prices` the cell list `save_prices/2` takes, so a fare whose prices have
+  # moved since the drawer opened refuses here exactly as a grid save does.
+  defp delete_stale(rows, detail, expected, products) do
+    name_stale(rows, expected) ++
+      detail_stale(detail, expected) ++
+      case Map.get(expected, :prices) do
+        nil -> []
+        _reviewed -> fare_stale(nil, %{reviewed: expected.prices}, products)
+      end
+  end
+
+  defp name_stale(rows, expected) do
+    case Map.fetch(expected, :name) do
+      :error ->
+        []
+
+      {:ok, name} ->
+        stored = fare_rows_name(rows)
+
+        if stored == name do
+          []
+        else
+          [%{field: :name, reviewed: name, stored: stored}]
+        end
+    end
+  end
+
+  defp detail_stale(detail, expected) do
+    Enum.flat_map([:kind, :accepted_network_ids], fn field ->
+      expected |> Map.fetch(field) |> stale_detail_cell(detail, field)
+    end)
+  end
+
+  defp stale_detail_cell(:error, _detail, _field), do: []
+
+  defp stale_detail_cell({:ok, reviewed}, detail, field) do
+    stored = detail && Map.get(detail, field)
+
+    if stored == reviewed, do: [], else: [%{field: field, reviewed: reviewed, stored: stored}]
+  end
+
+  defp fare_rows_name(rows) do
+    case Enum.find(rows, &is_binary(&1.fare_product_name)) do
+      nil -> nil
+      row -> row.fare_product_name
+    end
+  end
+
+  # R5's own rows and the leg rules both point at a product, so a deleted fare
+  # must leave neither naming it (FH-17). A replacement points them somewhere
+  # else, `:remove_rules` deletes them, and no replacement at all is refused
+  # while any of them exists: an operator confirming a delete did not mean to
+  # leave the version's cells unpriced.
+  defp settle_fare_rules(organization_id, gtfs_version_id, product_id, replacement, rows, detail) do
+    rules = fare_rules(organization_id, gtfs_version_id, product_id)
+
+    case replacement do
+      nil ->
+        if rules == [] do
+          drop_fare(organization_id, gtfs_version_id, product_id, rows, detail, [])
+        else
+          {:error, :replacement_required}
+        end
+
+      :remove_rules ->
+        removed = remove_fare_rules(organization_id, gtfs_version_id, rules)
+        drop_fare(organization_id, gtfs_version_id, product_id, rows, detail, removed)
+
+      replacement when is_binary(replacement) ->
+        products = version_products(organization_id, gtfs_version_id)
+
+        cond do
+          replacement == product_id ->
+            {:error, :conflicting_rule}
+
+          not Enum.any?(products, &(&1.fare_product_id == replacement)) ->
+            {:error, :not_found}
+
+          conflicting = conflicting_rule(organization_id, gtfs_version_id, rules, replacement) ->
+            {:error, {:conflicting_rule, conflicting}}
+
+          true ->
+            moved = move_fare_rules(organization_id, gtfs_version_id, product_id, replacement)
+            drop_fare(organization_id, gtfs_version_id, product_id, rows, detail, moved)
+        end
+    end
+  end
+
+  # The rules that name the fare: its leg rules and any transfer rule naming it
+  # as the difference or fee product. Every read is scoped to this version
+  # (INV-5), so another version's rule can never be moved by this write.
+  defp fare_rules(organization_id, gtfs_version_id, product_id) do
+    leg =
+      from(rule in FareLegRule,
+        where:
+          rule.organization_id == ^organization_id and
+            rule.gtfs_version_id == ^gtfs_version_id and
+            rule.fare_product_id == ^product_id,
+        order_by: rule.id,
+        select: {:leg_rule, rule.id}
+      )
+      |> Repo.all()
+
+    transfer =
+      from(rule in FareTransferRule,
+        where:
+          rule.organization_id == ^organization_id and
+            rule.gtfs_version_id == ^gtfs_version_id and
+            rule.fare_product_id == ^product_id,
+        order_by: rule.id,
+        select: {:transfer_rule, rule.id}
+      )
+      |> Repo.all()
+
+    Enum.sort(leg ++ transfer)
+  end
+
+  # GTFS states one rule per set of conditions and fare, so pointing a rule at a
+  # replacement that already states the same conditions would write two rows the
+  # unique index refuses. The rule that would collide is named, so the drawer can
+  # offer its overlap choice (AC-20) rather than the operator seeing a failed
+  # save with nothing to act on.
+  defp conflicting_rule(organization_id, gtfs_version_id, rules, replacement) do
+    moving = moving_leg_rules(organization_id, gtfs_version_id, rules)
+
+    existing =
+      from(rule in FareLegRule,
+        where:
+          rule.organization_id == ^organization_id and
+            rule.gtfs_version_id == ^gtfs_version_id and
+            rule.fare_product_id == ^replacement,
+        select: rule
+      )
+      |> Repo.all()
+
+    Enum.find_value(existing, fn rule ->
+      if Enum.any?(moving, &same_conditions?(&1, rule)), do: rule
+    end)
+  end
+
+  defp moving_leg_rules(organization_id, gtfs_version_id, rules) do
+    ids = for {:leg_rule, id} <- rules, do: id
+
+    if ids == [] do
+      []
+    else
+      from(rule in FareLegRule,
+        where:
+          rule.organization_id == ^organization_id and
+            rule.gtfs_version_id == ^gtfs_version_id and
+            rule.id in ^ids,
+        select: rule
+      )
+      |> Repo.all()
+    end
+  end
+
+  defp same_conditions?(left, right) do
+    left.network_id == right.network_id and left.from_area_id == right.from_area_id and
+      left.to_area_id == right.to_area_id and
+      left.from_timeframe_group_id == right.from_timeframe_group_id and
+      left.to_timeframe_group_id == right.to_timeframe_group_id
+  end
+
+  # The rules are read before the move, so the inverse records what each named
+  # and the id it had: undo restores the same row rather than a new one carrying
+  # the same conditions.
+  defp move_fare_rules(organization_id, gtfs_version_id, product_id, replacement) do
+    before = fare_rules(organization_id, gtfs_version_id, product_id)
+    now = DateTime.utc_now()
+
+    from(rule in FareLegRule,
+      where:
+        rule.organization_id == ^organization_id and
+          rule.gtfs_version_id == ^gtfs_version_id and
+          rule.fare_product_id == ^product_id
+    )
+    |> Repo.update_all(set: [fare_product_id: replacement, updated_at: now])
+
+    from(rule in FareTransferRule,
+      where:
+        rule.organization_id == ^organization_id and
+          rule.gtfs_version_id == ^gtfs_version_id and
+          rule.fare_product_id == ^product_id
+    )
+    |> Repo.update_all(set: [fare_product_id: replacement, updated_at: now])
+
+    Enum.map(before, fn
+      {:leg_rule, id} ->
+        %{kind: :leg_rule, id: id, before: product_id, after: replacement}
+
+      {:transfer_rule, id} ->
+        %{kind: :transfer_rule, id: id, before: product_id, after: replacement}
+    end)
+  end
+
+  # `:remove_rules` deletes the rules themselves, and the inverse carries each
+  # deleted row whole so undo puts back the rule with the id it had.
+  defp remove_fare_rules(organization_id, gtfs_version_id, rules) do
+    Enum.map(rules, fn
+      {:leg_rule, id} ->
+        row = fetch_leg_rule(organization_id, gtfs_version_id, id)
+        if row, do: Repo.delete_all(from(rule in FareLegRule, where: rule.id == ^id))
+        %{kind: :leg_rule, id: id, row: row && row_snapshot(row)}
+
+      {:transfer_rule, id} ->
+        row = fetch_transfer_rule(organization_id, gtfs_version_id, id)
+        if row, do: Repo.delete_all(from(rule in FareTransferRule, where: rule.id == ^id))
+        %{kind: :transfer_rule, id: id, row: row && row_snapshot(row)}
+    end)
+  end
+
+  defp fetch_leg_rule(organization_id, gtfs_version_id, id) do
+    FareLegRule
+    |> where(
+      [rule],
+      rule.id == ^id and rule.organization_id == ^organization_id and
+        rule.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.one()
+  end
+
+  defp fetch_transfer_rule(organization_id, gtfs_version_id, id) do
+    FareTransferRule
+    |> where(
+      [rule],
+      rule.id == ^id and rule.organization_id == ^organization_id and
+        rule.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.one()
+  end
+
+  # The fare's own rows and its detail row go, and the inverse carries them whole
+  # with the ids they had, so `undo/3` puts back the rows a rule pointed at.
+  defp drop_fare(organization_id, gtfs_version_id, product_id, rows, detail, rules) do
+    Repo.delete_all(
+      from(row in FareProduct,
+        where:
+          row.organization_id == ^organization_id and
+            row.gtfs_version_id == ^gtfs_version_id and
+            row.fare_product_id == ^product_id
+      )
+    )
+
+    if detail, do: Repo.delete_all(from(row in FareProductDetail, where: row.id == ^detail.id))
+
+    {:ok,
+     %{
+       before:
+         [fare_name_log_row(product_id, fare_rows_name(rows))] ++
+           Enum.map(rules, &fare_rule_log_row/1),
+       after: [],
+       action: "deleted",
+       inverse: %{
+         operation: :delete,
+         fare_product_id: product_id,
+         name: fare_rows_name(rows),
+         fare_products: Enum.map(rows, &row_snapshot/1),
+         detail: detail && row_snapshot(detail),
+         rules: rules
+       }
+     }}
+  end
+
+  # A whole row, kept in an inverse so undo restores it with the id it had rather
+  # than building a replacement from the values that survived. The struct itself
+  # is kept rather than a plain map, because `Ecto.Changeset.change/2` needs the
+  # schema to insert it back — the same shape `save_prices/2`'s inverse carries.
+  defp row_snapshot(row), do: row
+
+  defp fare_name_log_row(product_id, name) do
+    %{"fare_product_id" => product_id, "fare_product_name" => name}
+  end
+
+  defp fare_rule_log_row(%{kind: kind, id: id, row: row}) do
+    %{
+      "rule" => Atom.to_string(kind),
+      "rule_id" => id,
+      "fare_product_id" => row && row.fare_product_id
+    }
+  end
+
+  defp fare_rule_log_row(%{kind: kind, id: id, after: product_id}) do
+    %{"rule" => Atom.to_string(kind), "rule_id" => id, "fare_product_id" => product_id}
+  end
 
   # Every cell is checked before anything is written, so one stale cell refuses
   # the whole save rather than half of it. A cell with no amount at all is a
@@ -1415,6 +2331,177 @@ defmodule GtfsPlanner.Gtfs.Fares do
   end
 
   # -- Undoing a price change -----------------------------------------------------
+
+  # -- Undoing a fare change ------------------------------------------------------
+
+  # Applies a `save_fare/2` or `delete_fare/4` inverse.
+  #
+  # The entry this reversal names has to exist in this version, and every row the
+  # write touched must still hold what that write left: a fare's price rows must
+  # hold the amounts it left, a deleted fare's rows must still be gone, and a
+  # rule it moved or deleted must still be where it left it. Anything else
+  # answers `{:error, :stale}` and changes nothing, so undo can never revert a
+  # later edit (R15, AC-26).
+  defp undo_fare(organization_id, gtfs_version_id, operation_id, %{operation: _} = inverse) do
+    with :ok <- require_entry(operation_id, organization_id, gtfs_version_id),
+         :ok <- require_fare_unchanged(organization_id, gtfs_version_id, inverse) do
+      restore_fare(organization_id, gtfs_version_id, inverse)
+
+      {:ok,
+       %{
+         before: [],
+         after: [],
+         inverse: nil,
+         operation_id: operation_id,
+         action: "rolled_back",
+         rolled_back_to_log_id: operation_id
+       }}
+    end
+  end
+
+  # The fence for a fare reversal. A saved fare's rows are checked through the
+  # price inverse they share with `save_prices/2`, which compares each row's
+  # amount and presence; a deleted fare's rows must be gone, and the rules its
+  # delete settled must still be settled the same way.
+  defp require_fare_unchanged(organization_id, gtfs_version_id, inverse) do
+    stale? =
+      case inverse do
+        %{operation: :save, fare_products: states} ->
+          require_unchanged(organization_id, gtfs_version_id, states) == {:error, :stale}
+
+        %{operation: :delete, fare_product_id: product_id, rules: rules} ->
+          fare_rows_present(organization_id, gtfs_version_id, product_id) or
+            not Enum.all?(
+              rules,
+              &rule_untouched?(&1, organization_id, gtfs_version_id)
+            )
+
+        _other ->
+          true
+      end
+
+    if stale?, do: {:error, :stale}, else: :ok
+  end
+
+  defp fare_rows_present(organization_id, gtfs_version_id, product_id) do
+    Repo.exists?(
+      from(row in FareProduct,
+        where:
+          row.organization_id == ^organization_id and
+            row.gtfs_version_id == ^gtfs_version_id and
+            row.fare_product_id == ^product_id
+      )
+    )
+  end
+
+  # A rule the delete moved must still name the replacement, and a rule it
+  # deleted must still be gone. Either answer that a rule has been touched since
+  # makes the whole reversal stale.
+  defp rule_untouched?(%{kind: kind, id: id} = rule, organization_id, gtfs_version_id) do
+    schema = if kind == :leg_rule, do: FareLegRule, else: FareTransferRule
+
+    current =
+      from(r in schema,
+        where:
+          r.id == ^id and r.organization_id == ^organization_id and
+            r.gtfs_version_id == ^gtfs_version_id,
+        select: r.fare_product_id
+      )
+      |> Repo.one()
+
+    case rule do
+      # A rule the delete removed: still absent is still what the delete left.
+      %{row: _row} -> is_nil(current)
+      # A rule it moved: still naming the replacement is still what it left.
+      %{after: product_id} -> current == product_id
+    end
+  end
+
+  defp restore_fare(organization_id, gtfs_version_id, %{operation: :save} = inverse) do
+    restore_prices(organization_id, gtfs_version_id, inverse.fare_products)
+    restore_fare_name(organization_id, gtfs_version_id, inverse)
+    restore_fare_detail(organization_id, gtfs_version_id, inverse.detail)
+    :ok
+  end
+
+  defp restore_fare(organization_id, gtfs_version_id, %{operation: :delete} = inverse) do
+    Enum.each(inverse.fare_products, &Repo.insert!(Ecto.Changeset.change(&1)))
+
+    if inverse.detail do
+      Repo.insert!(Ecto.Changeset.change(inverse.detail))
+    end
+
+    Enum.each(inverse.rules, &restore_fare_rule(&1, organization_id, gtfs_version_id))
+
+    :ok
+  end
+
+  # A detail row the write created is deleted again, and a row it changed goes
+  # back to the values it held.
+  defp restore_fare_detail(organization_id, gtfs_version_id, %{before: nil, id: id}) do
+    Repo.delete_all(
+      from(row in FareProductDetail,
+        where:
+          row.id == ^id and row.organization_id == ^organization_id and
+            row.gtfs_version_id == ^gtfs_version_id
+      )
+    )
+  end
+
+  defp restore_fare_detail(organization_id, gtfs_version_id, %{before: before, id: id}) do
+    Repo.update_all(
+      from(row in FareProductDetail,
+        where:
+          row.id == ^id and row.organization_id == ^organization_id and
+            row.gtfs_version_id == ^gtfs_version_id
+      ),
+      set: Keyword.new(Map.merge(before, %{updated_at: DateTime.utc_now()}))
+    )
+  end
+
+  # A rule the delete moved goes back to naming the fare it named, and a rule it
+  # deleted is put back whole with the id it had.
+  defp restore_fare_rule(%{row: nil}, _organization_id, _gtfs_version_id), do: :ok
+
+  defp restore_fare_rule(%{row: row}, _organization_id, _gtfs_version_id) do
+    Repo.insert!(Ecto.Changeset.change(row))
+  end
+
+  defp restore_fare_rule(
+         %{kind: kind, id: id, before: product_id},
+         organization_id,
+         gtfs_version_id
+       ) do
+    schema = if kind == :leg_rule, do: FareLegRule, else: FareTransferRule
+
+    from(r in schema,
+      where:
+        r.id == ^id and r.organization_id == ^organization_id and
+          r.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.update_all(set: [fare_product_id: product_id, updated_at: DateTime.utc_now()])
+  end
+
+  # A rename is restored on every row of the fare, because that is where the
+  # name lives. A fare that did not exist before has no name to restore.
+  defp restore_fare_name(
+         organization_id,
+         gtfs_version_id,
+         %{fare_product_id: product_id, name: %{before: before}}
+       )
+       when not is_nil(before) do
+    Repo.update_all(
+      from(row in FareProduct,
+        where:
+          row.organization_id == ^organization_id and
+            row.gtfs_version_id == ^gtfs_version_id and
+            row.fare_product_id == ^product_id
+      ),
+      set: [fare_product_name: before, updated_at: DateTime.utc_now()]
+    )
+  end
+
+  defp restore_fare_name(_organization_id, _gtfs_version_id, _inverse), do: :ok
 
   # Applies a `save_prices/2` inverse, restoring every row it named.
   #
