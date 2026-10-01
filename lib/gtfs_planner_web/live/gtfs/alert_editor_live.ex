@@ -354,8 +354,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     end
   end
 
-  # "Both directions" stores no direction at all, which is how the scope answer
-  # says "every direction"; the other cards store their own number.
+  # "Both directions" is a choice like any other, so it saves and advances like
+  # any other: it stores no direction at all, which is how the scope answer says
+  # "every direction". The other cards store their own number.
+  def handle_event("choose_direction", %{"direction" => "both"}, socket) do
+    answer_and_advance(socket, :direction, %{"scope" => %{"direction_id" => nil}})
+  end
+
   def handle_event("choose_direction", %{"direction" => direction}, socket)
       when is_binary(direction) do
     case parse_choice(direction) do

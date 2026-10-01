@@ -1339,8 +1339,8 @@ async function openTiming(page, urgency) {
     .click();
   await page.locator("#alert-routes-continue").click();
 
-  await page.waitForSelector("#direction-both", { timeout: 15_000 });
-  await page.locator("#direction-both").click();
+  await page.waitForSelector("#direction-0", { timeout: 15_000 });
+  await page.locator("#direction-0").click();
 
   await page.waitForSelector("#alert-timing", { timeout: 15_000 });
 }
@@ -1507,6 +1507,10 @@ test.describe("alert timing", () => {
     await expect(monday).toHaveAttribute("aria-pressed", "false");
 
     await chooseWeekdays(page);
+    await page.locator("#timing-first-date").fill("2026-10-05");
+    await page.locator("#timing-weeks").fill("1");
+
+    await expect(page.locator("#alert-timing-occurrences > li")).toHaveCount(5);
 
     // The date input is typed rather than filled: a date the keyboard cannot
     // reach is a date a keyboard user cannot choose.
@@ -1514,12 +1518,15 @@ test.describe("alert timing", () => {
     await page.keyboard.type("10052026");
     await expect(page.locator("#timing-date")).toHaveValue("2026-10-05");
 
-    // Tab reaches Add date and Enter presses it.
+    // Tab reaches Add date and Enter presses it. The Monday named is one the
+    // pattern already covers, so it is removed rather than added.
     await page.keyboard.press("Tab");
     await expect(page.locator("#add-timing-date")).toBeFocused();
     await page.keyboard.press("Enter");
 
-    await expect(page.locator("#alert-timing-occurrences > li")).toHaveCount(5);
+    await expect(page.locator("#alert-timing-removed-2026-10-05")).toBeVisible();
+    await expect(page.locator("#alert-timing-occurrences > li")).toHaveCount(4);
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
 
     // The narrow viewport is shorter than the card, so this capture is the
     // whole page: a cropped one would show the heading and no preview.
