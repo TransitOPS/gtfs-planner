@@ -17,6 +17,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   summary `Alerts.Recurrence.summary/1` derived, and the labels
   `Alerts.labels_for/2` read from the alert's own version (CR-4).
 
+  The bottom bar carries the save state in the reader's words - `Saving…`,
+  `Saved`, `Not saved.` - and offers the actions that state allows: Retry for a
+  refused save, Load latest and Save as new alert for a stale one. The bar never
+  offers a way to overwrite a newer revision: a stale save is resolved by taking
+  one side or the other, never by forcing (R6, AC-16).
+
   None of these surfaces shows a publication state or a publication action,
   because saving an alert never publishes one in this package (R2, CR-1). The
   words Live, Scheduled, Ended, End and feed therefore appear nowhere in this
@@ -26,7 +32,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   use Phoenix.Component
 
   import GtfsPlannerWeb.CoreComponents,
-    only: [button: 1, icon: 1, segmented_control: 1, status_badge: 1]
+    only: [button: 1, callout: 1, icon: 1, input: 1, segmented_control: 1, status_badge: 1]
 
   alias Phoenix.LiveView.JS
   alias GtfsPlannerWeb.Components.RouteIdentity
@@ -433,7 +439,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
         {@heading}
       </h2>
       <p :if={@hint} id={"#{@id}-hint"} class="mt-1 text-sm text-muted">{@hint}</p>
-      <div id="alert-question" class="mt-5">
+      <div id="alert-question-body" class="mt-5">
         {render_slot(@inner_block)}
       </div>
       <div class="mt-5 flex flex-wrap items-center gap-3 border-t border-subtle pt-4">
@@ -654,27 +660,136 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   end
 
   @doc """
-  The bottom bar: what is saved, and the one way out of the editor.
+  The rider message fields: the two pieces of text an alert is made of.
 
-  The status line is a polite live region so a save that lands while the editor
-  is reading the question is announced rather than silent. Step 15 gives the
-  line its saving, saved and not-saved wording; until then it says only what is
-  true of this editor's own writes. Delete alert sits at the left because it is
-  destructive and must not be the button nearest Save.
+  Both inputs carry `phx-debounce="450"`, so typing saves 450 ms after the last
+  keystroke rather than on every character (AC-16), and both are named under
+  `alert[message]` so `Alerts.save_draft/4` casts them through the message
+  embed's own changeset. The values they render are the form's own, which is
+  what keeps a typed value on screen when a save is refused: the editor rebuilds
+  that form from the refused changeset, not from the row, so an input shows what
+  was typed rather than what the database still holds.
+
+  A refused save's field error is rendered beside the field, never in place of
+  it, so the reader can fix one word without retyping the sentence.
+  """
+  attr :form, :any, required: true, doc: "the `to_form/2` assign for this alert"
+
+  def message_fields(assigns) do
+    ~H"""
+    <div id="alert-message-fields" class="grid gap-4">
+      <.inputs_for :let={f} field={@form[:message]}>
+        <.input
+          field={f[:header]}
+          type="text"
+          label="Short message"
+          maxlength="120"
+          phx-debounce="450"
+          help="One line naming the effect and the place."
+        />
+        <.input
+          field={f[:description]}
+          type="textarea"
+          label="Full message"
+          rows="5"
+          phx-debounce="450"
+          help="Add the cause, the time and what to do instead."
+        />
+      </.inputs_for>
+    </div>
+    """
+  end
+
+  @doc """
+  The banner a stale save raises in place of the ordinary question body.
+
+  It says what happened and offers exactly two ways forward: take the newer
+  saved draft (**Load latest**), or keep the typed values as a separate alert
+  (**Save as new alert**). There is deliberately no "overwrite" action: a stale
+  write never overwrites a newer revision, and a banner offering to force it
+  would be the same failure wearing a button (R6, AC-16).
+  """
+  attr :id, :string, default: "alert-conflict"
+
+  def conflict_banner(assigns) do
+    ~H"""
+    <.callout
+      id={@id}
+      kind="warning"
+      title="This alert changed in another tab or by another editor."
+      class="mb-4 rounded-card"
+    >
+      <p id={"#{@id}-body"}>
+        Your latest changes aren't saved. Load the current draft to keep going, or save what
+        you have here as a new alert.
+      </p>
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <.button id="conflict-load-latest" type="button" variant="primary" phx-click="load_latest">
+          <.icon name="hero-arrow-path" class="size-4" /> Load latest
+        </.button>
+        <.button
+          id="conflict-save-new"
+          type="button"
+          variant="secondary"
+          phx-click="save_as_new"
+        >
+          Save as new alert
+        </.button>
+      </div>
+    </.callout>
+    """
+  end
+
+  @doc """
+  The bottom bar: the save status on the left, the way out on the right.
+
+  The status line is a polite live region, so a save that lands while the editor
+  is reading the question is announced rather than silent (AC-16). The wording
+  is the prototype's save vocabulary rather than its own: `Saving…` while a save
+  is in flight, `Saved` once the server has acknowledged it, `Not saved.` with a
+  **Retry** action when it has not. The status therefore never claims `Saved`
+  before the server has actually said so (FH-16).
+
+  **Save and close** is the primary action: it saves and returns to the list, so
+  leaving the editor never silently drops what was typed. Delete alert sits at
+  the left because it is destructive and must not be the button nearest Save.
   """
   attr :id, :string, default: "alert-save-bar"
   attr :status, :string, required: true
+  attr :state, :atom, required: true, doc: ":idle, :saving, :saved or :error"
   attr :show_delete?, :boolean, default: false
   attr :back_path, :string, required: true
+
+  attr :form_id, :string,
+    default: nil,
+    doc: "the draft form's id, so Save and close submits what is typed"
 
   def save_bar(assigns) do
     ~H"""
     <div id={@id} class="mt-6 border-t border-subtle bg-white">
       <div class="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-6">
         <div class="mr-auto min-w-0">
-          <p id="draft-save-status" role="status" aria-live="polite" class="text-[13px] text-muted">
+          <p
+            id="alert-save-status"
+            role="status"
+            aria-live="polite"
+            class={[
+              "text-[13px]",
+              @state == :error && "font-semibold text-error-fg",
+              @state != :error && "text-muted"
+            ]}
+          >
             {@status}
           </p>
+          <.button
+            :if={@state == :error}
+            id="alert-save-retry"
+            type="button"
+            variant="quiet"
+            phx-click="retry_save"
+          >
+            <.icon name="hero-arrow-path" class="size-4" /> Retry
+          </.button>
         </div>
         <.button
           :if={@show_delete?}
@@ -692,6 +807,26 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
         >
           Back to alerts
         </.link>
+        <.button
+          :if={@form_id}
+          id="alert-save-close"
+          type="submit"
+          variant="primary"
+          form={@form_id}
+        >
+          Save and close
+        </.button>
+        <%!-- The assistant frame owns its own questions in step 27 and has no
+             draft form to submit yet, so the same action is a click there. --%>
+        <.button
+          :if={is_nil(@form_id)}
+          id="alert-save-close"
+          type="button"
+          variant="primary"
+          phx-click="save_and_close"
+        >
+          Save and close
+        </.button>
       </div>
     </div>
     """

@@ -133,6 +133,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
     local_change = [alert.updated_at] |> DisplayClock.localize_many(zone) |> List.first()
 
     %{
+      # A stream item's `:id` is its DOM identity, so the two streams render the
+      # same rows under the same ids and either can update one row in place.
+      id: alert.id,
       alert: alert,
       alert_path: "/gtfs/#{socket.assigns.current_gtfs_version.id}/alerts/#{alert.id}",
       title: alert_title(alert),

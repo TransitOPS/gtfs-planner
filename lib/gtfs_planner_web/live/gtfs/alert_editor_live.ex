@@ -37,21 +37,43 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   depend on that answer. The progress row, the Back link and the advance after an
   answer all read this one list.
 
+  ## Autosave, save status and conflicts
+
+  Every question renders inside one `<.form id="alert-form" phx-change="autosave">`
+  carrying a hidden `alert[revision]` field, so the row is written through
+  `Alerts.save_draft/4` and never through anything else (INV-1). The hidden
+  revision is the base revision this editor loaded or last saved; it is read as
+  the `expected_revision` argument and never cast, so no param can move an alert
+  to a revision of its own (CR-2). That single field is what makes a change
+  replayed by form recovery after a reconnect stale rather than silently
+  overwriting whatever the other tab wrote (R6, PM-1).
+
+  The save bar reports what actually happened, in the prototype's words:
+  `Saving…` while a write is in flight, `Saved` once the server acknowledged it,
+  `Not saved.` with **Retry** when it refused. A refused save keeps every typed
+  value - the form is rebuilt from the refused changeset, not from the row - and
+  a stale save raises `#alert-conflict` with exactly two ways forward,
+  **Load latest** and **Save as new alert**. There is no action that overwrites a
+  newer revision, because a stale write never overwrites one (R6, AC-16).
+
   ## What this frame does not do
 
   It carries no publication state and no publication action: saving an alert
   never publishes one in this package, so Live, Scheduled, Ended, End and feed
   copy is absent by construction (R2, CR-1). The question bodies belong to the
   steps that own them; this step builds the frame they render inside, creation on
-  the first answer, the version check, the preference and **Delete alert**. The
-  assistant mode renders a placeholder region its own step fills.
+  the first answer, the version check, the preference, the autosave form with its
+  save status and conflict banner, and **Delete alert**. The assistant mode
+  renders a placeholder region its own step fills.
   """
 
   use GtfsPlannerWeb, :live_view
 
   import GtfsPlannerWeb.Gtfs.AlertComponents,
     only: [
+      conflict_banner: 1,
       mode_control: 1,
+      message_fields: 1,
       progress: 1,
       question_card: 1,
       rider_preview: 1,
@@ -147,7 +169,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
      |> assign(:step, :urgency)
      |> assign(:steps, [])
      |> assign(:flags, %{multimodal?: false, shared_routes?: false})
-     |> assign(:delete_open?, false)}
+     |> assign(:delete_open?, false)
+     |> assign(:save_state, :idle)
+     |> assign(:conflict, nil)
+     |> assign(:pending_attrs, nil)
+     |> assign(:form, draft_form(%Alert{}))}
   end
 
   @impl true
@@ -212,7 +238,252 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     end
   end
 
+  # The autosave path. Every keystroke that settles reaches here through the
+  # form's `phx-change`, carrying the whole form and this editor's base
+  # revision in the hidden field. Nothing else writes this row (INV-1).
+  def handle_event("autosave", %{"alert" => params}, socket) when is_map(params) do
+    case socket.assigns.alert do
+      # Nothing has been answered yet, so there is no row to save. The first
+      # answer creates it (AC-15); autosave has nothing to write before that.
+      nil ->
+        {:noreply, socket}
+
+      alert ->
+        save(socket, alert, params)
+    end
+  end
+
+  # Retry re-sends the params the last save carried. The typed values are still
+  # in `@pending_attrs`, so this is the same write attempted again rather than a
+  # fresh read of the row - which is what makes it a retry of *this* edit.
+  def handle_event("retry_save", _params, socket) do
+    case {socket.assigns.alert, socket.assigns.pending_attrs} do
+      {alert, params} when not is_nil(alert) and is_map(params) ->
+        save(socket, alert, params)
+
+      _other ->
+        {:noreply, socket}
+    end
+  end
+
+  # Taking the other side of a conflict: reload the row and show what it holds
+  # now. The typed values this editor had are dropped here, and only here -
+  # losing them is the point of choosing the newer draft.
+  def handle_event("load_latest", _params, socket) do
+    case socket.assigns.alert do
+      nil ->
+        {:noreply, socket}
+
+      alert ->
+        case Alerts.get_alert(audit_context(socket), alert.id) do
+          {:ok, current} ->
+            {:noreply,
+             socket
+             |> assign(:alert, current)
+             |> assign(:conflict, nil)
+             |> assign(:pending_attrs, nil)
+             |> assign(:form, draft_form(current))
+             |> assign(:save_state, :saved)
+             |> rebuild(current)}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, write_error_message(reason))}
+        end
+    end
+  end
+
+  # Keeping this side of a conflict: the values this editor holds become a
+  # separate alert, so neither draft is lost. The conflict row is left exactly
+  # as the other editor saved it.
+  def handle_event("save_as_new", _params, socket) do
+    case socket.assigns.pending_attrs do
+      params when is_map(params) ->
+        case Alerts.create_alert(audit_context(socket), castable(params)) do
+          {:ok, created} ->
+            {:noreply,
+             socket
+             |> assign(:conflict, nil)
+             |> assign(:pending_attrs, nil)
+             |> push_navigate(to: saved_path(socket, created, socket.assigns.step))}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, write_error_message(reason))}
+        end
+
+      nil ->
+        {:noreply, socket}
+    end
+  end
+
+  # The prototype's Save and close: write what is typed, then return to the
+  # list. A refused or stale write stays on the page rather than leaving, so
+  # nothing typed can be dropped by walking away from a failed save.
+  def handle_event("save_and_close", params, socket) do
+    # A submit carries the whole form, so a value typed within the debounce
+    # window is written rather than dropped; a click carries none, and the
+    # pending autosave params are already the same values.
+    socket =
+      case params do
+        %{"alert" => alert_params} when is_map(alert_params) ->
+          assign(socket, :pending_attrs, alert_params)
+
+        _other ->
+          socket
+      end
+
+    case write_pending(socket) do
+      {:ok, socket} -> {:noreply, leave_editor(socket)}
+      {:refused, socket} -> {:noreply, socket}
+    end
+  end
+
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  # -- Autosave ------------------------------------------------------------
+
+  defp save(socket, alert, params) do
+    socket =
+      socket
+      |> assign(:pending_attrs, params)
+      |> assign(:save_state, :saving)
+
+    case Alerts.save_draft(
+           audit_context(socket),
+           alert.id,
+           base_revision(params, alert),
+           castable(params)
+         ) do
+      {:ok, saved} ->
+        {:noreply,
+         socket
+         |> assign(:alert, saved)
+         |> assign(:conflict, nil)
+         |> assign(:pending_attrs, nil)
+         |> assign(:form, draft_form(saved))
+         |> assign(:save_state, :saved)
+         |> rebuild(saved)}
+
+      # A refused write changes nothing in the database, so the form is rebuilt
+      # from the refused changeset: the typed values and the field errors both
+      # come from what was sent, and nothing on screen is cleared (AC-16).
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply,
+         socket
+         |> assign(:form, draft_form(changeset))
+         |> assign(:save_state, :error)}
+
+      # A stale write also changes nothing, but its values are still the ones on
+      # screen, so the form keeps them rather than snapping back to the row.
+      {:error, {:stale, current}} ->
+        {:noreply,
+         socket
+         |> assign(:form, draft_form(Alert.draft_changeset(alert, castable(params))))
+         |> assign(:conflict, current)
+         |> assign(:save_state, :error)}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, write_error_message(reason))
+         |> assign(:save_state, :error)}
+    end
+  end
+
+  # Saving before leaving is one write with the same outcomes autosave has; the
+  # only difference is what happens next. A refusal keeps the editor open.
+  defp write_pending(%{assigns: %{alert: nil}} = socket), do: {:ok, socket}
+
+  defp write_pending(%{assigns: %{pending_attrs: nil}} = socket), do: {:ok, socket}
+
+  defp write_pending(%{assigns: %{alert: alert, pending_attrs: params}} = socket) do
+    socket = assign(socket, save_state: :saving)
+
+    case Alerts.save_draft(
+           audit_context(socket),
+           alert.id,
+           base_revision(params, alert),
+           castable(params)
+         ) do
+      {:ok, saved} ->
+        {:ok,
+         socket
+         |> assign(:alert, saved)
+         |> assign(:pending_attrs, nil)
+         |> assign(:form, draft_form(saved))
+         |> assign(:save_state, :saved)
+         |> rebuild(saved)}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:refused, assign(socket, form: draft_form(changeset), save_state: :error)}
+
+      {:error, {:stale, current}} ->
+        {:refused,
+         assign(
+           socket,
+           form: draft_form(Alert.draft_changeset(alert, castable(params))),
+           conflict: current,
+           save_state: :error
+         )}
+
+      {:error, reason} ->
+        {:refused, put_flash(socket, :error, write_error_message(reason))}
+    end
+  end
+
+  defp leave_editor(socket) do
+    socket
+    |> assign(:delete_open?, false)
+    |> push_navigate(to: alerts_path(socket))
+  end
+
+  # The base revision this write is made against. It comes from the hidden
+  # field, which is also what a form recovery replays, so a recovered change is
+  # compared against the revision it was composed on rather than the newest one
+  # (R6). A missing or unreadable field falls back to the revision this editor
+  # last saw, so a hand-made event cannot claim a revision of its own (CR-2).
+  defp base_revision(params, alert) do
+    case params["revision"] do
+      value when is_binary(value) ->
+        case Integer.parse(value) do
+          {revision, ""} -> revision
+          _other -> alert.revision
+        end
+
+      _other ->
+        alert.revision
+    end
+  end
+
+  # `revision` is this editor's own base, not an answer, so it never reaches the
+  # changeset. Nothing else is dropped: an unknown key is ignored by `cast/3`
+  # anyway, and dropping more would silently lose a future step's answer.
+  defp castable(params), do: Map.delete(params, "revision")
+
+  # -- The form the questions render inside -------------------------------
+
+  # The form's own source is a changeset built by the same public function the
+  # write is built from, so a refused write's errors are exactly the errors this
+  # form shows, and the values beside them are the values that were refused
+  # rather than the row's older ones.
+  defp draft_form(%Ecto.Changeset{} = changeset), do: to_form(changeset, as: :alert)
+
+  defp draft_form(%Alert{} = alert) do
+    alert
+    |> Alert.draft_changeset(%{})
+    |> draft_form()
+  end
+
+  # Everything derived from the row is rebuilt after a write, so the step
+  # sequence, the progress row and the Rider preview read the revision that was
+  # just saved rather than the one before it.
+  defp rebuild(socket, alert) do
+    flags = editor_flags(socket, alert)
+
+    socket
+    |> assign(:flags, flags)
+    |> assign(:steps, prepare_steps(steps_for(alert, flags), socket.assigns.step, flags, socket))
+    |> assign(:preview, preview(socket, alert))
+  end
 
   # -- Loading ------------------------------------------------------------
 
@@ -268,6 +539,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> assign(:step, step)
     |> assign(:preview, preview(socket, alert))
     |> assign(:delete_open?, false)
+    |> assign(:save_state, if(is_nil(alert), do: :idle, else: :saved))
+    |> assign(:conflict, nil)
+    |> assign(:pending_attrs, nil)
+    |> assign(:form, draft_form(alert || %Alert{}))
   end
 
   defp step_from(params, keys, _socket) do
@@ -686,24 +961,47 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
             <div class="min-w-0">
               <.progress steps={@steps} />
 
-              <.question_card
-                id="alert-question"
-                eyebrow={eyebrow(@alert)}
-                heading={question_for(@step, @alert)}
-                hint="Choose an option to move on. You can go back at any time."
-                back={back_patch(@steps, @step)}
-              >
-                <.urgency_question
-                  :if={@step == :urgency}
-                  alert={@alert}
-                  event="choose_urgency"
-                  name="urgency"
-                />
+              <.conflict_banner :if={@conflict} id="alert-conflict" />
 
-                <p :if={@step != :urgency} class="text-sm text-muted">
-                  This question is still being added. Everything you have already answered is saved.
-                </p>
-              </.question_card>
+              <.form
+                for={@form}
+                id="alert-form"
+                phx-change="autosave"
+                phx-submit="save_and_close"
+              >
+                <%!-- The base revision this editor writes against. It is a hidden
+                       field rather than a server assign because a change replayed
+                       by form recovery after a reconnect must still carry the
+                       revision it was composed on (R6). --%>
+                <input type="hidden" name="alert[revision]" value={@alert && @alert.revision} />
+
+                <.question_card
+                  id="alert-question"
+                  eyebrow={eyebrow(@alert)}
+                  heading={question_for(@step, @alert)}
+                  hint="Choose an option to move on. You can go back at any time."
+                  back={back_patch(@steps, @step)}
+                >
+                  <.urgency_question
+                    :if={@step == :urgency}
+                    alert={@alert}
+                    event="choose_urgency"
+                    name="urgency"
+                  />
+
+                  <.message_fields
+                    :if={@step == :message}
+                    form={@form}
+                  />
+
+                  <p
+                    :if={@step != :urgency and @step != :message}
+                    class="text-sm text-muted"
+                  >
+                    This question is still being added. Everything you have already answered is saved.
+                  </p>
+                </.question_card>
+              </.form>
             </div>
 
             <.rider_preview
@@ -720,9 +1018,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
         <.save_bar
           id="alert-save-bar"
-          status={save_status(@alert)}
+          status={save_status(@alert, @save_state)}
+          state={@save_state}
           show_delete?={not is_nil(@alert)}
           back_path={~p"/gtfs/#{@current_gtfs_version.id}/alerts"}
+          form_id={if @mode == :form, do: "alert-form"}
         />
 
         <.confirm_dialog
@@ -766,8 +1066,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
   defp alert_title(_alert), do: "this alert"
 
-  # The status line says only what is true of this editor's own writes. Step 15
-  # gives it the autosave wording as saves start to happen in the background.
-  defp save_status(nil), do: "No alert saved yet."
-  defp save_status(_alert), do: "Saved in this service version."
+  # The status line says only what has actually happened to this editor's own
+  # writes. `Saved` appears only after the server acknowledged the write, so the
+  # line can never claim a save the database refused (FH-16). A draft that has
+  # never been written says so, because "Nothing saved yet" is a true and
+  # different thing from "Not saved.".
+  defp save_status(nil, :idle), do: "No alert saved yet."
+  defp save_status(_alert, :idle), do: "Saved."
+  defp save_status(_alert, :saving), do: "Saving…"
+  defp save_status(_alert, :saved), do: "Saved"
+  defp save_status(_alert, :error), do: "Not saved."
 end

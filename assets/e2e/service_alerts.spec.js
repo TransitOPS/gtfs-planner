@@ -449,3 +449,217 @@ test.describe("alert editor shell", () => {
     await expect(page.locator("#alert-editor")).toBeVisible();
   });
 });
+
+// Autosave, save status and conflicts, as spec 30's step 15 renders them: the
+// bottom save bar's own words, the Retry a refused save offers, and the
+// two-action conflict banner a stale save raises (AC-16, R6). Nothing here
+// forces a save through anything but the form, because the form is the only
+// path an editor has.
+
+async function captureAutosaveReference(page, testInfo, state, width) {
+  if (!fs.existsSync(REFERENCE_PATH)) return;
+
+  await page.goto(`file://${REFERENCE_PATH}?state=${state}`);
+  await page.waitForLoadState("load");
+
+  await page.screenshot({
+    path: capturePath(testInfo, `autosave-ref-${state}-${width}.png`),
+    fullPage: false,
+  });
+}
+
+// A saved alert that already answers enough questions to reach the message
+// step, so the text inputs under test are the ones the editor itself uses.
+// The list puts an alert under the tab its own window belongs to, so the tabs
+// are opened in turn rather than assuming which one holds it.
+async function openMessageAlert(page) {
+  const versionId = await openAlerts(page);
+
+  for (const tab of ["current", "upcoming", "in_progress", "past"]) {
+    const tab_link = page.locator(`#alerts-tab-${tab}`);
+    if (!(await tab_link.count())) continue;
+
+    await tab_link.click();
+
+    // The row's own link is what says the tab holds an alert. Waiting for the
+    // stream's container instead would pass on a tab with no rows in it, and
+    // the wait is bounded per tab so an empty one moves on to the next.
+    const row_link = page.locator("a[id^='alert-link-']").first();
+
+    if (await row_link.waitFor({ state: "visible", timeout: 5_000 }).then(() => true, () => false)) {
+      await row_link.click();
+      break;
+    }
+  }
+
+  await page.waitForSelector("#alert-question", { timeout: 15_000 });
+
+  const url = page.url().split("?")[0];
+  await page.goto(`${url}?mode=form&step=message`);
+  await page.waitForSelector("#alert_message_header", { timeout: 15_000 });
+
+  return url;
+}
+
+test.describe("alert autosave", () => {
+  test.describe.configure({ timeout: 120_000 });
+
+  test("typing saves, and the bar reads the state it is in @autosave", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openMessageAlert(page);
+
+    const header = page.locator("#alert_message_header");
+    await header.fill("Route 12 detour: Harbor Hospital stop not served");
+
+    // "Saved" only after the server acknowledged, never optimistically.
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+    await expect(page.locator("#alert-save-retry")).toHaveCount(0);
+    await expect(page.locator("#alert-save-close")).toBeVisible();
+
+    // The same URL after a reload is the same question with the same answer:
+    // the draft is on the server, not in the browser.
+    await page.reload();
+    await page.waitForSelector("#alert_message_header", { timeout: 15000 });
+    await expect(page.locator("#alert_message_header")).toHaveValue(
+      "Route 12 detour: Harbor Hospital stop not served",
+    );
+
+    expect(await fitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "autosave-saved-1440.png"),
+      fullPage: false,
+    });
+  });
+
+  test("typing then reloading within 2 s still shows the typed header @autosave", async ({
+    page,
+  }) => {
+    await page.setViewportSize(DESKTOP);
+    await openMessageAlert(page);
+
+    await page.locator("#alert_message_header").fill("Reloaded quickly header");
+    await page.waitForTimeout(2000);
+    await page.reload();
+    await page.waitForSelector("#alert_message_header", { timeout: 15000 });
+
+    await expect(page.locator("#alert_message_header")).toHaveValue(
+      "Reloaded quickly header",
+    );
+  });
+
+  test("a refused save keeps the typed header and offers Retry @autosave", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openMessageAlert(page);
+
+    const tooLong = "a".repeat(121);
+    await page.locator("#alert_message_header").fill(tooLong);
+
+    await expect(page.locator("#alert-save-status")).toHaveText("Not saved.");
+    await expect(page.locator("#alert-save-retry")).toBeVisible();
+    await expect(page.locator("#alert_message_header")).toHaveValue(tooLong);
+    await expect(page.locator("#alert_message_header-error")).toContainText(
+      "120 character",
+    );
+
+    await page.screenshot({
+      path: capturePath(testInfo, "autosave-failure-1440.png"),
+      fullPage: false,
+    });
+    await captureAutosaveReference(page, testInfo, "form-message", "1440");
+
+    // Fixing the header saves it, which is what Retry's presence promised.
+    await page.locator("#alert_message_header").fill("Short enough now");
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+    await expect(page.locator("#alert-save-retry")).toHaveCount(0);
+  });
+
+  test("a stale save offers Load latest and Save as new alert, and nothing else @autosave", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    const url = await openMessageAlert(page);
+
+    // A second tab holds the same alert at the same revision and saves first,
+    // which is the interleaving AC-16 describes.
+    const other = await page.context().newPage();
+    await other.goto(`${url}?mode=form&step=message`);
+    await other.waitForSelector("#alert_message_header", { timeout: 15000 });
+    await other.locator("#alert_message_header").fill("Saved in the other tab");
+    await expect(other.locator("#alert-save-status")).toHaveText("Saved");
+    await other.close();
+
+    await page.locator("#alert_message_header").fill("Typed in this tab");
+    await expect(page.locator("#alert-conflict")).toBeVisible();
+    await expect(page.locator("#alert-conflict")).toContainText(
+      "another tab or by another editor",
+    );
+    await expect(page.locator("#conflict-load-latest")).toBeVisible();
+    await expect(page.locator("#conflict-save-new")).toBeVisible();
+    await expect(page.locator("#alert-save-status")).toHaveText("Not saved.");
+
+    expect(await fitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "autosave-conflict-1440.png"),
+      fullPage: false,
+    });
+
+    // Load latest takes the other side of the conflict.
+    await page.locator("#conflict-load-latest").click();
+    await expect(page.locator("#alert-conflict")).toHaveCount(0);
+    await expect(page.locator("#alert_message_header")).toHaveValue(
+      "Saved in the other tab",
+    );
+  });
+
+  test("the save bar and conflict banner fit the narrow width @autosave", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(NARROW);
+    const url = await openMessageAlert(page);
+
+    const other = await page.context().newPage();
+    await other.goto(`${url}?mode=form&step=message`);
+    await other.waitForSelector("#alert_message_header", { timeout: 15000 });
+    await other.locator("#alert_message_header").fill("Saved elsewhere");
+    await expect(other.locator("#alert-save-status")).toHaveText("Saved");
+    await other.close();
+
+    await page.locator("#alert_message_header").fill("Typed here at 320 px");
+    await expect(page.locator("#alert-conflict")).toBeVisible();
+    expect(await fitsViewport(page)).toBe(true);
+
+    await page.screenshot({
+      path: capturePath(testInfo, "autosave-conflict-320.png"),
+      fullPage: false,
+    });
+
+    await page.locator("#conflict-load-latest").click();
+    await expect(page.locator("#alert_message_header")).toHaveValue(
+      "Saved elsewhere",
+    );
+    await page.screenshot({
+      path: capturePath(testInfo, "autosave-saved-320.png"),
+      fullPage: false,
+    });
+  });
+
+  test("Save and close saves and returns to the list @autosave", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openMessageAlert(page);
+
+    await page.locator("#alert_message_header").fill("Typed then closed");
+    await page.locator("#alert-save-close").click();
+
+    await page.waitForURL(/\/alerts(\?|$)/, { timeout: 15000 });
+    await page.screenshot({
+      path: capturePath(testInfo, "autosave-closed-1440.png"),
+      fullPage: false,
+    });
+  });
+});
