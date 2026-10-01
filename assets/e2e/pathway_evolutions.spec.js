@@ -2529,9 +2529,11 @@ test.describe("calendars", () => {
     // weekly schedule. They span at most two consecutive months, so the open
     // month and its two neighbours hold exactly three removed cells.
     let removed = 0;
+    let lastRemovedStep = -1;
     let month = await page.locator("#closure-dates-month").textContent();
+    const steps = ["prev", "next", "next"];
 
-    for (const step of ["prev", "next", "next"]) {
+    for (const [index, step] of steps.entries()) {
       await page.locator(`#closure-dates-${step}`).click();
 
       // The step is an async round trip: wait for its month before counting
@@ -2539,12 +2541,24 @@ test.describe("calendars", () => {
       await expect(page.locator("#closure-dates-month")).not.toHaveText(month);
       month = await page.locator("#closure-dates-month").textContent();
 
-      removed += await page
+      const inMonth = await page
         .locator('#closure-dates-months [aria-label*=": Day off, no service"]')
         .count();
+
+      removed += inMonth;
+      if (inMonth > 0) lastRemovedStep = index;
     }
 
     expect(removed).toBe(3);
+
+    // The walk ends on the month after the open one, which holds removed days
+    // only when they cross a month boundary. Step back to the last month that
+    // does, so the capture below shows the removed state whatever today is.
+    for (let back = steps.length - 1 - lastRemovedStep; back > 0; back -= 1) {
+      await page.locator("#closure-dates-prev").click();
+      await expect(page.locator("#closure-dates-month")).not.toHaveText(month);
+      month = await page.locator("#closure-dates-month").textContent();
+    }
 
     await page
       .locator('#closure-dates-months [aria-label*=": Day off, no service"]')
