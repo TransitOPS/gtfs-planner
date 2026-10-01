@@ -8025,6 +8025,19 @@ defmodule GtfsPlanner.Gtfs do
     end)
   end
 
+  # A stop update carries the stop's own columns plus the command's `move`
+  # provenance. The distance a stop moved is not a column, so the two
+  # coordinate fields cannot express it: a 13.7 m correction and a 330 m
+  # relocation leave the same two fields changed, and the history view has to
+  # be able to say which happened. `move` is provenance, not part of the
+  # rollback snapshot, which is why it is allowed here and is absent from
+  # `reversible_fields_for/1`.
+  defp audited_attrs_for(type, attrs) when type in [:stop, "stop"] do
+    Map.filter(attrs, fn {key, _value} ->
+      to_string(key) in (reversible_fields_for(:stop) ++ ~w(move))
+    end)
+  end
+
   # A transfer write carries the explicit before/after snapshots and its operation
   # scope; no transfer column is diffed field-by-field.
   defp audited_attrs_for(type, attrs) when type in [:transfer, "transfer"] do

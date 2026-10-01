@@ -606,26 +606,55 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   # Everything this review read, hashed. A review answered against a version of
   # the data that has since moved on is refused by `apply_move/4` rather than
   # applied against facts that no longer hold.
+  #
+  # The stop's *content* is hashed alongside its `updated_at`, not instead of
+  # it. `stops.updated_at` is a `timestamp(0)` — a whole second — so two saves
+  # inside one second are indistinguishable by timestamp alone, and a
+  # fingerprint built on the timestamp alone would let a name edit through
+  # unreviewed. Hashing the fields the review actually read closes that, and
+  # is also what makes the fingerprint mean what it says: it covers the
+  # review's inputs, not merely a clock.
   defp review_fingerprint(stop, new_point, users, audit) do
     pattern_ids = users |> Enum.map(& &1.pattern_id) |> Enum.sort()
     lock_versions = affected_lock_versions(stop, users, audit)
 
     :crypto.hash(
       :sha256,
-      inspect({stop.id, stop.updated_at, point_of(stop), new_point, pattern_ids, lock_versions})
+      inspect({
+        stop.id,
+        stop.updated_at,
+        point_of(stop),
+        new_point,
+        pattern_ids,
+        lock_versions,
+        stop_content(stop)
+      })
     )
     |> Base.encode16(case: :lower)
   end
 
+  # The stop fields a review reads or reports on. Deliberately the stop's own
+  # columns and not the whole struct: `updated_at` is already covered above,
+  # and the ID and scope are covered by the same `stop.id` the rest is.
+  defp stop_content(stop) do
+    {stop.stop_name, stop.stop_desc, stop.stop_code, stop.tts_stop_name, stop.stop_url}
+  end
+
+  # Both directions, not just segments *from* the stop. The moved stop is
+  # the `from` of one pair and the `to` of the other, so a query that only
+  # looked at `from_stop_id` would cover the segment the redraw is about to
+  # rewrite for one direction and miss it entirely for the other — and a
+  # fingerprint that misses a row the apply writes is not a fingerprint.
   defp affected_lock_versions(stop, users, audit) do
     pairs = Enum.flat_map(users, & &1.pairs)
+    tos = Enum.map(pairs, &elem(&1, 1))
 
     from(segment in AlignmentSegment,
       where:
         segment.organization_id == ^audit.organization_id and
           segment.gtfs_version_id == ^audit.gtfs_version_id and
-          segment.from_stop_id == ^stop.stop_id and
-          segment.to_stop_id in ^Enum.map(pairs, &elem(&1, 1)),
+          (segment.from_stop_id == ^stop.stop_id or segment.to_stop_id == ^stop.stop_id) and
+          segment.to_stop_id in ^tos,
       select: {segment.from_stop_id, segment.to_stop_id, segment.lock_version},
       order_by: [asc: segment.from_stop_id, asc: segment.to_stop_id]
     )
@@ -633,28 +662,216 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   end
 
   @doc """
+  Applies a reviewed move, audited in the same transaction (AC-16).
+
+  `attrs` is the editor's draft and `options` is what the review it was
+  answered against produced:
+
+      %{lines: :redraw | :keep, answer: :same | :new | nil,
+        fingerprint: String.t(), suggestions: %{{from, to} => [[float()]]}}
+
+  The `fingerprint` is re-checked inside the transaction before anything is
+  written, so a review answered against a version of the data that has since
+  moved on is refused rather than applied against facts that no longer hold.
+
+  Answers `{:ok, %{stop:, redrawn:, stale:}}`, where `redrawn` and `stale` are
+  `RoutePattern` UUIDs. Or one of
+
+    * `{:error, :stale_review}` — the review's fingerprint no longer matches.
+      Nothing is written.
+    * `{:error, :answer_required}` — the move is past the `:far` band and the
+      editor has not answered. Nothing is written. This is a question the
+      editor has to answer, not a failure: at that distance the stop may be
+      the wrong stop entirely, and only the editor knows.
+    * `{:error, :new_stop}` — the editor answered `:new`, meaning this is a
+      different stop rather than a moved one. Nothing is written; the caller
+      starts an add at the pin instead.
+    * `{:error, :forbidden | :not_found | :busy | :failed_audit}` — as for
+      `create_stop/2`.
+    * `{:error, %Ecto.Changeset{}}` — the draft is invalid.
+
+  **A blocked pattern never rolls the move back.** Lines that cannot be
+  redrawn are reported in `stale` and their existing shape rows and digest are
+  left exactly as they were, because `materialize_pattern!/4` rolls the whole
+  transaction back when handed blockers. A stop that riders can no longer reach
+  is still a stop riders can no longer reach; refusing the coordinates over a
+  line that was already stale would be the wrong trade.
+  """
+  @spec apply_move(Ecto.UUID.t(), map(), map(), AuditContext.t()) ::
+          {:ok, %{stop: Stop.t(), redrawn: [Ecto.UUID.t()], stale: [Ecto.UUID.t()]}}
+          | {:error,
+             :stale_review
+             | :answer_required
+             | :new_stop
+             | :forbidden
+             | :not_found
+             | :busy
+             | :failed_audit
+             | Ecto.Changeset.t()}
+  def apply_move(stop_uuid, attrs, options, %AuditContext{} = audit)
+      when is_binary(stop_uuid) and is_map(attrs) and is_map(options) do
+    run_command_transaction(fn -> commit_move(stop_uuid, attrs, options, audit) end)
+  end
+
+  def apply_move(_stop_uuid, _attrs, _options, _audit), do: {:error, :invalid_input}
+
+  # The transaction body, in the order the steps are named in: authorize,
+  # lock, re-check, decide, write, redraw.
+  defp commit_move(stop_uuid, attrs, options, audit) do
+    :ok = authorize_editor!(audit)
+    _version = lock_published_version!(audit)
+
+    stop = lock_stop!(stop_uuid, audit)
+    new_point = new_point(Map.get(options, :point) || coords_from(attrs))
+
+    :ok = refuse_moved_review(stop, new_point, options, audit)
+    :ok = refuse_unanswered_far_move(stop, new_point, options)
+
+    editable = move_attrs(attrs, new_point, audit)
+
+    case Repo.update(Stop.editor_changeset(stop, editable)) do
+      {:ok, moved} ->
+        audit_move(stop, moved, attrs, new_point, options, audit)
+
+        %{redrawn: redrawn, stale: stale} =
+          redraw_after_move(moved, options, audit)
+
+        %{stop: moved, redrawn: redrawn, stale: stale}
+
+      {:error, %Ecto.Changeset{} = failed} ->
+        Repo.rollback(failed)
+    end
+  end
+
+  # The review's fingerprint covers the stop's `updated_at`, both points, the
+  # patterns the move touches and their segment lock versions. It is
+  # recomputed here from the *pre-move* stop, so `review_fingerprint/4` sees
+  # the same old point it saw when the editor was shown the review. Reading
+  # the stop again after the write would compare the new point against itself
+  # and never match — which would make every apply answer `:stale_review`.
+  defp refuse_moved_review(stop, new_point, options, audit) do
+    users = pair_users_for(Alignments.stop_pairs(audit, stop), audit)
+
+    expected = review_fingerprint(stop, new_point, users, audit)
+
+    if matches_fingerprint?(Map.get(options, :fingerprint), expected) do
+      :ok
+    else
+      Repo.rollback(:stale_review)
+    end
+  end
+
+  defp matches_fingerprint?(given, expected) when is_binary(given) and is_binary(expected) do
+    byte_size(given) == byte_size(expected) and Plug.Crypto.secure_compare(given, expected)
+  end
+
+  defp matches_fingerprint?(_given, _expected), do: false
+
+  # Past the far band the question is not "how far" but "is this the same
+  # stop". `:new` is an answer, not a refusal: the caller starts an add at the
+  # pin and leaves this stop alone.
+  defp refuse_unanswered_far_move(stop, new_point, options) do
+    band =
+      StopPlacement.move_band(StopPlacement.distance(point_of(stop), new_point), served?(stop))
+
+    case {band, Map.get(options, :answer)} do
+      {:far, nil} -> Repo.rollback(:answer_required)
+      {:far, :new} -> Repo.rollback(:new_stop)
+      _other -> :ok
+    end
+  end
+
+  # The draft's own editor fields, plus the coordinates the move decided. The
+  # immutable fields are dropped here as they are in `update_stop/4`, so a
+  # hidden field in the form cannot re-parent the stop or rename it on the way
+  # past this command.
+  defp move_attrs(attrs, {lon, lat}, audit) do
+    attrs
+    |> stringify_keys()
+    |> Map.drop(@immutable_stop_fields)
+    |> Map.merge(%{
+      "stop_lat" => Decimal.from_float(lat),
+      "stop_lon" => Decimal.from_float(lon),
+      "organization_id" => audit.organization_id,
+      "gtfs_version_id" => audit.gtfs_version_id
+    })
+  end
+
+  defp coords_from(attrs) do
+    attrs = stringify_keys(attrs)
+    {coordinate(attrs["stop_lon"]) || 0.0, coordinate(attrs["stop_lat"]) || 0.0}
+  end
+
+  # The distance is the point of the audit entry: a move of 330 m and a move
+  # of 12 m leave the same two fields changed, and the history view has to be
+  # able to say which happened.
+  defp audit_move(stop, moved, attrs, new_point, options, audit) do
+    attrs =
+      %{
+        "stop_lat" => Decimal.to_float(moved.stop_lat),
+        "stop_lon" => Decimal.to_float(moved.stop_lon)
+      }
+      |> Map.merge(
+        Map.take(stringify_keys(attrs), ~w(stop_name stop_desc stop_code tts_stop_name stop_url
+                                          platform_code wheelchair_boarding))
+      )
+      |> Map.put("move", %{
+        "distance_m" => StopPlacement.distance(point_of(stop), new_point),
+        "lines" => to_string(Map.get(options, :lines, :keep))
+      })
+
+    audit!(stop, audit, "updated", attrs)
+  end
+
+  # `:redraw` hands the geometry to step 15; `:keep` writes the coordinates
+  # and nothing else, so every pattern the review listed is stale by
+  # definition — the editor has decided the lines stay as they are.
+  defp redraw_after_move(moved, options, audit) do
+    case Map.get(options, :lines, :keep) do
+      :redraw ->
+        case Alignments.redraw_stop_pairs!(
+               audit.organization_id,
+               audit.gtfs_version_id,
+               %{
+                 suggestions: Map.get(options, :suggestions, %{}),
+                 failed: Map.get(options, :failed, %{}),
+                 reviewed_lock_versions: reviewed_lock_versions(moved, options, audit),
+                 audit_context: audit
+               }
+             ) do
+          %{redrawn: redrawn, stale: stale} ->
+            %{
+              redrawn: Enum.map(redrawn, & &1.pattern_id),
+              stale: Enum.map(stale, & &1.pattern_id)
+            }
+
+          {:error, reason} ->
+            Repo.rollback(reason)
+        end
+
+      _keep ->
+        affected = pair_users_for(Alignments.stop_pairs(audit, moved), audit)
+        %{redrawn: [], stale: Enum.map(affected, & &1.pattern_id)}
+    end
+  end
+
+  # The segment lock versions as they stand inside this transaction, so
+  # step 15 refuses a row that moved on between the review and the apply.
+  defp reviewed_lock_versions(moved, options, audit) do
+    if is_binary(Map.get(options, :fingerprint)) do
+      Enum.reduce(affected_lock_versions(moved, [], audit), %{}, fn {from, to, version}, acc ->
+        Map.put(acc, {from, to, nil}, version)
+      end)
+    else
+      %{}
+    end
+  end
+
+  @doc """
   Creates a stop in a version, audited in the same transaction (AC-12).
 
   `attrs` is the editor's draft. A blank or absent `stop_id` is filled by the
   version's ID rule; anything the editor typed is kept as typed.
-
-  Answers `{:ok, stop}`, or one of
-
-    * `{:error, :forbidden}` — the actor is not an active editor of this
-      organization. Nothing is written.
-    * `{:error, :not_found}` — the version is another organization's, or is not
-      published. Nothing is written.
-    * `{:error, :failed_audit}` — the stop was created but its audit entry could
-      not be written, so the whole transaction rolled back. This is INV-2's
-      teeth: an unrecorded change is not a change.
-    * `{:error, :busy}` — three attempts, each lost to a concurrent writer.
-    * `{:error, %Ecto.Changeset{}}` — the draft is invalid, or its typed `stop_id`
-      already exists in this version.
-
-  A generated ID that loses a race to a concurrent insert is not an error: the
-  closure is rerun so allocation sees the committed row and picks the next
-  number. A *typed* ID that already exists is never re-allocated — the editor
-  asked for that ID and renaming it silently would be worse than the error.
   """
   @spec create_stop(map(), AuditContext.t()) ::
           {:ok, Stop.t()}

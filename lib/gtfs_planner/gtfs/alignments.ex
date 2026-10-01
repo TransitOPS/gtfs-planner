@@ -1376,6 +1376,22 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   # — filtering first — the window would only ever see the stop's own rows, so
   # every LAG and LEAD would be nil and the review would find no pairs at all.
   # That failure is silent: an empty pair list reads as "nothing to redraw".
+  @doc """
+  The distinct `{from, to}` stop pairs on either side of `stop` in this
+  version, sorted.
+
+  The same list `suggest_stop_pairs/4` routes, exposed so a caller that
+  already has a routed set can ask which patterns a move touches without
+  routing again. `StopEditing.apply_move/4` needs it twice inside one
+  transaction — to recompute the review's fingerprint and, for `lines: :keep`,
+  to name the patterns it is leaving stale — and a routing request has no
+  business inside a database transaction.
+  """
+  @spec stop_pairs(AuditContext.t(), Stop.t()) :: [{String.t(), String.t()}]
+  def stop_pairs(%AuditContext{} = audit_context, %Stop{} = stop) do
+    stop_pairs(audit_context.organization_id, audit_context.gtfs_version_id, stop.stop_id)
+  end
+
   defp stop_pairs(organization_id, gtfs_version_id, stop_id) do
     neighbours =
       from(occurrence in RoutePatternStop,
