@@ -23,11 +23,12 @@ defmodule GtfsPlanner.Agents do
   turns of AC-30. Session ids are
   `{user_id, organization_id, gtfs_version_id, pack_id, identity,
 context_digest, subject_id}`, so a second tab on the same route shares the
-  conversation while the same user on another route never does (INV-1).
-  `context_digest/1` binds the approved extension and any accepted source
-  snapshot, so two accepted inputs for one route are two conversations rather
-  than one answering for the other; `subject_id` is `nil` for a pack with no
-  subject record, and separates two conversations about two different records.
+  conversation while the same user on another route never does (INV-1). The
+  digest covers the approved extension and any admitted source snapshot
+  together, so attaching a different source starts its own conversation instead
+  of continuing one whose tools already answered from the previous source;
+  `subject_id` is `nil` for a pack with no subject record, and separates two
+  conversations about two different records.
 
   `packs/0` is the only function here that names a concrete pack (INV-1). The
   Alerts pack is keyed by a subject: its tools read one alert of the scope's

@@ -19,11 +19,16 @@ defmodule GtfsPlannerWeb.AgentPanel do
   The panel also holds the conversation's server-owned resource context. `mount/2`
   binds the whole-version identity of the page it was mounted on, and a host that
   shows one resource of that version calls `set_context/2` when ordinary
-  navigation changes it. `set_context/2` affects this panel alone: it detaches the
-  prior session, clears this panel's transcript, draft and origin, and returns a
-  socket whose `agent_session` is nil, so a late event or down from the replaced
-  session can no longer reach the new state (INV-1, AC-1). No other tab, session
-  or native form input is touched.
+  navigation changes it. The context may also carry an admitted source snapshot
+  (`Scope.with_source_snapshot/2`), which is part of what this panel holds and
+  part of what it releases: replacing the context drops the source with the
+  transcript, and a person whose source is gone re-pastes it rather than the
+  helper answering from a copy this page no longer owns. `set_context/2` affects
+  this panel alone: it detaches the prior session, clears this panel's
+  transcript, draft and origin, and returns a socket whose `agent_session` is
+  nil, so a late event or down from the replaced session can no longer reach the
+  new state (INV-1, AC-1). No other tab, session or native form input is
+  touched.
 
   Focus is a client concern with a server trigger: `agent:focus` events must be
   handled by a hook on a wrapper that survives the conditional panel, because the

@@ -111,7 +111,7 @@ defmodule GtfsPlanner.Agents.ScopeTest do
   end
 
   describe "the resource context" do
-    test "context/1 binds one identity and leaves the approved extension unset" do
+    test "context/1 binds one identity and leaves the approval and the source unset" do
       id = Ecto.UUID.generate()
 
       assert Scope.context({:route, id}) == %{
@@ -154,71 +154,10 @@ defmodule GtfsPlanner.Agents.ScopeTest do
       assert Scope.approved_digest(resources_fixture().scope) == "none"
     end
 
-    test "context_digest/1 is the approved digest until a source snapshot exists" do
-      scope = resources_fixture().scope
-
-      assert Scope.source_snapshot(scope) == nil
-      assert Scope.context_digest(scope) == Scope.approved_digest(scope)
-
-      approved = approved_scope(resources_fixture())
-
-      assert Scope.context_digest(approved) == Scope.approved_digest(approved)
-    end
-
-    test "with_source_snapshot/2 admits a bounded payload and computes its own digest" do
-      context = Scope.context({:version, Ecto.UUID.generate()})
-      payload = %{"trip_ids" => [Ecto.UUID.generate()], "delta_seconds" => 300}
-
-      assert {:ok, admitted} =
-               Scope.with_source_snapshot(context, %{kind: " dated_changes ", payload: payload})
-
-      snapshot = Scope.source_snapshot(admitted)
-      assert snapshot.kind == "dated_changes"
-      assert snapshot.payload == payload
-      assert snapshot.digest =~ ~r/\A[0-9a-f]{64}\z/
-
-      # The same payload and kind digest identically; any value change does not.
-      assert {:ok, again} =
-               Scope.with_source_snapshot(context, %{kind: "dated_changes", payload: payload})
-
-      assert Scope.source_snapshot(again).digest == snapshot.digest
-
-      assert {:ok, other} =
-               Scope.with_source_snapshot(context, %{
-                 kind: "dated_changes",
-                 payload: %{payload | "delta_seconds" => 600}
-               })
-
-      refute Scope.source_snapshot(other).digest == snapshot.digest
-    end
-
-    test "with_source_snapshot/2 refuses a caller digest and a non-JSON-safe payload" do
-      context = Scope.context({:version, Ecto.UUID.generate()})
-
-      # A caller may not assert a digest for a payload this module never measured.
-      assert Scope.with_source_snapshot(context, %{
-               kind: "dated_changes",
-               payload: %{"a" => 1},
-               digest: String.duplicate("0", 64)
-             }) == {:error, :invalid_snapshot}
-
-      date_payload = %{"at" => ~D[2026-11-02]}
-      atom_payload = %{atom_key: "value"}
-      tuple_payload = %{"value" => {1, 2}}
-      pid_payload = %{"value" => self()}
-      list_payload = ["not", "a", "map"]
-
-      for payload <- [date_payload, atom_payload, tuple_payload, pid_payload, list_payload] do
-        assert Scope.with_source_snapshot(context, %{kind: "dated_changes", payload: payload}) ==
-                 {:error, :invalid_snapshot}
-      end
-
-      for kind <- ["", "   ", String.duplicate("k", 65), :dated_changes] do
-        assert Scope.with_source_snapshot(context, %{kind: kind, payload: %{}}) ==
-                 {:error, :invalid_snapshot}
-      end
-    end
-
+    # The seam itself is AI-04's and is covered by its own
+    # `source_snapshot_test.exs`; only the cap boundary is re-measured here,
+    # because a host refuses to attach an oversized source by naming
+    # `max_context_bytes/0` rather than repeating the number.
     test "with_source_snapshot/2 refuses a whole context over the byte cap, equality allowed" do
       context = Scope.context({:version, Ecto.UUID.generate()})
 
@@ -243,18 +182,6 @@ defmodule GtfsPlanner.Agents.ScopeTest do
   end
 
   describe "authorized_context/1" do
-    test "refuses a snapshot whose payload no longer matches its digest" do
-      context = resources_fixture()
-      scope = source_snapshot_scope(context)
-
-      assert Scope.authorized_context(scope) == :ok
-
-      snapshot = Scope.source_snapshot(scope)
-      tampered = Map.put(snapshot, :payload, Map.put(snapshot.payload, "delta_seconds", 86_400))
-
-      assert Scope.authorized_context(tampered_scope(scope, tampered)) == {:error, :unavailable}
-    end
-
     test "returns :ok for the scope's own version identity" do
       context = resources_fixture()
 
@@ -448,32 +375,7 @@ defmodule GtfsPlanner.Agents.ScopeTest do
     %{context.scope | resource_context: Scope.context({:route, context.route.id})}
   end
 
-  # The same route identity carrying an accepted dated-change source, so the
-  # remeasurement in `authorized_context/1` has a snapshot to remeasure.
-  defp source_snapshot_scope(context) do
-    scope = route_scope(context)
-
-    {:ok, resource_context} =
-      Scope.with_source_snapshot(
-        scope.resource_context,
-        %{
-          kind: "dated_changes",
-          payload: %{"trip_ids" => [Ecto.UUID.generate()], "delta_seconds" => 300}
-        }
-      )
-
-    %{scope | resource_context: resource_context}
-  end
-
-  # The same scope with a replaced snapshot, used to present a payload that no
-  # longer matches the digest the envelope computed.
-  defp tampered_scope(scope, snapshot) do
-    %{
-      scope
-      | resource_context: Map.put(scope.resource_context, :source_snapshot, snapshot)
-    }
-  end
-
+  # The same version identity carrying an approved Calendar extension.
   defp approved_scope(
          context,
          end_date \\ ~D[2026-10-12],

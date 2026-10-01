@@ -23,20 +23,23 @@ defmodule GtfsPlanner.Agents.Scope do
   Calendar's. It is part of the session key, so two alerts of one person and
   version get two conversations.
 
-  A resource context also carries an optional immutable `source_snapshot`: the
-  accepted input source a host froze after a server-observed native form
-  confirmation. `with_source_snapshot/2` admits it only as a bounded JSON-safe
-  envelope, computes the digest itself (a caller-supplied digest is refused) and
-  measures the whole serialized context against `max_context_bytes/0`;
-  `source_snapshot/1` reads it back, and `context_digest/1` binds both the
-  approval and the snapshot to the session key. The envelope only proves the
-  snapshot was whole and server-measured: a pack still owns the resource
-  identities inside a payload (INV-2).
+  A host may also admit an immutable copy of the source a person is working from
+  through `with_source_snapshot/2`. The copy is ephemeral and lives only in this
+  map: the panel drops it when the context is replaced, and a lost source is
+  re-pasted rather than retained. The server normalizes the envelope, hashes the
+  normalized `{kind, payload}` itself, and refuses a caller-supplied digest, so a
+  pack tool reads source content the server admitted rather than content a model
+  or a tool argument asserts. Admission is bounded by the whole serialized
+  resource context, not by the payload alone, and `authorized_context/1` re-checks
+  shape, digest and that byte limit on every boundary, so replacing a Calendar
+  approval or the payload cannot smuggle an oversized or tampered source past the
+  cap (FH-1). `context_digest/1` binds the approval and the snapshot together as
+  the session key, which is the one function `GtfsPlanner.Agents` names.
 
-  The session key carries `subject_id` and `context_digest/1` together: they
-  answer different questions. `subject_id` separates two conversations about two
+  The session key carries `subject_id` alongside `context_digest/1`, because they
+  answer different questions: `subject_id` separates two conversations about two
   different records, while `context_digest/1` separates two conversations about
-  one record from two different accepted sources.
+  one record whose accepted source differs.
   """
 
   alias GtfsPlanner.Authorization
@@ -46,9 +49,10 @@ defmodule GtfsPlanner.Agents.Scope do
   alias GtfsPlanner.Versions
 
   @max_approval_length 2_000
-  @max_context_bytes 65_536
   @max_snapshot_kind_length 64
-  @max_payload_depth 12
+  @max_payload_depth 32
+  @max_context_bytes 65_536
+  @max_finite_float 1.797_693_134_862_315_7e308
 
   @enforce_keys [:organization_id, :gtfs_version_id, :user_id, :pack_id]
   defstruct [
@@ -58,8 +62,8 @@ defmodule GtfsPlanner.Agents.Scope do
     :user_email,
     :pack_id,
     :version_name,
-    :subject_id,
-    resource_context: %{identity: nil, approved_extension: nil}
+:subject_id,
+    resource_context: %{identity: nil, approved_extension: nil, source_snapshot: nil}
   ]
 
   @typedoc "Which page this conversation belongs to."
@@ -72,24 +76,40 @@ defmodule GtfsPlanner.Agents.Scope do
           approval_text: String.t()
         }
 
-  @typedoc """
-  One immutable accepted source snapshot attached to a resource context.
+  @typedoc "A JSON-compatible value; the only shape a snapshot payload may hold."
+  @type json_value ::
+          String.t()
+          | number()
+          | boolean()
+          | nil
+          | [json_value()]
+          | %{optional(String.t()) => json_value()}
 
-  `payload` is the frozen, JSON-safe accepted source the host observed, and
-  `digest` is computed here from the normalized envelope rather than supplied by
-  the caller.
+  @typedoc """
+  An immutable, server-hashed copy of the source a host admitted for the helper.
+
+  `kind` names the source in a host's own words, `payload` is the normalized
+  JSON-compatible content and `digest` is the server's hash of the normalized
+  `{kind, payload}`. A snapshot is an admission record, not authority: it never
+  states that a source is an agency-approved timetable.
   """
   @type source_snapshot :: %{
           required(:kind) => String.t(),
-          required(:payload) => map(),
+          required(:payload) => %{optional(String.t()) => json_value()},
           required(:digest) => String.t()
         }
 
-  @typedoc "The server-owned resource context, never read from model output."
+  @typedoc """
+  The server-owned resource context, never read from model output.
+
+  `source_snapshot` is optional because a host that creates a context before it
+  has a source to admit builds the two original keys, and such a context is read
+  as carrying no snapshot.
+  """
   @type resource_context :: %{
           required(:identity) => identity() | nil,
           required(:approved_extension) => approved_extension() | nil,
-          required(:source_snapshot) => source_snapshot() | nil
+          optional(:source_snapshot) => source_snapshot() | nil
         }
 
   @type t :: %__MODULE__{
@@ -103,79 +123,105 @@ defmodule GtfsPlanner.Agents.Scope do
           resource_context: resource_context()
         }
 
-  @doc "Builds a resource context for `identity` with no approved extension."
+  @doc "Builds a resource context for `identity` with no approved extension or source snapshot."
   @spec context(identity()) :: resource_context()
   def context(identity),
     do: %{identity: identity, approved_extension: nil, source_snapshot: nil}
 
-  @doc "The whole JSON-safe serialized resource context may not exceed this."
+  @doc """
+  The byte ceiling `with_source_snapshot/2` and `authorized_context/1` measure a
+  whole resource context against.
+
+  A host refusing to attach an oversized source states this number beside the
+  refusal instead of repeating it as a literal at each call site.
+  """
   @spec max_context_bytes() :: pos_integer()
   def max_context_bytes, do: @max_context_bytes
 
   @doc """
-  Returns `context` with `snapshot` attached, or refuses it.
+  Returns `context` with an admitted immutable source snapshot.
 
-  `snapshot` is `%{kind: kind, payload: payload}`. `kind` is a nonblank string of
-  at most 64 characters, and `payload` is a bounded JSON-compatible map with
-  string keys: strings, finite numbers, booleans, `nil`, and nested maps and
-  lists of the same. The envelope digest is computed here from the normalized
-  `{kind, payload}`, so a caller cannot claim a digest for a payload this module
-  did not measure; a snapshot map carrying its own `digest` key, or a payload
-  carrying one, is refused outright.
+  `snapshot` is exactly `%{kind: kind, payload: payload}`: `kind` is a nonblank
+  string of at most 64 characters, and `payload` is a string-key map of strings,
+  finite numbers, booleans, `nil` and further maps or lists of the same. Anything
+  else, including a caller-supplied `:digest`, is `{:error, :invalid_snapshot}`,
+  because only the server may say what a payload hashes to.
 
-  `{:error, :invalid_snapshot}` is a shape this module will not admit, and
-  `{:error, :too_large}` is a whole resource context - identity, approval,
-  envelope and payload together - over `max_context_bytes/0`, with equality
-  allowed.
+  The admitted context is refused with `{:error, :too_large}` when its whole
+  serialized form, identity and approval and this envelope included, exceeds
+  65,536 bytes. The original context is returned unchanged in every error case,
+  so a refused source never becomes a half-attached one.
   """
   @spec with_source_snapshot(resource_context(), map()) ::
           {:ok, resource_context()} | {:error, :invalid_snapshot | :too_large}
-  def with_source_snapshot(_context, %{digest: _digest}), do: {:error, :invalid_snapshot}
-  def with_source_snapshot(_context, %{"digest" => _digest}), do: {:error, :invalid_snapshot}
-
-  def with_source_snapshot(context, %{kind: kind, payload: payload})
-      when is_map(context) do
-    with {:ok, kind} <- normalize_kind(kind),
-         :ok <- reject_caller_digest(payload),
-         {:ok, payload} <- normalize_payload(payload, 0),
-         snapshot = %{kind: kind, payload: payload, digest: snapshot_digest(kind, payload)},
-         context = Map.put(context, :source_snapshot, snapshot),
-         :ok <- measure_context(context) do
-      {:ok, context}
+  def with_source_snapshot(context, snapshot) when is_map(context) and is_map(snapshot) do
+    if Enum.sort(Map.keys(snapshot)) == [:kind, :payload] do
+      admit_snapshot(context, snapshot)
+    else
+      {:error, :invalid_snapshot}
     end
   end
 
   def with_source_snapshot(_context, _snapshot), do: {:error, :invalid_snapshot}
 
   @doc """
-  Returns the immutable source snapshot this context carries, or `nil`.
+  The admitted source snapshot this conversation may read, or `nil`.
 
-  A server-created context that predates snapshots, and one with no accepted
-  source, both read as absent rather than as a defect.
+  A context that predates snapshots, or one whose snapshot never passed
+  `with_source_snapshot/2`, reads as no snapshot; `authorized_context/1` is what
+  refuses the second case before any provider request, tool read, delivered
+  result or prepared lookup.
   """
-  @spec source_snapshot(t() | resource_context()) :: source_snapshot() | nil
-  def source_snapshot(%__MODULE__{resource_context: resource_context}),
-    do: source_snapshot(resource_context)
-
-  def source_snapshot(%{source_snapshot: snapshot}), do: snapshot
-
-  # A server-created context from before snapshots existed reads as carrying
-  # none, rather than raising on a key it never had.
-  def source_snapshot(%{}), do: nil
-
-  @doc """
-  The canonical digest binding this context's approval and its source snapshot.
-
-  Without a snapshot this is `approved_digest/1`, so a conversation that carries
-  no accepted source keeps exactly the key it already had.
-  """
-  @spec context_digest(t()) :: String.t()
-  def context_digest(%__MODULE__{} = scope) do
-    case source_snapshot(scope) do
-      nil -> approved_digest(scope)
-      snapshot -> sha256([approved_digest(scope), snapshot.kind, snapshot.digest])
+  @spec source_snapshot(t()) :: source_snapshot() | nil
+  def source_snapshot(%__MODULE__{resource_context: context}) do
+    case context do
+      %{source_snapshot: snapshot} -> snapshot
+      _other -> nil
     end
   end
+
+  defp admit_snapshot(context, %{kind: kind, payload: payload}) do
+    if valid_kind?(kind) and json_value?(payload, 0) do
+      snapshot = %{kind: kind, payload: payload, digest: snapshot_digest(kind, payload)}
+      admitted = Map.put(context, :source_snapshot, snapshot)
+
+      if oversize?(admitted), do: {:error, :too_large}, else: {:ok, admitted}
+    else
+      {:error, :invalid_snapshot}
+    end
+  end
+
+  defp valid_kind?(kind) when is_binary(kind),
+    do: String.length(kind) in 1..@max_snapshot_kind_length and String.trim(kind) != ""
+
+  defp valid_kind?(_kind), do: false
+
+  # The depth bound is a safety floor, not a product limit: `json_value?/2`
+  # recurses, and an untrusted payload is exactly where an unbounded nesting
+  # would exhaust the stack before any refusal could be returned.
+  defp json_value?(_term, depth) when depth > @max_payload_depth, do: false
+
+  defp json_value?(term, _depth) when is_binary(term) or is_boolean(term) or is_nil(term),
+    do: true
+
+  defp json_value?(term, _depth) when is_integer(term), do: true
+  defp json_value?(term, _depth) when is_float(term), do: finite?(term)
+
+  defp json_value?(term, depth) when is_list(term),
+    do: Enum.all?(term, &json_value?(&1, depth + 1))
+
+  defp json_value?(term, depth) when is_map(term) do
+    Enum.all?(Map.keys(term), &is_binary/1) and
+      Enum.all?(term, fn {_key, value} -> json_value?(value, depth + 1) end)
+  end
+
+  defp json_value?(_term, _depth), do: false
+
+  # Elixir's own arithmetic cannot overflow to a non-finite float, but a float
+  # can arrive from outside this process — a NIF, or decoded bytes — and JSON
+  # has no spelling for one. Comparing against the largest finite float refuses
+  # both infinities and any NaN, whose every comparison is false.
+  defp finite?(float), do: abs(float) < @max_finite_float
 
   @doc """
   Returns `:ok` only for a UUID user and organization whose current membership is
@@ -217,6 +263,33 @@ defmodule GtfsPlanner.Agents.Scope do
   def approved_digest(%__MODULE__{resource_context: %{approved_extension: approved}}) do
     approved
     |> canonical_approved()
+    |> hex_sha256()
+  end
+
+  @doc """
+  The digest binding this conversation's approved extension and source snapshot.
+
+  Both are hashed into one value, so a conversation that follows an approval is
+  never the conversation that followed the same approval with different source
+  attached, and a host that swaps the source starts a different conversation
+  rather than continuing one whose tools were answered from the old source
+  (INV-1). `approved_digest/1` stays available unchanged for a host that needs to
+  reason about the approval alone.
+  """
+  @spec context_digest(t()) :: String.t()
+  def context_digest(%__MODULE__{} = scope) do
+    [approved_digest(scope), source_snapshot_term(source_snapshot(scope))]
+    |> hex_sha256()
+  end
+
+  defp source_snapshot_term(nil), do: "none"
+  defp source_snapshot_term(%{kind: kind, payload: payload}), do: {:snapshot, kind, payload}
+  defp source_snapshot_term(other), do: other
+
+  defp snapshot_digest(kind, payload), do: hex_sha256({kind, payload})
+
+  defp hex_sha256(term) do
+    term
     |> :erlang.term_to_binary()
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
@@ -242,34 +315,111 @@ defmodule GtfsPlanner.Agents.Scope do
   # organization or version holds (AC-2).
   defp resolve_context(%__MODULE__{} = scope) do
     with :ok <- resolve_identity(scope),
-         :ok <- resolve_approved(scope) do
-      resolve_source_snapshot(scope)
+         :ok <- resolve_approved(scope),
+         :ok <- resolve_snapshot(scope) do
+      # Measured last, on the whole context: an approval or identity swapped for
+      # a larger one after admission cannot carry an already-admitted envelope
+      # past the cap.
+      if oversize?(scope.resource_context), do: {:error, :unavailable}, else: :ok
     end
   end
 
-  # The snapshot is re-measured and its digest recomputed on every check, so a
-  # context mutated after admission - or one whose payload was never a shape
-  # `with_source_snapshot/2` admits - cannot reach a provider request, a tool
-  # read or a delivered result.
-  defp resolve_source_snapshot(%__MODULE__{} = scope) do
+  # The digest is the server's, so a snapshot whose content no longer hashes to
+  # it was replaced after admission and is refused before anything reads it.
+  defp resolve_snapshot(%__MODULE__{} = scope) do
     case source_snapshot(scope) do
       nil ->
         :ok
 
-      %{kind: kind, payload: payload, digest: digest} ->
-        with {:ok, kind} <- normalize_kind(kind),
-             {:ok, payload} <- normalize_payload(payload, 0),
-             true <- snapshot_digest(kind, payload) == digest,
-             :ok <- measure_context(scope.resource_context) do
+      %{kind: kind, payload: payload, digest: digest} = snapshot ->
+        if map_size(snapshot) == 3 and valid_kind?(kind) and json_value?(payload, 0) and
+             digest == snapshot_digest(kind, payload) do
           :ok
         else
-          _other -> {:error, :unavailable}
+          {:error, :unavailable}
         end
 
       _other ->
         {:error, :unavailable}
     end
   end
+
+  # The whole serialized resource context is measured, not the payload: an
+  # oversized identity, approval or envelope refuses the same source a small one
+  # would admit (FH-1, PM-1). Each part is encoded by its own explicit fields —
+  # a tagged identity, ISO approval dates, the snapshot envelope — so a struct or
+  # a tuple is never handed to the encoder and the measured bytes are the bytes
+  # the JSON-safe context actually serializes to.
+  defp oversize?(context) do
+    context
+    |> serialized_context()
+    |> Jason.encode!()
+    |> byte_size()
+    |> Kernel.>(@max_context_bytes)
+  end
+
+  defp serialized_context(context) do
+    %{
+      "identity" => encoded_identity(context_value(context, :identity)),
+      "approved_extension" => encoded_approved(context_value(context, :approved_extension)),
+      "source_snapshot" => encoded_snapshot(context_value(context, :source_snapshot))
+    }
+  end
+
+  defp context_value(context, key) when is_map(context) do
+    case context do
+      %{^key => value} -> value
+      _other -> nil
+    end
+  end
+
+  defp context_value(_context, _key), do: nil
+
+  defp encoded_identity({kind, id}) when is_atom(kind) and is_binary(id),
+    do: %{"kind" => Atom.to_string(kind), "id" => id}
+
+  defp encoded_identity(_other), do: nil
+
+  defp encoded_approved(%{
+         service_id: service_id,
+         end_date: %Date{} = end_date,
+         approval_text: text
+       })
+       when is_binary(service_id) and is_binary(text),
+       do: %{
+         "service_id" => service_id,
+         "end_date" => Date.to_iso8601(end_date),
+         "approval_text" => text
+       }
+
+  defp encoded_approved(_other), do: nil
+
+  defp encoded_snapshot(%{kind: kind, payload: payload, digest: digest})
+       when is_binary(kind) and is_binary(digest) and is_map(payload),
+       do: %{"kind" => kind, "payload" => json_value(payload), "digest" => digest}
+
+  defp encoded_snapshot(_other), do: nil
+
+  # Measurement never raises on a payload some other code built: a value that is
+  # not JSON-compatible contributes its inspected form, which changes the byte
+  # count but leaves the shape, and therefore the refusal, the same.
+  defp json_value(term) when is_binary(term) or is_boolean(term) or is_nil(term), do: term
+  defp json_value(term) when is_integer(term), do: term
+
+  defp json_value(term) when is_float(term),
+    do: if(finite?(term), do: term, else: inspect(term))
+
+  defp json_value(term) when is_list(term), do: Enum.map(term, &json_value/1)
+
+  defp json_value(term) when is_map(term) do
+    if Enum.all?(Map.keys(term), &is_binary/1) do
+      Map.new(term, fn {key, value} -> {key, json_value(value)} end)
+    else
+      inspect(term)
+    end
+  end
+
+  defp json_value(term), do: inspect(term)
 
   defp resolve_identity(%__MODULE__{} = scope) do
     case scope.resource_context do
