@@ -8,6 +8,7 @@ defmodule GtfsPlanner.Gtfs.Stations.LevelsTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts.{User, UserOrgMembership}
+  alias GtfsPlanner.Gtfs
 
   alias GtfsPlanner.Gtfs.{
     Audit,
@@ -243,6 +244,131 @@ defmodule GtfsPlanner.Gtfs.Stations.LevelsTest do
              logs(scope.audit, :stop_level, attached.id)
   end
 
+  test "removal clears only the audited version and organization when GTFS IDs repeat", scope do
+    level = level_fixture(scope.organization.id, scope.version.id, level_id: "L1")
+    assert {:ok, attached} = Stations.add_existing_level(scope.audit, level.id)
+
+    child =
+      child_stop_fixture(scope.organization.id, scope.version.id, scope.station.stop_id,
+        stop_id: "PLATFORM",
+        level_id: "L1",
+        diagram_coordinate: %{x: 10, y: 20}
+      )
+
+    other_version = gtfs_version_fixture(scope.organization.id)
+    other_organization = organization_fixture()
+    other_organization_version = gtfs_version_fixture(other_organization.id)
+
+    same_ids_other_version =
+      attach_level_with_child(scope.organization.id, other_version.id, scope.station.stop_id)
+
+    same_ids_other_organization =
+      attach_level_with_child(
+        other_organization.id,
+        other_organization_version.id,
+        scope.station.stop_id
+      )
+
+    assert {:ok, :removed} =
+             Stations.remove_level_from_station(scope.audit, level.id, attached.lock_version)
+
+    assert Repo.get!(Stop, child.id).level_id == nil
+    assert Repo.get!(Stop, child.id).diagram_coordinate == nil
+
+    assert Repo.get!(Stop, same_ids_other_version.child.id).level_id == "L1"
+    assert Repo.get!(StopLevel, same_ids_other_version.stop_level.id)
+    assert Repo.get!(Stop, same_ids_other_organization.child.id).level_id == "L1"
+    assert Repo.get!(StopLevel, same_ids_other_organization.stop_level.id)
+  end
+
+  test "a level attached in another version or organization is reported missing", scope do
+    level = level_fixture(scope.organization.id, scope.version.id, level_id: "L1")
+    assert {:ok, _attached} = Stations.add_existing_level(scope.audit, level.id)
+
+    child =
+      child_stop_fixture(scope.organization.id, scope.version.id, scope.station.stop_id,
+        stop_id: "PLATFORM",
+        level_id: "L1",
+        diagram_coordinate: %{x: 10, y: 20}
+      )
+
+    other_version = gtfs_version_fixture(scope.organization.id)
+    other_organization = organization_fixture()
+    other_organization_version = gtfs_version_fixture(other_organization.id)
+
+    other_version_level =
+      attach_level_with_child(scope.organization.id, other_version.id, scope.station.stop_id)
+
+    other_organization_level =
+      attach_level_with_child(
+        other_organization.id,
+        other_organization_version.id,
+        scope.station.stop_id
+      )
+
+    assert {:error, :not_found} =
+             Stations.remove_level_from_station(
+               scope.audit,
+               other_version_level.level.id,
+               other_version_level.stop_level.lock_version
+             )
+
+    assert {:error, :not_found} =
+             Stations.remove_level_from_station(
+               scope.audit,
+               other_organization_level.level.id,
+               other_organization_level.stop_level.lock_version
+             )
+
+    assert Repo.get!(Stop, child.id).level_id == "L1"
+    assert Repo.get!(Stop, other_version_level.child.id).level_id == "L1"
+    assert Repo.get!(Stop, other_organization_level.child.id).level_id == "L1"
+  end
+
+  test "removal keeps boarding areas on other levels and drops the level from the station list",
+       scope do
+    level = level_fixture(scope.organization.id, scope.version.id, level_id: "L1")
+    other_level = level_fixture(scope.organization.id, scope.version.id, level_id: "L2")
+    assert {:ok, attached} = Stations.add_existing_level(scope.audit, level.id)
+    assert {:ok, _other_attached} = Stations.add_existing_level(scope.audit, other_level.id)
+
+    platform =
+      child_stop_fixture(scope.organization.id, scope.version.id, scope.station.stop_id,
+        level_id: "L1",
+        diagram_coordinate: %{x: 10, y: 20}
+      )
+
+    boarding_on_level =
+      child_stop_fixture(scope.organization.id, scope.version.id, platform.stop_id,
+        location_type: 4,
+        level_id: "L1",
+        diagram_coordinate: %{x: 15, y: 25}
+      )
+
+    boarding_on_other_level =
+      child_stop_fixture(scope.organization.id, scope.version.id, platform.stop_id,
+        location_type: 4,
+        level_id: "L2",
+        diagram_coordinate: %{x: 30, y: 40}
+      )
+
+    assert {:ok, :removed} =
+             Stations.remove_level_from_station(scope.audit, level.id, attached.lock_version)
+
+    assert Repo.get!(Stop, boarding_on_level.id).level_id == nil
+    assert Repo.get!(Stop, boarding_on_level.id).diagram_coordinate == nil
+    assert Repo.get!(Stop, boarding_on_other_level.id).level_id == "L2"
+
+    assert Repo.get!(Stop, boarding_on_other_level.id).diagram_coordinate == %{
+             "x" => 30.0,
+             "y" => 40.0
+           }
+
+    assert scope.organization.id
+           |> Gtfs.list_levels_for_station(scope.version.id, scope.station.id)
+           |> Enum.map(& &1.level.level_id) == ["L2"]
+  end
+
   test "revocation and a failed history insert leave level changes untouched", scope do
     level = level_fixture(scope.organization.id, scope.version.id, level_id: "L1")
     assert {:ok, attached} = Stations.add_existing_level(scope.audit, level.id)
@@ -401,6 +527,32 @@ defmodule GtfsPlanner.Gtfs.Stations.LevelsTest do
       record_id: record_id
     })
     |> Repo.insert!()
+  end
+
+  # A station that reuses the audited station's GTFS ID, with level "L1" attached and one
+  # platform on it, in another version or organization.
+  defp attach_level_with_child(organization_id, version_id, station_stop_id) do
+    station =
+      stop_fixture(organization_id, version_id, stop_id: station_stop_id, location_type: 1)
+
+    level = level_fixture(organization_id, version_id, level_id: "L1")
+
+    child =
+      child_stop_fixture(organization_id, version_id, station.stop_id,
+        stop_id: "PLATFORM",
+        level_id: "L1",
+        diagram_coordinate: %{x: 10, y: 20}
+      )
+
+    {:ok, stop_level} =
+      insert_stop_level(%{
+        organization_id: organization_id,
+        gtfs_version_id: version_id,
+        stop_id: station.id,
+        level_id: level.id
+      })
+
+    %{station: station, level: level, child: child, stop_level: stop_level}
   end
 
   defp logs(audit, type, id) do

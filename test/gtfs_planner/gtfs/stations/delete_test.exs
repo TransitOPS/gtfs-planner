@@ -164,6 +164,23 @@ defmodule GtfsPlanner.Gtfs.Stations.DeleteTest do
              ])
   end
 
+  test "deleting a boarding area keeps its parent platform", scope do
+    boarding =
+      child_stop_fixture(scope.organization.id, scope.version.id, scope.child.stop_id,
+        stop_id: "BOARDING_DELETED",
+        location_type: 4,
+        level_id: scope.child.level_id,
+        diagram_coordinate: %{"x" => 12.0, "y" => 22.0}
+      )
+
+    assert {:ok, %Stop{id: deleted_id}} =
+             Stations.delete_child_stop(scope.audit, boarding.id, boarding.lock_version)
+
+    assert deleted_id == boarding.id
+    assert Repo.get(Stop, boarding.id) == nil
+    assert Repo.get!(Stop, scope.child.id)
+  end
+
   test "a closure-backed pathway refuses deletion without changing rows or logs", scope do
     other = child_stop_fixture(scope.organization.id, scope.version.id, scope.station.stop_id)
 
@@ -304,6 +321,66 @@ defmodule GtfsPlanner.Gtfs.Stations.DeleteTest do
     assert Repo.get!(Pathway, pathway.id)
     assert Repo.get!(Stop, scope.child.id).level_id == scope.child.level_id
     assert all_logs(scope) == history_before_refusal
+  end
+
+  test "diagram removal clears a nested boarding area and deletes its connected pathways",
+       scope do
+    level_id = scope.child.level_id
+
+    platform =
+      child_stop_fixture(scope.organization.id, scope.version.id, scope.station.stop_id,
+        stop_id: "PLATFORM",
+        level_id: level_id,
+        diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+      )
+
+    boarding =
+      child_stop_fixture(scope.organization.id, scope.version.id, platform.stop_id,
+        stop_id: "BOARDING_AREA",
+        location_type: 4,
+        level_id: level_id,
+        diagram_coordinate: %{"x" => 12.0, "y" => 22.0}
+      )
+
+    sibling =
+      child_stop_fixture(scope.organization.id, scope.version.id, scope.station.stop_id,
+        stop_id: "SIBLING_NODE",
+        location_type: 3,
+        level_id: level_id,
+        diagram_coordinate: %{"x" => 14.0, "y" => 24.0}
+      )
+
+    pathway =
+      pathway_fixture(scope.organization.id, scope.version.id, boarding.stop_id, sibling.stop_id)
+
+    assert {:ok, %Stop{diagram_coordinate: nil, level_id: nil}} =
+             Stations.remove_child_stop_from_diagram(
+               scope.audit,
+               boarding.id,
+               boarding.lock_version
+             )
+
+    assert Repo.get(Pathway, pathway.id) == nil
+    assert Repo.get!(Stop, platform.id).diagram_coordinate == %{"x" => 10.0, "y" => 20.0}
+  end
+
+  test "removing a stop that is already off the diagram writes no second stop entry", scope do
+    placed =
+      scope.child
+      |> Ecto.Changeset.change(%{diagram_coordinate: %{"x" => 10.0, "y" => 20.0}})
+      |> Repo.update!()
+
+    assert {:ok, removed} =
+             Stations.remove_child_stop_from_diagram(scope.audit, placed.id, placed.lock_version)
+
+    assert {:ok, %Stop{diagram_coordinate: nil, level_id: nil}} =
+             Stations.remove_child_stop_from_diagram(
+               scope.audit,
+               removed.id,
+               removed.lock_version
+             )
+
+    assert [%{action: "updated"}] = logs(scope, placed.id)
   end
 
   test "a failed audit insert rolls back diagram removal", scope do
