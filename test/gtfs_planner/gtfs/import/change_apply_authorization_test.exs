@@ -165,10 +165,24 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeApplyAuthorizationTest do
 
   test "an editor of another organization does not authorize the apply", %{
     organization: organization,
-    version: version
+    version: version,
+    actor: actor
   } do
     outsider = member!(organization_fixture(), ["pathways_studio_editor"])
-    run = review_run!(organization, version, outsider, [level_decision("L2", 2.0)])
+    outsider_actor = %{id: outsider.id, email: outsider.email}
+
+    assert {:error, :forbidden} =
+             ChangeRuns.create_pending_compute(organization.id, version.id, outsider_actor, [])
+
+    # Request paths refuse the outsider, so attribute an approved run to them directly to reach
+    # the apply transaction's own check.
+    run = review_run!(organization, version, actor, [level_decision("L2", 2.0)])
+
+    {1, _} =
+      Repo.update_all(from(r in ChangeRun, where: r.id == ^run.id),
+        set: [actor_id: outsider.id, actor_email: outsider.email]
+      )
+
     {:ok, claimed, generation, token} = ChangeRuns.claim(organization.id, run.id, :apply)
 
     assert {:error, :forbidden} =
