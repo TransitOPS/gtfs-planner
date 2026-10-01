@@ -94,22 +94,26 @@ defmodule GtfsPlanner.Authorization do
                where: o.id == ^organization_id,
                lock: "FOR NO KEY UPDATE"
            ) do
-      if system_administrator?(actor_id) do
-        {:ok, :system}
-      else
-        membership = locked_membership(actor_id, organization_id)
-        user = Repo.get(User, actor_id)
-
-        if usable_admin?(membership, user),
-          do: {:ok, membership},
-          else: {:error, :forbidden}
-      end
+      locked_member_admin(actor_id, organization_id)
     else
       _ -> {:error, :not_found}
     end
   end
 
   def lock_member_admin(_, _), do: {:error, :forbidden}
+
+  defp locked_member_admin(actor_id, organization_id) do
+    if system_administrator?(actor_id) do
+      {:ok, :system}
+    else
+      membership = locked_membership(actor_id, organization_id)
+      user = Repo.get(User, actor_id)
+
+      if usable_admin?(membership, user),
+        do: {:ok, membership},
+        else: {:error, :forbidden}
+    end
+  end
 
   @doc "Returns whether a membership belongs to an active admin with a password."
   @spec usable_admin?(UserOrgMembership.t() | nil, User.t() | nil) :: boolean()

@@ -632,20 +632,18 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp delete_or_refuse(socket) do
     dialog = socket.assigns.delete_dialog
 
-    cond do
-      dialog == nil ->
-        socket
+    if dialog == nil do
+      socket
+    else
+      # Every identifier is re-resolved against what the page currently shows,
+      # so a replayed or stale list deletes nothing.
+      ids = visible_ids(socket, dialog.ids)
 
-      true ->
-        # Every identifier is re-resolved against what the page currently shows,
-        # so a replayed or stale list deletes nothing.
-        ids = visible_ids(socket, dialog.ids)
-
-        if ids == [] do
-          assign(socket, :delete_dialog, nil)
-        else
-          delete_visible(socket, dialog, ids)
-        end
+      if ids == [] do
+        assign(socket, :delete_dialog, nil)
+      else
+        delete_visible(socket, dialog, ids)
+      end
     end
   end
 
@@ -976,10 +974,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # and a cell the page cannot resolve through the grid bar. A cell with no stored
   # time (blank or estimated) has nothing to clear, so nothing is written.
   defp clear_cell(socket, trip_id, position) do
-    with {:ok, context} <- cell_context(socket, trip_id, position) do
-      if is_nil(context.current), do: socket, else: write_clear(socket, context)
-    else
-      :error -> warning_outcome(socket, ScheduleComponents.error_message(:not_found))
+    case cell_context(socket, trip_id, position) do
+      {:ok, context} ->
+        if is_nil(context.current), do: socket, else: write_clear(socket, context)
+
+      :error ->
+        warning_outcome(socket, ScheduleComponents.error_message(:not_found))
     end
   end
 
@@ -1303,16 +1303,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # only a minute count and one trip UUID; the trips, their times and the fence all
   # come from the loaded rows (AC-11, AC-23, INV-2).
   defp nudge(socket, %{"minutes" => minutes} = params) do
-    cond do
-      not nudge_minutes?(minutes) ->
-        socket
-
-      true ->
-        case nudge_ids(socket, params["trip"]) do
-          {:ok, ids} -> shift_trips(socket, ids, minutes)
-          :not_found -> warning_outcome(socket, ScheduleComponents.error_message(:not_found))
-          :none -> socket
-        end
+    if nudge_minutes?(minutes) do
+      case nudge_ids(socket, params["trip"]) do
+        {:ok, ids} -> shift_trips(socket, ids, minutes)
+        :not_found -> warning_outcome(socket, ScheduleComponents.error_message(:not_found))
+        :none -> socket
+      end
+    else
+      socket
     end
   end
 
@@ -2216,13 +2214,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp apply_change(socket) do
     case socket.assigns.change do
       %{review: %{}} = change ->
-        cond do
-          change.stale? ->
-            socket
-
-          true ->
-            submit_change(socket, change)
-        end
+        if change.stale?, do: socket, else: submit_change(socket, change)
 
       _no_review ->
         socket

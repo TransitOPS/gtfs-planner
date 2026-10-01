@@ -1227,35 +1227,40 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     audit = audit_context(socket)
 
     case socket.assigns.zone_drawer_zone_id do
-      nil ->
-        case FareZones.create_zone(audit, params) do
-          {:ok, zone} ->
-            zone_saved(socket, zone, @zone_created_message, nil)
+      nil -> save_new_zone(socket, audit, params)
+      current_zone_id -> save_zone_edit(socket, audit, current_zone_id, params)
+    end
+  end
 
-          {:error, %Ecto.Changeset{} = changeset} ->
-            zone_form_error(socket, changeset)
+  defp save_new_zone(socket, audit, params) do
+    case FareZones.create_zone(audit, params) do
+      {:ok, zone} ->
+        zone_saved(socket, zone, @zone_created_message, nil)
 
-          {:error, :not_found} ->
-            assign(socket, :zone_error, @save_failed_message)
+      {:error, %Ecto.Changeset{} = changeset} ->
+        zone_form_error(socket, changeset)
 
-          {:error, :forbidden} ->
-            socket |> validate_zone(params) |> assign(:zone_error, @save_failed_message)
-        end
+      {:error, :not_found} ->
+        assign(socket, :zone_error, @save_failed_message)
 
-      current_zone_id ->
-        case FareZones.update_zone(audit, current_zone_id, params) do
-          {:ok, zone} ->
-            zone_saved(socket, zone, @zone_updated_message, current_zone_id)
+      {:error, :forbidden} ->
+        socket |> validate_zone(params) |> assign(:zone_error, @save_failed_message)
+    end
+  end
 
-          {:error, %Ecto.Changeset{} = changeset} ->
-            zone_form_error(socket, changeset)
+  defp save_zone_edit(socket, audit, current_zone_id, params) do
+    case FareZones.update_zone(audit, current_zone_id, params) do
+      {:ok, zone} ->
+        zone_saved(socket, zone, @zone_updated_message, current_zone_id)
 
-          {:error, :not_found} ->
-            zone_edit_not_found(socket, current_zone_id)
+      {:error, %Ecto.Changeset{} = changeset} ->
+        zone_form_error(socket, changeset)
 
-          {:error, :forbidden} ->
-            socket |> validate_zone(params) |> assign(:zone_error, @save_failed_message)
-        end
+      {:error, :not_found} ->
+        zone_edit_not_found(socket, current_zone_id)
+
+      {:error, :forbidden} ->
+        socket |> validate_zone(params) |> assign(:zone_error, @save_failed_message)
     end
   end
 

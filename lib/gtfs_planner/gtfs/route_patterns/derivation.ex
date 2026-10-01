@@ -131,42 +131,53 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     with {:ok, missing_custom} <- missing_result,
          {:ok, {summaries, failed_routes}} <-
            derive_present_routes(organization_id, version_id, provenance, present_routes) do
-      summary =
-        Enum.reduce(summaries, zero_summary(missing_custom), fn summary, acc ->
-          Map.merge(acc, summary, fn _key, left, right -> left + right end)
-        end)
+      summary = merge_summaries(summaries, zero_summary(missing_custom))
 
       {:ok, Map.put(summary, :routes_failed, length(failed_routes))}
     end
+  end
+
+  defp merge_summaries(summaries, initial) do
+    Enum.reduce(summaries, initial, fn summary, acc ->
+      Map.merge(acc, summary, fn _key, left, right -> left + right end)
+    end)
   end
 
   defp derive_present_routes(organization_id, version_id, provenance, present_routes) do
     present_routes
     |> Enum.sort()
     |> Enum.reduce_while({:ok, {[], []}}, fn route_id, {:ok, {summaries, failed}} ->
-      case derive_route(organization_id, version_id, route_id, provenance) do
-        {:ok, summary} ->
-          {:cont, {:ok, {[summary | summaries], failed}}}
-
-        {:error, :forbidden} when elem(provenance, 0) == :editor ->
-          {:halt, {:error, :forbidden}}
-
-        # A superseded import must not record a route error either.
-        {:error, :lease_lost} ->
-          {:halt, {:error, :lease_lost}}
-
-        {:error, reason} ->
-          case run_batch_write(
-                 fn -> persist_route_error!(organization_id, version_id, route_id, reason) end,
-                 organization_id,
-                 version_id,
-                 provenance
-               ) do
-            {:ok, :ok} -> {:cont, {:ok, {summaries, [route_id | failed]}}}
-            {:error, write_reason} -> {:halt, {:error, write_reason}}
-          end
-      end
+      derive_route_step(route_id, summaries, failed, organization_id, version_id, provenance)
     end)
+  end
+
+  defp derive_route_step(route_id, summaries, failed, organization_id, version_id, provenance) do
+    case derive_route(organization_id, version_id, route_id, provenance) do
+      {:ok, summary} ->
+        {:cont, {:ok, {[summary | summaries], failed}}}
+
+      {:error, :forbidden} when elem(provenance, 0) == :editor ->
+        {:halt, {:error, :forbidden}}
+
+      # A superseded import must not record a route error either.
+      {:error, :lease_lost} ->
+        {:halt, {:error, :lease_lost}}
+
+      {:error, reason} ->
+        case persist_failed_route(organization_id, version_id, route_id, reason, provenance) do
+          {:ok, :ok} -> {:cont, {:ok, {summaries, [route_id | failed]}}}
+          {:error, write_reason} -> {:halt, {:error, write_reason}}
+        end
+    end
+  end
+
+  defp persist_failed_route(organization_id, version_id, route_id, reason, provenance) do
+    run_batch_write(
+      fn -> persist_route_error!(organization_id, version_id, route_id, reason) end,
+      organization_id,
+      version_id,
+      provenance
+    )
   end
 
   # The importer owns its version. A fenced import runs the write in a transaction

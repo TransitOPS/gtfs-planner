@@ -167,12 +167,12 @@ defmodule GtfsPlanner.Gtfs.Stop do
   end
 
   defp validate_parent(changeset) do
-    if get_field(changeset, :parent_station) not in [nil, ""] do
+    if get_field(changeset, :parent_station) in [nil, ""] do
+      changeset
+    else
       changeset
       |> validate_required([:level_id])
       |> validate_station_has_no_parent()
-    else
-      changeset
     end
   end
 

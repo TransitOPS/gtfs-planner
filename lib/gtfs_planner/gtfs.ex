@@ -2554,56 +2554,74 @@ defmodule GtfsPlanner.Gtfs do
         Repo.rollback(:not_found)
 
       %StopLevel{} = stop_level ->
-        alignment_changeset = StopLevel.alignment_changeset(stop_level, proposed_alignment)
+        write_reviewed_alignment(
+          stop_level,
+          proposed_alignment,
+          image_w,
+          image_h,
+          expected_fingerprint,
+          audit_ctx
+        )
+    end
+  end
 
-        alignment_changeset =
-          if alignment_changeset.changes == %{} do
-            Ecto.Changeset.force_change(alignment_changeset, :updated_at, DateTime.utc_now())
-          else
-            alignment_changeset
-          end
+  defp write_reviewed_alignment(
+         %StopLevel{} = stop_level,
+         proposed_alignment,
+         image_w,
+         image_h,
+         expected_fingerprint,
+         %AuditContext{} = audit_ctx
+       ) do
+    alignment_changeset = StopLevel.alignment_changeset(stop_level, proposed_alignment)
 
-        with {:ok, projection} <-
-               build_alignment_projection(
-                 stop_level.id,
-                 proposed_alignment,
-                 image_w,
-                 image_h,
-                 lock: "FOR UPDATE"
-               ),
-             :ok <- verify_review_fingerprint(projection, expected_fingerprint),
-             {:ok, updated_stop_level} <-
-               Repo.update(alignment_changeset),
-             {:ok, _alignment_log} <-
-               Audit.record_change_in_transaction(
-                 audit_ctx,
-                 :stop_level,
-                 stop_level,
-                 "updated",
-                 alignment_changeset.changes
-               ),
-             {:ok, changed_stops} <-
-               persist_changed_stops_with_audit(
-                 projection,
-                 audit_ctx
-               ),
-             {:ok, _pin_count} <-
-               StationJournal.refresh_pin_coordinates_for_stop_level(
-                 updated_stop_level,
-                 image_w,
-                 image_h
-               ) do
-          %{
-            active_stop_level: updated_stop_level,
-            changed_stops: changed_stops,
-            rows: projection.rows,
-            updated_stop_count: length(changed_stops),
-            unchanged_count: projection.unchanged_count,
-            unplaced_count: projection.unplaced_count
-          }
-        else
-          {:error, reason} -> Repo.rollback(reason)
-        end
+    alignment_changeset =
+      if alignment_changeset.changes == %{} do
+        Ecto.Changeset.force_change(alignment_changeset, :updated_at, DateTime.utc_now())
+      else
+        alignment_changeset
+      end
+
+    with {:ok, projection} <-
+           build_alignment_projection(
+             stop_level.id,
+             proposed_alignment,
+             image_w,
+             image_h,
+             lock: "FOR UPDATE"
+           ),
+         :ok <- verify_review_fingerprint(projection, expected_fingerprint),
+         {:ok, updated_stop_level} <-
+           Repo.update(alignment_changeset),
+         {:ok, _alignment_log} <-
+           Audit.record_change_in_transaction(
+             audit_ctx,
+             :stop_level,
+             stop_level,
+             "updated",
+             alignment_changeset.changes
+           ),
+         {:ok, changed_stops} <-
+           persist_changed_stops_with_audit(
+             projection,
+             audit_ctx
+           ),
+         {:ok, _pin_count} <-
+           StationJournal.refresh_pin_coordinates_for_stop_level(
+             updated_stop_level,
+             image_w,
+             image_h
+           ) do
+      %{
+        active_stop_level: updated_stop_level,
+        changed_stops: changed_stops,
+        rows: projection.rows,
+        updated_stop_count: length(changed_stops),
+        unchanged_count: projection.unchanged_count,
+        unplaced_count: projection.unplaced_count
+      }
+    else
+      {:error, reason} -> Repo.rollback(reason)
     end
   end
 

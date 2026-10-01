@@ -9,9 +9,9 @@ defmodule GtfsPlanner.Reachability do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Reachability.{Battery, Runner, Scoring}
   alias GtfsPlanner.Repo
-  alias GtfsPlanner.RunnerAdmission
   alias GtfsPlanner.Routing
   alias GtfsPlanner.Routing.{Route, StationGraph}
+  alias GtfsPlanner.RunnerAdmission
   alias GtfsPlanner.Validations.ValidationRun
 
   @pubsub GtfsPlanner.PubSub
@@ -40,24 +40,28 @@ defmodule GtfsPlanner.Reachability do
          :ok <- check_battery_size(snapshot),
          :ok <- fail_stale_runs(organization_id, gtfs_version_id, station_stop_id),
          {:ok, run} <- insert_run(organization_id, gtfs_version_id, station_stop_id) do
-      case spawn_run(run, station, snapshot, runner) do
-        {:ok, _pid} ->
-          {:ok, Repo.reload!(run)}
+      launch_run(run, station, snapshot, runner)
+    end
+  end
 
-        # The runner supervisor refuses at its :runner_limits cap before the task
-        # starts, so a busy run has read nothing. Its failure frees the station's
-        # active-run slot for the next attempt.
-        {:error, reason} ->
-          fail_run(run.id, if(reason == :busy, do: "busy", else: inspect(reason)))
+  defp launch_run(run, station, snapshot, runner) do
+    case spawn_run(run, station, snapshot, runner) do
+      {:ok, _pid} ->
+        {:ok, Repo.reload!(run)}
 
-          Phoenix.PubSub.broadcast(
-            @pubsub,
-            topic(run.id),
-            {:reachability_run_failed, run.id, reason}
-          )
+      # The runner supervisor refuses at its :runner_limits cap before the task
+      # starts, so a busy run has read nothing. Its failure frees the station's
+      # active-run slot for the next attempt.
+      {:error, reason} ->
+        fail_run(run.id, if(reason == :busy, do: "busy", else: inspect(reason)))
 
-          {:error, reason}
-      end
+        Phoenix.PubSub.broadcast(
+          @pubsub,
+          topic(run.id),
+          {:reachability_run_failed, run.id, reason}
+        )
+
+        {:error, reason}
     end
   end
 

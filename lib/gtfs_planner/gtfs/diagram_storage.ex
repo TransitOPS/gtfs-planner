@@ -504,24 +504,28 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
     with :ok <- advisory_lock(scope, filename),
          %StopLevel{} = current <- locked_stop_level(expected_stop_level.id, scope, station.id),
          true <- File.regular?(path) do
-      if current.lock_version != expected_stop_level.lock_version,
-        do: Repo.rollback({:stale, current.lock_version})
-
-      updated = Stations.put_stop_level_diagram!(current, filename)
-
-      case Audit.record_change_in_transaction(audit, :stop_level, current, "updated", %{
-             diagram_filename: filename,
-             scale_point_a: nil,
-             scale_point_b: nil,
-             scale_distance_meters: nil,
-             scale_meters_per_unit: nil
-           }) do
-        {:ok, _log} -> updated
-        {:error, reason} -> Repo.rollback(reason)
-      end
+      swap_stop_level_diagram(audit, expected_stop_level, current, filename)
     else
       nil -> Repo.rollback(:not_found)
       false -> Repo.rollback(:not_found)
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp swap_stop_level_diagram(audit, expected_stop_level, %StopLevel{} = current, filename) do
+    if current.lock_version != expected_stop_level.lock_version,
+      do: Repo.rollback({:stale, current.lock_version})
+
+    updated = Stations.put_stop_level_diagram!(current, filename)
+
+    case Audit.record_change_in_transaction(audit, :stop_level, current, "updated", %{
+           diagram_filename: filename,
+           scale_point_a: nil,
+           scale_point_b: nil,
+           scale_distance_meters: nil,
+           scale_meters_per_unit: nil
+         }) do
+      {:ok, _log} -> updated
       {:error, reason} -> Repo.rollback(reason)
     end
   end

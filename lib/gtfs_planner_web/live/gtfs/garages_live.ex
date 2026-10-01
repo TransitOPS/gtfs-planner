@@ -333,34 +333,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   def handle_async(:address_search, {:ok, {generation, result}}, socket) do
     if socket.assigns.garage_drawer_open and
          generation == socket.assigns.address_search_generation do
-      case result do
-        {:ok, results} ->
-          options =
-            Enum.map(results, fn result ->
-              %{
-                label: result.formatted_address,
-                value: result.formatted_address,
-                tag: result,
-                option: result.formatted_address
-              }
-            end)
-
-          send_update(LiveSelectComponent, id: "garage-address", options: options)
-
-          {:noreply,
-           socket
-           |> assign(:address_results, results)
-           |> assign(:address_search_state, if(results == [], do: :empty, else: :results))}
-
-        {:error, reason} ->
-          Logger.error("Geocoding autocomplete failed: #{inspect(reason)}")
-          send_update(LiveSelectComponent, id: "garage-address", options: [])
-
-          {:noreply,
-           socket
-           |> assign(:address_results, [])
-           |> assign(:address_search_state, :failed)}
-      end
+      {:noreply, apply_address_results(socket, result)}
     else
       {:noreply, socket}
     end
@@ -378,6 +351,33 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
        do: assign(socket, :address_search_state, :failed),
        else: socket
      )}
+  end
+
+  defp apply_address_results(socket, {:ok, results}) do
+    options =
+      Enum.map(results, fn result ->
+        %{
+          label: result.formatted_address,
+          value: result.formatted_address,
+          tag: result,
+          option: result.formatted_address
+        }
+      end)
+
+    send_update(LiveSelectComponent, id: "garage-address", options: options)
+
+    socket
+    |> assign(:address_results, results)
+    |> assign(:address_search_state, if(results == [], do: :empty, else: :results))
+  end
+
+  defp apply_address_results(socket, {:error, reason}) do
+    Logger.error("Geocoding autocomplete failed: #{inspect(reason)}")
+    send_update(LiveSelectComponent, id: "garage-address", options: [])
+
+    socket
+    |> assign(:address_results, [])
+    |> assign(:address_search_state, :failed)
   end
 
   defp search_address(socket, text) do

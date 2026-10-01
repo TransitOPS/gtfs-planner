@@ -114,26 +114,30 @@ defmodule GtfsPlanner.Gtfs.Stations do
 
       case companion_endpoint_attrs(attrs, pathway) do
         {:ok, endpoint_attrs} ->
-          field_attrs =
-            Enum.reduce(@companion_pathway_fields, endpoint_attrs, fn field, accepted ->
-              case companion_attr(attrs, field) do
-                {:ok, value} -> Map.put(accepted, field, value)
-                :error -> accepted
-              end
-            end)
-
-          changeset =
-            pathway
-            |> Pathway.editor_changeset(field_attrs)
-            # The editor normalizes exit gates; the companion cannot change this field.
-            |> Ecto.Changeset.delete_change(:is_bidirectional)
-
-          write_pathway(audit, changeset, "updated")
+          write_companion_pathway_fields(audit, pathway, attrs, endpoint_attrs)
 
         {:error, :invalid_endpoints} ->
           Repo.rollback(:invalid_endpoints)
       end
     end)
+  end
+
+  defp write_companion_pathway_fields(audit, pathway, attrs, endpoint_attrs) do
+    field_attrs =
+      Enum.reduce(@companion_pathway_fields, endpoint_attrs, fn field, accepted ->
+        case companion_attr(attrs, field) do
+          {:ok, value} -> Map.put(accepted, field, value)
+          :error -> accepted
+        end
+      end)
+
+    changeset =
+      pathway
+      |> Pathway.editor_changeset(field_attrs)
+      # The editor normalizes exit gates; the companion cannot change this field.
+      |> Ecto.Changeset.delete_change(:is_bidirectional)
+
+    write_pathway(audit, changeset, "updated")
   end
 
   @doc "Deletes a station-scoped pathway unless a scheduled evolution references it."
@@ -220,27 +224,30 @@ defmodule GtfsPlanner.Gtfs.Stations do
           changeset
         end
 
-      with {:ok, updated} <- Repo.update(changeset) do
-        audit_fields =
-          if new_id != level.level_id do
-            counts = cascade_level_id(audit, level.level_id, new_id)
-
-            Map.merge(changed_fields, %{
-              level_id: [level.level_id, new_id],
-              references: counts
-            })
-          else
-            changed_fields
-          end
-
-        case Audit.record_change_in_transaction(audit, :level, level, "updated", audit_fields) do
-          {:ok, _log} -> updated
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      else
+      case Repo.update(changeset) do
+        {:ok, updated} -> record_level_update(audit, level, updated, changed_fields, new_id)
         {:error, reason} -> Repo.rollback(reason)
       end
     end)
+  end
+
+  defp record_level_update(audit, level, updated, changed_fields, new_id) do
+    audit_fields =
+      if new_id != level.level_id do
+        counts = cascade_level_id(audit, level.level_id, new_id)
+
+        Map.merge(changed_fields, %{
+          level_id: [level.level_id, new_id],
+          references: counts
+        })
+      else
+        changed_fields
+      end
+
+    case Audit.record_change_in_transaction(audit, :level, level, "updated", audit_fields) do
+      {:ok, _log} -> updated
+      {:error, reason} -> Repo.rollback(reason)
+    end
   end
 
   @doc "Detaches a level at the stop-level revision and clears its station descendants."
@@ -255,15 +262,7 @@ defmodule GtfsPlanner.Gtfs.Stations do
         lock: "FOR UPDATE"
       )
       |> Repo.all()
-      |> Enum.each(fn stop ->
-        changes = %{level_id: nil, diagram_coordinate: nil}
-        stop |> Ecto.Changeset.change(changes) |> Repo.update!()
-
-        case Audit.record_change_in_transaction(audit, :stop, stop, "updated", changes) do
-          {:ok, _log} -> :ok
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
+      |> Enum.each(&clear_removed_level_from_stop!(audit, &1))
 
       with {:ok, _deleted} <- Repo.delete(stop_level),
            {:ok, _log} <-
@@ -273,6 +272,16 @@ defmodule GtfsPlanner.Gtfs.Stations do
         {:error, reason} -> Repo.rollback(reason)
       end
     end)
+  end
+
+  defp clear_removed_level_from_stop!(audit, stop) do
+    changes = %{level_id: nil, diagram_coordinate: nil}
+    stop |> Ecto.Changeset.change(changes) |> Repo.update!()
+
+    case Audit.record_change_in_transaction(audit, :stop, stop, "updated", changes) do
+      {:ok, _log} -> :ok
+      {:error, reason} -> Repo.rollback(reason)
+    end
   end
 
   @doc "Saves calibration and recalculates derived pathway lengths in the selected station."
@@ -351,38 +360,46 @@ defmodule GtfsPlanner.Gtfs.Stations do
         {image_w, image_h}
       ) do
     run(audit, :share, fn station ->
-      stop_level = lock_stop_level!(audit, station, expected_stop_level.id)
-      stale_stop_level!(stop_level, expected_stop_level.lock_version)
-
-      # Lock all descendants before deriving coordinates so another editor cannot
-      # move a point between the projection read and its audited write.
-      from(s in child_query(audit, station), order_by: [asc: s.id], lock: "FOR UPDATE")
-      |> Repo.all()
-
-      case Gtfs.derive_child_stop_coords(stop_level, image_w, image_h) do
-        {:ok, derived} ->
-          Enum.reduce(derived, 0, fn %{stop_id: id, lat: lat, lon: lon}, count ->
-            stop = lock_child!(audit, station, id)
-            changes = %{stop_lat: Decimal.from_float(lat), stop_lon: Decimal.from_float(lon)}
-
-            if decimal_changed?(stop.stop_lat, changes.stop_lat) or
-                 decimal_changed?(stop.stop_lon, changes.stop_lon) do
-              with {:ok, _updated} <- stop |> Stop.changeset(changes) |> Repo.update(),
-                   {:ok, _log} <-
-                     Audit.record_change_in_transaction(audit, :stop, stop, "updated", changes) do
-                count + 1
-              else
-                {:error, reason} -> Repo.rollback(reason)
-              end
-            else
-              count
-            end
-          end)
-
-        {:error, reason} ->
-          Repo.rollback(reason)
-      end
+      apply_alignment_in_station(audit, station, expected_stop_level, image_w, image_h)
     end)
+  end
+
+  defp apply_alignment_in_station(audit, station, expected_stop_level, image_w, image_h) do
+    stop_level = lock_stop_level!(audit, station, expected_stop_level.id)
+    stale_stop_level!(stop_level, expected_stop_level.lock_version)
+
+    # Lock all descendants before deriving coordinates so another editor cannot
+    # move a point between the projection read and its audited write.
+    from(s in child_query(audit, station), order_by: [asc: s.id], lock: "FOR UPDATE")
+    |> Repo.all()
+
+    case Gtfs.derive_child_stop_coords(stop_level, image_w, image_h) do
+      {:ok, derived} ->
+        Enum.reduce(derived, 0, fn coords, count ->
+          apply_child_stop_coords(audit, station, coords, count)
+        end)
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  defp apply_child_stop_coords(audit, station, %{stop_id: id, lat: lat, lon: lon}, count) do
+    stop = lock_child!(audit, station, id)
+    changes = %{stop_lat: Decimal.from_float(lat), stop_lon: Decimal.from_float(lon)}
+
+    if decimal_changed?(stop.stop_lat, changes.stop_lat) or
+         decimal_changed?(stop.stop_lon, changes.stop_lon) do
+      with {:ok, _updated} <- stop |> Stop.changeset(changes) |> Repo.update(),
+           {:ok, _log} <-
+             Audit.record_change_in_transaction(audit, :stop, stop, "updated", changes) do
+        count + 1
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    else
+      count
+    end
   end
 
   @doc false
@@ -445,64 +462,77 @@ defmodule GtfsPlanner.Gtfs.Stations do
 
   @doc "Restores a station entity from a scoped change log at the previewed revision."
   def rollback_entity(%AuditContext{} = audit, log_id, expected_revision) do
-    with {:ok, log_id} <- Ecto.UUID.cast(log_id) do
-      # Any historical stop ID may need restoration after a later rename, so
-      # select the exclusive version lock before entering the transaction.
-      preview_log = Audit.get_change_log(audit.organization_id, audit.gtfs_version_id, log_id)
-      lock_mode = if rollback_may_rename_stop?(preview_log), do: :exclusive, else: :share
-
-      run(audit, lock_mode, fn station ->
-        log =
-          Audit.get_change_log(audit.organization_id, audit.gtfs_version_id, log_id) ||
-            Repo.rollback(:not_found)
-
-        if lock_mode == :share and rollback_may_rename_stop?(log),
-          do: Repo.rollback(:not_found)
-
-        target_result = rollback_target_snapshot(log)
-
-        # The historical station match is sufficient to return a stored-log
-        # error even when a deleted entity no longer has a row to lock.
-        if log.station_stop_id == station.stop_id do
-          case target_result do
-            {:error, reason} when reason != :audit_only_entity -> Repo.rollback(reason)
-            _ -> :ok
-          end
-        end
-
-        entity = lock_rollback_entity!(audit, station, log)
-
-        with {:ok, target} <- target_result do
-          stale_rollback!(entity, expected_revision)
-          changeset = rollback_changeset(audit, station, entity, target)
-
-          if not changeset.valid?, do: Repo.rollback(changeset)
-          if changeset.changes == %{}, do: Repo.rollback(:already_matches_current)
-
-          {updated, counts} = apply_rollback!(audit, entity, changeset)
-
-          attrs =
-            changeset.changes
-            |> Map.delete(:stop_id)
-            |> Map.put(:rolled_back_to_log_id, log.id)
-            |> rollback_rename_metadata(entity, updated, counts)
-
-          case Audit.record_change_in_transaction(
-                 audit,
-                 rollback_entity_type!(log.entity_type),
-                 entity,
-                 "rolled_back",
-                 attrs
-               ) do
-            {:ok, _log} -> updated
-            {:error, reason} -> Repo.rollback(reason)
-          end
-        else
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
-    else
+    case Ecto.UUID.cast(log_id) do
+      {:ok, log_id} -> rollback_cast_log(audit, log_id, expected_revision)
       _ -> {:error, :not_found}
+    end
+  end
+
+  defp rollback_cast_log(audit, log_id, expected_revision) do
+    # Any historical stop ID may need restoration after a later rename, so
+    # select the exclusive version lock before entering the transaction.
+    preview_log = Audit.get_change_log(audit.organization_id, audit.gtfs_version_id, log_id)
+    lock_mode = if rollback_may_rename_stop?(preview_log), do: :exclusive, else: :share
+
+    run(audit, lock_mode, fn station ->
+      rollback_in_station(audit, station, lock_mode, log_id, expected_revision)
+    end)
+  end
+
+  defp rollback_in_station(audit, station, lock_mode, log_id, expected_revision) do
+    log =
+      Audit.get_change_log(audit.organization_id, audit.gtfs_version_id, log_id) ||
+        Repo.rollback(:not_found)
+
+    if lock_mode == :share and rollback_may_rename_stop?(log),
+      do: Repo.rollback(:not_found)
+
+    target_result = rollback_target_snapshot(log)
+
+    # The historical station match is sufficient to return a stored-log
+    # error even when a deleted entity no longer has a row to lock.
+    if log.station_stop_id == station.stop_id do
+      case target_result do
+        {:error, reason} when reason != :audit_only_entity -> Repo.rollback(reason)
+        _ -> :ok
+      end
+    end
+
+    entity = lock_rollback_entity!(audit, station, log)
+
+    case target_result do
+      {:ok, target} ->
+        restore_rollback_target!(audit, station, log, entity, target, expected_revision)
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  defp restore_rollback_target!(audit, station, log, entity, target, expected_revision) do
+    stale_rollback!(entity, expected_revision)
+    changeset = rollback_changeset(audit, station, entity, target)
+
+    if not changeset.valid?, do: Repo.rollback(changeset)
+    if changeset.changes == %{}, do: Repo.rollback(:already_matches_current)
+
+    {updated, counts} = apply_rollback!(audit, entity, changeset)
+
+    attrs =
+      changeset.changes
+      |> Map.delete(:stop_id)
+      |> Map.put(:rolled_back_to_log_id, log.id)
+      |> rollback_rename_metadata(entity, updated, counts)
+
+    case Audit.record_change_in_transaction(
+           audit,
+           rollback_entity_type!(log.entity_type),
+           entity,
+           "rolled_back",
+           attrs
+         ) do
+      {:ok, _log} -> updated
+      {:error, reason} -> Repo.rollback(reason)
     end
   end
 
@@ -555,32 +585,44 @@ defmodule GtfsPlanner.Gtfs.Stations do
 
   defp ensure_rollback_preview_scope(audit, station, %ChangeLog{} = log) do
     if log.entity_type in ["stop", "pathway", "level"] do
-      if log.station_stop_id == station.stop_id or
-           rollback_preview_current_member?(audit, station, log.entity_type, log.entity_id) do
-        :ok
-      else
-        {:error, :not_found}
-      end
+      ensure_rollback_preview_member(audit, station, log)
     else
-      current_stop_level? =
-        log.entity_type == "stop_level" and
-          case Ecto.UUID.cast(log.entity_id) do
-            {:ok, id} ->
-              Repo.exists?(
-                from(sl in StopLevel,
-                  where:
-                    sl.id == ^id and sl.organization_id == ^audit.organization_id and
-                      sl.gtfs_version_id == ^audit.gtfs_version_id and sl.stop_id == ^station.id
-                )
-              )
+      ensure_audit_only_preview_scope(audit, station, log)
+    end
+  end
 
-            _ ->
-              false
-          end
+  defp ensure_rollback_preview_member(audit, station, %ChangeLog{} = log) do
+    if log.station_stop_id == station.stop_id or
+         rollback_preview_current_member?(audit, station, log.entity_type, log.entity_id) do
+      :ok
+    else
+      {:error, :not_found}
+    end
+  end
 
-      if log.station_stop_id == station.stop_id or current_stop_level?,
-        do: {:error, :audit_only_entity},
-        else: {:error, :not_found}
+  defp ensure_audit_only_preview_scope(audit, station, %ChangeLog{} = log) do
+    current_stop_level? =
+      log.entity_type == "stop_level" and
+        current_station_stop_level?(audit, station, log.entity_id)
+
+    if log.station_stop_id == station.stop_id or current_stop_level?,
+      do: {:error, :audit_only_entity},
+      else: {:error, :not_found}
+  end
+
+  defp current_station_stop_level?(audit, station, entity_id) do
+    case Ecto.UUID.cast(entity_id) do
+      {:ok, id} ->
+        Repo.exists?(
+          from(sl in StopLevel,
+            where:
+              sl.id == ^id and sl.organization_id == ^audit.organization_id and
+                sl.gtfs_version_id == ^audit.gtfs_version_id and sl.stop_id == ^station.id
+          )
+        )
+
+      _ ->
+        false
     end
   end
 
@@ -685,19 +727,22 @@ defmodule GtfsPlanner.Gtfs.Stations do
       stop = lock_child!(audit, station, id)
       stale!(stop, expected_revision)
       delete_pathways_for_stop!(audit, stop.stop_id)
-
-      if is_nil(stop.diagram_coordinate) and is_nil(stop.level_id) do
-        stop
-      else
-        changes = %{diagram_coordinate: nil, level_id: nil}
-        updated = stop |> Ecto.Changeset.change(changes) |> Repo.update!()
-
-        case Audit.record_change_in_transaction(audit, :stop, stop, "updated", changes) do
-          {:ok, _log} -> updated
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end
+      clear_diagram_placement(audit, stop)
     end)
+  end
+
+  defp clear_diagram_placement(audit, stop) do
+    if is_nil(stop.diagram_coordinate) and is_nil(stop.level_id) do
+      stop
+    else
+      changes = %{diagram_coordinate: nil, level_id: nil}
+      updated = stop |> Ecto.Changeset.change(changes) |> Repo.update!()
+
+      case Audit.record_change_in_transaction(audit, :stop, stop, "updated", changes) do
+        {:ok, _log} -> updated
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end
   end
 
   @doc "Previews the selected station's stop IDs and all affected natural references."
@@ -753,35 +798,7 @@ defmodule GtfsPlanner.Gtfs.Stations do
   defp run(%AuditContext{} = audit, lock_mode, action) do
     Repo.transaction(fn ->
       Authorization.lock_editor!(audit)
-
-      version =
-        case lock_mode do
-          :share ->
-            Versions.lock_for_input_write!(audit.organization_id, audit.gtfs_version_id)
-
-          :exclusive ->
-            Versions.lock_for_exclusive_write!(audit.organization_id, audit.gtfs_version_id)
-        end
-
-      if version.publication_status != "published" or is_nil(version.published_at) do
-        Repo.rollback(:not_found)
-      end
-
-      unless is_binary(audit.station_stop_id) and audit.station_stop_id != "" do
-        Repo.rollback(:not_found)
-      end
-
-      station =
-        from(s in Stop,
-          where:
-            s.organization_id == ^audit.organization_id and
-              s.gtfs_version_id == ^audit.gtfs_version_id and
-              s.stop_id == ^audit.station_stop_id and s.location_type == 1,
-          lock: "FOR SHARE"
-        )
-        |> Repo.one()
-
-      if is_nil(station), do: Repo.rollback(:not_found)
+      station = lock_published_station!(audit, lock_mode)
       action.(station)
     end)
   rescue
@@ -793,6 +810,39 @@ defmodule GtfsPlanner.Gtfs.Stations do
         do: {:error, :pathway_in_use},
         else: reraise(error, __STACKTRACE__)
   end
+
+  # Runs inside the `run/3` transaction, after the membership lock: takes the
+  # version lock, then the station share lock.
+  defp lock_published_station!(%AuditContext{} = audit, lock_mode) do
+    version = lock_version_for_write!(audit, lock_mode)
+
+    if version.publication_status != "published" or is_nil(version.published_at) do
+      Repo.rollback(:not_found)
+    end
+
+    unless is_binary(audit.station_stop_id) and audit.station_stop_id != "" do
+      Repo.rollback(:not_found)
+    end
+
+    station =
+      from(s in Stop,
+        where:
+          s.organization_id == ^audit.organization_id and
+            s.gtfs_version_id == ^audit.gtfs_version_id and
+            s.stop_id == ^audit.station_stop_id and s.location_type == 1,
+        lock: "FOR SHARE"
+      )
+      |> Repo.one()
+
+    if is_nil(station), do: Repo.rollback(:not_found)
+    station
+  end
+
+  defp lock_version_for_write!(audit, :share),
+    do: Versions.lock_for_input_write!(audit.organization_id, audit.gtfs_version_id)
+
+  defp lock_version_for_write!(audit, :exclusive),
+    do: Versions.lock_for_exclusive_write!(audit.organization_id, audit.gtfs_version_id)
 
   defp rollback_may_rename_stop?(%ChangeLog{entity_type: "stop"} = log) do
     case rollback_target_snapshot(log) do
@@ -1378,35 +1428,37 @@ defmodule GtfsPlanner.Gtfs.Stations do
         ids when is_list(ids) -> MapSet.new(ids)
       end
 
-    cond do
-      child_stops == [] and selected_ids != MapSet.new() ->
-        {:error, :no_stops}
-
-      true ->
-        child_ids = Enum.map(child_stops, & &1.stop_id)
-
-        pathways =
-          from(p in Pathway,
-            where:
-              p.organization_id == ^audit.organization_id and
-                p.gtfs_version_id == ^audit.gtfs_version_id and
-                (p.from_stop_id in ^child_ids or p.to_stop_id in ^child_ids)
-          )
-          |> Repo.all()
-
-        mapping =
-          case style do
-            :kebab -> StationNaming.build_kebab_naming_map(child_stops)
-            _ -> StationNaming.build_naming_map(child_stops, pathways, station.stop_id)
-          end
-
-        rows =
-          Enum.filter(mapping, fn %{old_id: old_id, new_id: new_id} ->
-            old_id != new_id and (is_nil(selected_ids) or MapSet.member?(selected_ids, old_id))
-          end)
-
-        build_naming_preview(audit, rows, selected_ids)
+    if child_stops == [] and selected_ids != MapSet.new() do
+      {:error, :no_stops}
+    else
+      child_stops_naming_preview(audit, station, style, child_stops, selected_ids)
     end
+  end
+
+  defp child_stops_naming_preview(audit, station, style, child_stops, selected_ids) do
+    child_ids = Enum.map(child_stops, & &1.stop_id)
+
+    pathways =
+      from(p in Pathway,
+        where:
+          p.organization_id == ^audit.organization_id and
+            p.gtfs_version_id == ^audit.gtfs_version_id and
+            (p.from_stop_id in ^child_ids or p.to_stop_id in ^child_ids)
+      )
+      |> Repo.all()
+
+    mapping =
+      case style do
+        :kebab -> StationNaming.build_kebab_naming_map(child_stops)
+        _ -> StationNaming.build_naming_map(child_stops, pathways, station.stop_id)
+      end
+
+    rows =
+      Enum.filter(mapping, fn %{old_id: old_id, new_id: new_id} ->
+        old_id != new_id and (is_nil(selected_ids) or MapSet.member?(selected_ids, old_id))
+      end)
+
+    build_naming_preview(audit, rows, selected_ids)
   end
 
   defp build_naming_preview(audit, [], selected_ids) do

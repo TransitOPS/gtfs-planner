@@ -3,7 +3,6 @@ defmodule GtfsPlanner.Gtfs.Audit do
 
   import Ecto.Query, warn: false
 
-  alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.CalendarAttribute
@@ -19,6 +18,7 @@ defmodule GtfsPlanner.Gtfs.Audit do
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Trip
+  alias GtfsPlanner.Repo
 
   @structured_audit_entity_types [
     :route_pattern,

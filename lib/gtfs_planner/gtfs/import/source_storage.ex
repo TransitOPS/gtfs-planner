@@ -281,20 +281,22 @@ defmodule GtfsPlanner.Gtfs.Import.SourceStorage do
     case File.ls(organization_path) do
       {:ok, runs} ->
         Enum.reduce(runs, count, fn run, count ->
-          run_path = Path.join(organization_path, run)
-
-          if MapSet.member?(active, run) or within_orphan_grace?(run_path, grace_seconds) do
-            count
-          else
-            case File.rm_rf(run_path) do
-              {:ok, _removed} -> count + 1
-              {:error, _reason, _path} -> count
-            end
-          end
+          reconcile_run(Path.join(organization_path, run), run, active, grace_seconds, count)
         end)
 
       {:error, _reason} ->
         count
+    end
+  end
+
+  defp reconcile_run(run_path, run, active, grace_seconds, count) do
+    if MapSet.member?(active, run) or within_orphan_grace?(run_path, grace_seconds) do
+      count
+    else
+      case File.rm_rf(run_path) do
+        {:ok, _removed} -> count + 1
+        {:error, _reason, _path} -> count
+      end
     end
   end
 

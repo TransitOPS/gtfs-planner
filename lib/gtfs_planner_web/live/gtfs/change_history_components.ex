@@ -34,8 +34,8 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.ChangeLog
-  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.Pathway
+  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlannerWeb.Components.TransitPresentation
   alias GtfsPlannerWeb.Home.ChangeLinks

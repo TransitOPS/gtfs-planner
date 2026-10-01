@@ -2376,147 +2376,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("save_child_stop", params, socket) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-    station = socket.assigns.station
-
     with {:ok, x} <- parse_finite_float(params["x"]),
          {:ok, y} <- parse_finite_float(params["y"]) do
-      location_type = parse_int(params["location_type"] || "3")
-      selected_parent_platform = blank_to_nil(params["parent_platform"])
-      platform_stop_ids = platform_stop_ids_for_station(organization_id, gtfs_version_id, station)
-
-      parent_station =
-        if location_type == 4 and MapSet.member?(platform_stop_ids, selected_parent_platform) do
-          selected_parent_platform
-        else
-          station.stop_id
-        end
-
-      stop_id =
-        if socket.assigns.stop_id_mode == :auto and socket.assigns.selected_stop_id == nil and
-             params["stop_id"] not in [nil, ""] do
-          Gtfs.unique_stop_id(organization_id, gtfs_version_id, params["stop_id"])
-        else
-          params["stop_id"]
-        end
-
-      stop_attrs = %{
-        stop_name: params["stop_name"],
-        location_type: location_type,
-        parent_station: parent_station,
-        level_id: params["level_id"],
-        wheelchair_boarding: parse_optional_int(params["wheelchair_boarding"]),
-        platform_code: blank_to_nil(params["platform_code"]),
-        stop_lat: params["stop_lat"],
-        stop_lon: params["stop_lon"],
-        diagram_coordinate: %{"x" => x, "y" => y}
-      }
-
-      case socket.assigns.selected_stop_id do
-        nil ->
-          create_attrs =
-            stop_attrs
-            |> Map.put(:stop_id, stop_id)
-            |> Map.put(
-              :parent_platform,
-              if(location_type == 4, do: selected_parent_platform, else: nil)
-            )
-
-          case Stations.create_child_stop(socket.assigns.audit_ctx, create_attrs) do
-            {:ok, stop} ->
-              {:noreply,
-               socket
-               |> stream_insert(:child_stops, stop)
-               |> refresh_lists()
-               |> assign(
-                 :placement_status,
-                 "Stop placed at (#{Float.to_string(x)}, #{Float.to_string(y)})"
-               )
-               |> assign(:pending_xy, nil)
-               |> assign(:selected_stop_id, nil)
-               |> assign(:active_point_id, nil)
-               |> assign(:child_stop_outcome, nil)
-               |> assign(:child_stop_form, to_form(%{}))}
-
-            {:error, %Ecto.Changeset{} = changeset} ->
-              {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
-
-            {:error, reason} ->
-              {:noreply,
-               socket
-               |> assign(:child_stop_form, to_form(params))
-               |> assign_child_stop_outcome(reason, stop_id)}
-          end
-
-        selected_id ->
-          case socket.assigns.editing_child_stop do
-            %Stop{id: ^selected_id} = stop ->
-              stop_id_result =
-                if stop_id in [nil, ""] do
-                  Gtfs.generate_kebab_stop_id(
-                    organization_id,
-                    gtfs_version_id,
-                    stop_attrs.stop_name,
-                    stop.stop_id
-                  )
-                else
-                  {:ok, stop_id}
-                end
-
-              case stop_id_result do
-                {:ok, resolved_id} ->
-                  update_attrs =
-                    if resolved_id == stop.stop_id,
-                      do: stop_attrs,
-                      else: Map.put(stop_attrs, :stop_id, resolved_id)
-
-                  case Stations.update_child_stop(
-                         socket.assigns.audit_ctx,
-                         selected_id,
-                         update_attrs,
-                         child_stop_revision(socket)
-                       ) do
-                    {:ok, updated_stop} ->
-                      refresh_plan =
-                        child_stop_refresh_plan(stop, updated_stop, socket.assigns.active_level)
-
-                      {:noreply,
-                       socket
-                       |> assign(:placement_status, "Stop updated")
-                       |> close_child_stop_drawer_after_save()
-                       |> apply_child_stop_save_refresh(refresh_plan, updated_stop)
-                       |> maybe_refresh_history_entries("stop", updated_stop.id)}
-
-                    {:error, %Ecto.Changeset{} = changeset} ->
-                      {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
-
-                    {:error, reason} ->
-                      {:noreply,
-                       socket
-                       |> assign(:child_stop_form, to_form(params))
-                       |> assign_child_stop_outcome(reason, stop.stop_id)}
-                  end
-
-                {:error, message} ->
-                  # The submitted (blank) stop ID is part of the changeset so the field is
-                  # marked as used and shows the generation error.
-                  changeset =
-                    stop
-                    |> Stop.changeset(Map.put(stop_attrs, :stop_id, stop_id))
-                    |> Ecto.Changeset.add_error(:stop_id, message)
-                    |> Map.put(:action, :validate)
-
-                  {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
-              end
-
-            _ ->
-              {:noreply,
-               socket
-               |> assign(:child_stop_form, to_form(params))
-               |> assign_child_stop_outcome(:not_found, nil)}
-          end
-      end
+      save_child_stop(socket, params, x, y)
     else
       {:error, :invalid_coordinate} ->
         {:noreply,
@@ -3678,86 +3540,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   def handle_event("flip_pathway", %{"id" => id, "revision" => revision}, socket) do
     case socket.assigns.editing_pathway do
       %Pathway{id: ^id} = pathway ->
-        # Read current form values so pending edits are preserved through the flip.
-        form = socket.assigns.pathway_form
-        form_signposted = form[:signposted_as] && form[:signposted_as].value
-        form_reversed = form[:reversed_signposted_as] && form[:reversed_signposted_as].value
-
-        flip_attrs = %{
-          from_stop_id: pathway.to_stop_id,
-          to_stop_id: pathway.from_stop_id,
-          # Swap signage from form values (preserves pending edits)
-          signposted_as: form_reversed,
-          reversed_signposted_as: form_signposted,
-          # Preserve other pending form edits
-          pathway_mode: parse_int(form[:pathway_mode] && form[:pathway_mode].value),
-          is_bidirectional:
-            (form[:is_bidirectional] && form[:is_bidirectional].value) in [true, "true"],
-          traversal_time:
-            parse_optional_int(form[:traversal_time] && form[:traversal_time].value),
-          length: parse_optional_decimal(form[:length] && form[:length].value),
-          stair_count: parse_optional_int(form[:stair_count] && form[:stair_count].value),
-          min_width: parse_optional_decimal(form[:min_width] && form[:min_width].value)
-        }
-
-        case Stations.update_pathway(
-               socket.assigns.audit_ctx,
-               id,
-               flip_attrs,
-               parse_int(revision)
-             ) do
-          {:ok, updated_pathway} ->
-            refreshed_socket = refresh_lists(socket)
-
-            case Stations.get_pathway(socket.assigns.audit_ctx, updated_pathway.id) do
-              {:ok, reloaded} ->
-                pathway_pair =
-                  pair_siblings_for(
-                    %{from_stop_id: reloaded.from_stop_id, to_stop_id: reloaded.to_stop_id},
-                    refreshed_socket.assigns.pathways_list
-                  )
-
-                active_pathway_tab =
-                  case pathway_pair do
-                    [_first, second] ->
-                      if reloaded.id == second.id, do: :second, else: :first
-
-                    _ ->
-                      :first
-                  end
-
-                {:noreply,
-                 refreshed_socket
-                 |> assign(:editing_pathway, reloaded)
-                 |> assign(:editing_pathway_pair, pathway_pair)
-                 |> assign(:active_pathway_tab, active_pathway_tab)
-                 |> assign(:pathway_form, to_form(pathway_form_params(reloaded)))
-                 |> assign(:pathway_form_dirty, false)
-                 |> clear_pathway_refusals()
-                 |> maybe_refresh_history_entries("pathway", reloaded.id)}
-
-              {:error, :not_found} ->
-                {:noreply, assign_pathway_outcome(refreshed_socket, :not_found)}
-            end
-
-          {:error, %Ecto.Changeset{} = changeset} ->
-            detail =
-              changeset
-              |> Ecto.Changeset.traverse_errors(fn {msg, _opts} -> msg end)
-              |> Enum.map_join("; ", fn {field, msgs} ->
-                "#{field}: #{Enum.join(msgs, ", ")}"
-              end)
-
-            message =
-              if detail == "",
-                do: "Failed to flip pathway direction.",
-                else: "Failed to flip: #{detail}"
-
-            {:noreply, assign(socket, :pathway_error, message)}
-
-          {:error, reason} ->
-            {:noreply, assign_pathway_outcome(socket, reason)}
-        end
+        flip_editing_pathway(socket, pathway, revision)
 
       _ ->
         {:noreply, assign(socket, :pathway_error, "Pathway not found.")}
@@ -3931,54 +3714,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     params = Map.get(submitted, "level", submitted)
     audit = socket.assigns.audit_ctx
 
-    result =
-      case socket.assigns.show_level_modal do
-        :add when socket.assigns.level_mode == :existing ->
-          case params["existing_level_id"] do
-            id when is_binary(id) and id != "" -> Stations.add_existing_level(audit, id)
-            _ -> {:error, :level_required}
-          end
-
-        :add ->
-          attrs = %{
-            level_id: params["level_id"],
-            level_name: params["level_name"],
-            level_index: parse_int(params["level_index"])
-          }
-
-          Stations.create_station_level(audit, attrs, %{})
-
-        :edit ->
-          case socket.assigns.active_level do
-            %Gtfs.Level{id: id} = level ->
-              attrs = %{
-                level_id: params["level_id"],
-                level_name: params["level_name"],
-                level_index: parse_int(params["level_index"])
-              }
-
-              # Saving the values the level already has writes nothing and records no history.
-              if Gtfs.Level.editor_changeset(level, attrs).changes == %{},
-                do: {:ok, level},
-                else: Stations.update_level(audit, id, attrs, parse_int(params["lock_version"]))
-
-            _ ->
-              {:error, :not_found}
-          end
-
-        _ ->
-          {:error, :not_found}
-      end
+    result = level_save_result(socket, audit, params)
 
     socket = assign(socket, :level_form, to_form(params))
 
     case result do
       # A StopLevel also has a `:level` key (its association), so it matches first.
       {:ok, %StopLevel{level_id: level_id}} ->
-        case scoped_level_in_version(socket, level_id) do
-          %Gtfs.Level{} = level -> {:noreply, finish_level_save(socket, level)}
-          nil -> {:noreply, assign_level_outcome(socket, :not_found)}
-        end
+        {:noreply, finish_stop_level_save(socket, level_id)}
 
       {:ok, %{level: level}} ->
         {:noreply, finish_level_save(socket, level)}
@@ -6876,74 +6619,157 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
+  defp flip_editing_pathway(socket, %Pathway{id: id} = pathway, revision) do
+    flip_attrs = flip_pathway_attrs(pathway, socket.assigns.pathway_form)
+
+    case Stations.update_pathway(
+           socket.assigns.audit_ctx,
+           id,
+           flip_attrs,
+           parse_int(revision)
+         ) do
+      {:ok, updated_pathway} ->
+        show_flipped_pathway(socket, updated_pathway)
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply, assign(socket, :pathway_error, flip_error_message(changeset))}
+
+      {:error, reason} ->
+        {:noreply, assign_pathway_outcome(socket, reason)}
+    end
+  end
+
+  # Reads current form values so pending edits are preserved through the flip.
+  defp flip_pathway_attrs(%Pathway{} = pathway, form) do
+    %{
+      from_stop_id: pathway.to_stop_id,
+      to_stop_id: pathway.from_stop_id,
+      # Swap signage from form values (preserves pending edits)
+      signposted_as: form_field_value(form, :reversed_signposted_as),
+      reversed_signposted_as: form_field_value(form, :signposted_as),
+      # Preserve other pending form edits
+      pathway_mode: parse_int(form_field_value(form, :pathway_mode)),
+      is_bidirectional: form_field_value(form, :is_bidirectional) in [true, "true"],
+      traversal_time: parse_optional_int(form_field_value(form, :traversal_time)),
+      length: parse_optional_decimal(form_field_value(form, :length)),
+      stair_count: parse_optional_int(form_field_value(form, :stair_count)),
+      min_width: parse_optional_decimal(form_field_value(form, :min_width))
+    }
+  end
+
+  defp form_field_value(form, field), do: form[field] && form[field].value
+
+  defp show_flipped_pathway(socket, updated_pathway) do
+    refreshed_socket = refresh_lists(socket)
+
+    case Stations.get_pathway(socket.assigns.audit_ctx, updated_pathway.id) do
+      {:ok, reloaded} ->
+        pathway_pair =
+          pair_siblings_for(
+            %{from_stop_id: reloaded.from_stop_id, to_stop_id: reloaded.to_stop_id},
+            refreshed_socket.assigns.pathways_list
+          )
+
+        {:noreply,
+         refreshed_socket
+         |> assign(:editing_pathway, reloaded)
+         |> assign(:editing_pathway_pair, pathway_pair)
+         |> assign(:active_pathway_tab, tab_for_pathway(pathway_pair, reloaded))
+         |> assign(:pathway_form, to_form(pathway_form_params(reloaded)))
+         |> assign(:pathway_form_dirty, false)
+         |> clear_pathway_refusals()
+         |> maybe_refresh_history_entries("pathway", reloaded.id)}
+
+      {:error, :not_found} ->
+        {:noreply, assign_pathway_outcome(refreshed_socket, :not_found)}
+    end
+  end
+
+  defp flip_error_message(%Ecto.Changeset{} = changeset) do
+    detail =
+      changeset
+      |> Ecto.Changeset.traverse_errors(fn {msg, _opts} -> msg end)
+      |> Enum.map_join("; ", fn {field, msgs} ->
+        "#{field}: #{Enum.join(msgs, ", ")}"
+      end)
+
+    if detail == "",
+      do: "Failed to flip pathway direction.",
+      else: "Failed to flip: #{detail}"
+  end
+
   defp create_pathway_between_stops(socket, from_stop_id, to_stop_id) do
     with {:ok, from_stop} <- fetch_intent_stop(socket, from_stop_id),
          {:ok, to_stop} <- fetch_intent_stop(socket, to_stop_id),
          pair_key = normalize_pair_key(from_stop.stop_id, to_stop.stop_id),
          pair_count = Map.get(socket.assigns.pathway_pair_counts || %{}, pair_key, 0),
          false <- pair_count >= 2 do
-      pathway_id = "pw_#{:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)}"
-
-      attrs =
-        %{
-          pathway_id: pathway_id,
-          from_stop_id: from_stop.stop_id,
-          to_stop_id: to_stop.stop_id,
-          pathway_mode: 1,
-          is_bidirectional: true
-        }
-        |> maybe_put_auto_pathway_length(socket, from_stop, to_stop)
-
-      case Stations.create_pathway(socket.assigns.audit_ctx, attrs) do
-        {:ok, pathway} ->
-          case Stations.get_pathway(socket.assigns.audit_ctx, pathway.id) do
-            {:ok, loaded_pathway} ->
-              refreshed_socket = refresh_lists(socket)
-
-              pathway_pair =
-                pair_siblings_for(loaded_pathway, refreshed_socket.assigns.pathways_list)
-
-              {:noreply,
-               refreshed_socket
-               # Re-stream to remove highlight
-               |> stream_insert(:child_stops, from_stop)
-               |> assign(:editing_pathway_pair, pathway_pair)
-               |> assign(:active_pathway_tab, tab_for_pathway(pathway_pair, loaded_pathway))
-               |> assign(:pathway_form_dirty, false)
-               |> assign(:editing_pathway, loaded_pathway)
-               |> assign(:pathway_form, to_form(pathway_form_params(loaded_pathway)))
-               |> assign(:show_pathway_drawer, true)
-               |> assign(:active_point_id, nil)
-               |> assign(:selected_from_stop, nil)
-               |> assign(
-                 :placement_status,
-                 "Pathway created #{stop_display_label(from_stop)} → #{stop_display_label(to_stop)}"
-               )
-               |> clear_pathway_refusals()}
-
-            {:error, :not_found} ->
-              {:noreply, show_postwrite_pathway_missing(socket)}
-          end
-
-        {:error, reason} ->
-          outcome = pathway_outcome(reason)
-
-          {:noreply,
-           socket
-           |> assign(:show_pathway_drawer, false)
-           |> assign(:editing_pathway_pair, [])
-           |> assign(:active_pathway_tab, :first)
-           |> assign(:pathway_form_dirty, false)
-           |> assign(:editing_pathway, nil)
-           |> assign(:active_point_id, nil)
-           |> assign(:pathway_error, outcome.message)}
-      end
+      create_stop_pair_pathway(socket, from_stop, to_stop)
     else
       true ->
         {:noreply, assign(socket, :pathway_error, "This stop pair already has two pathways")}
 
       {:error, :not_found} ->
         {:noreply, assign(socket, :pathway_error, "Invalid stop selection")}
+    end
+  end
+
+  defp create_stop_pair_pathway(socket, from_stop, to_stop) do
+    pathway_id = "pw_#{:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)}"
+
+    attrs =
+      %{
+        pathway_id: pathway_id,
+        from_stop_id: from_stop.stop_id,
+        to_stop_id: to_stop.stop_id,
+        pathway_mode: 1,
+        is_bidirectional: true
+      }
+      |> maybe_put_auto_pathway_length(socket, from_stop, to_stop)
+
+    case Stations.create_pathway(socket.assigns.audit_ctx, attrs) do
+      {:ok, pathway} ->
+        case Stations.get_pathway(socket.assigns.audit_ctx, pathway.id) do
+          {:ok, loaded_pathway} ->
+            refreshed_socket = refresh_lists(socket)
+
+            pathway_pair =
+              pair_siblings_for(loaded_pathway, refreshed_socket.assigns.pathways_list)
+
+            {:noreply,
+             refreshed_socket
+             # Re-stream to remove highlight
+             |> stream_insert(:child_stops, from_stop)
+             |> assign(:editing_pathway_pair, pathway_pair)
+             |> assign(:active_pathway_tab, tab_for_pathway(pathway_pair, loaded_pathway))
+             |> assign(:pathway_form_dirty, false)
+             |> assign(:editing_pathway, loaded_pathway)
+             |> assign(:pathway_form, to_form(pathway_form_params(loaded_pathway)))
+             |> assign(:show_pathway_drawer, true)
+             |> assign(:active_point_id, nil)
+             |> assign(:selected_from_stop, nil)
+             |> assign(
+               :placement_status,
+               "Pathway created #{stop_display_label(from_stop)} → #{stop_display_label(to_stop)}"
+             )
+             |> clear_pathway_refusals()}
+
+          {:error, :not_found} ->
+            {:noreply, show_postwrite_pathway_missing(socket)}
+        end
+
+      {:error, reason} ->
+        outcome = pathway_outcome(reason)
+
+        {:noreply,
+         socket
+         |> assign(:show_pathway_drawer, false)
+         |> assign(:editing_pathway_pair, [])
+         |> assign(:active_pathway_tab, :first)
+         |> assign(:pathway_form_dirty, false)
+         |> assign(:editing_pathway, nil)
+         |> assign(:active_point_id, nil)
+         |> assign(:pathway_error, outcome.message)}
     end
   end
 
@@ -7265,6 +7091,166 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:child_stop_form, to_form(%{}))
   end
 
+  defp save_child_stop(socket, params, x, y) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
+
+    location_type = parse_int(params["location_type"] || "3")
+    selected_parent_platform = blank_to_nil(params["parent_platform"])
+    platform_stop_ids = platform_stop_ids_for_station(organization_id, gtfs_version_id, station)
+
+    parent_station =
+      if location_type == 4 and MapSet.member?(platform_stop_ids, selected_parent_platform) do
+        selected_parent_platform
+      else
+        station.stop_id
+      end
+
+    stop_id = submitted_child_stop_id(socket, params, organization_id, gtfs_version_id)
+
+    stop_attrs = %{
+      stop_name: params["stop_name"],
+      location_type: location_type,
+      parent_station: parent_station,
+      level_id: params["level_id"],
+      wheelchair_boarding: parse_optional_int(params["wheelchair_boarding"]),
+      platform_code: blank_to_nil(params["platform_code"]),
+      stop_lat: params["stop_lat"],
+      stop_lon: params["stop_lon"],
+      diagram_coordinate: %{"x" => x, "y" => y}
+    }
+
+    case socket.assigns.selected_stop_id do
+      nil ->
+        create_attrs =
+          stop_attrs
+          |> Map.put(:stop_id, stop_id)
+          |> Map.put(
+            :parent_platform,
+            if(location_type == 4, do: selected_parent_platform, else: nil)
+          )
+
+        place_new_child_stop(socket, params, create_attrs, stop_id, x, y)
+
+      selected_id ->
+        save_child_stop_edit(socket, params, stop_attrs, stop_id, selected_id)
+    end
+  end
+
+  defp submitted_child_stop_id(socket, params, organization_id, gtfs_version_id) do
+    if socket.assigns.stop_id_mode == :auto and socket.assigns.selected_stop_id == nil and
+         params["stop_id"] not in [nil, ""] do
+      Gtfs.unique_stop_id(organization_id, gtfs_version_id, params["stop_id"])
+    else
+      params["stop_id"]
+    end
+  end
+
+  defp place_new_child_stop(socket, params, create_attrs, stop_id, x, y) do
+    case Stations.create_child_stop(socket.assigns.audit_ctx, create_attrs) do
+      {:ok, stop} ->
+        {:noreply,
+         socket
+         |> stream_insert(:child_stops, stop)
+         |> refresh_lists()
+         |> assign(
+           :placement_status,
+           "Stop placed at (#{Float.to_string(x)}, #{Float.to_string(y)})"
+         )
+         |> assign(:pending_xy, nil)
+         |> assign(:selected_stop_id, nil)
+         |> assign(:active_point_id, nil)
+         |> assign(:child_stop_outcome, nil)
+         |> assign(:child_stop_form, to_form(%{}))}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:child_stop_form, to_form(params))
+         |> assign_child_stop_outcome(reason, stop_id)}
+    end
+  end
+
+  defp save_child_stop_edit(socket, params, stop_attrs, stop_id, selected_id) do
+    case socket.assigns.editing_child_stop do
+      %Stop{id: ^selected_id} = stop ->
+        update_editing_child_stop(socket, params, stop, stop_attrs, stop_id)
+
+      _ ->
+        {:noreply,
+         socket
+         |> assign(:child_stop_form, to_form(params))
+         |> assign_child_stop_outcome(:not_found, nil)}
+    end
+  end
+
+  defp update_editing_child_stop(socket, params, %Stop{} = stop, stop_attrs, stop_id) do
+    stop_id_result =
+      if stop_id in [nil, ""] do
+        Gtfs.generate_kebab_stop_id(
+          socket.assigns.current_organization.id,
+          socket.assigns.current_gtfs_version.id,
+          stop_attrs.stop_name,
+          stop.stop_id
+        )
+      else
+        {:ok, stop_id}
+      end
+
+    case stop_id_result do
+      {:ok, resolved_id} ->
+        submit_child_stop_update(socket, params, stop, stop_attrs, resolved_id)
+
+      {:error, message} ->
+        # The submitted (blank) stop ID is part of the changeset so the field is
+        # marked as used and shows the generation error.
+        changeset =
+          stop
+          |> Stop.changeset(Map.put(stop_attrs, :stop_id, stop_id))
+          |> Ecto.Changeset.add_error(:stop_id, message)
+          |> Map.put(:action, :validate)
+
+        {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
+    end
+  end
+
+  defp submit_child_stop_update(socket, params, %Stop{} = stop, stop_attrs, resolved_id) do
+    update_attrs =
+      if resolved_id == stop.stop_id,
+        do: stop_attrs,
+        else: Map.put(stop_attrs, :stop_id, resolved_id)
+
+    case Stations.update_child_stop(
+           socket.assigns.audit_ctx,
+           stop.id,
+           update_attrs,
+           child_stop_revision(socket)
+         ) do
+      {:ok, updated_stop} ->
+        refresh_plan = child_stop_refresh_plan(stop, updated_stop, socket.assigns.active_level)
+
+        {:noreply,
+         socket
+         |> assign(:placement_status, "Stop updated")
+         |> close_child_stop_drawer_after_save()
+         |> apply_child_stop_save_refresh(refresh_plan, updated_stop)
+         |> maybe_refresh_history_entries("stop", updated_stop.id)}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:child_stop_form, to_form(params))
+         |> assign_child_stop_outcome(reason, stop.stop_id)}
+    end
+  end
+
   defp child_stop_revision(socket, stop_id \\ nil) do
     case socket.assigns.editing_child_stop do
       %Stop{id: id, lock_version: revision}
@@ -7304,20 +7290,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           %{kind: "warning", message: "This stop no longer exists.", reload?: true}
 
         {:in_use, counts} ->
-          uses =
-            counts
-            |> Enum.filter(fn {_key, count} -> count > 0 end)
-            |> Enum.sort_by(fn {key, _count} -> key end)
-            |> Enum.map(fn {key, count} ->
-              label = key |> Atom.to_string() |> String.replace("_", " ")
-              label = if count == 1, do: String.trim_trailing(label, "s"), else: label
-              "#{count} #{label}"
-            end)
-            |> Enum.join(", ")
-
           %{
             kind: "warning",
-            message: "Can't delete #{stop_id}: still used by #{uses}.",
+            message: "Can't delete #{stop_id}: still used by #{child_stop_uses(counts)}.",
             reload?: false
           }
 
@@ -7333,6 +7308,64 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       end
 
     assign(socket, :child_stop_outcome, outcome)
+  end
+
+  defp level_save_result(socket, audit, params) do
+    case socket.assigns.show_level_modal do
+      :add when socket.assigns.level_mode == :existing ->
+        case params["existing_level_id"] do
+          id when is_binary(id) and id != "" -> Stations.add_existing_level(audit, id)
+          _ -> {:error, :level_required}
+        end
+
+      :add ->
+        attrs = %{
+          level_id: params["level_id"],
+          level_name: params["level_name"],
+          level_index: parse_int(params["level_index"])
+        }
+
+        Stations.create_station_level(audit, attrs, %{})
+
+      :edit ->
+        save_active_level(audit, socket.assigns.active_level, params)
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
+  defp finish_stop_level_save(socket, level_id) do
+    case scoped_level_in_version(socket, level_id) do
+      %Gtfs.Level{} = level -> finish_level_save(socket, level)
+      nil -> assign_level_outcome(socket, :not_found)
+    end
+  end
+
+  defp save_active_level(audit, %Gtfs.Level{id: id} = level, params) do
+    attrs = %{
+      level_id: params["level_id"],
+      level_name: params["level_name"],
+      level_index: parse_int(params["level_index"])
+    }
+
+    # Saving the values the level already has writes nothing and records no history.
+    if Gtfs.Level.editor_changeset(level, attrs).changes == %{},
+      do: {:ok, level},
+      else: Stations.update_level(audit, id, attrs, parse_int(params["lock_version"]))
+  end
+
+  defp save_active_level(_audit, _active_level, _params), do: {:error, :not_found}
+
+  defp child_stop_uses(counts) do
+    counts
+    |> Enum.filter(fn {_key, count} -> count > 0 end)
+    |> Enum.sort_by(fn {key, _count} -> key end)
+    |> Enum.map_join(", ", fn {key, count} ->
+      label = key |> Atom.to_string() |> String.replace("_", " ")
+      label = if count == 1, do: String.trim_trailing(label, "s"), else: label
+      "#{count} #{label}"
+    end)
   end
 
   defp finish_level_save(socket, level) do

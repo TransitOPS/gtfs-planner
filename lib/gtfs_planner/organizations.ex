@@ -492,18 +492,13 @@ defmodule GtfsPlanner.Organizations do
          change,
          actor_level
        ) do
-    proposed_roles = if match?({:roles, _}, change), do: elem(change, 1), else: []
-    removes_system_role? = "administrator" in roles and "administrator" not in proposed_roles
-    grants_system_role? = "administrator" not in roles and "administrator" in proposed_roles
-
-    removes_usable_admin? =
-      "pathways_studio_admin" in roles and "pathways_studio_admin" not in proposed_roles and
-        is_nil(membership.deactivated_at) and
-        not is_nil(Repo.get!(User, membership.user_id).hashed_password)
+    proposed_roles = proposed_roles(change)
+    removes_system_role? = removes_role?(roles, proposed_roles, "administrator")
+    grants_system_role? = grants_role?(roles, proposed_roles, "administrator")
+    removes_usable_admin? = removes_usable_admin?(membership, roles, proposed_roles)
 
     cond do
-      removes_system_role? and
-          (change == :remove or change == :deactivate or actor_level != :system) ->
+      removes_system_role? and system_removal_refused?(change, actor_level) ->
         {:error, :system_administrator}
 
       grants_system_role? and actor_level != :system ->
@@ -515,6 +510,24 @@ defmodule GtfsPlanner.Organizations do
       true ->
         :ok
     end
+  end
+
+  defp proposed_roles({:roles, roles}), do: roles
+  defp proposed_roles(_change), do: []
+
+  defp removes_role?(roles, proposed_roles, role),
+    do: role in roles and role not in proposed_roles
+
+  defp grants_role?(roles, proposed_roles, role),
+    do: role not in roles and role in proposed_roles
+
+  defp system_removal_refused?(change, actor_level),
+    do: change == :remove or change == :deactivate or actor_level != :system
+
+  defp removes_usable_admin?(%UserOrgMembership{} = membership, roles, proposed_roles) do
+    removes_role?(roles, proposed_roles, "pathways_studio_admin") and
+      is_nil(membership.deactivated_at) and
+      not is_nil(Repo.get!(User, membership.user_id).hashed_password)
   end
 
   defp delete_session_digests(user_id) do

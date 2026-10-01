@@ -645,14 +645,13 @@ defmodule GtfsPlanner.Operations do
 
       with {:ok, ids} <- cast_vehicle_ids(ids),
            {:ok, field, value} <- bulk_assignment(assignment) do
-        case ids do
-          [] -> {:ok, 0}
-          _ -> update_vehicles_locked(organization_id, actor, ids, field, value)
-        end
+        update_vehicles_locked(organization_id, actor, ids, field, value)
       end
     end)
     |> bulk_write_outcome()
   end
+
+  defp update_vehicles_locked(_organization_id, _actor, [], _field, _value), do: {:ok, 0}
 
   # The target is locked before the vehicles so a concurrent parent deletion
   # cannot hold the parent while waiting for these rows.
@@ -695,14 +694,13 @@ defmodule GtfsPlanner.Operations do
       authorize_editor!(organization_id, actor)
 
       with {:ok, ids} <- cast_vehicle_ids(ids) do
-        case ids do
-          [] -> {:ok, 0}
-          _ -> delete_vehicles_locked(organization_id, ids)
-        end
+        delete_vehicles_locked(organization_id, ids)
       end
     end)
     |> bulk_write_outcome()
   end
+
+  defp delete_vehicles_locked(_organization_id, []), do: {:ok, 0}
 
   defp delete_vehicles_locked(organization_id, ids) do
     with {:ok, locked_ids} <- lock_vehicles(organization_id, ids) do
@@ -1243,14 +1241,18 @@ defmodule GtfsPlanner.Operations do
           Repo.rollback(:not_found)
 
         parent ->
-          prepare_fun.(parent)
-
-          case delete_with_in_use_guard(parent, constraint_names, fn -> counts_fun.(parent) end) do
-            {:ok, deleted} -> deleted
-            {:error, {:in_use, counts}} -> Repo.rollback({:in_use, counts})
-          end
+          prepare_and_delete(parent, constraint_names, counts_fun, prepare_fun)
       end
     end)
+  end
+
+  defp prepare_and_delete(parent, constraint_names, counts_fun, prepare_fun) do
+    prepare_fun.(parent)
+
+    case delete_with_in_use_guard(parent, constraint_names, fn -> counts_fun.(parent) end) do
+      {:ok, deleted} -> deleted
+      {:error, {:in_use, counts}} -> Repo.rollback({:in_use, counts})
+    end
   end
 
   # The attempted delete runs in a savepoint so a constraint violation leaves

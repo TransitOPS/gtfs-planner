@@ -415,13 +415,17 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
 
   defp sync_new_entry(scope, targets, id, attrs) do
     with :ok <- validate_target(targets, attrs) do
-      changeset = JournalEntry.create_changeset(%JournalEntry{}, attrs, scope)
+      sync_validated_new_entry(scope, id, attrs)
+    end
+  end
 
-      if changeset.valid? do
-        sync_entry_transaction(scope, fn -> persist_entry(scope, id, attrs, changeset) end)
-      else
-        {:error, :validation_error}
-      end
+  defp sync_validated_new_entry(scope, id, attrs) do
+    changeset = JournalEntry.create_changeset(%JournalEntry{}, attrs, scope)
+
+    if changeset.valid? do
+      sync_entry_transaction(scope, fn -> persist_entry(scope, id, attrs, changeset) end)
+    else
+      {:error, :validation_error}
     end
   end
 
