@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.Rosters.SetWeekdayGroupTest do
   @moduledoc """
-  `set_roster_weekday_group/5` is the "Set Mon–Fri to run N" write: one run on
+  `set_roster_weekday_group/4` is the "Set Mon–Fri to run N" write: one run on
   every weekday of the requested weekday's base-day group, in one transaction,
   only when `Rosters.Candidates.group_availability/4` allows it, and a refusal
   that writes no row.
@@ -82,7 +82,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.SetWeekdayGroupTest do
     %{world: add_weekend(world)}
   end
 
-  describe "set_roster_weekday_group/5" do
+  describe "set_roster_weekday_group/4" do
     test "fills every weekday of the group with the run and its current times", %{world: world} do
       line = new_line(world)
 
@@ -155,7 +155,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.SetWeekdayGroupTest do
     end
   end
 
-  describe "set_roster_weekday_group/5 refusals" do
+  describe "set_roster_weekday_group/4 refusals" do
     test "a run another line holds on a day of the group is refused, naming the line", %{
       world: world
     } do
@@ -238,8 +238,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.SetWeekdayGroupTest do
       for bad_line <- ["not-a-uuid", 42, nil, Ecto.UUID.generate()] do
         assert {:error, :not_found} =
                  Gtfs.set_roster_weekday_group(
-                   world.organization.id,
-                   world.version.id,
+                   world_audit(world),
                    bad_line,
                    @wednesday,
                    "2001"
@@ -321,7 +320,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.SetWeekdayGroupTest do
 
   defp new_line(world) do
     assert {:ok, %{id: id, line_number: number}} =
-             Gtfs.create_roster_line(world.organization.id, world.version.id)
+             Gtfs.create_roster_line(world_audit(world))
 
     %{id: id, line_number: number}
   end
@@ -329,15 +328,14 @@ defmodule GtfsPlanner.Gtfs.Rosters.SetWeekdayGroupTest do
   defp set_group(world, line, weekday, run_id),
     do:
       Gtfs.set_roster_weekday_group(
-        world.organization.id,
-        world.version.id,
+        world_audit(world),
         line.id,
         weekday,
         run_id
       )
 
   defp set_slot(world, line, weekday, run_id),
-    do: Gtfs.set_roster_slot(world.organization.id, world.version.id, line.id, weekday, run_id)
+    do: Gtfs.set_roster_slot(world_audit(world), line.id, weekday, run_id)
 
   defp load_roster(world) do
     {:ok, %{roster: roster}} = Gtfs.load_roster(world.organization.id, world.version.id)

@@ -28,6 +28,8 @@ defmodule GtfsPlanner.Gtfs.Rosters do
 
   import Ecto.Query, warn: false
 
+  alias GtfsPlanner.Authorization
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.BlockingSetting
   alias GtfsPlanner.Gtfs.RosterLine
@@ -131,7 +133,7 @@ defmodule GtfsPlanner.Gtfs.Rosters do
 
   The day-type check needs the version's calendars, which this function has no
   scope for, so a stored key that is no longer a current day type is not reported
-  here: `update_roster_settings/3` makes that call inside its transaction.
+  here: `update_roster_settings/2` makes that call inside its transaction.
   """
   @spec change_roster_settings(roster_settings(), map()) :: Ecto.Changeset.t()
   def change_roster_settings(roster, attrs) do
@@ -149,8 +151,9 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   @doc """
   Stores the three roster rules for one organization's published version.
 
-  The save runs in one transaction whose first statement is the scoped version row
-  `FOR SHARE` (`Versions.lock_for_input_write!/2`), so the rules a review loaded
+  The save runs in one transaction that locks the editor membership first
+  (`Authorization.lock_editor!/1`), then the scoped version row `FOR SHARE`
+  (`Versions.lock_for_input_write!/2`), so the rules a review loaded
   cannot change under a calendar combination that owns the version, and this save
   waits behind such an owner in turn. It then takes `Blocking.lock_blocking!/1`,
   so a roster save serializes with every other planning-input writer and cannot
@@ -160,16 +163,16 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   base carries the stored Block rules values, so a first save on a version with no
   row satisfies the Block rules columns rather than inserting defaults over them.
 
-  Returns `{:error, :not_found}` when the version is unpublished or belongs to
+  Returns `{:error, :forbidden}` when the actor no longer holds an editor
+  membership, `{:error, :not_found}` when the version is unpublished or belongs to
   another organization, and `{:error, changeset}` when a value is outside its range
-  or a chosen day type is not current for that weekday, in which case nothing is
-  written.
+  or a chosen day type is not current for that weekday; none of them writes.
   """
-  @spec update_roster_settings(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
-          {:ok, roster_settings()} | {:error, Ecto.Changeset.t() | :not_found}
-  def update_roster_settings(organization_id, gtfs_version_id, attrs) do
-    with_roster_lock(organization_id, gtfs_version_id, fn ->
-      write_roster_settings!(organization_id, gtfs_version_id, attrs)
+  @spec update_roster_settings(AuditContext.t(), map()) ::
+          {:ok, roster_settings()} | {:error, Ecto.Changeset.t() | :forbidden | :not_found}
+  def update_roster_settings(%AuditContext{} = audit, attrs) do
+    with_roster_lock(audit, fn ->
+      write_roster_settings!(audit.organization_id, audit.gtfs_version_id, attrs)
     end)
   end
 
@@ -186,14 +189,16 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   sessions adding a line at the same time get two different numbers rather than
   one line and a unique-index refusal (INV-1).
 
-  Returns `{:error, :not_found}` when the version is unpublished or belongs to
-  another organization, in which case nothing is written.
+  Returns `{:error, :forbidden}` when the actor no longer holds an editor
+  membership and `{:error, :not_found}` when the version is unpublished or belongs
+  to another organization, in which case nothing is written.
   """
-  @spec create_line(Ecto.UUID.t(), Ecto.UUID.t()) ::
-          {:ok, %{id: Ecto.UUID.t(), line_number: pos_integer()}} | {:error, :not_found}
-  def create_line(organization_id, gtfs_version_id) do
-    with_roster_lock(organization_id, gtfs_version_id, fn ->
-      line = insert_line!(organization_id, gtfs_version_id)
+  @spec create_line(AuditContext.t()) ::
+          {:ok, %{id: Ecto.UUID.t(), line_number: pos_integer()}}
+          | {:error, :forbidden | :not_found}
+  def create_line(%AuditContext{} = audit) do
+    with_roster_lock(audit, fn ->
+      line = insert_line!(audit.organization_id, audit.gtfs_version_id)
 
       {:ok, %{id: line.id, line_number: line.line_number}}
     end)
@@ -224,7 +229,7 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   @doc """
   Creates a new line holding one run on every weekday of that run's own group.
 
-  This is "Create Mon–Fri line": the line is numbered exactly as `create_line/2`
+  This is "Create Mon–Fri line": the line is numbered exactly as `create_line/1`
   numbers it — the version's highest plus one — and the days written are the ones
   `Rosters.Candidates.new_line_availability/3` returns, which is every weekday
   based on the run's own day type. Saturday and Sunday get no row when the run's
@@ -235,22 +240,26 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   another line already works the run, and a week the run's own consecutive days
   would leave under the minimum rest are its refusals, and this writer returns
   the one it produced without inserting a line at all (domain rule 5, AC-9). The
-  short-rest rule is why the builder refuses what `set_slot/5` reports: a manual
+  short-rest rule is why the builder refuses what `set_slot/4` reports: a manual
   per-day edit may leave short rest and says so, a builder never creates one.
 
   The line and every one of its days are written inside the one transaction
-  `with_roster_lock/3` opens, so a refusal leaves no empty line behind and a day
+  `with_roster_lock/2` opens, so a refusal leaves no empty line behind and a day
   write that fails part-way rolls the whole line back rather than leaving a
   partial Mon–Fri (the "refusals write nothing" rule).
 
-  Returns `{:error, :not_found}` when the version is unpublished or belongs to
-  another organization, before anything is read or written.
+  Returns `{:error, :forbidden}` when the actor no longer holds an editor
+  membership and `{:error, :not_found}` when the version is unpublished or belongs
+  to another organization, before anything is read or written.
   """
-  @spec create_line_from_run(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t()) ::
+  @spec create_line_from_run(AuditContext.t(), String.t(), String.t()) ::
           {:ok, %{id: Ecto.UUID.t(), line_number: pos_integer(), weekdays: [1..7]}}
-          | {:error, :not_found | Candidates.refusal()}
-  def create_line_from_run(organization_id, gtfs_version_id, day_type_key, run_id) do
-    with_roster_lock(organization_id, gtfs_version_id, fn ->
+          | {:error, :forbidden | :not_found | Candidates.refusal()}
+  def create_line_from_run(%AuditContext{} = audit, day_type_key, run_id) do
+    organization_id = audit.organization_id
+    gtfs_version_id = audit.gtfs_version_id
+
+    with_roster_lock(audit, fn ->
       with {:ok, view} <- compose_read(organization_id, gtfs_version_id),
            {:ok, weekdays} <- Candidates.new_line_availability(view.roster, day_type_key, run_id),
            {:ok, key, run} <- weekday_run(view, hd(weekdays), run_id) do
@@ -293,16 +302,20 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   can show exactly which pair is short and by how much rather than a bare
   refusal (domain rule 5).
 
-  Returns `{:error, :not_found}` when the version is unpublished, belongs to
-  another organization, or names no line of that version under the given
+  Returns `{:error, :forbidden}` when the actor no longer holds an editor
+  membership, and `{:error, :not_found}` when the version is unpublished, belongs
+  to another organization, or names no line of that version under the given
   organization. A foreign or malformed line id is `:not_found` too, never a
   cross-tenant write.
   """
-  @spec set_slot(Ecto.UUID.t(), Ecto.UUID.t(), term(), 1..7, String.t()) ::
+  @spec set_slot(AuditContext.t(), term(), 1..7, String.t()) ::
           {:ok, %{short_rests: [Checks.short_rest()]}}
-          | {:error, :not_found | Candidates.refusal()}
-  def set_slot(organization_id, gtfs_version_id, line_id, weekday, run_id) do
-    with_roster_lock(organization_id, gtfs_version_id, fn ->
+          | {:error, :forbidden | :not_found | Candidates.refusal()}
+  def set_slot(%AuditContext{} = audit, line_id, weekday, run_id) do
+    organization_id = audit.organization_id
+    gtfs_version_id = audit.gtfs_version_id
+
+    with_roster_lock(audit, fn ->
       with {:ok, line} <- fetch_line(organization_id, gtfs_version_id, line_id),
            {:ok, view} <- compose_read(organization_id, gtfs_version_id),
            {:ok, key, run} <- weekday_run(view, weekday, run_id),
@@ -320,7 +333,7 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   The group is the set of weekdays sharing the requested weekday's base day
   type, so "Set Mon–Fri to run N" on any of Monday to Friday fills the same five
   days. Every one of them stores the run's current `sign_on_secs` and
-  `sign_off_secs` exactly as `set_slot/5` stores them, so a group write and a
+  `sign_off_secs` exactly as `set_slot/4` stores them, so a group write and a
   single-day write produce rows nothing can tell apart, and a re-cut run is
   accepted by re-setting it either way (INV-13).
 
@@ -329,22 +342,27 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   any of its days, a day the line already works a different run on, and a result
   leaving less than the minimum rest anywhere in the week are all that owner's
   refusals, and this writer returns the one it produced without writing a row.
-  The short-rest rule is why the builder refuses what `set_slot/5` reports
+  The short-rest rule is why the builder refuses what `set_slot/4` reports
   instead: a manual per-day edit may leave short rest and says so, a builder
   never creates one (domain rule 5).
 
-  The days are written inside the one transaction `with_roster_lock/3` opens, and
+  The days are written inside the one transaction `with_roster_lock/2` opens, and
   a write that fails part-way rolls the whole group back rather than leaving a
   partial Mon–Fri, so a refusal or a lost race leaves the line exactly as it was.
 
-  Returns `{:error, :not_found}` when the version is unpublished, belongs to
-  another organization, or names no line of that version under the given
+  Returns `{:error, :forbidden}` when the actor no longer holds an editor
+  membership, and `{:error, :not_found}` when the version is unpublished, belongs
+  to another organization, or names no line of that version under the given
   organization. A foreign or malformed line id is `:not_found` too.
   """
-  @spec set_weekday_group(Ecto.UUID.t(), Ecto.UUID.t(), term(), 1..7, String.t()) ::
-          {:ok, %{weekdays: [1..7]}} | {:error, :not_found | Candidates.refusal()}
-  def set_weekday_group(organization_id, gtfs_version_id, line_id, weekday, run_id) do
-    with_roster_lock(organization_id, gtfs_version_id, fn ->
+  @spec set_weekday_group(AuditContext.t(), term(), 1..7, String.t()) ::
+          {:ok, %{weekdays: [1..7]}}
+          | {:error, :forbidden | :not_found | Candidates.refusal()}
+  def set_weekday_group(%AuditContext{} = audit, line_id, weekday, run_id) do
+    organization_id = audit.organization_id
+    gtfs_version_id = audit.gtfs_version_id
+
+    with_roster_lock(audit, fn ->
       with {:ok, line} <- fetch_line(organization_id, gtfs_version_id, line_id),
            {:ok, view} <- compose_read(organization_id, gtfs_version_id),
            :ok <- Candidates.group_availability(view.roster, line.id, weekday, run_id),
@@ -369,7 +387,7 @@ defmodule GtfsPlanner.Gtfs.Rosters do
     end)
   end
 
-  # One upsert per group day, the same `write_day/6` `set_slot/5` uses, so a group
+  # One upsert per group day, the same `write_day/6` `set_slot/4` uses, so a group
   # row and a single-day row carry the same columns written the same way. A day
   # that fails — the run-once-per-weekday index losing a race — rolls the whole
   # transaction back with the refusal `write_day/6` produced, so the group is
@@ -395,16 +413,17 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   error — clearing an empty day reaches the state it was asked for, and the
   drawer can answer a second click without inventing a failure.
 
-  Returns `{:error, :not_found}` when the version is unpublished, belongs to
-  another organization, or names no line of that version under the given
+  Returns `{:error, :forbidden}` when the actor no longer holds an editor
+  membership, and `{:error, :not_found}` when the version is unpublished, belongs
+  to another organization, or names no line of that version under the given
   organization. A line id from another version, another organization or a
   malformed one is `:not_found` too, never a cross-tenant write.
   """
-  @spec clear_slot(Ecto.UUID.t(), Ecto.UUID.t(), term(), 1..7) ::
-          {:ok, :cleared | :already_off} | {:error, :not_found}
-  def clear_slot(organization_id, gtfs_version_id, line_id, weekday) do
-    with_roster_lock(organization_id, gtfs_version_id, fn ->
-      with {:ok, line} <- fetch_line(organization_id, gtfs_version_id, line_id) do
+  @spec clear_slot(AuditContext.t(), term(), 1..7) ::
+          {:ok, :cleared | :already_off} | {:error, :forbidden | :not_found}
+  def clear_slot(%AuditContext{} = audit, line_id, weekday) do
+    with_roster_lock(audit, fn ->
+      with {:ok, line} <- fetch_line(audit.organization_id, audit.gtfs_version_id, line_id) do
         clear_weekday(line, weekday)
       end
     end)
@@ -424,7 +443,7 @@ defmodule GtfsPlanner.Gtfs.Rosters do
     end
   end
 
-  # The version's whole roster, composed for a writer that already holds both
+  # The version's whole roster, composed for a writer that already holds its
   # locks and has read its own line. It reuses `load_roster/2`'s derivation and
   # `compose/5` itself, so the writer's refusals and its reported short rests are
   # computed from the same composition the page draws and the export reads
@@ -595,17 +614,18 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   lock before the delete. The confirm dialog names what is about to go, and a
   line with no days reports 0 rather than a missing figure.
 
-  Returns `{:error, :not_found}` when the version is unpublished, belongs to
-  another organization, or names no line of that version under the given
+  Returns `{:error, :forbidden}` when the actor no longer holds an editor
+  membership, and `{:error, :not_found}` when the version is unpublished, belongs
+  to another organization, or names no line of that version under the given
   organization. A foreign or malformed line id is `:not_found` and deletes
   nothing.
   """
-  @spec delete_line(Ecto.UUID.t(), Ecto.UUID.t(), term()) ::
+  @spec delete_line(AuditContext.t(), term()) ::
           {:ok, %{line_number: pos_integer(), run_days: non_neg_integer()}}
-          | {:error, :not_found}
-  def delete_line(organization_id, gtfs_version_id, line_id) do
-    with_roster_lock(organization_id, gtfs_version_id, fn ->
-      with {:ok, line} <- fetch_line(organization_id, gtfs_version_id, line_id) do
+          | {:error, :forbidden | :not_found}
+  def delete_line(%AuditContext{} = audit, line_id) do
+    with_roster_lock(audit, fn ->
+      with {:ok, line} <- fetch_line(audit.organization_id, audit.gtfs_version_id, line_id) do
         run_days =
           Repo.one(
             from(d in RosterLineDay,
@@ -650,16 +670,19 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   %{line_number: n}}` again, exactly like setting the operator the line already
   holds: both reach the state that was asked for.
 
-  The write runs inside the one transaction `with_roster_lock/3` opens, so the
-  version `FOR SHARE`, the publication check and `Blocking.lock_blocking!/1` all
-  precede its reads and its write (INV-1), and a refusal writes nothing.
+  The write runs inside the one transaction `with_roster_lock/2` opens, so the
+  editor membership, the version `FOR SHARE`, the publication check and
+  `Blocking.lock_blocking!/1` all precede its reads and its write (INV-1), and a
+  refusal writes nothing. `{:error, :forbidden}` is a revoked editor.
   """
-  @spec assign_operator(Ecto.UUID.t(), Ecto.UUID.t(), term(), term() | nil) ::
+  @spec assign_operator(AuditContext.t(), term(), term() | nil) ::
           {:ok, %{line_number: pos_integer()}}
-          | {:error, :not_found | {:operator_holds, pos_integer(), String.t()}}
-  def assign_operator(organization_id, gtfs_version_id, line_id, operator_id) do
-    with_roster_lock(organization_id, gtfs_version_id, fn ->
-      with {:ok, line} <- fetch_line(organization_id, gtfs_version_id, line_id),
+          | {:error, :forbidden | :not_found | {:operator_holds, pos_integer(), String.t()}}
+  def assign_operator(%AuditContext{} = audit, line_id, operator_id) do
+    organization_id = audit.organization_id
+
+    with_roster_lock(audit, fn ->
+      with {:ok, line} <- fetch_line(organization_id, audit.gtfs_version_id, line_id),
            {:ok, operator} <- fetch_operator(organization_id, operator_id),
            :ok <- check_operator_held(line, operator) do
         write_operator(line, operator)
@@ -844,7 +867,7 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   end
 
   # The version's movements and its whole-version runs, derived exactly as
-  # `Export.movement_rows/2` derives them, so the page, `set_slot/5`'s own
+  # `Export.movement_rows/2` derives them, so the page, `set_slot/4`'s own
   # checks and the export read one snapshot (INV-11).
   defp derive_runs(organization_id, gtfs_version_id) do
     movements = Blocking.export_movements(organization_id, gtfs_version_id)
@@ -882,28 +905,33 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   end
 
   # The one lock order every roster writer runs under (INV-1, domain rule 16):
-  # `Versions.lock_for_input_write!/2` takes the published version `FOR SHARE`
-  # before anything else, the publication check follows it, and
-  # `Blocking.lock_blocking!/1` follows that — in the block writers' order, so a
-  # roster write serializes with every other planning-input writer and cannot
-  # slip between a runs rebuild's review and its apply. No second lock is taken.
+  # `Authorization.lock_editor!/1` takes the actor's editor membership `FOR SHARE`
+  # first, so a revoked editor is refused before any version or entity lock is
+  # held; `Versions.lock_for_input_write!/2` then takes the published version
+  # `FOR SHARE`, the publication check follows it, and `Blocking.lock_blocking!/1`
+  # follows that — in the block writers' order, so a roster write serializes with
+  # every other planning-input writer and cannot slip between a runs rebuild's
+  # review and its apply. No second lock is taken.
   #
-  # Every writer here reads and writes only after these three statements, which is
-  # why the readers and writers below take no lock of their own: the fun is called
-  # with both locks already held. Steps 13 to 16 reach the same helper, so a
-  # fourth writer cannot take the locks in a different order by accident.
-  defp with_roster_lock(organization_id, gtfs_version_id, fun) do
-    case Repo.transaction(fn -> lock_and_run(organization_id, gtfs_version_id, fun) end) do
+  # Every writer here reads and writes only after these statements, which is why
+  # the readers and writers below take no lock of their own: the fun is called
+  # with every lock already held. A new writer reaches the same helper, so it
+  # cannot take the locks in a different order by accident.
+  defp with_roster_lock(%AuditContext{} = audit, fun) do
+    case Repo.transaction(fn -> lock_and_run(audit, fun) end) do
       {:ok, result} -> result
-      # `lock_for_input_write!/2` rolls back with `:not_found` for a version of
-      # another organization or one that does not exist, so a foreign version
-      # never reaches the fun and never takes the blocking lock.
+      # `lock_editor!/1` rolls back with `:forbidden` for a revoked editor, and
+      # `lock_for_input_write!/2` with `:not_found` for a version of another
+      # organization or one that does not exist, so a refused actor or a foreign
+      # version never reaches the fun and never takes the blocking lock.
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp lock_and_run(organization_id, gtfs_version_id, fun) do
-    version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)
+  defp lock_and_run(%AuditContext{} = audit, fun) do
+    Authorization.lock_editor!(audit)
+    gtfs_version_id = audit.gtfs_version_id
+    version = Versions.lock_for_input_write!(audit.organization_id, gtfs_version_id)
 
     if version.publication_status == @published_status do
       :ok = Blocking.lock_blocking!(gtfs_version_id)
@@ -960,8 +988,8 @@ defmodule GtfsPlanner.Gtfs.Rosters do
     end
   end
 
-  # The roster settings write, called with both locks already held by
-  # `with_roster_lock/3`.
+  # The roster settings write, called with every lock already held by
+  # `with_roster_lock/2`.
   defp write_roster_settings!(organization_id, gtfs_version_id, attrs) do
     # The stored row is the base rather than a bare struct, so the columns this
     # writer does not own are present and satisfy the insert of the version's

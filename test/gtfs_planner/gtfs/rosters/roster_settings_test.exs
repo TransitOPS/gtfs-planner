@@ -99,8 +99,10 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSettingsTest do
 
       assert {:ok, _} =
                Gtfs.update_roster_settings(
-                 organization.id,
-                 version.id,
+                 editor_audit_fixture(
+                   organization.id,
+                   version.id
+                 ),
                  Map.put(@valid, :roster_day_types, %{"1" => day_type_key})
                )
 
@@ -109,12 +111,17 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSettingsTest do
     end
   end
 
-  describe "update_roster_settings/3" do
+  describe "update_roster_settings/2" do
     test "stores the values and answers with them", context do
       %{organization: organization, version: version, day_type_key: day_type_key} = context
       attrs = Map.put(@valid, :roster_day_types, %{"1" => day_type_key})
 
-      assert {:ok, saved} = Gtfs.update_roster_settings(organization.id, version.id, attrs)
+      assert {:ok, saved} =
+               Gtfs.update_roster_settings(
+                 editor_audit_fixture(organization.id, version.id),
+                 attrs
+               )
+
       assert saved == attrs
 
       # Re-read from the table rather than from the answer the save returned.
@@ -125,10 +132,19 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSettingsTest do
       %{organization: organization, version: version, day_type_key: day_type_key} = context
       attrs = Map.put(@valid, :roster_day_types, %{"1" => day_type_key})
 
-      assert {:ok, _} = Gtfs.update_roster_settings(organization.id, version.id, attrs)
+      assert {:ok, _} =
+               Gtfs.update_roster_settings(
+                 editor_audit_fixture(organization.id, version.id),
+                 attrs
+               )
 
       second = %{attrs | min_rest_minutes: 700, roster_day_types: %{"2" => day_type_key}}
-      assert {:ok, ^second} = Gtfs.update_roster_settings(organization.id, version.id, second)
+
+      assert {:ok, ^second} =
+               Gtfs.update_roster_settings(
+                 editor_audit_fixture(organization.id, version.id),
+                 second
+               )
 
       assert Rosters.get_roster_settings(organization.id, version.id) == second
       assert Repo.aggregate(BlockingSetting, :count) == 1
@@ -143,7 +159,12 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSettingsTest do
           ] do
         attrs = Map.put(attrs, :roster_day_types, %{"1" => day_type_key})
 
-        assert {:ok, ^attrs} = Gtfs.update_roster_settings(organization.id, version.id, attrs)
+        assert {:ok, ^attrs} =
+                 Gtfs.update_roster_settings(
+                   editor_audit_fixture(organization.id, version.id),
+                   attrs
+                 )
+
         assert Rosters.get_roster_settings(organization.id, version.id) == attrs
       end
     end
@@ -162,8 +183,10 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSettingsTest do
       for {field, value, message} <- out_of_range do
         assert {:error, changeset} =
                  Gtfs.update_roster_settings(
-                   organization.id,
-                   version.id,
+                   editor_audit_fixture(
+                     organization.id,
+                     version.id
+                   ),
                    Map.put(@valid, field, value)
                  )
 
@@ -182,8 +205,10 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSettingsTest do
 
       assert {:error, changeset} =
                Gtfs.update_roster_settings(
-                 organization.id,
-                 version.id,
+                 editor_audit_fixture(
+                   organization.id,
+                   version.id
+                 ),
                  Map.put(@valid, :min_rest_minutes, "")
                )
 
@@ -208,7 +233,10 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSettingsTest do
         attrs = Map.put(@valid, :roster_day_types, %{weekday => key})
 
         assert {:error, changeset} =
-                 Gtfs.update_roster_settings(organization.id, version.id, attrs)
+                 Gtfs.update_roster_settings(
+                   editor_audit_fixture(organization.id, version.id),
+                   attrs
+                 )
 
         assert %{roster_day_types: [^message]} = errors_on(changeset)
 
@@ -226,7 +254,10 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSettingsTest do
         attrs = Map.put(@valid, :roster_day_types, choices)
 
         assert {:error, changeset} =
-                 Gtfs.update_roster_settings(organization.id, version.id, attrs)
+                 Gtfs.update_roster_settings(
+                   editor_audit_fixture(organization.id, version.id),
+                   attrs
+                 )
 
         assert [message] = errors_on(changeset).roster_day_types
         refute message =~ "Choose a day type that runs on"
@@ -237,12 +268,18 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSettingsTest do
       %{organization: organization, version: version, day_type_key: day_type_key} = context
       attrs = Map.put(@valid, :roster_day_types, %{"1" => day_type_key})
 
-      assert {:ok, _} = Gtfs.update_roster_settings(organization.id, version.id, attrs)
+      assert {:ok, _} =
+               Gtfs.update_roster_settings(
+                 editor_audit_fixture(organization.id, version.id),
+                 attrs
+               )
 
       assert {:error, changeset} =
                Gtfs.update_roster_settings(
-                 organization.id,
-                 version.id,
+                 editor_audit_fixture(
+                   organization.id,
+                   version.id
+                 ),
                  Map.put(attrs, :roster_day_types, %{"1" => "not-a-day-type-key"})
                )
 
@@ -265,7 +302,11 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSettingsTest do
           gtfs_version_id: other_version.id
         })
 
-      assert {:ok, _} = Gtfs.update_roster_settings(organization.id, version.id, attrs)
+      assert {:ok, _} =
+               Gtfs.update_roster_settings(
+                 editor_audit_fixture(organization.id, version.id),
+                 attrs
+               )
 
       assert Rosters.get_roster_settings(organization.id, version.id) ==
                Map.take(attrs, [:min_rest_minutes, :weekly_hours_warn_above, :roster_day_types])
@@ -282,7 +323,12 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSettingsTest do
 
       roster = Map.put(@valid, :roster_day_types, %{"1" => day_type_key})
 
-      assert {:ok, _} = Gtfs.update_roster_settings(organization.id, version.id, roster)
+      assert {:ok, _} =
+               Gtfs.update_roster_settings(
+                 editor_audit_fixture(organization.id, version.id),
+                 roster
+               )
+
       assert {:ok, _} = Gtfs.update_crew_settings(audit, @crew_rules)
 
       # The mutation that must not occur: the crew upsert replaced only its own
@@ -306,7 +352,12 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSettingsTest do
       assert {:ok, %BlockingSetting{}} = Gtfs.update_blocking_settings(audit, @block_rules)
 
       roster = Map.put(@valid, :roster_day_types, %{"1" => day_type_key})
-      assert {:ok, _} = Gtfs.update_roster_settings(organization.id, version.id, roster)
+
+      assert {:ok, _} =
+               Gtfs.update_roster_settings(
+                 editor_audit_fixture(organization.id, version.id),
+                 roster
+               )
 
       assert Runs.get_crew_settings(organization.id, version.id) == @crew_rules
 
@@ -343,7 +394,10 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSettingsTest do
             {other_organization.id, version.id}
           ] do
         assert {:error, :not_found} =
-                 Gtfs.update_roster_settings(organization_id, gtfs_version_id, attrs)
+                 Gtfs.update_roster_settings(
+                   editor_audit_fixture(organization_id, gtfs_version_id),
+                   attrs
+                 )
       end
 
       # A refused scope writes nothing, so the version's own row is not created by
@@ -358,7 +412,12 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSettingsTest do
       %{organization: organization, version: version, day_type_key: day_type_key} = context
       roster = Map.put(@valid, :roster_day_types, %{"1" => day_type_key})
 
-      assert {:ok, _} = Gtfs.update_roster_settings(organization.id, version.id, roster)
+      assert {:ok, _} =
+               Gtfs.update_roster_settings(
+                 editor_audit_fixture(organization.id, version.id),
+                 roster
+               )
+
       stored = Rosters.get_roster_settings(organization.id, version.id)
 
       changeset = Rosters.change_roster_settings(stored, %{})

@@ -91,8 +91,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterQueriesTest do
           ] do
         assert {:ok, %{line_number: _}} =
                  Gtfs.assign_roster_operator(
-                   scope.organization.id,
-                   scope.version.id,
+                   world_audit(scope),
                    line.id,
                    operator.id
                  )
@@ -124,8 +123,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterQueriesTest do
 
       assert {:ok, %{line_number: 1}} =
                Gtfs.assign_roster_operator(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  holder_line.id,
                  holder.id
                )
@@ -145,8 +143,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterQueriesTest do
       # being a holding — the same `[]` the confirmation would show.
       assert {:ok, %{line_number: 1}} =
                Gtfs.assign_roster_operator(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  holder_line.id,
                  nil
                )
@@ -163,8 +160,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterQueriesTest do
 
       assert {:ok, %{line_number: 1}} =
                Gtfs.assign_roster_operator(
-                 theirs.organization.id,
-                 theirs.version.id,
+                 world_audit(theirs),
                  their_line.id,
                  their_operator.id
                )
@@ -272,13 +268,13 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterQueriesTest do
 
   defp new_line(world) do
     assert {:ok, %{id: id, line_number: number}} =
-             Gtfs.create_roster_line(world.organization.id, world.version.id)
+             Gtfs.create_roster_line(world_audit(world))
 
     %{id: id, line_number: number}
   end
 
   defp set(world, line, weekday, run_id),
-    do: Gtfs.set_roster_slot(world.organization.id, world.version.id, line.id, weekday, run_id)
+    do: Gtfs.set_roster_slot(world_audit(world), line.id, weekday, run_id)
 
   # The stored pick, read back from the table rather than from a writer's answer.
   defp stored_operator(world, line) do

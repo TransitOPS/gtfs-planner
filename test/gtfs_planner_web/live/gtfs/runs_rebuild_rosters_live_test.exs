@@ -149,13 +149,13 @@ defmodule GtfsPlannerWeb.Gtfs.RunsRebuildRostersLiveTest do
 
   defp new_line(w) do
     assert {:ok, %{id: id, line_number: _number}} =
-             Gtfs.create_roster_line(w.organization.id, w.version.id)
+             Gtfs.create_roster_line(world_audit(w))
 
     id
   end
 
   defp set(w, line_id, weekday, run_id),
-    do: Gtfs.set_roster_slot(w.organization.id, w.version.id, line_id, weekday, run_id)
+    do: Gtfs.set_roster_slot(world_audit(w), line_id, weekday, run_id)
 
   defp saved_run_ids(w) do
     import Ecto.Query

@@ -23,8 +23,8 @@ defmodule GtfsPlannerWeb.Gtfs.RostersExportLiveTest do
   and runs `2001`, `2002`, `2004`, `6001`, `7001` — the same world the pick and
   open-work tests build — and, where a case needs a date running other service,
   a dates-only "Holiday" service on Mondays with a trip of its own. Lines are
-  written through `Gtfs.create_roster_line/2`, `Gtfs.set_roster_slot/5` and
-  `Gtfs.assign_roster_operator/4`, so the roster the section reads is a roster
+  written through `Gtfs.create_roster_line/1`, `Gtfs.set_roster_slot/4` and
+  `Gtfs.assign_roster_operator/3`, so the roster the section reads is a roster
   that really exists.
 
   A stale slot is made the way the export test makes one: a run is renamed
@@ -175,13 +175,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersExportLiveTest do
   defp path(world), do: "/gtfs/#{world.version.id}/rosters"
 
   defp line(world, days, operator \\ nil) do
-    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world.organization.id, world.version.id)
+    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world_audit(world))
 
     for {weekday, run_id} <- days do
       assert {:ok, _result} =
                Gtfs.set_roster_slot(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  line_id,
                  weekday,
                  run_id
@@ -191,8 +190,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersExportLiveTest do
     if operator do
       assert {:ok, _} =
                Gtfs.assign_roster_operator(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  line_id,
                  operator.id
                )

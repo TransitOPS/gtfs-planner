@@ -1693,7 +1693,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
 
   One decision is rendered and it belongs to `Rosters.Candidates`:
   `new_line_availability/3` decides whether a card offers "Create <label> line",
-  which is the same computation `create_roster_line_from_run/4` runs under the
+  which is the same computation `create_roster_line_from_run/3` runs under the
   lock. A card with a refused builder therefore shows no button rather than a
   button whose only answer would be a refusal.
 
@@ -2867,7 +2867,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
 
   Both number fields run `Gtfs.change_roster_settings/2`'s changeset and nothing
   else, exactly as the operator form does: the page invents no rule, and a
-  refusal from `update_roster_settings/3` is drawn with the action restored so
+  refusal from `update_roster_settings/2` is drawn with the action restored so
   its errors are not dropped. A base-week refusal is one error on
   `:roster_day_types` however many weekdays it names, so it is drawn once — on
   the notice and in the summary — rather than marked on seven selects.

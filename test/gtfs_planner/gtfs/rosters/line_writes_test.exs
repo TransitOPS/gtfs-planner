@@ -11,7 +11,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
   and block 102 on run `2002`: a published version whose one calendar service
   runs Monday to Friday, so Monday's base day type is the fixture's own key and
   both runs are available to place. The slots themselves are inserted through
-  `Repo.insert/1` of the schemas, because `Rosters.set_slot/5` arrives in step 13
+  `Repo.insert/1` of the schemas, because `Rosters.set_slot/4` arrives in step 13
   — the rows here are what a step-13 writer would have written, with the derived
   run's own sign-on and sign-off, so a stale-slot state cannot be mistaken for a
   clear that failed.
@@ -69,10 +69,10 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
     world
   end
 
-  describe "create_roster_line/2" do
+  describe "create_roster_line/1" do
     test "a version with no line gets line 1", %{world: world} do
       assert {:ok, %{line_number: 1, id: line_id}} =
-               Gtfs.create_roster_line(world.organization.id, world.version.id)
+               Gtfs.create_roster_line(world_audit(world))
 
       assert line_id == line_id(world, 1)
     end
@@ -81,48 +81,49 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
       ids =
         for expected <- [1, 2, 3] do
           assert {:ok, %{line_number: ^expected, id: id}} =
-                   Gtfs.create_roster_line(world.organization.id, world.version.id)
+                   Gtfs.create_roster_line(world_audit(world))
 
           id
         end
 
       assert {:ok, %{line_number: 2}} =
-               Gtfs.delete_roster_line(world.organization.id, world.version.id, Enum.at(ids, 1))
+               Gtfs.delete_roster_line(world_audit(world), Enum.at(ids, 1))
 
       # Deleting line 2 leaves lines 1 and 3. Numbering follows the lines that
       # exist, so the next line is 4 rather than 2: a number a planner has seen
       # is never handed to a different line.
       assert {:ok, %{line_number: 4}} =
-               Gtfs.create_roster_line(world.organization.id, world.version.id)
+               Gtfs.create_roster_line(world_audit(world))
 
       assert line_numbers(world) == [1, 3, 4]
     end
 
     test "a sibling version of the same organization numbers from its own lines", %{world: world} do
       assert {:ok, %{line_number: 1}} =
-               Gtfs.create_roster_line(world.organization.id, world.version.id)
+               Gtfs.create_roster_line(world_audit(world))
 
       assert {:ok, %{line_number: 2}} =
-               Gtfs.create_roster_line(world.organization.id, world.version.id)
+               Gtfs.create_roster_line(world_audit(world))
 
       sibling = gtfs_version_fixture(world.organization.id)
 
       # The sibling's own first line is 1 even though the organization holds
       # higher lines elsewhere: numbering is per version.
-      assert {:ok, %{line_number: 1}} = Gtfs.create_roster_line(world.organization.id, sibling.id)
+      assert {:ok, %{line_number: 1}} =
+               Gtfs.create_roster_line(%{world_audit(world) | gtfs_version_id: sibling.id})
     end
 
     test "an unpublished version is not found and no line is written", %{world: world} do
       :ok = stage(world)
 
       assert {:error, :not_found} =
-               Gtfs.create_roster_line(world.organization.id, world.version.id)
+               Gtfs.create_roster_line(world_audit(world))
 
       assert line_numbers(world) == []
     end
   end
 
-  describe "clear_roster_slot/4" do
+  describe "clear_roster_slot/3" do
     test "clearing a day removes the row and returns the run to open work", %{world: world} do
       line = working_line(world, "2001", @monday)
 
@@ -131,7 +132,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
       assert before.summary.open_by_weekday[@monday] == 1
 
       assert {:ok, :cleared} =
-               Gtfs.clear_roster_slot(world.organization.id, world.version.id, line.id, @monday)
+               Gtfs.clear_roster_slot(world_audit(world), line.id, @monday)
 
       assert {:ok, %{roster: after_roster}} =
                Gtfs.load_roster(world.organization.id, world.version.id)
@@ -153,12 +154,12 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
       line = working_line(world, "2001", @monday)
 
       assert {:ok, :already_off} =
-               Gtfs.clear_roster_slot(world.organization.id, world.version.id, line.id, @tuesday)
+               Gtfs.clear_roster_slot(world_audit(world), line.id, @tuesday)
 
       # The already-off answer is the state reached, not a refusal: the Monday row
       # is still there and the version still has one line.
       assert {:ok, :cleared} =
-               Gtfs.clear_roster_slot(world.organization.id, world.version.id, line.id, @monday)
+               Gtfs.clear_roster_slot(world_audit(world), line.id, @monday)
 
       assert line_numbers(world) == [1]
     end
@@ -168,13 +169,13 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
       :ok = stage(world)
 
       assert {:error, :not_found} =
-               Gtfs.clear_roster_slot(world.organization.id, world.version.id, line.id, @monday)
+               Gtfs.clear_roster_slot(world_audit(world), line.id, @monday)
 
       assert day_count(world) == 1
     end
   end
 
-  describe "delete_roster_line/3" do
+  describe "delete_roster_line/2" do
     test "deleting a line removes its days, its pick and returns its runs to open work", %{
       world: world
     } do
@@ -187,7 +188,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
         )
 
       assert {:ok, %{line_number: 1, run_days: 1}} =
-               Gtfs.delete_roster_line(world.organization.id, world.version.id, line.id)
+               Gtfs.delete_roster_line(world_audit(world), line.id)
 
       assert line_numbers(world) == []
       assert day_count(world) == 0
@@ -204,10 +205,10 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
     end
 
     test "a line with no days reports zero run-days", %{world: world} do
-      assert {:ok, line} = Gtfs.create_roster_line(world.organization.id, world.version.id)
+      assert {:ok, line} = Gtfs.create_roster_line(world_audit(world))
 
       assert {:ok, %{line_number: 1, run_days: 0}} =
-               Gtfs.delete_roster_line(world.organization.id, world.version.id, line.id)
+               Gtfs.delete_roster_line(world_audit(world), line.id)
     end
 
     test "an unpublished version is not found and the line stays", %{world: world} do
@@ -215,7 +216,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
       :ok = stage(world)
 
       assert {:error, :not_found} =
-               Gtfs.delete_roster_line(world.organization.id, world.version.id, line.id)
+               Gtfs.delete_roster_line(world_audit(world), line.id)
 
       assert line_numbers(world) == [1]
       assert day_count(world) == 1
@@ -237,14 +238,13 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
       # something the row's organization can stand in for.
       assert {:error, :not_found} =
                Gtfs.clear_roster_slot(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  other_line.id,
                  @monday
                )
 
       assert {:error, :not_found} =
-               Gtfs.delete_roster_line(world.organization.id, world.version.id, other_line.id)
+               Gtfs.delete_roster_line(world_audit(world), other_line.id)
 
       # The sibling's line is untouched, and the caller's own line still holds its
       # day: the refusals changed nothing on either side.
@@ -259,14 +259,13 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
 
       assert {:error, :not_found} =
                Gtfs.clear_roster_slot(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  their_line.id,
                  @monday
                )
 
       assert {:error, :not_found} =
-               Gtfs.delete_roster_line(world.organization.id, world.version.id, their_line.id)
+               Gtfs.delete_roster_line(world_audit(world), their_line.id)
 
       assert day_count(theirs) == 1
       assert line_numbers(theirs) == [1]
@@ -277,10 +276,10 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
 
       for bad_id <- ["not-a-uuid", 42, nil, ""] do
         assert {:error, :not_found} =
-                 Gtfs.clear_roster_slot(world.organization.id, world.version.id, bad_id, @monday)
+                 Gtfs.clear_roster_slot(world_audit(world), bad_id, @monday)
 
         assert {:error, :not_found} =
-                 Gtfs.delete_roster_line(world.organization.id, world.version.id, bad_id)
+                 Gtfs.delete_roster_line(world_audit(world), bad_id)
       end
 
       assert day_count(world) == 1
@@ -291,18 +290,18 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
       missing = Ecto.UUID.generate()
 
       assert {:error, :not_found} =
-               Gtfs.clear_roster_slot(world.organization.id, world.version.id, missing, @monday)
+               Gtfs.clear_roster_slot(world_audit(world), missing, @monday)
 
       assert {:error, :not_found} =
-               Gtfs.delete_roster_line(world.organization.id, world.version.id, missing)
+               Gtfs.delete_roster_line(world_audit(world), missing)
 
       assert line_numbers(world) == []
     end
   end
 
   # A line working `run_id` on `weekday`, stored with the derived run's own
-  # sign-on and sign-off — exactly what `Rosters.set_slot/5` will write in
-  # step 13. It goes through `create_roster_line/2` so the line it returns is one
+  # sign-on and sign-off — exactly what `Rosters.set_slot/4` will write in
+  # step 13. It goes through `create_roster_line/1` so the line it returns is one
   # a writer numbered, not a row the test invented.
   defp working_line(world, run_id, weekday) do
     line_with_run(world, world.version, derived_run(world, run_id), weekday)
@@ -313,7 +312,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
   # the run; `version` is where the line goes, which is what lets a case put one
   # under a sibling version the world itself never derived a run for.
   defp line_with_run(world, version, run, weekday) do
-    {:ok, %{id: id}} = Gtfs.create_roster_line(world.organization.id, version.id)
+    {:ok, %{id: id}} = Gtfs.create_roster_line(world_audit(%{world | version: version}))
 
     {:ok, _day} =
       %RosterLineDay{

@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.Rosters.CreateLineFromRunTest do
   @moduledoc """
-  `create_roster_line_from_run/4` is the "Create Mon–Fri line" write: a numbered
+  `create_roster_line_from_run/3` is the "Create Mon–Fri line" write: a numbered
   new line holding one run on every weekday of that run's own group, in one
   transaction, only when `Rosters.Candidates.new_line_availability/3` allows it,
   and a refusal that writes no line at all.
@@ -97,13 +97,13 @@ defmodule GtfsPlanner.Gtfs.Rosters.CreateLineFromRunTest do
     %{world: world, run_2001: derived_run(world, world.day_type_key, @run_2001_id).work}
   end
 
-  describe "create_roster_line_from_run/4" do
+  describe "create_roster_line_from_run/3" do
     test "creates the next numbered line holding the run on every weekday of its group", %{
       world: world,
       run_2001: run
     } do
       # Two lines already exist, so the new line's number is the version's
-      # highest plus one — the same numbering `create_roster_line/2` uses.
+      # highest plus one — the same numbering `create_roster_line/1` uses.
       new_line(world)
       new_line(world)
 
@@ -150,7 +150,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.CreateLineFromRunTest do
                create(world, world.day_type_key, @run_2001_id)
 
       assert {:ok, :cleared} =
-               Gtfs.clear_roster_slot(world.organization.id, world.version.id, line, @wednesday)
+               Gtfs.clear_roster_slot(world_audit(world), line, @wednesday)
 
       assert {:ok, %{line_number: 2, weekdays: @weekdays}} =
                create(world, world.day_type_key, @run_2001_id)
@@ -159,7 +159,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.CreateLineFromRunTest do
     end
   end
 
-  describe "create_roster_line_from_run/4 refusals" do
+  describe "create_roster_line_from_run/3 refusals" do
     test "a run another line holds on a day of its group is refused, naming the line", %{
       world: world
     } do
@@ -343,8 +343,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.CreateLineFromRunTest do
   # version's own calendars exactly as a planner's save would be.
   defp base_week_on(world, alternate) do
     Gtfs.update_roster_settings(
-      world.organization.id,
-      world.version.id,
+      world_audit(world),
       %{
         min_rest_minutes: 600,
         weekly_hours_warn_above: 48,
@@ -355,19 +354,18 @@ defmodule GtfsPlanner.Gtfs.Rosters.CreateLineFromRunTest do
 
   defp new_line(world) do
     assert {:ok, %{id: id, line_number: number}} =
-             Gtfs.create_roster_line(world.organization.id, world.version.id)
+             Gtfs.create_roster_line(world_audit(world))
 
     {number, id}
   end
 
   defp set_slot(world, line, weekday, run_id) do
-    Gtfs.set_roster_slot(world.organization.id, world.version.id, line, weekday, run_id)
+    Gtfs.set_roster_slot(world_audit(world), line, weekday, run_id)
   end
 
   defp create(world, day_type_key, run_id) do
     Gtfs.create_roster_line_from_run(
-      world.organization.id,
-      world.version.id,
+      world_audit(world),
       day_type_key,
       run_id
     )

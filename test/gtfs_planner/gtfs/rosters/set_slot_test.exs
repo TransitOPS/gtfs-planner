@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.Rosters.SetSlotTest do
   @moduledoc """
-  `set_roster_slot/5` is the slot drawer's write: it stores a run-day with the
+  `set_roster_slot/4` is the slot drawer's write: it stores a run-day with the
   run's own times, replaces whatever that weekday held, reports a short rest
   instead of refusing one, and refuses a held or unknown run or a weekday with no
   base day type by name.
@@ -79,7 +79,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.SetSlotTest do
     %{world: world}
   end
 
-  describe "set_roster_slot/5" do
+  describe "set_roster_slot/4" do
     test "stores the weekday's base day type, the run and the run's current times", %{
       world: world
     } do
@@ -164,7 +164,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.SetSlotTest do
     end
   end
 
-  describe "set_roster_slot/5 refusals" do
+  describe "set_roster_slot/4 refusals" do
     test "a run another line holds that weekday is refused, naming the holding line", %{
       world: world
     } do
@@ -210,8 +210,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.SetSlotTest do
       for bad_line <- [their_line.id, "not-a-uuid", 42, nil, Ecto.UUID.generate()] do
         assert {:error, :not_found} =
                  Gtfs.set_roster_slot(
-                   world.organization.id,
-                   world.version.id,
+                   world_audit(world),
                    bad_line,
                    @monday,
                    "2001"
@@ -224,12 +223,11 @@ defmodule GtfsPlanner.Gtfs.Rosters.SetSlotTest do
       assert day_count(theirs) == 0
 
       assert {:ok, %{line_number: 1, id: sibling_line}} =
-               Gtfs.create_roster_line(world.organization.id, sibling.id)
+               Gtfs.create_roster_line(%{world_audit(world) | gtfs_version_id: sibling.id})
 
       assert {:error, :not_found} =
                Gtfs.set_roster_slot(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  sibling_line,
                  @monday,
                  "2001"
@@ -293,13 +291,13 @@ defmodule GtfsPlanner.Gtfs.Rosters.SetSlotTest do
   # case can say which of two lines won a race.
   defp new_line(world) do
     assert {:ok, %{id: id, line_number: number}} =
-             Gtfs.create_roster_line(world.organization.id, world.version.id)
+             Gtfs.create_roster_line(world_audit(world))
 
     %{id: id, line_number: number}
   end
 
   defp set(world, line, weekday, run_id),
-    do: Gtfs.set_roster_slot(world.organization.id, world.version.id, line.id, weekday, run_id)
+    do: Gtfs.set_roster_slot(world_audit(world), line.id, weekday, run_id)
 
   defp load_roster(world) do
     {:ok, %{roster: roster}} = Gtfs.load_roster(world.organization.id, world.version.id)

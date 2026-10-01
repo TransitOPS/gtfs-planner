@@ -48,16 +48,21 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   Mount checks the editor role once. The `:editor_access` hook re-reads the
   membership through `EnsureRole.editor_member?/2` before each event in
   `@write_events`, so a role revoked while the page is open refuses the next
-  write rather than trusting the mount-time snapshot. `RunsLive` asks the same
-  question the same way. The list starts with `add_line` and grows with the
-  steps that add writes; a write that is not in it is not a write, which is why
-  the list is the whole of the page's write surface rather than a per-handler
-  guard nobody can enumerate.
+  write rather than trusting the mount-time snapshot. That check is the page's
+  fast feedback, not the boundary: every writer locks the actor's editor
+  membership inside its own transaction and answers `{:error, :forbidden}`
+  (`Authorization.lock_editor!/1`, as `RunsLive`'s writers do), and a refusal
+  from there is the same toast, so a role revoked between the hook and the write
+  is refused too. The list starts with `add_line` and grows with the steps that
+  add writes; a write that is not in it is not a write, which is why the list is
+  the whole of the page's write surface rather than a per-handler guard nobody
+  can enumerate.
   """
 
   use GtfsPlannerWeb, :live_view
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Rosters.AssignmentsExport
   alias GtfsPlanner.Gtfs.Rosters.Candidates
   alias GtfsPlanner.Operations
@@ -270,17 +275,39 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     if editor_access?(socket) do
       {:cont, socket}
     else
-      {:halt,
-       socket
-       |> put_toast(@editor_access_lost, :refused)
-       |> put_flash(:error, @editor_access_lost)}
+      {:halt, editor_refusal(socket)}
     end
   end
 
   defp require_editor(_event, _params, socket), do: {:cont, socket}
 
-  # The membership read lives in `EnsureRole.editor_member?/2` so this page and
-  # Runs ask the same question the same way.
+  # What a refused write says, whether the hook above or the writer's own
+  # `{:error, :forbidden}` caught it. The drawer or form that was open is left as
+  # it is, so what the editor typed is still there.
+  defp editor_refusal(socket) do
+    socket
+    |> put_toast(@editor_access_lost, :refused)
+    |> put_flash(:error, @editor_access_lost)
+  end
+
+  # The server-held identity every roster writer takes. Organization, version and
+  # actor come from the socket, never from event params, and the writer re-checks
+  # the actor's editor membership under its own lock.
+  defp audit_context(socket) do
+    %{current_user: user, current_organization: organization, current_gtfs_version: version} =
+      socket.assigns
+
+    %AuditContext{
+      actor_id: user.id,
+      actor_email: user.email,
+      organization_id: organization.id,
+      gtfs_version_id: version.id,
+      station_stop_id: nil
+    }
+  end
+
+  # An early check on the membership, so a revoked editor is refused before a
+  # writer is called. It is advisory: the writers repeat it under lock.
   defp editor_access?(socket) do
     with %{id: user_id} <- socket.assigns[:current_user],
          %{id: organization_id} <- socket.assigns[:current_organization] do
@@ -659,16 +686,11 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   def handle_event("set_day", _params, socket) do
     with %{line_id: line_id, weekday: weekday, run_id: run_id} <- writable_slot(socket),
          {:ok, result} <-
-           Gtfs.set_roster_slot(
-             socket.assigns.current_organization.id,
-             socket.assigns.current_gtfs_version.id,
-             line_id,
-             weekday,
-             run_id
-           ) do
+           Gtfs.set_roster_slot(audit_context(socket), line_id, weekday, run_id) do
       {:noreply,
        saved(socket, result.short_rests, "Set #{weekday_name(weekday)} to run #{run_id}.")}
     else
+      {:error, :forbidden} -> {:noreply, editor_refusal(socket)}
       {:error, reason} -> {:noreply, refuse(socket, reason)}
       _no_slot -> {:noreply, socket}
     end
@@ -677,15 +699,10 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   def handle_event("set_group", _params, socket) do
     with %{line_id: line_id, weekday: weekday, run_id: run_id} <- writable_slot(socket),
          {:ok, _result} <-
-           Gtfs.set_roster_weekday_group(
-             socket.assigns.current_organization.id,
-             socket.assigns.current_gtfs_version.id,
-             line_id,
-             weekday,
-             run_id
-           ) do
+           Gtfs.set_roster_weekday_group(audit_context(socket), line_id, weekday, run_id) do
       {:noreply, saved(socket, [], "Set #{group_label(socket, weekday)} to run #{run_id}.")}
     else
+      {:error, :forbidden} -> {:noreply, editor_refusal(socket)}
       {:error, reason} -> {:noreply, refuse(socket, reason)}
       _no_slot -> {:noreply, socket}
     end
@@ -694,14 +711,10 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   def handle_event("clear_day", _params, socket) do
     with %{line_id: line_id, weekday: weekday} <- writable_slot(socket),
          {:ok, _result} <-
-           Gtfs.clear_roster_slot(
-             socket.assigns.current_organization.id,
-             socket.assigns.current_gtfs_version.id,
-             line_id,
-             weekday
-           ) do
+           Gtfs.clear_roster_slot(audit_context(socket), line_id, weekday) do
       {:noreply, saved(socket, [], "Cleared #{weekday_name(weekday)}.")}
     else
+      {:error, :forbidden} -> {:noreply, editor_refusal(socket)}
       {:error, reason} -> {:noreply, refuse(socket, reason)}
       _no_slot -> {:noreply, socket}
     end
@@ -710,8 +723,8 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   # ── Open work ──────────────────────────────────────────────────────────────
   #
   # Two writes live here, and both create a line through the real writer:
-  # `Gtfs.create_roster_line/2` for the head's "Add line", and
-  # `Gtfs.create_roster_line_from_run/4` for a card's "Create Mon–Fri line".
+  # `Gtfs.create_roster_line/1` for the head's "Add line", and
+  # `Gtfs.create_roster_line_from_run/3` for a card's "Create Mon–Fri line".
   #
   # "Add line" opens the new line's Monday drawer afterwards, because an empty
   # week with no way to fill it is a dead end: the planner's next move is to
@@ -723,10 +736,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   # drops it on the next write, because a row still tinted after the planner has
   # moved on is a mark about something that is no longer the last thing they did.
   def handle_event("add_line", _params, socket) do
-    case Gtfs.create_roster_line(
-           socket.assigns.current_organization.id,
-           socket.assigns.current_gtfs_version.id
-         ) do
+    case Gtfs.create_roster_line(audit_context(socket)) do
       {:ok, line} ->
         socket = socket |> clear_open_work() |> assign(:new_line_id, line.id) |> load_roster()
 
@@ -734,6 +744,9 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
          socket
          |> open_new_line_drawer(line.id)
          |> put_toast("Line #{line.line_number} added.", :done)}
+
+      {:error, :forbidden} ->
+        {:noreply, socket |> clear_open_work() |> editor_refusal()}
 
       {:error, :not_found} ->
         # The head's control is not on a card, so its refusal is the page's own
@@ -747,16 +760,14 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
         %{"day_type" => day_type_key, "run" => run_id},
         socket
       ) do
-    case Gtfs.create_roster_line_from_run(
-           socket.assigns.current_organization.id,
-           socket.assigns.current_gtfs_version.id,
-           day_type_key,
-           run_id
-         ) do
+    case Gtfs.create_roster_line_from_run(audit_context(socket), day_type_key, run_id) do
       {:ok, line} ->
         socket = socket |> clear_open_work() |> assign(:new_line_id, line.id) |> load_roster()
 
         {:noreply, put_toast(socket, created_sentence(socket, line, run_id), :done)}
+
+      {:error, :forbidden} ->
+        {:noreply, socket |> clear_open_work() |> editor_refusal()}
 
       {:error, reason} ->
         {:noreply, refuse_open_work(socket, run_id, reason)}
@@ -828,13 +839,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     with %{run_id: run_id, weekday: weekday, selected_line_id: line_id} <- writable_add(socket),
          number when not is_nil(number) <- add_line_number(socket, line_id),
          {:ok, result} <-
-           Gtfs.set_roster_slot(
-             socket.assigns.current_organization.id,
-             socket.assigns.current_gtfs_version.id,
-             line_id,
-             weekday,
-             run_id
-           ) do
+           Gtfs.set_roster_slot(audit_context(socket), line_id, weekday, run_id) do
       {:noreply,
        socket
        |> close_add()
@@ -843,6 +848,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
          "Added run #{run_id} to line #{number} on #{weekday_name(weekday)}."
        )}
     else
+      {:error, :forbidden} -> {:noreply, editor_refusal(socket)}
       {:error, reason} -> {:noreply, refuse_add_to_line(socket, reason)}
       _nothing_to_add -> {:noreply, socket}
     end
@@ -850,7 +856,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
 
   # "Create new line" is two writes, because the spec asks for a line holding
   # this run on this day rather than for a line and a later set. The first write
-  # is `create_roster_line/2` and the second is the same `set_roster_slot/5` the
+  # is `create_roster_line/1` and the second is the same `set_roster_slot/4` the
   # line above uses. A refusal of the second leaves the empty line standing —
   # deleting it would be a third write hiding a fact the planner needs to see —
   # and says so, in the drawer, over the roster the second write was refused
@@ -1076,7 +1082,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     {:noreply, assign(socket, :delete_operator, nil)}
   end
 
-  # The delete. `Operations.delete_operator/2` is a hard delete whose foreign key
+  # The delete. `Operations.delete_operator/3` is a hard delete whose foreign key
   # leaves every held line open, in this version and in every other; the roster
   # is re-read afterwards so the grid redraws from the composition rather than
   # from a pick this page removed itself.
@@ -1148,7 +1154,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   #
   # The pick is a record of what a bid agreed, not a proposal the page decides
   # anything about: the row offers the organization's operators in seniority
-  # order, `Gtfs.assign_roster_operator/4` records or clears, and the writer's
+  # order, `Gtfs.assign_roster_operator/3` records or clears, and the writer's
   # own refusal is the sentence the row shows.
   #
   # Opening a pick and cancelling one are reads of the roster this socket already
@@ -1295,9 +1301,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   # is already visible in the grid as "Base week changed" on the slots it
   # invalidates — that marking is the composition's, not this page's.
   defp write_settings(socket, form_state, params) do
-    %{current_organization: organization, current_gtfs_version: version} = socket.assigns
-
-    case Gtfs.update_roster_settings(organization.id, version.id, params) do
+    case Gtfs.update_roster_settings(audit_context(socket), params) do
       {:ok, _settings} ->
         {:noreply,
          socket
@@ -1305,6 +1309,11 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
          |> load_roster()
          |> put_toast("Roster settings saved. Every line was checked again.", :done)
          |> push_event("focus_scoped_target", %{id: "rosters-settings-button"})}
+
+      # The role was revoked after the drawer opened. The drawer stays open with
+      # the entries as they were typed, and the page's toast says why.
+      {:error, :forbidden} ->
+        {:noreply, editor_refusal(socket)}
 
       # The version went unpublished between the drawer opening and the save.
       # The writer refuses the write, so the drawer says why and keeps the
@@ -1410,8 +1419,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   # that closes the row reads as the page having lost the planner's work.
   defp save_pick(socket, line_id, number, operator) do
     case Gtfs.assign_roster_operator(
-           socket.assigns.current_organization.id,
-           socket.assigns.current_gtfs_version.id,
+           audit_context(socket),
            line_id,
            pick_operator_id(operator)
          ) do
@@ -1443,6 +1451,9 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
           |> reopen_pick(number, pick_conflict(name, other_line))
 
         {:noreply, focus_pick_operator(refused)}
+
+      {:error, :forbidden} ->
+        {:noreply, editor_refusal(socket)}
 
       {:error, :not_found} ->
         refuse_pick_not_found(socket, number)
@@ -1806,6 +1817,10 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
            fallback_id: @operator_form_error_id
          })}
 
+      {:error, :forbidden} ->
+        # The form stays open with what the editor typed.
+        {:noreply, editor_refusal(socket)}
+
       {:error, :not_found} ->
         # The operator went while the form was open. A form for an operator that
         # is not there is a lie, so the form closes and the list is re-read; the
@@ -1935,6 +1950,11 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
          socket
          |> put_operator_import(%{preview: fresh, stale?: true})
          |> push_event("focus_scoped_target", %{id: @operator_import_error_id})}
+
+      {:error, :forbidden} ->
+        # The reviewed file stays in the drawer, so nothing the editor chose is
+        # lost.
+        {:noreply, editor_refusal(socket)}
     end
   end
 
@@ -1965,7 +1985,11 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   end
 
   defp delete_operator(socket, operator_id) do
-    case Operations.delete_operator(socket.assigns.current_organization.id, operator_id) do
+    case Operations.delete_operator(
+           socket.assigns.current_organization.id,
+           operator_actor(socket),
+           operator_id
+         ) do
       {:ok, operator} ->
         socket =
           socket
@@ -1993,15 +2017,14 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
           |> put_operators(load_operators(socket))
 
         {:noreply, put_toast(socket, @operator_gone, :refused)}
+
+      {:error, :forbidden} ->
+        {:noreply, editor_refusal(socket)}
     end
   end
 
   defp delete_line(socket, line_id) do
-    case Gtfs.delete_roster_line(
-           socket.assigns.current_organization.id,
-           socket.assigns.current_gtfs_version.id,
-           line_id
-         ) do
+    case Gtfs.delete_roster_line(audit_context(socket), line_id) do
       {:ok, %{line_number: number, run_days: run_days}} ->
         socket =
           socket
@@ -2032,27 +2055,22 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
           |> load_roster()
 
         {:noreply, put_toast(socket, @line_gone, :refused)}
+
+      {:error, :forbidden} ->
+        {:noreply, editor_refusal(socket)}
     end
   end
 
   defp create_line_for_add(socket, weekday, run_id) do
-    case Gtfs.create_roster_line(
-           socket.assigns.current_organization.id,
-           socket.assigns.current_gtfs_version.id
-         ) do
+    case Gtfs.create_roster_line(audit_context(socket)) do
       {:ok, line} -> add_run_to_new_line(socket, line, weekday, run_id)
+      {:error, :forbidden} -> {:noreply, editor_refusal(socket)}
       {:error, :not_found} -> {:noreply, refuse_add_to_line(socket, :not_found)}
     end
   end
 
   defp add_run_to_new_line(socket, line, weekday, run_id) do
-    case Gtfs.set_roster_slot(
-           socket.assigns.current_organization.id,
-           socket.assigns.current_gtfs_version.id,
-           line.id,
-           weekday,
-           run_id
-         ) do
+    case Gtfs.set_roster_slot(audit_context(socket), line.id, weekday, run_id) do
       {:ok, result} ->
         {:noreply,
          socket
@@ -2061,6 +2079,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
            result.short_rests,
            "Line #{line.line_number} created with run #{run_id} on #{weekday_name(weekday)}."
          )}
+
+      # The role was revoked between the two writes, so the empty line the first
+      # one made is on the roster now and the drawer has nothing left to do.
+      {:error, :forbidden} ->
+        {:noreply,
+         socket |> close_add() |> clear_open_work() |> load_roster() |> editor_refusal()}
 
       {:error, reason} ->
         # The line exists now, so the roster is re-read before the drawer is

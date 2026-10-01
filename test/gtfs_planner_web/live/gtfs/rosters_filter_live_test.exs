@@ -6,8 +6,8 @@ defmodule GtfsPlannerWeb.Gtfs.RostersFilterLiveTest do
   `?dir=` are read in `handle_params/3` and nowhere else, so a link is the same
   page as the click that produced it, and both are the thing under test. The
   world is written through the same writers the page uses —
-  `Gtfs.create_roster_line/2`, `Gtfs.set_roster_slot/5` and
-  `Gtfs.assign_roster_operator/4` — over `RunsFixtures.runs_version_fixture/1`,
+  `Gtfs.create_roster_line/1`, `Gtfs.set_roster_slot/4` and
+  `Gtfs.assign_roster_operator/3` — over `RunsFixtures.runs_version_fixture/1`,
   so a filter or an order can never be right about rows the page never had.
 
   ## The world
@@ -162,13 +162,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersFilterLiveTest do
   # Builds one line working the given `{weekday, run_id}` days and returns its id
   # and line number, which is what every assertion below addresses the row by.
   defp line(world, days) do
-    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world.organization.id, world.version.id)
+    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world_audit(world))
 
     for {weekday, run_id} <- days do
       assert {:ok, _result} =
                Gtfs.set_roster_slot(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  line_id,
                  weekday,
                  run_id
@@ -199,8 +198,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersFilterLiveTest do
   defp assign_operator(world, line_id, operator_id) do
     assert {:ok, _line} =
              Gtfs.assign_roster_operator(
-               world.organization.id,
-               world.version.id,
+               world_audit(world),
                line_id,
                operator_id
              )
@@ -329,12 +327,11 @@ defmodule GtfsPlannerWeb.Gtfs.RostersFilterLiveTest do
       refute has_element?(view, "#rosters-filter-option-stale")
       assert filter_labels(view) == ["All lines 1", "Open lines 1", "Lines with problems 0"]
 
-      {:ok, stale_line} = Gtfs.create_roster_line(world.organization.id, world.version.id)
+      {:ok, stale_line} = Gtfs.create_roster_line(world_audit(world))
 
       assert {:ok, _result} =
                Gtfs.set_roster_slot(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  stale_line.id,
                  2,
                  "2004"
@@ -468,12 +465,11 @@ defmodule GtfsPlannerWeb.Gtfs.RostersFilterLiveTest do
 
     test "the stale message's control patches the same URL as the filter row", context do
       {conn, world} = signed_in(context)
-      {:ok, stale_line} = Gtfs.create_roster_line(world.organization.id, world.version.id)
+      {:ok, stale_line} = Gtfs.create_roster_line(world_audit(world))
 
       assert {:ok, _result} =
                Gtfs.set_roster_slot(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  stale_line.id,
                  2,
                  "2004"

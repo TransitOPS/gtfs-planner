@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Operations.OperatorDeleteTest do
   @moduledoc """
-  `Operations.delete_operator/2` is an organization-scoped hard delete whose
+  `Operations.delete_operator/3` is an organization-scoped hard delete whose
   foreign key leaves the held lines open.
 
   The rows are the real ones: an operator is created through
@@ -36,7 +36,7 @@ defmodule GtfsPlanner.Operations.OperatorDeleteTest do
     %{world: runs_version_fixture()}
   end
 
-  describe "delete_operator/2" do
+  describe "delete_operator/3" do
     test "deletes an operator holding lines in two versions and empties both lines", %{
       world: world
     } do
@@ -49,7 +49,13 @@ defmodule GtfsPlanner.Operations.OperatorDeleteTest do
       assert stored_operator(world, first.id) == operator.id
       assert stored_operator(%{world | version: other_version}, second.id) == operator.id
 
-      assert {:ok, deleted} = Operations.delete_operator(world.organization.id, operator.id)
+      assert {:ok, deleted} =
+               Operations.delete_operator(
+                 world.organization.id,
+                 operations_actor(world.organization.id),
+                 operator.id
+               )
+
       assert deleted.id == operator.id
       assert deleted.employee_id == "E4101"
 
@@ -72,7 +78,13 @@ defmodule GtfsPlanner.Operations.OperatorDeleteTest do
       theirs = runs_version_fixture()
       foreign = create_operator(theirs, "E4200", "Bo Lindqvist", 8)
 
-      assert {:error, :not_found} = Operations.delete_operator(world.organization.id, foreign.id)
+      assert {:error, :not_found} =
+               Operations.delete_operator(
+                 world.organization.id,
+                 operations_actor(world.organization.id),
+                 foreign.id
+               )
+
       assert Repo.get(Operator, foreign.id) == foreign
       assert Operations.get_operator(theirs.organization.id, foreign.id).id == foreign.id
     end
@@ -82,10 +94,21 @@ defmodule GtfsPlanner.Operations.OperatorDeleteTest do
     } do
       operator = create_operator(world)
       line = held_line(world, operator.id)
-      assert {:ok, _deleted} = Operations.delete_operator(world.organization.id, operator.id)
+
+      assert {:ok, _deleted} =
+               Operations.delete_operator(
+                 world.organization.id,
+                 operations_actor(world.organization.id),
+                 operator.id
+               )
 
       for bad_id <- ["not-a-uuid", 42, nil, Ecto.UUID.generate(), operator.id] do
-        assert {:error, :not_found} = Operations.delete_operator(world.organization.id, bad_id)
+        assert {:error, :not_found} =
+                 Operations.delete_operator(
+                   world.organization.id,
+                   operations_actor(world.organization.id),
+                   bad_id
+                 )
       end
 
       assert stored_operator(world, line.id) == nil
@@ -94,7 +117,13 @@ defmodule GtfsPlanner.Operations.OperatorDeleteTest do
     test "an operator holding no line deletes without a reader or a locker", %{world: world} do
       operator = create_operator(world)
 
-      assert {:ok, deleted} = Operations.delete_operator(world.organization.id, operator.id)
+      assert {:ok, deleted} =
+               Operations.delete_operator(
+                 world.organization.id,
+                 operations_actor(world.organization.id),
+                 operator.id
+               )
+
       assert deleted.id == operator.id
       assert Repo.get(Operator, operator.id) == nil
       assert Enum.map(Operations.list_operators(world.organization.id), & &1.id) == []
@@ -125,12 +154,11 @@ defmodule GtfsPlanner.Operations.OperatorDeleteTest do
   # writers the page calls.
   defp held_line(world, operator_id) do
     assert {:ok, %{id: id, line_number: number}} =
-             Gtfs.create_roster_line(world.organization.id, world.version.id)
+             Gtfs.create_roster_line(world_audit(world))
 
     assert {:ok, %{line_number: ^number}} =
              Gtfs.assign_roster_operator(
-               world.organization.id,
-               world.version.id,
+               world_audit(world),
                id,
                operator_id
              )

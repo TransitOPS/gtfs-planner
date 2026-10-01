@@ -2,7 +2,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersOperatorDeleteLiveTest do
   @moduledoc """
   Confirming and deleting an operator from the operators drawer.
 
-  Every case here reaches the real writers — `Operations.delete_operator/2`
+  Every case here reaches the real writers — `Operations.delete_operator/3`
   through `RostersLive`'s `confirm_delete_operator` — and re-reads the stored rows
   afterwards, so "the confirmation named the lines" and "the lines are open" are
   two independent reads.
@@ -146,7 +146,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersOperatorDeleteLiveTest do
     {:ok, operator} =
       Operations.create_operator(
         organization_id,
-        %{id: Ecto.UUID.generate()},
+        GtfsPlanner.OperationsFixtures.operations_actor(organization_id),
         Map.merge(
           %{"employee_id" => "E-0000", "display_name" => "Nobody", "seniority_number" => nil},
           attrs
@@ -157,13 +157,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersOperatorDeleteLiveTest do
   end
 
   defp line(world, days) do
-    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world.organization.id, world.version.id)
+    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world_audit(world))
 
     for {weekday, run_id} <- days do
       assert {:ok, _result} =
                Gtfs.set_roster_slot(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  line_id,
                  weekday,
                  run_id
@@ -179,7 +178,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersOperatorDeleteLiveTest do
     line_id = line(world, days)
 
     {:ok, %{line_number: number}} =
-      Gtfs.assign_roster_operator(world.organization.id, world.version.id, line_id, operator_id)
+      Gtfs.assign_roster_operator(world_audit(world), line_id, operator_id)
 
     %{id: line_id, line_number: number}
   end
@@ -479,7 +478,11 @@ defmodule GtfsPlannerWeb.Gtfs.RostersOperatorDeleteLiveTest do
 
       # Another session deletes the row the confirmation named.
       assert {:ok, _deleted} =
-               Operations.delete_operator(world.organization.id, operator.id)
+               Operations.delete_operator(
+                 world.organization.id,
+                 %{id: world.audit.actor_id},
+                 operator.id
+               )
 
       view |> element("#rosters-delete-operator-confirm-confirm") |> render_click()
 

@@ -19,7 +19,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.LoadRosterTest do
   is only meaningful against the same derivation the Runs page reads (INV-11).
 
   The lines are inserted through `Repo.insert/1` of the schemas rather than
-  through a writer: `Rosters.create_line/2` and the slot writers arrive in steps
+  through a writer: `Rosters.create_line/1` and the slot writers arrive in steps
   12 to 15. The stored run times come from the derived run itself, which is what
   a writer will store, so the fresh slot is fresh for the same reason a written
   one would be.
@@ -255,7 +255,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.LoadRosterTest do
   end
 
   # A line working `run` on `weekday`, stored with the run's own sign-on and
-  # sign-off — exactly what `Rosters.set_slot/5` will write in step 14.
+  # sign-off — exactly what `Rosters.set_slot/4` will write in step 14.
   defp slot_line(world, run, weekday) do
     {:ok, line} =
       %RosterLine{

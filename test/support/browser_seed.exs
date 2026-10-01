@@ -7637,7 +7637,7 @@ case Accounts.register_first_admin(%{
     # base week is the computed default and the settings drawer opens on a week
     # nobody has confirmed.
     {:ok, _rosters_rules} =
-      GtfsPlanner.Gtfs.Rosters.update_roster_settings(org.id, rosters_version.id, %{
+      GtfsPlanner.Gtfs.Rosters.update_roster_settings(rosters_audit, %{
         min_rest_minutes: 600,
         weekly_hours_warn_above: 48,
         roster_day_types: %{}
@@ -7713,12 +7713,11 @@ case Accounts.register_first_admin(%{
     # The five lines, every one written through the production roster writers so
     # the rows are the ones the page's own drawers write: the lock order, the
     # stored run times and the refusals are all the real ones.
-    {:ok, roster_line_1} = GtfsPlanner.Gtfs.Rosters.create_line(org.id, rosters_version.id)
+    {:ok, roster_line_1} = GtfsPlanner.Gtfs.Rosters.create_line(rosters_audit)
 
     {:ok, _line_1_group} =
       GtfsPlanner.Gtfs.Rosters.set_weekday_group(
-        org.id,
-        rosters_version.id,
+        rosters_audit,
         roster_line_1.id,
         1,
         "1001"
@@ -7726,8 +7725,7 @@ case Accounts.register_first_admin(%{
 
     {:ok, _line_1_pick} =
       GtfsPlanner.Gtfs.Rosters.assign_operator(
-        org.id,
-        rosters_version.id,
+        rosters_audit,
         roster_line_1.id,
         Map.fetch!(rosters_operator_by_id, "E9001").id
       )
@@ -7736,51 +7734,49 @@ case Accounts.register_first_admin(%{
     # because a manual per-day edit is allowed to leave short rest where a
     # builder would refuse. Sunday's run signs off after 21:00 and Monday's signs
     # on before 05:30, which is under ten hours apart.
-    {:ok, roster_line_2} = GtfsPlanner.Gtfs.Rosters.create_line(org.id, rosters_version.id)
+    {:ok, roster_line_2} = GtfsPlanner.Gtfs.Rosters.create_line(rosters_audit)
 
     {:ok, _line_2_monday} =
-      GtfsPlanner.Gtfs.Rosters.set_slot(org.id, rosters_version.id, roster_line_2.id, 1, "1002")
+      GtfsPlanner.Gtfs.Rosters.set_slot(rosters_audit, roster_line_2.id, 1, "1002")
 
     {:ok, _line_2_sunday} =
-      GtfsPlanner.Gtfs.Rosters.set_slot(org.id, rosters_version.id, roster_line_2.id, 7, "7001")
+      GtfsPlanner.Gtfs.Rosters.set_slot(rosters_audit, roster_line_2.id, 7, "7001")
 
     # Line 3 — DAYS OFF APART. Mon-Fri plus Saturday leaves Sunday as the only day
     # off, so there is no two in a row anywhere in the cyclic week.
-    {:ok, roster_line_3} = GtfsPlanner.Gtfs.Rosters.create_line(org.id, rosters_version.id)
+    {:ok, roster_line_3} = GtfsPlanner.Gtfs.Rosters.create_line(rosters_audit)
 
     {:ok, _line_3_group} =
       GtfsPlanner.Gtfs.Rosters.set_weekday_group(
-        org.id,
-        rosters_version.id,
+        rosters_audit,
         roster_line_3.id,
         1,
         "1003"
       )
 
     {:ok, _line_3_saturday} =
-      GtfsPlanner.Gtfs.Rosters.set_slot(org.id, rosters_version.id, roster_line_3.id, 6, "6001")
+      GtfsPlanner.Gtfs.Rosters.set_slot(rosters_audit, roster_line_3.id, 6, "6001")
 
     # Line 4 — an OPEN line: a weekend pair with no pick recorded, which is also
     # the export's "line has no operator" warning.
-    {:ok, roster_line_4} = GtfsPlanner.Gtfs.Rosters.create_line(org.id, rosters_version.id)
+    {:ok, roster_line_4} = GtfsPlanner.Gtfs.Rosters.create_line(rosters_audit)
 
     {:ok, _line_4_saturday} =
-      GtfsPlanner.Gtfs.Rosters.set_slot(org.id, rosters_version.id, roster_line_4.id, 6, "6002")
+      GtfsPlanner.Gtfs.Rosters.set_slot(rosters_audit, roster_line_4.id, 6, "6002")
 
     {:ok, _line_4_sunday} =
-      GtfsPlanner.Gtfs.Rosters.set_slot(org.id, rosters_version.id, roster_line_4.id, 7, "7002")
+      GtfsPlanner.Gtfs.Rosters.set_slot(rosters_audit, roster_line_4.id, 7, "7002")
 
     # Line 5 — the STALE slot. The five weekdays are set through the writer, so
     # every row stores the run's current times; Friday's stored times are then
     # moved ten minutes earlier directly on the row, which is exactly the state a
     # re-cut of run 1004 leaves behind and the only way to reach it without
     # deleting the trip_runs rows (INV-13).
-    {:ok, roster_line_5} = GtfsPlanner.Gtfs.Rosters.create_line(org.id, rosters_version.id)
+    {:ok, roster_line_5} = GtfsPlanner.Gtfs.Rosters.create_line(rosters_audit)
 
     {:ok, _line_5_group} =
       GtfsPlanner.Gtfs.Rosters.set_weekday_group(
-        org.id,
-        rosters_version.id,
+        rosters_audit,
         roster_line_5.id,
         1,
         "1004"
@@ -7788,8 +7784,7 @@ case Accounts.register_first_admin(%{
 
     {:ok, _line_5_pick} =
       GtfsPlanner.Gtfs.Rosters.assign_operator(
-        org.id,
-        rosters_version.id,
+        rosters_audit,
         roster_line_5.id,
         Map.fetch!(rosters_operator_by_id, "E9002").id
       )

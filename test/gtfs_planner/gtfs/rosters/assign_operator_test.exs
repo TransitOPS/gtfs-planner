@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.Rosters.AssignOperatorTest do
   @moduledoc """
-  `assign_roster_operator/4` is the pick: it records, changes and clears the
+  `assign_roster_operator/3` is the pick: it records, changes and clears the
   operator of a line, refuses an operator who already holds a line in the same
   version by naming it, and refuses an operator of another organization without
   writing anything.
@@ -12,7 +12,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignOperatorTest do
   are claims about what was written, not about what was returned.
 
   The world is `RunsFixtures.runs_version_fixture/1`: a published version in its
-  own organization. Lines are created through `Gtfs.create_roster_line/2` rather
+  own organization. Lines are created through `Gtfs.create_roster_line/1` rather
   than inserted, so each one is a line the page could have made. Operators are
   inserted through `Operator.changeset/2` — `Operations`' writers arrive in
   steps 18 and 19 — which is all the pick needs: a row of this organization that
@@ -48,7 +48,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignOperatorTest do
     %{world: runs_version_fixture()}
   end
 
-  describe "assign_roster_operator/4" do
+  describe "assign_roster_operator/3" do
     test "records the operator on the line, re-read from the table", %{world: world} do
       line = new_line(world)
       operator = operator_fixture(world, "E-1", "Aurelia Nowak", 7)
@@ -157,8 +157,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignOperatorTest do
           ] do
         assert {:error, :not_found} =
                  Gtfs.assign_roster_operator(
-                   world.organization.id,
-                   world.version.id,
+                   world_audit(world),
                    bad_line,
                    bad_operator
                  )
@@ -191,8 +190,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignOperatorTest do
             Sandbox.allow(Repo, parent, self())
 
             Gtfs.assign_roster_operator(
-              world.organization.id,
-              world.version.id,
+              world_audit(world),
               line.id,
               operator.id
             )
@@ -212,12 +210,12 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignOperatorTest do
   end
 
   defp assign(world, line, operator_id) do
-    Gtfs.assign_roster_operator(world.organization.id, world.version.id, line.id, operator_id)
+    Gtfs.assign_roster_operator(world_audit(world), line.id, operator_id)
   end
 
   defp new_line(world) do
     assert {:ok, %{id: id, line_number: number}} =
-             Gtfs.create_roster_line(world.organization.id, world.version.id)
+             Gtfs.create_roster_line(world_audit(world))
 
     %{id: id, line_number: number}
   end

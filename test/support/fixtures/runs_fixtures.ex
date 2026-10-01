@@ -166,6 +166,17 @@ defmodule GtfsPlanner.RunsFixtures do
     }
   end
 
+  @doc """
+  The editor's audit context for a world's organization and its *current* version.
+
+  `world.audit` names the version the world was built with. A test that swaps
+  `world.version` for a sibling needs the context to follow the swap, so this
+  derives it from the world's present `organization` and `version`. The actor is
+  the organization's one editor, the same user `runs_version_fixture/1` made.
+  """
+  def world_audit(%{organization: organization, version: version}),
+    do: editor_audit_fixture(organization, version)
+
   # The station is a row of its own so a candidate can name it, and the two bays
   # carry no coordinates of their own: they inherit the station's, exactly as a
   # real feed's child stops do.

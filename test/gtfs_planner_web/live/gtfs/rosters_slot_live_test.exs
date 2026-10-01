@@ -2,8 +2,8 @@ defmodule GtfsPlannerWeb.Gtfs.RostersSlotLiveTest do
   @moduledoc """
   The slot drawer: choosing the run one weekday of one line works.
 
-  Every button here reaches the real writer — `Gtfs.set_roster_slot/5`,
-  `set_roster_weekday_group/5`, `clear_roster_slot/4` — and every stored row is
+  Every button here reaches the real writer — `Gtfs.set_roster_slot/4`,
+  `set_roster_weekday_group/4`, `clear_roster_slot/3` — and every stored row is
   re-read through `Gtfs.load_roster/2` afterwards, so "the grid shows it" and
   "the row says it" are two independent reads rather than one rendering.
 
@@ -151,13 +151,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersSlotLiveTest do
   defp path(world), do: "/gtfs/#{world.version.id}/rosters"
 
   defp line(world, days) do
-    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world.organization.id, world.version.id)
+    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world_audit(world))
 
     for {weekday, run_id} <- days do
       assert {:ok, _result} =
                Gtfs.set_roster_slot(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  line_id,
                  weekday,
                  run_id
@@ -502,10 +501,10 @@ defmodule GtfsPlannerWeb.Gtfs.RostersSlotLiveTest do
       # Another line takes run 2004 on Monday while the drawer is open. The
       # drawer is showing a roster that was read before that write, so the only
       # thing that can catch it is the writer's own availability.
-      {:ok, %{id: other}} = Gtfs.create_roster_line(world.organization.id, world.version.id)
+      {:ok, %{id: other}} = Gtfs.create_roster_line(world_audit(world))
 
       assert {:ok, _taken} =
-               Gtfs.set_roster_slot(world.organization.id, world.version.id, other, 1, "2004")
+               Gtfs.set_roster_slot(world_audit(world), other, 1, "2004")
 
       view |> element("#rosters-set-group") |> render_click()
 

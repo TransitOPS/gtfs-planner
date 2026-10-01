@@ -2,7 +2,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLineLiveTest do
   @moduledoc """
   The line drawer and the delete-line confirmation behind its footer.
 
-  Every button here reaches a real writer — `Gtfs.delete_roster_line/3` — and
+  Every button here reaches a real writer — `Gtfs.delete_roster_line/2` — and
   the stored rows are re-read straight out of `roster_lines` and
   `roster_line_days` afterwards, so "the line is gone" and "the screen says it
   is gone" are two independent reads rather than one rendering.
@@ -144,13 +144,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLineLiveTest do
   # A line written through the production writers, so its rows carry the stored
   # run times the composition reads (INV-13).
   defp line(world, days) do
-    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world.organization.id, world.version.id)
+    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world_audit(world))
 
     for {weekday, run_id} <- days do
       assert {:ok, _result} =
                Gtfs.set_roster_slot(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  line_id,
                  weekday,
                  run_id
@@ -174,8 +173,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLineLiveTest do
 
     assert {:ok, _result} =
              Gtfs.assign_roster_operator(
-               world.organization.id,
-               world.version.id,
+               world_audit(world),
                line_id,
                operator.id
              )
@@ -450,7 +448,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLineLiveTest do
       # Another planner deletes it while the confirmation is up, which is the
       # only way the writer can refuse here.
       assert {:ok, _result} =
-               Gtfs.delete_roster_line(world.organization.id, world.version.id, id)
+               Gtfs.delete_roster_line(world_audit(world), id)
 
       view |> element("#rosters-delete-line-confirm-confirm") |> render_click()
 

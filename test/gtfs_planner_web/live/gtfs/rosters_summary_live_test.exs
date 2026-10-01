@@ -23,7 +23,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersSummaryLiveTest do
       strip reports "1 above 48 h" and one line with problems. Those are the
       fixture's real figures, not a defect: this block is a 58-hour week.
 
-  The stale slot is a real one: a slot is set through `Gtfs.set_roster_slot/5`,
+  The stale slot is a real one: a slot is set through `Gtfs.set_roster_slot/4`,
   and then the stored `run_sign_on_secs` is moved behind the writer's back, which
   is exactly what a re-cut does to a run that keeps its ID (INV-13). The
   composition is not told; it discovers the drift from the stored times.
@@ -111,13 +111,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersSummaryLiveTest do
   # A line working run 2001 on every weekday of the base week: the "5 of 5"
   # line the strip's run-days tile is written against.
   defp full_week_line(world) do
-    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world.organization.id, world.version.id)
+    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world_audit(world))
 
     for weekday <- 1..5 do
       assert {:ok, _result} =
                Gtfs.set_roster_slot(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  line_id,
                  weekday,
                  "2001"
@@ -228,7 +227,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersSummaryLiveTest do
 
     test "reports a line with no work yet without claiming a range", context do
       {conn, world} = signed_in(context)
-      {:ok, _line} = Gtfs.create_roster_line(world.organization.id, world.version.id)
+      {:ok, _line} = Gtfs.create_roster_line(world_audit(world))
 
       {:ok, view, _html} = live(conn, path(world))
 

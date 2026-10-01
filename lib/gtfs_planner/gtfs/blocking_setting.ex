@@ -221,7 +221,7 @@ defmodule GtfsPlanner.Gtfs.BlockingSetting do
   # Every offending entry adds its own error on `:roster_day_types`, so one
   # bad key and one blank value are two reports rather than one blurred message.
   # The value's existence as a real day type is not checked here: that needs the
-  # version's calendars, so it belongs to `Rosters.update_roster_settings/3`.
+  # version's calendars, so it belongs to `Rosters.update_roster_settings/2`.
   defp validate_roster_day_types(:roster_day_types, day_types) when is_map(day_types) do
     Enum.flat_map(day_types, fn {weekday, key} ->
       cond do

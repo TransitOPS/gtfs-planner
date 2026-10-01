@@ -48,7 +48,7 @@ defmodule GtfsPlanner.Gtfs.RosterLine do
 
   Every field is set programmatically by the writer, so there is nothing here to
   cast; the three declarations map the database's rejections to fields, so
-  `Rosters.create_line/2` and `Rosters.assign_operator/4` can read a refusal off
+  `Rosters.create_line/1` and `Rosters.assign_operator/3` can read a refusal off
   the line it belongs to instead of reporting a bare constraint error.
   """
   @spec changeset(t(), map()) :: Ecto.Changeset.t()

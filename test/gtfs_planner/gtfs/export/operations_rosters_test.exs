@@ -389,7 +389,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRostersTest do
   # sign-on is negative. That is correct — the trip really does run on those
   # Mondays — and it is why this resolves through `BaseWeek` rather than filtering
   # every run in the version: only the base day type's run is one a Monday slot
-  # may name, and `set_roster_slot/5` refuses any other.
+  # may name, and `set_roster_slot/4` refuses any other.
   defp prepared(world) do
     world = world |> add_early_block() |> cut_runs()
 
@@ -454,12 +454,11 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRostersTest do
   # calls, with `operator` picked — or with no operator at all, which is the open
   # line the export warns about.
   defp line(world, weekday, run_id, operator) do
-    {:ok, line} = Gtfs.create_roster_line(world.organization.id, world.version.id)
+    {:ok, line} = Gtfs.create_roster_line(world_audit(world))
 
     assert {:ok, %{short_rests: []}} =
              Gtfs.set_roster_slot(
-               world.organization.id,
-               world.version.id,
+               world_audit(world),
                line.id,
                weekday,
                run_id
@@ -468,8 +467,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRostersTest do
     if operator do
       assert {:ok, _} =
                Gtfs.assign_roster_operator(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  line.id,
                  operator.id
                )

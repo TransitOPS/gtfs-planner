@@ -147,7 +147,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersOperatorImportLiveTest do
     {:ok, operator} =
       Operations.create_operator(
         organization_id,
-        %{id: Ecto.UUID.generate()},
+        GtfsPlanner.OperationsFixtures.operations_actor(organization_id),
         Map.merge(%{"employee_id" => "E-0000", "display_name" => "Nobody"}, attrs)
       )
 

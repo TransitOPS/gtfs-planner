@@ -792,7 +792,7 @@ defmodule GtfsPlanner.Operations do
   belongs to another organization. A malformed id is treated as missing.
 
   This is how another context resolves a submitted operator id without reading
-  the `operators` table itself — `GtfsPlanner.Gtfs.Rosters.assign_operator/4`
+  the `operators` table itself — `GtfsPlanner.Gtfs.Rosters.assign_operator/3`
   uses it, the way the block writers resolve a garage or vehicle type.
   """
   @spec get_operator(Ecto.UUID.t(), term()) :: Operator.t() | nil
@@ -815,18 +815,22 @@ defmodule GtfsPlanner.Operations do
   Creates an operator for the organization and records the acting user.
 
   An employee ID the organization already holds is refused with an error naming
-  the operator who holds it, so the editor is not left searching the list.
+  the operator who holds it, so the editor is not left searching the list. An
+  actor who is no longer an editor of the organization is
+  `{:error, :forbidden}` and nothing is written.
   """
   @spec create_operator(Ecto.UUID.t(), actor(), map()) ::
-          {:ok, Operator.t()} | {:error, Ecto.Changeset.t()}
+          {:ok, Operator.t()} | {:error, Ecto.Changeset.t() | :forbidden}
   def create_operator(organization_id, actor, attrs) do
-    changeset =
-      %Operator{organization_id: organization_id, updated_by_id: actor_id(actor)}
-      |> Operator.changeset(attrs)
+    authorized_write(organization_id, actor, fn ->
+      changeset =
+        %Operator{organization_id: organization_id, updated_by_id: actor_id(actor)}
+        |> Operator.changeset(attrs)
 
-    with {:ok, changeset} <- refuse_employee_id(changeset, organization_id, nil) do
-      Repo.insert(changeset)
-    end
+      with {:ok, changeset} <- refuse_employee_id(changeset, organization_id, nil) do
+        Repo.insert(changeset, mode: :savepoint)
+      end
+    end)
   end
 
   @doc """
@@ -834,11 +838,20 @@ defmodule GtfsPlanner.Operations do
 
   Returns `{:error, :not_found}` for a missing, malformed or foreign id and
   changes nothing. An employee ID another operator already holds is refused with
-  an error naming the holder.
+  an error naming the holder. An actor who is no longer an editor of the
+  organization is `{:error, :forbidden}`.
   """
   @spec update_operator(Ecto.UUID.t(), actor(), term(), map()) ::
-          {:ok, Operator.t()} | {:error, Ecto.Changeset.t() | :not_found}
+          {:ok, Operator.t()} | {:error, Ecto.Changeset.t() | :not_found | :forbidden}
   def update_operator(organization_id, actor, id, attrs) do
+    authorized_write(organization_id, actor, fn ->
+      update_operator_row(organization_id, actor, id, attrs)
+    end)
+  end
+
+  # The update itself, for a caller that has already locked the actor's editor
+  # membership in its own transaction.
+  defp update_operator_row(organization_id, actor, id, attrs) do
     case get_operator(organization_id, id) do
       nil ->
         {:error, :not_found}
@@ -850,7 +863,7 @@ defmodule GtfsPlanner.Operations do
           |> put_change(:updated_by_id, actor_id(actor))
 
         with {:ok, changeset} <- refuse_employee_id(changeset, organization_id, operator.id) do
-          Repo.update(changeset)
+          Repo.update(changeset, mode: :savepoint)
         end
     end
   end
@@ -865,18 +878,18 @@ defmodule GtfsPlanner.Operations do
   `GtfsPlanner.Gtfs.Rosters.operator_holdings/2` before it confirms.
 
   Returns `{:error, :not_found}` for a missing, malformed or foreign id and
-  deletes nothing.
+  deletes nothing, and `{:error, :forbidden}` when the actor is no longer an
+  editor of the organization.
   """
-  @spec delete_operator(Ecto.UUID.t(), term()) ::
-          {:ok, Operator.t()} | {:error, :not_found}
-  def delete_operator(organization_id, id) do
-    case get_operator(organization_id, id) do
-      nil ->
-        {:error, :not_found}
-
-      operator ->
-        Repo.delete(operator)
-    end
+  @spec delete_operator(Ecto.UUID.t(), actor(), term()) ::
+          {:ok, Operator.t()} | {:error, :not_found | :forbidden}
+  def delete_operator(organization_id, actor, id) do
+    authorized_write(organization_id, actor, fn ->
+      case get_operator(organization_id, id) do
+        nil -> {:error, :not_found}
+        operator -> Repo.delete(operator)
+      end
+    end)
   end
 
   # --- Operator import -------------------------------------------------------
@@ -907,18 +920,22 @@ defmodule GtfsPlanner.Operations do
   concurrent insert claimed an ID after the recompute) rolls back every write and
   returns a freshly read `{:error, {:preview_changed, preview}}` too.
 
-  Updates go through `update_operator/4`, so they record the acting user and keep
-  its duplicate employee ID refusal, and only the file's mapped fields are
+  The editor membership is locked first, so an actor who is no longer an editor
+  of the organization gets `{:error, :forbidden}` and nothing is written.
+
+  Updates keep `update_operator/4`'s rules — they record the acting user and
+  keep its duplicate employee ID refusal — and only the file's mapped fields are
   written: a file with no `seniority_number` column leaves the stored number
   alone and a blank cell clears it. No stored operator is deleted and an update
   keeps the row's UUID.
   """
   @spec apply_operator_import(Ecto.UUID.t(), actor(), Tods.parsed(), OperatorImport.preview()) ::
           {:ok, %{added: non_neg_integer(), updated: non_neg_integer()}}
-          | {:error, {:preview_changed, OperatorImport.preview()}}
+          | {:error, {:preview_changed, OperatorImport.preview()} | :forbidden}
   def apply_operator_import(organization_id, actor, parsed, preview) do
     outcome =
       Repo.transaction(fn ->
+        authorize_editor!(organization_id, actor)
         existing = load_operators(organization_id, true)
         fresh = classify_operators(existing, parsed)
 
@@ -938,6 +955,9 @@ defmodule GtfsPlanner.Operations do
 
       {:error, :short_insert} ->
         {:error, {:preview_changed, preview_operator_import(organization_id, parsed)}}
+
+      {:error, :forbidden} ->
+        {:error, :forbidden}
     end
   end
 
@@ -971,14 +991,14 @@ defmodule GtfsPlanner.Operations do
 
   defp employee_ids(rows), do: Enum.map(rows, & &1.employee_id)
 
-  # Each update goes through `update_operator/4` against the locked row, so the
-  # acting user is recorded and its duplicate employee ID refusal stays: the
+  # Each update goes through `update_operator_row/4` against the locked row, so
+  # the acting user is recorded and its duplicate employee ID refusal stays: the
   # stored row carries the file's employee ID, and the holder lookup excludes
   # the row being updated.
   defp write_operator_import(organization_id, actor, existing, fresh) do
     Enum.each(fresh.update, fn row ->
       {:ok, _operator} =
-        update_operator(
+        update_operator_row(
           organization_id,
           actor,
           Map.fetch!(existing, row.employee_id).id,
@@ -1843,7 +1863,7 @@ defmodule GtfsPlanner.Operations do
   defp actor_id(%{id: id}), do: id
   defp actor_id(_), do: nil
 
-  # The holder is read before the write, the way `Rosters.assign_operator/4`
+  # The holder is read before the write, the way `Rosters.assign_operator/3`
   # reads the line an operator already holds: an insert that violates the unique
   # index leaves a failed transaction behind, and this refusal is one scoped read
   # that never fails. The index still rejects a concurrent insert that claimed

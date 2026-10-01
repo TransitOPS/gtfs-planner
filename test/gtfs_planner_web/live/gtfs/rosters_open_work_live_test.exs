@@ -3,8 +3,8 @@ defmodule GtfsPlannerWeb.Gtfs.RostersOpenWorkLiveTest do
   Open work: the groups of runs still open, "Create Mon–Fri line" on a card, and
   the head's "Add line".
 
-  Every button here reaches the real writer — `Gtfs.create_roster_line_from_run/4`
-  and `create_roster_line/2` — and every stored row is re-read through
+  Every button here reaches the real writer — `Gtfs.create_roster_line_from_run/3`
+  and `create_roster_line/1` — and every stored row is re-read through
   `Gtfs.load_roster/2` or read straight out of `roster_line_days` afterwards, so
   "the grid shows it" and "the row says it" are two independent reads rather
   than one rendering.
@@ -161,13 +161,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersOpenWorkLiveTest do
   # A line written through the production writers, so its rows carry the stored
   # run times the composition reads (INV-13).
   defp line(world, days) do
-    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world.organization.id, world.version.id)
+    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world_audit(world))
 
     for {weekday, run_id} <- days do
       assert {:ok, _result} =
                Gtfs.set_roster_slot(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  line_id,
                  weekday,
                  run_id

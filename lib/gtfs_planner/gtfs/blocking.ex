@@ -1491,7 +1491,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   Day types are recomputed from `Calendars.list_calendars/3` on every read and never
   stored (INV-6), so a caller that needs to ask "is this key still a day type, and
   does it run on that weekday" answers it from this list rather than from a stored
-  key it would have to trust. `Rosters.update_roster_settings/3` is the caller: a
+  key it would have to trust. `Rosters.update_roster_settings/2` is the caller: a
   stored base-week choice is only accepted while its day type is current and has a
   date on that weekday.
 

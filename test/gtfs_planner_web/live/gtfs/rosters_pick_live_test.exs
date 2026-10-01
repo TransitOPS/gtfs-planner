@@ -3,7 +3,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersPickLiveTest do
   The inline pick row: which operators a line can be given, what the row says
   when the writer refuses, and where focus lands afterwards.
 
-  Every case here reaches the real writer — `Gtfs.assign_roster_operator/4`
+  Every case here reaches the real writer — `Gtfs.assign_roster_operator/3`
   through `RostersLive`'s `save_pick` — and the stored `roster_lines.operator_id`
   is re-read straight out of the database afterwards. "The cell says the
   operator" and "the row holds that operator" are therefore two independent
@@ -146,13 +146,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersPickLiveTest do
   # A line written through the production writers, so its row carries the stored
   # run times the composition reads (INV-13).
   defp line(world, days) do
-    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world.organization.id, world.version.id)
+    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world_audit(world))
 
     for {weekday, run_id} <- days do
       assert {:ok, _result} =
                Gtfs.set_roster_slot(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  line_id,
                  weekday,
                  run_id
@@ -242,8 +241,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersPickLiveTest do
 
       assert {:ok, _result} =
                Gtfs.assign_roster_operator(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  first,
                  held.id
                )
@@ -309,8 +307,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersPickLiveTest do
 
       assert {:ok, _result} =
                Gtfs.assign_roster_operator(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  line_id,
                  held.id
                )
@@ -400,8 +397,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersPickLiveTest do
       # Another session records the same pick on line 2 while this row is open.
       assert {:ok, _result} =
                Gtfs.assign_roster_operator(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  second,
                  chosen.id
                )

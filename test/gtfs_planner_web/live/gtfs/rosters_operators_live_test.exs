@@ -148,7 +148,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersOperatorsLiveTest do
     {:ok, operator} =
       Operations.create_operator(
         organization_id,
-        %{id: Ecto.UUID.generate()},
+        GtfsPlanner.OperationsFixtures.operations_actor(organization_id),
         %{
           "employee_id" => "E-0000",
           "display_name" => "Nobody"
@@ -160,13 +160,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersOperatorsLiveTest do
   end
 
   defp line(world, days) do
-    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world.organization.id, world.version.id)
+    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world_audit(world))
 
     for {weekday, run_id} <- days do
       assert {:ok, _result} =
                Gtfs.set_roster_slot(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  line_id,
                  weekday,
                  run_id
@@ -273,8 +272,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersOperatorsLiveTest do
 
       assert {:ok, _result} =
                Gtfs.assign_roster_operator(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  first,
                  senior_a.id
                )
@@ -648,8 +646,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersOperatorsLiveTest do
 
       assert {:ok, _result} =
                Gtfs.assign_roster_operator(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  line_id,
                  holder.id
                )

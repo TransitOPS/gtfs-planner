@@ -4,8 +4,8 @@ defmodule GtfsPlannerWeb.Gtfs.RostersGridLiveTest do
   that describe the week as a whole.
 
   Every word asserted here is a word the composition produced. The world is
-  written through the same writers the page uses — `Gtfs.create_roster_line/2`,
-  `Gtfs.set_roster_slot/5`, `Gtfs.assign_roster_operator/4` — over
+  written through the same writers the page uses — `Gtfs.create_roster_line/1`,
+  `Gtfs.set_roster_slot/4`, `Gtfs.assign_roster_operator/3` — over
   `RunsFixtures.runs_version_fixture/1`, and the two stale states are reached the
   ways production reaches them: a day whose base-week day type is no longer the
   weekday's own (a re-cut, INV-13), and a run whose stored assignments are gone
@@ -182,13 +182,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersGridLiveTest do
   # Builds one line working the given `{weekday, run_id}` days and returns its
   # id and line number, which is what every assertion below addresses the row by.
   defp line(world, days) do
-    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world.organization.id, world.version.id)
+    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world_audit(world))
 
     for {weekday, run_id} <- days do
       assert {:ok, _result} =
                Gtfs.set_roster_slot(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  line_id,
                  weekday,
                  run_id
@@ -394,8 +393,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersGridLiveTest do
 
       assert {:ok, %{line_number: ^assigned_number}} =
                Gtfs.assign_roster_operator(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  assigned_id,
                  operator.id
                )

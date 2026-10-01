@@ -8,7 +8,7 @@ defmodule GtfsPlanner.Gtfs.BlockingSettingRosterTest do
   These are pure changeset cases: `roster_changeset/2` is called directly, so
   no row is written and no database is touched. The column-isolation claim at
   the storage level — that the upsert replaces only `roster_fields/0` — belongs
-  to `Rosters.update_roster_settings/3`, which does not exist yet; what is
+  to `Rosters.update_roster_settings/2`, which does not exist yet; what is
   established here is the ownership boundary the changeset itself enforces.
 
   Run with:

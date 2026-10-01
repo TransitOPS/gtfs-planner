@@ -3,7 +3,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersSettingsLiveTest do
   The roster settings drawer: the base week, the two checks, and the fixed
   days-off rule.
 
-  Every save here reaches the real writer — `Gtfs.update_roster_settings/3`
+  Every save here reaches the real writer — `Gtfs.update_roster_settings/2`
   through `RostersLive`'s `save_settings` — and the stored `blocking_settings`
   row is re-read through `Gtfs.get_roster_settings/2` afterwards, so "the scope
   bar says it" and "the database holds it" are two independent reads rather than
@@ -244,7 +244,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersSettingsLiveTest do
   # A stored day type a calendar change has since made unusable, written past
   # the writer. The writer is right to refuse it — that is what the refusals in
   # `roster_settings_test.exs` assert — so this state cannot be reached through
-  # `update_roster_settings/3` and is written the only way it can be reached in
+  # `update_roster_settings/2` and is written the only way it can be reached in
   # production: a save that was correct when it was made, against calendars
   # that have changed since.
   defp store_unusable_day_type(world, weekday, key) do
@@ -265,13 +265,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersSettingsLiveTest do
   end
 
   defp line(world, days) do
-    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world.organization.id, world.version.id)
+    {:ok, %{id: line_id}} = Gtfs.create_roster_line(world_audit(world))
 
     for {weekday, run_id} <- days do
       assert {:ok, _result} =
                Gtfs.set_roster_slot(
-                 world.organization.id,
-                 world.version.id,
+                 world_audit(world),
                  line_id,
                  weekday,
                  run_id
