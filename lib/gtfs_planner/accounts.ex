@@ -802,16 +802,21 @@ defmodule GtfsPlanner.Accounts do
   @doc """
   Accepts an invitation by setting the user's password.
 
-  If an organization_id is provided, creates a membership with default viewer role.
   Deletes all of the user's tokens, so no earlier session or token outlives the
-  password it was issued under.
+  password it was issued under. Only the password fields of `attrs` are read.
+
+  The invited organization membership already exists: `invite_member/5` inserts
+  it, with the roles the administrator chose, in the same transaction as the
+  invite token. Accepting creates no membership, and an `organization_id` in
+  `attrs` is ignored, so a holder of an invite token cannot name another
+  organization.
 
   Returns `{:error, :already_has_password}` without changing anything when the
   user already has a password; an invitation must never replace one.
 
   ## Examples
 
-      iex> accept_invite_set_password(user, %{password: "new valid password", password_confirmation: "new valid password", organization_id: org_id})
+      iex> accept_invite_set_password(user, %{password: "new valid password", password_confirmation: "new valid password"})
       {:ok, %User{}}
 
       iex> accept_invite_set_password(user, %{password: "invalid", password_confirmation: "doesn't match"})
@@ -826,40 +831,16 @@ defmodule GtfsPlanner.Accounts do
       do: {:error, :already_has_password}
 
   def accept_invite_set_password(user, attrs) do
-    multi =
-      Ecto.Multi.new()
-      |> Ecto.Multi.update(
-        :user,
-        user |> User.password_changeset(attrs) |> User.confirm_changeset()
-      )
-      |> Ecto.Multi.delete_all(:tokens, UserToken.user_and_contexts_query(user, :all))
-
-    # Add membership creation if organization_id is provided
-    multi =
-      case Map.get(attrs, :organization_id) || Map.get(attrs, "organization_id") do
-        nil ->
-          multi
-
-        org_id ->
-          membership_attrs = %{
-            user_id: user.id,
-            organization_id: org_id,
-            roles: ["pathways_studio_editor"]
-          }
-
-          Ecto.Multi.insert(
-            multi,
-            :membership,
-            UserOrgMembership.changeset(%UserOrgMembership{}, membership_attrs)
-          )
-      end
-
-    multi
+    Ecto.Multi.new()
+    |> Ecto.Multi.update(
+      :user,
+      user |> User.password_changeset(attrs) |> User.confirm_changeset()
+    )
+    |> Ecto.Multi.delete_all(:tokens, UserToken.user_and_contexts_query(user, :all))
     |> Repo.transaction()
     |> case do
       {:ok, %{user: user}} -> {:ok, user}
       {:error, :user, changeset, _} -> {:error, changeset}
-      {:error, :membership, changeset, _} -> {:error, changeset}
     end
   end
 

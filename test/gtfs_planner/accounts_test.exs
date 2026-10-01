@@ -1169,40 +1169,83 @@ defmodule GtfsPlanner.AccountsTest do
 
   describe "accept_invite_set_password/2" do
     setup do
-      {:ok, user} = Accounts.invite_user(unique_user_email(), nil)
-      org = organization_fixture()
-      org_id = org.id
+      organization = organization_fixture()
+      admin = user_fixture()
+      organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
+      email = unique_user_email()
 
       token =
-        extract_user_token(fn url ->
-          Accounts.deliver_user_invite(user, fn token -> "#{url}/users/accept_invite/#{token}" end)
+        extract_user_token(fn _url ->
+          Accounts.invite_member(
+            email,
+            organization.id,
+            ["pathways_studio_editor"],
+            &invite_url/1,
+            actor: admin
+          )
         end)
 
-      %{user: user, token: token, org_id: org_id}
+      %{user: Accounts.get_user_by_invite_token(token), token: token, organization: organization}
     end
 
-    test "sets password and creates membership", %{user: user, org_id: org_id} do
+    test "sets the password and keeps the membership the invitation created", %{
+      user: user,
+      organization: organization
+    } do
       {:ok, _updated_user} =
         Accounts.accept_invite_set_password(user, %{
           password: "new valid password",
-          password_confirmation: "new valid password",
-          organization_id: org_id
+          password_confirmation: "new valid password"
         })
 
       assert Accounts.get_user_by_email_and_password(user.email, "new valid password")
 
-      assert membership =
-               Repo.get_by(UserOrgMembership, user_id: user.id, organization_id: org_id)
+      assert [%UserOrgMembership{organization_id: organization_id, roles: roles}] =
+               Repo.all(from m in UserOrgMembership, where: m.user_id == ^user.id)
 
-      assert membership
+      assert organization_id == organization.id
+      assert roles == ["pathways_studio_editor"]
     end
 
-    test "validates password", %{user: user, org_id: org_id} do
+    test "grants nothing for an organization_id in the submitted attributes", %{user: user} do
+      other_organization = organization_fixture()
+
+      {:ok, _updated_user} =
+        Accounts.accept_invite_set_password(user, %{
+          "password" => "new valid password",
+          "password_confirmation" => "new valid password",
+          "organization_id" => other_organization.id
+        })
+
+      assert Accounts.get_user_by_email_and_password(user.email, "new valid password")
+
+      refute Repo.get_by(UserOrgMembership,
+               user_id: user.id,
+               organization_id: other_organization.id
+             )
+    end
+
+    test "grants nothing for an atom-keyed organization_id", %{user: user} do
+      other_organization = organization_fixture()
+
+      {:ok, _updated_user} =
+        Accounts.accept_invite_set_password(user, %{
+          password: "new valid password",
+          password_confirmation: "new valid password",
+          organization_id: other_organization.id
+        })
+
+      refute Repo.get_by(UserOrgMembership,
+               user_id: user.id,
+               organization_id: other_organization.id
+             )
+    end
+
+    test "validates password", %{user: user} do
       {:error, changeset} =
         Accounts.accept_invite_set_password(user, %{
           password: "invalid",
-          password_confirmation: "another",
-          organization_id: org_id
+          password_confirmation: "another"
         })
 
       assert %{
@@ -1211,50 +1254,42 @@ defmodule GtfsPlanner.AccountsTest do
              } = errors_on(changeset)
     end
 
-    test "deletes invite token after acceptance", %{user: user, org_id: org_id} do
-      token =
-        extract_user_token(fn url ->
-          Accounts.deliver_user_invite(user, fn token -> "#{url}/users/accept_invite/#{token}" end)
-        end)
-
+    test "deletes invite token after acceptance", %{user: user, token: token} do
       Accounts.accept_invite_set_password(user, %{
         password: "new valid password",
-        password_confirmation: "new valid password",
-        organization_id: org_id
+        password_confirmation: "new valid password"
       })
 
       refute Accounts.get_user_by_invite_token(token)
     end
 
-    test "deletes the user's session tokens", %{user: user, org_id: org_id} do
+    test "deletes the user's session tokens", %{user: user} do
       session_token = Accounts.generate_user_session_token(user)
 
       {:ok, _updated_user} =
         Accounts.accept_invite_set_password(user, %{
           password: "new valid password",
-          password_confirmation: "new valid password",
-          organization_id: org_id
+          password_confirmation: "new valid password"
         })
 
       refute Accounts.get_user_by_session_token(session_token)
       assert Repo.all(from t in UserToken, where: t.user_id == ^user.id) == []
     end
 
-    test "refuses a user who already has a password and changes nothing", %{org_id: org_id} do
+    test "refuses a user who already has a password and changes nothing" do
       existing = user_fixture()
       session_token = Accounts.generate_user_session_token(existing)
 
       assert {:error, :already_has_password} =
                Accounts.accept_invite_set_password(existing, %{
                  password: "new valid password",
-                 password_confirmation: "new valid password",
-                 organization_id: org_id
+                 password_confirmation: "new valid password"
                })
 
       assert Accounts.get_user_by_email_and_password(existing.email, valid_user_password())
       refute Accounts.get_user_by_email_and_password(existing.email, "new valid password")
       assert Accounts.get_user_by_session_token(session_token)
-      refute Repo.get_by(UserOrgMembership, user_id: existing.id, organization_id: org_id)
+      assert Repo.all(from m in UserOrgMembership, where: m.user_id == ^existing.id) == []
     end
   end
 

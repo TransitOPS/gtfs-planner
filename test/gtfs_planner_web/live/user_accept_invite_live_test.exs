@@ -2,8 +2,9 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLiveTest do
   use GtfsPlannerWeb.ConnCase
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
+  import GtfsPlanner.OrganizationsFixtures
   alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.UserToken
+  alias GtfsPlanner.Accounts.{UserOrgMembership, UserToken}
   alias GtfsPlanner.Repo
 
   @invalid_token_message "Invite link is invalid or it has expired."
@@ -12,13 +13,26 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLiveTest do
   @focus_payload %{form_id: "accept_invite_form", fallback_id: nil}
 
   setup do
+    organization = organization_fixture()
+    admin = user_fixture()
+    organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
     email = "test-#{System.unique_integer()}@example.com"
-    {:ok, user} = Accounts.invite_user(email, nil)
 
-    {encoded_token, user_token} = UserToken.build_email_token(user, "invite")
-    Repo.insert!(user_token)
+    encoded_token =
+      extract_user_token(fn _url ->
+        Accounts.invite_member(
+          email,
+          organization.id,
+          ["pathways_studio_editor"],
+          &"http://localhost:4000/users/accept_invite/#{&1}",
+          actor: admin
+        )
+      end)
 
-    {:ok, user: user, token: encoded_token}
+    {:ok,
+     user: Accounts.get_user_by_invite_token(encoded_token),
+     token: encoded_token,
+     organization: organization}
   end
 
   describe "valid invite render" do
@@ -400,6 +414,36 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLiveTest do
 
       assert Accounts.get_user_by_email_and_password(user.email, "valid-password-123")
       assert Repo.get_by(UserToken, user_id: user.id, context: "invite") == nil
+    end
+
+    test "an organization_id added to the submitted payload grants no access", %{
+      conn: conn,
+      token: token,
+      user: user,
+      organization: organization
+    } do
+      other_organization = organization_fixture()
+      {:ok, view, _html} = live(conn, ~p"/users/accept_invite/#{token}")
+
+      view
+      |> element("#accept_invite_form")
+      |> render_submit(%{
+        "user" => %{
+          "password" => "valid-password-123",
+          "password_confirmation" => "valid-password-123",
+          "organization_id" => other_organization.id
+        }
+      })
+
+      assert Accounts.get_user_by_email_and_password(user.email, "valid-password-123")
+
+      refute Repo.get_by(UserOrgMembership,
+               user_id: user.id,
+               organization_id: other_organization.id
+             )
+
+      assert %UserOrgMembership{roles: ["pathways_studio_editor"]} =
+               Repo.get_by(UserOrgMembership, user_id: user.id, organization_id: organization.id)
     end
   end
 
