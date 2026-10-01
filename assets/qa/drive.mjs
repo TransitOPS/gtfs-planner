@@ -204,7 +204,9 @@ async function main(argv) {
 
 function scenario(argv) {
   const flags = parseFlags(argv, ["headed"]);
-  const id = flags._[0];
+  // The ID is the bare word the usage line documents, and `--id` is the same
+  // value by flag, which is how the launcher passes it.
+  const id = flags._[0] ?? flags.id;
 
   if (id === undefined) throw new Error("scenario needs a scenario ID");
 

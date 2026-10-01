@@ -415,7 +415,7 @@ async function startBrowser(state, { baseUrl, headed }) {
   }
 
   state.ready = signedIn;
-  state.url = page.url();
+  state.url = state.page.url();
 }
 
 // ---------------------------------------------------------------------------

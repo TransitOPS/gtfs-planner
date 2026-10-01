@@ -1,0 +1,290 @@
+#!/usr/bin/env bash
+#
+# Bring up an isolated stack and run one tester journey against it.
+#
+# Every run gets its own throwaway Postgres (ephemeralpg's `pg_tmp`, loopback
+# only, database `test`) and its own Phoenix port. An inherited
+# GTFS_PLANNER_TEST_DATABASE_URL or DATABASE_URL is discarded before anything
+# starts, so a run can never land on a shared or development database, and no
+# step here drops, resets, rolls back or truncates one. config/test.exs refuses
+# any other host or database name as well.
+#
+# Run output lives under the primary checkout's gitignored `.specs/ux-qa/runs/`,
+# never inside a worktree: `assets/qa/session.mjs` resolves that root from
+# `git rev-parse --git-common-dir`.
+#
+# The subcommands and their exit codes are contract C-2, defined once in the
+# journey-qa skill's `references/harness-contract.md`. This step implements
+# `up`; the others arrive with the steps that own them.
+#
+#   bin/ux-qa up <JRNY-###/slug> [--headed]
+#
+#   step   --run DIR <action> [target flags] [--intent T] [--expect T]
+#   note   --run DIR [--about N|last] --observed T [--confusion none|mild|blocked]
+#   finish --run DIR --claim done|gave-up [--reason T] [--eyes MODE]
+#   report --run DIR
+#   down   --run DIR [--record]
+#   replay [<JRNY-###[/slug]] ...] [--trail FILE] [--headed]
+#   selfcheck [<JRNY-###[/slug]] ...]
+#
+# Exit 0 is success, 1 is a check that failed or a step that was rejected or
+# not ok, and 2 is a harness error: a missing JDK, jar or pg_tmp, or a server
+# that never answered.
+#
+# What `up` does, in order: resolve the scenario and the JDK, refuse to start
+# without them, start the database, build the assets, seed, write
+# `<run>/session.json`, snapshot `<run>/baseline.json`, start Phoenix in the
+# background and wait on `/health`, then open the resident driver and print the
+# run directory and the tester's brief. `--keep` is deliberately not offered:
+# the checks run inside `down`, so nothing needs a lingering server.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+# shellcheck source=lib/browser-stack.sh
+source bin/lib/browser-stack.sh
+
+# How long `/health` may take to answer before the server is called a harness
+# error. Mix compiles nothing here, so this is the endpoint's first boot on a
+# warm `_build`, not a bound on a cold build.
+HEALTH_TIMEOUT=180
+
+# The poll interval of that wait. An interval is not a deadline.
+HEALTH_POLL=1
+
+usage() {
+  echo "usage: bin/ux-qa up <JRNY-###/slug> [--headed]" >&2
+}
+
+# The environment every subcommand runs in (contract C-2). The database
+# variables are discarded, not overridden: an inherited URL must never decide
+# which database a run writes to, and `CI` goes with them so `start_database`
+# cannot take the branch that reuses a CI service container instead of starting
+# a throwaway server of its own. MIX_TEST_PARTITION is set for the same reason
+# the browser stack sets it, so a run's ExUnit databases are its own.
+export MIX_ENV=test
+export MIX_TEST_PARTITION=${MIX_TEST_PARTITION:-_uxqa}
+export ELIXIR_ERL_OPTIONS=${ELIXIR_ERL_OPTIONS:-+S 4}
+unset GTFS_PLANNER_TEST_DATABASE_URL DATABASE_URL CI
+
+# The JDK the QA server runs the real validator with: the operator's choice
+# first, then the Homebrew JDK the application config already names, then
+# whatever `java` is on PATH.
+resolve_java() {
+  if [ -n "${JAVA_PATH:-}" ]; then
+    echo "$JAVA_PATH"
+    return
+  fi
+
+  if [ -x /opt/homebrew/opt/openjdk@21/bin/java ]; then
+    echo /opt/homebrew/opt/openjdk@21/bin/java
+    return
+  fi
+
+  command -v java || true
+}
+
+# Prints a JSON field of a one-line reply from `drive.mjs`.
+field() {
+  echo "$1" | jq -r "$2"
+}
+
+# The host a database URL names, read with Node rather than a URL parser that
+# would need another dependency.
+url_host() {
+  node -e 'process.stdout.write(new URL(process.argv[1]).hostname)' "$1"
+}
+
+# Waits for the server to answer /health, or fails the run. A Phoenix that has
+# already exited fails immediately rather than after the whole bound.
+wait_for_health() {
+  local port="$1"
+  local pid="$2"
+  local waited=0
+
+  while [ "$waited" -lt "$HEALTH_TIMEOUT" ]; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "Phoenix exited before /health answered; see the run's phoenix.log" >&2
+      return 1
+    fi
+
+    if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+      return 0
+    fi
+
+    sleep "$HEALTH_POLL"
+    waited=$((waited + HEALTH_POLL))
+  done
+
+  echo "Phoenix did not answer /health within ${HEALTH_TIMEOUT}s; see the run's phoenix.log" >&2
+  return 1
+}
+
+up() {
+  local scenario_id=
+  # Passed on as an optional word: `${h:+...}` keeps the empty case from
+  # expanding an unbound variable under `set -u`.
+  local headed=
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --headed)
+        headed=--headed
+        ;;
+      -*)
+        echo "unknown option for up: $1" >&2
+        usage
+        exit 2
+        ;;
+      *)
+        if [ -n "$scenario_id" ]; then
+          echo "up takes one scenario ID" >&2
+          usage
+          exit 2
+        fi
+        scenario_id="$1"
+        ;;
+    esac
+    shift
+  done
+
+  if [ -z "$scenario_id" ]; then
+    usage
+    exit 2
+  fi
+
+  # Everything a missing dependency would break is checked before a process
+  # starts, so a stack that cannot work is never left half-built.
+  local scenario_json seed java jar
+  scenario_json=$(node assets/qa/drive.mjs scenario --id "$scenario_id")
+  seed=$(field "$scenario_json" .scenario.seed)
+
+  if [ "$seed" = "null" ]; then
+    echo "no scenario \"$scenario_id\"; run bin/ux-qa with a scenario the journey pages declare" >&2
+    exit 2
+  fi
+
+  java=$(resolve_java)
+
+  if [ -z "$java" ] || ! "$java" -version >/dev/null 2>&1; then
+    echo "no runnable JDK found (set JAVA_PATH, or install openjdk@21); the QA server runs the real validator" >&2
+    exit 2
+  fi
+
+  jar=${GTFS_VALIDATOR_JAR:-priv/gtfs_validator/gtfs-validator-cli.jar}
+
+  if [ ! -f "$jar" ]; then
+    echo "the GTFS validator jar is missing at ${jar}; set GTFS_VALIDATOR_JAR to point at it" >&2
+    exit 2
+  fi
+
+  if [ -z "${GTFS_VALIDATOR_JAR:-}" ]; then
+    export GTFS_VALIDATOR_JAR="$jar"
+  fi
+
+  # Run output belongs in the primary checkout's ignored .specs, so a run never
+  # lands in a worktree or in a tree that would commit it.
+  local primary
+  primary=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
+
+  if ! git -C "$primary" check-ignore -q .specs/ux-qa; then
+    echo "${primary}/.specs/ux-qa is not ignored in ${primary}; runs would be committed" >&2
+    exit 2
+  fi
+
+  start_database
+
+  if ! command -v psql >/dev/null; then
+    echo "psql not found. Install it with: brew install postgresql@18" >&2
+    exit 2
+  fi
+
+  # The database must be this run's own throwaway one before anything writes to
+  # it (rule R14).
+  if [ "$(psql -X -Atc 'select current_database()' "$GTFS_PLANNER_TEST_DATABASE_URL")" != "test" ]; then
+    echo "the database is not a throwaway 'test' database: ${GTFS_PLANNER_TEST_DATABASE_URL}" >&2
+    exit 2
+  fi
+
+  if [ "$(url_host "$GTFS_PLANNER_TEST_DATABASE_URL")" != "127.0.0.1" ]; then
+    echo "the database is not on loopback: ${GTFS_PLANNER_TEST_DATABASE_URL}" >&2
+    exit 2
+  fi
+
+  if [ "${UX_QA_ASSETS_BUILT:-}" = "1" ]; then
+    export UX_QA_ASSETS_BUILT
+  else
+    # Phoenix 1.8 extracts the colocated hooks while the web modules compile, so
+    # the bundle has to run after one; a warm `_build` makes this a no-op.
+    mix compile
+    build_assets
+    export UX_QA_ASSETS_BUILT=1
+  fi
+
+  export UX_QA_SEED="$seed"
+  prepare_database test/support/ux_qa_seed.exs
+
+  local port init_json run
+  port=$(free_port)
+
+  init_json=$(node assets/qa/drive.mjs init \
+    --scenario "$scenario_id" \
+    --port "$port" \
+    --db-url "$GTFS_PLANNER_TEST_DATABASE_URL" \
+    --java-path "$java" \
+    ${headed:+"$headed"})
+  run=$(field "$init_json" .run)
+
+  # The baseline is captured before the tester acts, so a check that compares
+  # content in seconds has a known starting state to compare against.
+  node assets/qa/baseline.mjs --run "$run"
+
+  # From here on the run owns real processes, so a failure stops exactly those
+  # pids and nothing else.
+  local phoenix_pid open_json driver_pid
+  owned_pids=()
+
+  BROWSER_E2E=true UX_QA_REAL_VALIDATOR=true PHX_SERVER=true PORT="$port" JAVA_PATH="$java" \
+    mix phx.server >>"$run/phoenix.log" 2>&1 &
+  phoenix_pid=$!
+  owned_pids+=("$phoenix_pid")
+  node assets/qa/drive.mjs set-pid --run "$run" --which phoenix --pid "$phoenix_pid" >/dev/null
+
+  wait_for_health "$port" "$phoenix_pid"
+
+  open_json=$(node assets/qa/drive.mjs open --run "$run" ${headed:+"$headed"})
+  driver_pid=$(field "$open_json" .pid)
+  owned_pids+=("$driver_pid")
+  node assets/qa/drive.mjs set-pid --run "$run" --which driver --pid "$driver_pid" >/dev/null
+
+  echo "run: ${run}"
+  echo "brief: ${run}/brief.md"
+  echo "Phoenix: http://127.0.0.1:${port}"
+}
+
+# Stops only the pids this invocation started. A pid that has already gone is
+# ignored, so the trap is safe to run twice.
+stop_owned() {
+  local pid
+
+  for pid in ${owned_pids[@]+"${owned_pids[@]}"}; do # shellcheck disable=SC2086
+    if kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+    fi
+  done
+}
+
+owned_pids=()
+
+trap 'if [ $? -ne 0 ]; then stop_owned; fi' EXIT
+
+case "${1:-}" in
+  up)
+    shift
+    up "$@"
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
