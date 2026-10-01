@@ -13,6 +13,7 @@ defmodule GtfsPlanner.Accounts.User do
           password: String.t() | nil,
           current_password: String.t() | nil,
           confirmed_at: DateTime.t() | nil,
+          alert_authoring_mode: :form | :assistant | nil,
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }
@@ -25,6 +26,7 @@ defmodule GtfsPlanner.Accounts.User do
     field :password, :string, virtual: true, redact: true
     field :current_password, :string, virtual: true, redact: true
     field :confirmed_at, :naive_datetime
+    field :alert_authoring_mode, Ecto.Enum, values: [:form, :assistant], default: :form
 
     has_many :tokens, GtfsPlanner.Accounts.UserToken
     has_many :memberships, GtfsPlanner.Accounts.UserOrgMembership
@@ -98,6 +100,17 @@ defmodule GtfsPlanner.Accounts.User do
     |> validate_email()
     |> validate_required([:email])
     |> unique_constraint(:email)
+  end
+
+  @doc """
+  A changeset for the user's default alert authoring mode.
+
+  Casts only `:form` or `:assistant`; `Ecto.Enum` refuses any other value.
+  """
+  def alert_authoring_mode_changeset(user, attrs) do
+    user
+    |> cast(attrs, [:alert_authoring_mode])
+    |> validate_required([:alert_authoring_mode])
   end
 
   @doc """

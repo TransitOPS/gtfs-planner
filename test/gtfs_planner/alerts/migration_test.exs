@@ -107,8 +107,8 @@ defmodule GtfsPlanner.Alerts.MigrationTest do
   end
 
   describe "users.alert_authoring_mode" do
-    # The `users` schema does not know the column yet, so the fixture row is
-    # written the way it was before the migration and still reads "form".
+    # The column's `NOT NULL DEFAULT 'form'` is the database's own guarantee for
+    # any writer that does not name it; the `User` schema default agrees.
     test "defaults to \"form\" for a user written without the column" do
       user = user_fixture()
 
