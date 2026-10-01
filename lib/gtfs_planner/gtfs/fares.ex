@@ -59,6 +59,14 @@ defmodule GtfsPlanner.Gtfs.Fares do
   operator to find out from a failed save, and `set_pass_acceptance/5` is the
   checkbox in the passes table.
 
+  `set_older_format/2` is the mismatch banner's writer (AC-25, R14). A version
+  converted from an imported v1 feed holds both the v1 rows its import stored and
+  the v2 rows its conversion created, and the operator chooses which set the
+  export streams: `:derived` rebuilds `fare_attributes.txt` and `fare_rules.txt`
+  from the v2 rows, and `:imported` keeps the stored files exactly as they were
+  imported, which is the only way a rule the newer format cannot express survives
+  an export. The choice is refused where there is no imported file to keep.
+
   ## How a write is fenced
 
   Every writer in this module runs through the private `write/4` helper, so
@@ -178,6 +186,19 @@ defmodule GtfsPlanner.Gtfs.Fares do
   @time_period_inverse :time_period
 
   @undo_time_period_summary "Restored the time period a change replaced"
+
+  # The key an older-format change's inverse is named under, which is what
+  # `undo/3` matches on to tell it from a time period, a pass acceptance, a rule,
+  # a route group, a fare, a price, a definition or a conversion. It is its own
+  # key because it changes the version's one `fare_version_settings` row rather
+  # than any fare row.
+  @older_format_inverse :older_format
+
+  @undo_older_format_summary "Restored the older format a change replaced"
+
+  # The two sources the Fares v1 files may be written from (R14), as the atoms
+  # callers name them beside the `"derived"`/`"imported"` the column stores.
+  @older_format_sources [:derived, :imported]
 
   # The end of a service day, which "Until end of service day" writes as a
   # `timeframes` `end_time` (R10). GTFS carries it as hour 24 rather than as
@@ -345,6 +366,18 @@ defmodule GtfsPlanner.Gtfs.Fares do
         } = inverse
       ) do
     Transfers.undo_transfer(scope, operation_id, inverse.transfer)
+  end
+
+  def undo(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        operation_id,
+        %{
+          older_format: _inverse
+        } = inverse
+      ) do
+    write(scope, @undo_older_format_summary, @older_format_inverse, fn _setting ->
+      undo_older_format(organization_id, gtfs_version_id, operation_id, inverse.older_format)
+    end)
   end
 
   def undo(_scope, _operation_id, _inverse), do: {:error, :unknown_inverse}
@@ -3904,6 +3937,130 @@ defmodule GtfsPlanner.Gtfs.Fares do
          false
        ) do
     "Removed #{network_id} from the pass #{fare_display_name(organization_id, gtfs_version_id, fare_product_id)}"
+  end
+
+  # -- Choosing the older-format source ---------------------------------------------
+
+  @doc """
+  Chooses whether the exported Fares v1 files are derived from the stored v2 rows
+  or streamed from the `fare_attributes` and `fare_rules` rows an earlier v1
+  import stored (AC-25, R14).
+
+  `source` is `:derived` or `:imported`. `:imported` answers
+  `{:error, :no_stored_older_format}` when this version holds no stored
+  `fare_attributes` rows: there is no imported file to keep, so the export would
+  stream nothing for the older format rather than the rows an operator believes
+  it kept. A version that was made managed by the first-use setup rather than by
+  converting an imported feed is exactly this case.
+
+  `:imported` streams the stored v1 rows unchanged, including a rule the newer
+  format cannot express, which is the whole reason an operator asks for it (R2).
+  The stored rows are never edited by this writer — R13's conversion left them
+  untouched and this choice only decides which set the export reads.
+
+  One `fare_version` change-log entry is recorded with the summary `"Kept the
+  older format as imported"` or `"Exported the older format from the stored
+  fares"`, and the inverse restores the source this one replaced while the
+  settings row still holds what this write left (R15, AC-26).
+
+  A version that is not managed answers `{:error, :unmanaged}`, and a pair that
+  is not a published version of that organization answers `{:error, :not_found}`
+  with nothing written.
+  """
+  @spec set_older_format(scope(), :derived | :imported) :: write_result()
+  def set_older_format(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        source
+      )
+      when source in @older_format_sources do
+    write(scope, older_format_summary(source), @older_format_inverse, fn setting ->
+      apply_older_format(organization_id, gtfs_version_id, setting, source)
+    end)
+  end
+
+  defp apply_older_format(organization_id, gtfs_version_id, setting, source) do
+    with :ok <- require_stored_format(organization_id, gtfs_version_id, source),
+         {:ok, stored} <- put_older_format(setting, source) do
+      before_row = older_format_log_row(setting)
+      after_row = older_format_log_row(stored)
+
+      {:ok,
+       %{
+         before: [before_row],
+         after: [after_row],
+         action: "updated",
+         inverse: %{id: setting.id, before: setting.older_format, after: source}
+       }}
+    end
+  end
+
+  # `:imported` is offered only where there is an imported file to keep (R14).
+  # `:derived` never needs stored rows, since the export derives them from the
+  # v2 rows this package stores.
+  defp require_stored_format(_organization_id, _gtfs_version_id, :derived), do: :ok
+
+  defp require_stored_format(organization_id, gtfs_version_id, :imported) do
+    if count(FareAttribute, organization_id, gtfs_version_id) > 0 do
+      :ok
+    else
+      {:error, :no_stored_older_format}
+    end
+  end
+
+  defp put_older_format(%FareVersionSetting{} = setting, source) do
+    setting
+    |> Ecto.Changeset.change(older_format: Atom.to_string(source))
+    |> Repo.update()
+  end
+
+  defp older_format_summary(:imported), do: "Kept the older format as imported"
+  defp older_format_summary(:derived), do: "Exported the older format from the stored fares"
+
+  # The settings row's own log row, so the change-log entry names the one field
+  # this write moved rather than the whole settings row.
+  defp older_format_log_row(setting) do
+    %{"fare_version_settings_id" => setting.id, "older_format" => setting.older_format}
+  end
+
+  # Applies a `set_older_format/2` inverse. The settings row must still hold the
+  # source that write left, so a reversal can never revert a later choice
+  # (R15, AC-26).
+  defp undo_older_format(organization_id, gtfs_version_id, operation_id, inverse) do
+    with :ok <- require_entry(operation_id, organization_id, gtfs_version_id),
+         :ok <- require_older_format_unchanged(inverse, organization_id, gtfs_version_id) do
+      restore_older_format(inverse, organization_id, gtfs_version_id)
+
+      {:ok,
+       %{
+         before: [],
+         after: [],
+         inverse: nil,
+         operation_id: operation_id,
+         action: "rolled_back",
+         rolled_back_to_log_id: operation_id
+       }}
+    end
+  end
+
+  defp require_older_format_unchanged(inverse, organization_id, gtfs_version_id) do
+    case settings(organization_id, gtfs_version_id) do
+      %FareVersionSetting{id: id, older_format: older_format} when id == inverse.id ->
+        if older_format == Atom.to_string(inverse.after), do: :ok, else: {:error, :stale}
+
+      _other ->
+        {:error, :stale}
+    end
+  end
+
+  defp restore_older_format(inverse, organization_id, gtfs_version_id) do
+    from(setting in FareVersionSetting,
+      where:
+        setting.id == ^inverse.id and setting.organization_id == ^organization_id and
+          setting.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.update_all(set: [older_format: inverse.before, updated_at: DateTime.utc_now()])
+
+    :ok
   end
 
   # -- Editing time periods --------------------------------------------------------
