@@ -92,12 +92,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksChecksInSeatLiveTest do
 
     stay = in_seat_transfer_fixture(context.organization.id, context.version.id, a, b)
 
+    # A second record for the same pair only differs from the first by its type
+    # and its stored stops, so the conflicting pair is stored with drifted stops:
+    # the transfers key makes the two rows one key only while every column but
+    # the stops matches.
     reboard =
       transfer_fixture(context.organization.id, context.version.id, %{
         from_trip_id: a.trip_id,
         to_trip_id: b.trip_id,
         from_stop_id: stay.from_stop_id,
-        to_stop_id: stay.to_stop_id,
+        to_stop_id: "CONFLICT_OLD",
         transfer_type: 5
       })
 

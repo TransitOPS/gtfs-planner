@@ -419,16 +419,24 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers.ConcurrencyTest do
       a =
         trip.(%{
           trip_id: "a",
+          service_id: "W",
           block_id: "101",
           first_arrival: "06:00:00",
           last_arrival: "07:00:00"
         })
 
-      x = trip.(%{trip_id: "X", first_arrival: "09:00:00", last_arrival: "10:00:00"})
+      x =
+        trip.(%{
+          trip_id: "X",
+          service_id: "W",
+          first_arrival: "09:00:00",
+          last_arrival: "10:00:00"
+        })
 
       _b =
         trip.(%{
           trip_id: "b",
+          service_id: "W",
           block_id: "101",
           first_arrival: "08:10:00",
           last_arrival: "09:10:00"

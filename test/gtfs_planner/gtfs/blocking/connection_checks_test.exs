@@ -52,7 +52,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ConnectionChecksTest do
     test "a pair not consecutive on one day type is refused naming that day type", %{
       scope: scope
     } do
-      %{a, b, c, d} = shared_trip_fixture(scope)
+      %{a: a, b: b, c: c, d: d} = shared_trip_fixture(scope)
       no_school = DayTypes.key(["NS", "W"])
 
       failing = [
@@ -68,7 +68,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ConnectionChecksTest do
     end
 
     test "a pair consecutive in every shared day type is ok", %{scope: scope} do
-      %{a, b, c, d} = shared_trip_fixture(scope)
+      %{a: a, b: b, c: c, d: d} = shared_trip_fixture(scope)
 
       assert {:ok, checks} = check(scope, [ab(c, d)])
 
@@ -76,7 +76,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ConnectionChecksTest do
     end
 
     test "a pair naming a trip of another version is trip_missing", %{scope: scope} do
-      %{a} = shared_trip_fixture(scope)
+      %{a: a} = shared_trip_fixture(scope)
       other_version = gtfs_version_fixture(scope.organization.id)
       _foreign = trip(scope, %{trip_id: "foreign", version_id: other_version.id})
 
@@ -86,7 +86,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ConnectionChecksTest do
     end
 
     test "a version of another organization is not found", %{scope: scope} do
-      %{a, b} = shared_trip_fixture(scope)
+      %{a: a, b: b} = shared_trip_fixture(scope)
       other = new_scope()
 
       assert {:error, :not_found} =
@@ -96,7 +96,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ConnectionChecksTest do
     test "a pair whose second trip departs before the first arrives is a coupling", %{
       scope: scope
     } do
-      %{e, f} = shared_trip_fixture(scope)
+      %{e: e, f: f} = shared_trip_fixture(scope)
 
       assert {:ok, checks} = check(scope, [ab(e, f)])
 
@@ -106,7 +106,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ConnectionChecksTest do
 
   describe "lock_and_check_connections!/2" do
     test "returns the read's checks with the locked trip rows", %{scope: scope} do
-      %{a, b, c, d, e, f} = shared_trip_fixture(scope)
+      %{a: a, b: b, c: c, d: d, e: e, f: f} = shared_trip_fixture(scope)
       pairs = [ab(a, b), ab(c, d), ab(e, f)]
 
       no_school = DayTypes.key(["NS", "W"])
@@ -138,7 +138,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ConnectionChecksTest do
     test "a pair naming a trip of another version is a nil row and trip_missing", %{
       scope: scope
     } do
-      %{a} = shared_trip_fixture(scope)
+      %{a: a} = shared_trip_fixture(scope)
       other_version = gtfs_version_fixture(scope.organization.id)
       _foreign = trip(scope, %{trip_id: "foreign", version_id: other_version.id})
 
@@ -215,7 +215,12 @@ defmodule GtfsPlanner.Gtfs.Blocking.ConnectionChecksTest do
     %{a: a, b: b, c: c, d: d, e: e, f: f}
   end
 
-  defp ab(from, to), do: {from.trip_id, to.trip_id}
+  # A pair may name a trip this version does not hold, so the id is passed as a
+  # bare string there while every other case passes the trip row.
+  defp ab(from, to), do: {trip_id(from), trip_id(to)}
+
+  defp trip_id(%{trip_id: trip_id}), do: trip_id
+  defp trip_id(trip_id) when is_binary(trip_id), do: trip_id
 
   defp check(scope, pairs) do
     Gtfs.check_in_seat_connections(scope.organization.id, scope.version.id, pairs)

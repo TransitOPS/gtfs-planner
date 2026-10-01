@@ -702,7 +702,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       described_by="remove-stale-dialog-body"
       return_focus_id="checks-remove-stale"
     >
-      <p id="remove-stale-dialog-body">{@stale_copy.body}</p>
+      <%!-- `described_by` names `confirm_dialog`'s own `#remove-stale-dialog-body`
+      wrapper, so the paragraph inside it carries no id of its own. --%>
+      <p>{@stale_copy.body}</p>
     </.confirm_dialog>
 
     <.confirm_dialog
@@ -718,7 +720,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       described_by="remove-unmatched-dialog-body"
       return_focus_id="checks-remove-unmatched"
     >
-      <p id="remove-unmatched-dialog-body">{@unmatched_copy.body}</p>
+      <p>{@unmatched_copy.body}</p>
     </.confirm_dialog>
     """
   end
@@ -4112,7 +4114,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                         >
                           {row.detail}
                         </button>
-                        <.block_gap_note :if={row.connection} connection={row.connection} />
+                        <.block_gap_note
+                          :if={connection = Map.get(row, :connection)}
+                          connection={connection}
+                        />
                       </div>
                     <% else %>
                       <span>{row.detail}</span>
