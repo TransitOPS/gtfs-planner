@@ -273,12 +273,15 @@ defmodule GtfsPlannerWeb.Api.V1.SyncRevisionTest do
   end
 
   test "a request body over 8,000,000 bytes returns 413 before any write", scope do
-    conn =
-      scope
-      |> authed_conn()
-      |> post(sync_url(scope), String.duplicate(" ", 8_000_001))
+    # Plug.Parsers raises RequestTooLargeError, which the endpoint renders as 413;
+    # ConnTest re-raises it after the response is sent.
+    assert {413, _headers, _body} =
+             assert_error_sent(413, fn ->
+               scope
+               |> authed_conn()
+               |> post(sync_url(scope), String.duplicate(" ", 8_000_001))
+             end)
 
-    assert conn.status == 413
     assert change_log_count(scope, scope.pathway.id) == 0
   end
 
