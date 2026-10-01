@@ -40,6 +40,16 @@ defmodule GtfsPlanner.Gtfs.Fares do
   had in another and answers which route came from which group, so the drawer
   can state what it moved rather than leave the operator to notice.
 
+  `set_zone_fare/7`, `save_rule/3`, `delete_rule/3` and `set_pass_acceptance/5` are
+  the Where fares apply tab's pair of writers (AC-20, AC-21). A zone matrix cell
+  and a fare rule are the same thing at different breadths — the rules of one
+  fare over one set of conditions — so `set_zone_fare/7` is the cell form of
+  `save_rule/3` and both write through one helper. `save_rule/3` answers
+  `{:error, {:overlap, rule}}` when the conditions already pay a different
+  fare, so the rule drawer can offer Replace or Keep both rather than leaving an
+  operator to find out from a failed save, and `set_pass_acceptance/5` is the
+  checkbox in the passes table.
+
   ## How a write is fenced
 
   Every writer in this module runs through the private `write/4` helper, so
@@ -65,6 +75,7 @@ defmodule GtfsPlanner.Gtfs.Fares do
 
   import Ecto.Query, warn: false
 
+  alias GtfsPlanner.Gtfs.Area
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.FareAttribute
@@ -124,6 +135,26 @@ defmodule GtfsPlanner.Gtfs.Fares do
   @group_inverse :route_group
 
   @undo_route_group_summary "Restored the route group a change replaced"
+
+  # The key a zone fare or fare rule change's inverse is named under, which is
+  # what `undo/3` matches on to tell it from a fare, a price, a definition, a
+  # route group or a conversion. It is its own key because these writers change
+  # `fare_leg_rules` rather than a `fare_products` row.
+  @rule_inverse :rule
+
+  @undo_rule_summary "Restored the fare rule a change replaced"
+
+  # The key a pass acceptance change's inverse is named under. It is its own key
+  # because it changes one `fare_product_details` row's accepted networks rather
+  # than a rule, even though the pass rows it moves are Normalize's (R4).
+  @pass_inverse :pass_acceptance
+
+  @undo_pass_summary "Restored the pass acceptance a change replaced"
+
+  # `fare_product_details.kind` for a fare sold rather than applied to one ride.
+  # Its leg rules are mirrored by `Fares.Normalize` (R4), so it is the one kind
+  # a rule or a cell write refuses.
+  @pass_kind "pass"
 
   @typedoc """
   The arguments every writer of this package takes: the organization and version
@@ -224,6 +255,35 @@ defmodule GtfsPlanner.Gtfs.Fares do
       ) do
     write(scope, @undo_route_group_summary, @group_inverse, fn _setting ->
       undo_route_group(organization_id, gtfs_version_id, operation_id, inverse.route_group)
+    end)
+  end
+
+  def undo(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        operation_id,
+        %{
+          rule: _inverse
+        } = inverse
+      ) do
+    write(scope, @undo_rule_summary, @rule_inverse, fn _setting ->
+      undo_rule(organization_id, gtfs_version_id, operation_id, inverse.rule)
+    end)
+  end
+
+  def undo(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        operation_id,
+        %{
+          pass_acceptance: _inverse
+        } = inverse
+      ) do
+    write(scope, @undo_pass_summary, @pass_inverse, fn _setting ->
+      undo_pass_acceptance(
+        organization_id,
+        gtfs_version_id,
+        operation_id,
+        inverse.pass_acceptance
+      )
     end)
   end
 
@@ -2764,6 +2824,1192 @@ defmodule GtfsPlanner.Gtfs.Fares do
   end
 
   defp blank_to_nil(value), do: value
+
+  # -- Setting one zone fare -------------------------------------------------------
+
+  @doc """
+  Sets or clears one cell of a route group's zone fare matrix (AC-20).
+
+  A cell is one `(network_id, from_area_id, to_area_id)` pair, and it names a
+  *fare* rather than a product: the matrix shows a fare's adult price and says
+  the other rider types follow the Prices tab, which is true of the stored rows
+  because one fare is one `fare_products` row per rider type and payment method
+  and one `fare_leg_rules` row per rider. So `fare_product_id` may be any
+  product of the fare, or the fare's id as `save_fare/2` derives it from its name
+  (`Valley-coast ride` is `valley_coast_ride`), and every one of the fare's
+  products is written to the cell.
+
+  `both?` writes the reverse cell as well, which the cell dialog offers only for
+  a pair of different zones. A pass answers `{:error, :pass_fare}`: a pass is
+  sold, not applied to a single ride, and its leg rules are mirrored by
+  `Fares.Normalize` from the networks it accepts (R4, INV-4).
+
+  A `fare_product_id` of `nil` clears the cell: its rules go, and so do the pass
+  rows that mirrored them, because `Normalize.run!/2` rebuilds every pass row
+  from the single-ride rules that are left. A cell already holding no fare
+  answers `{:ok, ...}` with nothing written, so a dialog opened on a gap and
+  saved unchanged is not an error.
+
+  `reviewed` is the cell's product list as the matrix showed it, and a cell
+  whose rules have changed since answers `{:error, {:stale, details}}` and writes
+  nothing (R15). `nil` is no fence, which is what a create is.
+
+  A `network_id` or a zone this version does not hold answers
+  `{:error, :not_found}`, so another organization's or version's ids are never
+  written into this one's rules (INV-5). An unmanaged version answers
+  `{:error, :unmanaged}` and a pair that is not a published version of that
+  organization answers the same.
+  """
+  @spec set_zone_fare(
+          scope(),
+          String.t(),
+          String.t(),
+          String.t(),
+          String.t() | nil,
+          boolean(),
+          [String.t()] | nil
+        ) :: write_result()
+  def set_zone_fare(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        network_id,
+        from,
+        to,
+        fare_product_id,
+        both?,
+        reviewed
+      )
+      when is_binary(network_id) and is_binary(from) and is_binary(to) and is_boolean(both?) do
+    summary =
+      zone_fare_summary(
+        organization_id,
+        gtfs_version_id,
+        network_id,
+        from,
+        to,
+        fare_product_id,
+        both?
+      )
+
+    write(scope, summary, @rule_inverse, fn _setting ->
+      apply_zone_fare(
+        organization_id,
+        gtfs_version_id,
+        network_id,
+        from,
+        to,
+        fare_product_id,
+        both?,
+        reviewed
+      )
+    end)
+  end
+
+  # A cell is one `network_id`/`from_area_id`/`to_area_id` triple, and its rules
+  # are every non-pass row of that triple whatever its timeframe: the matrix
+  # draws one cell per pair, and a write that left a timed rule behind would
+  # disagree with the cell the read model shows.
+  defp apply_zone_fare(
+         organization_id,
+         gtfs_version_id,
+         network_id,
+         from,
+         to,
+         fare_product_id,
+         both?,
+         reviewed
+       ) do
+    with {:ok, cells} <- zone_cells(organization_id, gtfs_version_id, network_id, from, to, both?),
+         {:ok, product_ids} <-
+           zone_fare_products(organization_id, gtfs_version_id, fare_product_id),
+         :ok <- require_cell_unchanged(organization_id, gtfs_version_id, cells, reviewed),
+         {:ok, written} <- write_cells(organization_id, gtfs_version_id, cells, product_ids) do
+      {:ok,
+       %{
+         before: rule_log_rows(written.removed),
+         after: rule_log_rows(written.added),
+         action: "updated",
+         inverse: %{operation: :save, rules: written}
+       }}
+    end
+  end
+
+  # The cells one write touches: the one the dialog was opened on, and the
+  # reverse one when `both?` is set for a pair of different zones. A network and
+  # a zone this version does not hold are `:not_found` (INV-5), and a zone is
+  # checked against the version's own `areas` rows and the areas its rules name,
+  # which is the inventory AC-24 measures leg rules against.
+  defp zone_cells(organization_id, gtfs_version_id, network_id, from, to, both?) do
+    with :ok <- require_network(organization_id, gtfs_version_id, network_id),
+         :ok <- require_zones(organization_id, gtfs_version_id, [from, to]) do
+      cell = %{network_id: network_id, from_area_id: from, to_area_id: to}
+
+      reverse =
+        if both? and from != to do
+          [%{network_id: network_id, from_area_id: to, to_area_id: from}]
+        else
+          []
+        end
+
+      {:ok, [cell | reverse]}
+    end
+  end
+
+  defp require_network(organization_id, gtfs_version_id, network_id) do
+    case network_row(organization_id, gtfs_version_id, network_id) do
+      nil -> {:error, :not_found}
+      _network -> :ok
+    end
+  end
+
+  defp require_zones(organization_id, gtfs_version_id, zones) do
+    known = version_area_ids(organization_id, gtfs_version_id)
+    if Enum.all?(zones, &MapSet.member?(known, &1)), do: :ok, else: {:error, :not_found}
+  end
+
+  defp version_area_ids(organization_id, gtfs_version_id) do
+    Area
+    |> scoped(organization_id, gtfs_version_id)
+    |> select([area], area.area_id)
+    |> Repo.all()
+    |> Kernel.++(scoped_leg_rules(organization_id, gtfs_version_id) |> Enum.flat_map(&area_ids/1))
+    |> Enum.reject(&(is_nil(&1) or &1 == ""))
+    |> MapSet.new()
+  end
+
+  defp area_ids(rule) do
+    [rule.from_area_id, rule.to_area_id]
+  end
+
+  # The products a cell write writes, which is the whole fare: `nil` clears the
+  # cell and writes none, and a pass is refused because its rows are Normalize's
+  # (R4, INV-4).
+  defp zone_fare_products(_organization_id, _gtfs_version_id, nil), do: {:ok, []}
+
+  defp zone_fare_products(organization_id, gtfs_version_id, fare_product_id)
+       when is_binary(fare_product_id) do
+    products = version_products(organization_id, gtfs_version_id)
+
+    case fare_name_for(products, fare_product_id) do
+      nil ->
+        {:error, :not_found}
+
+      name ->
+        if MapSet.member?(version_pass_ids(organization_id, gtfs_version_id), fare_product_id) do
+          {:error, :pass_fare}
+        else
+          {:ok, fare_product_ids(products, name)}
+        end
+    end
+  end
+
+  defp zone_fare_products(_organization_id, _gtfs_version_id, _other), do: {:error, :not_found}
+
+  defp zone_fare_summary(_organization_id, _gtfs_version_id, network_id, from, to, nil, _both?) do
+    "Removed the fare for rides from #{from} to #{to} in #{network_id}"
+  end
+
+  defp zone_fare_summary(
+         organization_id,
+         gtfs_version_id,
+         network_id,
+         from,
+         to,
+         fare_product_id,
+         both?
+       ) do
+    products = version_products(organization_id, gtfs_version_id)
+    name = fare_name_for(products, fare_product_id)
+
+    direction = if both? and from != to, do: " and back", else: ""
+
+    "Set the fare for rides from #{from} to #{to}#{direction} in #{network_id} to #{name}"
+  end
+
+  # The fence: every cell's stored rules must still be the products the matrix
+  # showed. `nil` is a create and has nothing to be stale against.
+  defp require_cell_unchanged(_organization_id, _gtfs_version_id, _cells, nil), do: :ok
+
+  defp require_cell_unchanged(organization_id, gtfs_version_id, cells, reviewed)
+       when is_list(reviewed) do
+    stale =
+      Enum.flat_map(cells, fn cell ->
+        stored = cell_products(organization_id, gtfs_version_id, cell)
+
+        if stored == Enum.sort(Enum.uniq(reviewed)) do
+          []
+        else
+          [%{field: :products, reviewed: Enum.sort(Enum.uniq(reviewed)), stored: stored}]
+        end
+      end)
+
+    case stale do
+      [] -> :ok
+      stale -> {:error, {:stale, stale}}
+    end
+  end
+
+  defp require_cell_unchanged(_organization_id, _gtfs_version_id, _cells, _other),
+    do: {:error, :not_found}
+
+  # The cells' own rules go and the fare's products are written in their place.
+  # The rows are read before the delete, so the inverse carries each removed row
+  # whole and each added row's id, which is what `undo/3` needs to put the cell
+  # back as it was.
+  defp write_cells(organization_id, gtfs_version_id, cells, product_ids) do
+    rules = scoped_leg_rules(organization_id, gtfs_version_id)
+    pass_ids = version_pass_ids(organization_id, gtfs_version_id)
+
+    Enum.reduce(cells, %{removed: [], added: []}, fn cell, written ->
+      current = cell_rule_rows(rules, cell, pass_ids)
+
+      kept = Enum.filter(current, &(&1.fare_product_id in product_ids))
+      removed_rows = current -- kept
+      wanted = Enum.uniq(product_ids -- Enum.map(kept, & &1.fare_product_id))
+
+      inserted = insert_leg_rules(organization_id, gtfs_version_id, cell, wanted)
+      delete_rows(FareLegRule, organization_id, gtfs_version_id, removed_rows)
+
+      %{
+        removed: written.removed ++ Enum.map(removed_rows, &row_snapshot/1),
+        added: written.added ++ inserted
+      }
+    end)
+    |> then(&{:ok, &1})
+  end
+
+  # The non-pass rules of one cell. A cell is a triple, not a set of conditions
+  # with a timeframe, so a timed rule at the same pair is part of the cell: the
+  # read model draws one cell per pair and a write that left a timed rule behind
+  # would disagree with it.
+  defp cell_rule_rows(rules, cell, pass_ids) do
+    Enum.filter(rules, fn rule ->
+      not MapSet.member?(pass_ids, rule.fare_product_id) and
+        rule.network_id == cell.network_id and rule.from_area_id == cell.from_area_id and
+        rule.to_area_id == cell.to_area_id
+    end)
+  end
+
+  defp cell_products(organization_id, gtfs_version_id, cell) do
+    rules = scoped_leg_rules(organization_id, gtfs_version_id)
+    pass_ids = version_pass_ids(organization_id, gtfs_version_id)
+
+    rules
+    |> cell_rule_rows(cell, pass_ids)
+    |> Enum.map(& &1.fare_product_id)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  # One `fare_leg_rules` row per product of the fare, written with the conditions
+  # the operator's own columns state. `rule_priority`, `leg_group_id` and
+  # `to_timeframe_group_id` are left for `Fares.Normalize.run!/2`, which is their
+  # only writer (R3, INV-4) and which runs inside this same transaction
+  # (INV-1).
+  defp insert_leg_rules(_organization_id, _gtfs_version_id, _cell, []), do: []
+
+  defp insert_leg_rules(organization_id, gtfs_version_id, cell, product_ids) do
+    now = DateTime.utc_now()
+
+    rows =
+      Enum.map(product_ids, fn product_id ->
+        %{
+          id: Ecto.UUID.generate(),
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id,
+          network_id: cell.network_id,
+          from_area_id: cell.from_area_id,
+          to_area_id: cell.to_area_id,
+          from_timeframe_group_id: cell[:from_timeframe_group_id],
+          to_timeframe_group_id: nil,
+          fare_product_id: product_id,
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    {_count, inserted} = Repo.insert_all(FareLegRule, rows, returning: true)
+    inserted
+  end
+
+  # -- Writing, deleting and undoing fare rules -----------------------------------
+
+  @doc """
+  Creates or updates the fare rule of one set of conditions (AC-20).
+
+  `params` is the rule drawer's own form:
+
+      %{rule_id: String.t() | nil,
+        network_id: String.t() | nil,
+        from_area_id: String.t() | nil,
+        to_area_id: String.t() | nil,
+        from_timeframe_group_id: String.t() | nil,
+        fare_product_id: String.t(),
+        both?: boolean(),
+        reviewed: [String.t()] | nil}
+
+  Unlike a matrix cell, a rule may name any condition or none: a `network_id`,
+  a departure area, an arrival area and a time period are each `nil` for "any",
+  which is what an operator writing a group-wide or all-day rule means. A blank
+  string is that `nil`. A time period this version does not hold answers
+  `{:error, :not_found}`.
+
+  `fare_product_id` names a fare the same way `set_zone_fare/7`'s does, and a
+  pass answers `{:error, :pass_fare}` (R4, INV-4).
+
+  A conditions set that already names a *different* fare is an overlap, because
+  a rider can only be charged one single-ride fare for one ride. `overlap` of
+  `nil` answers `{:error, {:overlap, rule}}`, naming the rule that would
+  collide, so the drawer can offer the choice; `:replace` writes the new fare
+  over that rule and `:keep_both` leaves it and adds the new one beside it.
+  Another rider type or payment method of the *same* fare is not an overlap: it
+  is the same fare, and the four rules an imported cell carries are one fare
+  rather than four.
+
+  `reviewed` is the product list the rule list showed for these conditions, and
+  conditions that have changed since answer `{:error, {:stale, details}}` and
+  write nothing (R15). `rule_id` names the rule being edited — any one of its
+  rows — and its rules go before the new ones are written, so an edit replaces
+  rather than adds.
+  """
+  @spec save_rule(scope(), map(), :replace | :keep_both | nil) ::
+          write_result() | {:error, {:overlap, FareLegRule.t()}}
+  def save_rule(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        params,
+        overlap \\ nil
+      )
+      when is_map(params) and overlap in [:replace, :keep_both, nil] do
+    summary = rule_save_summary(organization_id, gtfs_version_id, params)
+
+    write(scope, summary, @rule_inverse, fn _setting ->
+      apply_rule(organization_id, gtfs_version_id, params, overlap)
+    end)
+  end
+
+  @doc """
+  Deletes one fare rule (AC-20).
+
+  `rule_id` names any one of the rules' rows and the whole rule goes, because a
+  rule is one fare over one set of conditions and half of it would leave a cell
+  priced for one rider type and not another. A row whose fare is a pass answers
+  `{:error, :pass_rule}`: `Fares.Normalize` writes every pass row from the
+  networks its fare accepts (R4, INV-4), so deleting one would be undone by the
+  next write of any kind.
+
+  `expected` is the fence and carries the `:fare_product_id` the rule list
+  showed; a rule whose product has moved since answers
+  `{:error, {:stale, details}}` and deletes nothing (R15). A rule of another
+  organization or another version answers `{:error, :not_found}`.
+  """
+  @spec delete_rule(scope(), String.t(), map()) :: write_result()
+  def delete_rule(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        rule_id,
+        expected
+      )
+      when is_binary(rule_id) and is_map(expected) do
+    summary = rule_delete_summary(organization_id, gtfs_version_id, rule_id)
+
+    write(scope, summary, @rule_inverse, fn _setting ->
+      remove_rule(organization_id, gtfs_version_id, rule_id, expected)
+    end)
+  end
+
+  defp apply_rule(organization_id, gtfs_version_id, params, overlap) do
+    with {:ok, conditions} <- rule_conditions(organization_id, gtfs_version_id, params),
+         {:ok, product_ids} <-
+           zone_fare_products(organization_id, gtfs_version_id, rule_fare(params)),
+         :ok <- require_conditions_unchanged(organization_id, gtfs_version_id, conditions, params),
+         {:ok, edited} <- edited_rule(organization_id, gtfs_version_id, params),
+         {:ok, targets} <- rule_targets(organization_id, gtfs_version_id, conditions, params),
+         {:ok, clashes} <- rule_clashes(organization_id, gtfs_version_id, targets, product_ids) do
+      settle_rule(
+        organization_id,
+        gtfs_version_id,
+        targets,
+        product_ids,
+        edited,
+        clashes,
+        overlap
+      )
+    end
+  end
+
+  defp rule_fare(params), do: fare_param(params, :fare_product_id)
+
+  # The conditions one rule states, with every blank read as "any". A network, a
+  # zone and a time period are each checked against this version's own rows, so
+  # another version's id is never written into this one's rules (INV-5).
+  defp rule_conditions(organization_id, gtfs_version_id, params) do
+    conditions = %{
+      network_id: blank_to_nil(fare_param(params, :network_id)),
+      from_area_id: blank_to_nil(fare_param(params, :from_area_id)),
+      to_area_id: blank_to_nil(fare_param(params, :to_area_id)),
+      from_timeframe_group_id: blank_to_nil(fare_param(params, :from_timeframe_group_id))
+    }
+
+    zones = Enum.reject([conditions.from_area_id, conditions.to_area_id], &is_nil/1)
+
+    with :ok <- optional_network(organization_id, gtfs_version_id, conditions.network_id),
+         :ok <- optional_zones(organization_id, gtfs_version_id, zones),
+         :ok <- optional_time_period(organization_id, gtfs_version_id, conditions) do
+      {:ok, conditions}
+    end
+  end
+
+  defp optional_network(_organization_id, _gtfs_version_id, nil), do: :ok
+
+  defp optional_network(organization_id, gtfs_version_id, network_id),
+    do: require_network(organization_id, gtfs_version_id, network_id)
+
+  defp optional_zones(_organization_id, _gtfs_version_id, []), do: :ok
+
+  defp optional_zones(organization_id, gtfs_version_id, zones),
+    do: require_zones(organization_id, gtfs_version_id, zones)
+
+  defp optional_time_period(_organization_id, _gtfs_version_id, %{from_timeframe_group_id: nil}),
+    do: :ok
+
+  defp optional_time_period(
+         organization_id,
+         gtfs_version_id,
+         %{from_timeframe_group_id: timeframe_group_id}
+       ) do
+    known =
+      FareTimePeriod
+      |> scoped(organization_id, gtfs_version_id)
+      |> select([period], period.timeframe_group_id)
+      |> Repo.all()
+      |> MapSet.new()
+
+    if MapSet.member?(known, timeframe_group_id), do: :ok, else: {:error, :not_found}
+  end
+
+  # The conditions sets one save writes: the one the drawer states, and the
+  # reverse when `both?` is set for two different named areas. The same overlap
+  # choice settles both, so "Also for rides from Y to X" cannot leave one
+  # direction replaced and the other kept.
+  defp rule_targets(_organization_id, _gtfs_version_id, conditions, params) do
+    target = conditions
+    both? = fare_param(params, :both?) == true
+
+    reverse =
+      if both? and not is_nil(conditions.from_area_id) and not is_nil(conditions.to_area_id) and
+           conditions.from_area_id != conditions.to_area_id do
+        [
+          Map.merge(target, %{
+            from_area_id: conditions.to_area_id,
+            to_area_id: conditions.from_area_id
+          })
+        ]
+      else
+        []
+      end
+
+    {:ok, [target | reverse]}
+  end
+
+  # The rules an edit replaces: the ones the named `rule_id` belongs to. A rule
+  # is one fare over one set of conditions, so editing it replaces the whole of
+  # it rather than adding a second set beside the first.
+  defp edited_rule(organization_id, gtfs_version_id, params) do
+    case fare_param(params, :rule_id) do
+      rule_id when is_binary(rule_id) ->
+        edited_rule_by_id(organization_id, gtfs_version_id, rule_id)
+
+      _nil_or_other ->
+        {:ok, []}
+    end
+  end
+
+  # A `rule_id` this version does not hold, or one whose fare is a pass, names
+  # no rule to edit; a pass's rows are `Normalize`'s (R4, INV-4).
+  defp edited_rule_by_id(organization_id, gtfs_version_id, rule_id) do
+    case fetch_leg_rule(organization_id, gtfs_version_id, rule_id) do
+      nil ->
+        {:error, :not_found}
+
+      rule ->
+        if MapSet.member?(
+             version_pass_ids(organization_id, gtfs_version_id),
+             rule.fare_product_id
+           ) do
+          {:error, :pass_rule}
+        else
+          {:ok, rules_of_fare(organization_id, gtfs_version_id, rule)}
+        end
+    end
+  end
+
+  # Every non-pass rule with the same conditions as the given rule: the whole
+  # rule, whichever of its rows the caller happened to name.
+  defp rules_of_fare(organization_id, gtfs_version_id, rule) do
+    rules = scoped_leg_rules(organization_id, gtfs_version_id)
+    pass_ids = version_pass_ids(organization_id, gtfs_version_id)
+    fare_ids = fare_product_ids(organization_id, gtfs_version_id, rule.fare_product_id)
+
+    Enum.filter(rules, fn candidate ->
+      not MapSet.member?(pass_ids, candidate.fare_product_id) and
+        candidate.fare_product_id in fare_ids and
+        same_rule_conditions?(candidate, rule)
+    end)
+  end
+
+  # The products of the fare a stored rule names, resolved the same way
+  # `zone_fare_products/3` resolves the caller's argument, so a rule and the
+  # fare the drawer chose are one fare's products either way.
+  defp fare_product_ids(organization_id, gtfs_version_id, fare_product_id) do
+    products = version_products(organization_id, gtfs_version_id)
+
+    case fare_name_for(products, fare_product_id) do
+      nil -> []
+      name -> fare_product_ids(products, name)
+    end
+  end
+
+  # The fence: the product list the rule list showed for these conditions must
+  # still be what is stored, so a save cannot land on top of an edit made since
+  # the drawer opened (R15). `nil` is a create and has nothing to be stale
+  # against. The rules the save itself replaces — the ones named by `rule_id`,
+  # and the clashing ones under `:replace` — are already accounted for by the
+  # write, so only the rules the drawer did not choose are compared.
+  defp require_conditions_unchanged(organization_id, gtfs_version_id, conditions, params) do
+    case fare_param(params, :reviewed) do
+      reviewed when is_list(reviewed) ->
+        stored = stored_conditions_products(organization_id, gtfs_version_id, conditions, params)
+        reviewed = Enum.sort(Enum.uniq(reviewed))
+
+        if stored == reviewed do
+          :ok
+        else
+          {:error, {:stale, [%{field: :products, reviewed: reviewed, stored: stored}]}}
+        end
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp stored_conditions_products(organization_id, gtfs_version_id, conditions, params) do
+    rules = scoped_leg_rules(organization_id, gtfs_version_id)
+    pass_ids = version_pass_ids(organization_id, gtfs_version_id)
+    edited_ids = edited_rule_ids(params, organization_id, gtfs_version_id)
+
+    rules
+    |> Enum.filter(fn rule ->
+      not MapSet.member?(pass_ids, rule.fare_product_id) and
+        not MapSet.member?(edited_ids, rule.id) and
+        rule.network_id == conditions.network_id and
+        rule.from_area_id == conditions.from_area_id and
+        rule.to_area_id == conditions.to_area_id and
+        rule.from_timeframe_group_id == conditions.from_timeframe_group_id
+    end)
+    |> Enum.map(& &1.fare_product_id)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp edited_rule_ids(params, organization_id, version_id) do
+    case fare_param(params, :rule_id) do
+      rule_id when is_binary(rule_id) ->
+        case fetch_leg_rule(organization_id, version_id, rule_id) do
+          nil -> MapSet.new()
+          rule -> rules_of_fare(organization_id, version_id, rule) |> MapSet.new(& &1.id)
+        end
+
+      _other ->
+        MapSet.new()
+    end
+  end
+
+  defp same_rule_conditions?(left, right) do
+    left.network_id == right.network_id and left.from_area_id == right.from_area_id and
+      left.to_area_id == right.to_area_id and
+      left.from_timeframe_group_id == right.from_timeframe_group_id
+  end
+
+  # The rules at these conditions that name a *different* fare. A rider can only
+  # be charged one single-ride fare for one ride, so this is the overlap the
+  # drawer offers to replace or to keep; another rider type or payment method of
+  # the same fare is the same fare and is not one — which is why the check is on
+  # the fare's product list rather than on the product id.
+  defp rule_clashes(organization_id, gtfs_version_id, targets, product_ids) do
+    rules = scoped_leg_rules(organization_id, gtfs_version_id)
+    pass_ids = version_pass_ids(organization_id, gtfs_version_id)
+
+    clashes =
+      targets
+      |> Enum.flat_map(fn target ->
+        Enum.filter(rules, fn rule ->
+          not MapSet.member?(pass_ids, rule.fare_product_id) and
+            target_rule?(rule, target) and rule.fare_product_id not in product_ids
+        end)
+      end)
+      |> Enum.uniq_by(& &1.id)
+      |> Enum.sort_by(& &1.id)
+
+    {:ok, clashes}
+  end
+
+  defp target_rule?(rule, target) do
+    rule.network_id == target.network_id and rule.from_area_id == target.from_area_id and
+      rule.to_area_id == target.to_area_id and
+      rule.from_timeframe_group_id == target[:from_timeframe_group_id]
+  end
+
+  # `:replace` writes the new fare over the clashing rules, `:keep_both` leaves
+  # them, and no choice at all is the refusal that makes the drawer offer one.
+  # Either way the rules an edit replaces go first, so an edit never leaves two
+  # sets of rules for one set of conditions.
+  defp settle_rule(organization_id, gtfs_version_id, targets, product_ids, edited, clashes, nil) do
+    case clashes do
+      [] -> write_rules(organization_id, gtfs_version_id, targets, product_ids, edited, [], [])
+      [clash | _rest] -> {:error, {:overlap, clash}}
+    end
+  end
+
+  defp settle_rule(
+         organization_id,
+         gtfs_version_id,
+         targets,
+         product_ids,
+         edited,
+         clashes,
+         :keep_both
+       ) do
+    write_rules(
+      organization_id,
+      gtfs_version_id,
+      targets,
+      product_ids,
+      edited,
+      [],
+      Enum.map(clashes, & &1.id)
+    )
+  end
+
+  defp settle_rule(
+         organization_id,
+         gtfs_version_id,
+         targets,
+         product_ids,
+         edited,
+         clashes,
+         :replace
+       ) do
+    write_rules(organization_id, gtfs_version_id, targets, product_ids, edited, clashes, [])
+  end
+
+  # `replaced` is the set of rules the choice took out (an edit's own rules, and
+  # the clashing ones under `:replace`); `preserved` is the set it left in place
+  # (the clashing ones under `:keep_both`).
+  defp write_rules(
+         organization_id,
+         gtfs_version_id,
+         targets,
+         product_ids,
+         edited,
+         replaced,
+         preserved
+       ) do
+    rules = scoped_leg_rules(organization_id, gtfs_version_id)
+    pass_ids = version_pass_ids(organization_id, gtfs_version_id)
+
+    removed_ids = MapSet.new(Enum.map(edited ++ replaced, & &1.id))
+    preserved_ids = MapSet.new(preserved)
+
+    {removed, added} =
+      Enum.reduce(targets, {[], []}, fn target, {removed, added} ->
+        # At this target, a rule goes when the write chose to replace it (an edit
+        # or an overlap the operator settled) or when it names a fare the write
+        # did not choose; a rule naming the chosen fare, or one the choice kept,
+        # is already what should be there and is left alone, so a repeated save
+        # is a no-op.
+        at_target =
+          Enum.filter(rules, fn rule ->
+            not MapSet.member?(pass_ids, rule.fare_product_id) and
+              not MapSet.member?(preserved_ids, rule.id) and
+              target_rule?(rule, target)
+          end)
+
+        current =
+          Enum.filter(at_target, fn rule ->
+            MapSet.member?(removed_ids, rule.id) or rule.fare_product_id not in product_ids
+          end)
+
+        # A product already named by a rule that is staying is not written again,
+        # so saving the same conditions and fare twice is a no-op rather than a
+        # second set of rows for one fare. The unique index cannot catch that on
+        # its own: it treats the rules whose timeframes are null as distinct.
+        staying = at_target -- current
+
+        named = Enum.map(staying ++ current, & &1.fare_product_id)
+        keep = product_ids |> Enum.uniq() |> Enum.reject(&(&1 in named))
+
+        inserted = insert_leg_rules(organization_id, gtfs_version_id, target, keep)
+        delete_rows(FareLegRule, organization_id, gtfs_version_id, current)
+
+        {removed ++ Enum.map(current, &row_snapshot/1), added ++ inserted}
+      end)
+
+    {:ok,
+     %{
+       before: rule_log_rows(removed),
+       after: rule_log_rows(added),
+       action: if(edited == [], do: "created", else: "updated"),
+       inverse: %{operation: :save, rules: %{removed: removed, added: added}}
+     }}
+  end
+
+  # The whole rule the named row belongs to goes, because a rule is one fare
+  # over one set of conditions and half of it would leave a cell priced for one
+  # rider type and not another. A pass row is refused rather than deleted
+  # because `Fares.Normalize` writes it back from the accepted networks on the
+  # next write of any kind (R4, INV-4).
+  defp remove_rule(organization_id, gtfs_version_id, rule_id, expected) do
+    with {:ok, rule} <- removable_rule(organization_id, gtfs_version_id, rule_id),
+         :ok <- require_rule_fence(organization_id, gtfs_version_id, rule, expected) do
+      removed = rules_of_fare(organization_id, gtfs_version_id, rule)
+      delete_rows(FareLegRule, organization_id, gtfs_version_id, removed)
+
+      {:ok,
+       %{
+         before: rule_log_rows(removed),
+         after: [],
+         action: "deleted",
+         inverse: %{operation: :delete, rules: Enum.map(removed, &row_snapshot/1)}
+       }}
+    end
+  end
+
+  defp removable_rule(organization_id, gtfs_version_id, rule_id) do
+    case fetch_leg_rule(organization_id, gtfs_version_id, rule_id) do
+      nil ->
+        {:error, :not_found}
+
+      rule ->
+        if MapSet.member?(
+             version_pass_ids(organization_id, gtfs_version_id),
+             rule.fare_product_id
+           ) do
+          {:error, :pass_rule}
+        else
+          {:ok, rule}
+        end
+    end
+  end
+
+  # The fence: the product the rule list showed must still be one of the rule's
+  # own products, so a rule somebody else has changed since the drawer opened
+  # deletes nothing (R15).
+  defp require_rule_fence(organization_id, gtfs_version_id, rule, expected) do
+    case Map.fetch(expected, :fare_product_id) do
+      :error ->
+        :ok
+
+      {:ok, reviewed} when is_binary(reviewed) ->
+        stored =
+          organization_id
+          |> rules_of_fare(gtfs_version_id, rule)
+          |> Enum.map(& &1.fare_product_id)
+          |> Enum.uniq()
+          |> Enum.sort()
+
+        if reviewed in stored do
+          :ok
+        else
+          {:error, {:stale, [%{field: :fare_product_id, reviewed: reviewed, stored: stored}]}}
+        end
+
+      {:ok, _other} ->
+        {:error, :not_found}
+    end
+  end
+
+  defp rule_save_summary(organization_id, gtfs_version_id, params) do
+    fare = fare_param(params, :fare_product_id)
+    name = fare_name_for(version_products(organization_id, gtfs_version_id), fare)
+    action = if is_nil(fare_param(params, :rule_id)), do: "Added", else: "Updated"
+
+    "#{action} the fare rule for #{rule_sentence(params)} paying #{name}"
+  end
+
+  defp rule_delete_summary(organization_id, gtfs_version_id, rule_id) do
+    case fetch_leg_rule(organization_id, gtfs_version_id, rule_id) do
+      nil ->
+        "Deleted a fare rule"
+
+      rule ->
+        name =
+          fare_name_for(version_products(organization_id, gtfs_version_id), rule.fare_product_id)
+
+        "Deleted the fare rule for #{rule_sentence(rule)} paying #{name}"
+    end
+  end
+
+  # The conditions in the words the rule list and the drawer's "what this rule
+  # does" card use, with "any" for each one the rule leaves open. It reads a
+  # stored rule and the drawer's form alike, because both name the same four
+  # conditions under the same keys.
+  defp rule_sentence(rule) when is_map(rule) do
+    read = fn
+      key, label ->
+        case blank_to_nil(Map.get(rule, key)) do
+          nil -> "any #{label}"
+          value -> value
+        end
+    end
+
+    "rides in #{read.(:network_id, "route group")} from #{read.(:from_area_id, "zone")} to " <>
+      "#{read.(:to_area_id, "zone")} at #{read.(:from_timeframe_group_id, "time")}"
+  end
+
+  @doc """
+  Adds or removes one route group from a pass's accepted networks (AC-21).
+
+  A pass's `accepted_network_ids` are the leg groups it stands in for, and
+  `Fares.Normalize` rebuilds the pass's leg rules from them (R4). Writing the
+  list is therefore the whole of this writer: the mirrored rows are
+  Normalize's, not this module's (INV-4), and they are rebuilt inside the same
+  transaction before it commits (INV-1).
+
+  A product this version does not hold, a product whose kind is not `"pass"`, a
+  network this version does not hold and a `network_id` other than
+  `"all_routes"` all answer `{:error, :not_found}`; an existing detail row
+  holding a different `kind` answers `{:error, :not_a_pass}`, which is the one
+  case a caller can tell apart.
+
+  `reviewed` is the accepted list the passes table showed, and a pass whose
+  list has changed since answers `{:error, {:stale, details}}` and writes
+  nothing (R15). A checkbox already in the state the operator asked for is
+  `{:ok, ...}` with nothing written, so pressing save twice records one entry.
+  """
+  @spec set_pass_acceptance(
+          scope(),
+          String.t(),
+          String.t(),
+          boolean(),
+          [String.t()] | nil
+        ) :: write_result()
+  def set_pass_acceptance(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        fare_product_id,
+        network_id,
+        accepted?,
+        reviewed
+      )
+      when is_binary(fare_product_id) and is_binary(network_id) and is_boolean(accepted?) do
+    summary =
+      pass_acceptance_summary(
+        organization_id,
+        gtfs_version_id,
+        fare_product_id,
+        network_id,
+        accepted?
+      )
+
+    write(scope, summary, @pass_inverse, fn _setting ->
+      apply_pass_acceptance(
+        organization_id,
+        gtfs_version_id,
+        fare_product_id,
+        network_id,
+        accepted?,
+        reviewed
+      )
+    end)
+  end
+
+  defp apply_pass_acceptance(
+         organization_id,
+         gtfs_version_id,
+         fare_product_id,
+         network_id,
+         accepted?,
+         reviewed
+       ) do
+    with {:ok, pass} <-
+           pass_detail(organization_id, gtfs_version_id, fare_product_id, network_id),
+         :ok <- require_acceptance_unchanged(pass, reviewed) do
+      accepted = accepted_network_ids(pass, network_id, accepted?)
+      write_pass_acceptance(organization_id, gtfs_version_id, pass, accepted)
+    end
+  end
+
+  # The pass's own detail row, which is where the accepted networks live, and
+  # `:not_found` for a product or a network this version does not hold (INV-5).
+  # A product with no detail row is read as a single ride everywhere else in
+  # this module, so accepting a network for it is a caller's mistake rather than
+  # a state the stored rows can hold.
+  defp pass_detail(organization_id, gtfs_version_id, fare_product_id, network_id) do
+    with {:ok, network_id} <- accepted_network_id(organization_id, gtfs_version_id, network_id),
+         {:ok, detail} <- pass_detail_row(organization_id, gtfs_version_id, fare_product_id) do
+      {:ok,
+       %{id: detail.id, fare_product_id: fare_product_id, network_id: network_id, row: detail}}
+    end
+  end
+
+  defp pass_detail_row(organization_id, gtfs_version_id, fare_product_id) do
+    case detail_row(organization_id, gtfs_version_id, fare_product_id) do
+      nil ->
+        {:error, :not_found}
+
+      %FareProductDetail{kind: "pass"} = detail ->
+        {:ok, detail}
+
+      %FareProductDetail{} ->
+        {:error, :not_a_pass}
+    end
+  end
+
+  defp accepted_network_id(_organization_id, _gtfs_version_id, @all_routes_accepted),
+    do: {:ok, @all_routes_accepted}
+
+  defp accepted_network_id(organization_id, gtfs_version_id, network_id) do
+    case network_row(organization_id, gtfs_version_id, network_id) do
+      nil -> {:error, :not_found}
+      _network -> {:ok, network_id}
+    end
+  end
+
+  defp require_acceptance_unchanged(_pass, nil), do: :ok
+
+  defp require_acceptance_unchanged(pass, reviewed) when is_list(reviewed) do
+    stored = pass.row.accepted_network_ids
+
+    if stored == Enum.sort(Enum.uniq(reviewed)) do
+      :ok
+    else
+      {:error, {:stale, [%{field: :accepted_network_ids, reviewed: reviewed, stored: stored}]}}
+    end
+  end
+
+  defp require_acceptance_unchanged(_pass, _other), do: {:error, :not_found}
+
+  # The list with this network added or dropped, sorted and deduplicated, which
+  # is the shape `Fares.Normalize` reads and the shape the table renders. A
+  # list that already says what the operator asked for is written as it stands,
+  # so one save is one change-log entry whether or not it moved.
+  defp accepted_network_ids(pass, network_id, true) do
+    Enum.sort(Enum.uniq([network_id | pass.row.accepted_network_ids]))
+  end
+
+  defp accepted_network_ids(pass, network_id, false) do
+    Enum.reject(pass.row.accepted_network_ids, &(&1 == network_id))
+  end
+
+  defp write_pass_acceptance(organization_id, gtfs_version_id, pass, accepted) do
+    now = DateTime.utc_now()
+
+    from(detail in FareProductDetail,
+      where:
+        detail.id == ^pass.id and detail.organization_id == ^organization_id and
+          detail.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.update_all(set: [accepted_network_ids: accepted, updated_at: now])
+
+    name = fare_display_name(organization_id, gtfs_version_id, pass.fare_product_id)
+    log = fare_name_log_row(pass.fare_product_id, name)
+
+    {:ok,
+     %{
+       before: [log],
+       after: [Map.put(log, "accepted_network_ids", accepted)],
+       action: "updated",
+       inverse: %{
+         operation: :save,
+         id: pass.id,
+         fare_product_id: pass.fare_product_id,
+         before: pass.row.accepted_network_ids,
+         after: accepted
+       }
+     }}
+  end
+
+  defp pass_acceptance_summary(
+         organization_id,
+         gtfs_version_id,
+         fare_product_id,
+         network_id,
+         true
+       ) do
+    "Accepted #{network_id} for the pass #{fare_display_name(organization_id, gtfs_version_id, fare_product_id)}"
+  end
+
+  defp pass_acceptance_summary(
+         organization_id,
+         gtfs_version_id,
+         fare_product_id,
+         network_id,
+         false
+       ) do
+    "Removed #{network_id} from the pass #{fare_display_name(organization_id, gtfs_version_id, fare_product_id)}"
+  end
+
+  @doc false
+  # The name a product id belongs to, matched against the ids `save_fare/2`
+  # derives from names as well as against the products themselves, so a caller
+  # that holds a fare's name-slug reaches the same fare the grid shows.
+  @spec fare_name_for([GtfsPlanner.Gtfs.FareProduct.t()], String.t() | nil) :: String.t() | nil
+  defp fare_name_for(products, fare_product_id) do
+    case Enum.find(products, &(&1.fare_product_id == fare_product_id)) do
+      nil ->
+        case Enum.find(products, &(fare_slug(fare_name(&1)) == fare_product_id)) do
+          nil -> nil
+          product -> fare_name(product)
+        end
+
+      product ->
+        fare_name(product)
+    end
+  end
+
+  defp fare_product_ids(products, name) do
+    products
+    |> Enum.filter(&(fare_name(&1) == name))
+    |> Enum.map(& &1.fare_product_id)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  # The change-log row of one leg rule, whichever direction it moved: the rule's
+  # own id and the conditions and product it states, which is what the rule list
+  # shows and what a reader of Recent changes can act on.
+  defp leg_rule_log_row(rule) do
+    %{
+      "rule_id" => rule.id,
+      "network_id" => rule.network_id,
+      "from_area_id" => rule.from_area_id,
+      "to_area_id" => rule.to_area_id,
+      "from_timeframe_group_id" => rule.from_timeframe_group_id,
+      "fare_product_id" => rule.fare_product_id
+    }
+  end
+
+  # The change-log rows of one rule write: the rules it removed before, the rules
+  # it added after. A save that changed nothing records one entry with both
+  # empty, which is the same shape every other writer of this module records.
+  defp rule_log_rows(rows), do: Enum.map(rows, &leg_rule_log_row/1)
+
+  # -- Undoing a rule or pass acceptance change -----------------------------------
+
+  # A saved rule's added rows must all still be there, and its removed rows all
+  # still gone. A delete's rows must all still be gone. Anything else answers
+  # `{:error, :stale}` and changes nothing, so a reversal can never revert a
+  # later edit (R15, AC-26).
+  defp require_rule_unchanged(organization_id, gtfs_version_id, inverse) do
+    stale? =
+      case inverse do
+        %{operation: :save, rules: %{removed: removed, added: added}} ->
+          Enum.any?(removed, &rule_present?(&1, organization_id, gtfs_version_id)) or
+            not Enum.all?(added, &(not rule_present?(&1, organization_id, gtfs_version_id)))
+
+        %{operation: :delete, rules: removed} ->
+          Enum.any?(removed, &rule_present?(&1, organization_id, gtfs_version_id))
+
+        _other ->
+          true
+      end
+
+    if stale?, do: {:error, :stale}, else: :ok
+  end
+
+  defp restore_rule(organization_id, gtfs_version_id, %{operation: :save, rules: rules}) do
+    delete_rows(FareLegRule, organization_id, gtfs_version_id, rules.added)
+    Enum.each(rules.removed, &Repo.insert!(Ecto.Changeset.change(&1)))
+
+    :ok
+  end
+
+  defp restore_rule(_organization_id, _gtfs_version_id, %{operation: :delete, rules: rules}) do
+    Enum.each(rules, &Repo.insert!(Ecto.Changeset.change(&1)))
+
+    :ok
+  end
+
+  # The pass must still hold exactly the accepted list the write left, which is
+  # the same fence `delete_route_group/3`'s reversal uses for a pass it stopped
+  # accepting.
+  defp require_acceptance_unchanged(inverse, organization_id, gtfs_version_id) do
+    current =
+      from(detail in FareProductDetail,
+        where:
+          detail.id == ^inverse.id and detail.organization_id == ^organization_id and
+            detail.gtfs_version_id == ^gtfs_version_id,
+        select: detail.accepted_network_ids
+      )
+      |> Repo.one()
+
+    if current == inverse.after, do: :ok, else: {:error, :stale}
+  end
+
+  defp restore_pass_acceptance(organization_id, gtfs_version_id, inverse) do
+    from(detail in FareProductDetail,
+      where:
+        detail.id == ^inverse.id and detail.organization_id == ^organization_id and
+          detail.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.update_all(
+      set: [accepted_network_ids: inverse.before, updated_at: DateTime.utc_now()]
+    )
+
+    :ok
+  end
+
+  # The version's leg rules in id order, which is the order the inverse reads and
+  # writes them in. Every read here is scoped to the organization and version
+  # together (INV-5).
+  defp scoped_leg_rules(organization_id, gtfs_version_id) do
+    FareLegRule
+    |> scoped(organization_id, gtfs_version_id)
+    |> order_by([rule], rule.id)
+    |> Repo.all()
+  end
+
+  # The products this version's editor recorded as passes, whose leg rules
+  # `Fares.Normalize` owns (R4, INV-4).
+  defp version_pass_ids(organization_id, gtfs_version_id) do
+    FareProductDetail
+    |> scoped(organization_id, gtfs_version_id)
+    |> where([detail], detail.kind == ^@pass_kind)
+    |> select([detail], detail.fare_product_id)
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
+  defp undo_rule(organization_id, gtfs_version_id, operation_id, inverse) do
+    with :ok <- require_entry(operation_id, organization_id, gtfs_version_id),
+         :ok <- require_rule_unchanged(organization_id, gtfs_version_id, inverse) do
+      restore_rule(organization_id, gtfs_version_id, inverse)
+
+      {:ok,
+       %{
+         before: [],
+         after: [],
+         inverse: nil,
+         operation_id: operation_id,
+         action: "rolled_back",
+         rolled_back_to_log_id: operation_id
+       }}
+    end
+  end
+
+  defp undo_pass_acceptance(organization_id, gtfs_version_id, operation_id, inverse) do
+    with :ok <- require_entry(operation_id, organization_id, gtfs_version_id),
+         :ok <- require_acceptance_unchanged(inverse, organization_id, gtfs_version_id) do
+      restore_pass_acceptance(organization_id, gtfs_version_id, inverse)
+
+      {:ok,
+       %{
+         before: [],
+         after: [],
+         inverse: nil,
+         operation_id: operation_id,
+         action: "rolled_back",
+         rolled_back_to_log_id: operation_id
+       }}
+    end
+  end
 
   # -- Writing one fare ------------------------------------------------------------
 
