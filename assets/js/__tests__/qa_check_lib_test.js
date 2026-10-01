@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 
+import { evaluateImport } from "../../qa/checks/import-feed.mjs";
 import {
   assertVersionId,
   compareSignatures,
@@ -332,4 +333,92 @@ test("a well-formed version id passes the check", () => {
   const id = "0f9a2b1c-3d4e-4f50-8a6b-7c8d9e0f1a2b";
 
   expect(assertVersionId(id)).toBe(id);
+});
+// The import check compares a version against the zip, so the counts below
+// are written out rather than read from either one.
+
+const ZIP_COUNTS = { routes: 5, stops: 9, trips: 11, stop_times: 28, calendars: 2 };
+
+const SEEDED = {
+  id: "1b3f5c2a-6d47-4b8e-9f10-2c5d8e4a7b31",
+  name: "Empty feed",
+  publication_status: "published",
+  inserted_at: "2026-09-30T19:08:05.000000Z",
+};
+
+const IMPORTED = {
+  id: "9c2e7d41-5a68-4f3b-8e02-71d4a6f9c8b2",
+  name: "sample-feed.zip",
+  publication_status: "published",
+  inserted_at: "2026-09-30T19:12:41.000000Z",
+};
+
+const STAGING = { ...IMPORTED, id: "d5a1b8e3-7c40-4f62-91ad-3e8c0b5f2d74", publication_status: "staging" };
+const LATER = { ...IMPORTED, id: "f0c3a9d7-2b58-4e91-8a63-5d1e7c4b9a08", inserted_at: "2026-09-30T19:14:02.000000Z" };
+
+function evaluate(overrides) {
+  return evaluateImport({
+    sourceCounts: ZIP_COUNTS,
+    versions: [SEEDED, IMPORTED],
+    baselineIds: [SEEDED.id],
+    counts: ZIP_COUNTS,
+    ...overrides,
+  });
+}
+
+test("a new published version holding the zip's counts passes the import check", () => {
+  const result = evaluate();
+
+  expect(result.pass).toBe(true);
+  expect(result.observations).toEqual([
+    `version ${IMPORTED.id} holds the zip's routes, stops, trips, stop_times, calendars counts`,
+  ]);
+});
+
+test("no new version fails, because that is the untouched state", () => {
+  const result = evaluate({ versions: [SEEDED] });
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toEqual([
+    "no published version that the run did not start from exists yet",
+  ]);
+});
+
+test("a new version that is not published yet does not count", () => {
+  const result = evaluate({ versions: [SEEDED, STAGING] });
+
+  expect(result.pass).toBe(false);
+  expect(result.observations[0]).toMatch(/no published version/);
+});
+
+test("a partial import fails and names the count that differs", () => {
+  const result = evaluate({ counts: { ...ZIP_COUNTS, trips: 10 } });
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toEqual(["trips: 11 in the zip, 10 in the version"]);
+});
+
+test("two new versions are judged by the latest one", () => {
+  const result = evaluate({ versions: [SEEDED, IMPORTED, LATER], counts: { ...ZIP_COUNTS, routes: 3 } });
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toEqual(["routes: 5 in the zip, 3 in the version"]);
+
+  const earlier = evaluate({ versions: [SEEDED, LATER, IMPORTED] });
+
+  expect(earlier.pass).toBe(true);
+});
+
+test("every table that differs is named", () => {
+  const result = evaluate({ counts: { routes: 5, stops: 0, trips: 11, stop_times: 28, calendars: 2 } });
+
+  expect(result.observations).toEqual(["stops: 9 in the zip, 0 in the version"]);
+});
+
+test("a version counted before its rows exist fails rather than passing an absent count", () => {
+  const result = evaluate({ counts: null });
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toHaveLength(5);
+  expect(result.observations[0]).toMatch(/in the version/);
 });
