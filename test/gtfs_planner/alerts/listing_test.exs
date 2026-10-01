@@ -143,7 +143,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       _mine = open_ended_delay(context, "2026-10-01", nil)
 
       viewer = user_fixture()
-      organization_membership_fixture(viewer, context.organization, ["pathways_studio_viewer"])
+      organization_membership_fixture(viewer, context.organization, [])
 
       audit = audit_context(context.organization, context.version, viewer)
 

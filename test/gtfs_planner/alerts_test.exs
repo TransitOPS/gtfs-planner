@@ -116,7 +116,7 @@ defmodule GtfsPlanner.AlertsTest do
       alert = alert_fixture(context.audit)
 
       viewer = user_fixture()
-      organization_membership_fixture(viewer, context.organization, ["pathways_studio_viewer"])
+      organization_membership_fixture(viewer, context.organization, [])
 
       assert {:error, :forbidden} =
                Alerts.get_alert(
@@ -261,7 +261,7 @@ defmodule GtfsPlanner.AlertsTest do
     test "refuses a member without the editor role", context do
       alert = alert_fixture(context.audit)
       viewer = user_fixture()
-      organization_membership_fixture(viewer, context.organization, ["pathways_studio_viewer"])
+      organization_membership_fixture(viewer, context.organization, [])
 
       audit = audit_context(context.organization, context.version, viewer)
 
@@ -345,7 +345,7 @@ defmodule GtfsPlanner.AlertsTest do
     test "refuses a member without the editor role", context do
       alert = alert_fixture(context.audit)
       viewer = user_fixture()
-      organization_membership_fixture(viewer, context.organization, ["pathways_studio_viewer"])
+      organization_membership_fixture(viewer, context.organization, [])
 
       audit = audit_context(context.organization, context.version, viewer)
 
