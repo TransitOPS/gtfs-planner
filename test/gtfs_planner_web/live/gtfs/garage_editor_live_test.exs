@@ -23,6 +23,12 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
     city: "Cedar Valley"
   }
 
+  # LiveSelect keeps its option list hidden until the input takes focus, as it does
+  # when someone types, so the options are not in the page until then.
+  defp open_address_options(view) do
+    view |> element("#garage-address") |> render_hook("focus", %{})
+  end
+
   defp editor_setup(_context) do
     organization = organization_fixture()
     user = user_fixture()
@@ -406,6 +412,7 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
 
       render_hook(view, "live_select_change", %{"text" => "Main St", "id" => "garage-address"})
       render_async(view)
+      open_address_options(view)
       assert has_element?(view, "#garage-address", "Main St, Cedar Valley")
 
       ref = Process.monitor(slow_task)
@@ -532,6 +539,7 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
 
       view |> element("#garage-address-retry") |> render_click()
       render_async(view)
+      open_address_options(view)
       assert has_element?(view, "#garage-address", "120 Depot Road, Cedar Valley")
       refute has_element?(view, "#garage-address-retry")
       refute has_element?(view, "#garage-form-error")
