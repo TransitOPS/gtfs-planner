@@ -49,7 +49,7 @@ Org name                                        [Version ▾]   [Initials ▾]
 | Home (`/`) | Organization tasks for the signed-in user | Organization | Live |
 | Routes | Route catalog, transfers, route and pattern pages | This version | Live |
 | Calendars | Service calendars | This version | Live |
-| Operations | Blocks · Runs · Rosters | This version | Planned; grouping Proposed |
+| Operations | Blocks · Runs · Rosters | This version | Live; grouping Proposed |
 | Stops & stations | Stops, stations, floorplans, reports, closures | This version | Live |
 | Flex | On-demand services layered on routes | This version | Proposed |
 | GTFS | Export (default tab): export runs, validation, publishing. Import: creates a new version from GTFS files | Export: this version. Import: organization | Live; GTFS grouping Proposed |
@@ -130,10 +130,10 @@ flowchart LR
 
   app --> orgs[Organizations]
 
-  class app,routes,routeList,route,rDetails,rPatterns,pattern,pTabs,cals,calList,cal,stops,station,sTabs,imp,exp,orgs live;
+  class app,routes,routeList,route,rDetails,rPatterns,pattern,pTabs,cals,calList,cal,stops,station,sTabs,imp,exp,orgs,blocks,runs,rosters live;
   class rSchedules live;
   class compare live;
-  class paste,blocks,runs,rosters,evol planned;
+  class paste,evol planned;
   class transfers,pAlign,combine,ops,flex,flexSvc,gtfs,publish,settings,sVersion,sAll,sOrg proposed;
 ```
 
@@ -271,7 +271,7 @@ Operations                          /gtfs/:version/…
 ```
 
 - **Blocks** (basic and advanced blocking): one day type at a time.
-  - Planned drawers for deadhead times, relief points and interlining stay on this page.
+  - The drawers for deadhead times, relief points and interlining are on this page.
   - *Proposed:* the block drawer lists each trip-to-trip connection with a **Riders stay on
     board** choice: follows the block (default, no row), stay on board (type 4) or must re-board
     (type 5). Block edits flag, never delete, a row that no longer matches the block.
@@ -486,7 +486,7 @@ its feature is specified.
 | Calendars | [Calendars](requirements/calendars-and-service-periods-requirements.md) AC-CAL-001 to AC-CAL-032 | Calendars list and Calendar | Live; coverage bars and combine Proposed |
 | Trips and frequencies | [Trips](requirements/trips-requirements.md) | Route › Schedules | Planned / Proposed |
 | In-seat transfers | AC-TRIP-041, AC-TRIP-042 | Operations › Blocks › block drawer | Proposed |
-| Blocks | [Schedules and blocks](requirements/schedules-and-blocks-requirements.md) | Operations › Blocks | Planned |
+| Blocks | [Schedules and blocks](requirements/schedules-and-blocks-requirements.md) | Operations › Blocks | Live |
 | Transfers | [Transfers](requirements/transfers-requirements.md) | Routes › Transfers | Live |
 | Fare zones | [Stops and stations](requirements/stops-and-stations-requirements.md) AC-STOP-023 to AC-STOP-026 | Settings › Fares › Zones | Live |
 | Agencies and feed info | [System configuration](requirements/system-configuration-requirements.md) AC-CONFIG-001 to AC-CONFIG-017, AC-CONFIG-040 | Settings › Agencies, Feed details; Route › Details | Proposed |
