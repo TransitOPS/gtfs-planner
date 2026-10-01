@@ -33,6 +33,7 @@ defmodule GtfsPlannerWeb.Gtfs.ServiceQueriesHelperTest do
   @model "test/model-a"
 
   @thanksgiving "2026-11-26"
+  @thanksgiving_date ~D[2026-11-26]
   @first_message "What leaves Central Station after 6pm on Thanksgiving?"
   @answer "Central Station has two departures after 6:00pm on Thanksgiving."
   @departure_arguments ~s({"service_date":"2026-11-26","stop_id":"CENTRAL","stop_sequence":1,"after":"18:00","include_after_midnight":false})
@@ -100,7 +101,9 @@ defmodule GtfsPlannerWeb.Gtfs.ServiceQueriesHelperTest do
                live(context.conn, "/gtfs/#{context.version.id}/routes/H12/schedules")
 
       # The page for H12 holds its own conversation, so the H8 transcript never
-      # appears beside another route's rows.
+      # appears beside another route's rows. Opening its panel starts it.
+      other_view |> element("#agent-helper-open") |> render_click()
+
       other = session_pid(other_view)
       assert is_pid(other)
       refute other == first
@@ -173,6 +176,96 @@ defmodule GtfsPlannerWeb.Gtfs.ServiceQueriesHelperTest do
       card = view |> element("#agent-evidence-2-1") |> render()
       assert card =~ "2 stops to board at"
       assert card =~ "Stops with more than one visit"
+    end
+  end
+
+  describe "a turn that cannot answer" do
+    test "a rejected provider request offers Retry and leaves the schedule editable",
+         context do
+      {view, pid} = open_helper(context)
+
+      before = schedule_signature(view)
+      expect_status(401, %{"error" => "provider key rejected"})
+      submit(view, @first_message)
+      assert await_settled(pid).status == :failed
+
+      # The failure is announced and Retry is offered on the failed entry.
+      assert has_element?(view, "#agent-retry-2")
+      assert render(view) =~ "The helper is unavailable right now."
+
+      # A failed turn renders no card, and the page behind it never changed.
+      refute has_element?(view, "[data-evidence-kind]")
+      assert schedule_signature(view) == before
+      assert element(view, "#schedules-add-trips") |> render() =~ ~s(phx-click)
+    end
+
+    test "a provider outage stops the helper as unavailable instead of failing", context do
+      {view, pid} = open_helper(context)
+
+      before = schedule_signature(view)
+      expect_status(500, %{"error" => "provider unavailable"})
+      submit(view, @first_message)
+      assert await_settled(pid).status == :unavailable
+
+      assert render(view) =~ "This route or calendar is no longer available"
+      refute has_element?(view, "[data-evidence-kind]")
+      assert schedule_signature(view) == before
+    end
+
+    test "more dates than one answer covers is refused with no card and a next action",
+         context do
+      {view, pid} = open_helper(context)
+
+      dates =
+        1..32
+        |> Enum.map(&Date.to_iso8601(Date.add(@thanksgiving_date, &1)))
+        |> Jason.encode!()
+
+      expect_reply(
+        tool_calls_reply([
+          {"call_1", "compare_service_dates", ~s({"dates":#{dates}})}
+        ])
+      )
+
+      expect_reply(text_reply("Ask about fewer dates at a time."))
+
+      before = schedule_signature(view)
+      submit(view, "Which of the next month does this route run service?")
+      assert await_settled(pid).status == :done
+
+      # The dispatch fence refuses the call before the pack reads anything, so
+      # the turn ends on the model's own next action and no card is rendered.
+      assert has_element?(view, "#agent-entry-2", "Ask about fewer dates at a time.")
+      refute has_element?(view, "[data-evidence-kind]")
+      assert schedule_signature(view) == before
+    end
+
+    test "a date the route does not run answers with a card that counts nothing", context do
+      {view, pid} = open_helper(context)
+
+      # Far outside the calendar's own range, so no calendar runs the route.
+      quiet = Date.to_iso8601(~D[2035-06-15])
+      arguments = ~s({"dates":["#{quiet}"]})
+
+      expect_reply(tool_calls_reply([{"call_1", "summarize_service", arguments}]))
+
+      expect_reply(text_reply("That date is not one this route runs."))
+
+      submit(view, "Does this route run service on #{quiet}?")
+      assert await_settled(pid).status == :done
+
+      card = view |> element("#agent-evidence-2-1") |> render()
+      assert card =~ "Server result"
+      assert card =~ "recorded service on 1 dates"
+      assert card =~ "gtfs_service_queries"
+
+      # The three computed facts say the date has no recorded service.
+      assert view
+             |> element("#agent-evidence-2-1")
+             |> render()
+             |> LazyHTML.from_fragment()
+             |> LazyHTML.query("dd")
+             |> Enum.map(&LazyHTML.text/1) == ["1", "0", "1"]
     end
   end
 
@@ -285,7 +378,7 @@ defmodule GtfsPlannerWeb.Gtfs.ServiceQueriesHelperTest do
       exception_type: 1
     })
 
-    holiday = calendar_fixture(organization.id, version.id, %{service_id: "HOLIDAY"})
+    calendar_fixture(organization.id, version.id, %{service_id: "HOLIDAY"})
 
     pattern =
       schedule_pattern_fixture(organization.id, version.id, %{
@@ -306,7 +399,7 @@ defmodule GtfsPlannerWeb.Gtfs.ServiceQueriesHelperTest do
           {"H8-1910", "19:10:00"}
         ] do
       schedule_trip_fixture(organization.id, version.id, route.route_id, pattern, %{
-        service_id: holiday,
+        service_id: "HOLIDAY",
         trip_id: trip_id,
         start_time: start_time,
         trip_headsign: "Harbor Yards"
@@ -314,11 +407,26 @@ defmodule GtfsPlannerWeb.Gtfs.ServiceQueriesHelperTest do
     end
 
     schedule_trip_fixture(organization.id, version.id, route.route_id, pattern, %{
-      service_id: holiday,
+      service_id: "HOLIDAY",
       trip_id: "H8-FREQ",
       start_time: "20:00:00",
       trip_headsign: "Harbor Yards",
       frequencies: [%{start_time: "20:00:00", end_time: "22:00:00", headway_secs: 1200}]
+    })
+
+    # A loop that calls at Central Station twice, which is what makes a question
+    # that names only the stop ambiguous instead of answerable.
+    schedule_trip_fixture(organization.id, version.id, route.route_id, pattern, %{
+      service_id: "HOLIDAY",
+      trip_id: "H8-LOOP",
+      state: "custom",
+      timed_pattern_id: nil,
+      trip_headsign: "Harbor Yards",
+      stop_times: [
+        {"CENTRAL", "18:00:00", "18:00:00"},
+        {"HARBOR", "21:00:00", "21:00:00"},
+        {"CENTRAL", "23:50:00", "23:50:00"}
+      ]
     })
 
     Map.merge(context, %{route: route})
@@ -343,6 +451,12 @@ defmodule GtfsPlannerWeb.Gtfs.ServiceQueriesHelperTest do
   ## Scripted OpenRouter replies
 
   defp expect_reply(payload) do
+    expect_status(200, payload)
+  end
+
+  # A non-200 answer from the provider boundary, so a rejected or failing
+  # request reaches the panel as the real transport outcome it is.
+  defp expect_status(status, payload) do
     test = self()
 
     Req.Test.expect(@owner, 1, fn conn ->
@@ -351,7 +465,7 @@ defmodule GtfsPlannerWeb.Gtfs.ServiceQueriesHelperTest do
 
       conn
       |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(payload))
+      |> Plug.Conn.send_resp(status, Jason.encode!(payload))
     end)
   end
 
