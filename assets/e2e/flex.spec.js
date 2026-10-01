@@ -72,13 +72,17 @@ async function logIn(page) {
 }
 
 // A click that lands before the LiveView joins is dropped, so every navigation
-// waits for the mounted view first.
+// waits for the mounted view first. An open socket does not mean the join
+// finished: the joined view carries `phx-connected`.
 async function waitForLiveView(page) {
   await page.waitForSelector("[data-phx-main]", { state: "attached" });
   await page.waitForFunction(() => {
     const main = document.querySelector("[data-phx-main]");
     return Boolean(
-      main && !main.hasAttribute("data-phx-pending") && window.liveSocket?.isConnected(),
+      main &&
+        main.classList.contains("phx-connected") &&
+        !main.hasAttribute("data-phx-pending") &&
+        window.liveSocket?.isConnected(),
     );
   });
 }
