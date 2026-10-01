@@ -176,11 +176,19 @@ defmodule GtfsPlannerWeb.Gtfs.RostersOperatorsLiveTest do
     line_id
   end
 
+  # A re-read, so the claim is about the table. `Repo.all/1` has no `order_by`
+  # and Postgres makes no promise about the order rows come back in, so a
+  # two-row assertion against it was asserting an accident of the heap and
+  # passed or failed with the seed. The order on screen is `drawn_rows/1`'s
+  # job; this one only has to say which rows are stored, so it sorts them.
+  # The sort is on the whole tuple, and `nil` is an atom, so an operator
+  # without a seniority number sorts after the numbered ones.
   defp stored_operators(organization_id) do
     Operator
     |> Repo.all()
     |> Enum.filter(&(&1.organization_id == organization_id))
     |> Enum.map(&{&1.seniority_number, &1.employee_id, &1.display_name})
+    |> Enum.sort()
   end
 
   defp stored_operator(organization_id, employee_id) do
