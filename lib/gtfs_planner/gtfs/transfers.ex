@@ -1548,7 +1548,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   defp station?(%Stop{location_type: 1}), do: true
   defp station?(_stop), do: false
 
-  # Endpoint display names, once each, in endpoint order: a name or else the ID.
+  # Display names of the endpoints, once each, in endpoint order: a name or else the ID.
   defp missing_coordinates(index, stop_ids) do
     stop_ids
     |> Enum.flat_map(&missing_coordinate_name(index, &1))

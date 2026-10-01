@@ -4411,7 +4411,7 @@ defmodule GtfsPlanner.Gtfs do
   Behaves like `list_pathways_for_level/4` but only includes pathways where
   the given `stop_id` is one of the endpoints. Both endpoints must still belong
   to the parent station descendant set and at least one endpoint must be on the
-  requested level. Endpoint stops and cross-level flags are populated the same
+  requested level. The endpoint stops and cross-level flags are populated the same
   way as `list_pathways_for_level/4`.
 
   ## Examples
