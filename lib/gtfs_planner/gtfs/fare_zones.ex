@@ -68,9 +68,13 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   re-send the untouched field, an imported `" A"` included. An ID the inventory
   already carries - a record, a stop of any location type or a fare-rule
   reference - is rejected with the in-use message, so a rename can neither merge
-  two zones nor duplicate a rule row. `change_zone/2` is the drawer's form
-  changeset and makes the same byte-for-byte decision, so a form validates what
-  the write will do.
+  two zones nor duplicate a rule row. A rename and a delete also carry the zone ID
+  onto `fare_leg_rules.from_area_id` and `to_area_id` (R7) - the same rows the
+  stops and the fare rules are carried to - and then let `Fares.Normalize.run!/2`
+  refresh a managed version's implied rows inside the same version-locked
+  transaction, since `Normalize` is their only writer. `change_zone/2` is the
+  drawer's form changeset and makes the same byte-for-byte decision, so a form
+  validates what the write will do.
 
   `delete_zone/4` removes a zone inside the same version-locked transaction. It
   refuses a zone that left the inventory (`:not_found`), a request whose expected
@@ -81,7 +85,8 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   the zone's stops of every location type move to the replacement (nil unassigns
   them), every fare-rule row that mentions the zone in `origin_id`,
   `destination_id` or `contains_id` is rewritten with the exact replacement value
-  and reinserted under a new ID, a rewritten row identical to an unaffected row
+  and reinserted under a new ID, as is every leg rule that names the zone as an
+  area, a rewritten row identical to an unaffected row
   or to an earlier kept rewritten row is dropped, and the metadata record is
   removed - so no row keeps the deleted ID and no group is left orphaned.
 
@@ -109,7 +114,10 @@ defmodule GtfsPlanner.Gtfs.FareZones do
 
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareAttribute
+  alias GtfsPlanner.Gtfs.FareLegRule
   alias GtfsPlanner.Gtfs.FareRule
+  alias GtfsPlanner.Gtfs.Fares
+  alias GtfsPlanner.Gtfs.Fares.Normalize
   alias GtfsPlanner.Gtfs.Fares.VersionLock
   alias GtfsPlanner.Gtfs.FareZone
   alias GtfsPlanner.Gtfs.Route
@@ -787,12 +795,16 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   after trimming is a rename. The trimmed new ID is validated, rejected with the
   in-use message when the inventory already carries it, and otherwise written in
   one transaction to `stops.zone_id` of every location type, to
-  `fare_rules.origin_id`, `destination_id` and `contains_id`, and to the metadata
-  record; no row keeps the old ID, and every one of those writes uses the
-  trimmed new ID. A form value that is the stored bytes or trims back to them is
-  a metadata edit, not a rename. The returned zone is the inventory entry under
-  the final ID. A pair that is not a published version of the organization
-  returns `:not_found` and writes nothing.
+  `fare_rules.origin_id`, `destination_id` and `contains_id`, to
+  `fare_leg_rules.from_area_id` and `to_area_id`, and to the metadata record; no
+  row keeps the old ID, and every one of those writes uses the trimmed new ID. A
+  managed version's implied rows are then refreshed by `Fares.Normalize.run!/2`
+  inside the same transaction (R7, INV-1), because a leg rule's conditions
+  decide its priority, its leg group and the pass rows that mirror it. A form
+  value that is the stored bytes or trims back to them is a metadata edit, not a
+  rename. The returned zone is the inventory entry under the final ID. A pair
+  that is not a published version of the organization returns `:not_found` and
+  writes nothing.
   """
   @spec update_zone(AuditContext.t(), String.t(), map()) ::
           {:ok, zone()} | {:error, Ecto.Changeset.t()} | {:error, :not_found | :forbidden}
@@ -825,14 +837,19 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   Inside one version-locked transaction the zone's stops of every location type
   move to the exact replacement ID (nil unassigns them), every fare-rule row that
   mentions the zone in `origin_id`, `destination_id` or `contains_id` is rewritten
-  with the exact replacement value and reinserted with a new ID, a rewritten row
-  that would be identical to an unaffected row or to an earlier kept rewritten
-  row is dropped, and the zone's metadata record is removed. Every other row keeps
-  its bytes and timestamps, so no row references the deleted ID and no fare-rule
-  group is destroyed or left orphaned. The result counts the stops whose zone
-  changed, the rewritten rows kept and the affected rows dropped as duplicates. A
-  pair that is not a published version of the organization returns `:not_found`
-  and writes nothing.
+  with the exact replacement value and reinserted with a new ID, every
+  `fare_leg_rules` row whose `from_area_id` or `to_area_id` is the zone is carried
+  to the replacement the same way (nil clears the area), and the zone's metadata
+  record is removed. A rewritten row that would be identical to an unaffected row
+  or to an earlier kept rewritten row is dropped, on both sides of the write, so
+  neither the fare-rule index nor the leg-rule index is asked for a row that
+  already exists. A managed version's implied rows are then refreshed by
+  `Fares.Normalize.run!/2` inside the same transaction (R7, INV-1). Every other
+  row keeps its bytes and timestamps, so no row references the deleted ID and no
+  fare-rule group is destroyed or left orphaned. The result counts the stops
+  whose zone changed, the rewritten rows kept and the affected rows dropped as
+  duplicates. A pair that is not a published version of the organization returns
+  `:not_found` and writes nothing.
   """
   @spec delete_zone(
           AuditContext.t(),
@@ -1249,6 +1266,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
 
         if changeset.valid? do
           rewrite_zone_id(organization_id, gtfs_version_id, current_zone_id, new_zone_id)
+          normalize_managed_fares(organization_id, gtfs_version_id)
           persist_zone(changeset, record, organization_id, gtfs_version_id, new_zone_id)
         else
           Repo.rollback(changeset)
@@ -1276,7 +1294,9 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   # An ID change moves the exact new ID on every location type - a station or
   # entrance carries a zone ID too - and in all three fare-rule zone columns. The
   # new ID was not in the inventory, so no rewritten fare rule can become
-  # identical to another row and hit the unique row index.
+  # identical to another row and hit the unique row index. The version's leg
+  # rules move with them (R7), and they are rebuilt like the fare rules because a
+  # leg rule's unique index covers its areas too.
   defp rewrite_zone_id(organization_id, gtfs_version_id, current_zone_id, new_zone_id) do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
@@ -1301,12 +1321,142 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     |> rule_scope(gtfs_version_id)
     |> where([r], r.contains_id == ^current_zone_id)
     |> Repo.update_all(set: [contains_id: new_zone_id, updated_at: now])
+
+    carry_leg_rule_areas(organization_id, gtfs_version_id, current_zone_id, new_zone_id, now)
   end
 
   defp rule_scope(organization_id, gtfs_version_id) do
     from(r in FareRule,
       where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id
     )
+  end
+
+  defp leg_rule_scope(organization_id, gtfs_version_id) do
+    from(r in FareLegRule,
+      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id
+    )
+  end
+
+  # R7: the exact replacement area ID moves onto `from_area_id` and `to_area_id`
+  # of every leg rule that names the zone. A `nil` replacement clears the area
+  # rather than leaving a reference to a zone that no longer exists, which is
+  # what the stops of that zone and its fare rules already do.
+  #
+  # A leg rule's unique index covers its areas, so the affected rows are read,
+  # rewritten, deduplicated against the rows the write does not touch and then
+  # deleted and reinserted - the same treatment the fare rules of a deletion get.
+  # A rewritten row that would land on an existing row is a duplicate the rider
+  # is already offered, so it is dropped rather than rejected.
+  defp carry_leg_rule_areas(organization_id, gtfs_version_id, zone_id, replacement, now) do
+    {affected, unaffected} =
+      organization_id
+      |> list_leg_rules(gtfs_version_id)
+      |> Enum.split_with(&references_area?(&1, zone_id))
+
+    {kept, removed_duplicate_rows} =
+      deduplicate_leg_rules(affected, unaffected, zone_id, replacement)
+
+    delete_leg_rule_rows(organization_id, gtfs_version_id, Enum.map(affected, & &1.id))
+    insert_leg_rule_rows(organization_id, gtfs_version_id, kept, now)
+
+    %{kept_rows: length(kept), removed_duplicate_rows: removed_duplicate_rows}
+  end
+
+  defp list_leg_rules(organization_id, gtfs_version_id) do
+    organization_id
+    |> leg_rule_scope(gtfs_version_id)
+    |> Repo.all()
+  end
+
+  defp references_area?(row, zone_id) do
+    row.from_area_id == zone_id or row.to_area_id == zone_id
+  end
+
+  defp deduplicate_leg_rules(affected, unaffected, zone_id, replacement) do
+    seen = MapSet.new(unaffected, &leg_rule_values/1)
+
+    {kept, _seen} =
+      Enum.reduce(affected, {[], seen}, fn row, {kept, seen} ->
+        rewritten = rewrite_leg_rule_row(row, zone_id, replacement)
+        values = leg_rule_values(rewritten)
+
+        if MapSet.member?(seen, values) do
+          {kept, seen}
+        else
+          {[rewritten | kept], MapSet.put(seen, values)}
+        end
+      end)
+
+    kept = Enum.reverse(kept)
+    {kept, length(affected) - length(kept)}
+  end
+
+  defp rewrite_leg_rule_row(row, zone_id, replacement) do
+    %{
+      row
+      | from_area_id: replace_zone(row.from_area_id, zone_id, replacement),
+        to_area_id: replace_zone(row.to_area_id, zone_id, replacement)
+    }
+  end
+
+  # The eight columns the unique index covers: two rows that differ in nothing
+  # else are the same rule priced the same way.
+  defp leg_rule_values(row) do
+    {
+      row.network_id,
+      row.from_area_id,
+      row.to_area_id,
+      row.from_timeframe_group_id,
+      row.to_timeframe_group_id,
+      row.fare_product_id
+    }
+  end
+
+  defp delete_leg_rule_rows(organization_id, gtfs_version_id, ids) do
+    {deleted, nil} =
+      organization_id
+      |> leg_rule_scope(gtfs_version_id)
+      |> where([r], r.id in ^ids)
+      |> Repo.delete_all()
+
+    deleted
+  end
+
+  defp insert_leg_rule_rows(_organization_id, _gtfs_version_id, [], _now), do: :ok
+
+  defp insert_leg_rule_rows(organization_id, gtfs_version_id, rows, now) do
+    rows =
+      Enum.map(rows, fn row ->
+        %{
+          id: Ecto.UUID.generate(),
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id,
+          leg_group_id: row.leg_group_id,
+          network_id: row.network_id,
+          from_area_id: row.from_area_id,
+          to_area_id: row.to_area_id,
+          from_timeframe_group_id: row.from_timeframe_group_id,
+          to_timeframe_group_id: row.to_timeframe_group_id,
+          fare_product_id: row.fare_product_id,
+          rule_priority: row.rule_priority,
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    Repo.insert_all(FareLegRule, rows)
+  end
+
+  # INV-1: a managed version's implied rows are `Fares.Normalize`'s to write, and
+  # it is the only module that writes them, so a zone ID that moved under a
+  # managed version's leg rules is refreshed here - inside the same version-locked
+  # transaction as the move. An unmanaged version has no implied rows to refresh.
+  defp normalize_managed_fares(organization_id, gtfs_version_id) do
+    if Fares.managed?(organization_id, gtfs_version_id) do
+      Normalize.run!(organization_id, gtfs_version_id)
+    end
+
+    :ok
   end
 
   defp zone_record(organization_id, gtfs_version_id, zone_id) do
@@ -1384,6 +1534,8 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     delete_rule_rows(organization_id, gtfs_version_id, Enum.map(affected, & &1.id))
     insert_rule_rows(organization_id, gtfs_version_id, kept, now)
     delete_zone_record(organization_id, gtfs_version_id, zone_id)
+    carry_leg_rule_areas(organization_id, gtfs_version_id, zone_id, replacement, now)
+    normalize_managed_fares(organization_id, gtfs_version_id)
 
     %{
       moved_stops: moved_stops,
