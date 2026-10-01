@@ -403,22 +403,53 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapEditTest do
       assert has_element?(view, "#stops-map-edit-name[value='']")
     end
 
-    test "a move past the correction band is reviewed, not written", ctx do
+    test "a move past the correction band opens the review, not a written save", ctx do
+      stub_routing(200)
       seeded(ctx)
 
       view = open_map(ctx, stop: "1434")
 
       # Served by a pattern, so a move beyond the correction band is a review
-      # rather than a correction.
+      # rather than a correction. Step 31 replaced this panel's message with the
+      # review itself; stops_map_move_test.exs carries the review's own cases.
       view
       |> form("#stops-map-edit-form", %{"stop" => %{"stop_lat" => "44.63661"}})
       |> render_submit()
 
       settle(view)
 
-      assert has_element?(view, "#stops-map-edit-review")
+      assert has_element?(view, "#stops-map-move-panel")
       assert Decimal.to_float(Repo.get_by!(Stop, stop_id: "1434").stop_lat) == 44.63561
     end
+  end
+
+  # The review is read through the real `StreetRouting` composition with only
+  # its HTTP boundary faked, so a move can be typed and submitted here without
+  # reaching the address service.
+  defp stub_routing(status) do
+    Req.Test.set_req_test_to_shared(%{})
+
+    Req.Test.stub(GtfsPlanner.StreetRouting.Geoapify, fn conn ->
+      Plug.Conn.send_resp(
+        Plug.Conn.put_resp_content_type(conn, "application/json"),
+        status,
+        Jason.encode!(%{
+          "type" => "FeatureCollection",
+          "features" => [
+            %{
+              "type" => "Feature",
+              "properties" => %{"mode" => "bus"},
+              "geometry" => %{
+                "type" => "MultiLineString",
+                "coordinates" => [[[-124.0530, 44.6205], [-124.0530, 44.6215]]]
+              }
+            }
+          ]
+        })
+      )
+    end)
+
+    on_exit(fn -> Req.Test.set_req_test_to_private(%{}) end)
   end
 
   # --- fixture --------------------------------------------------------------

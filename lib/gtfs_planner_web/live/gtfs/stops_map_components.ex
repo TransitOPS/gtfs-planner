@@ -1543,7 +1543,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
   attr :dirty?, :boolean, default: false
   attr :saving?, :boolean, default: false
   attr :outcome, :atom, default: :none
-  attr :review_band, :atom, default: nil
+  attr :move, :map, default: nil
+  attr :move_saved, :map, default: nil
+  attr :pin_off_canvas?, :boolean, default: false
   attr :conflict, :map, default: nil
   attr :more_open?, :boolean, default: false
   attr :tech_open?, :boolean, default: false
@@ -1615,6 +1617,15 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
             <.bays_block bays={@stop.bays} />
           </div>
 
+          <div :if={@move_saved} id="stops-map-move-saved" class="mt-5">
+            <%!-- A move that landed is confirmed on the panel the editor is left
+                 on: the review has been answered, and what remains is a stop at
+                 its new position and a line drawn for it. --%>
+            <.message kind="success" title="The stop has moved" id="stops-map-move-saved-message">
+              {moved_message(@move_saved)}
+            </.message>
+          </div>
+
           <div
             :if={@outcome == :stale and @conflict}
             id="stops-map-edit-conflict"
@@ -1637,18 +1648,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
               id="stops-map-edit-failed-message"
             >
               Nothing was changed. Your edits are still here. Check your connection and save again.
-            </.message>
-          </div>
-
-          <div :if={@outcome == :review_required} id="stops-map-edit-review" class="mt-5">
-            <.message
-              kind="warning"
-              role="status"
-              title="This stop moved further than a correction"
-              id="stops-map-edit-review-message"
-            >
-              Nothing was saved. A move of this distance changes which pattern lines run past the
-              stop, so it is reviewed before it is written.
             </.message>
           </div>
 
@@ -1693,8 +1692,34 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
                 form={@form}
                 errors={@errors}
               />
-              <p class="m-0 mt-1 text-[13px] text-muted">
-                The saved position stays where it is until you save.
+              <%!-- The move, in the editor's own units. A stop is corrected on a
+                   curb, so the distance is stated in feet and the pin's nudge is
+                   stated in feet too; "Put it back" undoes the move and leaves
+                   every other typed field alone. --%>
+              <p :if={@move} id="stops-map-edit-moved" class="m-0 mt-1 text-[13px] text-strong">
+                Moved {feet(@move.distance_m)} of where it was.{if @move.band == :correction,
+                  do: " A small correction, so it saves without a review.",
+                  else: " This far needs a review before it saves."}
+                <button
+                  id="stops-map-edit-put-back"
+                  type="button"
+                  phx-click="put_back"
+                  class="font-semibold text-action underline underline-offset-4"
+                >
+                  Put it back
+                </button>
+                <button
+                  :if={@pin_off_canvas?}
+                  id="stops-map-edit-find-pin"
+                  type="button"
+                  phx-click="find_pin"
+                  class="ml-2 font-semibold text-action underline underline-offset-4"
+                >
+                  Find the pin
+                </button>
+              </p>
+              <p :if={is_nil(@move)} class="m-0 mt-1 text-[13px] text-muted">
+                Drag the pin on the map to move it. The saved position stays until you save.
               </p>
             </fieldset>
 
@@ -1831,7 +1856,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
                 class="min-h-11"
                 disabled={@saving? or not @dirty?}
               >
-                {if @saving?, do: "Saving…", else: "Save changes"}
+                {if @saving?,
+                  do: "Saving…",
+                  else:
+                    if(@move && @move.band != :correction && @stop.routes != [],
+                      do: "Review move",
+                      else: "Save changes"
+                    )}
               </.button>
             </div>
           </.form>
@@ -1863,6 +1894,356 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
     </aside>
     """
   end
+
+  @doc """
+  The move review: what a move this far would change, and the two answers.
+
+  A move past the correction band is not a save, because a stop's position is
+  what its riders recognise and what the pattern lines run past. The panel
+  therefore asks two questions — whether this is the same stop at all, past the
+  far band, and what happens to the lines either side of the stop — and writes
+  nothing until both are answered.
+  """
+  attr :id, :string, required: true
+  attr :stop, :map, default: nil
+  attr :review, :map, default: nil
+  attr :loading?, :boolean, default: false
+  attr :distance, :any, default: nil
+  attr :lines, :atom, default: :redraw
+  attr :answer, :atom, default: nil
+  attr :errors, :list, default: []
+  attr :saving?, :boolean, default: false
+  attr :outcome, :atom, default: :none
+  attr :saved, :map, default: nil
+
+  def move_review_panel(assigns) do
+    ~H"""
+    <aside
+      id={@id}
+      aria-label="Review move"
+      class="flex min-h-0 flex-col border-t border-subtle bg-white lg:border-l lg:border-t-0"
+    >
+      <div class="min-h-0 flex-1 overflow-y-auto">
+        <div class="px-5 py-5">
+          <h2
+            id="stops-map-move-heading"
+            tabindex="-1"
+            autofocus
+            class="font-display text-[22px] font-semibold text-strong"
+          >
+            Review move
+          </h2>
+          <p class="m-0 mt-1 text-sm text-muted">
+            {(@stop && @stop.name) || "This stop"}
+          </p>
+
+          <%!-- The review is read outside the command's transaction, so it is
+               a line the panel waits on rather than a frozen form. --%>
+          <div :if={@loading?} id="stops-map-move-loading" role="status" class="mt-5">
+            <.message kind="info" title="Reading the lines that pass here">
+              Working out which patterns this move would change&hellip;
+            </.message>
+          </div>
+
+          <div :if={@outcome == :review_failed} id="stops-map-move-review-failed" class="mt-5">
+            <.message
+              kind="error"
+              title="We couldn’t review this move"
+              id="stops-map-move-review-failed-message"
+            >
+              Nothing was saved and your edits are still here. Try Save again in a moment.
+            </.message>
+          </div>
+
+          <div :if={@outcome == :stale_review} id="stops-map-move-stale" class="mt-5">
+            <.message
+              kind="warning"
+              title="This stop changed while you were reviewing"
+              id="stops-map-move-stale-message"
+            >
+              Nothing was saved. Someone else changed this stop after the review was read, so the
+              lines above no longer describe it. Close the panel, look at the stop again, and move it
+              once more.
+            </.message>
+          </div>
+
+          <div :if={@outcome == :move_failed} id="stops-map-move-failed" class="mt-5">
+            <.message
+              kind="error"
+              title="We couldn’t save this move"
+              id="stops-map-move-failed-message"
+            >
+              Nothing was changed. Your edits are still here. Check your connection and try again.
+            </.message>
+          </div>
+
+          <div :if={@errors != []} id="stops-map-move-errors" class="mt-5">
+            <.message
+              kind="error"
+              title="This move needs an answer"
+              id="stops-map-move-errors-message"
+            >
+              <ul class="m-0 list-disc pl-5">
+                <li :for={message <- @errors}>{message}</li>
+              </ul>
+            </.message>
+          </div>
+
+          <%= if @review do %>
+            <p id="stops-map-move-distance" class="m-0 mt-5 text-[15px] font-semibold text-strong">
+              Moves {feet(@review.distance_m)} of where the stop was.
+            </p>
+            <p :if={@review.band != :far} class="m-0 mt-2 text-sm">
+              It keeps ID {@stop && @stop.stop_id}, so riders&rsquo; saved stops and real-time arrivals
+              follow it.
+            </p>
+
+            <.far_choice
+              id="stops-map-move-far"
+              review={@review}
+              band={@review.band}
+              answer={@answer}
+              stop={@stop}
+            />
+
+            <fieldset
+              :if={@answer != :new}
+              class="m-0 mt-6 min-w-0 border-0 p-0"
+              id="stops-map-move-lines"
+            >
+              <legend class="p-0 text-[15px] font-bold text-strong">
+                {length(@review.patterns)} patterns stop here
+              </legend>
+              <ul id="stops-map-move-patterns" class="m-0 mt-2 list-none p-0 text-sm">
+                <li
+                  :for={pattern <- @review.patterns}
+                  id={"stops-map-move-pattern-#{dom_id(pattern.route_pattern_id)}"}
+                  class="flex items-start gap-2 py-1.5"
+                >
+                  <.route_badge
+                    :if={pattern_route(@stop, pattern)}
+                    route={pattern_route(@stop, pattern)}
+                  />
+                  <span>
+                    toward {pattern.headsign || "the end of the line"}
+                    <span class="block text-[13px] text-muted">
+                      Line from {pattern.from_name || "the start"} to {pattern.to_name || "the end"} changes: {outcome_words(
+                        pattern.outcome
+                      )}
+                    </span>
+                  </span>
+                </li>
+              </ul>
+
+              <p class="m-0 mt-3 text-sm font-semibold text-strong">Their map lines</p>
+              <label class="mt-1 flex min-h-11 cursor-pointer items-start gap-3 py-1">
+                <input
+                  type="radio"
+                  name="move[lines]"
+                  value="redraw"
+                  checked={@lines == :redraw}
+                  phx-click="move_choice"
+                  phx-value-lines="redraw"
+                  class="mt-1 size-4 accent-action"
+                />
+                <span>
+                  <span class="block text-[15px] text-strong">Redraw along the streets</span>
+                  <span class="block text-[13px] text-muted">
+                    Recommended. Only the highlighted sections change.
+                  </span>
+                </span>
+              </label>
+              <label class="flex min-h-11 cursor-pointer items-start gap-3 py-1">
+                <input
+                  type="radio"
+                  name="move[lines]"
+                  value="keep"
+                  checked={@lines == :keep}
+                  phx-click="move_choice"
+                  phx-value-lines="keep"
+                  class="mt-1 size-4 accent-action"
+                />
+                <span>
+                  <span class="block text-[15px] text-strong">Keep the old lines for now</span>
+                  <span class="block text-[13px] text-muted">
+                    The sections are marked out of date in each pattern&rsquo;s map.
+                  </span>
+                </span>
+              </label>
+            </fieldset>
+
+            <section class="mt-6">
+              <h3 class="m-0 text-[15px] font-bold text-strong">Also changes</h3>
+              <ul
+                id="stops-map-move-also"
+                class="m-0 mt-1 list-none divide-y divide-subtle p-0 text-sm"
+              >
+                <li :for={line <- also_changes(@review, @stop)} class="py-2">{line}</li>
+              </ul>
+            </section>
+
+            <div :if={@answer == :new} class="mt-5">
+              <p id="stops-map-move-new" class="m-0 text-sm">
+                Next you&rsquo;ll name the new stop. Its patterns can then use it in place of {(@stop &&
+                                                                                                  @stop.name) ||
+                  "this stop"} with Replace.
+              </p>
+            </div>
+          <% end %>
+        </div>
+      </div>
+
+      <div class="border-t border-subtle px-5 py-4">
+        <div class="flex flex-wrap items-center gap-3">
+          <button
+            id="stops-map-move-back"
+            type="button"
+            phx-click="back_to_edit"
+            disabled={@saving?}
+            class="inline-flex min-h-11 items-center rounded-control border border-control bg-white px-4 text-sm font-semibold text-strong hover:bg-canvas disabled:opacity-70"
+          >
+            Back to editing
+          </button>
+          <.button
+            id="stops-map-move-save"
+            type="button"
+            phx-click="save_move"
+            disabled={@saving? or @review == nil}
+            class="ml-auto min-h-11"
+          >
+            {if @answer == :new,
+              do: "Continue to new stop",
+              else: if(@saving?, do: "Saving…", else: "Save move")}
+          </.button>
+        </div>
+      </div>
+    </aside>
+    """
+  end
+
+  defp far_choice(assigns) do
+    assigns = assign(assigns, :id, "stops-map-move-far")
+
+    ~H"""
+    <fieldset
+      :if={@band == :far}
+      class="m-0 mt-5 min-w-0 border-0 p-0"
+      id="stops-map-move-far"
+      tabindex="-1"
+    >
+      <legend class="p-0 text-[15px] font-bold text-strong">Is this the same stop?</legend>
+      <label class="mt-1 flex min-h-11 cursor-pointer items-start gap-3 py-1">
+        <input
+          type="radio"
+          name="move[answer]"
+          value="same"
+          checked={@answer == :same}
+          phx-click="move_choice"
+          phx-value-answer="same"
+          class="mt-1 size-4 accent-action"
+        />
+        <span>
+          <span class="block text-[15px] text-strong">Yes, the same stop has moved here</span>
+          <span class="block text-[13px] text-muted">
+            It keeps ID {@stop && @stop.stop_id}. Riders&rsquo; saved stops and real-time arrivals
+            follow it to the new place.
+          </span>
+        </span>
+      </label>
+      <label class="flex min-h-11 cursor-pointer items-start gap-3 py-1">
+        <input
+          type="radio"
+          name="move[answer]"
+          value="new"
+          checked={@answer == :new}
+          phx-click="move_choice"
+          phx-value-answer="new"
+          class="mt-1 size-4 accent-action"
+        />
+        <span>
+          <span class="block text-[15px] text-strong">No, this is a new stop</span>
+          <span class="block text-[13px] text-muted">
+            Creates a new stop here. The old stop stays where it is until you replace it or take it
+            out of its patterns.
+          </span>
+        </span>
+      </label>
+    </fieldset>
+    """
+  end
+
+  # The far-move question is asked only past the band where it changes the
+  # answer: closer than that a move is a correction of this stop, not a claim
+  # about which stop this is.
+
+  # What one pattern's outcome means, in the words the reference uses. An outcome
+  # the editor cannot act on is stated as the thing that happened rather than as
+  # the atom that produced it.
+  defp outcome_words(:redraw), do: "Will redraw."
+  defp outcome_words(:no_line), do: "No line to redraw."
+  defp outcome_words({:blocked, _reason}), do: "Blocked: trips don’t match the stops."
+
+  defp outcome_words({:routing_failed, _reason}),
+    do: "Blocked: the street route couldn’t be found."
+
+  defp outcome_words(_other), do: "The line stays as it is."
+
+  defp moved_message(%{redrawn: [], stale: []}), do: "The stop is at its new position."
+
+  defp moved_message(%{redrawn: redrawn, stale: []}) do
+    "#{count_word(length(redrawn), "pattern", "patterns")} redrawn for the new position."
+  end
+
+  defp moved_message(%{redrawn: redrawn, stale: stale}) do
+    "#{count_word(length(redrawn), "pattern", "patterns")} redrawn and #{count_word(length(stale), "pattern", "patterns")} marked out of date."
+  end
+
+  # "Also changes" is everything the review read that the move does not change
+  # by writing: what the editor should expect to be different afterwards.
+  defp also_changes(review, stop) do
+    weekday = review.weekday_trips
+
+    transfers =
+      Enum.map(review.transfers, fn transfer ->
+        "Transfer to #{transfer.label}: the walk becomes #{feet(transfer.after_m)} " <>
+          "(was #{feet(transfer.before_m)}). The #{transfer.min_transfer_time}-minute minimum " <>
+          "still covers it."
+      end)
+
+    relief =
+      Enum.map(review.relief_points, fn relief ->
+        "#{relief}. The relief point moves with the stop."
+      end)
+
+    [
+      "#{count_word(weekday, "weekday trip", "weekday trips")} keep their scheduled times. " <>
+        "Times estimated between timepoints are worked out again from the new distances at export."
+    ] ++ transfers ++ relief ++ [fare_zone_line(stop)]
+  end
+
+  defp fare_zone_line(%{zone_id: nil}),
+    do: "Fare zone stays the same — this stop is not in a zone."
+
+  defp fare_zone_line(_stop), do: "Fare zone stays the same."
+
+  defp pattern_route(%{routes: routes}, pattern) when is_list(routes),
+    do: Enum.find(routes, &(&1.route_id == pattern.route_id))
+
+  defp pattern_route(_stop, _pattern), do: nil
+
+  # The panel states distances in feet because a curb is measured in feet; the
+  # whole number is what an editor can act on, and anything under a foot is a
+  # rounding difference rather than a move.
+  defp feet(nil), do: ""
+
+  defp feet(metres) do
+    whole = (metres * 3.280839895) |> round()
+
+    if whole < 1, do: "less than a foot", else: "#{whole} ft"
+  end
+
+  defp count_word(1, singular, _plural), do: "1 #{singular}"
+  defp count_word(count, _singular, plural), do: "#{count} #{plural}"
 
   @doc """
   "Where it's used": what names this stop besides its own row.

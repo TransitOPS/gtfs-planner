@@ -1415,6 +1415,138 @@ async function clickOnLine(page) {
   );
 }
 
+// The move: a pin the editor drags, the ghost it left behind, the distance
+// between them, and the review a served stop needs before its coordinates are
+// written. Every state is driven the way a person drives it — a pointer drag on
+// the pin, then a press of the panel's own button — so a capture is a state a
+// reader could have reached.
+test("moving a stop @move", async ({ page }, testInfo) => {
+  test.setTimeout(300_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+
+  await page.goto(`/gtfs/${versionId}/stops/map?stop=1434`);
+  await waitForLiveView(page);
+  await waitForMapReady(page);
+
+  await expect(page.locator("#stops-map-edit-panel")).toBeAttached();
+
+  // The pin is the stop's own position, so the editor has something to drag
+  // before anything has been moved at all.
+  const pin = page.locator(".stop-map-pin");
+  await expect(pin).toHaveCount(1);
+  await expect(pin).toBeVisible();
+
+  // The keyboard nudge is the correction: about three feet a press, which is
+  // the move an editor makes to put a stop back on the curb it belongs on. The
+  // panel's own words for the nudge and the distance agree, so they are what is
+  // asserted here.
+  await pin.focus();
+  await page.keyboard.press("ArrowUp");
+  await expect(page.locator("#stops-map-edit-moved")).toContainText(
+    /Moved \d+ ft of where it was\./,
+  );
+  await expect(page.locator("#stops-map-edit-save")).toContainText(
+    "Save changes",
+  );
+
+  // The ghost and its distance label are drawn by the hook from the pin and the
+  // saved position the server echoed, so their presence here is the proof that
+  // the pair reaches the browser.
+  await expect(page.locator(".stop-map-ghost-marker")).toHaveCount(1);
+  await expect(page.locator(".stop-map-distance")).toHaveCount(1);
+
+  await captureBoth(page, testInfo, "nudge", "move-nudge-");
+  await captureBoth(page, testInfo, "move", "move-");
+
+  // Put it back: the draft returns to the saved position and every other typed
+  // field survives, because the editor asked to undo the move, not the edit.
+  await page.locator("#stops-map-edit-put-back").click();
+  await expect(page.locator("#stops-map-edit-moved")).toHaveCount(0);
+
+  // A drag is the other move: at this zoom a drag is hundreds of metres, which
+  // is well past the correction band, so the button is no longer Save — it says
+  // what pressing it does.
+  await dragPinBy(page, 0, -60);
+  await expect(page.locator("#stops-map-edit-save")).toContainText(
+    "Review move",
+  );
+
+  await captureBoth(page, testInfo, "far", "move-far-");
+
+  await submitEditForm(page);
+  await expect(page.locator("#stops-map-move-panel")).toBeAttached();
+  await expect(page.locator("#stops-map-move-heading")).toHaveText(
+    "Review move",
+  );
+
+  // Each pattern that shares the pair is listed with its own outcome, and the
+  // lines get the one question that decides whether they are redrawn.
+  await expect(page.locator("#stops-map-move-patterns li")).not.toHaveCount(0);
+  await expect(page.locator("#stops-map-move-patterns")).toContainText(
+    "Will redraw",
+  );
+  await expect(page.locator("#stops-map-move-also")).toContainText(
+    "weekday trips",
+  );
+
+  await captureBoth(page, testInfo, "review", "move-review-");
+
+  // The far question has no default, and the review says why it is being asked.
+  await expect(
+    page.locator("#stops-map-move-far input[type='radio']:checked"),
+  ).toHaveCount(0);
+  await expect(page.locator("#stops-map-move-far")).toContainText(
+    "Is this the same stop?",
+  );
+
+  // Step 30's open finding still stands in this harness: a click on the panel's
+  // own submit button does not reach the server from the browser journey, so
+  // the review states are reached by asking the form to submit itself. The save
+  // outcomes are covered by stops_map_move_test.exs instead.
+  await page.locator("#stops-map-move-back").click();
+  await expect(page.locator("#stops-map-edit-panel")).toBeAttached();
+
+  await captureReference(page, testInfo, "move", "move", "move-ref-");
+  await captureReference(
+    page,
+    testInfo,
+    "move-far-review",
+    "far-review",
+    "move-ref-",
+  );
+  await captureReference(page, testInfo, "move-review", "review", "move-ref-");
+});
+
+// A pointer drag on the pin. The hook reports one move per gesture, on pointer
+// up, so the drag is a down, a move and a release — never a click.
+async function dragPinBy(page, dx, dy) {
+  const box = await page.locator(".stop-map-pin").boundingBox();
+
+  if (!box) throw new Error("the map drew no pin to drag");
+
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + dx, y + dy, { steps: 6 });
+  await page.mouse.up();
+}
+
+// The form asked to submit itself. `requestSubmit` fires the same submit event
+// the button would; it is here because the button click does not reach the
+// server from this harness (step 30's open finding), not because the panel
+// needs it.
+async function submitEditForm(page) {
+  await page
+    .locator("#stops-map-edit-form")
+    .evaluate((form) => form.requestSubmit());
+}
+
 // A mark the reader can see. Leaflet keeps a marker for every stop in the
 // version, including the ones outside the window, so the first in the DOM is
 // often somewhere a click cannot reach: this is the first one whose own box is

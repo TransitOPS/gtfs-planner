@@ -55,6 +55,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       add_panel: 1,
       created_panel: 1,
       edit_panel: 1,
+      move_review_panel: 1,
       map_stage: 1,
       page_header: 1,
       search_field: 1,
@@ -179,8 +180,29 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     |> assign(:edit_loaded_updated_at, nil)
     |> assign(:edit_dirty?, false)
     |> assign(:edit_review_band, nil)
+    |> assign_move_state()
     |> assign(:discard_action, nil)
     |> assign_edit_draft(empty_edit_draft())
+  end
+
+  # Everything the move review owns, in one place, for the same reason the edit
+  # state is: the review is opened from a save, from a keyboard nudge or from a
+  # restored panel, and every one of those starts from the same empty question
+  # rather than from whatever the last move left behind.
+  defp assign_move_state(socket) do
+    socket
+    # The pending move: how far the pin is from the saved position and which
+    # band that falls in. `nil` until the pin moves, and `nil` again when it is
+    # put back, so the panel never describes a move that is not on the map.
+    |> assign(:edit_move, nil)
+    |> assign(:move_review, nil)
+    |> assign(:move_loading?, false)
+    |> assign(:move_lines, :redraw)
+    |> assign(:move_answer, nil)
+    |> assign(:move_errors, [])
+    |> assign(:move_saving?, false)
+    |> assign(:move_outcome, :none)
+    |> assign(:move_saved, nil)
   end
 
   defp empty_edit_draft do
@@ -429,15 +451,12 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
      |> start_load()}
   end
 
-  def handle_async(:edit_save, {:ok, {:review_required, band}}, socket) do
-    # A move past the correction band is step 31's review, not a failure here.
-    # Nothing was written, and the panel says so rather than pretending the save
-    # landed or discarding the draft that asked for it.
-    {:noreply,
-     socket
-     |> assign(:edit_saving, false)
-     |> assign(:edit_outcome, :review_required)
-     |> assign(:edit_review_band, band)}
+  def handle_async(:edit_save, {:ok, {:review_required, _band}}, socket) do
+    # The command refused to write and asked the question step 31 answers: a
+    # move past the correction band changes which pattern lines run past the
+    # stop, so it is reviewed rather than saved. The draft is kept exactly as
+    # typed, because the editor's next action is to answer, not to retype.
+    {:noreply, start_move_review(socket)}
   end
 
   def handle_async(:edit_save, {:ok, {:error, :stale}}, socket) do
@@ -480,6 +499,95 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   def handle_async(:edit_usage, _result, socket),
     do: {:noreply, assign(socket, :edit_usage, nil)}
 
+  def handle_async(:move_review, {:ok, {:ok, review}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:move_loading?, false)
+     |> assign(:move_review, review)}
+  end
+
+  # A review that could not be answered is a failure to say, not an answer: the
+  # panel says the review could not run and leaves the draft where it was, so
+  # the editor can press Save again rather than guess.
+  def handle_async(:move_review, _result, socket) do
+    {:noreply,
+     socket
+     |> assign(:move_loading?, false)
+     |> assign(:move_outcome, :review_failed)}
+  end
+
+  def handle_async(:move_apply, {:ok, {:ok, result}}, socket) do
+    reloaded = reload_stop(socket, result.stop)
+
+    {:noreply,
+     socket
+     |> assign(:move_saving?, false)
+     |> assign(:move_outcome, :moved)
+     |> assign(:move_saved, %{redrawn: result.redrawn, stale: result.stale})
+     |> assign_move_state_after_apply()
+     |> assign_edit_stop(reloaded)
+     |> start_edit_usage(reloaded)
+     |> start_load()}
+  end
+
+  # The review was answered against a version of the data that has since moved
+  # on. Nothing was written, and the review is dropped rather than re-run: the
+  # editor's next action is to look at the stop again, not to be offered the
+  # same question about facts that no longer hold.
+  def handle_async(:move_apply, {:ok, {:error, :stale_review}}, socket) do
+    # The conflict block names who changed the stop and what they changed, which
+    # the audit log is asked about through the row itself — so the row is read
+    # back rather than the panel's row, which is the same row with fewer fields.
+    changed =
+      case socket.assigns.edit_stop do
+        nil -> nil
+        row -> reload_stop_row(socket, row.stop_id) || row
+      end
+
+    {:noreply,
+     socket
+     |> assign(:move_saving?, false)
+     |> assign(:move_outcome, :stale_review)
+     |> assign_edit_conflict(changed)}
+  end
+
+  # The far-move question has to be answered, and the answer is still missing.
+  def handle_async(:move_apply, {:ok, {:error, :answer_required}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:move_saving?, false)
+     |> assign(:move_errors, ["Choose one. A move this far changes where riders wait."])}
+  end
+
+  def handle_async(:move_apply, {:ok, {:error, :new_stop}}, socket) do
+    # "No, this is a new stop" is an answer, not a refusal: the move stops here
+    # and the pin becomes the start of an add, with the old stop left alone.
+    {:noreply, begin_add_at_pin(socket)}
+  end
+
+  def handle_async(:move_apply, {:ok, {:error, %Ecto.Changeset{} = changeset}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:move_saving?, false)
+     |> assign_edit_draft(socket.assigns.edit_draft, edit_changeset_errors(changeset))}
+  end
+
+  def handle_async(:move_apply, _result, socket) do
+    {:noreply,
+     socket
+     |> assign(:move_saving?, false)
+     |> assign(:move_outcome, :move_failed)}
+  end
+
+  # A move that landed is a move that is over: the review, the pending move and
+  # the pin's ghost all belong to the position the stop no longer has.
+  defp assign_move_state_after_apply(socket) do
+    socket
+    |> assign(:edit_move, nil)
+    |> assign(:move_review, nil)
+    |> assign(:move_errors, [])
+  end
+
   # The usage is read from one stop's struct, so the reply has to name the stop
   # it was read for or the panel cannot tell whether it is still the right one.
   defp usage_matches_panel?(%{edit_usage_for: stop_id, edit_stop: %{stop_id: stop_id}}, _usage),
@@ -491,11 +599,16 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # field rather than replaced: a param the panel does not name is not a field
   # (the whitelist), and a field the browser did not send keeps its value
   # rather than being blanked by an omission.
+  #
+  # The move is recomputed here rather than only on a `pin_moved`, because the
+  # two coordinates are also fields: a pair typed into them is the same move,
+  # and the distance label the panel shows has to agree with the map.
   defp apply_edit_field(socket, params) do
     socket
     |> assign_edit_draft(merge_draft(socket.assigns.edit_draft, params, @edit_fields), %{})
     |> assign(:edit_outcome, :none)
     |> assign(:edit_conflict, nil)
+    |> refresh_edit_move()
     |> assign_dirty()
   end
 
@@ -585,6 +698,181 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # to the names `Stop.editor_changeset/2` casts. A stop ID, a zone, a parent or
   # a location type posted alongside them is not in this map, so it cannot reach
   # the command even if the command were to read it (INV-5).
+  # --- moving ----------------------------------------------------------------
+
+  # A pin report while the edit panel is open is a move, not a placement: the
+  # point becomes the draft's position and the saved position stays where it
+  # is. The two coordinate fields follow the pin, because they are the same
+  # position written down rather than a second, competing one.
+  defp move_edit_pin(socket, lat, lon) do
+    draft =
+      socket.assigns.edit_draft
+      |> Map.put("stop_lat", coordinate_text(lat))
+      |> Map.put("stop_lon", coordinate_text(lon))
+
+    socket
+    |> assign_edit_draft(draft, %{})
+    |> assign(:edit_outcome, :none)
+    |> refresh_edit_move()
+    |> assign_dirty()
+  end
+
+  # Putting the pin back is not the same as closing the panel: the draft goes to
+  # the saved position and every other typed field survives, because the editor
+  # asked to undo the move, not the edit.
+  defp put_back_edit_move(socket) do
+    case socket.assigns.edit_baseline do
+      baseline when is_map(baseline) ->
+        socket
+        |> assign_edit_draft(
+          Map.merge(socket.assigns.edit_draft, %{
+            "stop_lat" => baseline["stop_lat"],
+            "stop_lon" => baseline["stop_lon"]
+          }),
+          %{}
+        )
+        |> assign(:edit_outcome, :none)
+        |> refresh_edit_move()
+        |> assign_dirty()
+        |> push_map_mode()
+
+      _no_baseline ->
+        socket
+    end
+  end
+
+  # The pending move, measured on the server from the draft against the row the
+  # panel loaded. `nil` means there is no move to talk about: either the draft
+  # still holds the saved coordinates or one of them cannot be read, and a
+  # distance to nowhere is worse than no distance at all.
+  defp refresh_edit_move(socket) do
+    socket
+    |> assign(:edit_move, edit_move(socket.assigns))
+    |> push_map_mode()
+  end
+
+  defp edit_move(%{edit_baseline: baseline, edit_draft: draft, edit_stop: stop})
+       when is_map(baseline) and not is_nil(stop) do
+    with {:ok, {lat, lon}} <-
+           parse_point(%{"lat" => draft["stop_lat"], "lon" => draft["stop_lon"]}),
+         {:ok, {base_lat, base_lon}} <-
+           parse_point(%{"lat" => baseline["stop_lat"], "lon" => baseline["stop_lon"]}),
+         distance when distance > 0.5 <-
+           StopPlacement.distance({base_lon, base_lat}, {lon, lat}) do
+      %{
+        distance_m: distance,
+        band: StopPlacement.move_band(distance, stop.routes != []),
+        lat: lat,
+        lon: lon
+      }
+    else
+      _not_a_move -> nil
+    end
+  end
+
+  defp edit_move(_assigns), do: nil
+
+  # The draft's position as geometry. `nil` when the draft holds no readable
+  # pair, which is what keeps a forged or half-typed coordinate from being
+  # centred on or sent to a review.
+  defp draft_point(%{edit_draft: draft}) do
+    case parse_point(%{"lat" => draft["stop_lat"], "lon" => draft["stop_lon"]}) do
+      {:ok, {lat, lon}} -> {lon, lat}
+      :error -> nil
+    end
+  end
+
+  # The review is read in the LiveView process rather than in the command's
+  # transaction, because `move_review/3` asks Geoapify for street geometry and
+  # an external call does not belong inside a transaction that is holding locks.
+  defp start_move_review(socket) do
+    case {socket.assigns.edit_stop, draft_point(socket.assigns)} do
+      {%{uuid: uuid}, point} when not is_nil(point) ->
+        audit = audit_context(socket.assigns)
+
+        socket =
+          socket
+          |> assign(:edit_saving, false)
+          |> assign(:move_loading?, true)
+          |> assign(:move_outcome, :none)
+          |> assign(:move_errors, [])
+          |> assign(:move_review, nil)
+          |> assign(:move_answer, nil)
+
+        start_async(socket, :move_review, fn -> StopEditing.move_review(uuid, point, audit) end)
+
+      _no_stop_or_point ->
+        socket |> assign(:edit_saving, false) |> assign(:edit_outcome, :failed)
+    end
+  end
+
+  # The apply is the editor's answer, so the panel sends only the answers: which
+  # lines, and whether the move is the same stop. The geometry the review read
+  # is held in the assign, never posted back by the browser — a `suggestions`
+  # map that arrived from the client would be a map the server never derived.
+  defp start_apply_move(socket) do
+    with %{move_review: review} when is_map(review) <- socket.assigns,
+         %{uuid: uuid} <- socket.assigns.edit_stop,
+         attrs when is_map(attrs) <-
+           edit_attrs(socket.assigns, socket.assigns.edit_stop, socket.assigns.edit_draft) do
+      options = %{
+        lines: socket.assigns.move_lines,
+        answer: socket.assigns.move_answer,
+        fingerprint: review.fingerprint,
+        suggestions: review.suggestions,
+        point: draft_point(socket.assigns)
+      }
+
+      audit = audit_context(socket.assigns)
+
+      socket = socket |> assign(:move_saving?, true) |> assign(:move_errors, [])
+
+      start_async(socket, :move_apply, fn ->
+        StopEditing.apply_move(uuid, attrs, options, audit)
+      end)
+    else
+      _nothing_to_apply -> socket
+    end
+  end
+
+  # The answers are a whitelist for the same reason the fields are: a param the
+  # panel does not name is not an answer, and the value the command receives is
+  # one of the two words it understands.
+  defp assign_move_choice(socket, %{"lines" => lines}) do
+    assign(socket, :move_lines, if(lines == "keep", do: :keep, else: :redraw))
+  end
+
+  defp assign_move_choice(socket, %{"answer" => answer}) do
+    assign(socket, :move_answer, if(answer == "new", do: :new, else: :same))
+  end
+
+  defp assign_move_choice(socket, _params), do: socket
+
+  # "No, this is a new stop" hands the pin to the add flow. The old stop is left
+  # exactly as it was — nothing was written — and the new stop starts at the
+  # point the editor chose rather than at the stop's old position.
+  defp begin_add_at_pin(socket) do
+    {lat, lon} =
+      case socket.assigns.edit_move do
+        %{lat: lat, lon: lon} -> {lat, lon}
+        _no_move -> {nil, nil}
+      end
+
+    socket
+    |> assign(:move_review, nil)
+    |> assign(:move_saving?, false)
+    |> assign(:move_outcome, :none)
+    |> begin_add(:stop)
+    |> then(fn add ->
+      if is_nil(lat) do
+        add
+      else
+        add |> assign(:placement, {lat, lon}) |> seed_coordinates(lat, lon)
+      end
+    end)
+    |> push_map_mode()
+  end
+
   defp edit_attrs(_assigns, stop, draft) do
     %{
       "stop_name" => presence(draft["stop_name"]),
@@ -677,6 +965,38 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
   def handle_event("pin_moved", params, socket) do
     {:noreply, socket |> assign_placement(params) |> maybe_start_reverse()}
+  end
+
+  def handle_event("put_back", _params, socket),
+    do: {:noreply, put_back_edit_move(socket)}
+
+  # A pin that moved outside the view is still the stop's position: it is simply
+  # not on screen. The panel says so and offers to bring it back, because a pin
+  # the editor cannot see is a pin they cannot judge.
+  def handle_event("find_pin", _params, socket) do
+    {:noreply, push_focus(socket, draft_point(socket.assigns))}
+  end
+
+  # The review is opened by a save that came back `{:review_required, _}`, so the
+  # question the editor is answering is the one the command asked rather than a
+  # second read the panel invented.
+  def handle_event("move_choice", params, socket) do
+    {:noreply, assign_move_choice(socket, params)}
+  end
+
+  def handle_event("back_to_edit", _params, socket) do
+    # Back to editing keeps the draft and the pending move: the review is a
+    # question about this move, and leaving it does not answer it or discard it.
+    {:noreply,
+     socket
+     |> assign(:move_review, nil)
+     |> assign(:move_loading?, false)
+     |> assign(:move_outcome, :none)
+     |> push_map_mode()}
+  end
+
+  def handle_event("save_move", _params, socket) do
+    {:noreply, start_apply_move(socket)}
   end
 
   # Every keystroke in the add form. The draft is the server's, so the panel
@@ -1076,6 +1396,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
         socket
         |> assign_edit_stop(stop)
         |> start_edit_usage(stop)
+        |> push_map_mode()
         |> push_focus(stop_point(socket.assigns.model, stop.stop_id))
 
       # A stop this version does not hold leaves the panel where it was: an
@@ -1096,6 +1417,17 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
          ) do
       {:ok, reloaded} -> reloaded
       _unavailable -> stop
+    end
+  end
+
+  defp reload_stop_row(socket, stop_id) do
+    case StopsMap.load_stop(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           stop_id
+         ) do
+      {:ok, reloaded} -> reloaded
+      _unavailable -> nil
     end
   end
 
@@ -1228,16 +1560,23 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   end
 
   defp last_actor(organization_id, gtfs_version_id, stop) do
-    case StopEditing.last_change(organization_id, gtfs_version_id, stop.uuid) do
+    case StopEditing.last_change(organization_id, gtfs_version_id, stop_uuid(stop)) do
       nil -> nil
       log -> log.actor_email
     end
   end
 
+  # The panel's row names the stop `uuid`; the schema struct Ecto returns names
+  # the same column `id`. Both are the same stop, so the audit log is asked with
+  # whichever half the caller had.
+  defp stop_uuid(%{uuid: uuid}), do: uuid
+  defp stop_uuid(%{id: id}), do: id
+  defp stop_uuid(_stop), do: nil
+
   defp changed_field_words(_organization_id, _gtfs_version_id, nil), do: []
 
   defp changed_field_words(organization_id, gtfs_version_id, stop) do
-    case StopEditing.last_change(organization_id, gtfs_version_id, stop.uuid) do
+    case StopEditing.last_change(organization_id, gtfs_version_id, stop_uuid(stop)) do
       nil ->
         []
 
@@ -2096,25 +2435,43 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
             />
           <% else %>
             <%= if @panel == :edit do %>
-              <.edit_panel
-                id="stops-map-edit-panel"
-                stop={@edit_stop}
-                form={@edit_form}
-                where={edit_where(assigns)}
-                usage={@edit_usage}
-                zone_id={@edit_stop && @edit_stop.zone_id}
-                zone_name={@edit_zone_name}
-                zone_href={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares"}
-                errors={@edit_errors}
-                dirty?={@edit_dirty?}
-                saving?={@edit_saving}
-                outcome={@edit_outcome}
-                review_band={@edit_review_band}
-                conflict={@edit_conflict}
-                more_open?={@edit_more_open?}
-                tech_open?={@edit_tech_open?}
-                discard_action={@discard_action}
-              />
+              <%= if @move_review != nil or @move_loading? do %>
+                <.move_review_panel
+                  id="stops-map-move-panel"
+                  stop={@edit_stop}
+                  review={@move_review}
+                  loading?={@move_loading?}
+                  distance={@edit_move && @edit_move.distance_m}
+                  lines={@move_lines}
+                  answer={@move_answer}
+                  errors={@move_errors}
+                  saving?={@move_saving?}
+                  outcome={@move_outcome}
+                  saved={@move_saved}
+                />
+              <% else %>
+                <.edit_panel
+                  id="stops-map-edit-panel"
+                  stop={@edit_stop}
+                  form={@edit_form}
+                  where={edit_where(assigns)}
+                  usage={@edit_usage}
+                  zone_id={@edit_stop && @edit_stop.zone_id}
+                  zone_name={@edit_zone_name}
+                  zone_href={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares"}
+                  errors={@edit_errors}
+                  dirty?={@edit_dirty?}
+                  saving?={@edit_saving}
+                  outcome={@edit_outcome}
+                  move={@edit_move}
+                  move_saved={@move_saved}
+                  pin_off_canvas?={pin_off_canvas?(assigns)}
+                  conflict={@edit_conflict}
+                  more_open?={@edit_more_open?}
+                  tech_open?={@edit_tech_open?}
+                  discard_action={@discard_action}
+                />
+              <% end %>
             <% else %>
               <%= if @panel == :created do %>
                 <.created_panel
@@ -2370,6 +2727,33 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
   # Add mode is the panel asking for a place, so it ends as soon as there is
   # one: a placed stop is adjusted by its pin, not by placing it again.
+  defp mode_payload(%{panel: :edit} = assigns) do
+    # The edit panel's pin is the stop's own position, and the ghost is where it
+    # is saved — the two are what makes a move legible on the map. Without a
+    # pending move there is nothing to compare, so the pin is the saved point
+    # and no ghost is drawn.
+    saved = edit_saved_point(assigns)
+    label = assigns.edit_stop && assigns.edit_stop.name
+
+    case assigns.edit_move do
+      %{lat: lat, lon: lon} ->
+        %{
+          mode: :browse,
+          pin: %{lat: lat, lon: lon, label: label},
+          ghost: saved
+        }
+
+      # Before anything has moved the pin is still the stop's own position, so
+      # the editor has something to drag; the ghost appears with the move,
+      # because a ghost is the thing the pin left behind.
+      _no_move when is_map(saved) ->
+        %{mode: :browse, pin: %{lat: saved.lat, lon: saved.lon, label: label}, ghost: nil}
+
+      _no_move ->
+        %{mode: :browse, pin: nil, ghost: nil}
+    end
+  end
+
   defp mode_payload(%{placement: {lat, lon}}),
     do: %{mode: :browse, pin: %{lat: lat, lon: lon, label: "New stop"}, ghost: nil}
 
@@ -2381,16 +2765,35 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     %{mode: mode, pin: nil, ghost: nil}
   end
 
+  # The saved position, read from the row the panel loaded rather than from the
+  # draft: the draft is what the editor is changing, and the ghost's whole job
+  # is to be the thing the draft has moved away from.
+  defp edit_saved_point(%{edit_baseline: baseline}) when is_map(baseline) do
+    case parse_point(%{"lat" => baseline["stop_lat"], "lon" => baseline["stop_lon"]}) do
+      {:ok, {lat, lon}} -> %{lat: lat, lon: lon}
+      :error -> nil
+    end
+  end
+
+  defp edit_saved_point(_assigns), do: nil
+
   # A point that cannot be read is refused rather than clamped. A lat/lon pair
   # is a position on the Earth, and "north" is not one; saving a clamped pair
   # would put a stop in a place nobody chose.
   defp assign_placement(socket, params) do
     case parse_point(params) do
       {:ok, {lat, lon}} ->
-        socket
-        |> assign(:placement, {lat, lon})
-        |> seed_coordinates(lat, lon)
-        |> push_map_mode()
+        socket = assign(socket, :placement, {lat, lon})
+
+        # A pin is a placement while a stop is being added and a move while one
+        # is being edited. The same report means the different thing in each, so
+        # the panel decides which, and the add flow's reverse geocode is not
+        # asked for a stop that is merely being nudged across the street.
+        if socket.assigns.panel == :edit do
+          move_edit_pin(socket, lat, lon)
+        else
+          socket |> seed_coordinates(lat, lon) |> push_map_mode()
+        end
 
       :error ->
         socket
@@ -2427,6 +2830,26 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
   defp parse_point(_params), do: :error
 
+  # A pin moved outside the current view is a pin the editor cannot see, and a
+  # distance they cannot check. The caption says which way it went and offers to
+  # find it rather than leaving the editor to pan for it.
+  defp map_caption(%{panel: :edit, edit_move: %{distance_m: distance}} = assigns)
+       when is_number(distance) do
+    off_canvas? = pin_off_canvas?(assigns)
+
+    %{
+      title: "The stop has moved",
+      text:
+        if off_canvas? do
+          "The pin is outside the view. Press Find the pin in the panel, or pan to it."
+        else
+          "Drag the pin again, or focus it and use the arrow keys: about 3 ft a press, 30 ft with Shift."
+        end
+    }
+  end
+
+  defp map_caption(%{panel: :edit}), do: nil
+
   defp map_caption(%{panel: :add, placement: nil}) do
     %{
       title: "Click the curb where riders wait",
@@ -2443,6 +2866,17 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   end
 
   defp map_caption(_assigns), do: nil
+
+  # The bounds the hook last reported are the view the editor is looking at. A
+  # pin outside them is not on the canvas, and the panel's own coordinates are
+  # the only other answer to where it went.
+  defp pin_off_canvas?(%{view_bounds: nil}), do: false
+
+  defp pin_off_canvas?(%{view_bounds: bounds, edit_move: %{lat: lat, lon: lon}}) do
+    not inside?({lon, lat}, bounds)
+  end
+
+  defp pin_off_canvas?(_assigns), do: false
 
   # Bounds arrive from the hook as JSON numbers. A view that cannot be read is
   # rejected rather than clamped: a clamped box would quietly list the wrong
