@@ -42,6 +42,13 @@ defmodule GtfsPlannerWeb.AgentPanel do
   A route reference resolves to that route's own Schedules page, which is the
   page the Schedule helper is bound to; it is the same page the panel already
   shows, so following it never leaves the scope this panel holds.
+
+  A host that applies the assistant's own changes opts in with `auto_apply: true`
+  and names the record in `subject_id`. Each settled, unapplied prepared entry is
+  then handed to the host exactly once as `{:agent_prepared, conversation_id,
+  entry_id}`; the panel still prepares nothing and writes nothing (CR-6) — the
+  host applies it. `open/1` lets a host open the panel the way the open button
+  does.
   """
 
   import Phoenix.Component, only: [assign: 3, to_form: 2]
@@ -84,9 +91,19 @@ defmodule GtfsPlannerWeb.AgentPanel do
 
   `pack_id` must be a pack `GtfsPlanner.Agents.packs/0` ships; title, intro and
   examples come from that pack.
+
+  Options:
+
+    * `:auto_apply` - hand each settled, unapplied prepared entry to the host as
+      `{:agent_prepared, conversation_id, entry_id}` (AC-26). Defaults to false,
+      so a host that reviews changes itself — Calendar's — receives nothing.
+    * `:subject_id` - the record this conversation is about, carried into the
+      session `Scope` so two records get two conversations.
   """
-  @spec mount(Phoenix.LiveView.Socket.t(), String.t()) :: Phoenix.LiveView.Socket.t()
-  def mount(socket, pack_id) do
+  @spec mount(Phoenix.LiveView.Socket.t(), String.t(), keyword()) :: Phoenix.LiveView.Socket.t()
+  def mount(socket, pack_id, opts \\ [])
+
+  def mount(socket, pack_id, opts) do
     pack = Map.fetch!(Agents.packs(), pack_id)
 
     socket
@@ -95,6 +112,9 @@ defmodule GtfsPlannerWeb.AgentPanel do
     |> assign(:agent_title, pack.title())
     |> assign(:agent_intro, pack.intro())
     |> assign(:agent_examples, pack.examples())
+    |> assign(:agent_auto_apply?, Keyword.get(opts, :auto_apply, false) == true)
+    |> assign(:agent_subject_id, Keyword.get(opts, :subject_id))
+    |> assign(:agent_forwarded, MapSet.new())
     |> assign(:agent_open?, false)
     |> assign(:agent_session, nil)
     |> assign(:agent_conversation_id, nil)
@@ -134,21 +154,33 @@ defmodule GtfsPlannerWeb.AgentPanel do
     end
   end
 
-  ## Events
+  ## Opening
 
-  defp handle_event("agent_open", _params, socket) do
+  @doc """
+  Opens the panel and attaches this process to the conversation, as the open
+  button's `"agent_open"` event does.
+
+  A host that opens the panel itself — a route that arrives in assistant mode —
+  calls this from its own handler and assigns the returned socket. A refused open
+  still opens the panel, because the panel is what carries the notice (AC-12).
+  """
+  @spec open(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
+  def open(socket) do
     case Agents.open(scope(socket)) do
       {:ok, pid, snapshot} ->
-        {:halt,
-         socket
-         |> store_session(pid, snapshot)
-         |> assign(:agent_open?, true)
-         |> push_event("agent:focus", %{id: @composer})}
+        socket
+        |> store_session(pid, snapshot)
+        |> assign(:agent_open?, true)
+        |> push_event("agent:focus", %{id: @composer})
 
       {:error, status} ->
-        {:halt, refuse(socket, status)}
+        refuse(socket, status)
     end
   end
+
+  ## Events
+
+  defp handle_event("agent_open", _params, socket), do: {:halt, open(socket)}
 
   defp handle_event("agent_close", _params, socket) do
     {:halt,
@@ -257,7 +289,8 @@ defmodule GtfsPlannerWeb.AgentPanel do
         {:halt,
          socket
          |> stream_insert(@entries, resolve_entry_evidence(entry, socket))
-         |> assign(:agent_entries_empty?, false)}
+         |> assign(:agent_entries_empty?, false)
+         |> forward_prepared(entry)}
 
       {:status, status} ->
         {:halt, assign(socket, :agent_status, status)}
@@ -297,6 +330,8 @@ defmodule GtfsPlannerWeb.AgentPanel do
   # The only monitors this socket holds are the panel's session monitors, and a
   # host consumes its async work through `handle_async/3`, not raw downs.
   defp handle_info({:DOWN, _ref, :process, _pid, _reason}, socket), do: {:halt, socket}
+  # An unknown message is the host's: the handoff below has no handler here, so it
+  # reaches the host's own `handle_info/2` unchanged.
   defp handle_info(_message, socket), do: {:cont, socket}
 
   ## Evidence resolution
@@ -387,6 +422,28 @@ defmodule GtfsPlannerWeb.AgentPanel do
   defp calendar_base(socket),
     do: "/gtfs/" <> socket.assigns.current_gtfs_version.id <> "/calendars"
 
+  ## Handoff to the host
+
+  # A settled assistant entry carrying a prepared change is offered to the host
+  # once per conversation. The session re-broadcasts an entry whenever its state
+  # changes — a working state, a retry, the applied mark — so the forwarded set is
+  # what keeps one change from being applied twice (AC-26).
+  defp forward_prepared(socket, entry) do
+    if socket.assigns.agent_auto_apply? and forwardable?(entry) and
+         not MapSet.member?(socket.assigns.agent_forwarded, entry.id) do
+      send(self(), {:agent_prepared, socket.assigns.agent_conversation_id, entry.id})
+
+      assign(socket, :agent_forwarded, MapSet.put(socket.assigns.agent_forwarded, entry.id))
+    else
+      socket
+    end
+  end
+
+  defp forwardable?(entry) do
+    entry.role == :assistant and entry.status == :done and
+      not is_nil(entry.prepared) and entry.applied? == false
+  end
+
   ## Session bookkeeping
 
   # Releasing the held session first is what keeps a second tab attached: the
@@ -450,6 +507,9 @@ defmodule GtfsPlannerWeb.AgentPanel do
     |> assign(:agent_status, snapshot.status)
     |> assign(:agent_entries_empty?, snapshot.entries == [])
     |> assign(:agent_notice, nil)
+    # A new or replaced conversation numbers its entries from one, so ids from the
+    # previous conversation must not suppress this one's first handoff.
+    |> assign(:agent_forwarded, MapSet.new())
     |> stream(@entries, Enum.map(snapshot.entries, &resolve_entry_evidence(&1, socket)),
       reset: true
     )
@@ -460,6 +520,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
     |> assign(:agent_conversation_id, conversation_id)
     |> assign(:agent_status, :idle)
     |> assign(:agent_notice, nil)
+    |> assign(:agent_forwarded, MapSet.new())
     |> assign(:agent_entries_empty?, true)
     |> assign(:agent_form, empty_form())
     |> assign(:agent_last_message, nil)
@@ -515,6 +576,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
       user_email: socket.assigns.current_user.email,
       pack_id: socket.assigns.agent_pack_id,
       version_name: socket.assigns.current_gtfs_version.name,
+      subject_id: socket.assigns.agent_subject_id,
       resource_context: socket.assigns.agent_context
     }
   end
