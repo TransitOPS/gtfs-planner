@@ -639,3 +639,129 @@ async function pinPosition(page) {
     };
   });
 }
+
+// ── search (step 26) ───────────────────────────────────────────────────────
+
+// The panel's search: this version's stops by name or ID, and the address
+// service's places, in one field. What this asserts is the round trip the
+// server owns — a query reaches the adapter, the stops come back without the
+// address service being needed, and choosing a place is a placement, which the
+// map answers with a pin.
+test("the panel search @search", async ({ page }, testInfo) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+  await openMap(page, versionId);
+  await waitForMapReady(page);
+
+  // The field is there before anything is typed, and it says what it will
+  // answer: a stop in this feed, or a place to put one at.
+  await expect(page.locator("#stops-map-search")).toBeVisible();
+  await expect(page.locator("#stops-map-search-query")).toBeVisible();
+  await expect(page.locator("#stops-map-list")).toBeAttached();
+
+  // "1st" is in the seeded version's own stop names, so this half of the answer
+  // comes from this feed rather than from the address service.
+  await page.locator("#stops-map-search-query").fill("1st");
+  await expect(page.locator("#stops-map-search-results-stops")).toBeAttached();
+  await expect(
+    page.locator("#stops-map-search-results-stops li", {
+      hasText: "SE 1st St",
+    }),
+    // Two, not one: the seed's duplicate pair shares this name, and a search
+    // that hid one of them would be hiding a real stop.
+  ).toHaveCount(2);
+
+  // The browser adapter answers above its three-character minimum, so a place
+  // comes back too — the two groups are the field's two answers.
+  await expect(page.locator("#stops-map-search-results-places")).toBeAttached();
+  await expect(
+    page.locator("#stops-map-search-results-places", { hasText: "Depot Road" }),
+  ).toHaveCount(1);
+
+  // The list the search replaced is gone rather than pushed down: forty rows
+  // under a result set is a page an editor scrolls past.
+  await expect(page.locator("#stops-map-list")).toHaveCount(0);
+
+  await captureBoth(page, testInfo, "results", "search-");
+
+  // Choosing a stop result selects it, and the panel's heading says which one.
+  await page
+    .locator("#stops-map-search-results-stops li button")
+    .first()
+    .click();
+  await expect(page.locator("#stops-map-panel h2")).toContainText("SE 1st St");
+  await expect(page.locator("#stops-map-panel")).toContainText("Stop · ID");
+
+  // Clearing the field gives the list back.
+  await page.locator("#stops-map-search-query").fill("");
+  await expect(page.locator("#stops-map-list")).toBeAttached();
+  await expect(page.locator("#stops-map-search-results")).toHaveCount(0);
+
+  // A query that matches nothing says what to try rather than showing nothing.
+  // Two characters is the one a browser run can reach: the address service's
+  // three-character minimum refuses a shorter query, so no place comes back to
+  // sit beside the empty message.
+  await page.locator("#stops-map-search-query").fill("zz");
+  await expect(page.locator("#stops-map-search-results-empty")).toContainText(
+    "Try a street name",
+  );
+  await capture(page, testInfo, "search-empty-desktop");
+
+  // Add mode offers an address rather than this version's stops, and choosing
+  // a place is a placement: the pin lands there and add mode ends.
+  await page.locator("#stops-map-search-query").fill("");
+  await page.locator("#stops-map-add-stop").click();
+  await expect(page.locator("#stops-map-address-search")).toBeVisible();
+  await expect(page.locator("#stops-map-address-hint")).toContainText(
+    "Results favour places near your stops",
+  );
+
+  await page.locator("#stops-map-address-search-query").fill("Depot");
+  await expect(
+    page.locator("#stops-map-address-results-places"),
+  ).toBeAttached();
+  await expect(page.locator("#stops-map-list")).toHaveCount(0);
+
+  await captureBoth(page, testInfo, "add-search", "search-");
+
+  await page.locator("[data-stop-map-place]").first().click();
+  await expect(page.locator("[data-stop-map-pin]")).toBeAttached();
+  await expect(page.locator("#stops-map-crosshair")).toBeHidden();
+  await expect(page.locator("#stops-map-caption")).toContainText(
+    "Drag the pin to adjust",
+  );
+
+  await capture(page, testInfo, "search-add-placed-desktop");
+  await page.setViewportSize(MOBILE);
+  await waitForMapReady(page);
+  await expectFits(page);
+  // Attached rather than in the viewport: the browser adapter's place is in
+  // Cedar Valley and this feed is in Newport, so the pin is legitimately off
+  // the canvas the map is showing. Recorded as a step-31 finding rather than
+  // asserted here.
+  await expect(page.locator("[data-stop-map-pin]")).toBeAttached();
+  await capture(page, testInfo, "search-add-placed-mobile");
+  await page.setViewportSize(DESKTOP);
+
+  // The prototype's two search states, at both viewports, for the side-by-side
+  // inspection.
+  if (REFERENCE_FILE && existsSync(REFERENCE_FILE)) {
+    for (const state of ["search", "add-search"]) {
+      for (const viewport of [DESKTOP, MOBILE]) {
+        await page.setViewportSize(viewport);
+        await page.goto(`file://${REFERENCE_FILE}?state=${state}`);
+        await page.waitForLoadState("load");
+
+        await capture(page, testInfo, `search-ref-${state}-${viewport.label}`, {
+          fullPage: false,
+        });
+      }
+    }
+  }
+
+  await page.setViewportSize(DESKTOP);
+});

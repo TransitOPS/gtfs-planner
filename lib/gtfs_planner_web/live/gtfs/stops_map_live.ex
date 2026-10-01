@@ -49,13 +49,17 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       add_panel: 1,
       map_stage: 1,
       page_header: 1,
+      search_field: 1,
+      search_results: 1,
       stop_list: 1
     ]
 
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
+  alias GtfsPlanner.Geocoding
   alias GtfsPlanner.Gtfs.StopsMap
   alias GtfsPlannerWeb.Gtfs.StopsMapComponents
+  require Logger
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -72,6 +76,16 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # is a decision about the model, not about the markup.
   @panel_limit 40
 
+  # A search is an answer, not a list to read: the browse panel's forty rows say
+  # "there is more here" and a result list does not. Six stops and four places
+  # are the counts the prototype shows, and they are chosen so a screenful of
+  # them still fits at 390 px.
+  @search_stop_limit 6
+  @search_place_limit 4
+
+  # The form name the search field's params arrive under.
+  @search_as :search
+
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
@@ -86,7 +100,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
      |> assign(:selected_stop_id, nil)
      |> assign(:stops_state, :loading)
      |> assign(:placement, nil)
-     |> assign(:scope_error, nil)}
+     |> assign(:scope_error, nil)
+     |> assign_search("", [], [], false)}
   end
 
   @impl true
@@ -165,6 +180,132 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   def handle_event("pin_moved", params, socket),
     do: {:noreply, assign_placement(socket, params)}
 
+  # Search answers two questions at once, and the field is one field: "is this
+  # stop in my feed" (this version's own rows) and "where do I put the new one"
+  # (the address service). They are searched together and rendered apart, so an
+  # editor never has to choose a mode to find out whether a stop exists.
+  def handle_event("search", %{"search" => %{"query" => raw}}, socket),
+    do: {:noreply, run_search(socket, raw)}
+
+  # A search field that arrives without a query is a search for nothing, which
+  # is the same as no search: the panel returns to the list it had.
+  def handle_event("search", _params, socket),
+    do:
+      {:noreply,
+       assign_search(
+         socket,
+         socket.assigns.search_query,
+         socket.assigns.search_stops,
+         socket.assigns.search_places,
+         socket.assigns.search_unavailable?
+       )}
+
+  # Choosing a stop from the results selects it. The panel's heading becomes
+  # that stop, which is the selection an editor can see before the edit panel
+  # (step 30) takes the heading over.
+  def handle_event("select_stop", %{"stop_id" => stop_id}, socket) do
+    if Enum.any?(socket.assigns.search_stops, &(&1.stop_id == stop_id)) do
+      {:noreply, assign(socket, :selected_stop_id, stop_id)}
+    else
+      # A result id that is not one this search produced is refused rather than
+      # looked up: the panel only shows what the search returned, so accepting
+      # an id it never showed would select a stop the editor cannot see.
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("select_stop", _params, socket), do: {:noreply, socket}
+
+  # Choosing a place is a placement. It writes the same `placement` a click on
+  # the map writes, so the pin, the caption and the map's mode are unchanged by
+  # how the editor got there — one draft, one position.
+  def handle_event("choose_place", params, socket),
+    do: {:noreply, assign_placement(socket, params)}
+
+  # --- search ----------------------------------------------------------------
+
+  defp run_search(socket, raw) do
+    case String.trim(raw || "") do
+      "" ->
+        assign_search(socket, "", [], [], false)
+
+      query ->
+        stops = matching_stop_rows(socket.assigns, query)
+
+        case Geocoding.autocomplete(query, bias: search_bias(socket.assigns.model)) do
+          {:ok, places} ->
+            assign_search(socket, query, stops, Enum.take(places, @search_place_limit), false)
+
+          # A query shorter than the address service's minimum is not a failure,
+          # it is a query it has not answered yet. It reads as "nothing yet",
+          # which is what it is.
+          {:error, :text_too_short} ->
+            assign_search(socket, query, stops, [], false)
+
+          {:error, reason} ->
+            Logger.error("Geocoding autocomplete failed: #{inspect(reason)}")
+            assign_search(socket, query, stops, [], true)
+        end
+    end
+  end
+
+  # The stop half of a search runs against this version's own rows, so it keeps
+  # working when the address service does not — which is the whole reason the
+  # two halves are separate in the panel.
+  defp matching_stop_rows(%{panel: :add}, _query), do: []
+
+  defp matching_stop_rows(assigns, query) do
+    needle = String.downcase(query)
+
+    assigns.model
+    |> located_stops()
+    |> Enum.filter(fn stop ->
+      String.contains?(String.downcase(stop.name || ""), needle) or
+        String.downcase(stop.stop_id) == needle
+    end)
+    |> Enum.sort_by(&{&1.location_type != 1, &1.name || &1.stop_id})
+    |> Enum.take(@search_stop_limit)
+    |> Enum.map(&row(assigns.model, &1))
+  end
+
+  # Address results are ranked near the stops this version already has, because
+  # an editor is placing a stop in the feed they are editing and not looking
+  # for an address anywhere in the world. The bias is the midpoint of the
+  # loaded stops' bounds as `{lon, lat}`, the order the geocoding adapter's
+  # `:bias` takes. A version with no located stop has no midpoint, and an
+  # unranked search beats a fabricated one.
+  defp search_bias(nil), do: nil
+
+  defp search_bias(model) do
+    points = for point <- Enum.map(model.stops, & &1.point), point, do: point
+
+    case points do
+      [] ->
+        nil
+
+      points ->
+        {midpoint(points, 0), midpoint(points, 1)}
+    end
+  end
+
+  # `StopsMap` points are `{lon, lat}` tuples.
+  defp midpoint(points, axis) do
+    values = Enum.map(points, &elem(&1, axis))
+    (Enum.min(values) + Enum.max(values)) / 2
+  end
+
+  # One place the search's four assigns live, so every exit from a search —
+  # cleared, answered, too short, failed — leaves the form holding what the
+  # editor typed rather than what the last render happened to know.
+  defp assign_search(socket, query, stops, places, unavailable?) do
+    socket
+    |> assign(:search_query, query)
+    |> assign(:search_form, to_form(%{"query" => query}, as: @search_as))
+    |> assign(:search_stops, stops)
+    |> assign(:search_places, places)
+    |> assign(:search_unavailable?, unavailable?)
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -210,23 +351,49 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
           />
 
           <%= if @panel == :add do %>
-            <.add_panel id="stops-map-add-panel" />
+            <.add_panel
+              id="stops-map-add-panel"
+              form={@search_form}
+              query={@search_query}
+              places={@search_places}
+              unavailable?={@search_unavailable?}
+            />
           <% else %>
             <.browse_panel
               id="stops-map-panel"
               title={panel_title(assigns)}
               subtitle={panel_subtitle(assigns)}
             >
+              <.search_field
+                id="stops-map-search"
+                form={@search_form}
+                label="Find a stop, street or place"
+                placeholder="Name, stop ID or cross street"
+              />
+
               <%= if @stops_state == :loading do %>
                 <div id="stops-map-panel-loading" role="status">
-                  <span class="sr-only">Loading stops…</span>
+                  <span class="sr-only">Loading stops&hellip;</span>
                   <.browse_panel_loading id="stops-map-skeleton" />
                 </div>
               <% else %>
                 <%= if @model == nil or @model.stops == [] do %>
                   <.first_use_panel id="stops-map-first-use" version={@current_gtfs_version} />
                 <% else %>
-                  <.stop_list id="stops-map-list" stops={panel_rows(assigns)} />
+                  <%!-- A search replaces the list rather than sitting above it:
+                        forty rows under a result set is a page an editor has to
+                        scroll past to see what they searched for. --%>
+                  <%= if @search_query == "" do %>
+                    <.stop_list id="stops-map-list" stops={panel_rows(assigns)} />
+                  <% else %>
+                    <.search_results
+                      id="stops-map-search-results"
+                      query={@search_query}
+                      stops={@search_stops}
+                      places={@search_places}
+                      unavailable?={@search_unavailable?}
+                    />
+                  <% end %>
                 <% end %>
               <% end %>
             </.browse_panel>
@@ -342,10 +509,28 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   defp station_count(nil), do: 0
   defp station_count(%{stops: stops}), do: Enum.count(stops, &(&1.location_type == 1))
 
+  # A chosen search result takes over the panel's heading. Step 30 replaces
+  # this with the edit panel's own heading; until then the selection has to be
+  # visible somewhere, and the heading is the one place the editor is already
+  # looking.
+  defp panel_title(%{selected_stop_id: stop_id} = assigns) when is_binary(stop_id) do
+    case selected_row(assigns, stop_id) do
+      %{name: name} -> name
+      nil -> panel_title(%{assigns | selected_stop_id: nil})
+    end
+  end
+
   defp panel_title(%{panel: :first_use}), do: "No stops in this version yet"
 
   defp panel_title(%{stops_state: :unavailable}), do: "Stops could not load"
   defp panel_title(_assigns), do: "Stops in this area"
+
+  defp panel_subtitle(%{selected_stop_id: stop_id} = assigns) when is_binary(stop_id) do
+    case selected_row(assigns, stop_id) do
+      nil -> panel_subtitle(%{assigns | selected_stop_id: nil})
+      row -> StopsMapComponents.selection_note(row)
+    end
+  end
 
   defp panel_subtitle(%{stops_state: :loading}), do: "Reading this version’s stops…"
   defp panel_subtitle(%{stops_state: :unavailable}), do: "The list is kept."
@@ -375,6 +560,18 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
   defp count_type(rows, location_type) do
     Enum.count(rows, &(&1.location_type == location_type))
+  end
+
+  # The row for a chosen result, rebuilt from the loaded model rather than
+  # remembered: a stop that was removed while the panel was open has no row,
+  # and a heading for a stop this version no longer holds would be a lie.
+  defp selected_row(%{model: nil}, _stop_id), do: nil
+
+  defp selected_row(assigns, stop_id) do
+    case Enum.find(located_stops(assigns.model), &(&1.stop_id == stop_id)) do
+      nil -> nil
+      stop -> row(assigns.model, stop)
+    end
   end
 
   # The mode, the pin and the ghost are the hook's half of a placement, and the

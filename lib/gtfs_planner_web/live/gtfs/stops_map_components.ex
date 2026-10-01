@@ -13,9 +13,16 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
   The panel is a region, not a modal: the design system's inspector rule. The
   object being edited is drawn beside the editor, so the editor is a panel and
   the map keeps its place.
+
+  The search field and its results are here rather than in the view because they
+  are markup with states, and the panel's states are the design system's: a
+  field the editor can type in, results that are 44 px buttons, and a message
+  that says what to try when nothing matched.
   """
 
   use GtfsPlannerWeb, :html
+
+  import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
   @doc """
   The page header: the title, the List | Map switch, the version's stop count
@@ -221,16 +228,18 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
 
   It sits at the bottom left, inside the stage and outside `#stop-map`, because
   Leaflet owns every child of the canvas and a legend placed in there would be
-  the first thing a `fitBounds` threw away. The two toggles change what is drawn
-  and nothing the server stores, so the hook handles them on the client; the
-  basemap buttons carry `aria-pressed` because they are a pair of choices, not
-  two independent actions.
+  the first thing a `fitBounds` threw away. Below `xl` it clears Leaflet's own
+  attribution strip: at 390 px the legend wraps to three rows and its bottom
+  edge lands on the credits, which reads as one overlapping smear. The two
+  toggles change what is drawn and nothing the server stores, so the hook
+  handles them on the client; the basemap buttons carry `aria-pressed` because
+  they are a pair of choices, not two independent actions.
   """
   def map_legend(assigns) do
     ~H"""
     <div
       id="stops-map-legend"
-      class="absolute bottom-3 left-3 z-10 flex max-w-[calc(100%-24px)] flex-wrap items-center gap-x-4 gap-y-1 rounded-control border border-subtle bg-overlay px-3 py-1 text-[13px] text-default shadow-card"
+      class="absolute bottom-8 left-3 z-10 flex max-w-[calc(100%-24px)] flex-wrap items-center gap-x-4 gap-y-1 rounded-control border border-subtle bg-overlay px-3 py-1 text-[13px] text-default shadow-card xl:bottom-3"
     >
       <span class="inline-flex items-center gap-1.5">
         <svg width="22" height="16" viewBox="0 0 22 16" aria-hidden="true">
@@ -330,6 +339,139 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
   end
 
   @doc """
+  The panel's search field: a labelled text field with a magnifier in it.
+
+  It is a form rather than a bare input because `phx-change` only fires inside
+  one, and the form submits to the same search so Enter answers the question
+  the editor is already asking. The value comes from a `to_form/2` the view
+  rebuilt from the query it just handled, so a draft survives a refused or slow
+  address search instead of being wiped by the re-render.
+
+  The classes are given in full rather than inherited: `.input`'s defaults are
+  not combined with an override, and the field has to match the panel's other
+  controls at 44 px with the icon inside it.
+  """
+  attr :id, :string, required: true
+  attr :form, :any, required: true
+  attr :label, :string, required: true
+  attr :placeholder, :string, required: true
+
+  def search_field(assigns) do
+    ~H"""
+    <.form for={@form} id={@id} phx-change="search" phx-submit="search" class="mt-5">
+      <label for={"#{@id}-query"} class="block text-sm font-semibold text-strong">
+        {@label}
+      </label>
+      <div class="relative mt-1.5">
+        <.icon
+          name="hero-magnifying-glass"
+          class="pointer-events-none absolute left-3 top-1/2 size-5 -translate-y-1/2 text-muted"
+        />
+        <.input
+          field={@form[:query]}
+          id={"#{@id}-query"}
+          type="search"
+          autocomplete="off"
+          phx-debounce="250"
+          placeholder={@placeholder}
+          class="h-11 w-full rounded-control border border-control pl-10 pr-3 text-[15px] placeholder:text-muted"
+        />
+      </div>
+    </.form>
+    """
+  end
+
+  @doc """
+  What the search found: the stops that matched, the places that matched, and
+  what to try when neither did.
+
+  The two groups are separate because they answer different questions — "is
+  this stop in my feed" and "is this where my stop goes" — and an editor who
+  cannot tell them apart searches for the wrong thing twice.
+
+  `unavailable?` is the address service failing, not a search that found
+  nothing. It is a line beside the stop results rather than a replacement for
+  them: stop search is this version's own data and keeps working.
+  """
+  attr :id, :string, required: true
+  attr :query, :string, required: true
+  attr :stops, :list, default: []
+  attr :places, :list, default: []
+  attr :unavailable?, :boolean, default: false
+  attr :empty_text, :string, default: nil
+
+  def search_results(assigns) do
+    ~H"""
+    <div id={@id} class="px-5">
+      <div :if={@unavailable?} id={"#{@id}-unavailable"} class="mt-4">
+        <.message
+          kind="warning"
+          title="Address search is unavailable"
+          id={"#{@id}-unavailable-message"}
+        >
+          Stops in this version still match. Search again later for streets and places.
+        </.message>
+      </div>
+
+      <div class="mt-4 grid gap-4">
+        <div :if={@stops != []}>
+          <h3 class="m-0 text-[13px] font-bold text-muted">Stops</h3>
+          <ul id={"#{@id}-stops"} class="m-0 mt-1 list-none p-0">
+            <li :for={row <- @stops} id={"#{@id}-stop-#{row.stop_id}"}>
+              <.stop_row row={row} selectable />
+            </li>
+          </ul>
+        </div>
+
+        <div :if={@places != []}>
+          <h3 class="m-0 text-[13px] font-bold text-muted">Places</h3>
+          <ul id={"#{@id}-places"} class="m-0 mt-1 list-none p-0">
+            <li :for={{place, index} <- Enum.with_index(@places)} id={"#{@id}-place-#{index}"}>
+              <.place_row place={place} />
+            </li>
+          </ul>
+        </div>
+
+        <p :if={@stops == [] and @places == []} id={"#{@id}-empty"} class="m-0 text-sm">
+          {@empty_text || default_empty_text(@query)}
+        </p>
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
+  One place from the address search: a pin, its name and what kind of place it is.
+
+  A place is a button because choosing it is the whole point of searching for
+  one — in add mode it becomes the draft's position, and in browse mode it moves
+  the pin to where the editor is looking.
+  """
+  attr :place, :map, required: true
+
+  def place_row(assigns) do
+    ~H"""
+    <button
+      type="button"
+      data-stop-map-place
+      phx-click="choose_place"
+      phx-value-lat={@place.lat}
+      phx-value-lon={@place.lon}
+      phx-value-address={@place.formatted_address}
+      class="flex min-h-11 w-full items-center gap-3 rounded-control px-2 py-2 text-left hover:bg-canvas"
+    >
+      <.icon name="hero-map-pin" class="size-5 shrink-0 text-muted" />
+      <span class="min-w-0 flex-1">
+        <span class="block text-[14px] font-semibold text-strong">
+          {@place.formatted_address}
+        </span>
+        <span class="block text-[13px] text-muted">{place_subtitle(@place)}</span>
+      </span>
+    </button>
+    """
+  end
+
+  @doc """
   The panel's loading state: the heading a reader sees first, then skeletons
   shaped like the rows that follow.
   """
@@ -388,40 +530,72 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
 
   The route badges are the answer to "which bus stops here", which is the first
   question about a stop anybody asks, so it is on the row rather than behind a
-  click. The rows are read-only in this shell: selecting one opens the edit
-  panel, which is the next step's work, so a row that looked pressable here
-  would be a control that does nothing.
+  click.
+
+  A row is read-only until something can be done with it. `selectable` is set
+  where choosing the row selects that stop, which today is the search results:
+  the browse list's own rows stay inert until the edit panel behind them exists,
+  because a row that looks pressable and does nothing is worse than a row that
+  does not look pressable.
   """
   attr :row, :map, required: true
+  attr :selectable, :boolean, default: false
+
+  def stop_row(%{selectable: true} = assigns) do
+    assigns = assign(assigns, :row_id, "stops-map-row-#{assigns.row.stop_id}")
+
+    ~H"""
+    <button
+      type="button"
+      id={@row_id}
+      phx-click="select_stop"
+      phx-value-stop_id={@row.stop_id}
+      class="flex min-h-11 w-full items-start gap-3 rounded-control px-2 py-2 text-left hover:bg-canvas"
+    >
+      <.stop_row_body row={@row} />
+    </button>
+    """
+  end
 
   def stop_row(assigns) do
+    assigns = assign(assigns, :row_id, "stops-map-row-#{assigns.row.stop_id}")
+
     ~H"""
     <div
-      id={"stops-map-row-#{@row.stop_id}"}
+      id={@row_id}
       class="flex min-h-11 w-full items-start gap-3 rounded-control px-2 py-2"
     >
-      <span class="mt-0.5 flex size-5 shrink-0 items-center justify-center">
-        <span :if={@row.location_type == 1} class="size-3.5 rounded-[3px] bg-strong"></span>
-        <span
-          :if={@row.location_type != 1}
-          class={[
-            "size-3.5 rounded-full border-2 bg-white",
-            @row.served? && "border-strong",
-            !@row.served? && "border-dashed border-navy-300"
-          ]}
-        >
-        </span>
-      </span>
-
-      <span class="min-w-0 flex-1">
-        <span class="block text-[14px] font-semibold text-strong">{@row.name}</span>
-        <span class="block text-[13px] text-muted">{row_subtitle(@row)}</span>
-      </span>
-
-      <span class="flex shrink-0 flex-wrap justify-end gap-1">
-        <.route_badge :for={route <- @row.routes} route={route} />
-      </span>
+      <.stop_row_body row={@row} />
     </div>
+    """
+  end
+
+  @doc false
+  attr :row, :map, required: true
+
+  def stop_row_body(assigns) do
+    ~H"""
+    <span class="mt-0.5 flex size-5 shrink-0 items-center justify-center">
+      <span :if={@row.location_type == 1} class="size-3.5 rounded-[3px] bg-strong"></span>
+      <span
+        :if={@row.location_type != 1}
+        class={[
+          "size-3.5 rounded-full border-2 bg-white",
+          @row.served? && "border-strong",
+          !@row.served? && "border-dashed border-navy-300"
+        ]}
+      >
+      </span>
+    </span>
+
+    <span class="min-w-0 flex-1">
+      <span class="block text-[14px] font-semibold text-strong">{@row.name}</span>
+      <span class="block text-[13px] text-muted">{row_subtitle(@row)}</span>
+    </span>
+
+    <span class="flex shrink-0 flex-wrap justify-end gap-1">
+      <.route_badge :for={route <- @row.routes} route={route} />
+    </span>
     """
   end
 
@@ -489,16 +663,46 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
   end
 
   @doc """
-  The add-mode panel shell: the caption's counterpart in the panel, and the way
-  back out. The form itself arrives with the add flow.
+  The add-mode panel shell: the caption's counterpart in the panel, the optional
+  address search, and the way back out. The form itself arrives with the add
+  flow.
+
+  The address field is optional on purpose — the caption above it already says
+  to click the curb, and a field that read as required would send an editor
+  looking for an address to place a stop that is visible from the window.
   """
   attr :id, :string, required: true
+  attr :form, :any, required: true
+  attr :query, :string, required: true
+  attr :places, :list, default: []
+  attr :unavailable?, :boolean, default: false
 
   def add_panel(assigns) do
     ~H"""
     <div id={@id} class="px-5 py-5">
       <h2 class="font-display text-[22px] font-semibold text-strong">New stop</h2>
       <p class="mt-1 text-sm text-muted">Click the curb where riders wait.</p>
+
+      <.search_field
+        id="stops-map-address-search"
+        form={@form}
+        label="Find an address or intersection (optional)"
+        placeholder="For example, 9th &amp; US 101"
+      />
+
+      <p :if={@query == ""} id="stops-map-address-hint" class="m-0 mt-1.5 text-[13px] text-muted">
+        Results favour places near your stops.
+      </p>
+
+      <.search_results
+        :if={@query != ""}
+        id="stops-map-address-results"
+        query={@query}
+        places={@places}
+        unavailable?={@unavailable?}
+        empty_text="No match near this version's stops. Try a street name."
+      />
+
       <button
         id="stops-map-add-cancel"
         type="button"
@@ -510,6 +714,51 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
     </div>
     """
   end
+
+  @doc """
+  The line under the panel's heading when a search result is chosen: what kind
+  of stop this is and which ID the editor will be editing.
+
+  The ID is on it because it is the thing an editor copies into a sign, a
+  dispatcher's note or a support ticket, and reading it off a list of forty
+  rows is a job nobody should have to do mid-selection.
+  """
+  attr :row, :map, required: true
+
+  def selection_note(%{location_type: 1} = row) do
+    "Station · ID #{row.stop_id} · #{row.bays} #{pluralize(row.bays, "bay")}"
+  end
+
+  def selection_note(row) do
+    [
+      "Stop · ID #{row.stop_id}",
+      presence(row.desc),
+      if(row.served?, do: nil, else: "Not served")
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" · ")
+  end
+
+  defp presence(""), do: nil
+  defp presence(nil), do: nil
+  defp presence(text), do: text
+
+  # A place's second line says what kind of thing it is and where it is. It is
+  # built from the address the service returned rather than a fixed word, so a
+  # place in another town says so instead of reading as one on this feed.
+  defp place_subtitle(place) do
+    where = [place.city, place.state] |> Enum.map(&presence/1) |> Enum.reject(&is_nil/1)
+    where = Enum.join(where, ", ")
+
+    Enum.reject(["Address", if(where == "", do: nil, else: where)], &is_nil/1)
+    |> Enum.join(" · ")
+  end
+
+  # An empty result names what was not found and one thing to try instead. A
+  # bare "no results" leaves an editor guessing what kind of answer the field
+  # would have given.
+  defp default_empty_text(query),
+    do: "No stops or places match “#{query}”. Try a street name, like “9th”."
 
   @doc """
   How many stops a version holds, in the words both the header and the browse
