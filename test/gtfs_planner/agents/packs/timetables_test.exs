@@ -459,8 +459,10 @@ defmodule GtfsPlanner.Agents.Packs.TimetablesTest do
                  "direction_id" => 0
                })
 
-      assert {:tool_error,
-              "Argument direction_id must be 0 or 1 for the direction the review resolved."} =
+      # The tool's own schema bounds direction_id to 0 or 1, so an out-of-range
+      # direction is refused by argument validation before the pack reads the
+      # route at all.
+      assert {:tool_error, "Argument direction_id must be at most 1."} =
                prepare(context.scope, %{
                  "row_ids" => [1],
                  "service_id" => "SRC_WKD",
@@ -682,21 +684,23 @@ defmodule GtfsPlanner.Agents.Packs.TimetablesTest do
       assert evidence.total_label == "trips to add or change"
       assert evidence.scope.identity == "route:#{context.route.id}"
 
-      # Nothing a model could write reaches the card: it carries only the keys
-      # the evidence type declares, and no value in it is a URL or a prose total.
+      # Nothing a model could write reaches the card: it carries exactly the
+      # keys `GtfsPlanner.Agents.Pack`'s evidence type declares, and no value
+      # in it is a URL or a prose total.
       assert Enum.sort(Map.keys(evidence)) == [
-               "completeness",
-               "completeness_reason",
-               "digest",
-               "exclusions",
-               "facts",
-               "kind",
-               "resources",
-               "scope",
-               "source_ref",
-               "source_revision",
-               "total",
-               "total_label"
+               :completeness,
+               :completeness_reason,
+               :digest,
+               :exclusions,
+               :facts,
+               :kind,
+               :resources,
+               :scope,
+               :source_ref,
+               :source_revision,
+               :title,
+               :total,
+               :total_label
              ]
 
       refute inspect(evidence) =~ "http"
@@ -707,7 +711,7 @@ defmodule GtfsPlanner.Agents.Packs.TimetablesTest do
       # A pasted cell the native grammar cannot read leaves the row needing the
       # editor's own decision, which the card must not present as complete.
       undecided_payload =
-        put_in(context.payload, ["text"], String.replace(pasted_text(), "07:05", "later"))
+        put_in(context.payload, ["text"], String.replace(pasted_text(), "7:05", "later"))
 
       undecided_scope =
         scope_with_source(
@@ -934,7 +938,7 @@ defmodule GtfsPlanner.Agents.Packs.TimetablesTest do
     native = paste_scope(organization, version, route, "WIDE_WKD")
 
     text =
-      (["Trip\tWide Stop 1\tWide Stop 2\tWide Stop 3"] ++
+      ([["Trip", "Wide Stop 1", "Wide Stop 2", "Wide Stop 3"]] ++
          for(
            index <- 1..8,
            do: ["#{200 + index}", "#{5 + index}:00", "#{5 + index}:05", "#{5 + index}:10"]
