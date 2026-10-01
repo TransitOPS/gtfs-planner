@@ -4896,7 +4896,7 @@ defmodule GtfsPlanner.GtfsTest do
         gtfs_version_id: version.id,
         station_id: station.id,
         station_stop_id: station.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: audit_ctx.actor_id
       }
 
       pin_id = Ecto.UUID.generate()
@@ -5179,7 +5179,8 @@ defmodule GtfsPlanner.GtfsTest do
       gtfs_version: gtfs_version,
       station: station,
       level: level,
-      stop_level: stop_level
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
     } do
       later_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -5208,7 +5209,7 @@ defmodule GtfsPlanner.GtfsTest do
         gtfs_version_id: gtfs_version.id,
         station_id: station.id,
         station_stop_id: station.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: audit_ctx.actor_id
       }
 
       pin_id = Ecto.UUID.generate()
@@ -5355,7 +5356,7 @@ defmodule GtfsPlanner.GtfsTest do
         gtfs_version_id: gtfs_version.id,
         station_id: station.id,
         station_stop_id: station.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: audit_ctx.actor_id
       }
 
       pin_id = Ecto.UUID.generate()
@@ -5439,7 +5440,7 @@ defmodule GtfsPlanner.GtfsTest do
         gtfs_version_id: gtfs_version.id,
         station_id: station.id,
         station_stop_id: station.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: audit_ctx.actor_id
       }
 
       pin_id = Ecto.UUID.generate()

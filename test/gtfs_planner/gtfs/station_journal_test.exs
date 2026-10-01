@@ -193,7 +193,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: version.id,
         station_id: station.id,
         station_stop_id: station.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(organization).id
       }
 
       %{
@@ -371,7 +371,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: other_version.id,
         station_id: other_station.id,
         station_stop_id: other_station.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(other_organization).id
       }
 
       id = Ecto.UUID.generate()
@@ -443,7 +443,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: other_version.id,
         station_id: other_station.id,
         station_stop_id: other_station.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(other_organization).id
       }
 
       assert %{synced_count: 0, errors: [%{id: ^id, code: :id_conflict}]} =
@@ -521,7 +521,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: other_version.id,
         station_id: other_station.id,
         station_stop_id: other_station.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(other_organization).id
       }
 
       unrelated_pin =
@@ -628,7 +628,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: version.id,
         station_id: station.id,
         station_stop_id: station.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(organization).id
       }
 
       {:ok, scope: scope, child: child, pathway: pathway}
@@ -988,7 +988,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: other_ver.id,
         station_id: other_station.id,
         station_stop_id: other_station.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(other_org).id
       }
 
       Gtfs.sync_journal_entries(other_scope, [
@@ -1088,7 +1088,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: version.id,
         station_id: station.id,
         station_stop_id: station.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(organization).id
       }
 
       {:ok, scope: scope}
@@ -1169,7 +1169,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: other_ver.id,
         station_id: other_station.id,
         station_stop_id: other_station.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(other_org).id
       }
 
       other_id = Ecto.UUID.generate()
@@ -1283,7 +1283,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: ver_a.id,
         station_id: station_a.id,
         station_stop_id: station_a.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(org_a).id
       }
 
       org_b = organization_fixture()
@@ -1300,7 +1300,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: ver_b.id,
         station_id: station_b.id,
         station_stop_id: station_b.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(org_b).id
       }
 
       ver_a_2 = gtfs_version_fixture(org_a.id)
@@ -1316,7 +1316,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: ver_a_2.id,
         station_id: station_a_2.id,
         station_stop_id: station_a_2.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(org_a).id
       }
 
       station_a_3 =
@@ -1330,7 +1330,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: ver_a.id,
         station_id: station_a_3.id,
         station_stop_id: station_a_3.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(org_a).id
       }
 
       {:ok, scope_a: scope_a, scope_b: scope_b, scope_c: scope_c, scope_d: scope_d}

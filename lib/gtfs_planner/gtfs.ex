@@ -1104,12 +1104,12 @@ defmodule GtfsPlanner.Gtfs do
     do: StationJournal.list_entries(scope, opts)
 
   @spec close_journal_entry(Scope.t(), Ecto.UUID.t()) ::
-          {:ok, JournalEntry.t()} | {:error, :not_found | Ecto.Changeset.t()}
+          {:ok, JournalEntry.t()} | {:error, :not_found | :forbidden | Ecto.Changeset.t()}
   def close_journal_entry(%Scope{} = scope, entry_id),
     do: StationJournal.close_entry(scope, entry_id)
 
   @spec reopen_journal_entry(Scope.t(), Ecto.UUID.t()) ::
-          {:ok, JournalEntry.t()} | {:error, :not_found | Ecto.Changeset.t()}
+          {:ok, JournalEntry.t()} | {:error, :not_found | :forbidden | Ecto.Changeset.t()}
   def reopen_journal_entry(%Scope{} = scope, entry_id),
     do: StationJournal.reopen_entry(scope, entry_id)
 

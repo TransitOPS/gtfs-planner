@@ -232,6 +232,7 @@ defmodule GtfsPlannerWeb.Api.V1.SyncController do
     do: "Journal entry id conflicts with an existing entry."
 
   defp journal_error_message(:validation_error), do: "Journal entry is invalid."
+  defp journal_error_message(:forbidden), do: "Editor access was revoked."
   defp journal_error_message(_code), do: "Journal entry could not be synchronized."
 
   defp add_pathway_error(results, id, code, message, extra \\ %{}) do

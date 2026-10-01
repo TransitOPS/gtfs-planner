@@ -69,6 +69,8 @@ defmodule GtfsPlanner.Gtfs.ReviewedApplyTransaction.RepoTest do
           email: "serializable-#{Ecto.UUID.generate()}@example.com"
         })
 
+      organization_membership_fixture(actor, organization)
+
       try do
         station =
           stop_fixture(organization.id, gtfs_version.id, %{
