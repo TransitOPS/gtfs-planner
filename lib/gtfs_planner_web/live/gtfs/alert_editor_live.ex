@@ -1503,11 +1503,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # the later of today and seven days before the first date (AC-20). Storing
   # nothing is what lets the default follow a date the editor changes later.
   defp notice_value(socket, alert, today) do
-    field =
-      case socket.assigns.form && socket.assigns.form[:timing] do
-        nil -> nil
-        timing_form -> timing_form[:notice_on]
-      end
+    # `@form[:timing]` is the embed's own field, so the answer is one step
+    # further on: the form behind it is what holds `notice_on`.
+    timing_field = socket.assigns.form && socket.assigns.form[:timing]
+    field = timing_field && timing_field.form[:notice_on]
 
     if is_binary(field && field.value) and field.value != "" do
       field.value
