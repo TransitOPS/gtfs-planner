@@ -645,6 +645,7 @@ defmodule GtfsPlanner.Gtfs.Fares do
       riders: riders,
       media: media,
       groups: groups,
+      routes: build_routes(organization_id, gtfs_version_id),
       matrices: build_matrices(rows, groups, pass_ids, names),
       transfers: build_transfers(rows.fare_transfer_rules),
       time_periods: build_time_periods(periods, rows.timeframes),
@@ -869,6 +870,25 @@ defmodule GtfsPlanner.Gtfs.Fares do
       [row],
       row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id
     )
+  end
+
+  # The version's own routes, which the Where tab's group table draws a badge
+  # for, its drawer offers as a choice, and its "In no group" row is worked
+  # from: a route no `route_networks` row names is one no group holds. The keys
+  # are the `routes.txt` column names, so `RouteIdentity.route_badge/1` reads
+  # this read model the same way it reads a `Gtfs.Route` struct.
+  defp build_routes(organization_id, gtfs_version_id) do
+    Route
+    |> scoped(organization_id, gtfs_version_id)
+    |> order_by([route], asc: route.route_id)
+    |> select([route], %{
+      route_id: route.route_id,
+      route_short_name: route.route_short_name,
+      route_long_name: route.route_long_name,
+      route_color: route.route_color,
+      route_text_color: route.route_text_color
+    })
+    |> Repo.all()
   end
 
   # The version's route groups with their routes, and whether a group is priced

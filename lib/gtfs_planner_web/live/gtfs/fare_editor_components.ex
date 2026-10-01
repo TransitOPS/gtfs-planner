@@ -45,6 +45,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
 
   alias GtfsPlanner.Gtfs.Fares.Money
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlannerWeb.Components.RouteIdentity
 
   @doc """
   Renders the fare editor's one header primary for the current tab, or nothing.
@@ -2738,6 +2739,906 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
       </div>
     </.confirm_dialog>
     """
+  end
+
+  @doc """
+  Renders the Where tab's lede and its route groups table: one row per group
+  with its route badges and how a ride on it is charged, plus the "In no group"
+  warning row for the version's routes no group holds.
+
+  Everything here is read from the workspace's own `groups` and `routes`, so the
+  table, the matrices below it and the passes table cannot disagree about which
+  routes a group holds. The group name is a button that opens that group's
+  drawer; "Create route group" is the card's own secondary action, because the
+  tab's one primary is Add fare rule in the header.
+  """
+  attr :workspace, :map, required: true
+
+  def route_groups_card(assigns) do
+    ~H"""
+    <section
+      id="route-groups-card"
+      aria-labelledby="route-groups-title"
+      class="overflow-clip rounded-card border border-subtle bg-white"
+    >
+      <div class="flex flex-wrap items-start gap-x-6 gap-y-2 border-b border-subtle px-4 py-3 sm:px-5">
+        <div class="min-w-0 flex-1 basis-[420px]">
+          <h2
+            id="route-groups-title"
+            class="font-sans text-base font-bold tracking-normal text-strong"
+          >
+            Route groups
+          </h2>
+          <p class="mt-0.5 text-[13px] text-muted">
+            Routes that charge the same fares, such as local and intercity routes. Each route is
+            in one group.
+          </p>
+        </div>
+        <.button
+          id="create-route-group"
+          variant="secondary"
+          class="min-h-11"
+          phx-click="open_group_drawer"
+        >
+          <.icon name="hero-plus" class="size-4" /> Create route group
+        </.button>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table id="route-groups" class="w-full border-collapse text-sm">
+          <caption class="sr-only">
+            The version's route groups, the routes in each, and the fare a ride on them pays.
+          </caption>
+          <thead>
+            <tr class="text-left">
+              <th
+                scope="col"
+                class="w-[220px] border-b border-subtle bg-canvas px-4 py-2 text-[13px] font-semibold text-strong"
+              >
+                Group
+              </th>
+              <th
+                scope="col"
+                class="border-b border-subtle bg-canvas px-4 py-2 text-[13px] font-semibold text-strong"
+              >
+                Routes
+              </th>
+              <th
+                scope="col"
+                class="w-[300px] border-b border-subtle bg-canvas px-4 py-2 text-[13px] font-semibold text-strong"
+              >
+                Which fare a ride pays
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              :for={group <- @workspace.groups}
+              id={"route-group-#{group.network_id}"}
+              class="hover:bg-canvas/60"
+            >
+              <th
+                scope="row"
+                class="border-b border-subtle px-4 py-2.5 text-left align-top font-normal"
+              >
+                <button
+                  type="button"
+                  id={"edit-group-#{group.network_id}"}
+                  phx-click="open_group_drawer"
+                  phx-value-network_id={group.network_id}
+                  class="group/name block min-h-11 w-full text-left"
+                >
+                  <span class="block text-sm font-bold text-strong underline decoration-subtle underline-offset-4 group-hover/name:decoration-action">
+                    {group.name || group.network_id}
+                  </span>
+                  <span class="block text-[13px] font-normal text-muted">
+                    {route_count_text(length(group.route_ids))}
+                  </span>
+                </button>
+              </th>
+              <td class="border-b border-subtle px-4 py-2.5 align-top">
+                <div class="flex max-w-[520px] flex-wrap gap-1">
+                  <.route_badges
+                    :for={route <- group_route_badges(group, @workspace)}
+                    route={route}
+                  />
+                </div>
+              </td>
+              <td class="border-b border-subtle px-4 py-2.5 align-top text-sm">
+                <%= cond do %>
+                  <% group.zone_priced? -> %>
+                    <span id={"group-charge-#{group.network_id}"}>
+                      By zone ·
+                      <a
+                        href={"#zone-matrix-#{group.network_id}"}
+                        class="font-semibold text-strong underline decoration-subtle underline-offset-4 hover:decoration-action"
+                      >
+                        see the zone table
+                      </a>
+                    </span>
+                  <% flat = flat_rule_fare(group, @workspace) -> %>
+                    <span id={"group-charge-#{group.network_id}"}>
+                      {flat.name}{if amount = adult_amount_text(flat, @workspace),
+                        do: " · #{amount} adult"},
+                      any stops
+                    </span>
+                  <% true -> %>
+                    <span
+                      id={"group-charge-#{group.network_id}"}
+                      class="font-semibold text-warning-fg"
+                    >
+                      No fare yet
+                    </span>
+                <% end %>
+              </td>
+            </tr>
+
+            <tr
+              :if={loose_routes(@workspace) != []}
+              id="route-groups-unassigned"
+              class="bg-warning-bg"
+            >
+              <th
+                scope="row"
+                class="border-b border-subtle bg-warning-bg px-4 py-2.5 text-left align-top text-sm font-bold text-warning-fg"
+              >
+                <span class="flex items-center gap-2">
+                  <.icon name="hero-exclamation-triangle" class="size-4 shrink-0" /> In no group
+                </span>
+              </th>
+              <td class="border-b border-subtle bg-warning-bg px-4 py-2.5">
+                <div class="flex flex-wrap gap-1">
+                  <.route_badges :for={route <- @workspace.routes} route={route} />
+                </div>
+              </td>
+              <td class="border-b border-subtle bg-warning-bg px-4 py-2.5 text-sm text-warning-fg">
+                No fare. Trip planners show no price.
+                <.button
+                  id="add-unassigned-to-group"
+                  variant="quiet"
+                  class="min-h-11 !text-warning-fg underline"
+                  phx-click="open_group_drawer"
+                  phx-value-network_id={first_group_id(@workspace)}
+                >
+                  Add to a group
+                </.button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    """
+  end
+
+  @doc """
+  Renders one zone fare matrix: rows are where a ride starts and columns where
+  it ends, every cell a button that opens the cell dialog for that pair.
+
+  `matrix` is the workspace's own entry for a zone-priced group, so a cell's
+  "No fare" flag is the read model's rather than a guess: a pair nobody priced
+  is present and flagged, and that is what the cell dialog writes through. A
+  warning cell carries an icon and the words, never colour alone.
+  """
+  attr :matrix, :map, required: true
+  attr :workspace, :map, required: true
+
+  def zone_matrix(assigns) do
+    ~H"""
+    <section
+      id={"zone-matrix-#{@matrix.network_id}"}
+      aria-labelledby={"zone-matrix-title-#{@matrix.network_id}"}
+      class="overflow-clip rounded-card border border-subtle bg-white"
+    >
+      <div class="border-b border-subtle px-4 py-3 sm:px-5">
+        <h2
+          id={"zone-matrix-title-#{@matrix.network_id}"}
+          class="font-sans text-base font-bold tracking-normal text-strong"
+        >
+          Zone fares on {group_name(@workspace, @matrix.network_id)}
+        </h2>
+        <p class="mt-0.5 text-[13px] text-muted">
+          Rows are where a ride starts, columns where it ends. Adult prices; other rider types
+          follow the Prices tab. Select a cell to change its fare.
+        </p>
+      </div>
+
+      <div class="overflow-x-auto p-4 sm:p-5">
+        <table class="w-full min-w-[560px] border-collapse overflow-hidden rounded-card border border-subtle text-sm">
+          <caption class="sr-only">
+            The fare for a ride in each zone pair on {group_name(@workspace, @matrix.network_id)}.
+          </caption>
+          <thead>
+            <tr>
+              <td class="w-[200px] border-b border-subtle bg-canvas px-3 py-2 text-[12px] text-muted">
+                From ↓ &nbsp; To →
+              </td>
+              <th
+                :for={zone <- @matrix.zones}
+                scope="col"
+                class="border-b border-l border-subtle bg-canvas px-3 py-2 text-[13px] font-semibold text-strong"
+              >
+                {zone.name}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr :for={from <- @matrix.zones}>
+              <th
+                scope="row"
+                class="border-b border-subtle bg-canvas px-3 py-2 text-left text-[13px] font-semibold text-strong"
+              >
+                {from.name}
+              </th>
+              <td
+                :for={to <- @matrix.zones}
+                class="border-b border-l border-subtle p-0"
+              >
+                <.matrix_cell
+                  network_id={@matrix.network_id}
+                  from={from}
+                  to={to}
+                  cell={
+                    Map.get(@matrix.cells, {from.area_id, to.area_id}, %{
+                      products: [],
+                      gap?: true
+                    })
+                  }
+                  workspace={@workspace}
+                />
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p class="mt-3 text-[13px] text-muted">
+          Riders pay by where they board and where they get off. A ride that only passes through a
+          zone isn’t charged for it.
+        </p>
+      </div>
+    </section>
+    """
+  end
+
+  @doc false
+  # One cell of a zone matrix. A pair nobody priced is a warning cell: the words
+  # and an icon, not a colour on its own, and a 44 px target like every other
+  # control on the tab.
+  attr :network_id, :string, required: true
+  attr :from, :map, required: true
+  attr :to, :map, required: true
+  attr :cell, :map, required: true
+  attr :workspace, :map, required: true
+
+  defp matrix_cell(assigns) do
+    ~H"""
+    <button
+      type="button"
+      id={"cell-#{@network_id}-#{@from.area_id}-#{@to.area_id}"}
+      data-cell={cell_key(@from, @to)}
+      data-gap={to_string(@cell.gap?)}
+      phx-click="open_cell"
+      phx-value-network_id={@network_id}
+      phx-value-from={@from.area_id}
+      phx-value-to={@to.area_id}
+      aria-label={cell_aria_label(@cell, @from, @to, @workspace)}
+      class={[
+        "flex min-h-11 w-full flex-col items-center justify-center gap-0.5 px-2 py-1.5 hover:underline",
+        if(@cell.gap?,
+          do: "bg-warning-bg font-bold text-warning-fg",
+          else: "hover:bg-canvas"
+        )
+      ]}
+    >
+      <%= if @cell.gap? do %>
+        <span class="flex items-center gap-1.5 text-sm">
+          <.icon name="hero-exclamation-triangle" class="size-4 shrink-0" /> No fare
+        </span>
+        <span class="text-[12px] font-normal">Set fare</span>
+      <% else %>
+        <span class="text-sm font-semibold tabular-nums text-strong">
+          {cell_price_text(@cell, @workspace)}
+        </span>
+        <span class="text-[12px] text-muted">{cell_fare_names(@cell, @workspace)}</span>
+        <.badge :if={length(@cell.products) > 1} tone="warning" class="mt-0.5">
+          {length(@cell.products)} fares
+        </.badge>
+      <% end %>
+    </button>
+    """
+  end
+
+  @doc """
+  Renders the dialog that sets one zone matrix cell's fare: the single rides as a
+  radio list with their adult prices, "No fare", and — for a pair of different
+  zones — the choice to set the reverse cell too.
+
+  The whole dialog is one form whose confirm button submits it, so the fare and
+  the "also for the return ride" answer travel with the write rather than being
+  pushed as a separate event.
+  """
+  attr :cell, :map, required: true
+  attr :form, :any, required: true
+  attr :workspace, :map, required: true
+  attr :version_name, :string, required: true
+  attr :published?, :boolean, default: true
+  attr :return_focus_id, :string, default: nil
+  attr :pending?, :boolean, default: false
+
+  def cell_dialog(assigns) do
+    ~H"""
+    <.confirm_dialog
+      id="cell-dialog"
+      chrome="planner"
+      size="2xl"
+      open={true}
+      pending={@pending?}
+      title={"Fare from #{@cell.from_name} to #{@cell.to_name}"}
+      confirm_label="Save fare"
+      pending_label="Saving…"
+      confirm_disabled={@cell.error != nil}
+      on_confirm="set_zone_fare"
+      on_cancel="close_cell"
+      cancel_label="Cancel"
+      confirm_form="cell-form"
+      return_focus_id={@return_focus_id}
+    >
+      <p id="cell-dialog-context" class="flex flex-wrap items-center gap-2 text-[13px] text-muted">
+        <span>{@cell.group_name}</span>
+        <span aria-hidden="true">·</span>
+        <span>{version_phrase(@version_name, @published?)}</span>
+      </p>
+
+      <.form
+        for={@form}
+        id="cell-form"
+        as={:cell}
+        novalidate
+        phx-change="change_cell"
+        phx-submit="set_zone_fare"
+        class="mt-4 grid gap-4"
+      >
+        <input type="hidden" name="cell[from]" value={@cell.from} />
+        <input type="hidden" name="cell[to]" value={@cell.to} />
+        <input type="hidden" name="cell[both]" value="false" />
+
+        <fieldset id="cell-fares">
+          <legend class="text-sm font-semibold text-strong">Fare</legend>
+          <div class="mt-2 grid gap-1">
+            <label
+              :for={fare <- single_fares(@workspace)}
+              class="flex min-h-11 cursor-pointer items-center gap-3 rounded-control px-2 has-[:checked]:bg-selection"
+            >
+              <input
+                type="radio"
+                id={"cell-fare-#{fare.key}"}
+                name="cell[fare_product_id]"
+                value={fare.key}
+                checked={@cell.fare_product_id == fare.key}
+                class="size-4 accent-action"
+              />
+              <span class="flex-1 text-sm font-semibold text-strong">{fare.name}</span>
+              <span class="text-sm tabular-nums text-default">{fare.price}</span>
+            </label>
+
+            <label
+              for="cell-fare-none"
+              class="flex min-h-11 cursor-pointer items-center gap-3 rounded-control px-2 has-[:checked]:bg-selection"
+            >
+              <input
+                type="radio"
+                id="cell-fare-none"
+                name="cell[fare_product_id]"
+                value=""
+                checked={is_nil(@cell.fare_product_id)}
+                class="size-4 accent-action"
+              />
+              <span class="flex-1 text-sm text-default">
+                No fare <span class="text-muted">· trip planners show no price</span>
+              </span>
+            </label>
+          </div>
+        </fieldset>
+
+        <div
+          :if={@cell.from != @cell.to}
+          id="cell-return"
+          class="border-t border-subtle pt-3"
+        >
+          <.fare_checkbox
+            id="cell-both"
+            name="cell[both]"
+            value="true"
+            checked={@cell.both?}
+            label={"Also for rides from #{@cell.to_name} to #{@cell.from_name}"}
+          />
+        </div>
+
+        <p :if={@cell.error} id="cell-error" class="text-sm font-semibold text-error-fg">
+          {@cell.error}
+        </p>
+      </.form>
+
+      <:status>
+        <p id="cell-status" class="mb-2 text-[13px] text-muted">
+          Nothing changes until you save. {export_phrase(@version_name, @published?)}
+        </p>
+      </:status>
+    </.confirm_dialog>
+    """
+  end
+
+  @doc """
+  Renders the route group drawer: the group's name, every route of this version
+  as a choice, and the two warnings the prototype shows — the routes this group
+  takes out of another group, and the routes that would be left in no group.
+
+  `route_ids` is the whole set of routes the draft holds, because a group is the
+  routes it holds rather than a list an editor adds to: a route whose box is
+  unticked is removed from the group when the drawer saves.
+  """
+  attr :draft, :map, required: true
+  attr :form, :any, required: true
+  attr :workspace, :map, required: true
+  attr :version_name, :string, required: true
+  attr :published?, :boolean, default: true
+  attr :return_focus_id, :string, default: nil
+  attr :pending?, :boolean, default: false
+
+  def group_drawer(assigns) do
+    assigns =
+      assigns
+      |> assign(:moving, moved_routes(assigns.draft, assigns.workspace))
+      |> assign(:leaving, leaving_routes(assigns.draft, assigns.workspace))
+
+    ~H"""
+    <.drawer
+      id="group-drawer"
+      chrome="planner"
+      open
+      pending={@pending?}
+      on_close="close_group_drawer"
+      title={group_drawer_title(@draft)}
+      initial_focus={:first_field}
+      return_focus_id={@return_focus_id}
+      class="max-w-[560px]"
+    >
+      <:lede>
+        Changes apply to {version_phrase(@version_name, @published?)} as soon as you save.
+      </:lede>
+
+      <div id="group-drawer-content" class="flex min-h-0 flex-1 flex-col">
+        <.form
+          for={@form}
+          id="group-form"
+          as={:group}
+          novalidate
+          phx-change="validate_group"
+          phx-submit="save_route_group"
+          class="flex min-h-0 flex-1 flex-col"
+        >
+          <.drawer_scroll>
+            <.form_error_summary
+              id="error-summary"
+              title={group_error_summary_title(length(@draft.failures))}
+              failures={@draft.failures}
+            />
+
+            <.input
+              id="group-name"
+              field={@form[:name]}
+              type="text"
+              label="Name"
+              placeholder="Local routes"
+              errors={List.wrap(@draft.name_error)}
+              help="As riders know it, such as “Local routes” or “Express”."
+              autocomplete="off"
+              phx-debounce="300"
+            />
+
+            <fieldset id="group-routes" class="min-w-0">
+              <legend class="text-sm font-semibold text-strong">Routes</legend>
+              <p class="mt-0.5 text-[13px] text-muted">
+                A route is in one group. Choosing a route from another group moves it here.
+              </p>
+              <%!-- The hidden marker says the route list arrived at all: an
+                unticked checkbox is absent from a form's payload, so a drawer
+                where the operator ticked nothing sends no `route_ids` key unless
+                the marker travels with it. A group with no routes is a real
+                answer — it is what leaves every route in no group. --%>
+              <input type="hidden" name="group[route_ids][]" value="" />
+              <div class="mt-2 grid sm:grid-cols-2">
+                <label
+                  :for={route <- @workspace.routes}
+                  for={"group-route-#{route.route_id}"}
+                  class="flex min-h-11 cursor-pointer items-center gap-3 py-1"
+                >
+                  <input
+                    type="checkbox"
+                    id={"group-route-#{route.route_id}"}
+                    name="group[route_ids][]"
+                    value={route.route_id}
+                    checked={route.route_id in @draft.route_ids}
+                    class="size-5 shrink-0 accent-action"
+                  />
+                  <span class="min-w-0 text-sm text-strong">
+                    <RouteIdentity.route_badge route={route} />
+                    {route_name(route)}
+                    <span :if={other_group_of(route, assigns)} class="block text-[12px] text-muted">
+                      In {other_group_of(route, assigns)}
+                    </span>
+                  </span>
+                </label>
+              </div>
+            </fieldset>
+
+            <.message
+              :if={@moving != []}
+              id="group-moving"
+              kind="warning"
+              role="status"
+              title="Routes move between groups"
+            >
+              <b>
+                {Enum.map_join(@moving, ", ", &"Route #{&1.route_id}")}
+                {if length(@moving) == 1, do: "moves", else: "move"} from {group_name(
+                  @workspace,
+                  hd(@moving).from_network_id
+                )}.
+              </b>
+              Rides on {if length(@moving) == 1, do: "it", else: "them"} will charge {@draft.name ||
+                "this group"}’s fares.
+            </.message>
+
+            <.message
+              :if={@leaving != []}
+              id="group-leaving"
+              kind="warning"
+              role="status"
+              title="Routes left in no group"
+            >
+              <b>
+                {Enum.map_join(@leaving, ", ", &"Route #{&1}")} will be in no group
+              </b>
+              and have no fare until you add {if length(@leaving) == 1, do: "it", else: "them"} to another group.
+            </.message>
+
+            <p class="text-[13px] text-muted">
+              In the exported feed a route group is a GTFS network <code class="font-mono text-[12px]">networks.txt, route_networks.txt</code>. The route
+              form’s “Fare network” field shows the same choice.
+            </p>
+          </.drawer_scroll>
+
+          <.drawer_footer>
+            <.button
+              id="cancel-route-group"
+              variant="quiet"
+              class="min-h-11"
+              phx-click="close_group_drawer"
+            >
+              Cancel
+            </.button>
+            <.button
+              id="save-route-group"
+              variant="primary"
+              class="min-h-11"
+              type="submit"
+              phx-disable-with="Saving…"
+            >
+              {if @draft.key, do: "Save changes", else: "Create route group"}
+            </.button>
+          </.drawer_footer>
+        </.form>
+      </div>
+    </.drawer>
+    """
+  end
+
+  @doc """
+  Renders the passes table: one row per pass and one column per route group,
+  each cell a checkbox that adds or removes that group from the pass's accepted
+  networks.
+
+  A version with no pass carries no table — there is nothing to accept — which
+  is what the prototype does.
+  """
+  attr :workspace, :map, required: true
+  attr :version_name, :string, required: true
+  attr :published?, :boolean, default: true
+
+  def passes_card(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :forms,
+        Map.new(pass_fares(assigns.workspace), &{&1.key, to_form(%{}, as: :pass)})
+      )
+
+    ~H"""
+    <section
+      :if={pass_fares(@workspace) != []}
+      id="passes-card"
+      aria-labelledby="passes-title"
+      class="overflow-clip rounded-card border border-subtle bg-white"
+    >
+      <div class="border-b border-subtle px-4 py-3 sm:px-5">
+        <h2 id="passes-title" class="font-sans text-base font-bold tracking-normal text-strong">
+          Passes
+        </h2>
+        <p class="mt-0.5 text-[13px] text-muted">
+          Which route groups accept each pass. A pass covers every ride on those groups; riders
+          see it as another way to pay. Changes apply to {version_phrase(@version_name, @published?)} as soon as you save.
+        </p>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table id="passes" class="w-full border-collapse text-sm">
+          <caption class="sr-only">Which route groups accept each pass.</caption>
+          <thead>
+            <tr>
+              <th
+                scope="col"
+                class="border-b border-subtle bg-canvas px-4 py-2 text-left text-[13px] font-semibold text-strong"
+              >
+                Pass
+              </th>
+              <th
+                :for={group <- @workspace.groups}
+                scope="col"
+                class="w-[180px] border-b border-subtle bg-canvas px-4 py-2 text-left text-[13px] font-semibold text-strong"
+              >
+                {group.name || group.network_id}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr :for={fare <- pass_fares(@workspace)} id={"pass-row-#{fare.key}"}>
+              <th
+                scope="row"
+                class="border-b border-subtle px-4 text-left text-sm font-bold text-strong"
+              >
+                {fare.name}
+                <span class="font-normal text-muted">· {fare.price}</span>
+              </th>
+              <td
+                :for={group <- @workspace.groups}
+                class="border-b border-subtle px-4"
+              >
+                <%!-- One form per cell: the checkbox carries the group it belongs
+                  to beside its own answer, so a change names the one group that
+                  moved rather than the whole row. The hidden marker sends `false`
+                  when the box is unticked, because an unticked checkbox is absent
+                  from a form's payload. --%>
+                <.form
+                  for={Map.fetch!(@forms, fare.key)}
+                  id={"pass-form-#{fare.key}-#{group.network_id}"}
+                  as={:pass}
+                  phx-change="set_pass_acceptance"
+                  class="flex min-h-11 items-center gap-2"
+                >
+                  <input type="hidden" name="pass[fare_product_id]" value={fare.key} />
+                  <input type="hidden" name="pass[network_id]" value={group.network_id} />
+                  <input type="hidden" name="pass[accepted]" value="false" />
+                  <label
+                    for={"pass-#{fare.key}-#{group.network_id}"}
+                    class="flex min-h-11 cursor-pointer items-center gap-2"
+                  >
+                    <input
+                      type="checkbox"
+                      id={"pass-#{fare.key}-#{group.network_id}"}
+                      name="pass[accepted]"
+                      value="true"
+                      checked={group.network_id in fare.accepted_network_ids}
+                      class="size-5 shrink-0 accent-action"
+                    />
+                    <span class="text-sm text-default">Accepted</span>
+                  </label>
+                </.form>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    """
+  end
+
+  @doc false
+  # One route badge in the groups table. The badge is the same component the
+  # Routes page draws, so a route's colour cannot differ between the two.
+  attr :route, :map, required: true
+
+  defp route_badges(assigns) do
+    ~H"""
+    <span data-group-badge={@route.route_id}>
+      <RouteIdentity.route_badge route={@route} />
+    </span>
+    """
+  end
+
+  defp route_count_text(1), do: "1 route"
+  defp route_count_text(count), do: "#{count} routes"
+
+  defp group_route_badges(group, workspace) do
+    Enum.map(group.route_ids, &route_of(workspace, &1)) |> Enum.reject(&is_nil/1)
+  end
+
+  defp route_of(workspace, route_id) do
+    Enum.find(workspace.routes, &(&1.route_id == route_id))
+  end
+
+  defp route_name(route) do
+    Enum.find_value([route.route_short_name, route.route_long_name], fn value ->
+      if is_binary(value) and String.trim(value) != "", do: value
+    end) || route.route_id
+  end
+
+  # The version's routes no group holds, which is the "In no group" row's own
+  # list. A `route_networks` row names a route a `routes.txt` row does not is
+  # not drawn: the badge needs a colour the version has.
+  defp loose_routes(workspace) do
+    grouped = MapSet.new(Enum.flat_map(workspace.groups, & &1.route_ids))
+    Enum.reject(workspace.routes, &MapSet.member?(grouped, &1.route_id))
+  end
+
+  defp first_group_id(workspace) do
+    case List.first(workspace.groups) do
+      nil -> nil
+      group -> group.network_id
+    end
+  end
+
+  # The fare a group-wide rule — one naming no zone pair — charges this group.
+  defp flat_rule_fare(group, workspace) do
+    Enum.find_value(workspace.fares, fn fare ->
+      if fare.kind == "single" and
+           Enum.any?(fare.rules, fn rule ->
+             rule.network_id == group.network_id and blank_area?(rule.from_area_id) and
+               blank_area?(rule.to_area_id)
+           end) do
+        fare
+      end
+    end)
+  end
+
+  defp cell_key(from, to), do: "#{from.area_id}-#{to.area_id}"
+
+  defp cell_aria_label(cell, from, to, workspace) do
+    if cell.gap? do
+      "#{from.name} to #{to.name}: no fare. Set a fare"
+    else
+      "#{from.name} to #{to.name}: #{cell_fare_names(cell, workspace)}, #{cell_price_text(cell, workspace)} adult. Change fare"
+    end
+  end
+
+  # A cell's adult price, worked from the fare the cell names and the rider type
+  # the version shows first — the same price the Prices tab leads each fare row
+  # with.
+  defp cell_price_text(cell, workspace) do
+    rider = rider_default(workspace)
+    amount = cell_amounts(cell, workspace) |> Map.get(rider && rider.rider_category_id)
+
+    Money.format(amount, workspace.currency) || "—"
+  end
+
+  defp cell_fare_names(cell, workspace) do
+    cell
+    |> cell_fares(workspace)
+    |> Enum.map(& &1.name)
+    |> Enum.join(", ")
+  end
+
+  # The distinct fares a cell's rules name. A cell holding every rider type of
+  # one fare is one fare, which is why the products are read through the fares
+  # rather than counted.
+  defp cell_fares(cell, workspace) do
+    Enum.flat_map(cell.products, fn product_id ->
+      case Enum.find(workspace.fares, &(product_id in &1.product_ids)) do
+        nil -> []
+        fare -> [fare]
+      end
+    end)
+    |> Enum.uniq_by(& &1.name)
+    |> Enum.sort_by(& &1.name)
+  end
+
+  defp cell_amounts(cell, workspace) do
+    Enum.reduce(cell_fares(cell, workspace), %{}, fn fare, amounts ->
+      Map.merge(amounts, fare.prices, fn _rider_id, left, right -> right || left end)
+    end)
+  end
+
+  defp pass_fares(workspace) do
+    workspace.fares
+    |> Enum.filter(&(&1.kind == "pass"))
+    |> Enum.map(fn fare ->
+      %{
+        key: List.first(fare.product_ids),
+        name: fare.name,
+        price: adult_amount_text(fare, workspace) || "—",
+        accepted_network_ids: fare.accepted_network_ids
+      }
+    end)
+  end
+
+  defp adult_amount(fare, workspace) do
+    rider = rider_default(workspace)
+    rider && Map.get(fare.prices, rider.rider_category_id)
+  end
+
+  # The same amount the Prices tab leads the fare's row with, formatted for the
+  # version's own currency.
+  defp adult_amount_text(fare, workspace) do
+    Money.format(adult_amount(fare, workspace), workspace.currency)
+  end
+
+  # The single rides a cell may be set to, keyed by the product id the writer
+  # names one: the fare's own first row, which `Fares.set_zone_fare/7` reads as
+  # the fare and writes every rider type of.
+  defp single_fares(workspace) do
+    for fare <- workspace.fares,
+        fare.kind == "single",
+        key = List.first(fare.product_ids),
+        is_binary(key) do
+      %{
+        key: key,
+        name: fare.name,
+        price: adult_amount_text(fare, workspace) || "—"
+      }
+    end
+  end
+
+  defp group_drawer_title(%{key: nil}), do: "Create route group"
+  defp group_drawer_title(%{name: name}), do: "Edit route group · #{name}"
+
+  defp group_error_summary_title(1), do: "Fix this problem to save"
+  defp group_error_summary_title(_count), do: "Fix these problems to save"
+
+  @doc false
+  # The routes this draft takes out of another group, each with where it came
+  # from — the same list `Fares.save_route_group/2` reports as `moved`. A group
+  # being created moves nothing, because a route only moves out of a group that
+  # already holds it.
+  defp moved_routes(%{key: nil}, _workspace), do: []
+
+  defp moved_routes(draft, workspace) do
+    Enum.flat_map(workspace.groups, fn group ->
+      if group.network_id == draft.key do
+        []
+      else
+        Enum.map(
+          Enum.filter(group.route_ids, &(&1 in draft.route_ids)),
+          &%{
+            route_id: &1,
+            from_network_id: group.network_id
+          }
+        )
+      end
+    end)
+  end
+
+  # The routes this group holds that the draft no longer holds, which is what
+  # leaves them in no group.
+  defp leaving_routes(draft, workspace) do
+    case Enum.find(workspace.groups, &(&1.network_id == draft.key)) do
+      nil -> []
+      group -> Enum.reject(group.route_ids, &(&1 in draft.route_ids))
+    end
+  end
+
+  # The group a route is in besides the one being edited, which is what the
+  # drawer's route list says under the route's name.
+  # The other group a route belongs to, which the route list states for every
+  # route rather than only the ones the draft has picked up: the move warning
+  # below is about the draft, but "where this route is now" is the version's
+  # own fact and has to be readable before anything is ticked.
+  defp other_group_of(route, assigns) do
+    assigns.workspace.groups
+    |> Enum.find_value(fn group ->
+      if group.network_id != assigns.draft.key and route.route_id in group.route_ids do
+        group_name(assigns.workspace, group.network_id)
+      end
+    end)
   end
 
   @doc """

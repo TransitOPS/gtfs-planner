@@ -58,6 +58,7 @@ alias GtfsPlanner.Gtfs.ExportRuns
 alias GtfsPlanner.Gtfs.FareAttribute
 alias GtfsPlanner.Gtfs.FareRule
 alias GtfsPlanner.Gtfs.Fares
+alias GtfsPlanner.Gtfs.FareProductDetail
 alias GtfsPlanner.Gtfs.Fares.Conversion
 alias GtfsPlanner.Gtfs.Fares.Interpreter
 alias GtfsPlanner.Gtfs.Fares.Transfers
@@ -3689,6 +3690,45 @@ case Accounts.register_first_admin(%{
     convert!.(fares_mismatch_version)
     gaps_scope = convert!.(fares_gaps_version)
 
+    # The sample's two pass names. `Conversion` classifies a product by R12 —
+    # every rule it uses must share its conditions with a rule of a *differently
+    # named* fare — and the sample's passes each stand alone, so the conversion
+    # leaves all seven fares as single rides. A version whose operator has since
+    # said which names are passes records that in `fare_product_details`, which
+    # is where the Where tab's passes table reads it from, so the seed records
+    # the same fact here.
+    record_pass_kinds! = fn version_ids, kinds ->
+      for gtfs_version_id <- version_ids,
+          detail <-
+            Repo.all(
+              from(product in FareProductDetail,
+                where:
+                  product.organization_id == ^org.id and
+                    product.gtfs_version_id == ^gtfs_version_id
+              )
+            ) do
+        base = detail.fare_product_id |> String.split("_adult_") |> hd()
+
+        case Map.fetch(kinds, base) do
+          {:ok, {kind, accepted}} ->
+            detail
+            |> Ecto.Changeset.change(%{kind: kind, accepted_network_ids: accepted})
+            |> Repo.update!()
+
+          :error ->
+            :ok
+        end
+      end
+    end
+
+    record_pass_kinds!.(
+      [fares_managed_version.id, fares_gaps_version.id],
+      %{
+        "day_pass" => {"pass", ["N_LOCAL"]},
+        "month_pass" => {"pass", ["all_routes"]}
+      }
+    )
+
     # The difference the prepared North Coast needs: without it the sample's
     # Local-then-Intercity journey charges both fares.
     {:ok, _fares_difference} =
@@ -3737,19 +3777,12 @@ case Accounts.register_first_admin(%{
       )
       |> Repo.update_all(set: [price: Decimal.new("1.75"), updated_at: DateTime.utc_now()])
 
-    # The gaps version: the `CST -> TOL` cell holds every rider type of the
-    # Valley-coast ride, which is what the editor's cell dialog reviews.
-    gaps_cell_products =
-      Interpreter.load_rows(org.id, fares_gaps_version.id).fare_leg_rules
-      |> Enum.filter(fn rule ->
-        rule.network_id == "N_LOCAL" and rule.from_area_id == "CST" and rule.to_area_id == "TOL"
-      end)
-      |> Enum.map(& &1.fare_product_id)
-      |> Enum.uniq()
-      |> Enum.sort()
-
-    {:ok, _fares_cleared_cell} =
-      Fares.set_zone_fare(gaps_scope, "N_LOCAL", "CST", "TOL", nil, false, gaps_cell_products)
+    # The gaps version has no fare in either direction of the CST/TOL pair.
+    # This is a newly created disposable fixture, so no user has reviewed a
+    # cell yet; clear both directions together before normalization can remove
+    # the only fare-rule reference that keeps TOL discoverable as a zone.
+    {:ok, _fares_cleared_pair} =
+      Fares.set_zone_fare(gaps_scope, "N_LOCAL", "CST", "TOL", nil, true, nil)
 
     gaps_local_routes =
       "N_LOCAL"

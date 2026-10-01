@@ -40,6 +40,11 @@ defmodule GtfsPlanner.Gtfs.Fares.Workspace do
       *zone-priced* when any of the version's leg rules names both areas for it,
       which is what gives it a matrix.
 
+    * `routes` — the version's own routes, keyed by their `routes.txt` column
+      names, which the Where tab's group table badges, its group drawer offers
+      and its "In no group" row is worked from. A route no group's `route_ids`
+      hold is one no group holds.
+
     * `matrices` — one per zone-priced group, over that group's own zones: every
       ordered pair of zones is a cell, keyed by `{from_area_id, to_area_id}`,
       holding the single-ride `fare_product_id`s that price it and a `gap?`
@@ -109,6 +114,14 @@ defmodule GtfsPlanner.Gtfs.Fares.Workspace do
           zone_priced?: boolean()
         }
 
+  @type route :: %{
+          route_id: String.t(),
+          route_short_name: String.t() | nil,
+          route_long_name: String.t() | nil,
+          route_color: String.t() | nil,
+          route_text_color: String.t() | nil
+        }
+
   @type zone :: %{area_id: String.t(), name: String.t()}
 
   @type cell :: %{products: [String.t()], gap?: boolean()}
@@ -167,6 +180,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Workspace do
           riders: [rider()],
           media: [medium()],
           groups: [group()],
+          routes: [route()],
           matrices: [matrix()],
           transfers: [transfer()],
           time_periods: [time_period()],
@@ -182,6 +196,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Workspace do
             riders: [],
             media: [],
             groups: [],
+            routes: [],
             matrices: [],
             transfers: [],
             time_periods: [],

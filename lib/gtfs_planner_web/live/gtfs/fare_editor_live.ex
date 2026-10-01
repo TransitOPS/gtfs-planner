@@ -50,6 +50,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
 
   import GtfsPlannerWeb.Gtfs.FareEditorComponents,
     only: [
+      cell_dialog: 1,
       conversion_review: 1,
       fare_cards: 1,
       fare_delete_dialog: 1,
@@ -60,16 +61,20 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       fare_table: 1,
       fares_conflict: 1,
       fares_mismatch_banner: 1,
+      group_drawer: 1,
       header_primary: 1,
       load_error: 1,
       loading: 1,
       media_delete_dialog: 1,
       media_drawer: 1,
+      passes_card: 1,
       price_change_dialog: 1,
       price_save_bar: 1,
       rider_delete_dialog: 1,
       rider_drawer: 1,
-      unmanaged_fares: 1
+      route_groups_card: 1,
+      unmanaged_fares: 1,
+      zone_matrix: 1
     ]
 
   import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1]
@@ -121,6 +126,12 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
      |> assign(:conversion_focus, nil)
      |> assign(:prices_mode, :grid)
      |> assign(:older_mismatches, [])
+     |> assign(:group_draft, nil)
+     |> assign(:group_form, to_form(%{}, as: :group))
+     |> assign(:group_focus, nil)
+     |> assign(:cell, nil)
+     |> assign(:cell_form, to_form(%{}, as: :cell))
+     |> assign(:cell_focus, nil)
      |> assign(:drawer_pending?, false)}
   end
 
@@ -782,6 +793,146 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
     end
   end
 
+  # -- Where fares apply: route groups, the zone matrix and passes ------------
+
+  # The group drawer is one of the two overlays the Where tab owns, so opening
+  # either closes the other: a drawer and a dialog are both an overlay over the
+  # same page, and Escape must return focus to one control rather than two.
+  @impl true
+  def handle_event("open_group_drawer", params, socket) do
+    draft = open_group_draft(socket, params)
+
+    {:noreply,
+     socket
+     |> assign(:cell, nil)
+     |> assign(:cell_focus, nil)
+     |> assign(:group_draft, draft)
+     |> assign(:group_form, to_form(%{"name" => draft.name}, as: :group))
+     |> assign(:group_focus, params["opener_id"])
+     |> assign(:price_note, nil)}
+  end
+
+  @impl true
+  def handle_event("close_group_drawer", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:group_draft, nil)
+     |> assign(:group_focus, nil)}
+  end
+
+  # A change carries the whole form — the name and every route box — so the
+  # draft is rebuilt from it rather than merged into: an unticked box is simply
+  # absent from the payload, and a merge would keep the route the operator just
+  # removed. Nothing is written until the submit.
+  @impl true
+  def handle_event("validate_group", %{"group" => params}, socket) when is_map(params) do
+    case socket.assigns.group_draft do
+      nil -> {:noreply, socket}
+      draft -> {:noreply, put_group(socket, group_draft(draft, socket, params))}
+    end
+  end
+
+  def handle_event("validate_group", _params, socket), do: {:noreply, socket}
+
+  # The write is exactly what `Fares.save_route_group/2` is for: the group's
+  # name and the whole set of routes it holds, which is what makes a route in at
+  # most one group true (AC-19) rather than a convention the UI keeps. The
+  # answer's `moved` list is the drawer's own warning, so the operator is told
+  # what moved after the write as well as before it.
+  @impl true
+  def handle_event("save_route_group", %{"group" => params}, socket) when is_map(params) do
+    case socket.assigns.group_draft do
+      nil ->
+        {:noreply, socket}
+
+      draft ->
+        draft = group_draft(draft, socket, params)
+        socket = put_group(socket, draft)
+
+        if draft.failures == [] do
+          save_route_group(socket, draft)
+        else
+          {:noreply, focus_error_summary(socket)}
+        end
+    end
+  end
+
+  def handle_event("save_route_group", _params, socket), do: {:noreply, socket}
+
+  # The cell dialog opens on one cell of one group's matrix, with the fare that
+  # cell holds and the reverse cell's fare beside it: the "also for the return
+  # ride" choice is only offered when it is free to offer, which is the case
+  # when the reverse cell holds nothing or holds the same fare.
+  @impl true
+  def handle_event("open_cell", params, socket) do
+    {:noreply,
+     socket
+     |> assign(:group_draft, nil)
+     |> assign(:group_focus, nil)
+     |> assign(:cell, open_cell(socket, params))
+     |> assign(:cell_focus, "cell-#{params["network_id"]}-#{params["from"]}-#{params["to"]}")}
+  end
+
+  @impl true
+  def handle_event("close_cell", _params, socket) do
+    {:noreply, assign(socket, :cell, nil)}
+  end
+
+  @impl true
+  def handle_event("change_cell", %{"cell" => params}, socket) when is_map(params) do
+    case socket.assigns.cell do
+      nil -> {:noreply, socket}
+      cell -> {:noreply, assign(socket, :cell, cell_draft(cell, params))}
+    end
+  end
+
+  def handle_event("change_cell", _params, socket), do: {:noreply, socket}
+
+  # The write is `Fares.set_zone_fare/7` and nothing else: the cell's own
+  # products are the fence the writer checks, so a cell another operator has
+  # changed since the dialog opened refuses the whole write rather than
+  # overwriting it (AC-20, R15).
+  @impl true
+  def handle_event("set_zone_fare", %{"cell" => params}, socket) when is_map(params) do
+    case socket.assigns.cell do
+      nil ->
+        {:noreply, socket}
+
+      cell ->
+        cell = cell_draft(cell, params)
+
+        if cell.error do
+          {:noreply, assign(socket, :cell, cell)}
+        else
+          set_zone_fare(socket, cell)
+        end
+    end
+  end
+
+  def handle_event("set_zone_fare", _params, socket), do: {:noreply, socket}
+
+  # The passes table writes each box as it is ticked or unticked, so a pass's
+  # accepted groups are never a draft the operator has to remember to save.
+  # `set_pass_acceptance/5` names the one group that changed, and the pass's
+  # own accepted list is the fence it checks.
+  @impl true
+  def handle_event("set_pass_acceptance", %{"pass" => params}, socket) when is_map(params) do
+    with product_id when is_binary(product_id) <- params["fare_product_id"],
+         network_id when is_binary(network_id) <- params["network_id"] do
+      case pass_of_product(socket, product_id) do
+        nil ->
+          {:noreply, socket}
+
+        fare ->
+          set_pass_acceptance(socket, fare, network_id, params["accepted"] == "true")
+      end
+    else
+      _other -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("set_pass_acceptance", _params, socket), do: {:noreply, socket}
+
   # The dialog's own state, opened with the prototype's defaults: single rides,
   # every rider type the version charges, $0.25, the nearest nickel, and the
   # reduced rider kept at half its fare's new adult price.
@@ -979,6 +1130,307 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       error: "These fares couldn’t be converted (#{reason})."
     }
   end
+
+  defp open_group_draft(socket, params) do
+    case group_of(socket, params["network_id"]) do
+      nil ->
+        group_draft_new(socket)
+
+      group ->
+        group_draft_edit(group)
+    end
+  end
+
+  defp group_draft_new(_socket) do
+    %{key: nil, name: "", route_ids: [], name_error: nil, failures: []}
+  end
+
+  defp group_draft_edit(group) do
+    %{
+      key: group.network_id,
+      name: group.name || "",
+      route_ids: group.route_ids,
+      name_error: nil,
+      failures: []
+    }
+  end
+
+  defp group_of(_socket, nil), do: nil
+
+  defp group_of(socket, network_id) when is_binary(network_id) do
+    Enum.find(socket.assigns.workspace.groups, &(&1.network_id == network_id))
+  end
+
+  # The draft as the payload a change event carries: the name is text, and the
+  # route boxes are a list whose unticked entries are simply absent.
+  defp group_draft(draft, _socket, params) do
+    route_ids =
+      case params["route_ids"] do
+        # The marker field means an empty list is the operator's own answer:
+        # every box unticked.
+        ids when is_list(ids) -> Enum.reject(ids, &(&1 == ""))
+        ids when is_binary(ids) -> if ids == "", do: draft.route_ids, else: [ids]
+        # No marker and no list: the payload did not carry the route answer, so
+        # the routes the draft holds are kept.
+        nil -> draft.route_ids
+      end
+
+    draft
+    |> Map.put(:name, to_string(params["name"] || ""))
+    |> Map.put(:route_ids, route_ids)
+    |> Map.put(:name_error, nil)
+    |> Map.put(:failures, [])
+  end
+
+  defp put_group(socket, draft) do
+    socket
+    |> assign(:group_draft, draft)
+    |> assign(:group_form, to_form(%{"name" => draft.name}, as: :group))
+  end
+
+  defp save_route_group(socket, draft) do
+    socket = assign(socket, :drawer_pending?, true)
+    name = blank_name(draft.name)
+    version_name = socket.assigns.current_gtfs_version.name
+
+    params =
+      %{name: name, route_ids: draft.route_ids}
+      |> then(fn params ->
+        if draft.key, do: Map.put(params, :network_id, draft.key), else: params
+      end)
+
+    case Fares.save_route_group(fare_scope(socket), params) do
+      {:ok, %{operation_id: operation_id, inverse: inverse} = result} ->
+        {:noreply,
+         socket
+         |> load_workspace()
+         |> assign(:group_draft, nil)
+         |> assign(:group_focus, nil)
+         |> assign(:drawer_pending?, false)
+         |> assign(:price_note, %{
+           text: "#{name} saved to #{version_name} service.#{moved_text(result)}",
+           undo: [{operation_id, inverse}]
+         })}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:drawer_pending?, false)
+         |> put_group(refuse_group(socket.assigns.group_draft, reason))}
+    end
+  end
+
+  # The routes the writer moved, named after the write rather than before it:
+  # what the drawer warned about is what the answer reports.
+  defp moved_text(%{moved: []}), do: ""
+
+  defp moved_text(%{moved: moved}) do
+    " " <> Enum.map_join(moved, ", ", &"Route #{&1.route_id} moved to this group.")
+  end
+
+  # A refused save names the field the writer would not read, and the summary is
+  # the list of them rather than the first one the draft holds.
+  defp refuse_group(draft, reason) do
+    message = group_reason_message(reason)
+    field = group_failure_field(reason)
+    failure = %{href: field, msg: "#{group_failure_label(field)}: #{message}"}
+
+    Map.merge(draft, %{name_error: message, failures: [failure]})
+  end
+
+  defp group_failure_field(:duplicate_route_group), do: "#group-name"
+  defp group_failure_field(:not_found), do: "#group-routes"
+  defp group_failure_field(_reason), do: "#group-name"
+
+  defp group_failure_label("#group-routes"), do: "Routes"
+  defp group_failure_label(_href), do: "Name"
+
+  defp group_reason_message(:duplicate_route_group),
+    do: "This version already holds a group with that name."
+
+  defp group_reason_message(:not_found), do: "This version holds no such group or route."
+  defp group_reason_message(:unmanaged), do: "This version’s fares are not edited here yet."
+
+  defp group_reason_message(%Ecto.Changeset{} = changeset) do
+    # A blank name is the writer's own refusal and carries its message; the UI
+    # states what the writer said rather than a second wording of it.
+    changeset
+    |> Ecto.Changeset.traverse_errors(fn {message, _opts} -> message end)
+    |> Map.values()
+    |> List.flatten()
+    |> Enum.join(" ")
+  end
+
+  defp group_reason_message(_reason), do: "That group could not be saved."
+
+  defp open_cell(socket, params) do
+    network_id = params["network_id"]
+    from = params["from"]
+    to = params["to"]
+    workspace = socket.assigns.workspace
+
+    matrix = Enum.find(workspace.matrices, &(&1.network_id == network_id))
+    cell = matrix && Map.get(matrix.cells, {from, to})
+    reverse = matrix && Map.get(matrix.cells, {to, from})
+    products = (cell && cell.products) || []
+    reverse_products = (reverse && reverse.products) || []
+
+    %{
+      network_id: network_id,
+      from: from,
+      to: to,
+      from_name: zone_name(matrix, from),
+      to_name: zone_name(matrix, to),
+      group_name: group_name(workspace, network_id),
+      fare_product_id: cell_fare_key(products, workspace),
+      both?: from != to and reverse_products in [[], products],
+      reviewed: products,
+      error: nil
+    }
+  end
+
+  defp cell_draft(cell, params) do
+    fare = blank_to_nil(params["fare_product_id"])
+
+    cell
+    |> Map.put(:fare_product_id, fare)
+    |> Map.put(:both?, params["both"] == "true" and cell.from != cell.to)
+    |> Map.put(:error, nil)
+  end
+
+  defp zone_name(nil, _area_id), do: nil
+
+  defp zone_name(matrix, area_id) do
+    case Enum.find(matrix.zones, &(&1.area_id == area_id)) do
+      %{name: name} -> name
+      nil -> area_id
+    end
+  end
+
+  defp group_name(workspace, network_id) do
+    case Enum.find(workspace.groups, &(&1.network_id == network_id)) do
+      %{name: name} -> name || network_id
+      nil -> network_id
+    end
+  end
+
+  # The product a cell's fare is written by: the first `fare_product_id` the
+  # workspace's own fares hold for it, because `set_zone_fare/7` reads any
+  # product of a fare as that fare.
+  defp cell_fare_key([], _workspace), do: nil
+
+  defp cell_fare_key(products, workspace) do
+    fare = Enum.find(workspace.fares, &(List.first(&1.product_ids) in products))
+    fare && List.first(fare.product_ids)
+  end
+
+  defp set_zone_fare(socket, cell) do
+    socket = assign(socket, :drawer_pending?, true)
+    version_name = socket.assigns.current_gtfs_version.name
+
+    case Fares.set_zone_fare(
+           fare_scope(socket),
+           cell.network_id,
+           cell.from,
+           cell.to,
+           cell.fare_product_id,
+           cell.both?,
+           cell.reviewed
+         ) do
+      {:ok, %{operation_id: operation_id, inverse: inverse}} ->
+        {:noreply,
+         socket
+         |> load_workspace()
+         |> assign(:cell, nil)
+         |> assign(:cell_focus, nil)
+         |> assign(:drawer_pending?, false)
+         |> assign(:price_note, %{
+           text: zone_fare_note(cell, socket.assigns.workspace, version_name),
+           undo: [{operation_id, inverse}]
+         })}
+
+      {:error, {:stale, _details}} ->
+        {:noreply,
+         assign(socket, :drawer_pending?, false)
+         |> assign(:cell, %{
+           cell
+           | error: "That cell changed since this dialog opened. Nothing was saved."
+         })}
+
+      {:error, :pass_fare} ->
+        {:noreply,
+         assign(socket, :drawer_pending?, false)
+         |> assign(:cell, %{cell | error: "A pass is sold, not applied to a single ride."})}
+
+      {:error, reason} ->
+        {:noreply,
+         assign(socket, :drawer_pending?, false)
+         |> assign(:cell, %{cell | error: "That fare could not be saved (#{reason})."})}
+    end
+  end
+
+  # What the write did, in the prototype's own words. The fare is named from
+  # the reloaded workspace rather than from the draft, so the note says what is
+  # stored rather than what was chosen.
+  defp zone_fare_note(%{fare_product_id: nil} = cell, _workspace, version_name) do
+    "Removed the fare from #{cell.from_name} to #{cell.to_name} in #{version_name} service."
+  end
+
+  defp zone_fare_note(cell, workspace, version_name) do
+    fare = fare_name_of(cell.fare_product_id, workspace)
+
+    "Rides from #{cell.from_name} to #{cell.to_name}#{reverse_phrase(cell)} now pay #{fare} in #{version_name} service."
+  end
+
+  defp reverse_phrase(%{both?: true}), do: " and back"
+  defp reverse_phrase(_cell), do: ""
+
+  defp fare_name_of(nil, _workspace), do: "no fare"
+
+  defp fare_name_of(product_id, workspace) do
+    case Enum.find(workspace.fares, &(product_id in &1.product_ids)) do
+      nil -> product_id
+      fare -> fare.name
+    end
+  end
+
+  defp pass_of_product(socket, product_id) do
+    Enum.find(socket.assigns.workspace.fares, &(product_id in &1.product_ids))
+  end
+
+  defp set_pass_acceptance(socket, fare, network_id, accepted?) do
+    case Fares.set_pass_acceptance(
+           fare_scope(socket),
+           List.first(fare.product_ids),
+           network_id,
+           accepted?,
+           fare.accepted_network_ids
+         ) do
+      {:ok, %{operation_id: operation_id, inverse: inverse}} ->
+        {:noreply,
+         socket
+         |> load_workspace()
+         |> assign(:price_note, %{
+           text:
+             "#{fare.name} #{if accepted?, do: "is now accepted", else: "is no longer accepted"} on #{group_name(socket.assigns.workspace, network_id)}.",
+           undo: [{operation_id, inverse}]
+         })}
+
+      {:error, {:stale, _details}} ->
+        {:noreply,
+         assign(socket, :price_note, %{
+           text:
+             "That pass changed since this table was read. Nothing was saved — reopen the tab to see the current acceptances."
+         })}
+
+      {:error, reason} ->
+        {:noreply,
+         assign(socket, :price_note, %{text: "That acceptance could not be saved (#{reason})."})}
+    end
+  end
+
+  defp blank_name(name) when is_binary(name), do: String.trim(name)
+  defp blank_name(_name), do: ""
 
   # -- The setup draft ---------------------------------------------------------
 
@@ -1957,7 +2409,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <div id="fare-editor-page" class="ds-page">
+      <div id="fare-editor-page" class="ds-page min-w-0">
         <.back_link id="settings-back" navigate={settings_path(@current_gtfs_version.id)}>
           Settings
         </.back_link>
@@ -1986,12 +2438,38 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
           checks_tone={if @load_state == :ready, do: checks_tone(@checks), else: nil}
         />
 
-        <div class="mt-4 grid grid-cols-1 gap-4">
+        <div class="mt-4 grid min-w-0 grid-cols-1 gap-4">
           <.loading :if={@load_state == :loading} />
           <.load_error :if={@load_state == :unavailable} />
           <%!-- The tab's own body arrives with the tab that owns it; the shell
           owns the frame above and the load states beside it. --%>
-          <div :if={@load_state == :ready} id="fare-editor-panel">
+          <div :if={@load_state == :ready} id="fare-editor-panel" class="min-w-0">
+            <div
+              :if={@live_action == :where}
+              id="fare-where-panel"
+              class="grid min-w-0 grid-cols-1 gap-4"
+            >
+              <.fare_note note={@price_note} />
+              <p id="where-lede" class="max-w-[80ch] text-sm text-default">
+                A ride’s fare depends on its <b class="font-semibold text-strong">route group</b>
+                and, where you price by zone,
+                the <b class="font-semibold text-strong">zones</b>
+                where it starts and ends. What a
+                rider pays when they change buses is on the Transfers tab.
+              </p>
+              <.route_groups_card workspace={@workspace} />
+              <.zone_matrix
+                :for={matrix <- @workspace.matrices}
+                matrix={matrix}
+                workspace={@workspace}
+              />
+              <.passes_card
+                workspace={@workspace}
+                version_name={@current_gtfs_version.name}
+                published?={published?(@current_gtfs_version)}
+              />
+            </div>
+
             <div :if={@live_action == :prices} id="fare-prices-panel" class="grid gap-4">
               <.fare_note note={@price_note} />
               <.fare_setup
@@ -2121,6 +2599,30 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
           :if={@conversion}
           conversion={@conversion}
           return_focus_id={@conversion_focus}
+        />
+
+        <%!-- The Where tab's two overlays, siblings of the grid like every other
+          drawer here: a drawer is fixed to the edge of the viewport, and a grid
+          container would place it by its own column. --%>
+        <.group_drawer
+          :if={@group_draft}
+          draft={@group_draft}
+          form={@group_form}
+          workspace={@workspace}
+          version_name={@current_gtfs_version.name}
+          published?={published?(@current_gtfs_version)}
+          return_focus_id={@group_focus}
+          pending?={@drawer_pending?}
+        />
+        <.cell_dialog
+          :if={@cell}
+          cell={@cell}
+          form={@cell_form}
+          workspace={@workspace}
+          version_name={@current_gtfs_version.name}
+          published?={published?(@current_gtfs_version)}
+          return_focus_id={@cell_focus}
+          pending?={@drawer_pending?}
         />
       </div>
     </Layouts.app>

@@ -1134,3 +1134,198 @@ test("setup", async ({ page }, testInfo) => {
   await captureReference(page, testInfo, "?state=imported-v1", "ref-setup-imported");
   await captureReference(page, testInfo, "?state=mismatch", "ref-setup-mismatch");
 });
+
+// ── where ───────────────────────────────────────────────────────────────────
+
+// Where fares apply: the route groups table and its drawer, the zone matrix
+// with its gap cells and the cell dialog, and the passes table. The journeys
+// below are the three prepared cases — the CST→TOL gap filled with both
+// directions, route 10 moving from Intercity into Local routes with the warning
+// that says so, and the Day pass's acceptance of Local routes removed and put
+// back through Undo — and then the states at both prepared viewports beside the
+// prototype states they follow.
+test("where", async ({ page }, testInfo) => {
+  await routeBlankTiles(page);
+  await logIn(page);
+
+  const found = {};
+  for (const [key, name] of Object.entries(VERSIONS)) {
+    found[key] = await versionIdByName(page, name);
+  }
+
+  const openWhere = async (versionId) => {
+    await page.goto(`/gtfs/${versionId}/settings/fares/where`);
+    await waitForLiveView(page);
+    await expect(page.locator("#route-groups")).toBeAttached();
+  };
+
+  // ── the gaps version: a cell nobody priced, and the dialog that fills it ──
+  await openWhere(found.gaps);
+
+  // The groups table names each group, how a ride is charged and every route it
+  // holds. The sample's `CST → TOL` cell is the gap: it says so in words, not by
+  // colour alone.
+  await expect(page.locator("#route-group-N_LOCAL")).toContainText("Local routes");
+  // The gaps version is the sample after route 40 left `N_LOCAL`, so its group
+  // is one route smaller than the sample's own thirteen.
+  await expect(page.locator("#route-group-N_LOCAL")).toContainText("12 routes");
+  await expect(page.locator("#route-group-N_LOCAL")).toContainText("By zone");
+  await expect(page.locator("#route-group-N_INTERCITY")).toContainText("Intercity");
+
+  await expect(page.locator("#zone-matrix-N_LOCAL")).toBeAttached();
+  const gapCell = page.locator("[data-cell='CST-TOL']");
+  await expect(gapCell).toContainText("No fare");
+  await expect(gapCell).toHaveAttribute("data-gap", "true");
+
+  // The neighbouring priced cells read as prices, so the gap is visibly the odd
+  // one out rather than an empty square.
+  await expect(page.locator("[data-cell='CST-CST']")).toContainText("$1.50");
+  await expect(page.locator("[data-cell='CST-CST']")).toContainText("Local ride");
+
+  // The gaps version's group is the fixture that dropped route 40, so the table
+  // offers the version's own answer to the route it left behind.
+  await expect(page.locator("#route-groups-unassigned")).toContainText("Route 40");
+  await expect(page.locator("#add-unassigned-to-group")).toBeAttached();
+
+  // ── case 1: the gap, filled with both directions ──────────────────────────
+  await gapCell.click();
+  await expect(page.locator("#cell-dialog")).toBeAttached();
+  await expect(page.locator("#cell-dialog")).toContainText(
+    "Fare from Coast zone to Toledo and valley",
+  );
+  await expect(page.locator("#cell-fare-none")).toBeChecked();
+
+  // Both directions of the pair were cleared, so filling the reverse along with
+  // this one is offered and offered ticked: the return ride is nobody's price
+  // yet either.
+  await expect(page.locator("#cell-return")).toBeAttached();
+  await expect(page.locator("#cell-both")).toBeChecked();
+
+  await page.locator("#cell-fare-valley_coast_ride_adult_cash").check();
+  await page.locator("#cell-dialog-confirm").click();
+
+  await expect(page.locator("#cell-dialog")).toHaveCount(0);
+  await expect(page.locator("#fare-note")).toContainText("Valley-coast ride");
+  await expect(page.locator("[data-cell='CST-TOL']")).toContainText(
+    "Valley-coast ride",
+  );
+  await expect(page.locator("[data-cell='CST-TOL']")).toContainText("$5.00");
+  // The reverse cell was filled by the same write, which is what "both" means.
+  await expect(page.locator("[data-cell='TOL-CST']")).toContainText(
+    "Valley-coast ride",
+  );
+
+  // Undo takes the pair back to the gap, so the journey after this one reads the
+  // fixture it seeded.
+  await page.locator("#undo-prices").click();
+  await expect(page.locator("#fare-note")).toContainText("undone");
+  await expect(page.locator("[data-cell='CST-TOL']")).toContainText("No fare");
+
+  // ── case 2: route 10 moves between groups, with the warning that says so ───
+  await openWhere(found.gaps);
+  await page.locator("#edit-group-N_LOCAL").click();
+
+  await expect(page.locator("#group-drawer")).toBeAttached();
+  await expect(page.locator("#group-name")).toHaveValue("Local routes");
+
+  // The route list says where every route is now, so the move is readable
+  // before anything is ticked.
+  await expect(page.locator("label[for='group-route-10']")).toContainText(
+    "In Intercity",
+  );
+  await expect(page.locator("#group-moving")).toHaveCount(0);
+
+  await page.locator("#group-route-10").check();
+  await expect(page.locator("#group-moving")).toContainText("Route 10");
+  await expect(page.locator("#group-moving")).toContainText(
+    "moves from Intercity",
+  );
+
+  await page.locator("#save-route-group").click();
+
+  await expect(page.locator("#group-drawer")).toHaveCount(0);
+  await expect(page.locator("#fare-note")).toContainText("Local routes saved");
+  // The route is in the group it was moved to and the group it came from is one
+  // route smaller.
+  await expect(page.locator("[data-group-badge='10']")).toBeAttached();
+  await expect(page.locator("#route-group-N_INTERCITY")).toContainText("1 route");
+  // The gaps version is the sample after route 40 left `N_LOCAL`, so its group
+  // is one route smaller than the sample's own thirteen.
+  await expect(page.locator("#route-group-N_LOCAL")).toContainText("12 routes");
+
+  await page.locator("#undo-prices").click();
+  await expect(page.locator("#route-group-N_INTERCITY")).toContainText("Intercity");
+  await expect(page.locator("#route-group-N_LOCAL")).toContainText("12 routes");
+
+  // ── case 3: a pass's acceptance of a group, and Undo ──────────────────────
+  await openWhere(found.managed);
+
+  await expect(page.locator("#passes")).toBeAttached();
+  await expect(page.locator("#passes")).toContainText("Day pass");
+  await expect(page.locator("#pass-day_pass_adult_cash-N_LOCAL")).toBeChecked();
+  await expect(page.locator("#pass-day_pass_adult_cash-N_INTERCITY")).not.toBeChecked();
+
+  await page.locator("#pass-day_pass_adult_cash-N_LOCAL").uncheck();
+
+  await expect(page.locator("#fare-note")).toContainText("is no longer accepted");
+  await expect(page.locator("#pass-day_pass_adult_cash-N_LOCAL")).not.toBeChecked();
+
+  await page.locator("#undo-prices").click();
+  await expect(page.locator("#fare-note")).toContainText("undone");
+  await expect(page.locator("#pass-day_pass_adult_cash-N_LOCAL")).toBeChecked();
+
+  // ── captures ────────────────────────────────────────────────────────────
+  for (const viewport of [DESKTOP, PHONE]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await openWhere(found.gaps);
+
+    await expect(page.locator("#zone-matrix-N_LOCAL")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await capture(page, testInfo, `where-groups-${viewport.label}`);
+
+    // The gap and the cell dialog that fills it, captured in the viewport
+    // because the dialog is fixed to the edge of it.
+    await page.locator("[data-cell='CST-TOL']").click();
+    await expect(page.locator("#cell-dialog")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `where-cell-${viewport.label}`);
+
+    await page.locator("#cell-fare-valley_coast_ride_adult_cash").check();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `where-cell-chosen-${viewport.label}`);
+    await page.locator("#cell-dialog-cancel").click();
+
+    // The group drawer, empty and with a move in it.
+    await page.locator("#edit-group-N_LOCAL").click();
+    await expect(page.locator("#group-drawer")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `where-group-edit-${viewport.label}`);
+
+    await page.locator("#group-route-10").check();
+    await expect(page.locator("#group-moving")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `where-group-moving-${viewport.label}`);
+
+    // And its own refusal: a name the version already holds.
+    await page.locator("#group-route-10").uncheck();
+    await page.locator("#cancel-route-group").click();
+
+    await page.locator("#create-route-group").click();
+    await page.locator("#group-name").fill("Local routes");
+    await page.locator("#save-route-group").click();
+    await expect(page.locator("#error-summary")).toBeAttached();
+    await captureDrawer(page, testInfo, `where-group-refused-${viewport.label}`);
+    await page.locator("#cancel-route-group").click();
+
+    // The passes table, on the version that has one.
+    await openWhere(found.managed);
+    await expect(page.locator("#passes")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await capture(page, testInfo, `where-passes-${viewport.label}`);
+  }
+
+  await captureReference(page, testInfo, "?state=where", "ref-where");
+  await captureReference(page, testInfo, "?state=where-gaps", "ref-where-gaps");
+  await captureReference(page, testInfo, "?state=cell", "ref-where-cell");
+  await captureReference(page, testInfo, "?state=group-edit", "ref-where-group-edit");
+});
