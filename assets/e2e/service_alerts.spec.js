@@ -1188,8 +1188,9 @@ test.describe("alert cancelled departures", () => {
     const first_date = await firstDepartureDate(page);
     const first_list = page.locator(`#alert-departure-list-${first_date}`);
     await expect(first_list.locator("input[type='checkbox']").first()).toBeVisible();
-    // Each label is a rider's departure: its time and where it goes.
-    await expect(first_list.locator("label").first()).toContainText(/^\d{1,2}:\d{2}/);
+    // Each label is a rider's departure: its time and where it goes. The text
+    // is matched without anchors, because the label wraps its own whitespace.
+    await expect(first_list.locator("label").first()).toContainText(/\d{1,2}:\d{2} (AM|PM) to /);
 
     await page.screenshot({
       path: capturePath(testInfo, "departures-open-1440.png"),

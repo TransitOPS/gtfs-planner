@@ -65,7 +65,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
       # one, which is running the next morning (AC-10).
       assert has_element?(
                view,
-               "#alert-departure-2026-10-05-#{schedule.early.id}",
+               "label[for='alert-departure-2026-10-05-#{schedule.early.id}']",
                "8:15 AM to Lincoln City"
              )
 
@@ -110,7 +110,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
       # than reading as an earlier departure (AC-10).
       assert has_element?(
                view,
-               "#alert-departure-2026-10-05-#{schedule.night.id}",
+               "label[for='alert-departure-2026-10-05-#{schedule.night.id}']",
                "12:40 AM (next day) to Downtown"
              )
     end

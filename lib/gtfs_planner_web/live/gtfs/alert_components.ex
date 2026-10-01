@@ -1476,10 +1476,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
 
         <fieldset id={"alert-departure-list-#{Date.to_iso8601(group.date)}"} class="grid gap-2">
           <legend class="sr-only">Departures on {Calendar.strftime(group.date, "%A, %B %-d")}</legend>
-          <label
+          <%!-- The input sits beside its label rather than inside it. A checkbox
+                 nested in the label that points at it is activated twice by the
+                 keyboard - once by the control and once by the label - so Space
+                 would store the pair and immediately take it back. --%>
+          <div
             :for={departure <- group.departures}
-            for={"alert-departure-#{Date.to_iso8601(group.date)}-#{departure.trip_id}"}
-            class="flex min-h-11 cursor-pointer items-start gap-3 rounded-control border border-subtle px-3 py-2 has-[:checked]:border-action has-[:checked]:bg-selection has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus"
+            class="flex min-h-11 items-start gap-3 rounded-control border border-subtle px-3 py-2 has-[:checked]:border-action has-[:checked]:bg-selection has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus"
           >
             <input
               type="checkbox"
@@ -1490,13 +1493,16 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
               phx-value-date={Date.to_iso8601(group.date)}
               class="mt-1 size-5 shrink-0 accent-action"
             />
-            <span class="min-w-0">
+            <label
+              for={"alert-departure-#{Date.to_iso8601(group.date)}-#{departure.trip_id}"}
+              class="min-w-0 flex-1 cursor-pointer"
+            >
               <span class="block text-sm font-[650] text-strong">{departure.label}</span>
               <span :if={departure.route_label} class="block text-[13px] text-muted">
                 {departure.route_label}
               </span>
-            </span>
-          </label>
+            </label>
+          </div>
 
           <p
             :if={group.departures == []}
