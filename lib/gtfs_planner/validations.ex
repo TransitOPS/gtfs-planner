@@ -10,13 +10,23 @@ defmodule GtfsPlanner.Validations do
   the lease has not expired, all checked under a row lock in the same transaction.
   A superseded owner therefore writes nothing. Lease expiry compares against
   PostgreSQL time (`CURRENT_TIMESTAMP`), never the application clock.
+
+  `start_mobility_data_run/4` creates a run and hands it to a
+  `Validations.Runner` under `Validations.RunnerSupervisor`, which owns the
+  lease from claim to terminal write.
   """
 
   import Ecto.Query
 
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.Validator.Result
   alias GtfsPlanner.Repo
-  alias GtfsPlanner.Validations.{ValidationRun, WalkabilityTest}
+  alias GtfsPlanner.RunnerAdmission
+  alias GtfsPlanner.Validations.{Runner, ValidationRun, WalkabilityTest}
+
+  require Logger
+
+  @mobility_run_types ["mobility_data", "mobility_data_flex"]
 
   @lease_seconds Application.compile_env(:gtfs_planner, :validation_lease_seconds, 300)
 
@@ -33,6 +43,59 @@ defmodule GtfsPlanner.Validations do
     }
     |> ValidationRun.changeset(%{run_type: run_type, status: "started"})
     |> Repo.insert()
+  end
+
+  @doc """
+  Creates a MobilityData validation run for the actor and starts its runner.
+
+  `run_type` is `"mobility_data"` or `"mobility_data_flex"`. The actor must
+  currently be an editor of the organization (`{:error, :forbidden}` otherwise,
+  and no run is created). The run's messages arrive on `topic/1`.
+
+  When the runner supervisor is at its `:runner_limits` cap the run never starts:
+  it is failed with `error_details` `"busy"` and the result is `{:error, :busy}`.
+  Any other start failure fails the run as `"not_started"` and returns
+  `{:error, :not_started}`.
+  """
+  @spec start_mobility_data_run(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), map()) ::
+          {:ok, ValidationRun.t()}
+          | {:error, :forbidden | :invalid_run_type | :busy | :not_started | Ecto.Changeset.t()}
+  def start_mobility_data_run(organization_id, version_id, run_type, actor)
+      when run_type in @mobility_run_types do
+    with :ok <-
+           Authorization.authorize_editor(%{
+             actor_id: actor_id(actor),
+             organization_id: organization_id
+           }),
+         {:ok, run} <- create_validation_run(organization_id, version_id, run_type) do
+      start_runner(run)
+    end
+  end
+
+  def start_mobility_data_run(_organization_id, _version_id, _run_type, _actor),
+    do: {:error, :invalid_run_type}
+
+  defp actor_id(%{id: id}), do: id
+  defp actor_id(_actor), do: nil
+
+  # The supervisor refuses a start at its cap before the runner's `init/1` runs,
+  # so a refused run was never claimed and is still `started`: close it here.
+  defp start_runner(run) do
+    child = {Runner, organization_id: run.organization_id, run_id: run.id}
+
+    case RunnerAdmission.start_child(GtfsPlanner.Validations.RunnerSupervisor, child) do
+      {:ok, _pid} ->
+        {:ok, run}
+
+      {:error, :busy} ->
+        _ = fail_unstarted(run.organization_id, run.id, "busy")
+        {:error, :busy}
+
+      {:error, reason} ->
+        Logger.error("Validation run #{run.id} did not start: #{inspect(reason)}")
+        _ = fail_unstarted(run.organization_id, run.id, "not_started")
+        {:error, :not_started}
+    end
   end
 
   @doc """
@@ -64,6 +127,8 @@ defmodule GtfsPlanner.Validations do
 
   @doc """
   Lists recent completed or failed validation runs for an organization and GTFS version.
+
+  A run refused for lack of capacity (`"busy"`) never ran and is not listed.
   """
   @spec list_recent_validation_runs(Ecto.UUID.t(), Ecto.UUID.t(), pos_integer()) :: [
           ValidationRun.t()
@@ -73,6 +138,7 @@ defmodule GtfsPlanner.Validations do
     |> where([run], run.organization_id == ^organization_id)
     |> where([run], run.gtfs_version_id == ^gtfs_version_id)
     |> where([run], run.status in ["completed", "failed"])
+    |> ran()
     |> order_by([run], desc: run.started_at)
     |> limit(^limit)
     |> Repo.all()
@@ -82,7 +148,8 @@ defmodule GtfsPlanner.Validations do
   Returns the newest completed or failed MobilityData validation run for an
   organization and GTFS version, or `nil` when none has finished.
 
-  Reachability and pathways runs are ignored.
+  Reachability and pathways runs are ignored, and so is a run refused for lack
+  of capacity (`"busy"`), which never ran.
   """
   @spec latest_feed_check(Ecto.UUID.t(), Ecto.UUID.t()) :: ValidationRun.t() | nil
   def latest_feed_check(organization_id, gtfs_version_id) do
@@ -91,6 +158,7 @@ defmodule GtfsPlanner.Validations do
     |> where([run], run.gtfs_version_id == ^gtfs_version_id)
     |> where([run], run.run_type == "mobility_data")
     |> where([run], run.status in ["completed", "failed"])
+    |> ran()
     |> order_by([run], desc: run.started_at, asc: run.id)
     |> limit(1)
     |> Repo.one()
@@ -338,6 +406,11 @@ defmodule GtfsPlanner.Validations do
   """
   @spec get_walkability_test(Ecto.UUID.t()) :: WalkabilityTest.t() | nil
   def get_walkability_test(id), do: Repo.get(WalkabilityTest, id)
+
+  # `fail_unstarted(…, "busy")` closes a run that no runner ever claimed; it is
+  # not a check result, so it must not replace the last real one.
+  defp ran(query),
+    do: where(query, [run], is_nil(run.error_details) or run.error_details != "busy")
 
   # Runs `fun`, which returns `{result, messages}`, and publishes each message on
   # its run's topic only after the transaction has committed, so a subscriber that

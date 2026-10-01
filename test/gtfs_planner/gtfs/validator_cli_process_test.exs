@@ -5,6 +5,8 @@
 # `java -jar <validator>` and records the PID it runs as, so the tests can
 # check with `kill -0` that the process the port started is gone. Everything
 # else, including `Validator.validate/3` with the real Export, runs for real.
+# `validate/3` returns a result and never writes the run row; the claim, lease and
+# terminal writes belong to `Validations.Runner` (runner_test.exs).
 
 defmodule GtfsPlanner.Gtfs.ValidatorCliProcessTest do
   use GtfsPlanner.DataCase, async: false
@@ -25,18 +27,6 @@ defmodule GtfsPlanner.Gtfs.ValidatorCliProcessTest do
 
   @fake_java Path.expand("../../support/fixtures/fake_validator.sh", __DIR__)
   @report_limit 67_108_864
-
-  # Stands in for the export module and removes the validation run, so the
-  # write after the validator finishes finds no row to update.
-  defmodule RunDeletingExport do
-    alias GtfsPlanner.Repo
-    alias GtfsPlanner.Validations.ValidationRun
-
-    def export_to_zip(_organization_id, _gtfs_version_id, _profile, _opts) do
-      Repo.delete_all(ValidationRun)
-      {:ok, "zip"}
-    end
-  end
 
   setup do
     dir =
@@ -168,47 +158,43 @@ defmodule GtfsPlanner.Gtfs.ValidatorCliProcessTest do
       %{organization: organization, version: version, run: run}
     end
 
-    test "returns the invalid-report error instead of {:ok, _} and fails the run", ctx do
+    test "returns the invalid-report error instead of {:ok, _}", ctx do
       put_env(:gtfs_validator_path, "bad_report")
 
       assert {:error, {:invalid_report, _decode_error}} = validate(ctx)
-
-      assert %ValidationRun{status: "failed"} = Validations.get_validation_run!(ctx.run.id)
     end
 
     test "returns :report_too_large instead of {:ok, _} when the report exceeds the limit", ctx do
       put_env(:gtfs_validator_path, "big_report")
 
       assert {:error, :report_too_large} = validate(ctx)
-
-      assert %ValidationRun{status: "failed"} = Validations.get_validation_run!(ctx.run.id)
     end
 
-    test "fails the run with :timeout when the CLI outlives the configured deadline", ctx do
+    test "returns :timeout when the CLI outlives the configured deadline", ctx do
       put_env(:gtfs_validator_path, "sleep")
       put_env(:validator_timeout_ms, 200)
 
       assert {:error, :timeout} = validate(ctx)
-
-      failed = Validations.get_validation_run!(ctx.run.id)
-      assert failed.status == "failed"
-      assert failed.error_details =~ "timeout"
     end
 
-    test "returns persistence_failed instead of :ok when the completion write fails", ctx do
+    test "leaves the run row untouched when the validation succeeds", ctx do
       put_env(:gtfs_validator_path, "report")
-      put_env(:gtfs_export_module, RunDeletingExport)
+      before_run = Repo.get!(ValidationRun, ctx.run.id)
 
-      assert {:error, {:persistence_failed, :mark_completed}} = validate(ctx)
+      assert {:ok, %Result{}} = validate(ctx)
+
+      assert Repo.get!(ValidationRun, ctx.run.id) == before_run
+      assert before_run.status == "started"
     end
 
-    test "returns persistence_failed instead of the CLI error when the failure write fails",
-         ctx do
+    test "leaves the run row untouched when the validation fails", ctx do
       put_env(:gtfs_validator_path, "sleep")
       put_env(:validator_timeout_ms, 200)
-      put_env(:gtfs_export_module, RunDeletingExport)
+      before_run = Repo.get!(ValidationRun, ctx.run.id)
 
-      assert {:error, {:persistence_failed, :mark_failed}} = validate(ctx)
+      assert {:error, :timeout} = validate(ctx)
+
+      assert Repo.get!(ValidationRun, ctx.run.id) == before_run
     end
 
     test "feeds the real export with the default distance estimate to the CLI", ctx do

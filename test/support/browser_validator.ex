@@ -4,21 +4,17 @@ defmodule GtfsPlanner.Gtfs.BrowserValidator do
   @behaviour GtfsPlanner.Gtfs.ValidatorBehaviour
 
   alias GtfsPlanner.Gtfs.Validator.Result
-  alias GtfsPlanner.Validations
 
+  # Returns a fixed result. `Validations.Runner` claims the run and writes the
+  # terminal state, exactly as it does around the real validator.
   @impl true
-  def validate(_organization_id, _gtfs_version_id, opts) do
-    run = opts |> Keyword.fetch!(:validation_run_id) |> Validations.get_validation_run!()
-    {:ok, running_run} = Validations.mark_running(run)
-
-    result = %Result{
-      summary: %{errors: 0, warnings: 1, infos: 2},
-      notices: [],
-      duration_ms: 1,
-      validated_at: DateTime.utc_now()
-    }
-
-    {:ok, _completed_run} = Validations.mark_completed(running_run, result)
-    {:ok, result}
+  def validate(_organization_id, _gtfs_version_id, _opts) do
+    {:ok,
+     %Result{
+       summary: %{errors: 0, warnings: 1, infos: 2},
+       notices: [],
+       duration_ms: 1,
+       validated_at: DateTime.utc_now()
+     }}
   end
 end

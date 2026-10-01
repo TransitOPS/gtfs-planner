@@ -6,6 +6,7 @@ defmodule GtfsPlanner.Support.RunnerSlots do
   # A test that starts a runner waits here before it starts the next job.
 
   @supervisors [
+    GtfsPlanner.Validations.RunnerSupervisor,
     GtfsPlanner.Gtfs.Import.RunnerSupervisor,
     GtfsPlanner.Gtfs.Import.ChangeRunnerSupervisor,
     GtfsPlanner.Gtfs.Export.RunnerSupervisor,

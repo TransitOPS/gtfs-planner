@@ -50,14 +50,14 @@ defmodule GtfsPlanner.Gtfs.ValidatorReportTest do
     assert errors + warnings + infos > 0
   end
 
-  test "validate/3 completes the run with the real jar and the configured paths", ctx do
+  test "validate/3 returns the real jar's result and leaves the run row to the runner", ctx do
     {:ok, run} =
       Validations.create_validation_run(ctx.organization.id, ctx.version.id, "mobility_data")
 
     assert {:ok, %Result{}} =
              Validator.validate(ctx.organization.id, ctx.version.id, validation_run_id: run.id)
 
-    assert %ValidationRun{status: "completed"} = Validations.get_validation_run!(run.id)
+    assert %ValidationRun{status: "started"} = Validations.get_validation_run!(run.id)
   end
 
   # A small feed the validator can read: agency, service calendar, one route,

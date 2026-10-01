@@ -12,8 +12,10 @@ defmodule GtfsPlanner.Gtfs.Validator do
   `"mobility_data_flex"` run validates the flex zip, every other run the full
   export.
 
-  The validation process runs asynchronously and communicates progress
-  through Phoenix.PubSub, allowing LiveViews to display real-time updates.
+  `validate/3` only returns a result; it never writes the run row. The run's
+  claim, lease, completion and failure belong to `GtfsPlanner.Validations.Runner`,
+  which calls it in a supervised task and reports progress to LiveViews through
+  Phoenix.PubSub.
   """
 
   @behaviour GtfsPlanner.Gtfs.ValidatorBehaviour
@@ -50,9 +52,7 @@ defmodule GtfsPlanner.Gtfs.Validator do
     - `{:error, reason}` on failure, where `reason` is one of `:timeout` (the CLI
       outlived `:validator_timeout_ms`), `:cancelled` (see `cancel/1`),
       `:report_too_large`, `{:invalid_report, term}`, `{:cli_failed, exit_code, output}`,
-      `{:persistence_failed, :mark_running | :mark_completed | :mark_failed}`, or
-      an export or configuration error. A run whose terminal write failed is left
-      `running` and is never reported as completed.
+      or an export or configuration error.
 
   ## Examples
 
@@ -67,46 +67,35 @@ defmodule GtfsPlanner.Gtfs.Validator do
     temp_dir_ref = make_ref()
 
     try do
-      with :ok <- persist(:mark_running, fn -> Validations.mark_running(run) end) do
-        broadcast_progress(run.id, :exporting, 10, "Generating GTFS export...")
+      broadcast_progress(run.id, :exporting, 10, "Generating GTFS export...")
 
-        result =
-          with {:ok, zip_path, temp_dir} <-
-                 export_to_temp_file(
-                   organization_id,
-                   gtfs_version_id,
-                   export_profile(run.run_type)
-                 ) do
-            # Store temp_dir for cleanup
-            Process.put(temp_dir_ref, temp_dir)
+      with {:ok, zip_path, temp_dir} <-
+             export_to_temp_file(
+               organization_id,
+               gtfs_version_id,
+               export_profile(run.run_type)
+             ) do
+        # Store temp_dir for cleanup
+        Process.put(temp_dir_ref, temp_dir)
 
-            broadcast_progress(run.id, :exporting, 30, "Export complete")
-            broadcast_progress(run.id, :validating, 50, "Running MobilityData validator...")
+        broadcast_progress(run.id, :exporting, 30, "Export complete")
+        broadcast_progress(run.id, :validating, 50, "Running MobilityData validator...")
 
-            case run_validator_cli(zip_path, temp_dir) do
-              {:ok, output_dir} ->
-                broadcast_progress(run.id, :validating, 90, "Validation complete")
-                broadcast_progress(run.id, :processing, 95, "Processing results...")
+        case run_validator_cli(zip_path, temp_dir) do
+          {:ok, output_dir} ->
+            broadcast_progress(run.id, :validating, 90, "Validation complete")
+            broadcast_progress(run.id, :processing, 95, "Processing results...")
 
-                with {:ok, _validation_result} = parsed <- parse_report(output_dir, start_time) do
-                  broadcast_progress(run.id, :processing, 100, "Done")
-                  parsed
-                end
-
-              {:error, reason} = error ->
-                Logger.error("Validator CLI failed: #{inspect(reason)}")
-                error
+            with {:ok, _validation_result} = parsed <- parse_report(output_dir, start_time) do
+              broadcast_progress(run.id, :processing, 100, "Done")
+              parsed
             end
-          end
 
-        record_result(run, result)
+          {:error, reason} = error ->
+            Logger.error("Validator CLI failed: #{inspect(reason)}")
+            error
+        end
       end
-    rescue
-      exception ->
-        # The exception propagates, so a failed write here is only logged.
-        persist(:mark_failed, fn -> Validations.mark_failed(run, exception) end)
-
-        reraise exception, __STACKTRACE__
     after
       # Cleanup temp directory if it was created
       case Process.get(temp_dir_ref) do
@@ -128,38 +117,6 @@ defmodule GtfsPlanner.Gtfs.Validator do
   def cancel(pid) when is_pid(pid) do
     send(pid, @cancel_message)
     :ok
-  end
-
-  # Persists the outcome of the pipeline. A failed terminal write returns
-  # `{:persistence_failed, operation}` instead of the pipeline's own result, and
-  # a failed `mark_completed` leaves the run `running` for lease recovery.
-  defp record_result(run, {:ok, validation_result}) do
-    with :ok <-
-           persist(:mark_completed, fn -> Validations.mark_completed(run, validation_result) end) do
-      {:ok, validation_result}
-    end
-  end
-
-  defp record_result(run, {:error, _reason} = error) do
-    with :ok <- persist(:mark_failed, fn -> Validations.mark_failed(run, error) end) do
-      error
-    end
-  end
-
-  # Runs one run-status write and turns any failure, including a stale row, into
-  # an explicit error instead of continuing as if it had been saved.
-  defp persist(operation, write) do
-    case write.() do
-      {:ok, _row} -> :ok
-      {:error, reason} -> persistence_failed(operation, reason)
-    end
-  rescue
-    exception -> persistence_failed(operation, exception)
-  end
-
-  defp persistence_failed(operation, reason) do
-    Logger.error("Failed to persist #{operation}: #{inspect(reason)}")
-    {:error, {:persistence_failed, operation}}
   end
 
   @doc false
