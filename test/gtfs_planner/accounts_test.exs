@@ -733,37 +733,6 @@ defmodule GtfsPlanner.AccountsTest do
     end
   end
 
-  describe "invite_user/2" do
-    setup do
-      %{organization_id: Ecto.UUID.generate()}
-    end
-
-    test "creates a new user when email does not exist", %{organization_id: org_id} do
-      email = unique_user_email()
-
-      assert {:ok, %User{}} = Accounts.invite_user(email, org_id)
-      assert Accounts.get_user_by_email(email)
-    end
-
-    test "returns existing user when email already exists", %{organization_id: org_id} do
-      existing_user = user_fixture()
-
-      assert {:ok, %User{id: id}} = Accounts.invite_user(existing_user.email, org_id)
-      assert id == existing_user.id
-    end
-
-    test "downcases email", %{organization_id: org_id} do
-      email = "UPPERCASE@EXAMPLE.COM"
-      {:ok, user} = Accounts.invite_user(email, org_id)
-      assert user.email == "uppercase@example.com"
-    end
-
-    test "validates email format", %{organization_id: org_id} do
-      {:error, changeset} = Accounts.invite_user("invalid-email", org_id)
-      assert errors_on(changeset).email == ["must have the @ sign and no spaces"]
-    end
-  end
-
   describe "invite_member/5" do
     @login_url "http://localhost:4000/users/log_in"
 
@@ -895,7 +864,7 @@ defmodule GtfsPlanner.AccountsTest do
       organization: organization,
       actor: actor
     } do
-      {:ok, pending} = Accounts.invite_user(unique_user_email(), nil)
+      pending = invited_user_fixture()
 
       assert {:ok, %User{id: id}} =
                Accounts.invite_member(
@@ -1492,15 +1461,6 @@ defmodule GtfsPlanner.AccountsTest do
 
       assert get_change(changeset, :email) == "newmail@example.com"
       assert changeset.valid?
-    end
-
-    test "invite_user/2 trims and lowercases email" do
-      org_id = Ecto.UUID.generate()
-      raw = "  Invitee-#{System.unique_integer([:positive])}@Example.com  "
-
-      {:ok, user} = Accounts.invite_user(raw, org_id)
-
-      assert user.email == raw |> String.trim() |> String.downcase()
     end
 
     test "register_user/1 preserves whitespace in password" do

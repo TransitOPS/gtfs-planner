@@ -2875,11 +2875,12 @@ case Accounts.register_first_admin(%{
         admin_org.id
       )
 
-    # Invitation pending: `invite_user/2` uses `User.invite_changeset/2`, which
-    # sets no password, so the row renders "Invitation pending" and offers
-    # "Resend invite".
+    # Invitation pending: `User.invite_changeset/2` sets no password, so the row
+    # renders "Invitation pending" and offers "Resend invite".
     {:ok, pending_member} =
-      Accounts.invite_user("contracts-pending@gtfs-planner.test", admin_org.id)
+      %User{}
+      |> User.invite_changeset(%{email: "contracts-pending@gtfs-planner.test"})
+      |> Repo.insert()
 
     {:ok, _pending_membership} =
       Accounts.create_user_org_membership(%{

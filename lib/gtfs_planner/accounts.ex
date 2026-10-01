@@ -713,34 +713,6 @@ defmodule GtfsPlanner.Accounts do
     end
   end
 
-  @doc """
-  Invites a user to an organization.
-
-  Creates a user record if one doesn't exist, then generates an invite token.
-
-  ## Examples
-
-      iex> invite_user("new@example.com", org_id)
-      {:ok, %User{}}
-
-      iex> invite_user("", org_id)
-      {:error, %Ecto.Changeset{}}
-
-  """
-  def invite_user(email, _organization_id) when is_binary(email) do
-    email = String.downcase(email)
-
-    case get_user_by_email(email) do
-      nil ->
-        %User{}
-        |> User.invite_changeset(%{email: email})
-        |> Repo.insert()
-
-      user ->
-        {:ok, user}
-    end
-  end
-
   @doc ~S"""
   Delivers the user invitation email to the given user.
 

@@ -41,6 +41,15 @@ defmodule GtfsPlanner.AccountsFixtures do
   end
 
   @doc """
+  Generate a user who was invited and has not set a password.
+  """
+  def invited_user_fixture(attrs \\ %{}) do
+    %GtfsPlanner.Accounts.User{}
+    |> GtfsPlanner.Accounts.User.invite_changeset(Enum.into(attrs, %{email: unique_user_email()}))
+    |> GtfsPlanner.Repo.insert!()
+  end
+
+  @doc """
   Returns a map of valid user attributes.
   """
   def valid_user_attributes(attrs \\ %{}) do
