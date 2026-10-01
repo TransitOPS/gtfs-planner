@@ -24,8 +24,18 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRun do
   @terminal_states [:partial, :completed, :failed, :interrupted, :cancelled, :expired]
   @summary_keys ~w(applicable preview approved rejected applied failed unapplied add modify remove conflict ignored_evolution_files)a
   @diagnostic_keys ~w(code detail entity_type natural_key)a
-  @manifest_keys ~w(files total_bytes)a
+  @manifest_keys ~w(files total_bytes reviewed_evidence)a
   @manifest_file_keys ~w(name key size sha256 content_type)a
+  # The only namespace this manifest may carry beyond its base source files. It
+  # records what native confirmation captured, and it is bounded on both axes:
+  # history entries, and the whole encoded namespace.
+  @reviewed_evidence_keys ~w(version entries)a
+  @reviewed_entry_keys ~w(decision_id decision_digest source_digest snapshot_digest station_id actor_id confirmed_at observations)a
+  @reviewed_observation_keys ~w(target field original_value normalized_value unit meaning captured_date source_ref source_revision source_digest)a
+  @reviewed_target_keys ~w(pathway_id)a
+  @max_reviewed_entries 100
+  @max_reviewed_observations 100
+  @max_reviewed_bytes 65_536
   @max_string 4_096
 
   @primary_key {:id, :binary_id, autogenerate: true}
@@ -56,6 +66,20 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRun do
 
   def states, do: @states
   def terminal_states, do: @terminal_states
+
+  @doc """
+  The bounds a `reviewed_evidence` namespace is admitted under.
+
+  The schema owns these numbers, so the context that appends an entry checks the
+  same bound the validator enforces rather than a second copy of it.
+  """
+  def reviewed_evidence_limits do
+    %{
+      max_entries: @max_reviewed_entries,
+      max_observations: @max_reviewed_observations,
+      max_bytes: @max_reviewed_bytes
+    }
+  end
 
   @doc "Public params cannot alter durable scope, actor, lease, artifact, or lifecycle state."
   def changeset(run, _attrs), do: change(run)
@@ -181,21 +205,85 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRun do
     value = normalize_keys(value, @manifest_keys)
 
     Map.keys(value) -- @manifest_keys == [] and
-      case value do
-        %{files: files} when is_list(files) and length(files) <= 100 ->
-          Enum.all?(files, &manifest_file?/1) and
-            (not Map.has_key?(value, :total_bytes) or valid_count?(value.total_bytes))
+      reviewed_evidence_ok?(Map.get(value, :reviewed_evidence)) and
+      base_files_ok?(value)
+  end
 
-        %{total_bytes: total} ->
-          valid_count?(total)
+  defp base_files_ok?(%{files: files} = value) when is_list(files) and length(files) <= 100 do
+    Enum.all?(files, &manifest_file?/1) and
+      (not Map.has_key?(value, :total_bytes) or valid_count?(value.total_bytes))
+  end
 
-        %{} ->
-          true
+  defp base_files_ok?(%{total_bytes: total}), do: valid_count?(total)
+  defp base_files_ok?(%{}), do: true
+  defp base_files_ok?(_value), do: false
 
-        _ ->
+  # A manifest without the namespace is a legacy manifest and stays valid, so the
+  # absence of reviewed evidence remains readable. A namespace that is present is
+  # validated in full: an unknown key, an unknown version, an unbounded entry or an
+  # oversized payload is refused rather than stored.
+  defp reviewed_evidence_ok?(nil), do: true
+
+  defp reviewed_evidence_ok?(value) when is_map(value) do
+    value = normalize_keys(value, @reviewed_evidence_keys)
+
+    Map.keys(value) -- @reviewed_evidence_keys == [] and
+      Map.get(value, :version) == 1 and
+      case Map.get(value, :entries) do
+        entries when is_list(entries) and length(entries) <= @max_reviewed_entries ->
+          Enum.all?(entries, &reviewed_entry?/1) and
+            Jason.encode!(value) |> byte_size() <= @max_reviewed_bytes
+
+        _other ->
           false
       end
   end
+
+  defp reviewed_evidence_ok?(_value), do: false
+
+  defp reviewed_entry?(value) when is_map(value) do
+    value = normalize_keys(value, @reviewed_entry_keys)
+
+    Map.keys(value) -- @reviewed_entry_keys == [] and
+      Enum.all?(value, fn {key, item} ->
+        if key == :observations,
+          do: reviewed_observations?(item),
+          else: key in @reviewed_entry_keys and scalar?(item)
+      end)
+  end
+
+  defp reviewed_entry?(_value), do: false
+
+  defp reviewed_observations?(value)
+       when is_list(value) and length(value) <= @max_reviewed_observations do
+    Enum.all?(value, &reviewed_observation?/1)
+  end
+
+  defp reviewed_observations?(_value), do: false
+
+  defp reviewed_observation?(value) when is_map(value) do
+    value = normalize_keys(value, @reviewed_observation_keys)
+
+    Map.keys(value) -- @reviewed_observation_keys == [] and
+      Enum.all?(value, fn {key, item} ->
+        if key == :target,
+          do: reviewed_target?(item),
+          else: key in @reviewed_observation_keys and scalar?(item)
+      end)
+  end
+
+  defp reviewed_observation?(_value), do: false
+
+  # The measurement's target is the one natural key the observation is about. No
+  # other row, name, storage key or free text is part of it.
+  defp reviewed_target?(value) when is_map(value) do
+    value = normalize_keys(value, @reviewed_target_keys)
+
+    Map.keys(value) -- @reviewed_target_keys == [] and
+      Enum.all?(value, fn {key, item} -> key == :pathway_id and scalar?(item) end)
+  end
+
+  defp reviewed_target?(_value), do: false
 
   defp manifest_file?(value) when is_map(value) do
     value = normalize_keys(value, @manifest_file_keys)

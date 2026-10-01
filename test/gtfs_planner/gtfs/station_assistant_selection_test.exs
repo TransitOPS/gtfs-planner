@@ -330,7 +330,7 @@ defmodule GtfsPlanner.Gtfs.StationAssistantSelectionTest do
                  "pathway:PW_W12"
                ])
 
-      assert [%{decision_id: "pathway:PW_W14"} = selected] = result["selected"]
+      assert [%{"decision_id" => "pathway:PW_W14"} = selected] = result["selected"]
 
       assert selected["natural_key"] == "PW_W14"
       assert selected["current_value"] == "0.95"
