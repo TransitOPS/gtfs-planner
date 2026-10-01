@@ -120,6 +120,37 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
   entry in `unresolved`, and `timing` is `:complete` only when that list is
   empty: a refused, unknown or excluded trip never reads as a complete
   exact-timing plan, and complete date computation stays a separate claim.
+
+  ## Impact and execution prerequisites
+
+  `prepare/2` is the one call a host makes. It performs `load/2` once and then
+  runs `partition/2` and `project_times/3` as pure functions over that single
+  read, so the report describes one database state rather than three reads that
+  could straddle a commit (AC-3, AC-9).
+
+  The report names who else the change touches. `dependency_rows` holds the
+  scoped users of every touched calendar, every same-block trip, every version
+  transfer rule with its `0..5` type and referential selectors, the block
+  attributes and operating settings in force, the run assignments keyed by
+  `Trip.id` UUID and `day_type_key`, and each selected trip's route, pattern
+  and timing selectors with its stop incidence. The rows are the loaded rows,
+  so `dependency_digest` fingerprints their exact content and every selector
+  they carry.
+
+  Transfer applicability is deliberately conservative: a rule's presence is a
+  review candidate, never a certificate that a connection is feasible. Nothing
+  here widens the accepted selection - a user of a touched calendar that the
+  editor did not select is reported as a dependency, never as something this
+  plan would change.
+
+  `execution_stages` says what would have to exist before such a change could be
+  executed, and every stage is `:foundation_missing` today: date partition and
+  reassignment, temporary identity and date overlap, block and transfer lineage,
+  and partial-save reconciliation with publication prevention. The reasons
+  describe the current native `Copy`, `Shift` and `MoveCalendar` contracts from
+  the code that implements them. None of them is an executable operation, a
+  prepared command or a token, and nothing here tracks a manual editor action
+  as completed execution (AC-10, CR-1, INV-1).
   """
 
   import Ecto.Query
@@ -434,6 +465,85 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
           input_digest: String.t(),
           selected_trip_ids: [Ecto.UUID.t()],
           dependency_digest: String.t()
+        }
+
+  @typedoc """
+  One scoped dependency row, keeping the identity its selector refers to.
+
+  `applicability: :conservative_review_candidate` is not decoration: a transfer
+  rule that references a selected trip is disclosed so it can be reviewed, not
+  so a connection can be assumed to exist.
+  """
+  @type dependency_row :: map()
+
+  @typedoc """
+  Everything the plan's impact consists of, as loaded rows.
+
+  Every list holds the projected content of one dependency kind, so
+  `dependency_digest` fingerprints it exactly. A calendar user the editor did
+  not select appears here and is never in the accepted selection.
+  """
+  @type dependency_rows :: %{
+          affected_services: [map()],
+          trip_selectors: [map()],
+          same_block_trips: [map()],
+          transfers: [dependency_row()],
+          block_attributes: [map()],
+          blocking_settings: [map()],
+          route_operating_settings: [map()],
+          trip_runs: [map()],
+          stop_incidence: [map()]
+        }
+
+  @typedoc """
+  One prerequisite of executing a date-bounded change.
+
+  `status` is `:analysis_complete` where the plan itself finished the analysis,
+  `:native_review_needed` where an existing native review already covers it, and
+  `:foundation_missing` where no writer in this application can do it. Every
+  stage this planner reports is `:foundation_missing`: the analysis is complete
+  and the execution foundation is absent (AC-10).
+  """
+  @type execution_stage :: %{
+          kind: atom(),
+          status: :analysis_complete | :native_review_needed | :foundation_missing,
+          affected_ids: [String.t()],
+          reasons: [String.t()]
+        }
+
+  @typedoc """
+  The read-only plan a reviewer reads before deciding anything.
+
+  `computation: :complete` describes the date partition and `timing` describes
+  the projected clocks, so complete dates never imply complete timing. There is
+  no command, callback, token or pending-operation list anywhere in it: an
+  incomplete computation arrives as `{:error, {:incomplete, reason}}` instead of
+  a report claiming completeness (AC-5, AC-10, CR-1, CR-3).
+  """
+  @type report :: %{
+          schema_version: pos_integer(),
+          scope: %{
+            organization_id: Ecto.UUID.t(),
+            gtfs_version_id: Ecto.UUID.t(),
+            route_uuid: Ecto.UUID.t(),
+            route_id: String.t()
+          },
+          input_digest: String.t(),
+          dependency_digest: String.t(),
+          computation: :complete | :incomplete,
+          timing: :complete | :unresolved,
+          totals: %{
+            selected_trips: non_neg_integer(),
+            affected_trip_dates: non_neg_integer(),
+            unchanged_trip_dates: non_neg_integer(),
+            unaffected_calendar_users: non_neg_integer()
+          },
+          partitions: partitions(),
+          projected_clocks: [clock_row()],
+          unaffected_users: [Ecto.UUID.t()],
+          dependency_rows: dependency_rows(),
+          execution_stages: [execution_stage()],
+          unresolved: [unresolved_reason()]
         }
 
   @typedoc """
@@ -1494,6 +1604,337 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
       trip_id: trip.id,
       stop_sequence: stop_sequence,
       clock: clock
+    }
+  end
+
+  # -- impact and execution prerequisites ------------------------------------
+
+  @doc """
+  Composes the one coherent read, the pure partition and clock computation over
+  it, and the impact report a reviewer reads before deciding anything.
+
+  `scope` and `accepted` are the same inputs `load/2` takes, and the load
+  happens exactly once: `partition/2` and `project_times/3` run as pure
+  functions over that snapshot, so the report describes one database state and
+  cannot mix two commits (AC-3, AC-9). Failure is `load/2`'s own -
+  `{:error, :forbidden | :not_found | {:incomplete, reason}}` - so an incomplete
+  read is never dressed up as a report with fewer rows (AC-5, CR-3).
+
+  `dependency_rows` enumerates who else the change touches, without widening it:
+
+    * `affected_services` - every touched calendar, its selected trips and the
+      unselected trips of the same calendar that keep all of D. Those
+      unaffected users are reported, never included in the change.
+    * `trip_selectors` - each selected trip's route, route pattern, timed
+      pattern and block identity, kept in the namespaces they were stored in.
+    * `same_block_trips` - every version trip sharing a selected trip's block,
+      with `successor_candidate` naming the ones whose own service runs on the
+      affected dates. A successor candidate is a block peer, not a computed
+      successor.
+    * `transfers` - every version transfer rule, including the general type 4
+      and type 5 rules that reference no trip, route or stop. Each row keeps its
+      exact selectors, and `applicability: :conservative_review_candidate`
+      records that presence is not connection feasibility.
+    * `block_attributes`, `blocking_settings` and `route_operating_settings` -
+      the planning attributes and operating settings a later execution would
+      have to respect.
+    * `trip_runs` - run assignments keyed by `Trip.id` UUID and `day_type_key`.
+      The UUID namespace is never confused with the imported `Trip.trip_id` the
+      transfer rules use.
+    * `stop_incidence` - per stop, which selected trips stop there and how many
+      times.
+
+  `execution_stages` names what has to exist before any of this could be
+  executed, and every stage is `:foundation_missing`: partition/reassignment,
+  temporary identity/overlap, block/transfer lineage, and partial-save
+  reconciliation with publication prevention. The reasons describe the current
+  `Copy`, `Shift` and `MoveCalendar` contracts from the code that implements
+  them.
+
+  Nothing here is executable. There is no apply callback, prepared command,
+  token or operation list in the report, and a manual edit made later in the
+  native editor is never observed or recorded as completed execution
+  (AC-10, CR-1, INV-1).
+  """
+  @spec prepare(Scope.t(), accepted() | map()) :: {:ok, report()} | {:error, error()}
+  def prepare(%Scope{} = scope, accepted) do
+    with {:ok, snapshot} <- load(scope, accepted),
+         {:ok, partitions} <- partition(snapshot, accepted),
+         {:ok, projection} <- project_times(snapshot, accepted, partitions) do
+      {:ok, build_report(snapshot, partitions, projection)}
+    end
+  end
+
+  def prepare(_scope, _accepted), do: {:error, :forbidden}
+
+  defp build_report(snapshot, partitions, projection) do
+    impact = impact_input(snapshot, partitions)
+    rows = dependency_rows(impact, partitions)
+
+    %{
+      schema_version: @schema_version,
+      scope: Map.get(snapshot, :scope),
+      input_digest: Map.get(snapshot, :input_digest),
+      dependency_digest: Map.get(snapshot, :dependency_digest),
+      computation: :complete,
+      timing: projection.timing,
+      totals: totals(partitions, impact),
+      partitions: partitions,
+      projected_clocks: projection.projected_clocks,
+      unaffected_users: unaffected_users(partitions),
+      dependency_rows: rows,
+      execution_stages: execution_stages(rows, impact),
+      unresolved: projection.unresolved
+    }
+  end
+
+  # Everything the dependency rows and the stages read, taken once from the
+  # snapshot. The selected trips are the read's own selection, so a dependency
+  # can never name a trip the editor did not accept.
+  defp impact_input(snapshot, partitions) do
+    trips = snapshot |> Map.get(:trips) |> Enum.filter(&is_map/1)
+    selected_ids = readable_selection_ids(Map.get(snapshot, :selected_trip_ids))
+    selected = Enum.filter(trips, &(&1.id in selected_ids))
+
+    %{
+      trips: trips,
+      selected: selected,
+      selected_imported: MapSet.new(selected, & &1.trip_id),
+      blocks: MapSet.new(selected, & &1.block_id) |> MapSet.delete(nil),
+      routes: selected |> Enum.map(& &1.route_id) |> Enum.uniq(),
+      services: MapSet.new(partitions, & &1.service_id),
+      temporary_services:
+        MapSet.new(partitions, & &1.service_id)
+        |> MapSet.filter(fn service_id ->
+          Enum.any?(partitions, &(&1.service_id == service_id and &1.temporary_dates != []))
+        end),
+      snapshot: snapshot,
+      selected_ids: selected_ids
+    }
+  end
+
+  # Trip-date pairs, not unique dates: two trips of the same service on the same
+  # affected date are two pairs, which is what a reader comparing the count of
+  # changed trips against the count of changed dates needs to see.
+  defp totals(partitions, impact) do
+    %{
+      selected_trips: length(impact.selected_ids),
+      affected_trip_dates: trip_date_pairs(partitions, :temporary_dates),
+      unchanged_trip_dates: trip_date_pairs(partitions, :normal_dates),
+      unaffected_calendar_users: length(unaffected_users(partitions))
+    }
+  end
+
+  defp trip_date_pairs(partitions, key) do
+    Enum.reduce(partitions, 0, fn partition, total ->
+      total + length(partition.selected_trip_ids) * length(Map.fetch!(partition, key))
+    end)
+  end
+
+  defp unaffected_users(partitions) do
+    partitions
+    |> Enum.flat_map(& &1.unaffected_trip_ids)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp dependency_rows(impact, partitions) do
+    snapshot = impact.snapshot
+
+    %{
+      affected_services: affected_services(snapshot, partitions),
+      trip_selectors: Enum.map(impact.selected, &trip_selectors/1),
+      same_block_trips: same_block_trips(snapshot, impact),
+      transfers: transfer_rows(snapshot, impact),
+      block_attributes: loaded_rows(snapshot, :block_attributes, &block_row?(&1, impact)),
+      blocking_settings: loaded_rows(snapshot, :blocking_settings),
+      route_operating_settings:
+        loaded_rows(snapshot, :route_operating_settings, &(&1.route_id in impact.routes)),
+      trip_runs: trip_run_rows(snapshot, impact),
+      stop_incidence: stop_incidence(snapshot, impact)
+    }
+  end
+
+  defp loaded_rows(snapshot, kind), do: loaded_rows(snapshot, kind, fn _row -> true end)
+
+  defp loaded_rows(snapshot, kind, predicate) do
+    snapshot
+    |> Map.get(kind)
+    |> Enum.filter(&(is_map(&1) and predicate.(&1)))
+    |> Enum.sort_by(&row_identity/1)
+  end
+
+  # Every loaded row keeps its own primary key in `id`, so sorting by it is the
+  # one ordering that does not depend on a partial row's content.
+  defp row_identity(row), do: Map.get(row, :id) || ""
+
+  defp block_row?(row, impact), do: MapSet.member?(impact.blocks, row.block_id)
+
+  defp affected_services(snapshot, partitions) do
+    calendars = Map.new(loaded_rows(snapshot, :calendars), &{&1.service_id, &1.id})
+
+    Enum.map(partitions, fn partition ->
+      %{
+        service_id: partition.service_id,
+        calendar_id: Map.get(calendars, partition.service_id),
+        selected_trip_ids: partition.selected_trip_ids,
+        unaffected_trip_ids: partition.unaffected_trip_ids,
+        temporary_date_count: length(partition.temporary_dates),
+        normal_date_count: length(partition.normal_dates)
+      }
+    end)
+  end
+
+  defp trip_selectors(trip) do
+    %{
+      trip_id: trip.id,
+      trip_ref: trip.trip_id,
+      service_id: trip.service_id,
+      route_id: trip.route_id,
+      route_pattern_id: trip.route_pattern_id,
+      timed_pattern_id: trip.timed_pattern_id,
+      block_id: trip.block_id
+    }
+  end
+
+  # Every trip sharing a selected trip's block, selected or not. A block peer
+  # whose own service runs on an affected date is flagged as a successor
+  # candidate; that is a block relationship the plan discloses, not a computed
+  # succession the native blocker did not produce.
+  defp same_block_trips(snapshot, impact) do
+    selected_blocks = MapSet.new(impact.selected, & &1.id)
+
+    snapshot
+    |> Map.get(:trips)
+    |> Enum.filter(&(is_map(&1) and MapSet.member?(impact.blocks, &1.block_id)))
+    |> Enum.map(fn trip ->
+      %{
+        trip_id: trip.id,
+        trip_ref: trip.trip_id,
+        service_id: trip.service_id,
+        block_id: trip.block_id,
+        selected: MapSet.member?(selected_blocks, trip.id),
+        successor_candidate: MapSet.member?(impact.temporary_services, trip.service_id)
+      }
+    end)
+    |> Enum.sort_by(&{&1.block_id, &1.trip_ref})
+  end
+
+  # Every version transfer rule is a conservative dependency: a rule that
+  # references no trip, route or stop - the general type 4 and type 5 rules -
+  # can still bear on the change, so it is listed rather than dropped. The row
+  # keeps its stored `from_*`/`to_*` selectors exactly, and the applicability
+  # marker records that listing a rule is not a claim the connection works.
+  defp transfer_rows(snapshot, impact) do
+    selected = impact.selected_imported
+
+    loaded_rows(snapshot, :transfers)
+    |> Enum.map(fn row ->
+      row
+      |> Map.put(:applicability, :conservative_review_candidate)
+      |> Map.put(:references_selected_trips, references(row, selected))
+    end)
+  end
+
+  defp references(row, selected) do
+    []
+    |> maybe_reference(Map.get(row, :from_trip_id), selected, :from_trip)
+    |> maybe_reference(Map.get(row, :to_trip_id), selected, :to_trip)
+    |> Enum.sort()
+  end
+
+  defp maybe_reference(refs, nil, _selected, _side), do: refs
+
+  defp maybe_reference(refs, trip_ref, selected, side) do
+    if MapSet.member?(selected, trip_ref), do: [side | refs], else: refs
+  end
+
+  # Run assignments are keyed by the `Trip.id` UUID, so a row is selected here by
+  # that UUID and never by the imported `Trip.trip_id`.
+  defp trip_run_rows(snapshot, impact) do
+    relevant =
+      MapSet.new(impact.selected, & &1.id)
+      |> MapSet.union(MapSet.new(same_block_trip_ids(snapshot, impact)))
+
+    loaded_rows(snapshot, :trip_runs, &MapSet.member?(relevant, &1.trip_id))
+  end
+
+  defp same_block_trip_ids(snapshot, impact) do
+    snapshot
+    |> Map.get(:trips)
+    |> Enum.filter(&(is_map(&1) and MapSet.member?(impact.blocks, &1.block_id)))
+    |> Enum.map(& &1.id)
+  end
+
+  # Per stop, the selected trips that call there and how often. It is stop
+  # incidence in the selected trips, not a connection or an in-seat analysis.
+  defp stop_incidence(snapshot, impact) do
+    snapshot
+    |> Map.get(:stop_times)
+    |> Enum.filter(&(is_map(&1) and MapSet.member?(impact.selected_imported, &1.trip_id)))
+    |> Enum.group_by(& &1.stop_id)
+    |> Enum.map(fn {stop_id, rows} ->
+      %{
+        stop_id: stop_id,
+        occurrence_count: length(rows),
+        trip_refs: rows |> Enum.map(& &1.trip_id) |> Enum.uniq() |> Enum.sort()
+      }
+    end)
+    |> Enum.sort_by(& &1.stop_id)
+  end
+
+  defp execution_stages(rows, impact) do
+    selected = impact.selected_ids
+    services = impact.services |> MapSet.to_list() |> Enum.sort()
+
+    [
+      stage(
+        :partition_reassignment,
+        services,
+        [
+          "The native Change calendar (MoveCalendar) moves whole selected trips to another service_id; it never splits one calendar's original dates into a temporary partition.",
+          "Shift moves clocks and frequency windows on the trips it loads and creates and removes no calendar date, so no native writer establishes a temporary partition of a touched calendar.",
+          "This plan computes that partition - the affected dates T and the unchanged dates N of every touched service - but writes nothing: no calendar, calendar_date, trip or stop-time writer is reachable from it."
+        ]
+      ),
+      stage(
+        :temporary_identity_overlap,
+        selected,
+        [
+          "Copy allocates every new trip_id through TripChanges.allocate_trip_ids/5, so a copy carries no stored lineage back to the trip it came from and no date-bounded overlap with it.",
+          "Copy's listed-duplicate check matches the target route_pattern_id and the first departure clock against listed trips of the target service. It carries no date lineage, so it cannot tell a temporary identity from the original on a date they share.",
+          "Shift keeps the stored Trip.id and edits that trip in place, so it has no separate temporary identity and no overlap to reconcile against the original.",
+          "Nothing in the application records that one trip is the temporary form of another on a bounded set of dates."
+        ]
+      ),
+      stage(
+        :block_transfer_lineage,
+        impact.blocks |> MapSet.to_list() |> Enum.sort(),
+        [
+          "Copy's insert carries no block_id and its command writes no transfer row, so a copy starts unblocked with no in-seat records.",
+          "Shift's updates carry no block_id, so a shift keeps the block it already had; no writer records a block's dates, or the transfer rules that would apply while a trip is temporarily shifted.",
+          "#{length(rows.transfers)} version transfer rules are listed conservatively with their type and referential selectors. Presence is a review candidate, not a certificate that a connection is feasible.",
+          "#{length(rows.block_attributes)} block attributes, #{length(rows.blocking_settings)} operating settings and #{length(rows.trip_runs)} run assignments are listed, and none of them survives a partition the application cannot yet establish."
+        ]
+      ),
+      stage(
+        :partial_save_reconciliation,
+        selected,
+        [
+          "Copy, Shift and MoveCalendar each save their own reviewed command independently; nothing reconciles the state of a change that was only partly saved.",
+          "No guard withholds publication of a version whose dated change is partly applied, so an interrupted plan could leave a version that reads as current and is not.",
+          "This report exposes no apply command, callback or token, and it observes no manual editor action, so nothing here tracks execution as done."
+        ]
+      )
+    ]
+  end
+
+  defp stage(kind, affected_ids, reasons) do
+    %{
+      kind: kind,
+      status: :foundation_missing,
+      affected_ids: Enum.uniq(affected_ids),
+      reasons: reasons
     }
   end
 
