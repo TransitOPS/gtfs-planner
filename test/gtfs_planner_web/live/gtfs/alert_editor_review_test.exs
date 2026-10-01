@@ -260,9 +260,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
   # -- Fixtures ------------------------------------------------------------
 
   # A planned weekly delay with wording somebody wrote: the alert the review
-  # is mostly about, because it is complete and its text is the operator's.
-  # The confirmed end is what `Completion` requires of a planned alert's end
-  # answer, and it changes nothing about the weekly summary the When row shows.
+  # is mostly about, because it is complete and its text is the operator's. It
+  # holds only the answers the planned timing card collects: a planned alert
+  # has no end kind, and its weekly pattern already bounds its end.
   defp planned_delay(context) do
     alert_fixture(context.audit, %{
       "urgency" => "planned",
@@ -275,9 +275,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
         "weeks" => 3,
         "weekdays" => [1, 2, 3, 4, 5],
         "start_time" => "20:00:00",
-        "end_time" => "05:00:00",
-        "end_kind" => "confirmed",
-        "end_date" => "2026-10-24"
+        "end_time" => "05:00:00"
       },
       "message" => %{
         "header" => @header,
@@ -295,7 +293,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
       "situation" => "stop_closed",
       "cause" => "construction",
       "scope" => %{
-        "shape" => "stops",
+        "shape" => "stop_all_routes",
         "stop_ids" => [context.first.id],
         "route_ids" => [context.route.id]
       },
@@ -389,7 +387,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
   defp review_links(view) do
     view
     |> summary_links()
-    |> Enum.map(&LazyHTML.attribute(&1, "href"))
+    |> Enum.flat_map(&LazyHTML.attribute(&1, "href"))
   end
 
   defp summary_links(view) do

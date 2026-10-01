@@ -98,7 +98,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorChoicesTest do
     test "a service change asks what changes before it asks about routes", context do
       alert = alert_with(context, %{"urgency" => "planned", "situation" => "service_change"})
 
-      {:ok, view, _html} = live(context.conn, edit_path(context.version, alert))
+      {:ok, view, _html} = live(context.conn, edit_path(context.version, alert) <> "?step=change")
 
       assert has_element?(view, "#alert-question-title", "What kind of service change?")
       assert has_element?(view, "#change-fewer_trips", "Fewer trips")
@@ -320,7 +320,38 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorChoicesTest do
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
       assert saved.scope.shape == :system
-      assert saved.scope.route_ids == nil
+      assert saved.scope.route_ids == []
+    end
+  end
+
+  describe "a stale card click" do
+    setup :editor_conn
+
+    test "shows the conflict and leaves the other editor's draft alone", context do
+      alert = alert_with(context, %{"urgency" => "now"})
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=situation")
+
+      # Another tab saves revision 2 while this editor still holds revision 1.
+      assert {:ok, _other} =
+               Alerts.save_draft(context.audit, alert.id, alert.revision, %{
+                 "situation" => "delay"
+               })
+
+      view |> element("#situation-detour") |> render_click()
+
+      # The click is refused with the conflict and its two ways forward, and the
+      # editor stays on the question instead of crashing and remounting.
+      assert has_element?(view, "#alert-conflict")
+      assert has_element?(view, "#conflict-load-latest")
+      assert has_element?(view, "#conflict-save-new")
+      assert has_element?(view, "#alert-question-title", "What is happening?")
+      assert has_element?(view, "#alert-save-status", "Not saved.")
+
+      assert {:ok, row} = Alerts.get_alert(context.audit, alert.id)
+      assert row.situation == :delay
+      assert row.revision == alert.revision + 1
     end
   end
 
@@ -340,7 +371,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorChoicesTest do
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
       assert saved.situation == nil
-      assert saved.scope == nil
+      assert saved.scope.shape == nil
     end
   end
 

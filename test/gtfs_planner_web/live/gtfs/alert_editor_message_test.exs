@@ -26,7 +26,6 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Alerts
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
 
   # The built-in detour script's templates, filled from this fixture's own
@@ -134,7 +133,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
 
       # Sent as a raw event rather than through `element/2`: this is what a
       # hand-made event would carry, and it names a key no card offered.
-      render_click(view, "choose_script", %{"key" => "builtin:no_service_day"})
+      render_click(view, "choose_script", %{"key" => "builtin:made_up"})
 
       assert {:ok, unchanged} = Alerts.get_alert(context.audit, alert.id)
       assert unchanged.revision == revision
@@ -270,6 +269,51 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
       render_patch(view, message_path(context, alert))
 
       assert has_element?(view, "#review-wording")
+    end
+
+    test "arriving again regenerates generated wording whose facts changed", context do
+      alert = detour_alert(context)
+      {:ok, _view, _html} = live(context.conn, message_path(context, alert))
+
+      # The wording was generated on arrival and nobody has touched it. The
+      # skipped stops change under it before the editor comes back.
+      assert {:ok, generated} = Alerts.get_alert(context.audit, alert.id)
+      assert generated.message.header == @detour_header
+      assert generated.message.customized == false
+
+      assert {:ok, _changed} =
+               Alerts.save_draft(context.audit, alert.id, generated.revision, %{
+                 "scope" => %{"stop_ids" => [context.middle.id, context.last.id]}
+               })
+
+      {:ok, reloaded, _html} = live(context.conn, message_path(context, alert))
+
+      # Returning to the step reads the stops as they are now, not the ones the
+      # text was generated from.
+      assert reloaded |> element("#message-header") |> render() =~
+               "Route 1 detour: NE 12th St to NE 20th St not served"
+
+      assert {:ok, regenerated} = Alerts.get_alert(context.audit, alert.id)
+      assert regenerated.message.header == "Route 1 detour: NE 12th St to NE 20th St not served"
+      assert regenerated.message.customized == false
+    end
+
+    test "unmarked wording that holds only a description is somebody's own", context do
+      alert = detour_alert(context)
+
+      # Wording with no `customized` mark and no header, as another writer such as
+      # the assistant leaves it. It has text, so it is not generated over.
+      assert {:ok, written} =
+               Alerts.save_draft(context.audit, alert.id, alert.revision, %{
+                 "message" => %{"description" => "Written by someone else."}
+               })
+
+      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+
+      assert {:ok, unchanged} = Alerts.get_alert(context.audit, alert.id)
+      assert unchanged.revision == written.revision
+      assert unchanged.message.description == "Written by someone else."
+      assert view |> element("#message-description") |> render() =~ "Written by someone else."
     end
 
     test "arriving again never regenerates wording the operator wrote", context do
@@ -445,7 +489,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
         organization_id: organization.id,
         gtfs_version_id: version.id,
         route_id: "R1",
-        route_short_name: "Route 1",
+        route_short_name: "1",
         route_long_name: "Coast Highway",
         route_type: 3
       })

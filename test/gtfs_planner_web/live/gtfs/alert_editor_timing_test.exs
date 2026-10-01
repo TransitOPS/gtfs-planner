@@ -89,15 +89,18 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       assert has_element?(view, "#alert-timing-error", "Choose the date this started.")
 
       # A check-in is stored as the civil time it falls on, in the agency's own
-      # clock, sixty minutes from the moment the editor chose it (CR-7).
+      # clock, sixty minutes from the moment the editor chose it (CR-7). The
+      # stored value is truncated to the second, so it is at least 3 599 s after
+      # a clock read taken before the event.
+      before_write = Alerts.agency_now(context.audit)
+
       render_change(view, "autosave", %{
         "check_in_offset" => "60",
         "alert" => %{"timing" => %{"start_date" => "2026-10-01", "start_time" => "08:00"}}
       })
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
-      now = Alerts.agency_now(context.audit)
-      assert NaiveDateTime.diff(saved.timing.check_in_at, now) >= 3_600
+      assert NaiveDateTime.diff(saved.timing.check_in_at, before_write) >= 3_599
       assert saved.timing.start_date == ~D[2026-10-01]
       assert saved.timing.start_time == ~T[08:00:00]
 
@@ -123,6 +126,31 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
       assert saved.timing.end_kind == :confirmed
       assert saved.timing.end_time == ~T[17:30:00]
+    end
+
+    test "a stored check-in is shown as the selected option", context do
+      alert = now_alert(context)
+
+      assert {:ok, _saved} =
+               Alerts.save_draft(context.audit, alert.id, alert.revision, %{
+                 "timing" => %{
+                   "end_kind" => "estimated",
+                   "check_in_at" => "2026-10-05T16:30:00"
+                 }
+               })
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+
+      # The stored time never equals one of the offsets, which are measured from
+      # a clock that moves on, so it is its own option and the selected one.
+      assert has_element?(
+               view,
+               "#timing-check-in option[selected]",
+               "Check back Oct 5, 4:30 PM"
+             )
+
+      assert has_element?(view, "#timing-check-in option", "In 30 minutes")
     end
 
     test "an end kind this question does not offer stores nothing", context do
@@ -160,7 +188,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       assert has_element?(view, "#alert-timing-overnight", "Ends the following day.")
       assert has_element?(view, "#alert-timing-count", "10 days: Oct 5 to Oct 16")
 
-      for day <- 0..9 do
+      # Monday to Friday over two weeks: 5 to 9 October and 12 to 16 October.
+      for day <- [0, 1, 2, 3, 4, 7, 8, 9, 10, 11] do
         date = Date.add(@first_date, day)
 
         assert has_element?(
@@ -183,6 +212,40 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
              )
 
       assert render(view) =~ "8:00 PM to 5:00 AM (next day)"
+    end
+
+    test "a Once period reads as one period from its first date to its last", context do
+      alert = planned_alert(context)
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+
+      view |> element("#alert-timing-pattern-continuous") |> render_click()
+
+      put_timing(view, %{
+        "first_date" => "2026-10-05",
+        "last_date" => "2026-10-07",
+        "start_time" => "08:00",
+        "end_time" => "18:00"
+      })
+
+      # Three days of one period, and both ends are named: the preview never
+      # reports a three-day answer as one day (AC-20).
+      assert has_element?(view, "#alert-timing-count", "3 days: Oct 5 to Oct 7")
+
+      assert has_element?(
+               view,
+               "#alert-timing-occurrence-2026-10-05",
+               "Monday, October 5 to Wednesday, October 7"
+             )
+
+      assert has_element?(
+               view,
+               "#alert-timing-occurrence-2026-10-05",
+               "8:00 AM to 6:00 PM"
+             )
+
+      refute render(view) =~ "(next day)"
     end
 
     test "removing one Friday takes it out of the pattern", context do
@@ -232,7 +295,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
 
       add_timing_date(view, @added_saturday)
 
-      assert has_element?(view, "#alert-timing-count", "10 days: Oct 5 to Oct 17")
+      assert has_element?(view, "#alert-timing-count", "11 days: Oct 5 to Oct 16")
       assert has_element?(view, "#alert-timing-added-2026-10-10", "Saturday, October 10")
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
@@ -255,15 +318,49 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       week_before = Date.add(@first_date, -7)
       expected = if Date.compare(week_before, today) == :gt, do: week_before, else: today
 
-      assert view
-             |> element("#timing-notice-on")
-             |> render() =~ ~s(value="#{Date.to_iso8601(expected)}")
+      # The default is named beside the input and the input itself is empty, so
+      # nothing was stored by the edits above.
+      assert render(view) =~
+               "Left empty, riders are told from #{Calendar.strftime(expected, "%b %-d")}."
+
+      refute view |> element("#timing-notice-on") |> render() =~ "value="
+      assert {:ok, unstored} = Alerts.get_alert(context.audit, alert.id)
+      assert unstored.timing.notice_on == nil
 
       # Choosing another date stores it, and it stops following the rule.
       put_timing(view, %{"notice_on" => "2026-09-30"})
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
       assert saved.timing.notice_on == ~D[2026-09-30]
+    end
+
+    test "an unrelated edit does not store the default notice date", context do
+      alert = planned_alert(context)
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+
+      view |> element("#alert-timing-pattern-weekly") |> render_click()
+
+      # A first date more than a week out gives a default later than today, which
+      # is the case a submitted default would store wrongly.
+      far = context.audit |> Alerts.agency_now() |> NaiveDateTime.to_date() |> Date.add(30)
+
+      view
+      |> form("#alert-form", %{"alert" => %{"timing" => %{"first_date" => Date.to_iso8601(far)}}})
+      |> render_change()
+
+      view
+      |> form("#alert-form", %{"alert" => %{"timing" => %{"weeks" => "2"}}})
+      |> render_change()
+
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.timing.first_date == far
+      assert saved.timing.weeks == 2
+      assert saved.timing.notice_on == nil
+
+      assert render(view) =~
+               "Left empty, riders are told from #{Calendar.strftime(Date.add(far, -7), "%b %-d")}."
     end
 
     test "an all-day answer has no times and no overnight note", context do
@@ -279,9 +376,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
 
       assert has_element?(view, "#timing-day-start")
 
-      # The checkbox sits beside its label, so Space clears it exactly as a
-      # pointer click does - and the hidden field carries the answer.
-      view |> element("#timing-all-day") |> render_click()
+      # The checkbox sits beside its label and carries no click handler of its
+      # own: ticking it is a change of the whole form, which is what the browser
+      # sends.
+      view
+      |> form("#alert-form", %{"alert" => %{"timing" => %{"all_day" => "true"}}})
+      |> render_change()
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
       assert saved.timing.all_day == true
@@ -347,7 +447,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
 
       view |> element("#alert-timing-pattern-weekly") |> render_click()
       choose_weekdays(view, 1..5)
-      revision = alert.revision + 4
+      assert {:ok, before} = Alerts.get_alert(context.audit, alert.id)
+      revision = before.revision
 
       view |> render_click("toggle_weekday", %{"day" => "9"})
 

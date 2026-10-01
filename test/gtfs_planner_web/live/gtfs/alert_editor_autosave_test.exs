@@ -128,7 +128,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
 
       # The typed value is still on screen, because the other side of the
       # conflict is the one that may become a new alert.
-      assert view |> element("#alert_message_header") |> render() =~ "Typed here"
+      assert view |> element("#message-header") |> render() =~ "Typed here"
     end
 
     test "the conflict banner offers no way to overwrite", context do
@@ -154,6 +154,39 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
       end
     end
 
+    test "walking to another question keeps the banner and the typed values", context do
+      alert = message_alert(context)
+
+      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+
+      assert {:ok, _other} =
+               Alerts.save_draft(context.audit, alert.id, 1, %{
+                 "message" => %{"header" => "Saved by the other editor"}
+               })
+
+      view
+      |> form("#alert-form",
+        alert: %{"revision" => "1", "message" => %{"header" => "Typed here"}}
+      )
+      |> render_change()
+
+      assert has_element?(view, "#alert-conflict")
+
+      # Navigating re-reads the row, but it must not report the typed text as
+      # saved or take Save as new alert away.
+      view |> element("#alert-step-situation") |> render_click()
+
+      assert has_element?(view, "#alert-question-title", "What is happening?")
+      assert has_element?(view, "#alert-conflict")
+      assert has_element?(view, "#conflict-save-new")
+      assert has_element?(view, "#alert-save-status", "Not saved.")
+
+      assert view |> element("#conflict-save-new") |> render_click()
+
+      assert [copy] = Repo.all(Alerts.Alert) |> Enum.reject(&(&1.id == alert.id))
+      assert copy.message.header == "Typed here"
+    end
+
     test "Load latest shows the newer saved draft", context do
       alert = message_alert(context)
 
@@ -174,7 +207,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
 
       refute has_element?(view, "#alert-conflict")
       assert has_element?(view, "#alert-save-status", "Saved")
-      assert view |> element("#alert_message_header") |> render() =~ "Saved by the other editor"
+      assert view |> element("#message-header") |> render() =~ "Saved by the other editor"
     end
 
     test "Save as new alert creates a second alert holding the local values and opens it",
@@ -205,7 +238,86 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
       assert [copy] = Repo.all(Alerts.Alert) |> Enum.reject(&(&1.id == alert.id))
       assert copy.message.header == "Typed here"
 
-      assert_redirect(view, ~r|/gtfs/#{context.version.id}/alerts/#{copy.id}|)
+      assert_redirect(
+        view,
+        "/gtfs/#{context.version.id}/alerts/#{copy.id}?mode=form&step=message"
+      )
+    end
+  end
+
+  describe "a second edit composed before the first one's reply" do
+    setup :editor_conn
+
+    test "is written on top of the editor's own save instead of refused", context do
+      alert = message_alert(context)
+
+      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+
+      render_change(view, "autosave", %{
+        "alert" => %{"revision" => "1", "message" => %{"header" => "First edit"}}
+      })
+
+      # The browser composed this one before the diff carrying revision 2
+      # arrived, so it still names revision 1.
+      render_change(view, "autosave", %{
+        "alert" => %{"revision" => "1", "message" => %{"description" => "Second edit"}}
+      })
+
+      refute has_element?(view, "#alert-conflict")
+      assert has_element?(view, "#alert-save-status", "Saved")
+
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.revision == 3
+      assert saved.message.header == "First edit"
+      assert saved.message.description == "Second edit"
+    end
+
+    test "is still refused when another editor wrote in between", context do
+      alert = message_alert(context)
+
+      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+
+      render_change(view, "autosave", %{
+        "alert" => %{"revision" => "1", "message" => %{"header" => "First edit"}}
+      })
+
+      assert {:ok, _other} =
+               Alerts.save_draft(context.audit, alert.id, 2, %{
+                 "message" => %{"description" => "Saved by the other editor"}
+               })
+
+      render_change(view, "autosave", %{
+        "alert" => %{"revision" => "1", "message" => %{"description" => "Second edit"}}
+      })
+
+      assert has_element?(view, "#alert-conflict")
+
+      assert {:ok, row} = Alerts.get_alert(context.audit, alert.id)
+      assert row.revision == 3
+      assert row.message.description == "Saved by the other editor"
+    end
+
+    test "a revision from before the editor loaded the row is still stale", context do
+      alert = message_alert(context)
+
+      assert {:ok, _other} =
+               Alerts.save_draft(context.audit, alert.id, 1, %{
+                 "message" => %{"header" => "Saved by the other editor"}
+               })
+
+      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+
+      # A form recovery after a reconnect replays what it composed on revision 1,
+      # and the editor loaded revision 2, so the write is refused.
+      render_change(view, "autosave", %{
+        "alert" => %{"revision" => "1", "message" => %{"header" => "Replayed"}}
+      })
+
+      assert has_element?(view, "#alert-conflict")
+
+      assert {:ok, row} = Alerts.get_alert(context.audit, alert.id)
+      assert row.revision == 2
+      assert row.message.header == "Saved by the other editor"
     end
   end
 
@@ -224,8 +336,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
 
       # Nothing on screen was cleared: the refused sentence is still the input's
       # value (AC-16).
-      assert view |> element("#alert_message_header") |> render() =~ long
-      assert has_element?(view, "#alert_message_header-error", "120 character")
+      assert view |> element("#message-header") |> render() =~ long
+      assert has_element?(view, "#message-header-error", "120 character")
       assert has_element?(view, "#alert-save-status", "Not saved.")
       assert has_element?(view, "#alert-save-retry")
 
@@ -252,7 +364,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
       # holds, so a refusal that is still a refusal changes nothing and loses
       # nothing.
       assert has_element?(view, "#alert-save-status", "Not saved.")
-      assert view |> element("#alert_message_header") |> render() =~ long
+      assert view |> element("#message-header") |> render() =~ long
 
       assert {:ok, unchanged} = Alerts.get_alert(context.audit, alert.id)
       assert unchanged.revision == 1
@@ -324,7 +436,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
       # Sent as a raw event rather than through `form/3`, because a real form
       # could not hold this value: the point is what the handler does with a
       # revision it cannot read (CR-2).
-      render_change(view, %{
+      render_change(view, "autosave", %{
         "alert" => %{"revision" => "not-a-revision", "message" => %{"header" => "Forged"}}
       })
 
@@ -340,7 +452,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
 
       {:ok, view, _html} = live(context.conn, message_path(context, alert))
 
-      render_change(view, %{
+      render_change(view, "autosave", %{
         "alert" => %{
           "revision" => "1",
           "organization_id" => Ecto.UUID.generate(),
@@ -351,6 +463,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
       })
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.revision == 2
+      assert saved.message.header == "Forged identity"
       assert saved.organization_id == context.organization.id
       assert saved.gtfs_version_id == context.version.id
       refute saved.complete

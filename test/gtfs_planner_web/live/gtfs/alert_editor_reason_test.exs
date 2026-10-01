@@ -83,10 +83,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReasonTest do
 
       # The schema stores these thirteen and no others, so the cards cannot offer
       # a cause the row would refuse and none can be missing from the row (AC-21).
-      assert {:parameterized, {Ecto.Enum, %{mappings: mappings}}} =
-               Alert.__schema__(:type, :cause)
-
-      assert Enum.sort(values) == mappings |> Map.keys() |> Enum.map(&to_string/1) |> Enum.sort()
+      assert Enum.sort(values) ==
+               Alert |> Ecto.Enum.values(:cause) |> Enum.map(&to_string/1) |> Enum.sort()
 
       for {value, label} <- @causes do
         assert has_element?(view, "#alert-cause-#{value}")
@@ -152,7 +150,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReasonTest do
       assert has_element?(view, "#alert-question-title", "Why is this happening?")
       assert has_element?(view, "#alert-cause-other_cause[aria-pressed='true']")
       assert has_element?(view, "#cause-detail")
-      assert has_element?(view, "#cause-detail label", "Describe the other reason")
+      assert has_element?(view, "#alert-reason-other label", "Describe the other reason")
     end
 
     test "the explanation autosaves and is still there after a reload", context do

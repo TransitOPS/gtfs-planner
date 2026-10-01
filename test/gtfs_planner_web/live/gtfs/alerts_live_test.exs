@@ -22,6 +22,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
 
   alias GtfsPlanner.Alerts
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.DisplayClock
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
 
   # The words this package must never show on an alerts surface: the publication
@@ -50,7 +52,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
       {:ok, view, _html} = live(context.conn, alerts_path(context.version))
 
       assert has_element?(view, "#alerts-page")
-      assert has_element?(view, "#create-alert", "Create alert")
+      assert has_element?(view, "#create-alert-first-use", "Create alert")
 
       assert ["nav-alerts" | _rest] =
                view
@@ -114,8 +116,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
 
       refute has_element?(view, "[data-role='alert-needs-attention']")
 
-      context.organization
-      |> Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
+      Stop
+      |> Repo.get!(stop.id)
       |> Repo.delete!()
 
       {:ok, view, _html} = live(context.conn, alerts_path(context.version))
@@ -124,13 +126,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
     end
 
     test "a row whose check-in has arrived shows Check-in due", context do
-      agency_today = agency_today(context)
+      now = Alerts.agency_now(context.audit)
 
       timing = %{
-        "start_date" => Date.to_iso8601(agency_today),
-        "start_time" => "08:00:00",
+        "start_date" => now |> NaiveDateTime.to_date() |> Date.to_iso8601(),
+        "start_time" => "00:00:00",
         "end_kind" => "estimated",
-        "check_in_at" => NaiveDateTime.to_iso8601(NaiveDateTime.new!(agency_today, ~T[07:00:00]))
+        "check_in_at" => now |> NaiveDateTime.add(-3_600) |> NaiveDateTime.to_iso8601()
       }
 
       {:ok, _alert} =
@@ -172,6 +174,22 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
 
       assert has_element?(view, "#alerts-list", "All routes")
       assert has_element?(view, "#alerts-list", "1 stop")
+    end
+
+    test "a draft with no route answer does not read All routes", context do
+      draft = incomplete(context)
+      {:ok, current} = current_delay(context)
+
+      {:ok, view, _html} =
+        live(context.conn, alerts_path(context.version) <> "?tab=in_progress")
+
+      assert has_element?(view, "#alert-row-#{draft.id}", "Incomplete")
+      refute has_element?(view, "#alert-row-#{draft.id}", "All routes")
+
+      # An alert that chose the whole system still reads All routes.
+      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+
+      assert has_element?(view, "#alert-row-#{current.id}", "All routes")
     end
 
     test "the page carries no publication state or action", context do
@@ -243,7 +261,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
       conn = log_in_user(build_conn(), viewer, organization: context.organization)
 
       assert {:error, {:redirect, %{to: path}}} = live(conn, alerts_path(context.version))
-      assert path == "/"
+      assert path == "/admin/organizations"
     end
   end
 
@@ -261,10 +279,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
   # The agency's own date, because the tabs are grouped on it rather than on
   # UTC's (CR-7).
   defp agency_today(context) do
-    {:ok, today} =
-      GtfsPlanner.Gtfs.DisplayClock.today(context.organization.id, context.version.id)
-
-    today.date
+    DisplayClock.today(context.organization.id, context.version.id).date
   end
 
   # A complete alert covering the agency's today, so `Alerts.Listing` reads it as

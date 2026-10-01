@@ -24,7 +24,6 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
   alias GtfsPlanner.Alerts
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Repo
-  alias GtfsPlannerWeb.Gtfs.AlertEditorLive
 
   # The words this package must never show on an editor surface: the publication
   # states and actions of the prototype's earlier revision, which package 30
@@ -76,13 +75,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
              |> element("#alert-urgency-now")
              |> render_click()
 
+      assert [alert] = Repo.all(GtfsPlanner.Alerts.Alert)
+
       assert_redirect(
         view,
-        ~r|/gtfs/#{context.version.id}/alerts/[0-9a-f-]+\?mode=form&step=situation|
+        "/gtfs/#{context.version.id}/alerts/#{alert.id}?mode=form&step=situation"
       )
-
-      assert [%{alert: alert}] =
-               Repo.all(GtfsPlanner.Alerts.Alert)
 
       assert alert.urgency == :now
       assert alert.revision == 1
@@ -110,13 +108,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
       {:ok, view, _html} =
         live(context.conn, edit_path(context.version, alert) <> "?step=timing&mode=form")
 
-      assert has_element?(view, "#alert-question-title", "When will service change?")
+      assert has_element?(view, "#alert-question-title", "When should this alert end?")
       assert has_element?(view, "#alert-step-timing[aria-current='step']")
 
       {:ok, view, _html} =
         live(context.conn, edit_path(context.version, alert) <> "?step=timing&mode=form")
 
-      assert has_element?(view, "#alert-question-title", "When will service change?")
+      assert has_element?(view, "#alert-question-title", "When should this alert end?")
     end
 
     test "without ?mode the editor opens in the reader's stored preference", context do
@@ -264,7 +262,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
       chosen =
         route_fixture(context.organization.id, context.version.id, %{route_id: "R1"})
 
-      _other = route_fixture(context.organization.id, context.version.id, %{route_id: "R2"})
+      other = route_fixture(context.organization.id, context.version.id, %{route_id: "R2"})
 
       shared =
         stop_fixture(context.organization.id, context.version.id, %{
@@ -276,7 +274,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
 
       # Both routes serve the one stop through a real trip, which is the only
       # thing `Alerts.routes_at_stops/2` reads.
-      for route <- [chosen, _other] do
+      for route <- [chosen, other] do
         bundle =
           schedule_pattern_fixture(context.organization.id, context.version.id, %{
             route_id: route.route_id,
@@ -310,10 +308,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
           "urgency" => "now",
           "situation" => "stop_closed",
           "scope" => %{
-            "shape" => "route_stop_pairs",
+            "shape" => "route_stops",
             "route_stop_pairs" => [
               %{"route_id" => chosen.id, "stop_id" => shared.id},
-              %{"route_id" => _other.id, "stop_id" => shared.id}
+              %{"route_id" => other.id, "stop_id" => shared.id}
             ],
             "stop_ids" => [shared.id]
           }
@@ -332,10 +330,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
           "message" => message()
         })
 
-      {:ok, view, _html} = live(context.conn, edit_path(context.version, alert))
+      # The current question shows its position, so the check is read on a step
+      # after the first one.
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=message")
 
       assert has_element?(view, "#alert-step-urgency .hero-check")
-      assert has_element?(view, "#alert-step-timing", "4.")
+      assert has_element?(view, "#alert-step-timing", "5.")
+      refute has_element?(view, "#alert-step-timing .hero-check")
     end
   end
 
@@ -364,7 +366,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
       {:ok, view, _html} = live(context.conn, edit_path(context.version, alert))
 
       assert has_element?(view, "#alert-preview-header", "Route 1 buses delayed")
-      assert has_element?(view, "#alert-preview-when", "Oct 5 to Oct 7")
+      # A confirmed end names its end date, so the When line covers 5 to 7 October.
+      assert has_element?(view, "#alert-preview-when", "Oct 5")
+      assert has_element?(view, "#alert-preview-when", "Oct 7")
       assert has_element?(view, "#alert-preview-what", "Delays")
     end
 
@@ -388,7 +392,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
       assert view |> element("#delete-alert") |> render_click()
 
       assert has_element?(view, "#delete-alert-dialog[data-open='true']")
-      assert has_element?(view, "#delete-alert-dialog-body", "Route 1 buses delayed")
+
+      assert has_element?(
+               view,
+               "#delete-alert-dialog-body",
+               "Delete Route 1 buses delayed? This can't be undone."
+             )
 
       assert view |> element("#delete-alert-dialog-confirm") |> render_click()
 
@@ -416,7 +425,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
       conn = log_in_user(build_conn(), viewer, organization: context.organization)
 
       assert {:error, {:redirect, %{to: path}}} = live(conn, new_path(context.version))
-      assert path == "/"
+      assert path == "/admin/organizations"
     end
   end
 

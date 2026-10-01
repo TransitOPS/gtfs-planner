@@ -130,14 +130,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
       assert saved.scope.shape == :trips
 
-      assert Enum.sort(saved.scope.trips, & &1.trip_id) ==
-               Enum.sort(
-                 [
-                   %{trip_id: schedule.early.id, service_date: @monday},
-                   %{trip_id: schedule.late.id, service_date: @monday}
-                 ],
-                 & &1.trip_id
-               )
+      assert saved.scope.trips |> Enum.map(&{&1.trip_id, &1.service_date}) |> Enum.sort() ==
+               Enum.sort([{schedule.early.id, @monday}, {schedule.late.id, @monday}])
 
       assert has_element?(
                view,
@@ -167,14 +161,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
 
-      assert Enum.sort(saved.scope.trips, &{&1.service_date, &1.trip_id}) ==
-               Enum.sort(
-                 [
-                   %{trip_id: schedule.early.id, service_date: @monday},
-                   %{trip_id: schedule.weekend.id, service_date: @saturday}
-                 ],
-                 &{&1.service_date, &1.trip_id}
-               )
+      assert saved.scope.trips |> Enum.map(&{&1.trip_id, &1.service_date}) |> Enum.sort() ==
+               Enum.sort([{schedule.early.id, @monday}, {schedule.weekend.id, @saturday}])
 
       # The selection belongs to the date it was made on, so Saturday's own
       # checklist shows only Saturday's choice as chosen.
