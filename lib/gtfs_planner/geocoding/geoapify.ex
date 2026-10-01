@@ -186,8 +186,11 @@ defmodule GtfsPlanner.Geocoding.Geoapify do
 
   # Both request builders append the configured `:geocoding_req_options`, which is
   # how a test routes the call through `Req.Test` and asserts the request it builds.
+  # Autocomplete is on every keystroke, so it keeps the short upstream defaults: a
+  # five-second timeout and one retry.
   defp autocomplete_options(params) do
-    [params: params] ++ Application.get_env(:gtfs_planner, :geocoding_req_options, [])
+    [params: params, receive_timeout: 5_000, retry: :transient, max_retries: 1] ++
+      Application.get_env(:gtfs_planner, :geocoding_req_options, [])
   end
 
   defp req_options(params) do

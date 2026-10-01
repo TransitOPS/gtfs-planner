@@ -31,6 +31,7 @@ defmodule GtfsPlanner.Gtfs.StopEditingDeleteTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.User
   alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs.AuditContext
@@ -643,6 +644,17 @@ defmodule GtfsPlanner.Gtfs.StopEditingDeleteTest do
       )
 
       Repo.delete_all(from o in Organization, where: o.id == ^fixture.organization.id)
+
+      # An unboxed test commits the users its actor and stranger fixtures
+      # created. Deleting the organization removes the membership but not the
+      # user, and a leftover user breaks the first-administrator tests, which
+      # need a database with no committed users.
+      Repo.delete_all(
+        from u in User,
+          where:
+            like(u.email, "delete-no-%") or like(u.email, "delete-stranger-%") or
+              like(u.email, "stop-delete-%")
+      )
     end)
   end
 end

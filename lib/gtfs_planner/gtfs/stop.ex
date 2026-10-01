@@ -119,6 +119,7 @@ defmodule GtfsPlanner.Gtfs.Stop do
     |> cast(attrs, @editor_fields)
     |> validate_stop_fields()
     |> validate_editor_rules()
+    |> validate_located_type_fields()
   end
 
   @doc "Creates an editor stop with ownership supplied by the server."
@@ -130,6 +131,7 @@ defmodule GtfsPlanner.Gtfs.Stop do
     |> cast(attrs, [:stop_id | @editor_fields])
     |> validate_stop_fields()
     |> validate_editor_rules()
+    |> validate_located_type_fields()
   end
 
   @doc "Creates a changeset for a stop."
@@ -165,14 +167,18 @@ defmodule GtfsPlanner.Gtfs.Stop do
   """
   def child_stop_changeset(stop, attrs) do
     stop
-    |> editor_changeset(attrs)
+    |> cast(attrs, @editor_fields)
+    |> validate_stop_fields()
+    |> validate_editor_rules()
     |> require_child_level()
   end
 
   @doc "Same rule as `child_stop_changeset/2`, for a stop being created."
   def child_stop_changeset(%__MODULE__{} = stop, attrs, audit) do
-    stop
-    |> create_changeset(attrs, audit)
+    %{stop | organization_id: audit.organization_id, gtfs_version_id: audit.gtfs_version_id}
+    |> cast(attrs, [:stop_id | @editor_fields])
+    |> validate_stop_fields()
+    |> validate_editor_rules()
     |> require_child_level()
   end
 
@@ -184,19 +190,23 @@ defmodule GtfsPlanner.Gtfs.Stop do
     end
   end
 
-  # The editor's own rules, shared by the update and create changesets so both
-  # surfaces refuse the same values.
+  # The rules every stop-writing surface shares, so all of them refuse the same
+  # nested station and the same unusable web address.
   defp validate_editor_rules(changeset) do
     changeset
     |> validate_parent_rule()
-    |> then(fn changeset ->
-      if get_field(changeset, :location_type) in @located_types do
-        validate_required(changeset, [:stop_name, :stop_lat, :stop_lon])
-      else
-        changeset
-      end
-    end)
     |> validate_http_url(:stop_url)
+  end
+
+  # A name and both coordinates are required only where a rider can board. The
+  # station diagram's own form does not ask for them: it positions a child stop
+  # on the diagram, so `child_stop_changeset/2` leaves these fields optional.
+  defp validate_located_type_fields(changeset) do
+    if get_field(changeset, :location_type) in @located_types do
+      validate_required(changeset, [:stop_name, :stop_lat, :stop_lon])
+    else
+      changeset
+    end
   end
 
   # GTFS: a station (location_type=1) must not have a parent_station.
