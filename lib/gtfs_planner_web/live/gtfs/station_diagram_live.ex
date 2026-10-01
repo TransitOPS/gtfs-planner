@@ -6996,12 +6996,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       level_id: level_id
     }
 
-    case Stations.update_child_stop(
-           socket.assigns.audit_ctx,
-           stop.id,
-           attrs,
-           stop.lock_version
-         ) do
+    # Re-positioning to the stored position writes nothing and records no history.
+    result =
+      if Stop.editor_changeset(stop, attrs).changes == %{},
+        do: {:ok, stop},
+        else:
+          Stations.update_child_stop(socket.assigns.audit_ctx, stop.id, attrs, stop.lock_version)
+
+    case result do
       {:ok, updated_stop} ->
         {:noreply,
          socket
