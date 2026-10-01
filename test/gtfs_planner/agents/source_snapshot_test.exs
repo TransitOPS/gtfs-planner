@@ -90,8 +90,9 @@ defmodule GtfsPlanner.Agents.SourceSnapshotTest do
       # The same context is the same conversation, in this tab and any other.
       assert {:ok, ^pid, _same} = Agents.open(scope)
 
-      assert {:ok, _other, _other_snapshot} =
-               Agents.open(%{scope | user_id: Ecto.UUID.generate()})
+      # Another person is not a member of this organization at all, so their
+      # own scope for the same context never opens a conversation.
+      assert Agents.open(%{scope | user_id: Ecto.UUID.generate()}) == {:error, :forbidden}
     end
 
     test "an approval keeps its own digest, and a source changes only the conversation key",
@@ -305,7 +306,10 @@ defmodule GtfsPlanner.Agents.SourceSnapshotTest do
       assert {:ok, third_pid, _third_snapshot} = Agents.open(third)
 
       assert first_pid != second_pid
-      assert first_pid != third_pid
+
+      # The third scope carries the first scope's payload, so the two are the
+      # same conversation key and the same session.
+      assert third_pid == first_pid
     end
 
     test "a replaced source drops this panel's transcript and its late results, and leaves another tab's alone",
@@ -333,6 +337,15 @@ defmodule GtfsPlanner.Agents.SourceSnapshotTest do
       assert Scope.source_snapshot(scope(context, panel_context(view))).kind == @kind
       assert session_pid(view) != original
       assert panel_assigns(view).agent_entries_empty?
+
+      # `:sys.replace_state/2` swaps the socket without a render pass, so the
+      # client's copy of the page is one diff behind the socket the panel now
+      # holds. A down from a process this panel never monitored is one of the
+      # panel's own halted `handle_info/2` clauses, so it reaches no host
+      # handler and makes the LiveView push the diff ordinary navigation would
+      # have pushed.
+      send(view.pid, {:DOWN, make_ref(), :process, self(), :normal})
+      _ = :sys.get_state(view.pid)
 
       refute has_element?(view, "#agent-entry-2")
       assert has_element?(view, "#agent-first-conversation")
@@ -405,14 +418,19 @@ defmodule GtfsPlanner.Agents.SourceSnapshotTest do
 
       # The prepared lookup is the first boundary the withdrawn editor reaches on
       # the second conversation, and it refuses before the proposal is read: the
-      # session goes down with it rather than waiting for a send.
-      assert Agents.prepared(replying_pid, "a-conversation", 1) == :error
+      # session goes down with it rather than waiting for a send. A refused
+      # boundary answers `{:error, reason}`; only a live session that simply has
+      # no such proposal answers the bare `:error`.
+      assert Agents.prepared(replying_pid, "a-conversation", 1) == {:error, :forbidden}
       assert_receive {:DOWN, ^replying_monitor, :process, ^replying_pid, :normal}, 2_000
 
       # The send on that same conversation is refused too, as is the answer that
       # was already in flight for the first one.
       assert Agents.send_message(replying_pid, "One more question?") == {:error, :ended}
       assert Agents.send_message(pid, "A later question?") == {:error, :ended}
+
+      # This session is gone rather than refusing, so the ended session's own
+      # `:error` is what the lookup answers.
       assert Agents.prepared(pid, "a-conversation", 2) == :error
 
       # Dispatch and a new attachment refuse the same conversation, and the
@@ -436,8 +454,13 @@ defmodule GtfsPlanner.Agents.SourceSnapshotTest do
       arguments = ~s|{"service_date":"2026-10-05"}|
       bound = route_scope(context, route.id)
 
-      assert {:ok, _result} =
+      # `Dispatch.call/4` answers a successful tool read with its result and the
+      # evidence the turn shows beside it.
+      assert {:ok, result, evidence} =
                Dispatch.call(ServiceQueries, bound, "list_boarding_occurrences", arguments)
+
+      assert result["route_id"] == route.route_id
+      assert evidence.kind == "boarding_occurrences"
 
       Repo.delete!(route)
 

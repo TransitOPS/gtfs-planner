@@ -181,7 +181,7 @@ defmodule GtfsPlanner.Agents.Scope do
   end
 
   defp admit_snapshot(context, %{kind: kind, payload: payload}) do
-    if valid_kind?(kind) and json_value?(payload, 0) do
+    if valid_kind?(kind) and map_payload?(payload) do
       snapshot = %{kind: kind, payload: payload, digest: snapshot_digest(kind, payload)}
       admitted = Map.put(context, :source_snapshot, snapshot)
 
@@ -195,6 +195,13 @@ defmodule GtfsPlanner.Agents.Scope do
     do: String.length(kind) in 1..@max_snapshot_kind_length and String.trim(kind) != ""
 
   defp valid_kind?(_kind), do: false
+
+  # The payload's top level is a string-key map, as `source_snapshot/0` and
+  # `with_source_snapshot/2` document; `json_value?/2` alone would admit a bare
+  # list, string, number, boolean or `nil` there, so the map check is made
+  # separately and the per-value recursion still governs every entry.
+  defp map_payload?(payload) when is_map(payload), do: json_value?(payload, 0)
+  defp map_payload?(_payload), do: false
 
   # The depth bound is a safety floor, not a product limit: `json_value?/2`
   # recurses, and an untrusted payload is exactly where an unbounded nesting
@@ -332,7 +339,7 @@ defmodule GtfsPlanner.Agents.Scope do
         :ok
 
       %{kind: kind, payload: payload, digest: digest} = snapshot ->
-        if map_size(snapshot) == 3 and valid_kind?(kind) and json_value?(payload, 0) and
+        if map_size(snapshot) == 3 and valid_kind?(kind) and map_payload?(payload) and
              digest == snapshot_digest(kind, payload) do
           :ok
         else
