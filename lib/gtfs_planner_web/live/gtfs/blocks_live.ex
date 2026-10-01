@@ -263,6 +263,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # drawer has to leave one sentence behind about what it did.
   @connection_undo_refused "Couldn't undo: the connection changed after your save. Open it to review."
 
+  # The trip drawer's one record removal (R7, AC-21). The removal names the pair
+  # it deleted; a record another editor has since changed is `:stale` with
+  # nothing deleted, and every other refusal says the same thing.
+  @remove_record_changed "This record changed. Nothing was removed."
+  @remove_record_failed "Couldn't remove the record. Nothing changed. Try again."
+
   # The three answers in the page's own words. A stale plan is named
   # by what the reader must do about it rather than by an input the page cannot
   # see: `apply_block_plan/3` reports `:stale_plan` without saying which setting,
@@ -1283,6 +1289,51 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # day, the drawer and the timeline exactly as they are (R10).
   def handle_event("dismiss_connection_result", _params, socket) do
     {:noreply, assign(socket, :connection_result, nil)}
+  end
+
+  # The trip drawer's record removal, in three events: ask, cancel, confirm.
+  #
+  # Asking names the record the editor clicked, and only a record the loaded day
+  # lists for the open trip as stale can be named at all, so a crafted event
+  # cannot turn a matching record into a removal. Nothing is read or written
+  # until the confirmation.
+  def handle_event("request_remove_record", %{"id" => id}, socket) do
+    case removable_entry(socket, id) do
+      nil -> {:noreply, socket}
+      entry -> {:noreply, assign(socket, remove_record: entry, remove_pending: false)}
+    end
+  end
+
+  def handle_event("request_remove_record", _params, socket), do: {:noreply, socket}
+
+  # Cancelling keeps the record and the drawer's own state exactly as they were.
+  def handle_event("cancel_remove_record", _params, socket) do
+    {:noreply, assign(socket, remove_record: nil, remove_pending: false)}
+  end
+
+  # The write itself: `Gtfs.remove_in_seat_records/2`, the facade for
+  # `InSeatTransfers.remove_records/2`, with the one row the drawer listed and the
+  # `updated_at` it showed, so another editor's change between the listing and
+  # the confirmation is `:stale` with nothing deleted (R7, INV-4). The
+  # organization, version and actor come from the audit context and the editor
+  # role is re-read here exactly as the other block writes do it, so a forged
+  # event from a viewer is refused rather than deleting anything.
+  #
+  # The write is one locked row, its audit and the day reload, so it runs in the
+  # event itself the way the Undo does; both refusals reload the day as well, so
+  # the drawer never keeps listing a record the store has moved on from.
+  def handle_event("confirm_remove_record", _params, %{assigns: %{remove_record: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("confirm_remove_record", _params, socket) do
+    if editor_access?(socket) do
+      remove_stale_record(socket)
+    else
+      {:noreply,
+       socket
+       |> assign(:remove_record, nil)
+       |> put_flash(:error, @permission_message)}
+    end
   end
 
   # The two writes in the Block rules drawer. The drawer only
@@ -2437,6 +2488,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
         socket
         |> assign(:trip_view, trip)
+        # A removal question belongs to the trip that raised it, so any re-resolve
+        # — a closed drawer, another trip, a reloaded day — drops it rather than
+        # reopening the same question over a different trip's records.
+        |> assign(:remove_record, nil)
         |> assign(:gap_view, gap_view)
         |> assign(:block_view, if(is_nil(trip) and is_nil(gap), do: block))
         |> resolve_connection(day, gap_view)
@@ -4397,6 +4452,59 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     end
   end
 
+  defp remove_stale_record(socket) do
+    row = socket.assigns.remove_record.row
+
+    case Gtfs.remove_in_seat_records([{row.id, row.updated_at}], audit_context(socket)) do
+      {:ok, _removed} ->
+        {:noreply,
+         socket
+         |> assign(:remove_record, nil)
+         |> load_day()
+         |> resolve_drawers()
+         |> assign_page_rows_if_loaded()
+         |> put_flash(:info, removed_record_text(row))}
+
+      {:error, :stale} ->
+        {:noreply,
+         socket
+         |> assign(:remove_record, nil)
+         |> load_day()
+         |> resolve_drawers()
+         |> assign_page_rows_if_loaded()
+         |> put_flash(:error, @remove_record_changed)}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> assign(:remove_record, nil)
+         |> put_flash(:error, @remove_record_failed)}
+    end
+  end
+
+  # The record the open trip's drawer listed under `id`, when the day loaded it
+  # as stale. That listing is the only source, so a confirmation can never name a
+  # record the reader was not looking at.
+  defp removable_entry(socket, id) do
+    with {:trip, trip, _day_types} <- socket.assigns.trip_view,
+         [entry | _rest] <-
+           socket.assigns.in_seat
+           |> Map.get(trip.id, [])
+           |> Enum.filter(&(to_string(&1.row.id) == id and stale_record?(&1.state))) do
+      entry
+    else
+      _other -> nil
+    end
+  end
+
+  # The one state a removal is offered for: no block in the version reaches the
+  # record, so it cannot be valid GTFS for this feed (R7).
+  defp stale_record?({:stale, _reason}), do: true
+  defp stale_record?(_state), do: false
+
+  defp removed_record_text(row),
+    do: "Removed the record for trip #{row.from_trip_id} → #{row.to_trip_id}."
+
   defp audit_context(socket) do
     %AuditContext{
       organization_id: socket.assigns.current_organization.id,
@@ -4609,6 +4717,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       connection_form: connection_form(nil),
       connection_scope: nil,
       connection_discard: nil,
+      # The stale record the trip drawer is asking about, or nil when no removal
+      # is being confirmed. The record itself is the loaded day's own listing
+      # entry, so the confirmation names the row and the timestamp the editor saw.
+      remove_record: nil,
+      remove_pending: false,
       # The Set-all setting chosen in the group panel, and no group open with it:
       # the choice is per group and starts empty, which is why the fieldset's
       # review button is disabled on a panel the reader has just opened.
@@ -5578,6 +5691,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                     assign_form={@assign_form}
                     destination_options={@destination_options}
                     destination_total={@destination_total}
+                    remove_record={@remove_record}
+                    remove_pending={@remove_pending}
                   />
                 <% {:elsewhere, trip_id, day_types} -> %>
                   <BlocksComponents.trip_elsewhere

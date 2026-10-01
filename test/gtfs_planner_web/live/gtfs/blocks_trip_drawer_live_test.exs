@@ -14,6 +14,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTripDrawerLiveTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs.Blocking.DayTypes
+  alias GtfsPlanner.Gtfs.Transfer
+  alias GtfsPlanner.Repo
+
+  import Ecto.Query
 
   @weekend %{
     monday: 0,
@@ -327,6 +332,153 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTripDrawerLiveTest do
                "#trip-transfers [data-role='trip-transfer-state']",
                "isn't next on this vehicle on Weekday (#{weekday_dates()} days)"
              )
+    end
+  end
+
+  describe "removing a stale record from the trip drawer" do
+    setup :editor_scope
+
+    test "a stale record offers its removal and confirming deletes it and reloads the day",
+         %{version: version} = context do
+      calendar(context, "WK", "Weekday")
+
+      a = trip(context, %{trip_id: "a", block_id: "101", first: "06:00:00", last: "07:00:00"})
+
+      # `y` runs in the same day type with no block, so the record names a trip
+      # no block reaches and the day load calls it `{:stale, :no_block}`.
+      y = trip(context, %{trip_id: "y", first: "09:00:00", last: "10:00:00"})
+
+      record = in_seat_transfer_fixture(context.organization.id, context.version.id, a, y)
+
+      conn = editor_conn(context)
+      base = blocks_path(version.id)
+
+      {:ok, view, _html} = live(conn, base <> "?trip=a")
+
+      assert has_element?(view, "#trip-transfers", "Stay-on-board records \u00b7 1")
+      assert has_element?(view, "#trip-transfers", "A trip has no block.")
+
+      # The listing row and its own button carry the record's id, so one record
+      # is addressable rather than the list.
+      assert has_element?(view, "#trip-transfer-#{record.id}")
+
+      view |> element("#remove-record-#{record.id}") |> render_click()
+
+      # The question names the pair and the setting it deletes, and cancelling
+      # keeps the record exactly as it was.
+      assert has_element?(view, "#remove-record-dialog", "Remove the record for trip a \u2192 y?")
+      assert has_element?(view, "#remove-record-dialog", "riders stay on board")
+      assert has_element?(view, "#remove-record-dialog", "The deletion is audited.")
+
+      view |> element("#remove-record-dialog-cancel") |> render_click()
+
+      assert has_element?(view, "#remove-record-dialog[data-open='false']")
+      assert Repo.get(Transfer, record.id)
+
+      view |> element("#remove-record-#{record.id}") |> render_click()
+
+      html = view |> element("#remove-record-dialog-confirm") |> render_click()
+
+      assert html =~ "Removed the record for trip a \u2192 y."
+      assert Repo.get(Transfer, record.id) == nil
+
+      # The reloaded day no longer lists the record, so the drawer reports none.
+      assert has_element?(view, "#trip-transfers", "Stay-on-board records \u00b7 0")
+      assert has_element?(view, "#trip-drawer", "No stay-on-board records mention this trip.")
+      refute has_element?(view, "#remove-record-#{record.id}")
+    end
+
+    test "an unconfirmed record is left untouched and offers no removal",
+         %{version: version} = context do
+      # The two trips share no date and `b` runs the day after a date of `a`, so
+      # the state is `{:unconfirmed, :next_service_day}` rather than stale.
+      calendar(context, "W", "Weekday", %{dates: [~D[2026-09-01]]})
+      calendar(context, "S", "School", %{dates: [~D[2026-09-02]]})
+
+      a = trip(context, %{trip_id: "a", service_id: "W", block_id: "101"})
+      b = trip(context, %{trip_id: "b", service_id: "S", block_id: "202"})
+
+      record = in_seat_transfer_fixture(context.organization.id, context.version.id, a, b)
+
+      conn = editor_conn(context)
+
+      {:ok, view, _html} =
+        live(conn, blocks_path(version.id) <> "?day=#{DayTypes.key(["W"])}&trip=a")
+
+      assert has_element?(view, "#trip-transfers", "Stay-on-board records \u00b7 1")
+
+      assert has_element?(
+               view,
+               "#trip-transfer-#{record.id}",
+               "Left untouched: the record may be valid GTFS."
+             )
+
+      refute has_element?(view, "#remove-record-#{record.id}")
+      assert element_count(view, "#trip-transfers button") == 0
+      assert has_element?(view, "#remove-record-dialog[data-open='false']")
+    end
+
+    test "a record changed since the drawer loaded is refused and nothing is deleted",
+         %{version: version} = context do
+      calendar(context, "WK", "Weekday")
+
+      a = trip(context, %{trip_id: "a", block_id: "101", first: "06:00:00", last: "07:00:00"})
+      y = trip(context, %{trip_id: "y", first: "09:00:00", last: "10:00:00"})
+
+      record = in_seat_transfer_fixture(context.organization.id, context.version.id, a, y)
+
+      conn = editor_conn(context)
+      base = blocks_path(version.id)
+
+      {:ok, view, _html} = live(conn, base <> "?trip=a")
+
+      view |> element("#remove-record-#{record.id}") |> render_click()
+
+      # Another editor touches the row after the drawer listed it, so the stored
+      # `updated_at` no longer matches the one the confirmation carries.
+      later = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.add(60, :second)
+
+      {1, _} =
+        Repo.update_all(from(t in Transfer, where: t.id == ^record.id), set: [updated_at: later])
+
+      html = view |> element("#remove-record-dialog-confirm") |> render_click()
+
+      assert html =~ "This record changed. Nothing was removed."
+      assert Repo.get(Transfer, record.id)
+
+      # The reloaded drawer still lists it: the refusal deleted nothing.
+      assert has_element?(view, "#trip-transfers", "Stay-on-board records \u00b7 1")
+      assert has_element?(view, "#remove-record-#{record.id}")
+    end
+
+    test "a viewer cannot remove: the permission flash answers and the record stays",
+         %{version: version} = context do
+      calendar(context, "WK", "Weekday")
+
+      a = trip(context, %{trip_id: "a", block_id: "101", first: "06:00:00", last: "07:00:00"})
+      y = trip(context, %{trip_id: "y", first: "09:00:00", last: "10:00:00"})
+
+      record = in_seat_transfer_fixture(context.organization.id, context.version.id, a, y)
+
+      conn = editor_conn(context)
+      base = blocks_path(version.id)
+
+      {:ok, view, _html} = live(conn, base <> "?trip=a")
+
+      view |> element("#remove-record-#{record.id}") |> render_click()
+
+      assert has_element?(view, "#remove-record-dialog[data-open='true']")
+
+      # No viewer role exists; a revoked editor is a membership with no roles.
+      membership = Accounts.get_user_org_membership(context.user.id, context.organization.id)
+      {:ok, _membership} = Accounts.update_user_org_membership(membership, %{roles: []})
+
+      html = view |> element("#remove-record-dialog-confirm") |> render_click()
+
+      assert html =~ "You don&#39;t have permission to change blocks in this version."
+      assert Repo.get(Transfer, record.id)
+      assert has_element?(view, "#trip-transfers", "Stay-on-board records \u00b7 1")
+      assert has_element?(view, "#remove-record-#{record.id}")
     end
   end
 
