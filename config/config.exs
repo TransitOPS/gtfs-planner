@@ -65,6 +65,11 @@ config :gtfs_planner,
 # or use `after_connect: {Postgrex, :query!, ["SET TIME ZONE 'UTC'", []]}`.
 config :gtfs_planner, GtfsPlanner.Repo, parameters: [timezone: "UTC"]
 
+# Deadline (in milliseconds) for the repeatable-read transaction one export
+# reads from. When it passes, the database releases the connection and the run
+# fails with `snapshot_timeout`.
+config :gtfs_planner, export_snapshot_timeout_ms: 600_000
+
 # Configure the endpoint
 config :gtfs_planner, GtfsPlannerWeb.Endpoint,
   url: [host: "localhost"],
