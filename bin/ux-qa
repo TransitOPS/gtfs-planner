@@ -389,9 +389,12 @@ up() {
   local phoenix_pid open_json driver_pid
   owned_pids=()
 
-  BROWSER_E2E=true UX_QA_REAL_VALIDATOR=true PHX_SERVER=true PORT="$port" JAVA_PATH="$java" \
-    mix phx.server >>"$run/phoenix.log" 2>&1 &
-  phoenix_pid=$!
+  # The server leads a session of its own, so it outlives the shell that asked
+  # for it: `step`, `finish` and `down` are separate invocations, and a process
+  # left in `up`'s group would be killed with that shell instead.
+  phoenix_pid=$(detach_spawn "$run/phoenix.log" env \
+    BROWSER_E2E=true UX_QA_REAL_VALIDATOR=true PHX_SERVER=true \
+    PORT="$port" JAVA_PATH="$java" mix phx.server)
   owned_pids+=("$phoenix_pid")
   node assets/qa/drive.mjs set-pid --run "$run" --which phoenix --pid "$phoenix_pid" >/dev/null
 

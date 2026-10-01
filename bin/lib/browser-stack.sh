@@ -7,6 +7,49 @@
 # bodies are the text that used to live inline in bin/test-browser; only the
 # wrapping moved.
 
+# detach_spawn <log file> <command> [argument...]
+#
+# Runs the command in a session of its own and prints its pid. macOS has no
+# `setsid`, so the toolchain's own runtime does it: a detached child leads its
+# own process group, so the caller's shell going away does not take it with it.
+# Output still goes to the log the caller named. The caller supplies its own
+# command line, so this changes no existing caller's behaviour.
+detach_spawn() {
+  node -e '
+const { spawn } = require("node:child_process");
+const { openSync } = require("node:fs");
+
+const [logPath, command, ...args] = process.argv.slice(1);
+const log = openSync(logPath, "a");
+
+const child = spawn(command, args, { detached: true, stdio: ["ignore", log, log] });
+
+child.unref();
+process.stdout.write(String(child.pid));
+' "$1" "${@:2}"
+}
+
+# detach_capture <command> [argument...]
+#
+# The same detachment for a command whose answer this shell has to read: the
+# command runs in a session of its own, its standard output is captured, and
+# that output is printed unchanged. Its own output goes to the caller's
+# terminal, exactly as running it directly would have sent it there.
+detach_capture() {
+  node -e '
+const { spawnSync } = require("node:child_process");
+
+const result = spawnSync(process.argv[1], process.argv.slice(2), {
+  detached: true,
+  stdio: ["ignore", "pipe", "inherit"],
+  encoding: "utf8"
+});
+
+process.stdout.write(result.stdout || "");
+process.exit(result.status === null ? 1 : result.status);
+' "$@"
+}
+
 # start_database [--keep]
 #
 # Exports GTFS_PLANNER_TEST_DATABASE_URL for a throwaway pg_tmp server, or keeps
@@ -47,8 +90,11 @@ start_database() {
     fi
 
     # -t listens on TCP with a free port; loopback only, since pg_tmp uses trust
-    # authentication and would otherwise listen on every interface.
-    GTFS_PLANNER_TEST_DATABASE_URL=$(pg_tmp -t -w "$timeout" -o "-c listen_addresses=127.0.0.1")
+    # authentication and would otherwise listen on every interface. It runs in
+    # a session of its own: a server that stayed in the caller's process group
+    # would die with the shell that asked for it, before the run that needs it
+    # had finished. The printed URL is the same line it has always printed.
+    GTFS_PLANNER_TEST_DATABASE_URL=$(detach_capture pg_tmp -t -w "$timeout" -o "-c listen_addresses=127.0.0.1")
     export GTFS_PLANNER_TEST_DATABASE_URL
 
     if [ -n "$keep" ]; then
