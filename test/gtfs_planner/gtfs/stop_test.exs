@@ -315,17 +315,31 @@ defmodule GtfsPlanner.Gtfs.StopTest do
     end
   end
 
-  describe "changeset/2 and import_changeset/2 level requirements" do
-    test "changeset/2 requires level_id when parent_station is set" do
+  @station_in_station_error "A station can't be inside another station. Choose another type."
+
+  describe "changeset/2 and import_changeset/2 level_id rules" do
+    # GTFS needs level_id only for elevator pathways. `changeset/2` stays
+    # permissive about it so the map editor can move a stop between stations; the
+    # station diagram's own form adds the requirement through
+    # `Stop.child_stop_changeset/2`.
+    test "changeset/2 accepts a child stop with a parent station and no level_id" do
       attrs =
         base_stop_attrs()
-        |> Map.put(:parent_station, "PARENT_STATION")
+        |> Map.put(:parent_station, "ST-NTC")
         |> Map.put(:level_id, nil)
+
+      assert Stop.changeset(%Stop{}, attrs).valid?
+    end
+
+    test "changeset/2 still rejects a station with a parent station and no level_id" do
+      attrs =
+        base_stop_attrs()
+        |> Map.merge(%{location_type: 1, parent_station: "ST-NTC", level_id: nil})
 
       changeset = Stop.changeset(%Stop{}, attrs)
 
       refute changeset.valid?
-      assert Keyword.has_key?(changeset.errors, :level_id)
+      assert {@station_in_station_error, _} = changeset.errors[:location_type]
     end
 
     test "import_changeset/2 allows nil level_id when parent_station is set" do
@@ -341,8 +355,6 @@ defmodule GtfsPlanner.Gtfs.StopTest do
   end
 
   describe "changeset/2 and import_changeset/2 station parent rule" do
-    @station_in_station_error "A station can't be inside another station. Choose another type."
-
     test "changeset/2 rejects a station with a parent station" do
       attrs =
         base_stop_attrs()
