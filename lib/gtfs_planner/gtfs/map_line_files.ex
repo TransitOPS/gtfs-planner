@@ -8,8 +8,10 @@ defmodule GtfsPlanner.Gtfs.MapLineFiles do
   offers none. Every file problem is a plain atom so the upload panel can give
   each one its own message (AC-22).
 
-  This step covers GeoJSON (`.geojson`, `.json`); `.kml`, `.kmz` and `.gpx`
-  arrive with the XML reader.
+  The XML formats (`.kml`, `.kmz`, `.gpx`) are read with a SAX pass that
+  disallows entities and external entities, so an entity-expanding document is
+  rejected as unreadable instead of expanding, and a `.kmz` is inflated in
+  bounded chunks that stop at 20 MB.
   """
 
   alias GtfsPlanner.Gtfs.GeoJson
@@ -31,6 +33,11 @@ defmodule GtfsPlanner.Gtfs.MapLineFiles do
   @join_tolerance_m 50.0
   @earth_radius_m 6_371_008.8
 
+  # A KMZ entry is untrusted, so its inflate reads the compressed bytes in
+  # chunks and stops once this much has come out of it.
+  @max_inflate_bytes 20 * 1024 * 1024
+  @inflate_chunk_bytes 65_536
+
   @doc """
   Reads an uploaded map file into the lines it offers.
 
@@ -44,11 +51,18 @@ defmodule GtfsPlanner.Gtfs.MapLineFiles do
     * `:points_only` / `:areas_only` — the document holds only points or only
       polygons;
     * `:swapped` — the positions look latitude-first (AC-22's swapped-axes
-      message).
+      message);
+    * `:network_link` — the document only links to a network resource;
+    * `:too_large` — a KMZ entry inflated past #{@max_inflate_bytes} bytes.
 
   A `LineString` is one line. A `MultiLineString` becomes one line per run of
   parts whose ends meet within #{@join_tolerance_m} m, and `joined_from` counts
   the parts each line came from.
+
+  KML and GPX read the same way: every `LineString`/`gx:Track`/`trk`/`rte`
+  piece is a part, pieces that meet end to end join into one line named after
+  the first `Placemark`/`trk`/`rte` that named one, and any altitude a position
+  carries is dropped.
   """
   @spec parse(binary(), String.t()) :: {:ok, [line()]} | {:error, error()}
   def parse(bytes, file_name) when is_binary(bytes) and is_binary(file_name) do
@@ -61,7 +75,312 @@ defmodule GtfsPlanner.Gtfs.MapLineFiles do
   defp read(extension, bytes) when extension in [".geojson", ".json"],
     do: geojson_lines(bytes)
 
+  defp read(extension, bytes) when extension in [".kml", ".gpx"],
+    do: xml_lines(bytes)
+
+  defp read(".kmz", bytes) do
+    with {:ok, entry} <- first_kml_entry(bytes),
+         {:ok, document} <- entry_bytes(bytes, entry) do
+      xml_lines(document)
+    end
+  end
+
   defp read(_extension, _bytes), do: {:error, :unsupported}
+
+  # --- KML, KMZ and GPX -------------------------------------------------
+  #
+  # Uploaded XML is untrusted, so it is read with a SAX pass that allows no
+  # entities and no external entities: an entity-expanding document fails the
+  # parse and answers `{:error, :unreadable}` without expanding anything.
+
+  defp xml_lines(bytes) do
+    collector = %{pieces: [], name: nil, text: nil, points: nil, kinds: MapSet.new()}
+
+    case :xmerl_sax_parser.stream(bytes, xml_options(collector)) do
+      {:ok, collected, _rest} -> built_xml_lines(collected)
+      _other -> {:error, :unreadable}
+    end
+  end
+
+  defp xml_options(collector) do
+    [
+      :disallow_entities,
+      {:external_entities, :none},
+      {:event_fun, fn event, location, state -> xml_event(event, location, state) end},
+      {:event_state, collector}
+    ]
+  end
+
+  # `points` collects the positions of the piece currently open, in reverse,
+  # so a piece is built the same way whether it arrives as coordinate text
+  # (KML), Track `coord` text or GPX point attributes. A piece is named by the
+  # `name` read while its `Placemark`, `trk` or `rte` was open.
+  defp xml_event({:startElement, _uri, local, _qualified, attributes}, _location, state),
+    do: start_element(local, attributes, state)
+
+  defp xml_event({:characters, _characters}, _location, %{text: nil} = state), do: state
+
+  defp xml_event({:characters, characters}, _location, state),
+    do: %{state | text: [characters | state.text]}
+
+  defp xml_event({:endElement, _uri, local, _qualified}, _location, state),
+    do: end_element(local, state)
+
+  defp xml_event(_event, _location, state), do: state
+
+  defp start_element(local, attributes, state) do
+    case local do
+      ~c"Placemark" -> %{state | name: nil, points: nil}
+      ~c"trk" -> %{state | name: nil, points: []}
+      ~c"rte" -> %{state | name: nil, points: []}
+      ~c"LineString" -> %{state | points: []}
+      ~c"Track" -> %{state | points: []}
+      ~c"trkpt" -> add_attribute_point(state, attributes)
+      ~c"rtept" -> add_attribute_point(state, attributes)
+      local -> open_element(local, state)
+    end
+  end
+
+  # The elements that contribute no geometry still record what kind of document
+  # this is, so a file with nothing to draw can say why.
+  defp open_element(~c"Point", state), do: mark_kind(state, :point)
+  defp open_element(~c"Polygon", state), do: mark_kind(state, :area)
+  defp open_element(~c"NetworkLink", state), do: mark_kind(state, :network_link)
+
+  defp open_element(local, state) when local in [~c"name", ~c"coordinates", ~c"coord"],
+    do: %{state | text: []}
+
+  defp open_element(_local, state), do: state
+
+  defp end_element(~c"name", state), do: %{state | name: text(state.text), text: nil}
+
+  defp end_element(~c"coordinates", state),
+    do: add_positions(state, coordinates_positions(text(state.text)))
+
+  defp end_element(~c"coord", state),
+    do: add_positions(state, coord_positions(text(state.text)))
+
+  defp end_element(local, state) when local in [~c"LineString", ~c"Track", ~c"trk", ~c"rte"] do
+    %{
+      state
+      | pieces: [%{name: state.name, points: Enum.reverse(state.points)} | state.pieces],
+        points: nil
+    }
+  end
+
+  defp end_element(_local, state), do: state
+
+  # A piece that is not open (a `<Point>`'s coordinates, say) collects nothing.
+  defp add_positions(%{points: nil} = state, _positions), do: %{state | text: nil}
+
+  defp add_positions(state, positions),
+    do: %{state | points: Enum.reverse(positions) ++ state.points, text: nil}
+
+  defp mark_kind(state, kind), do: %{state | kinds: MapSet.put(state.kinds, kind)}
+
+  # KML lists positions as `lon,lat[,alt]` tuples separated by whitespace, and
+  # a Track's `gx:coord` as `lon lat alt`; altitude is dropped.
+  defp coordinates_positions(text) do
+    text
+    |> String.split(~r/\s+/u, trim: true)
+    |> Enum.flat_map(fn tuple ->
+      case String.split(tuple, ",") do
+        [lon, lat | _rest] -> position(lon, lat)
+        _other -> []
+      end
+    end)
+  end
+
+  defp coord_positions(text) do
+    case String.split(String.trim(text), ~r/\s+/u) do
+      [lon, lat | _rest] -> position(lon, lat)
+      _other -> []
+    end
+  end
+
+  defp position(lon, lat) do
+    with {lon, ""} <- Float.parse(lon),
+         {lat, ""} <- Float.parse(lat) do
+      [[Float.round(lon, 6), Float.round(lat, 6)]]
+    else
+      _other -> []
+    end
+  end
+
+  # A GPX point arrives as `lat`/`lon` attributes rather than as text, so the
+  # axes are swapped back into the longitude-first order every reader uses.
+  defp add_attribute_point(state, attributes) do
+    case {attribute(attributes, ~c"lon"), attribute(attributes, ~c"lat")} do
+      {nil, _lat} -> state
+      {_lon, nil} -> state
+      {lon, lat} -> %{state | points: position(lon, lat) ++ state.points}
+    end
+  end
+
+  defp attribute(attributes, name) do
+    Enum.find_value(attributes, fn {_uri, _prefix, local, value} ->
+      if local == name, do: List.to_string(value)
+    end)
+  end
+
+  defp text(nil), do: ""
+
+  defp text(parts) do
+    parts |> Enum.reverse() |> Enum.join() |> String.trim()
+  end
+
+  # Every piece the document offered is joined with the same tolerance the
+  # GeoJSON reader uses, and the first name the document gave a piece names the
+  # first line.
+  defp built_xml_lines(state) do
+    pieces = Enum.reverse(state.pieces)
+
+    case line_groups(Enum.map(pieces, & &1.points), Enum.find_value(pieces, & &1.name)) do
+      [] -> xml_problem(state)
+      lines -> {:ok, lines}
+    end
+  end
+
+  defp xml_problem(state) do
+    cond do
+      MapSet.member?(state.kinds, :network_link) -> {:error, :network_link}
+      MapSet.member?(state.kinds, :point) -> {:error, :points_only}
+      MapSet.member?(state.kinds, :area) -> {:error, :areas_only}
+      true -> {:error, :empty}
+    end
+  end
+
+  # A KMZ is a zip holding KML; `:zip.list_dir/1` names its entries with the
+  # offset and compressed size of each, and the first `.kml` is the document.
+  defp first_kml_entry(bytes) do
+    case :zip.list_dir(bytes) do
+      {:ok, entries} ->
+        case Enum.find(entries, &kml_entry?/1) do
+          {:zip_file, _name, _info, _comment, offset, comp_size} ->
+            {:ok, {offset, comp_size}}
+
+          _other ->
+            {:error, :unreadable}
+        end
+
+      {:error, _reason} ->
+        {:error, :unreadable}
+    end
+  end
+
+  defp kml_entry?({:zip_file, name, _info, _comment, _offset, _comp_size}) do
+    String.ends_with?(List.to_string(name) |> String.downcase(), ".kml")
+  end
+
+  defp kml_entry?(_entry), do: false
+
+  defp entry_bytes(bytes, {offset, comp_size}) do
+    case local_entry(bytes, offset, comp_size) do
+      # A stored entry is already its own output, so its size is the limit.
+      {:ok, 0, payload} ->
+        if comp_size > @max_inflate_bytes, do: {:error, :too_large}, else: {:ok, payload}
+
+      {:ok, 8, payload} ->
+        inflate(payload)
+
+      _other ->
+        {:error, :unreadable}
+    end
+  end
+
+  # The compressed bytes start after the entry's local header, whose name and
+  # extra field lengths move the start of the data.
+  defp local_entry(bytes, offset, comp_size)
+       when is_integer(offset) and is_integer(comp_size) and offset >= 0 and comp_size >= 0 and
+              offset + 30 <= byte_size(bytes) do
+    case binary_part(bytes, offset, 30) do
+      <<"PK\x03\x04", _version::little-16, _flags::little-16, method::little-16, _time::little-16,
+        _date::little-16, _crc::little-32, _compressed::little-32, _uncompressed::little-32,
+        name_length::little-16, extra_length::little-16>>
+      when method in [0, 8] ->
+        entry_payload(bytes, offset + 30 + name_length + extra_length, comp_size, method)
+
+      _other ->
+        {:error, :unreadable}
+    end
+  end
+
+  defp local_entry(_bytes, _offset, _comp_size), do: {:error, :unreadable}
+
+  defp entry_payload(bytes, start, comp_size, method) do
+    length = min(comp_size, byte_size(bytes) - start)
+
+    if start <= byte_size(bytes) and length >= 0 do
+      {:ok, method, binary_part(bytes, start, length)}
+    else
+      {:error, :unreadable}
+    end
+  end
+
+  # Inflate reads the compressed bytes a chunk at a time and stops as soon as
+  # more than `@max_inflate_bytes` have come out, so a high-ratio entry never
+  # costs the memory its size claims.
+  defp inflate(compressed) do
+    z = :zlib.open()
+    :zlib.inflateInit(z, -15)
+    inflate_step(z, compressed, 0, [], 0)
+  end
+
+  defp inflate_step(z, compressed, offset, chunks, total) do
+    cond do
+      total > @max_inflate_bytes ->
+        {:error, :too_large}
+
+      offset < byte_size(compressed) ->
+        chunk =
+          binary_part(
+            compressed,
+            offset,
+            min(@inflate_chunk_bytes, byte_size(compressed) - offset)
+          )
+
+        case :zlib.safeInflate(z, chunk) do
+          {:continue, output} ->
+            inflate_step(
+              z,
+              compressed,
+              offset + byte_size(chunk),
+              [output | chunks],
+              add(total, output)
+            )
+
+          other ->
+            inflate_done(other, chunks)
+        end
+
+      true ->
+        drain(z, compressed, offset, chunks, total)
+    end
+  end
+
+  # Draining the tail is what tells a finished stream from a truncated one:
+  # `:continue` means more output is ready, and an empty read once the input is
+  # spent means the stream ended mid-way rather than at a real boundary.
+  defp drain(z, compressed, offset, chunks, total) do
+    case :zlib.safeInflate(z, <<>>) do
+      {:continue, output} ->
+        if IO.iodata_length(output) == 0 do
+          {:error, :unreadable}
+        else
+          inflate_step(z, compressed, offset, [output | chunks], add(total, output))
+        end
+
+      other ->
+        inflate_done(other, chunks)
+    end
+  end
+
+  defp inflate_done({:finished, output}, chunks),
+    do: {:ok, IO.iodata_to_binary([output | chunks])}
+
+  defp inflate_done(_other, _chunks), do: {:error, :unreadable}
+
+  defp add(total, output), do: total + IO.iodata_length(output)
 
   defp geojson_lines(bytes) do
     with {:ok, document} <- GeoJson.decode(bytes) do
