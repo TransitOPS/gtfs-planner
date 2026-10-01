@@ -615,8 +615,33 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
   @spec insertion_index(point(), [point()]) :: non_neg_integer()
   def insertion_index(point, ordered_points) do
     here = along_m(point, ordered_points)
+    count = Enum.count(ordered_points, &(along_m(&1, ordered_points) < here))
 
-    Enum.count(ordered_points, &(along_m(&1, ordered_points) < here))
+    if past_the_last?(point, ordered_points), do: length(ordered_points), else: count
+  end
+
+  # `along_m/2` clamps each projection to its segment's ends, so a point past
+  # the last stop measures at exactly the last stop's own distance and is not
+  # counted as being before it. That is right for a point that is off the end
+  # of a line's geometry and wrong for the ordinary case of a stop further along
+  # the route than the last one this pattern calls at: appending is cheaper
+  # there than putting it between the last stop and the end of the line, so the
+  # answer is the length.
+  #
+  # Only the terminal leg is consulted, so the head of the line and every
+  # interior position are measured exactly as before. A stop off to the side of
+  # the last stop is past it too, and appending is the right answer for that one
+  # as well.
+  defp past_the_last?(_point, []), do: false
+  defp past_the_last?(_point, [_only]), do: false
+
+  defp past_the_last?(point, ordered_points) do
+    last = List.last(ordered_points)
+    before = Enum.at(ordered_points, -2)
+    {x, y} = local(point, last)
+    {lx, ly} = local(last, before)
+
+    x * lx + y * ly > 0.0
   end
 
   @doc """

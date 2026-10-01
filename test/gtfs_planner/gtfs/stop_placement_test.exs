@@ -175,10 +175,12 @@ defmodule GtfsPlanner.Gtfs.StopPlacementTest do
     test "a point past the end of the line belongs after its last stop" do
       row = collinear_row()
 
-      # The projection clamps at the line's end, so the point measures at the
-      # end rather than beyond it. The answer is still the last place a stop can
-      # take, and "between the last stop and the end" is what the panel says.
-      assert StopPlacement.insertion_index(north_of(List.last(row), 50.0), row) == 3
+      # Appending is cheaper than putting the stop between the last stop and
+      # the end of the line, so the answer is the length. `along_m/2` clamps
+      # the projection at the terminal vertex, so a plain count of the stops
+      # that measure before this point would place it before the last stop
+      # instead — see the `past_the_last?/2` branch below the function.
+      assert StopPlacement.insertion_index(north_of(List.last(row), 50.0), row) == 4
     end
 
     test "a point on a stop's own place is not before that stop" do
