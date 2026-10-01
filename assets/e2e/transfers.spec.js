@@ -9,7 +9,10 @@
 // The fixtures come from `test/support/browser_seed.exs`. The "Browser Transfers
 // Version" carries the transfer network — a station with two platform children
 // and an entrance, three routes, five trips and eight general rules plus two
-// in-seat records — and the "Browser E2E Version" carries no transfers at all.
+// in-seat records — and the "Catalog Empty Version" carries no routes, stops or
+// transfers at all. The "Browser E2E Version" is not a first-use version: the
+// timetable-paste fixture gives it two timed transfers, and only that journey's
+// replace, which removes trip BPS_1209 with them, empties it.
 // Rule ids are random per seed, so every journey finds a rule by the copy it
 // renders rather than by an id; only the seeded stop ids are literal.
 //
@@ -30,7 +33,7 @@ const EDITOR_USER = {
 };
 
 const TRANSFERS_VERSION = "Browser Transfers Version";
-const FIRST_USE_VERSION = "Browser E2E Version";
+const FIRST_USE_VERSION = "Catalog Empty Version";
 const ROUTE = "BXF_24";
 
 // The whole-station default is the one station rule with no route on either side.
