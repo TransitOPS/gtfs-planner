@@ -89,6 +89,36 @@ defmodule GtfsPlanner.Gtfs.Fares.Normalize do
   def priority(conditions), do: conditions_priority(conditions)
 
   @doc """
+  The leg group R3 gives a leg rule: its own network, or `"all_routes"` when it
+  names none.
+
+  `run!/2` is the only writer of `leg_group_id` (INV-4); this is the one place
+  its value is worked out, so `Fares.Conversion` can state the rows a conversion
+  will produce before they exist.
+  """
+  @spec leg_group_id(map()) :: String.t()
+  def leg_group_id(rule), do: accepted_network_id(rule)
+
+  @doc """
+  The condition sets a pass mirrors for the leg groups it accepts (R4).
+
+  `rules` are the version's non-pass leg rules and `accepted` a pass's
+  `accepted_network_ids`. The answer is the distinct, sorted
+  `{network_id, from_area_id, to_area_id, from_timeframe_group_id}` sets of the
+  rules whose leg group the pass accepts, which is the one place `run!/2` derives
+  the same list when it rebuilds a pass's rows — a caller that has to state
+  those rows before they are written reads them here.
+  """
+  @spec mirrored_condition_sets([map()], [String.t()]) :: [tuple()]
+  def mirrored_condition_sets(rules, accepted) do
+    rules
+    |> Enum.filter(&(accepted_network(&1) in accepted))
+    |> Enum.map(&{&1.network_id, &1.from_area_id, &1.to_area_id, &1.from_timeframe_group_id})
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  @doc """
   Rewrites the version's implied fare rows and returns `:ok`.
 
   Raises `GtfsPlanner.Gtfs.Fares.InvariantError` when the version's rider
@@ -192,13 +222,9 @@ defmodule GtfsPlanner.Gtfs.Fares.Normalize do
   end
 
   defp mirrored_conditions(rules, pass_ids, accepted) do
-    for rule <- rules,
-        not MapSet.member?(pass_ids, rule.fare_product_id),
-        accepted_network(rule) in accepted do
-      {rule.network_id, rule.from_area_id, rule.to_area_id, rule.from_timeframe_group_id}
-    end
-    |> Enum.uniq()
-    |> Enum.sort()
+    rules
+    |> Enum.reject(&MapSet.member?(pass_ids, &1.fare_product_id))
+    |> mirrored_condition_sets(accepted)
   end
 
   defp pass_row(organization_id, gtfs_version_id, fare_product_id, conditions, now) do

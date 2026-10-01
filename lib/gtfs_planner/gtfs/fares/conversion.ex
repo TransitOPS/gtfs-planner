@@ -105,6 +105,42 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
   Every stored `fare_attributes` and `fare_rules` row is left exactly as it was
   (INV-3). The inverse names only the rows this write created, and undoing the
   conversion returns the version to unmanaged with its imported files back.
+
+  ## Converting an imported Fares v2 feed
+
+  A version imported from `fare_leg_rules.txt` already holds the rows the editor
+  reads, so its conversion creates almost nothing. It records the operator facts
+  the Fares v2 files have no place for, adopts the imported areas as fare zones
+  through `GtfsPlanner.Gtfs.FareZones` (R13, INV-2) and marks the version managed:
+
+  - one `fare_product_details` row per `fare_product_id`, whose kind is R12's
+    classification: a product is a **pass** when every rule using it shares its
+    conditions with a rule using a *different* product, and single-ride
+    otherwise. A pass's `accepted_network_ids` are the networks its own rules
+    name, or `["all_routes"]` when it names none;
+  - the `rule_priority`, `leg_group_id` and `to_timeframe_group_id` R3 gives
+    every leg rule, written by `Normalize.run!/2` after the pass rows it derives
+    are in place;
+  - one `networks` row per network the version's rules and routes name but never
+    declared, named after its own ID, and one `route_networks` row per route
+    copied from `routes.network_id` when the version has no `route_networks`;
+  - one `fare_zones` row per imported area and one `stops.zone_id` per stop
+    whose area is the only one it is in;
+  - the `fare_version_settings` row and one `fare_version` change-log entry.
+
+  The conversion is accepted only when normalizing changes nothing a rider is
+  offered. Every combination of network, departure area, arrival area and
+  timeframe - each including none - is priced twice: the way
+  `Interpreter.leg_products/5` reads the imported rows, and the way it reads the
+  rows the conversion will leave behind. Any difference refuses the whole
+  conversion with `:product_mismatch` and writes nothing.
+
+  Five refusals name what a v2 feed can hold that this conversion cannot
+  represent: `:multi_area_stop` for a stop in two areas, `:area_zone_mismatch`
+  for a stop whose zone is not the area it is in, `:to_timeframe` for a rule that
+  prices an arrival timeframe, `:leg_groups` for imported route groups that do
+  not map one-to-one onto networks while transfer rules exist, and `:too_large`
+  for a version whose combinations are more than `@max_domain`.
   """
 
   import Ecto.Query, warn: false
@@ -112,6 +148,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
   # otherwise collide with `Kernel.apply/3`.
   import Kernel, except: [apply: 3]
 
+  alias GtfsPlanner.Gtfs.Area
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.FareLegRule
@@ -127,6 +164,8 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
   alias GtfsPlanner.Gtfs.Fares.VersionLock
   alias GtfsPlanner.Gtfs.FareTransferRule
   alias GtfsPlanner.Gtfs.FareVersionSetting
+  alias GtfsPlanner.Gtfs.FareZone
+  alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Gtfs.Network
   alias GtfsPlanner.Gtfs.RiderCategory
   alias GtfsPlanner.Gtfs.Route
@@ -181,11 +220,19 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
   # this arrival, which is the clock Google's older format runs.
   @duration_first_departure_to_arrival 0
 
-  # The price check walks every active route against every ordered pair of the
-  # version's zones, so a feed with thousands of routes and zones must not walk
-  # it. R12 refuses such a version outright; step 15 times the largest public
-  # excerpt and records the value it settles on here.
-  @max_domain 20_000
+  # The equivalence checks walk every combination the version can ask for, so a
+  # feed with thousands of routes and zones must not walk one. R12 refuses such
+  # a version outright.
+  #
+  # Measured in step 15 on the largest public excerpt — Santa Cruz Metro, whose
+  # 25 leg rules are the most of the three — one `Interpreter.leg_products/5` call
+  # over its rows costs 13.7 microseconds, and a combination prices the leg twice,
+  # once on the imported rows and once on the rows the conversion would leave
+  # behind. 2,000,000 / 27.5 is 72,771 combinations inside two seconds, and the
+  # limit is twice that: 145,000. North Coast's own version of the same walk —
+  # 14 routes against four zones in both directions — is 224 combinations, three
+  # orders of magnitude below it.
+  @max_domain 145_000
 
   # A refused review names enough of the differences to act on, and no more.
   @max_examples 5
@@ -320,7 +367,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
     case source(rows) do
       :v1 -> plan_v1(rows)
       :none -> {:ok, empty_preview(rows)}
-      :v2 -> {:refused, [unsupported_source()]}
+      :v2 -> plan_v2(rows)
     end
   end
 
@@ -377,16 +424,673 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
     VersionLock.transact(organization_id, gtfs_version_id, fn ->
       case undoable_setting(organization_id, gtfs_version_id, operation_id) do
         {:ok, setting, entry} ->
-          delete_created(organization_id, gtfs_version_id, inverse)
-          :ok = Normalize.run!(organization_id, gtfs_version_id)
-          record_rollback(scope, setting, entry, conversion_undo_summary())
-          %{operation_id: operation_id, inverse: nil}
+          undo_conversion_rows(scope, operation_id, setting, entry, inverse)
 
         {:error, reason} ->
           Repo.rollback(reason)
       end
     end)
   end
+
+  # The inverse names the writer that made it, and the two undo different things:
+  # the older-format conversion only ever created rows, and the Fares v2 one also
+  # replaced them.
+  defp undo_conversion_rows(scope, operation_id, setting, entry, inverse) do
+    if Map.get(inverse, :source) == :v2 do
+      undo_v2_conversion(scope, operation_id, setting, entry, inverse)
+    else
+      undo_v1_conversion(scope, operation_id, setting, entry, inverse)
+    end
+  end
+
+  defp undo_v1_conversion(scope, operation_id, setting, entry, inverse) do
+    organization_id = scope.organization_id
+    gtfs_version_id = scope.gtfs_version_id
+
+    delete_created(organization_id, gtfs_version_id, inverse)
+    :ok = Normalize.run!(organization_id, gtfs_version_id)
+    record_rollback(scope, setting, entry, conversion_undo_summary())
+    %{operation_id: operation_id, inverse: nil}
+  end
+
+  # A v2 conversion replaced stored rows rather than only creating them, so its
+  # undo puts the imported values back instead of running `Normalize` over them:
+  # the answer is the version the import wrote, with the settings row gone, so
+  # the version is unmanaged again and its files export as they were imported.
+  defp undo_v2_conversion(scope, operation_id, setting, entry, inverse) do
+    organization_id = scope.organization_id
+    gtfs_version_id = scope.gtfs_version_id
+
+    delete_rows(FareLegRule, inverse.leg_rule_ids, organization_id, gtfs_version_id)
+
+    delete_rows(
+      FareTransferRule,
+      inverse.transfer_rule_ids,
+      organization_id,
+      gtfs_version_id
+    )
+
+    restore_rows(inverse.transfer_rule_rows)
+    restore_rows(inverse.leg_rule_rows)
+    restore_columns(FareLegRule, inverse.leg_rules, organization_id, gtfs_version_id)
+
+    restore_columns(
+      FareTransferRule,
+      inverse.fare_transfer_rules,
+      organization_id,
+      gtfs_version_id
+    )
+
+    clear_adopted_zones(organization_id, gtfs_version_id, inverse.stop_zones)
+    delete_zone_records(organization_id, gtfs_version_id, inverse.fare_zones)
+
+    [
+      {FareProductDetail, inverse.fare_product_details},
+      {RouteNetwork, inverse.route_networks},
+      {Network, inverse.networks},
+      {FareVersionSetting, [inverse.setting]}
+    ]
+    |> Enum.each(fn {schema, ids} ->
+      delete_rows(schema, ids, organization_id, gtfs_version_id)
+    end)
+
+    record_rollback(scope, setting, entry, v2_undo_summary())
+    %{operation_id: operation_id, inverse: nil}
+  end
+
+  defp rows_in(schema, organization_id, gtfs_version_id) do
+    Repo.all(
+      from(row in schema,
+        where: row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id
+      )
+    )
+  end
+
+  # A rule `Normalize` dropped - a pass product's imported rules - goes back as
+  # the row the import wrote, id included, so an undone conversion exports the
+  # same bytes the import read.
+  defp restore_rows([]), do: :ok
+
+  defp restore_rows(rows) do
+    Enum.each(rows, &Repo.insert!(Ecto.Changeset.change(&1)))
+    :ok
+  end
+
+  defp restore_columns(_schema, [], _organization_id, _gtfs_version_id), do: :ok
+
+  defp restore_columns(schema, states, organization_id, gtfs_version_id) do
+    Enum.each(states, fn state ->
+      {id, values} = Map.pop!(state, :id)
+
+      {1, _count} =
+        from(row in schema,
+          where:
+            row.id == ^id and row.organization_id == ^organization_id and
+              row.gtfs_version_id == ^gtfs_version_id
+        )
+        |> Repo.update_all(set: Map.to_list(values))
+    end)
+  end
+
+  # Only the `zone_id` this conversion filled is cleared, and only where it still
+  # holds the area the conversion adopted: a zone an operator drew since then is
+  # never removed.
+  defp clear_adopted_zones(_organization_id, _gtfs_version_id, []), do: :ok
+
+  defp clear_adopted_zones(organization_id, gtfs_version_id, stops) do
+    Enum.each(stops, fn %{stop_id: stop_id, zone_id: zone_id} ->
+      from(s in Stop,
+        where:
+          s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+            s.stop_id == ^stop_id and s.zone_id == ^zone_id
+      )
+      |> Repo.update_all(set: [zone_id: nil])
+    end)
+  end
+
+  defp delete_zone_records(_organization_id, _gtfs_version_id, []), do: :ok
+
+  defp delete_zone_records(organization_id, gtfs_version_id, zone_ids) do
+    Repo.delete_all(
+      from(zone in FareZone,
+        where:
+          zone.organization_id == ^organization_id and zone.gtfs_version_id == ^gtfs_version_id and
+            zone.zone_id in ^zone_ids
+      )
+    )
+
+    :ok
+  end
+
+  # -- Converting an imported Fares v2 feed -------------------------------------
+
+  @pass_kind "pass"
+  @single_ride_kind "single"
+  @multi_area_stop_message "A stop in two areas cannot become one fare zone"
+  @area_zone_mismatch_message "A stop's zone is not the only area it is in"
+  @to_timeframe_message "A leg rule that prices an arrival timeframe cannot be normalized"
+  @leg_groups_message "The imported route groups do not map one-to-one onto networks"
+  @product_mismatch_message "Normalizing these fare rules would change the fare a rider is offered"
+
+  defp plan_v2(%Rows{managed?: true}), do: {:refused, [unsupported_source()]}
+
+  defp plan_v2(%Rows{} = rows) do
+    areas = area_rows(rows)
+
+    case v2_refusal(rows, areas) do
+      :ok ->
+        plan = build_v2_plan(rows, areas)
+
+        case product_differences(rows, plan) do
+          [] ->
+            {:ok, plan}
+
+          examples ->
+            {:refused,
+             [
+               %{code: :product_mismatch, message: @product_mismatch_message, examples: examples}
+             ]}
+        end
+
+      reason ->
+        {:refused, [reason]}
+    end
+  end
+
+  # The refusals run cheapest-first and the first that applies is the answer, so
+  # a version with two unconvertible structures names one code rather than
+  # whichever check happened to run last.
+  defp v2_refusal(%Rows{} = rows, areas) do
+    cond do
+      multi_area_stops(rows) != [] ->
+        refusal(
+          :multi_area_stop,
+          @multi_area_stop_message,
+          Enum.map(multi_area_stops(rows), &"#{&1.stop_id} is in #{Enum.join(&1.area_ids, ", ")}")
+        )
+
+      zone_conflicts(rows) != [] ->
+        refusal(
+          :area_zone_mismatch,
+          @area_zone_mismatch_message,
+          Enum.map(
+            zone_conflicts(rows),
+            &"#{&1.stop_id} is in zone #{&1.zone_id} but its only area is #{&1.area_id}"
+          )
+        )
+
+      to_timeframe_rules(rows) != [] ->
+        refusal(
+          :to_timeframe,
+          @to_timeframe_message,
+          Enum.map(
+            to_timeframe_rules(rows),
+            &"#{&1.fare_product_id} prices arrival timeframe #{&1.to_timeframe_group_id}"
+          )
+        )
+
+      leg_group_conflicts(rows) != [] ->
+        refusal(
+          :leg_groups,
+          @leg_groups_message,
+          Enum.map(leg_group_conflicts(rows), &describe_leg_group_conflict/1)
+        )
+
+      true ->
+        domain_refusal(rows, areas)
+    end
+  end
+
+  # The equivalence check prices every combination of network, departure area,
+  # arrival area and timeframe, so the work a version can ask for is the product
+  # of those four sets. `@max_domain` is the measured ceiling: see the comment
+  # on the constant.
+  defp domain_refusal(%Rows{} = rows, areas) do
+    domain = v2_domain(rows, areas)
+
+    if domain_size(domain) <= @max_domain do
+      :ok
+    else
+      refusal(
+        :too_large,
+        "#{@max_domain} fare combinations is the most a conversion will check",
+        ["this version asks for #{domain_size(domain)}"]
+      )
+    end
+  end
+
+  defp build_v2_plan(%Rows{} = rows, areas) do
+    details = product_details(rows)
+
+    pass_ids =
+      details |> Enum.filter(&(&1.kind == @pass_kind)) |> MapSet.new(& &1.fare_product_id)
+
+    leg_rules = planned_leg_rules(rows, pass_ids)
+    networks = missing_networks(rows)
+    route_networks = copied_route_networks(rows)
+    stop_areas = adoptable_stop_areas(rows)
+
+    %{
+      source: :v2,
+      networks: networks,
+      route_networks: route_networks,
+      details: details,
+      passes: details |> Enum.filter(&(&1.kind == @pass_kind)) |> Enum.map(& &1.fare_product_id),
+      areas: areas,
+      stop_areas: stop_areas,
+      leg_rules: leg_rules,
+      domain: v2_domain(rows, areas),
+      updates: %{
+        fare_leg_rules: length(changed_leg_rules(rows)),
+        stops: length(stop_areas)
+      },
+      creates: %{
+        fare_product_details: length(details),
+        networks: length(networks),
+        route_networks: length(route_networks),
+        fare_zones: length(areas)
+      },
+      product_differences: 0,
+      price_differences: 0,
+      known_differences: [],
+      kept_older_only: [],
+      fingerprint: v2_fingerprint(rows, areas)
+    }
+  end
+
+  defp area_rows(%Rows{organization_id: organization_id, gtfs_version_id: gtfs_version_id}) do
+    from(a in Area,
+      where: a.organization_id == ^organization_id and a.gtfs_version_id == ^gtfs_version_id,
+      order_by: a.area_id,
+      select: %{area_id: a.area_id, area_name: a.area_name}
+    )
+    |> Repo.all()
+  end
+
+  # R12's classification. Every rule using the product must share its conditions
+  # with a rule using a different product, and "different product" has to mean a
+  # different fare rather than another rider or medium of the same fare: an
+  # agency that sells one adult and one reduced local single ride at the same
+  # conditions is selling two prices for one fare, not a pass, and reading the
+  # sentence any other way would classify every rider variant as a pass.
+  defp product_details(%Rows{fare_products: products, fare_leg_rules: rules}) do
+    rules_by_product = Enum.group_by(rules, & &1.fare_product_id)
+    names = Map.new(products, &{&1.fare_product_id, &1.fare_product_name})
+
+    products
+    |> Enum.uniq_by(& &1.fare_product_id)
+    |> Enum.sort_by(& &1.fare_product_id)
+    |> Enum.with_index()
+    |> Enum.map(fn {%{fare_product_id: id}, position} ->
+      own = Map.get(rules_by_product, id, [])
+      other = Enum.reject(rules, &(&1.fare_product_id == id))
+
+      %{
+        fare_product_id: id,
+        position: position,
+        kind: product_kind(id, own, other, names),
+        accepted_network_ids: accepted_networks(own)
+      }
+    end)
+  end
+
+  defp product_kind(id, own, other, names) do
+    conditions = Enum.map(own, &rule_conditions/1)
+
+    shared? =
+      conditions != [] and
+        Enum.all?(conditions, fn conditions ->
+          name = Map.get(names, id)
+
+          Enum.any?(other, fn rule ->
+            rule.fare_product_id != id and Map.get(names, rule.fare_product_id) != name and
+              rule_conditions(rule) == conditions
+          end)
+        end)
+
+    if shared?, do: @pass_kind, else: @single_ride_kind
+  end
+
+  # The leg groups a pass is accepted on are the ones its own rules name, and a
+  # pass that names none is accepted everywhere - it is the only place its
+  # conditions say anything about where it is sold.
+  defp accepted_networks(rules) do
+    case rules
+         |> Enum.map(& &1.network_id)
+         |> Enum.reject(&(is_nil(&1) or &1 == ""))
+         |> Enum.uniq() do
+      [] -> ["all_routes"]
+      networks -> Enum.sort(networks)
+    end
+  end
+
+  defp rule_conditions(rule) do
+    {rule.network_id, rule.from_area_id, rule.to_area_id, rule.from_timeframe_group_id}
+  end
+
+  # The rows the conversion will leave behind: every single-ride rule with the
+  # R3 priority and leg group R3 gives it, and, for a pass, the rows R4
+  # mirrors from the rules its accepted leg groups hold. `Normalize` is the only
+  # writer of those columns (INV-4); this states their values before they exist.
+  defp planned_leg_rules(%Rows{fare_leg_rules: rules}, pass_ids) do
+    single = rules |> Enum.reject(&MapSet.member?(pass_ids, &1.fare_product_id))
+
+    Enum.map(single, &normalized_rule/1) ++
+      Enum.flat_map(pass_ids, &mirrored_pass_rules(single, &1))
+  end
+
+  defp normalized_rule(rule) do
+    conditions = %{
+      network_id: rule.network_id,
+      from_area_id: rule.from_area_id,
+      to_area_id: rule.to_area_id,
+      from_timeframe_group_id: rule.from_timeframe_group_id
+    }
+
+    %{
+      rule
+      | rule_priority: Normalize.priority(conditions),
+        leg_group_id: Normalize.leg_group_id(rule),
+        to_timeframe_group_id: nil
+    }
+  end
+
+  defp mirrored_pass_rules(single, fare_product_id) do
+    accepted =
+      single
+      |> Enum.filter(&(&1.fare_product_id == fare_product_id))
+      |> accepted_networks()
+
+    for {network_id, from_area_id, to_area_id, from_timeframe_group_id} <-
+          Normalize.mirrored_condition_sets(single, accepted),
+        conditions = %{
+          network_id: network_id,
+          from_area_id: from_area_id,
+          to_area_id: to_area_id,
+          from_timeframe_group_id: from_timeframe_group_id
+        } do
+      %{
+        fare_product_id: fare_product_id,
+        network_id: network_id,
+        from_area_id: from_area_id,
+        to_area_id: to_area_id,
+        from_timeframe_group_id: from_timeframe_group_id,
+        to_timeframe_group_id: nil,
+        leg_group_id: Normalize.leg_group_id(conditions),
+        rule_priority: Normalize.priority(conditions)
+      }
+    end
+  end
+
+  defp changed_leg_rules(%Rows{fare_leg_rules: rules}) do
+    Enum.filter(rules, fn rule ->
+      normalized = normalized_rule(rule)
+
+      rule.rule_priority != normalized.rule_priority or
+        rule.leg_group_id != normalized.leg_group_id or
+        rule.to_timeframe_group_id != normalized.to_timeframe_group_id
+    end)
+  end
+
+  # A network the version's rules or routes name but never declared gets a record
+  # named after its own ID: without one the version has routes in a network the
+  # zone drawer cannot show, and the managed export writes no `networks.txt` at
+  # all, so the network would be lost rather than kept.
+  defp missing_networks(%Rows{} = rows) do
+    declared = MapSet.new(rows.networks, & &1.network_id)
+
+    rows.fare_leg_rules
+    |> Enum.map(& &1.network_id)
+    |> Kernel.++(Map.values(rows.route_networks))
+    |> Kernel.++(Map.values(rows.route_network_ids))
+    |> Enum.reject(&(is_nil(&1) or &1 == ""))
+    |> Enum.uniq()
+    |> Enum.reject(&MapSet.member?(declared, &1))
+    |> Enum.sort()
+    |> Enum.map(&%{network_id: &1, name: &1})
+  end
+
+  # `route_networks.txt` is preferred over `routes.network_id` everywhere else in
+  # this application, so a feed that uses only the column loses it the moment the
+  # version is managed. Copying it is the only write that keeps it.
+  defp copied_route_networks(%Rows{route_networks: route_networks, route_network_ids: by_route}) do
+    if route_networks == [] do
+      by_route
+      |> Enum.reject(&(is_nil(&1) or &1 == ""))
+      |> Enum.sort()
+      |> Enum.map(&%{route_id: &1.route_id, network_id: &1.network_id})
+    else
+      []
+    end
+  end
+
+  # Only a stop with no zone of its own and exactly one area is adopted, which is
+  # exactly what the two refusal checks above have already required of the rest.
+  defp adoptable_stop_areas(%Rows{stop_areas: stop_areas, stop_zones: stop_zones}) do
+    for {stop_id, [area_id]} <- Enum.sort(stop_areas),
+        is_nil(Map.get(stop_zones, stop_id)),
+        do: %{stop_id: stop_id, area_id: area_id}
+  end
+
+  # -- The v2 equivalence check ------------------------------------------------
+
+  # The four sets the check ranges over, each holding none as well as the values
+  # the version actually uses: the areas are the zones the conversion declares,
+  # so a zone pair the version never names is checked too and both readings agree
+  # on it.
+  defp v2_domain(%Rows{} = rows, areas) do
+    area_ids = Enum.map(areas, & &1.area_id)
+
+    %{
+      networks:
+        Enum.uniq([
+          nil
+          | Enum.sort(
+              referenced(rows.fare_leg_rules, :network_id) ++ Map.values(rows.route_network_ids)
+            )
+        ]),
+      from_areas:
+        Enum.uniq([nil | Enum.sort(area_ids ++ referenced(rows.fare_leg_rules, :from_area_id))]),
+      to_areas:
+        Enum.uniq([nil | Enum.sort(area_ids ++ referenced(rows.fare_leg_rules, :to_area_id))]),
+      timeframes: [
+        []
+        | Enum.sort(
+            referenced(rows.fare_leg_rules, :from_timeframe_group_id) ++ timeframe_ids(rows)
+          )
+          |> Enum.map(&[&1])
+      ]
+    }
+  end
+
+  defp domain_size(domain) do
+    length(domain.networks) * length(domain.from_areas) * length(domain.to_areas) *
+      length(domain.timeframes)
+  end
+
+  defp referenced(rules, field) do
+    rules
+    |> Enum.map(&Map.fetch!(&1, field))
+    |> Enum.reject(&(is_nil(&1) or &1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp timeframe_ids(%Rows{} = rows) do
+    from(t in GtfsPlanner.Gtfs.Timeframe,
+      where:
+        t.organization_id == ^rows.organization_id and t.gtfs_version_id == ^rows.gtfs_version_id,
+      select: t.timeframe_group_id
+    )
+    |> Repo.all()
+  end
+
+  defp product_differences(%Rows{} = rows, plan) do
+    derived = derived_v2_rows(rows, plan)
+
+    %{
+      networks: networks,
+      from_areas: from_areas,
+      to_areas: to_areas,
+      timeframes: timeframes
+    } = plan.domain
+
+    for network_id <- networks,
+        from_area_id <- from_areas,
+        to_area_id <- to_areas,
+        timeframes <- timeframes,
+        reduce: [] do
+      differences ->
+        imported =
+          Interpreter.leg_products(rows, network_id, from_area_id, to_area_id, timeframes)
+
+        normalized =
+          Interpreter.leg_products(derived, network_id, from_area_id, to_area_id, timeframes)
+
+        if Enum.sort(imported) == Enum.sort(normalized) do
+          differences
+        else
+          [
+            "#{describe_combination(network_id, from_area_id, to_area_id, timeframes)}: " <>
+              "#{price_list(imported)} becomes #{price_list(normalized)}"
+            | differences
+          ]
+          |> Enum.take(@max_examples)
+        end
+    end
+  end
+
+  # `leg_products/5` reads the leg rules and nothing else, so the derived rows
+  # carry the planned rules; the copied route networks and adopted zones are set
+  # here too so this is the whole version the conversion will leave behind.
+  defp derived_v2_rows(%Rows{} = rows, plan) do
+    %Rows{
+      rows
+      | managed?: true,
+        fare_leg_rules: plan.leg_rules,
+        route_networks: Map.new(plan.route_networks, &{&1.route_id, &1.network_id}),
+        stop_zones:
+          Enum.reduce(plan.stop_areas, rows.stop_zones, fn area, zones ->
+            Map.put(zones, area.stop_id, area.area_id)
+          end)
+    }
+  end
+
+  defp describe_combination(network_id, from_area_id, to_area_id, timeframes) do
+    "#{network_text(network_id)} from #{zone_text(from_area_id)} to #{zone_text(to_area_id)}" <>
+      timeframe_text(timeframes)
+  end
+
+  defp network_text(nil), do: "on every network"
+  defp network_text(network_id), do: "on #{network_id}"
+
+  defp zone_text(nil), do: "any zone"
+  defp zone_text(zone_id), do: zone_id
+
+  defp timeframe_text([]), do: ""
+  defp timeframe_text(timeframes), do: " in #{Enum.join(timeframes, " or ")}"
+
+  defp price_list(products) do
+    case Enum.sort(products) do
+      [] -> "no fare"
+      products -> Enum.join(products, " and ")
+    end
+  end
+
+  # -- The v2 refusals --------------------------------------------------------
+
+  defp multi_area_stops(%Rows{stop_areas: stop_areas}) do
+    stop_areas
+    |> Enum.filter(fn {_stop_id, area_ids} -> length(area_ids) > 1 end)
+    |> Enum.map(fn {stop_id, area_ids} -> %{stop_id: stop_id, area_ids: Enum.sort(area_ids)} end)
+    |> Enum.sort_by(& &1.stop_id)
+  end
+
+  defp zone_conflicts(%Rows{stop_areas: stop_areas, stop_zones: stop_zones}) do
+    for {stop_id, [area_id]} <- Enum.sort(stop_areas),
+        zone_id = Map.get(stop_zones, stop_id),
+        not is_nil(zone_id),
+        zone_id != area_id,
+        do: %{stop_id: stop_id, zone_id: zone_id, area_id: area_id}
+  end
+
+  defp to_timeframe_rules(%Rows{fare_leg_rules: rules}) do
+    rules
+    |> Enum.filter(&(not is_nil(&1.to_timeframe_group_id) and &1.to_timeframe_group_id != ""))
+    |> Enum.sort_by(&{&1.fare_product_id, &1.to_timeframe_group_id})
+  end
+
+  # The imported route groups must map one-to-one onto networks before the
+  # version is managed, because a transfer rule is keyed by leg group and the
+  # editor prices it per network (R5). A feed with no transfer rules is left
+  # alone: nothing reads those groups yet.
+  defp leg_group_conflicts(%Rows{} = rows) do
+    if rows.fare_transfer_rules == [] do
+      []
+    else
+      networks = group_networks(rows.fare_leg_rules)
+
+      many =
+        networks
+        |> Enum.filter(fn {_group, group_networks} -> Enum.count(group_networks) != 1 end)
+        |> Enum.sort()
+        |> Enum.map(fn {group, group_networks} -> {:many_networks, group, group_networks} end)
+
+      nameless =
+        rows.fare_transfer_rules
+        |> Enum.flat_map(&[&1.from_leg_group_id, &1.to_leg_group_id])
+        |> Enum.uniq()
+        |> Enum.reject(&Map.has_key?(networks, &1))
+        |> Enum.sort()
+        |> Enum.map(&{:no_rules, &1, []})
+
+      many ++ nameless ++ shared_networks(networks)
+    end
+  end
+
+  defp group_networks(rules) do
+    rules
+    |> Enum.group_by(&leg_group(&1))
+    |> Map.new(fn {group, group_rules} ->
+      {group, group_rules |> Enum.map(& &1.network_id) |> Enum.uniq()}
+    end)
+  end
+
+  # Two route groups that both name one network collapse into one when the editor
+  # prices transfers per network, so the pair is the same row twice.
+  defp shared_networks(networks) do
+    networks
+    |> Enum.flat_map(fn {group, group_networks} -> sharing(group, group_networks, networks) end)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp sharing(group, group_networks, networks) do
+    Enum.flat_map(group_networks, fn network_id ->
+      networks
+      |> Enum.filter(fn {other, other_networks} ->
+        other != group and network_id in other_networks
+      end)
+      |> Enum.map(fn {other, _networks} -> {min_group(group, other), network_id} end)
+    end)
+  end
+
+  defp min_group(left, right), do: min(left, right)
+
+  defp leg_group(rule) do
+    if is_nil(rule.leg_group_id) or rule.leg_group_id == "", do: nil, else: rule.leg_group_id
+  end
+
+  defp describe_leg_group_conflict({:many_networks, group, networks}) do
+    "#{group || "an unnamed route group"} names #{Enum.count(networks)} networks"
+  end
+
+  defp describe_leg_group_conflict({:no_rules, group, _networks}),
+    do: "transfer rule names route group #{group}, which no leg rule uses"
+
+  defp describe_leg_group_conflict({group, network_id}),
+    do: "#{group} and another route group both use network #{network_id}"
+
+  defp refusal(code, message, examples), do: %{code: code, message: message, examples: examples}
 
   # -- The answers, as a plan ---------------------------------------------------
 
@@ -697,6 +1401,16 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
     end)
   end
 
+  defp insert_v2_product_details(organization_id, gtfs_version_id, details) do
+    Enum.map(details, fn detail ->
+      %FareProductDetail{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
+      |> FareProductDetail.changeset(
+        Map.take(detail, [:fare_product_id, :kind, :position, :accepted_network_ids])
+      )
+      |> Repo.insert!()
+    end)
+  end
+
   # A free system charges nothing to anyone. Otherwise the adult answer is the
   # price, a reduced or youth rider pays half of it to the nearest nickel, and a
   # child rides free (AC-10).
@@ -756,12 +1470,12 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
     ]
   end
 
-  defp insert_settings(organization_id, gtfs_version_id, operation_id) do
+  defp insert_settings(organization_id, gtfs_version_id, operation_id, older_format \\ "derived") do
     %FareVersionSetting{
       organization_id: organization_id,
       gtfs_version_id: gtfs_version_id,
       managed_at: DateTime.utc_now(),
-      older_format: "derived",
+      older_format: older_format,
       conversion_operation_id: operation_id
     }
     |> FareVersionSetting.changeset(%{})
@@ -1516,13 +2230,215 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
     )
   end
 
+  # The reviewed state the editor converts, for a version imported from
+  # `fare_leg_rules.txt`: every stored row the plan reads, hashed. `apply/3`
+  # recomputes it inside the version lock, so a fare row that changed between the
+  # review and the write refuses the conversion instead of writing a plan nobody
+  # reviewed (AC-13).
+  defp v2_fingerprint(%Rows{} = rows, areas) do
+    lines =
+      Enum.map(Enum.sort_by(rows.fare_products, & &1.id), &v2_product_line/1) ++
+        Enum.map(Enum.sort_by(rows.fare_leg_rules, & &1.id), &v2_leg_rule_line/1) ++
+        Enum.map(Enum.sort_by(rows.fare_transfer_rules, & &1.id), &v2_transfer_line/1) ++
+        Enum.map(Enum.sort_by(rows.networks, & &1.id), &v2_network_line/1) ++
+        Enum.map(Enum.sort_by(rows.rider_categories, & &1.id), &v2_rider_line/1) ++
+        Enum.map(Enum.sort_by(rows.fare_media, & &1.id), &v2_media_line/1) ++
+        Enum.map(Enum.sort_by(areas, & &1.area_id), &v2_area_line/1) ++
+        v2_stop_lines(rows) ++
+        v2_route_network_lines(rows)
+
+    :sha256
+    |> :crypto.hash(Enum.join(lines, "\n"))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp v2_product_line(product) do
+    Enum.join(
+      [
+        product.fare_product_id,
+        product.fare_product_name,
+        product.rider_category_id,
+        product.fare_media_id,
+        Decimal.to_string(product.amount, :normal),
+        product.currency
+      ],
+      "|"
+    )
+  end
+
+  defp v2_leg_rule_line(rule) do
+    Enum.join(
+      [
+        rule.leg_group_id,
+        rule.fare_product_id,
+        rule.network_id,
+        rule.from_area_id,
+        rule.to_area_id,
+        rule.from_timeframe_group_id,
+        rule.to_timeframe_group_id
+      ],
+      "|"
+    )
+  end
+
+  defp v2_transfer_line(rule) do
+    Enum.join(
+      [
+        rule.from_leg_group_id,
+        rule.to_leg_group_id,
+        rule.transfer_count,
+        rule.duration_limit,
+        rule.duration_limit_type,
+        rule.fare_transfer_type,
+        rule.fare_product_id
+      ],
+      "|"
+    )
+  end
+
+  defp v2_network_line(network), do: Enum.join([network.network_id, network.network_name], "|")
+
+  defp v2_rider_line(rider),
+    do: Enum.join([rider.rider_category_id, rider.rider_category_name], "|")
+
+  defp v2_media_line(media), do: Enum.join([media.fare_media_id, media.fare_media_name], "|")
+
+  defp v2_area_line(area), do: Enum.join([area.area_id, area.area_name], "|")
+
+  defp v2_stop_lines(%Rows{stop_areas: stop_areas, stop_zones: stop_zones}) do
+    Enum.map(Enum.sort(stop_zones), fn {stop_id, zone_id} -> "zone|#{stop_id}|#{zone_id}" end) ++
+      Enum.map(Enum.sort(stop_areas), fn {stop_id, area_ids} ->
+        "area|#{stop_id}|#{Enum.join(Enum.sort(area_ids), ",")}"
+      end)
+  end
+
+  defp v2_route_network_lines(%Rows{route_networks: route_networks, route_network_ids: by_route}) do
+    Enum.map(Enum.sort(route_networks), fn {route_id, network_id} ->
+      "route_network|#{route_id}|#{network_id}"
+    end) ++
+      Enum.map(Enum.sort(by_route), fn {route_id, network_id} ->
+        "route_column|#{route_id}|#{network_id}"
+      end)
+  end
+
   # -- Writing the conversion -------------------------------------------------
 
   defp write_or_refuse(scope, %Rows{} = rows, fingerprint) do
     case source(rows) do
       :v1 -> write_plan_or_refuse(scope, rows, fingerprint)
+      :v2 -> write_v2_or_refuse(scope, rows, fingerprint)
       _other -> Repo.rollback({:refused, [unsupported_source()]})
     end
+  end
+
+  defp write_v2_or_refuse(scope, %Rows{} = rows, fingerprint) do
+    case plan_v2(rows) do
+      {:ok, plan} ->
+        if plan.fingerprint == fingerprint do
+          write_v2_conversion(scope, plan)
+        else
+          Repo.rollback({:refused, [%{code: :stale, message: @stale_message, examples: []}]})
+        end
+
+      {:refused, reasons} ->
+        Repo.rollback({:refused, reasons})
+    end
+  end
+
+  # A v2 conversion creates the operator facts the files have no place for and
+  # changes what is stored in place, so its inverse names both the rows it
+  # created and the values it replaced. The leg rules and the transfer rules are
+  # read back before `Normalize` runs rather than planned, because `Normalize` is
+  # the writer: only what it actually did is in the inverse.
+  defp write_v2_conversion(scope, plan) do
+    organization_id = scope.organization_id
+    gtfs_version_id = scope.gtfs_version_id
+
+    detail_rows = insert_v2_product_details(organization_id, gtfs_version_id, plan.details)
+    network_rows = insert_networks_for(organization_id, gtfs_version_id, plan.networks)
+    route_rows = insert_route_networks_for(organization_id, gtfs_version_id, plan.route_networks)
+
+    leg_rules_before = leg_rule_states(organization_id, gtfs_version_id)
+    transfers_before = transfer_states(organization_id, gtfs_version_id)
+
+    {:ok, adopted} =
+      FareZones.adopt_areas_as_zones(
+        organization_id,
+        gtfs_version_id,
+        plan.areas,
+        plan.stop_areas
+      )
+
+    :ok = Normalize.run!(organization_id, gtfs_version_id)
+
+    leg_rules_after = leg_rule_states(organization_id, gtfs_version_id)
+    transfers_after = transfer_states(organization_id, gtfs_version_id)
+
+    inverse = %{
+      source: :v2,
+      fare_product_details: Enum.map(detail_rows, & &1.id),
+      networks: Enum.map(network_rows, & &1.id),
+      route_networks: Enum.map(route_rows, & &1.id),
+      fare_zones: adopted.zones,
+      stop_zones: adopted.stops,
+      leg_rules: replaced_states(leg_rules_before, leg_rules_after),
+      leg_rule_rows: dropped_rows(leg_rules_before, leg_rules_after),
+      leg_rule_ids: Map.keys(leg_rules_after) -- Map.keys(leg_rules_before),
+      fare_transfer_rules: replaced_states(transfers_before, transfers_after),
+      transfer_rule_rows: dropped_rows(transfers_before, transfers_after),
+      transfer_rule_ids: Map.keys(transfers_after) -- Map.keys(transfers_before)
+    }
+
+    operation = record_operation(scope, v2_summary(plan), plan.creates)
+    setting = insert_settings(organization_id, gtfs_version_id, operation.id)
+
+    %{operation_id: operation.id, inverse: %{conversion: Map.put(inverse, :setting, setting.id)}}
+  end
+
+  defp v2_summary(plan) do
+    "Converted #{length(plan.leg_rules)} imported Fares v2 leg rules for " <>
+      "#{length(plan.details)} fare products and adopted #{plan.creates.fare_zones} areas as zones"
+  end
+
+  defp v2_undo_summary,
+    do: "Removed the fares and zones the Fares v2 conversion created"
+
+  # The rows `Normalize` replaced are recorded by their own id and the values it
+  # found, and the rows it dropped - a pass product's imported rules - by the whole
+  # row, so undoing puts back exactly what the import wrote.
+  defp replaced_states(before, after_) do
+    for {id, state} <- Enum.sort(before),
+        Map.has_key?(after_, id),
+        Map.fetch!(after_, id) != state,
+        do: Map.put(state, :id, id)
+  end
+
+  defp dropped_rows(before, after_) do
+    before |> Map.drop(Map.keys(after_)) |> Map.values()
+  end
+
+  defp leg_rule_states(organization_id, gtfs_version_id) do
+    Map.new(
+      rows_in(FareLegRule, organization_id, gtfs_version_id),
+      &{&1.id,
+       %{
+         rule_priority: &1.rule_priority,
+         leg_group_id: &1.leg_group_id,
+         to_timeframe_group_id: &1.to_timeframe_group_id
+       }}
+    )
+  end
+
+  defp transfer_states(organization_id, gtfs_version_id) do
+    Map.new(
+      rows_in(FareTransferRule, organization_id, gtfs_version_id),
+      &{&1.id,
+       %{
+         fare_product_id: &1.fare_product_id,
+         duration_limit: &1.duration_limit,
+         transfer_count: &1.transfer_count
+       }}
+    )
   end
 
   defp write_plan_or_refuse(scope, %Rows{} = rows, fingerprint) do

@@ -95,6 +95,14 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   chosen values. `delete_rule_group/2` removes exactly the reviewed rows under
   the same fence. So a rule edit can neither merge two rules, orphan a row, trim
   an ID nor overwrite a review the user never saw.
+
+  `adopt_areas_as_zones/4` is this sub-context's one job for a fare conversion:
+  it turns a version's imported `areas` into its fare zones, which is why it —
+  and nothing else outside the importer — writes `stops.zone_id` and
+  `fare_zones` for a converted version (R13, INV-2). It runs inside the caller's
+  transaction rather than taking the version lock itself, because a conversion
+  already holds it, and it returns the two sets of changes an undo needs: the
+  stops whose empty `zone_id` it filled and the zone IDs it declared.
   """
 
   import Ecto.Query, warn: false
@@ -638,6 +646,98 @@ defmodule GtfsPlanner.Gtfs.FareZones do
       {:change, _zone_id} -> FareZone.changeset(zone, attrs, :new)
     end
   end
+
+  @doc """
+  Adopts a version's imported `areas` as its fare zones (R13, INV-2).
+
+  `areas` is the version's `areas` rows as `[%{area_id: id, area_name: name}]`
+  and `stop_areas` is one `%{stop_id: id, area_id: area_id}` entry per stop the
+  caller has established belongs to exactly one area. A stop whose `zone_id` is
+  nil or empty is given that area; a stop already in a zone keeps it, because a
+  zone an operator drew is never overwritten by an imported area. Each area with
+  no `fare_zones` record is declared with `FareZone.changeset/3`'s `:keep` mode,
+  so the imported ID keeps its exact bytes, named after its `area_name` or — when
+  the area has no name — after its own ID, and colored with the deterministic
+  palette key `FareZone.default_color/1` gives that ID.
+
+  Both writes run in the caller's transaction, so a conversion that adopts areas
+  and then fails leaves the version exactly as it was. The answer is
+  `{:ok, %{stops: [%{stop_id: id, zone_id: zone_id}], zones: [zone_id]}}` — the
+  stops whose `zone_id` this call filled and the zone IDs it declared, which is
+  what `GtfsPlanner.Gtfs.Fares.Conversion` clears and deletes when it undoes the
+  conversion. An area the version already declares is not returned, so an undo
+  never deletes a record this call did not write.
+  """
+  @spec adopt_areas_as_zones(Ecto.UUID.t(), Ecto.UUID.t(), [map()], [map()]) :: {:ok, map()}
+  def adopt_areas_as_zones(organization_id, gtfs_version_id, areas, stop_areas) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    stops = adopt_stop_zones(organization_id, gtfs_version_id, stop_areas, now)
+    zones = declare_zones(organization_id, gtfs_version_id, areas)
+
+    {:ok, %{stops: stops, zones: zones}}
+  end
+
+  # Only an empty `zone_id` is filled, and only for a stop of this organization
+  # and version. The returned pairs are the rows this call changed, so undoing it
+  # clears exactly those and no zone an operator drew.
+  defp adopt_stop_zones(organization_id, gtfs_version_id, stop_areas, now) do
+    stop_areas
+    |> Enum.uniq_by(& &1.stop_id)
+    |> Enum.reduce([], fn %{stop_id: stop_id, area_id: area_id}, adopted ->
+      updated =
+        from(s in Stop,
+          where:
+            s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+              s.stop_id == ^stop_id and (is_nil(s.zone_id) or s.zone_id == "")
+        )
+        |> Repo.update_all(set: [zone_id: area_id, updated_at: now])
+
+      case updated do
+        {1, _rows} -> [%{stop_id: stop_id, zone_id: area_id} | adopted]
+        {0, _rows} -> adopted
+      end
+    end)
+    |> Enum.reverse()
+  end
+
+  defp declare_zones(organization_id, gtfs_version_id, areas) do
+    Enum.flat_map(areas, fn area ->
+      area_id = area.area_id
+
+      if zone_record(organization_id, gtfs_version_id, area_id) do
+        []
+      else
+        insert_zone(organization_id, gtfs_version_id, area)
+        [area_id]
+      end
+    end)
+  end
+
+  # `:keep` never casts `zone_id`, so the struct carries the area's exact bytes
+  # into the insert; only the name and the palette color are cast.
+  defp insert_zone(organization_id, gtfs_version_id, area) do
+    %FareZone{
+      zone_id: area.area_id,
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
+    }
+    |> FareZone.changeset(
+      %{name: zone_name(area), color: FareZone.default_color(area.area_id)},
+      :keep
+    )
+    |> Repo.insert!()
+  end
+
+  defp zone_name(%{area_name: name, area_id: area_id}), do: zone_name(name, area_id)
+
+  defp zone_name(name, area_id) when is_binary(name) do
+    case String.trim(name) do
+      "" -> area_id
+      trimmed -> trimmed
+    end
+  end
+
+  defp zone_name(_name, area_id), do: area_id
 
   @doc """
   Creates a zone in a published version of an organization.
