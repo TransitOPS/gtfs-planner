@@ -11288,32 +11288,54 @@ case Accounts.register_first_admin(%{
         ]
       })
 
+    # Every trip carries the headsign a rider names it by, because the departures
+    # question labels a departure with its first stop time and where it goes
+    # (AC-10, AC-19). The night trip leaves at 24:40, so its own clock renders
+    # as the next day rather than as an earlier departure.
     [
-      {alerts_route_1, route_1_outbound, "AL-R1-T1", "06:05:00", "ALERTS_WEEKDAY"},
-      {alerts_route_1, route_1_outbound, "AL-R1-T2", "08:15:00", "ALERTS_WEEKDAY"},
-      {alerts_route_1, route_1_outbound, "AL-R1-T3", "12:40:00", "ALERTS_WEEKDAY"},
-      {alerts_route_1, route_1_outbound, "AL-R1-T4", "16:20:00", "ALERTS_WEEKDAY"},
-      {alerts_route_1, route_1_outbound, "AL-R1-T5", "18:35:00", "ALERTS_WEEKDAY"},
-      # The night trip: its final stop time is 24:40, past midnight.
-      {alerts_route_1, route_1_outbound, "AL-R1-T6", "23:30:00", "ALERTS_WEEKDAY"},
-      {alerts_route_1, route_1_outbound, "AL-R1-T7", "09:00:00", "ALERTS_WEEKEND"},
-      {alerts_route_1, route_1_outbound, "AL-R1-T8", "17:30:00", "ALERTS_WEEKEND"},
-      {alerts_route_1, route_1_inbound, "AL-R1-T9", "07:00:00", "ALERTS_WEEKDAY"},
-      {alerts_route_1, route_1_inbound, "AL-R1-T10", "19:00:00", "ALERTS_WEEKDAY"},
-      {alerts_route_12, route_12_outbound, "AL-R12-T1", "06:50:00", "ALERTS_WEEKDAY"},
-      {alerts_route_12, route_12_outbound, "AL-R12-T2", "15:00:00", "ALERTS_WEEKDAY"},
-      {alerts_route_12, route_12_outbound, "AL-R12-T3", "10:00:00", "ALERTS_WEEKEND"},
-      {alerts_route_12, route_12_inbound, "AL-R12-T4", "08:00:00", "ALERTS_WEEKDAY"},
-      {alerts_route_50, route_50_outbound, "AL-R50-T1", "07:30:00", "ALERTS_WEEKDAY"},
-      {alerts_route_50, route_50_outbound, "AL-R50-T2", "11:00:00", "ALERTS_WEEKEND"}
+      {alerts_route_1, route_1_outbound, "AL-R1-T1", "06:05:00", "ALERTS_WEEKDAY",
+       "To Lincoln City"},
+      {alerts_route_1, route_1_outbound, "AL-R1-T2", "08:15:00", "ALERTS_WEEKDAY",
+       "To Lincoln City"},
+      {alerts_route_1, route_1_outbound, "AL-R1-T3", "12:40:00", "ALERTS_WEEKDAY",
+       "To Lincoln City"},
+      {alerts_route_1, route_1_outbound, "AL-R1-T4", "16:20:00", "ALERTS_WEEKDAY",
+       "To Lincoln City"},
+      {alerts_route_1, route_1_outbound, "AL-R1-T5", "18:35:00", "ALERTS_WEEKDAY",
+       "To Lincoln City"},
+      {alerts_route_1, route_1_outbound, "AL-R1-T6", "24:40:00", "ALERTS_WEEKDAY",
+       "To Lincoln City"},
+      {alerts_route_1, route_1_outbound, "AL-R1-T7", "09:00:00", "ALERTS_WEEKEND",
+       "To Lincoln City"},
+      {alerts_route_1, route_1_outbound, "AL-R1-T8", "17:30:00", "ALERTS_WEEKEND",
+       "To Lincoln City"},
+      {alerts_route_1, route_1_inbound, "AL-R1-T9", "07:00:00", "ALERTS_WEEKDAY", "To Newport"},
+      {alerts_route_1, route_1_inbound, "AL-R1-T10", "19:00:00", "ALERTS_WEEKDAY", "To Newport"},
+      {alerts_route_12, route_12_outbound, "AL-R12-T1", "06:50:00", "ALERTS_WEEKDAY",
+       "To Hospital"},
+      {alerts_route_12, route_12_outbound, "AL-R12-T2", "15:00:00", "ALERTS_WEEKDAY",
+       "To Hospital"},
+      {alerts_route_12, route_12_outbound, "AL-R12-T3", "10:00:00", "ALERTS_WEEKEND",
+       "To Hospital"},
+      {alerts_route_12, route_12_inbound, "AL-R12-T4", "08:00:00", "ALERTS_WEEKDAY",
+       "To Nye Beach"},
+      {alerts_route_50, route_50_outbound, "AL-R50-T1", "07:30:00", "ALERTS_WEEKDAY",
+       "To Newport"},
+      {alerts_route_50, route_50_outbound, "AL-R50-T2", "11:00:00", "ALERTS_WEEKEND",
+       "To Newport"}
     ]
-    |> Enum.each(fn {route, bundle, trip_id, start_time, service_id} ->
+    |> Enum.each(fn {route, bundle, trip_id, start_time, service_id, headsign} ->
       GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
         org.id,
         alerts_version.id,
         route.route_id,
         bundle,
-        %{service_id: service_id, trip_id: trip_id, start_time: start_time}
+        %{
+          service_id: service_id,
+          trip_id: trip_id,
+          start_time: start_time,
+          trip_headsign: headsign
+        }
       )
     end)
 
@@ -11321,7 +11343,8 @@ case Accounts.register_first_admin(%{
       "Browser seed: alerts version #{alerts_version.id} " <>
         "(Routes 1/12 bus and Route 50 tram, eight coded stops, " <>
         "Newport Transit Center shared by Routes 1 and 12, weekday and weekend " <>
-        "service today ± 60 days, Route 1 night trip past 24:00)"
+        "service today ± 60 days, headsigns on every trip, Route 1 night trip " <>
+        "departing at 24:40)"
     )
 
     # One organization script so the message step has an organization-owned

@@ -1190,7 +1190,16 @@ test.describe("alert cancelled departures", () => {
     await expect(first_list.locator("input[type='checkbox']").first()).toBeVisible();
     // Each label is a rider's departure: its time and where it goes. The text
     // is matched without anchors, because the label wraps its own whitespace.
-    await expect(first_list.locator("label").first()).toContainText(/\d{1,2}:\d{2} (AM|PM) to /);
+    await expect(first_list.locator("label").first()).toContainText(
+      /\d{1,2}:\d{2} (AM|PM) to Lincoln City/,
+    );
+
+    // The seeded night trip leaves at 24:40, so on weekday service its own row
+    // says the departure is the next day rather than reading as 12:40 AM.
+    const weekday = new Date(`${first_date}T00:00:00Z`).getUTCDay();
+    if (weekday >= 1 && weekday <= 5) {
+      await expect(page.locator("#alert-departures")).toContainText("(next day)");
+    }
 
     await page.screenshot({
       path: capturePath(testInfo, "departures-open-1440.png"),
