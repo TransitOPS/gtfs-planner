@@ -72,6 +72,23 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   only the text, so the label a stored stop renders is compared against what was
   typed and the identity is dropped when they differ.
 
+  ## Departures are schedule rows, never typed names
+
+  The cancelled-departures question names the trips the alert cancels and the
+  service date each one runs on, because a trip repeats across its service
+  dates and a selector without the date matches every one of them. The dates
+  are chosen here rather than in a timing step: `steps_for/2` puts
+  `departures` - with no `timing` - between `routes` and `reason` for
+  `cancelled_trips`, and `Recurrence.date_range/1` reads the alert's own
+  service dates.
+
+  The list is `Alerts.departures_on/4` over the alert's own version, so it
+  offers only the trips whose service is active on the date being listed, with
+  the direction the alert stores narrowing it and a clock past 24:00 saying so.
+  Every trip that reaches the row is one this list offered for that date and a
+  route the alert names, so a hand-made event attaches nothing (R1, CR-4). The
+  writes go through `Alerts.save_draft/4` like every other answer (INV-1).
+
   ## What this frame does not do
 
   It carries no publication state and no publication action: saving an alert
@@ -90,6 +107,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       alternative_question: 1,
       change_question: 1,
       conflict_banner: 1,
+      departures_question: 1,
       direction_question: 1,
       mode_control: 1,
       mode_question: 1,
@@ -218,6 +236,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
      |> assign(:directions_open?, false)
      |> assign(:mode_route_types, [])
      |> assign(:directions, [])
+     |> assign(:departure_dates, [])
+     |> assign(:departure_routes?, false)
+     |> assign(:departure_error, nil)
+     |> assign(:added_dates, [])
+     |> assign(:chosen_date, nil)
+     |> assign(:service_date_field, service_date_form(nil))
      |> assign(:form, draft_form(%Alert{}))}
   end
 
@@ -398,6 +422,19 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       nil -> {:noreply, socket}
       alert -> pick_alternative(socket, alert, id, params)
     end
+  end
+
+  # The service date is a form field inside this same autosave form, so a chosen
+  # date arrives as this question's own answer rather than as an event of its
+  # own. It is only the date the editor is looking at: **Add date** is what puts
+  # it in the list, so typing a date never answers the question by itself and
+  # nothing is written for it here.
+  def handle_event("autosave", %{"service_date" => %{"date" => value}}, socket)
+      when is_binary(value) do
+    {:noreply,
+     socket
+     |> assign(:chosen_date, parse_date(value))
+     |> assign(:service_date_field, service_date_form(value))}
   end
 
   def handle_event("autosave", %{"alert" => params}, socket) when is_map(params) do
@@ -695,6 +732,90 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     end
   end
 
+  # -- Departures --------------------------------------------------------
+
+  # **Add date** is one date at a time, because each date has its own checklist:
+  # the trips running on a Monday are not the trips running on the Saturday
+  # after it (AC-19). The date the editor typed is the one this adds, and a
+  # date already in the list is added once.
+  def handle_event("add_service_date", _params, socket) do
+    case socket.assigns.chosen_date do
+      nil ->
+        {:noreply, assign(socket, :departure_error, "Choose a date to add.")}
+
+      date ->
+        {:noreply,
+         socket
+         |> assign(:added_dates, Enum.uniq(socket.assigns.added_dates ++ [date]))
+         |> assign(:departure_error, nil)
+         |> load_departure_dates()}
+    end
+  end
+
+  # Removing a date takes its pairs with it, because a trip cancelled on a date
+  # the alert no longer names is a trip the alert still claims. A date that held
+  # no selection is only removed from the working list, and writes nothing.
+  def handle_event("remove_service_date", %{"date" => value}, socket) when is_binary(value) do
+    with %Date{} = date <- parse_date(value) do
+      socket = assign(socket, :added_dates, List.delete(socket.assigns.added_dates, date))
+
+      case socket.assigns.alert do
+        nil -> {:noreply, load_departure_dates(socket)}
+        alert -> drop_date_pairs(socket, alert, date)
+      end
+    else
+      _not_a_date -> {:noreply, socket}
+    end
+  end
+
+  # A departure is one checkbox and one write, which is what keeps Back lossless:
+  # the pair is on the row before Continue is pressed (AC-19).
+  #
+  # The pair is only stored when the schedule really offers that trip on that
+  # date for a route the alert names, so a hand-made event cannot attach a trip
+  # of another version, a trip that does not run, or a trip of a route this
+  # alert does not name (R1, CR-4, INV-1).
+  def handle_event("toggle_departure", %{"trip_id" => trip_id, "date" => value}, socket)
+      when is_binary(trip_id) and is_binary(value) do
+    alert = socket.assigns.alert
+
+    with %{} = alert <- alert,
+         %Date{} = date <- parse_date(value),
+         true <- departure_offered?(socket, alert, trip_id, date) do
+      chosen = scope(alert).trips
+      pair = {trip_id, date}
+
+      trips =
+        if Enum.any?(chosen, &({&1.trip_id, &1.service_date} == pair)) do
+          Enum.reject(chosen, &({&1.trip_id, &1.service_date} == pair))
+        else
+          chosen ++ [%{"trip_id" => trip_id, "service_date" => date}]
+        end
+
+      write_stop(socket, %{"scope" => %{"shape" => "trips", "trips" => trip_params(trips)}})
+    else
+      _not_offered_on_that_date -> {:noreply, socket}
+    end
+  end
+
+  # The departure list is a multi-select, so it is written as it is chosen and
+  # Continue is the explicit action that moves on. Nothing chosen says so inline
+  # rather than advancing over an answer that was never stored.
+  def handle_event("continue_departures", _params, socket) do
+    case socket.assigns.alert do
+      nil ->
+        {:noreply, socket}
+
+      alert ->
+        if present?(scope(alert).trips) do
+          {:noreply, advance_without_writing(socket, alert, :departures)}
+        else
+          {:noreply,
+           assign(socket, :departure_error, "Choose at least one departure that will not run.")}
+        end
+    end
+  end
+
   def handle_event(_event, _params, socket), do: {:noreply, socket}
 
   # R7, and the failure EV-16 exists to reject: a label the editor then types
@@ -942,6 +1063,124 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
   defp stop_field(alert, kind), do: to_form(%{"stop_id" => chosen_stop_id(alert, kind)}, as: kind)
 
+  # -- Departures --------------------------------------------------------
+
+  # The date input's own form. It is built from the value the editor typed
+  # rather than from the row, because a date the editor has not added yet is
+  # not an answer.
+  defp service_date_form(value), do: to_form(%{"date" => value}, as: :service_date)
+
+  # The list is only read when the editor is actually on this question, because
+  # it is one schedule read per date per chosen route and every other step of
+  # every alert would otherwise pay for it on arrival.
+  defp prepare_departure_question(socket) do
+    if socket.assigns.step == :departures do
+      load_departure_dates(socket)
+    else
+      assign(socket, departure_dates: [], departure_routes?: false)
+    end
+  end
+
+  defp load_departure_dates(socket) do
+    alert = socket.assigns.alert
+    routes = route_labels(socket, alert)
+    chosen = MapSet.new(scope(alert).trips, &{&1.trip_id, &1.service_date})
+
+    groups =
+      Enum.map(working_dates(socket, alert), fn date ->
+        departures =
+          alert
+          |> departure_lists(socket, date)
+          |> List.flatten()
+          |> Enum.sort_by(&{&1.first_departure_seconds, &1.trip_id})
+          |> Enum.map(fn departure ->
+            departure
+            |> Map.put(:route_id, departure.route_id)
+            |> Map.put(:route_label, departure_route_label(routes, departure.route_id))
+            |> Map.put(:selected?, MapSet.member?(chosen, {departure.trip_id, date}))
+          end)
+
+        %{date: date, departures: departures}
+      end)
+
+    socket
+    |> assign(:departure_dates, groups)
+    |> assign(:departure_routes?, map_size(routes) > 0)
+  end
+
+  # The names the alert's own routes are known by, read through the one public
+  # labelling read so a departure row, the Rider preview and the review all say
+  # the same thing (CR-4).
+  defp route_labels(_socket, nil), do: %{}
+
+  defp route_labels(socket, alert) do
+    socket |> audit_context() |> Alerts.labels_for(alert) |> Map.fetch!(:routes)
+  end
+
+  # The dates this question lists: the ones the alert already names a cancelled
+  # trip on, plus the ones the editor added in this session. With neither, the
+  # agency's own today is offered, so the question opens on something real
+  # rather than on an empty card.
+  defp working_dates(socket, alert) do
+    stored = scope(alert).trips |> Enum.map(& &1.service_date) |> Enum.reject(&is_nil/1)
+
+    case Enum.sort(Enum.uniq(stored ++ socket.assigns.added_dates)) do
+      [] -> [socket |> audit_context() |> Alerts.agency_now() |> NaiveDateTime.to_date()]
+      dates -> dates
+    end
+  end
+
+  # One schedule read per chosen route and date. The direction the alert stores
+  # narrows the list; no stored direction means both, which is what "every
+  # direction" means (AC-10, CR-4).
+  defp departure_lists(nil, _socket, _date), do: []
+
+  defp departure_lists(alert, socket, date) do
+    audit = audit_context(socket)
+    direction_id = scope(alert).direction_id
+
+    Enum.map(scope(alert).route_ids || [], fn route_id ->
+      audit
+      |> Alerts.departures_on(route_id, direction_id, date)
+      |> Enum.map(&Map.put(&1, :route_id, route_id))
+    end)
+  end
+
+  # With one route the headsign already names it, so the row repeats nothing.
+  defp departure_route_label(routes, route_id) do
+    if map_size(routes) < 2, do: nil, else: Map.get(routes, route_id)
+  end
+
+  # Whether the schedule really offers this trip on this date. Every offered
+  # departure is re-read from the alert's own version, so an identity from
+  # another version, a trip that does not run that day, or a trip of a route the
+  # alert does not name is absent from the answer and writes nothing (R1, CR-4).
+  defp departure_offered?(socket, alert, trip_id, date) do
+    Enum.any?(departure_lists(alert, socket, date), &(&1.trip_id == trip_id))
+  end
+
+  defp drop_date_pairs(socket, alert, date) do
+    kept = Enum.reject(scope(alert).trips, &(&1.service_date == date))
+
+    if length(kept) == length(scope(alert).trips) do
+      {:noreply, load_departure_dates(socket)}
+    else
+      write_stop(socket, %{"scope" => %{"trips" => trip_params(kept)}})
+    end
+  end
+
+  defp trip_params(trips),
+    do: Enum.map(trips, &%{"trip_id" => &1.trip_id, "service_date" => &1.service_date})
+
+  defp parse_date(value) when is_binary(value) do
+    case Date.from_iso8601(value) do
+      {:ok, date} -> date
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp parse_date(_value), do: nil
+
   defp stop_option(stop) do
     %{label: stop.label, value: stop.id, hint: stop_hint(stop)}
   end
@@ -1159,6 +1398,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> assign(:mode_route_types, question_options(socket, alert, step, :mode_route_types))
     |> assign(:directions, question_options(socket, alert, step, :directions))
     |> assign(:stop_error, nil)
+    |> assign(:departure_error, nil)
     |> assign(:stretch_ends, %{})
     |> assign(:directions_open?, false)
     |> assign(:form, draft_form(alert || %Alert{}))
@@ -1175,6 +1415,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> reset_stop_fields()
     |> assign(:route_stop_options, route_stop_options(socket, alert))
     |> assign(:shared_routes, shared_route_options(socket, alert))
+    |> prepare_departure_question()
   end
 
   # The prototype's skipped-stop list is the chosen route's own stops, in the
@@ -1603,6 +1844,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # what it needs instead, because Continue is what carries a reader on there.
   defp question_hint(:routes), do: "Choose at least one route, or the whole system."
   defp question_hint(:stops), do: "Choose the stops riders cannot use, or a stretch of them."
+
+  defp question_hint(:departures),
+    do: "Choose the departures that will not run, and the dates they run on."
+
   defp question_hint(:place), do: "Search this version's stops by name or number."
 
   defp question_hint(_step), do: "Choose an option to move on. You can go back at any time."
@@ -1831,6 +2076,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
                     error={@stop_error}
                   />
 
+                  <.departures_question
+                    :if={@step == :departures}
+                    dates={@departure_dates}
+                    field={@service_date_field}
+                    routes_chosen?={@departure_routes?}
+                    error={@departure_error}
+                  />
+
                   <.message_fields
                     :if={@step == :message}
                     form={@form}
@@ -1874,6 +2127,17 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
                       variant="primary"
                       class="ml-auto"
                       phx-click="continue_alternative"
+                    >
+                      Continue
+                    </.button>
+
+                    <.button
+                      :if={@step == :departures}
+                      id="alert-departures-continue"
+                      type="button"
+                      variant="primary"
+                      class="ml-auto"
+                      phx-click="continue_departures"
                     >
                       Continue
                     </.button>

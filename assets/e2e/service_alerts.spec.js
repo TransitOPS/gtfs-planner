@@ -1093,3 +1093,192 @@ test.describe("alert stop questions", () => {
     await captureStopsReference(page, testInfo, "form-stops", "320");
   });
 });
+
+// The cancelled-departures question, as spec 30's step 18 renders it: a service
+// date per checklist, the departures running on it, and a pair stored for each
+// one chosen (AC-19). The seeded Route 1 runs weekday and weekend service today
+// ± 60 days, so a dated cancellation has real departures to offer on any date
+// this journey names.
+
+async function captureDeparturesReference(page, testInfo, state, width) {
+  if (!fs.existsSync(REFERENCE_PATH)) return;
+
+  await page.goto(`file://${REFERENCE_PATH}?state=${state}`);
+  await page.waitForLoadState("load");
+
+  await page.screenshot({
+    path: capturePath(testInfo, `departures-ref-${state}-${width}.png`),
+    fullPage: false,
+  });
+}
+
+// A cancelled trip names a route and a date rather than a schedule question, so
+// the journey walks the editor's own flow: urgency, situation, mode, routes.
+async function openDepartures(page) {
+  await openNewAlert(page);
+  await waitForEditorMounted(page);
+
+  await page.locator("#alert-urgency-now").click();
+  await page.waitForURL(/step=situation/, { timeout: 15_000 });
+  await page.locator("#situation-cancelled_trips").click();
+
+  // The seeded version is multimodal, so the mode question sits between the
+  // situation and the routes.
+  await page.waitForSelector("#mode-3", { timeout: 15_000 });
+  await page.locator("#mode-3").click();
+  await page.waitForSelector("#alert-routes-continue", { timeout: 15_000 });
+
+  await page.locator("#alert-route-search").pressSequentially("Route 1");
+  await page.waitForSelector("#alert-route-options button", { timeout: 15_000 });
+  // Match the label span, not the button's text content: the button wraps the
+  // label in whitespace, and "Route 12" and "Route 50" both contain "Route 1".
+  await page
+    .locator("#alert-route-options button")
+    .filter({ has: page.locator("span.font-semibold", { hasText: /^Route 1$/ }) })
+    .first()
+    .click();
+  await page.locator("#alert-routes-continue").click();
+
+  await page.waitForSelector("#alert-departures", { timeout: 15_000 });
+  return page.url().split("?")[0];
+}
+
+// The date the question opened on, read from the group it rendered rather than
+// from the browser's clock, so a service date and the server's own today never
+// disagree about which day it is.
+async function firstDepartureGroup(page) {
+  return page
+    .locator("div[id^='alert-departures-']")
+    .filter({ has: page.locator("fieldset[id^='alert-departure-list-']") })
+    .first();
+}
+
+async function firstDepartureDate(page) {
+  const group = await firstDepartureGroup(page);
+  const id = await group.getAttribute("id");
+  return id.replace("alert-departures-", "");
+}
+
+async function addDayAfter(page, iso) {
+  const [year, month, day] = iso.split("-").map(Number);
+  const next = new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10);
+
+  await page.locator("#service-date").fill(next);
+  await page.locator("#add-service-date").click();
+  await page.waitForSelector(`#alert-departures-${next}`, { timeout: 15_000 });
+  return next;
+}
+
+test.describe("alert cancelled departures", () => {
+  test.describe.configure({ timeout: 120_000 });
+
+  test("a dated cancellation names two departures on two dates @departures", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openDepartures(page);
+
+    await expect(page.locator("#alert-question-title")).toHaveText(
+      "Which departures will not run?",
+    );
+    await expect(page.locator("#add-service-date")).toBeVisible();
+
+    // The question opens on the agency's own date, listing that day's
+    // departures in the order they leave.
+    const first_date = await firstDepartureDate(page);
+    const first_list = page.locator(`#alert-departure-list-${first_date}`);
+    await expect(first_list.locator("input[type='checkbox']").first()).toBeVisible();
+    // Each label is a rider's departure: its time and where it goes.
+    await expect(first_list.locator("label").first()).toContainText(/^\d{1,2}:\d{2}/);
+
+    await page.screenshot({
+      path: capturePath(testInfo, "departures-open-1440.png"),
+      fullPage: false,
+    });
+
+    // A second date gets its own checklist, drawn from the same schedule.
+    const second_date = await addDayAfter(page, first_date);
+    const second_list = page.locator(`#alert-departure-list-${second_date}`);
+    await expect(second_list.locator("input[type='checkbox']")).not.toHaveCount(0);
+
+    // Each chosen departure writes at once, so the pair is on the row before
+    // Continue is pressed.
+    const chosen = second_list.locator("input[type='checkbox']");
+    await chosen.nth(0).click();
+    await expect(chosen.nth(0)).toBeChecked();
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+    await chosen.nth(1).click();
+    await expect(chosen.nth(1)).toBeChecked();
+
+    // The same departure on the first date is a separate pair, because a trip
+    // repeats across its service dates.
+    await first_list.locator("input[type='checkbox']").first().click();
+    await expect(first_list.locator("input[type='checkbox']").first()).toBeChecked();
+
+    await page.screenshot({
+      path: capturePath(testInfo, "departures-dated-1440.png"),
+      fullPage: false,
+    });
+
+    await page.locator("#alert-departures-continue").click();
+    await page.waitForURL(/step=reason/, { timeout: 15_000 });
+    await expect(page.locator("#alert-question-title")).toHaveText("Why is this happening?");
+
+    await captureDeparturesReference(page, testInfo, "form-trips", "1440");
+  });
+
+  test("removing a date takes its departures with it @departures", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openDepartures(page);
+
+    const first_date = await firstDepartureDate(page);
+    const second_date = await addDayAfter(page, first_date);
+
+    await page
+      .locator(`#alert-departure-list-${second_date} input[type='checkbox']`)
+      .first()
+      .click();
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+
+    await page.locator(`#alert-remove-date-${second_date}`).click();
+    await expect(page.locator(`#alert-departures-${second_date}`)).toHaveCount(0);
+    await expect(page.locator(`#alert-departures-${first_date}`)).toBeVisible();
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+
+    await page.screenshot({
+      path: capturePath(testInfo, "departures-removed-1440.png"),
+      fullPage: false,
+    });
+  });
+
+  test("departures can be chosen by keyboard at the narrow width @departures", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(NARROW);
+    await openDepartures(page);
+
+    await expect(page.locator("#alert-departures")).toBeVisible();
+    expect(await fitsViewport(page)).toBe(true);
+
+    const iso = await firstDepartureDate(page);
+    const first_box = page.locator(`#alert-departure-list-${iso} input[type='checkbox']`).first();
+
+    // Space on the focused checkbox is the keyboard's own selection, so the
+    // departure is stored the same way a pointer click stores it.
+    await first_box.focus();
+    await expect(first_box).toBeFocused();
+    await page.keyboard.press("Space");
+    await expect(first_box).toBeChecked();
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+
+    // The narrow viewport is shorter than the checklist, so this capture is
+    // the whole page: a cropped one would show the heading and no departures.
+    await page.screenshot({
+      path: capturePath(testInfo, "departures-selected-320.png"),
+      fullPage: true,
+    });
+    await captureDeparturesReference(page, testInfo, "form-trips", "320");
+  });
+});

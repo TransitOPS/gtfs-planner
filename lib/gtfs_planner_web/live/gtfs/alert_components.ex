@@ -1397,6 +1397,130 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
     """
   end
 
+  @doc """
+  Which departures will not run, and on which dates (AC-19).
+
+  A cancelled trip is named the way a rider names it - the first departure and
+  where it goes - because the departures come from `Alerts.departures_on/4`,
+  which reads the schedule of the alert's own version and offers only the trips
+  whose service is active on the date being listed (AC-10, CR-4).
+
+  The service date is chosen here rather than in the timing step: a cancelled
+  trip carries its service date in the alert itself, and the specification's
+  step sequence puts `departures` - with no `timing` - between `routes` and
+  `reason` for `cancelled_trips`. **Add date** appends a date to the working
+  list and gives it its own checklist; removing a date takes its pairs out of
+  the alert.
+
+  Every checkbox writes at once, so Back is lossless, and Continue is the
+  action that moves on. A date the route does not run says so rather than
+  showing an empty list.
+  """
+  attr :dates, :list,
+    required: true,
+    doc: "one `%{date: Date, departures: [departure]}` entry per service date, earliest first"
+
+  attr :field, :any, required: true, doc: "the `to_form/2` field the date input writes to"
+
+  attr :routes_chosen?, :boolean, default: false, doc: "whether the alert already names a route"
+
+  attr :error, :string, default: nil
+
+  def departures_question(assigns) do
+    ~H"""
+    <div id="alert-departures" class="grid gap-4">
+      <p class="text-sm text-muted">
+        Only the departures you choose are marked cancelled, and only on the dates you name here.
+        Times past midnight say so.
+      </p>
+
+      <div id="alert-departure-dates" class="grid gap-2">
+        <.input
+          type="date"
+          field={@field}
+          id="service-date"
+          label="Service date"
+          help="Choose a date this route runs, then add it. Each date gets its own list of departures."
+        />
+
+        <div>
+          <.button id="add-service-date" type="button" phx-click="add_service_date">
+            <.icon name="hero-plus" class="size-4" /> Add date
+          </.button>
+        </div>
+      </div>
+
+      <p :if={not @routes_chosen?} id="alert-departures-no-route" class="text-sm text-muted">
+        Choose a route first, and its departures are listed here for each date you name.
+      </p>
+
+      <div
+        :for={group <- @dates}
+        id={"alert-departures-#{Date.to_iso8601(group.date)}"}
+        class="grid gap-2"
+      >
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+          <h3 class="text-sm font-semibold text-strong">
+            {Calendar.strftime(group.date, "%A, %B %-d")}
+          </h3>
+          <.button
+            id={"alert-remove-date-#{Date.to_iso8601(group.date)}"}
+            type="button"
+            variant="quiet"
+            phx-click="remove_service_date"
+            phx-value-date={Date.to_iso8601(group.date)}
+          >
+            <.icon name="hero-x-mark" class="size-4" /> Remove this date
+          </.button>
+        </div>
+
+        <fieldset id={"alert-departure-list-#{Date.to_iso8601(group.date)}"} class="grid gap-2">
+          <legend class="sr-only">Departures on {Calendar.strftime(group.date, "%A, %B %-d")}</legend>
+          <label
+            :for={departure <- group.departures}
+            for={"alert-departure-#{Date.to_iso8601(group.date)}-#{departure.trip_id}"}
+            class="flex min-h-11 cursor-pointer items-start gap-3 rounded-control border border-subtle px-3 py-2 has-[:checked]:border-action has-[:checked]:bg-selection has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus"
+          >
+            <input
+              type="checkbox"
+              id={"alert-departure-#{Date.to_iso8601(group.date)}-#{departure.trip_id}"}
+              checked={departure.selected?}
+              phx-click="toggle_departure"
+              phx-value-trip-id={departure.trip_id}
+              phx-value-date={Date.to_iso8601(group.date)}
+              class="mt-1 size-5 shrink-0 accent-action"
+            />
+            <span class="min-w-0">
+              <span class="block text-sm font-[650] text-strong">{departure.label}</span>
+              <span :if={departure.route_label} class="block text-[13px] text-muted">
+                {departure.route_label}
+              </span>
+            </span>
+          </label>
+
+          <p
+            :if={group.departures == []}
+            id={"alert-departures-empty-#{Date.to_iso8601(group.date)}"}
+            class="text-sm text-muted"
+          >
+            No departures run on this date.
+          </p>
+        </fieldset>
+      </div>
+
+      <p
+        :if={@error}
+        id="alert-departures-error"
+        role="alert"
+        tabindex="-1"
+        class="text-sm font-semibold text-error-fg"
+      >
+        {@error}
+      </p>
+    </div>
+    """
+  end
+
   # The one combobox both stop questions use, styled like the transfers editor's
   # so the same control looks the same wherever an operator meets it.
   attr :id, :string, required: true
