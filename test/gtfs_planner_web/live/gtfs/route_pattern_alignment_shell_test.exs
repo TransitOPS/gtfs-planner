@@ -442,6 +442,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentShellTest do
           dialog_open: false,
           editable?: false,
           offline?: false,
+          # The download menu's links are scoped to this published version.
+          version_id: version.id,
           version_name: version.name,
           organization_name: organization.name,
           # The path-file panel is not rendered here, but the upload it takes
