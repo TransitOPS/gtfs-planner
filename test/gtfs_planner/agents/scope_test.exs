@@ -111,10 +111,14 @@ defmodule GtfsPlanner.Agents.ScopeTest do
   end
 
   describe "the resource context" do
-    test "context/1 binds one identity and leaves the approved extension unset" do
+    test "context/1 binds one identity and leaves the approval and the source unset" do
       id = Ecto.UUID.generate()
 
-      assert Scope.context({:route, id}) == %{identity: {:route, id}, approved_extension: nil}
+      assert Scope.context({:route, id}) == %{
+               identity: {:route, id},
+               approved_extension: nil,
+               source_snapshot: nil
+             }
     end
 
     test "identity/1 reads the bound identity and is nil without one" do
