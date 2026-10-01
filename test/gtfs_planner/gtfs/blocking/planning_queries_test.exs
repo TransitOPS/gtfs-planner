@@ -438,9 +438,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanningQueriesTest do
   # --- helpers ---------------------------------------------------------------
 
   # The second argument is always a version of the organization given as the
-  # first: `Gtfs.create_trip/1` and `Gtfs.create_stop/1` take the version's
-  # org-scoped share lock, so a foreign organization's row cannot be written into
-  # our version at all.
+  # first, so a foreign organization's row is never written into our version.
   defp trip!(organization, version, trip_id, attrs \\ %{}) do
     trip_fixture(
       organization.id,

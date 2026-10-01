@@ -667,7 +667,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
         level_fixture(org.id, historical_version.id, level_id: selected_level.level_id)
 
       {:ok, _} =
-        GtfsPlanner.Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: historical_station.id,
           level_id: historical_level.id,
           organization_id: org.id,

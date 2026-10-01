@@ -83,7 +83,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsFloorplanTest do
 
     for {level, filename} <- [{concourse, "floorplan_l1.png"}, {street, "floorplan_l2.png"}] do
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: version.id,
           stop_id: station.id,
@@ -213,7 +213,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsFloorplanTest do
       })
 
     {:ok, _stop_level} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: version.id,
         stop_id: station.id,

@@ -8,7 +8,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
   import GtfsPlanner.GtfsFixtures
 
   alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.FloorplanTransform
   alias GtfsPlanner.Repo
@@ -128,14 +127,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
       })
 
     {:ok, stop_level} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
         stop_id: station.id,
         level_id: level.id
       })
 
-    {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "align-diagram.png")
+    {:ok, _} = put_stop_level_diagram(stop_level, "align-diagram.png")
 
     %{
       user: user,
@@ -504,7 +503,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
           end)
         )
 
-      assert {:ok, _deleted_stop_level} = Gtfs.delete_stop_level(stop_level)
+      assert {:ok, _deleted_stop_level} = Repo.delete(stop_level)
 
       view = mount_map_view(context)
 
@@ -969,7 +968,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
       %{organization: organization, gtfs_version: gtfs_version, station: station} = context
 
       {:ok, level2} =
-        Gtfs.create_level(%{
+        insert_level(%{
           level_id: "align_level_2",
           level_name: "Alignment Level 2",
           level_index: 1.0,
@@ -978,7 +977,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
         })
 
       {:ok, _stop_level2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,

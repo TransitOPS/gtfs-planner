@@ -31,7 +31,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePathwayCommandsTest do
     level = level_fixture(organization.id, version.id, level_id: "PATHWAY_LEVEL")
 
     {:ok, _attachment} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: version.id,
         stop_id: station.id,

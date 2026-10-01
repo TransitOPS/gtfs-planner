@@ -629,7 +629,7 @@ defmodule GtfsPlannerWeb.DashboardPathwaysTest do
 
   defp floorplan(ctx, station, level, diagram_filename) do
     {:ok, stop_level} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         stop_id: station.id,
         level_id: level.id,
         diagram_filename: diagram_filename,

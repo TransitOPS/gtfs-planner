@@ -38,11 +38,11 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
       )
 
       # Set diagram coordinate on child stop
-      {:ok, _} = Gtfs.update_stop_diagram_coordinate(child, %{x: 42.5, y: 18.3})
+      {:ok, _} = put_stop_diagram_coordinate(child, %{x: 42.5, y: 18.3})
 
       # Create stop_level with diagram and calibration
       {:ok, sl} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: station.id,
           level_id: level.id,
           organization_id: org_a.id,
@@ -51,7 +51,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
         })
 
       {:ok, _} =
-        Gtfs.update_stop_level_scale(sl, %{
+        put_stop_level_scale(sl, %{
           scale_point_a: %{x: 5.0, y: 10.0},
           scale_point_b: %{x: 95.0, y: 90.0},
           scale_distance_meters: Decimal.new("25.0"),

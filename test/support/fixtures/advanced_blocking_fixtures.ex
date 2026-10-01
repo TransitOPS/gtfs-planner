@@ -142,8 +142,8 @@ defmodule GtfsPlanner.AdvancedBlockingFixtures do
   inherits its parent station's point. `:parent_station` names a parent station.
 
   A stop with a parent station is written through `Gtfs.import_create_stop/1`
-  rather than `GtfsFixtures.stop_fixture/3`, because `Gtfs.create_stop/1` uses
-  `Stop.changeset/2`, which demands a `level_id` for any stop with a parent. The
+  rather than `GtfsFixtures.stop_fixture/3`, because `Stop.changeset/2` demands a
+  `level_id` for any stop with a parent. The
   import path is the permissive one the importer itself uses, and going through
   the context keeps the input write lock and the `:stops` broadcast that the
   unparented branch already gets from `stop_fixture/3`.

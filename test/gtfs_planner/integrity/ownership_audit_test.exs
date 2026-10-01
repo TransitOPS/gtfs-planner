@@ -1,7 +1,6 @@
 defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
   use GtfsPlanner.DataCase, async: false
 
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.TripRun
   alias GtfsPlanner.Integrity.OwnershipAudit
@@ -48,7 +47,7 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
     pathway_fixture(org.id, version.id, station.stop_id, platform.stop_id)
 
     assert {:ok, _} =
-             Gtfs.create_stop_level(%{
+             insert_stop_level(%{
                organization_id: org.id,
                gtfs_version_id: version.id,
                stop_id: station.id,
@@ -106,7 +105,7 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
     Repo.query!("ALTER TABLE stop_levels DROP CONSTRAINT IF EXISTS stop_levels_stops_owner_fkey")
 
     assert {:ok, stop_level} =
-             Gtfs.create_stop_level(%{
+             insert_stop_level(%{
                organization_id: org.id,
                gtfs_version_id: other_version.id,
                stop_id: stop.id,

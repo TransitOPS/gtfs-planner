@@ -53,7 +53,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
       version_id: version_id
     } do
       stop = stop_fixture(org_id, version_id, stop_id: "platform_north")
-      {:ok, _} = Gtfs.update_stop_diagram_coordinate(stop, %{x: 50.5, y: 25.0})
+      {:ok, _} = put_stop_diagram_coordinate(stop, %{x: 50.5, y: 25.0})
 
       assert {:ok, entries} = Export.build_zip_entries(org_id, version_id)
       refute Enum.empty?(entries)
@@ -92,7 +92,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
       version_id: version_id
     } do
       stop = stop_fixture(org_id, version_id, stop_id: "platform_north")
-      {:ok, _} = Gtfs.update_stop_diagram_coordinate(stop, %{x: 50.5, y: 25.0})
+      {:ok, _} = put_stop_diagram_coordinate(stop, %{x: 50.5, y: 25.0})
       route_fixture(org_id, version_id, route_id: "Red", route_short_name: "Red", active: false)
       route_fixture(org_id, version_id, route_id: "Blue", route_short_name: "Blue", active: true)
 
@@ -154,7 +154,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
       level = level_fixture(org_id, version_id, level_id: "L1")
 
       {:ok, sl} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: station.id,
           level_id: level.id,
           organization_id: org_id,
@@ -163,7 +163,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
         })
 
       {:ok, _} =
-        Gtfs.update_stop_level_scale(sl, %{
+        put_stop_level_scale(sl, %{
           scale_point_a: %{x: 10.0, y: 20.0},
           scale_point_b: %{x: 80.0, y: 70.0},
           scale_distance_meters: Decimal.new("15.5"),
@@ -188,7 +188,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
       level = level_fixture(org_id, version_id, level_id: "L1")
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: station.id,
           level_id: level.id,
           organization_id: org_id,
@@ -235,7 +235,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
       level = level_fixture(org_id, version_id, level_id: "L1")
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: station.id,
           level_id: level.id,
           organization_id: org_id,
@@ -276,7 +276,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
           location_type: 1
         )
 
-      {:ok, _} = Gtfs.update_stop_diagram_coordinate(selected_station, %{x: 12.0, y: 24.0})
+      {:ok, _} = put_stop_diagram_coordinate(selected_station, %{x: 12.0, y: 24.0})
 
       historical_station =
         stop_fixture(org_id, historical_version.id,
@@ -287,7 +287,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
       historical_level = level_fixture(org_id, historical_version.id, level_id: "L1")
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: historical_station.id,
           level_id: historical_level.id,
           organization_id: org_id,
@@ -321,7 +321,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
       level = level_fixture(org_id, version_id, level_id: "L1")
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: station.id,
           level_id: level.id,
           organization_id: org_id,
@@ -346,7 +346,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
       level = level_fixture(org_id, version_id, level_id: "L1")
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: station.id,
           level_id: level.id,
           organization_id: org_id,

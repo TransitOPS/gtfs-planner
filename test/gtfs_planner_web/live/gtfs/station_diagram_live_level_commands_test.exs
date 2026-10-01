@@ -32,7 +32,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveLevelCommandsTest do
       level_fixture(organization.id, version.id, level_id: "LEVEL_ONE", level_name: "Level one")
 
     {:ok, stop_level} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: version.id,
         stop_id: station.id,
@@ -148,7 +148,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveLevelCommandsTest do
 
   test "stale ruler save keeps its entered distance and leaves scale unchanged", scope do
     {:ok, seeded} =
-      Gtfs.update_stop_level_scale(scope.stop_level, %{
+      put_stop_level_scale(scope.stop_level, %{
         scale_point_a: %{"x" => 10.0, "y" => 10.0},
         scale_point_b: %{"x" => 20.0, "y" => 10.0},
         scale_distance_meters: Decimal.new("25"),

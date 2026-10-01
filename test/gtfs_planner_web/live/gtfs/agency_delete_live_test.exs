@@ -27,6 +27,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyDeleteLiveTest do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.FareAttribute
   alias GtfsPlanner.Gtfs.FeedSettings
+  alias GtfsPlanner.GtfsFixtures
   alias GtfsPlanner.Repo
 
   @open_drawer "#agency-drawer-overlay[data-open='true']"
@@ -64,7 +65,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyDeleteLiveTest do
   # nothing a changeset refuses can hide inside a fixture.
   defp create_agency(organization, version, agency_id, name) do
     {:ok, agency} =
-      Gtfs.create_agency(%{
+      GtfsFixtures.insert_agency(%{
         organization_id: organization.id,
         gtfs_version_id: version.id,
         agency_id: agency_id,
@@ -97,7 +98,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyDeleteLiveTest do
         Map.put(attrs, :route_short_name, attrs[:route_id])
       end
 
-    {:ok, route} = Gtfs.create_route(attrs)
+    {:ok, route} = GtfsFixtures.insert_route(attrs)
 
     route
   end

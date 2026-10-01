@@ -4,6 +4,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.{JournalEntry, JournalPhoto}
+  alias GtfsPlanner.Gtfs.StationJournal
   alias GtfsPlanner.Gtfs.StationJournal.Scope
   alias GtfsPlanner.Repo
 
@@ -181,7 +182,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       level = level_fixture(organization.id, version.id, level_id: "L1")
 
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: version.id,
           stop_id: station.id,
@@ -500,7 +501,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       assert is_nil(unrefreshed.lon)
 
       {:ok, aligned_stop_level} =
-        Gtfs.update_stop_level_alignment(stop_level, %{
+        put_stop_level_alignment(stop_level, %{
           floorplan_center_lat: 40.7128,
           floorplan_center_lon: -74.006,
           floorplan_scale_mpp: 0.25,
@@ -538,7 +539,12 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         )
         |> Repo.insert!()
 
-      assert {:ok, 1} = Gtfs.refresh_pin_coordinates_for_stop_level(aligned_stop_level, 1000, 800)
+      assert {:ok, 1} =
+               StationJournal.refresh_pin_coordinates_for_stop_level(
+                 aligned_stop_level,
+                 1000,
+                 800
+               )
 
       refreshed = Repo.get!(JournalEntry, pin_id)
       assert refreshed.diagram_x == 50.0
@@ -1471,7 +1477,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         level_fixture(scope_a.organization_id, scope_a.gtfs_version_id, level_id: "L1_NOTIF")
 
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: scope_a.organization_id,
           gtfs_version_id: scope_a.gtfs_version_id,
           stop_id: scope_a.station_id,
@@ -1495,7 +1501,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       assert_receive {:station_journal_changed, ^station_id_a}
 
       {:ok, aligned_stop_level} =
-        Gtfs.update_stop_level_alignment(stop_level, %{
+        put_stop_level_alignment(stop_level, %{
           floorplan_center_lat: 40.7128,
           floorplan_center_lon: -74.006,
           floorplan_scale_mpp: 0.25,
@@ -1503,7 +1509,11 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         })
 
       assert {:ok, 1} =
-               Gtfs.refresh_pin_coordinates_for_stop_level(aligned_stop_level, 1000, 800)
+               StationJournal.refresh_pin_coordinates_for_stop_level(
+                 aligned_stop_level,
+                 1000,
+                 800
+               )
 
       # CRIT-005: refresh_pin_coordinates_for_stop_level must not broadcast
       refute_receive {:station_journal_changed, _}

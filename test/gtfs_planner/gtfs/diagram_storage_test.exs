@@ -13,7 +13,6 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.{Audit, AuditContext, StopLevel}
   alias GtfsPlanner.Gtfs.DiagramStorage
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
@@ -238,7 +237,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
     test "commits only an extant candidate and preserves the previous diagram when its candidate disappears",
          %{organization: org, version: version, station: station, level: level, audit: audit} do
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: station.id,
           level_id: level.id,
           diagram_filename: "previous.png",
@@ -287,7 +286,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
         )
 
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: station.id,
           level_id: level.id,
           diagram_filename: referenced,
@@ -358,7 +357,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
     test "cleanup-first and commit-first outcomes retain a committed reference or fail commit safely",
          %{organization: org, version: version, station: station, level: level, audit: audit} do
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: station.id,
           level_id: level.id,
           diagram_filename: "previous.png",
@@ -417,7 +416,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
 
     test "revoked editor cannot commit a staged candidate", scope do
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: scope.station.id,
           level_id: scope.level.id,
           diagram_filename: "previous.png",
@@ -454,7 +453,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
 
     test "candidate commit rejects a stale stop-level revision", scope do
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: scope.station.id,
           level_id: scope.level.id,
           diagram_filename: "previous.png",
@@ -471,7 +470,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
           @candidate_png
         )
 
-      {:ok, current} = Gtfs.update_stop_level_diagram(stop_level, "newer.png")
+      {:ok, current} = put_stop_level_diagram(stop_level, "newer.png")
       current_revision = current.lock_version
 
       assert {:error, {:stale, ^current_revision}} =
@@ -483,7 +482,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
     test "successful candidate commit records history with the filename and reset calibration",
          scope do
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: scope.station.id,
           level_id: scope.level.id,
           diagram_filename: "previous.png",
@@ -522,7 +521,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
 
     test "failed diagram history leaves the previous filename in place", scope do
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: scope.station.id,
           level_id: scope.level.id,
           diagram_filename: "previous.png",
@@ -566,7 +565,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
       File.write!(legacy_file_path, @legacy_bytes)
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: station.id,
           level_id: level.id,
           diagram_filename: "plan.png",
@@ -680,7 +679,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
 
       # Reference the diagram from every published version's StopLevel.
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: station.id,
           level_id: level.id,
           diagram_filename: "plan.png",
@@ -689,7 +688,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: version_b_station.id,
           level_id: version_b_level.id,
           diagram_filename: "plan.png",
@@ -698,7 +697,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: version_c_station.id,
           level_id: version_c_level.id,
           diagram_filename: "plan.png",
@@ -743,7 +742,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
     test "does not copy when no legacy file exists for a referenced diagram",
          %{organization: org, version: version, station: station, level: level} do
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: station.id,
           level_id: level.id,
           diagram_filename: "missing.png",
@@ -761,7 +760,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
       File.write!(Path.join(legacy_dir, "plan.png"), @legacy_bytes)
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: station.id,
           level_id: level.id,
           diagram_filename: "plan.png",
@@ -795,7 +794,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
       File.write!(legacy_path, @legacy_bytes)
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: station.id,
           level_id: level.id,
           diagram_filename: "plan.png",
@@ -820,7 +819,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
       File.write!(Path.join(legacy_dir, "plan.png"), @legacy_bytes)
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: station.id,
           level_id: level.id,
           diagram_filename: "plan.png",

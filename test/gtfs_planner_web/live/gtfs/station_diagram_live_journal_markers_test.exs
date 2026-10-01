@@ -52,7 +52,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
       })
 
     {:ok, stop_level} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         organization_id: organization_id,
         gtfs_version_id: gtfs_version_id,
         stop_id: station.id,
@@ -228,7 +228,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
         })
 
       {:ok, stop_level_b} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -387,7 +387,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
         })
 
       {:ok, stop_level_b} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,

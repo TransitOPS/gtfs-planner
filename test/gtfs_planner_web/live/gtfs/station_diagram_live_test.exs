@@ -83,7 +83,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -223,7 +223,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -634,7 +634,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -751,7 +751,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       # Associate level with station
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -1435,7 +1435,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station_without_platforms.id,
@@ -1703,7 +1703,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -1724,7 +1724,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -1745,7 +1745,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -1768,7 +1768,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       child_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -1804,7 +1804,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       child_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -1838,7 +1838,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       child_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -1877,7 +1877,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       child_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -1917,7 +1917,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       selected_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -1968,7 +1968,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       level_2 =
         level_fixture(organization.id, gtfs_version.id, %{
@@ -1978,7 +1978,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -2039,7 +2039,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       child_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -2077,7 +2077,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       child_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -2116,7 +2116,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       child_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -2148,7 +2148,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       child_stop_1 =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -2201,7 +2201,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       child_stop_1 =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -2715,7 +2715,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       # Associate level diagram so connect mode is available
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "connect-picker-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "connect-picker-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -2795,7 +2795,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "connect-scope-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "connect-scope-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -2826,7 +2826,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "connect-invalid-id-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "connect-invalid-id-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -2873,7 +2873,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "connect-mixed-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "connect-mixed-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -2943,7 +2943,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "connect-same-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "connect-same-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -3002,7 +3002,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_1} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -3011,7 +3011,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -3274,7 +3274,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -3416,7 +3416,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -3542,7 +3542,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -3810,7 +3810,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       # Associate levels with station
       {:ok, _stop_level1} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -3819,7 +3819,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -3960,7 +3960,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_1} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -3969,7 +3969,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -4208,7 +4208,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       # Associate level with station
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -4235,7 +4235,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     } do
       # Add a diagram to the stop_level
       {:ok, _updated_stop_level} =
-        Gtfs.update_stop_level_diagram(stop_level, "test_diagram.png")
+        put_stop_level_diagram(stop_level, "test_diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -4274,7 +4274,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level: stop_level
     } do
       {:ok, _updated_stop_level} =
-        Gtfs.update_stop_level_diagram(stop_level, "test_diagram.png")
+        put_stop_level_diagram(stop_level, "test_diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -4312,7 +4312,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       station: station,
       stop_level: stop_level
     } do
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
@@ -4334,7 +4334,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       station: station,
       stop_level: stop_level
     } do
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
@@ -4412,7 +4412,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level1} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -4420,7 +4420,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -4628,7 +4628,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -4714,7 +4714,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -4755,7 +4755,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -4764,7 +4764,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -4799,7 +4799,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level_a =
         Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
 
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level_a, "level_a.png")
+      {:ok, _} = put_stop_level_diagram(stop_level_a, "level_a.png")
 
       # Create a second level with its own diagram
       level_b =
@@ -4810,14 +4810,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, stop_level_b} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
           level_id: level_b.id
         })
 
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level_b, "level_b.png")
+      {:ok, _} = put_stop_level_diagram(stop_level_b, "level_b.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -4885,14 +4885,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
           level_id: level.id
         })
 
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       %{
         user: user,
@@ -5164,7 +5164,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -5861,7 +5861,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -5945,7 +5945,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -6196,7 +6196,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -6344,7 +6344,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -6443,7 +6443,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -6542,7 +6542,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -6630,7 +6630,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -7085,7 +7085,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -7426,7 +7426,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -7940,7 +7940,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_1} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -7949,7 +7949,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -8117,7 +8117,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -8125,15 +8125,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
           level_id: level_2.id
         })
 
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "measure-level-1.png")
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level_2, "measure-level-2.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "measure-level-1.png")
+      {:ok, _} = put_stop_level_diagram(stop_level_2, "measure-level-2.png")
 
       stop_a =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -8315,7 +8315,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
 
       {:ok, _} =
-        Gtfs.update_stop_level_scale(stop_level, %{
+        put_stop_level_scale(stop_level, %{
           scale_point_a: %{"x" => 10.0, "y" => 10.0},
           scale_point_b: %{"x" => 24.0, "y" => 30.0},
           scale_distance_meters: Decimal.new("25"),
@@ -8345,7 +8345,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
 
       {:ok, _} =
-        Gtfs.update_stop_level_scale(stop_level, %{
+        put_stop_level_scale(stop_level, %{
           scale_point_a: %{"x" => 10.0, "y" => 10.0},
           scale_point_b: %{"x" => 20.0, "y" => 10.0},
           scale_distance_meters: Decimal.new("25"),
@@ -8628,7 +8628,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
 
       {:ok, _} =
-        Gtfs.update_stop_level_scale(stop_level, %{
+        put_stop_level_scale(stop_level, %{
           scale_point_a: %{"x" => 0.0, "y" => 0.0},
           scale_point_b: %{"x" => 10.0, "y" => 0.0},
           scale_distance_meters: Decimal.new("20"),
@@ -8658,7 +8658,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
 
       {:ok, _} =
-        Gtfs.update_stop_level_scale(stop_level, %{
+        put_stop_level_scale(stop_level, %{
           scale_point_a: %{"x" => 0.0, "y" => 0.0},
           scale_point_b: %{"x" => 10.0, "y" => 0.0},
           scale_distance_meters: Decimal.new("20"),
@@ -8701,7 +8701,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
 
       {:ok, _} =
-        Gtfs.update_stop_level_scale(stop_level, %{
+        put_stop_level_scale(stop_level, %{
           scale_point_a: %{"x" => 0.0, "y" => 0.0},
           scale_point_b: %{"x" => 10.0, "y" => 0.0},
           scale_distance_meters: Decimal.new("20"),
@@ -8748,7 +8748,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
 
       {:ok, _} =
-        Gtfs.update_stop_level_scale(stop_level, %{
+        put_stop_level_scale(stop_level, %{
           scale_point_a: %{"x" => 0.0, "y" => 0.0},
           scale_point_b: %{"x" => 10.0, "y" => 0.0},
           scale_distance_meters: Decimal.new("20"),
@@ -8815,7 +8815,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
 
       {:ok, _} =
-        Gtfs.update_stop_level_scale(stop_level, %{
+        put_stop_level_scale(stop_level, %{
           scale_point_a: %{"x" => 0.0, "y" => 0.0},
           scale_point_b: %{"x" => 10.0, "y" => 0.0},
           scale_distance_meters: Decimal.new("20"),
@@ -8905,7 +8905,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -8997,7 +8997,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -9057,7 +9057,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       })
 
     {:ok, _stop_level_2} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
         stop_id: station.id,
@@ -9208,7 +9208,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -9748,7 +9748,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -9756,7 +9756,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _updated_stop_level} = Gtfs.update_stop_level_diagram(stop_level, "drag-level.png")
+      {:ok, _updated_stop_level} = put_stop_level_diagram(stop_level, "drag-level.png")
 
       %{
         user: user,
@@ -10204,7 +10204,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       edit_stop: child_stop
     } do
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -10348,7 +10348,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -10356,7 +10356,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -10414,7 +10414,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-submit-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "search-submit-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -10451,7 +10451,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-blank-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "search-blank-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -10487,7 +10487,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-current-level-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "search-current-level-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -10528,7 +10528,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-different-level-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "search-different-level-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -10563,7 +10563,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-not-found-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "search-not-found-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -10603,7 +10603,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-other-station-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "search-other-station-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -10640,7 +10640,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-no-coord-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "search-no-coord-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -10677,7 +10677,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-orphan-level-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "search-orphan-level-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -10740,7 +10740,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -10748,7 +10748,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "audit-level.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "audit-level.png")
 
       %{
         user: user,
@@ -11028,7 +11028,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -11322,7 +11322,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -11504,7 +11504,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -11512,7 +11512,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "lifecycle.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "lifecycle.png")
 
       %{
         user: user,
@@ -12248,7 +12248,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -12256,7 +12256,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "history.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "history.png")
 
       %{
         user: user,
@@ -12680,7 +12680,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -12688,7 +12688,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "preview.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "preview.png")
 
       %{
         user: user,
@@ -13062,7 +13062,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -13070,7 +13070,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "confirm.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "confirm.png")
 
       %{
         user: user,
@@ -13514,7 +13514,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -13522,7 +13522,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "rollback_err.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "rollback_err.png")
 
       %{
         user: user,
@@ -14348,7 +14348,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -14356,7 +14356,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "tabs.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "tabs.png")
 
       %{
         user: user,
@@ -14599,7 +14599,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station_a.id,
@@ -14607,7 +14607,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station_a.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "x.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "x.png")
 
       %{
         user: user,
@@ -14692,7 +14692,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station_a.id,
@@ -14700,7 +14700,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station_a.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "p.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "p.png")
 
       %{
         user: user,
@@ -14789,7 +14789,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -14797,7 +14797,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diff.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diff.png")
 
       %{
         user: user,
@@ -14909,7 +14909,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -14917,7 +14917,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "fb.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "fb.png")
 
       %{
         user: user,
@@ -14977,7 +14977,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -14985,7 +14985,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "noop.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "noop.png")
 
       %{
         user: user,
@@ -15190,7 +15190,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -15198,7 +15198,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "version-scope.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "version-scope.png")
 
       %{
         user: user,
@@ -15429,7 +15429,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -15437,7 +15437,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "tog.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "tog.png")
 
       %{
         user: user,
@@ -15558,7 +15558,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station_a.id,
@@ -15568,7 +15568,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level =
         Gtfs.get_stop_level(organization.id, gtfs_version.id, station_a.id, level.id)
 
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "rbmove.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "rbmove.png")
 
       %{
         user: user,
@@ -15713,7 +15713,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -15852,7 +15852,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -15860,7 +15860,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diff.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diff.png")
 
       %{
         user: user,

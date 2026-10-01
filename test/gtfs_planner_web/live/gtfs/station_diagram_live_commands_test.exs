@@ -8,7 +8,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveCommandsTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.{AuditContext, Stations, Stop}
   alias GtfsPlanner.Repo
 
@@ -28,7 +27,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveCommandsTest do
     level = level_fixture(organization.id, version.id, level_id: "LIVE_L1")
 
     {:ok, _attachment} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: version.id,
         stop_id: station.id,

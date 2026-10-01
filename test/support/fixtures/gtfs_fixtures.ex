@@ -1,10 +1,16 @@
 defmodule GtfsPlanner.GtfsFixtures do
   @moduledoc """
-  This module defines test helpers for creating
-  entities via the `GtfsPlanner.Gtfs` context.
+  This module defines test helpers for arranging GTFS rows.
+
+  The `*_fixture` helpers and the `insert_*`/`put_*` helpers write straight through
+  `Repo` with the schema changesets. They skip the actor authorization, version lock and
+  history of the scoped commands (`Stations`, `Schedules`, `FeedSettings`, ...), which are
+  the only application writers. Fixtures are trusted test code; use the scoped command
+  when the command itself is under test.
   """
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarAttribute
@@ -14,13 +20,17 @@ defmodule GtfsPlanner.GtfsFixtures do
   alias GtfsPlanner.Gtfs.Level
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.PathwayEvolution
+  alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.StationEditingStatus
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopLevel
+  alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Gtfs.Transfer
+  alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
 
   @doc "Returns the persisted revision to use when exercising a station rollback in tests."
@@ -39,6 +49,52 @@ defmodule GtfsPlanner.GtfsFixtures do
     end
   end
 
+  @doc "Inserts a stop with `Stop.changeset/2`, returning `Repo.insert/1`'s result."
+  def insert_stop(attrs), do: %Stop{} |> Stop.changeset(attrs) |> Repo.insert()
+
+  @doc "Inserts a level with `Level.changeset/2`, returning `Repo.insert/1`'s result."
+  def insert_level(attrs), do: %Level{} |> Level.changeset(attrs) |> Repo.insert()
+
+  @doc "Inserts a station-level association with `StopLevel.changeset/2`."
+  def insert_stop_level(attrs), do: %StopLevel{} |> StopLevel.changeset(attrs) |> Repo.insert()
+
+  @doc "Inserts a route with `Route.changeset/2`, returning `Repo.insert/1`'s result."
+  def insert_route(attrs), do: %Route{} |> Route.changeset(attrs) |> Repo.insert()
+
+  @doc "Inserts an agency with `Agency.changeset/2`, returning `Repo.insert/1`'s result."
+  def insert_agency(attrs), do: %Agency{} |> Agency.changeset(attrs) |> Repo.insert()
+
+  @doc "Inserts a trip with `Trip.changeset/2`, returning `Repo.insert/1`'s result."
+  def insert_trip(attrs), do: %Trip{} |> Trip.changeset(attrs) |> Repo.insert()
+
+  @doc "Inserts a stop time with `StopTime.changeset/2`, returning `Repo.insert/1`'s result."
+  def insert_stop_time(attrs), do: %StopTime{} |> StopTime.changeset(attrs) |> Repo.insert()
+
+  @doc "Sets a stop level's diagram file and clears its calibration, as an upload does."
+  def put_stop_level_diagram(%StopLevel{} = stop_level, filename) do
+    stop_level
+    |> StopLevel.changeset(%{
+      diagram_filename: filename,
+      scale_point_a: nil,
+      scale_point_b: nil,
+      scale_distance_meters: nil,
+      scale_meters_per_unit: nil
+    })
+    |> Repo.update()
+  end
+
+  @doc "Sets a stop level's calibration with `StopLevel.scale_changeset/2`."
+  def put_stop_level_scale(%StopLevel{} = stop_level, attrs),
+    do: stop_level |> StopLevel.scale_changeset(attrs) |> Repo.update()
+
+  @doc "Sets a stop level's floorplan alignment with `StopLevel.alignment_changeset/2`."
+  def put_stop_level_alignment(%StopLevel{} = stop_level, attrs),
+    do: stop_level |> StopLevel.alignment_changeset(attrs) |> Repo.update()
+
+  @doc "Sets a stop's diagram coordinate."
+  def put_stop_diagram_coordinate(%Stop{} = stop, %{x: _, y: _} = coordinate),
+    do: stop |> Stop.changeset(%{diagram_coordinate: coordinate}) |> Repo.update()
+
   @doc """
   Generate valid level attributes for testing.
   """
@@ -55,7 +111,7 @@ defmodule GtfsPlanner.GtfsFixtures do
   """
   def level_fixture(organization_id, gtfs_version_id, attrs \\ %{}) do
     {:ok, level} =
-      Gtfs.create_level(
+      insert_level(
         valid_level_attrs(attrs)
         |> Map.put(:organization_id, organization_id)
         |> Map.put(:gtfs_version_id, gtfs_version_id)
@@ -83,7 +139,7 @@ defmodule GtfsPlanner.GtfsFixtures do
   """
   def stop_fixture(organization_id, gtfs_version_id, attrs \\ %{}) do
     {:ok, stop} =
-      Gtfs.create_stop(
+      insert_stop(
         valid_stop_attrs(attrs)
         |> Map.put(:organization_id, organization_id)
         |> Map.put(:gtfs_version_id, gtfs_version_id)
@@ -170,7 +226,7 @@ defmodule GtfsPlanner.GtfsFixtures do
   """
   def route_fixture(organization_id, gtfs_version_id, attrs \\ %{}) do
     {:ok, route} =
-      Gtfs.create_route(
+      insert_route(
         valid_route_attrs(attrs)
         |> Map.put(:organization_id, organization_id)
         |> Map.put(:gtfs_version_id, gtfs_version_id)
@@ -196,7 +252,7 @@ defmodule GtfsPlanner.GtfsFixtures do
   """
   def agency_fixture(organization_id, gtfs_version_id, attrs \\ %{}) do
     {:ok, agency} =
-      Gtfs.create_agency(
+      insert_agency(
         valid_agency_attrs(attrs)
         |> Map.put(:organization_id, organization_id)
         |> Map.put(:gtfs_version_id, gtfs_version_id)
@@ -221,7 +277,7 @@ defmodule GtfsPlanner.GtfsFixtures do
   """
   def trip_fixture(organization_id, gtfs_version_id, route_id, attrs \\ %{}) do
     {:ok, trip} =
-      Gtfs.create_trip(
+      insert_trip(
         valid_trip_attrs(attrs)
         |> Map.put(:organization_id, organization_id)
         |> Map.put(:gtfs_version_id, gtfs_version_id)
@@ -247,7 +303,7 @@ defmodule GtfsPlanner.GtfsFixtures do
   """
   def stop_time_fixture(organization_id, gtfs_version_id, trip_id, stop_id, attrs \\ %{}) do
     {:ok, stop_time} =
-      Gtfs.create_stop_time(
+      insert_stop_time(
         valid_stop_time_attrs(attrs)
         |> Map.put(:organization_id, organization_id)
         |> Map.put(:gtfs_version_id, gtfs_version_id)

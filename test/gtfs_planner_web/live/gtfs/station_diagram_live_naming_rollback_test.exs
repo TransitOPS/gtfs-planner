@@ -253,7 +253,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveNamingRollbackTest do
     level = level_fixture(scope.organization.id, scope.version.id)
 
     {:ok, stop_level} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         organization_id: scope.organization.id,
         gtfs_version_id: scope.version.id,
         stop_id: scope.station.id,

@@ -22,6 +22,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyTimezoneLiveTest do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.FeedSettings
+  alias GtfsPlanner.GtfsFixtures
 
   @open_drawer "#agency-timezone-drawer-overlay[data-open='true']"
   @closed_drawer "#agency-timezone-drawer-overlay[data-open='false']"
@@ -55,7 +56,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyTimezoneLiveTest do
   # nothing a changeset refuses can hide inside a fixture.
   defp create_agency(organization, version, agency_id, name, timezone) do
     {:ok, agency} =
-      Gtfs.create_agency(%{
+      GtfsFixtures.insert_agency(%{
         organization_id: organization.id,
         gtfs_version_id: version.id,
         agency_id: agency_id,
@@ -70,7 +71,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyTimezoneLiveTest do
   defp create_routes(organization, version, agency_id, count) do
     for index <- 1..count//1 do
       {:ok, _route} =
-        Gtfs.create_route(%{
+        GtfsFixtures.insert_route(%{
           organization_id: organization.id,
           gtfs_version_id: version.id,
           agency_id: agency_id,
@@ -275,7 +276,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyTimezoneLiveTest do
 
       # One route still without an agency, which is what the empty state counts.
       {:ok, _route} =
-        Gtfs.create_route(%{
+        GtfsFixtures.insert_route(%{
           organization_id: organization.id,
           gtfs_version_id: version.id,
           route_id: "NO_AGENCY",

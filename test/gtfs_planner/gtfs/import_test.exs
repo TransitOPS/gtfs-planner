@@ -197,7 +197,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
     } do
       # First, create a level with ID "L1" directly
       {:ok, _} =
-        Gtfs.create_level(%{
+        insert_level(%{
           level_id: "L1",
           level_index: 0.0,
           level_name: "Existing Level",

@@ -578,7 +578,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
       token = review_token(context)
 
       assert {:ok, _replacement} =
-               Gtfs.create_trip(%{
+               insert_trip(%{
                  organization_id: context.organization.id,
                  gtfs_version_id: context.version.id,
                  route_id: context.route.route_id,
@@ -1478,8 +1478,8 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
     %{task: task, backend: backend}
   end
 
-  # The direct trip writer's own order: the scoped version row `FOR SHARE` first, then the
-  # insert through the real `Gtfs.create_trip/1` path, committed by this transaction.
+  # The cooperating trip writer's own order: the scoped version row `FOR SHARE` first, then the
+  # trip insert, committed by this transaction.
   defp write_late_trip(scope, parent) do
     unboxed(fn ->
       Repo.transaction(fn ->
@@ -1497,7 +1497,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
 
   defp created_trip_id!(scope) do
     {:ok, trip} =
-      Gtfs.create_trip(%{
+      insert_trip(%{
         organization_id: scope.organization_id,
         gtfs_version_id: scope.version_id,
         route_id: scope.route_id,

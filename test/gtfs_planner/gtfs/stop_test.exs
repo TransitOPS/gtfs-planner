@@ -25,7 +25,6 @@ defmodule GtfsPlanner.Gtfs.StopTest do
       organization: org,
       version: version
     } do
-      assert {:error, %Ecto.Changeset{valid?: false}} = Gtfs.create_stop(%{})
       assert {:error, %Ecto.Changeset{valid?: false}} = Gtfs.import_create_stop(%{})
 
       refute Stop.changeset(%Stop{organization_id: org.id, gtfs_version_id: version.id}, %{
@@ -48,7 +47,7 @@ defmodule GtfsPlanner.Gtfs.StopTest do
       foreign = %{stop | organization_id: other.id}
 
       assert {:error, :not_found} =
-               Gtfs.create_stop(%{
+               Gtfs.import_create_stop(%{
                  organization_id: other.id,
                  gtfs_version_id: version.id,
                  stop_id: "FOREIGN_STOP"

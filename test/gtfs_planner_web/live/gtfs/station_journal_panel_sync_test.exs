@@ -723,7 +723,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
       })
 
     {:ok, stop_level} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         organization_id: organization_id,
         gtfs_version_id: gtfs_version_id,
         stop_id: station.id,

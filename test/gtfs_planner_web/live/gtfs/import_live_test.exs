@@ -1603,7 +1603,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       # A prior published version whose rows + diagram file must stay byte-identical.
       {:ok, prior} = Versions.create_gtfs_version(organization.id, %{name: "Prior Live"})
 
-      GtfsPlanner.Gtfs.create_level(%{
+      insert_level(%{
         level_id: "LP",
         level_index: 0.0,
         level_name: "Prior Level",

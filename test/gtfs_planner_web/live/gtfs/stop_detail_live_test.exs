@@ -510,7 +510,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -663,7 +663,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
         level_fixture(organization.id, gtfs_version.id, %{level_id: "L1", level_index: 0.0})
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -1337,7 +1337,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: ctx.organization.id,
           gtfs_version_id: ctx.version.id,
           stop_id: ctx.station.id,

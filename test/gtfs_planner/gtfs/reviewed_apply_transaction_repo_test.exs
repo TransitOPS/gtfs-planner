@@ -86,7 +86,7 @@ defmodule GtfsPlanner.Gtfs.ReviewedApplyTransaction.RepoTest do
           })
 
         {:ok, stop_level} =
-          Gtfs.create_stop_level(%{
+          insert_stop_level(%{
             organization_id: organization.id,
             gtfs_version_id: gtfs_version.id,
             stop_id: station.id,

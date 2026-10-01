@@ -135,7 +135,7 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
     rows =
       Enum.map(1..n, fn i ->
         {:ok, lvl} =
-          GtfsPlanner.Gtfs.create_level(%{
+          insert_level(%{
             level_id: "L#{System.unique_integer([:positive])}",
             level_index: 0.0,
             level_name: "Level #{i}",

@@ -385,7 +385,7 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportFlowTest do
       })
 
     {:ok, _stop_level} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         organization_id: organization_id,
         gtfs_version_id: version_id,
         stop_id: station.id,

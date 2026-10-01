@@ -107,7 +107,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
     route = route_fixture(organization.id, version.id, %{route_id: "COMBINE_ROUTE"})
 
     {:ok, first_stop} =
-      GtfsPlanner.Gtfs.create_stop(%{
+      insert_stop(%{
         stop_id: "CB_S1",
         stop_name: "Combine Stop 1",
         location_type: 0,
@@ -116,7 +116,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
       })
 
     {:ok, second_stop} =
-      GtfsPlanner.Gtfs.create_stop(%{
+      insert_stop(%{
         stop_id: "CB_S2",
         stop_name: "Combine Stop 2",
         location_type: 0,

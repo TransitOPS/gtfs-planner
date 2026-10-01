@@ -8,7 +8,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePanelTest do
   import GtfsPlanner.GtfsFixtures
 
   alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Gtfs
 
   # The workspace's docked panel and toolbar: what the level's points and
   # pathways look like as lists, how the panel narrows them, and what the
@@ -47,17 +46,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePanelTest do
       })
 
     {:ok, stop_level} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
         stop_id: station.id,
         level_id: level.id
       })
 
-    {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "panel.png")
+    {:ok, _} = put_stop_level_diagram(stop_level, "panel.png")
 
     {:ok, _} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
         stop_id: station.id,

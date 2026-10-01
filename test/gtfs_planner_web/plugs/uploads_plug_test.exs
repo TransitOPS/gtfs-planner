@@ -11,7 +11,6 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
   import GtfsPlanner.VersionsFixtures
   import GtfsPlanner.GtfsFixtures
 
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.DiagramStorage
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
   alias GtfsPlanner.Repo
@@ -555,7 +554,7 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
       File.write!(legacy_path, "legacy diagram bytes")
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: station.id,
           level_id: level.id,
           diagram_filename: "plan.png",
@@ -597,7 +596,7 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
       level = level_fixture(org.id, version.id)
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: station.id,
           level_id: level.id,
           diagram_filename: "plan.png",

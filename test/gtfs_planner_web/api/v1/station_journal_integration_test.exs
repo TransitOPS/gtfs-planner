@@ -7,7 +7,6 @@ defmodule GtfsPlannerWeb.Api.V1.StationJournalIntegrationTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Gtfs
 
   @password "valid user password 123456"
 
@@ -330,7 +329,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationJournalIntegrationTest do
     pathway_fixture(organization_id, version_id, node.stop_id, other_node.stop_id)
 
     {:ok, _stop_level} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         organization_id: organization_id,
         gtfs_version_id: version_id,
         stop_id: station.id,
