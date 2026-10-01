@@ -3,11 +3,13 @@ defmodule GtfsPlanner.Agents do
   The LiveViews' entry point to the helper agent.
 
   A conversation is one session process, keyed by the person, organization,
-  service version and pack (AC-24). Two panels opened by the same person on the
-  same version share the conversation, while another person's or another
-  version's panel never attaches to it (FH-3). `open/1` re-reads the membership
-  before it starts or attaches anything (INV-2), so a deactivated or de-roled
-  membership cannot join even an already-running conversation.
+  service version, pack and subject (AC-24, AC-25). Two panels opened by the same
+  person on the same version for the same record share the conversation, while
+  another person's, another version's or another record's panel never attaches to
+  it (FH-3). A Calendar panel carries no subject, so its key is unchanged.
+  `open/1` re-reads the membership before it starts or attaches anything
+  (INV-2), so a deactivated or de-roled membership cannot join even an
+  already-running conversation.
 
   Every call takes a session pid. A `nil` or non-pid handle, and a session that
   has ended, produce a documented error instead of raising into a LiveView:
@@ -20,8 +22,9 @@ defmodule GtfsPlanner.Agents do
   cap) and `GtfsPlanner.Agents.TurnSupervisor`, which bounds the eight active
   turns of AC-30. Session ids are
   `{user_id, organization_id, gtfs_version_id, pack_id, identity,
-  approved_digest}`, so a second tab on the same route shares the conversation
-  while the same user on another route never does (INV-1).
+  approved_digest, subject_id}`, so a second tab on the same route shares the
+  conversation while the same user on another route never does (INV-1).
+  `subject_id` is `nil` for a pack with no subject record.
 
   `packs/0` is the only function here that names a concrete pack (INV-1).
   """
@@ -139,7 +142,7 @@ defmodule GtfsPlanner.Agents do
   # route's panel from reaching this conversation (FH-3, INV-1).
   defp key(%Scope{} = scope) do
     {scope.user_id, scope.organization_id, scope.gtfs_version_id, scope.pack_id,
-     Scope.identity(scope), Scope.approved_digest(scope)}
+     Scope.identity(scope), Scope.approved_digest(scope), scope.subject_id}
   end
 
   defp start_session(scope, pack) do
