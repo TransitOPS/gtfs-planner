@@ -68,14 +68,14 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   # The events that write. Mount checks the editor role once; these re-read the
-  # membership before each write. Step 30 gives `add_line` its write; it is
-  # named here from the start so the head's control and the guard that covers it
-  # are introduced together.
+  # membership before each write. `add_line` and `create_line_from_run` are step
+  # 30's; they were named here from the start so the head's control and the guard
+  # that covers it were introduced together.
   #
   # The slot drawer's three actions are writes and are listed with it. Opening
   # the drawer and choosing a candidate are reads of the roster already on the
   # socket, so they re-check no membership.
-  @write_events ~w(add_line set_day set_group clear_day)
+  @write_events ~w(add_line create_line_from_run set_day set_group clear_day)
 
   # A role revoked while the page is open is not an error the reader caused and
   # is not a validation problem, so it is a refusal said once, in the page's own
@@ -126,6 +126,14 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
      # nothing and still occupies the fixed box at the foot of the viewport.
      |> assign(:toast, nil)
      |> assign(:slot, nil)
+     # The line a write just created, so the grid can point at it. Cleared by
+     # the next write, because a highlight is about the change the planner just
+     # made and nothing else (see `clear_new_line/1`).
+     |> assign(:new_line_id, nil)
+     # The refusal a create left on one open-run card, `%{run_id:, text:}`. It
+     # is page state rather than a toast because it belongs to a card, and it is
+     # cleared by the next write for the same reason as the toast.
+     |> assign(:open_work_refusal, nil)
      |> stream(:roster_lines, [], dom_id: &roster_line_dom_id/1)
      |> attach_hook(:editor_access, :handle_event, &require_editor/3)}
   end
@@ -541,10 +549,133 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     end
   end
 
+  # ── Open work ──────────────────────────────────────────────────────────────
+  #
+  # Two writes live here, and both create a line through the real writer:
+  # `Gtfs.create_roster_line/2` for the head's "Add line", and
+  # `Gtfs.create_roster_line_from_run/4` for a card's "Create Mon–Fri line".
+  #
+  # "Add line" opens the new line's Monday drawer afterwards, because an empty
+  # week with no way to fill it is a dead end: the planner's next move is to
+  # choose Monday's run. The drawer is built by the same `open_slot/4` the grid
+  # uses, from the roster re-read after the write.
+  #
+  # A create from a card names the line it built, so the grid can highlight that
+  # row and scroll to it. The highlight is one change deep: `clear_new_line/1`
+  # drops it on the next write, because a row still tinted after the planner has
+  # moved on is a mark about something that is no longer the last thing they did.
+  def handle_event("add_line", _params, socket) do
+    case Gtfs.create_roster_line(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id
+         ) do
+      {:ok, line} ->
+        socket = socket |> clear_open_work() |> assign(:new_line_id, line.id) |> load_roster()
+
+        {:noreply,
+         socket
+         |> open_new_line_drawer(line.id)
+         |> put_toast("Line #{line.line_number} added.", :done)}
+
+      {:error, :not_found} ->
+        # The head's control is not on a card, so its refusal is the page's own
+        # toast rather than a card message: there is nowhere on a card for it.
+        {:noreply, socket |> clear_open_work() |> put_toast(@version_not_found, :refused)}
+    end
+  end
+
+  def handle_event(
+        "create_line_from_run",
+        %{"day_type" => day_type_key, "run" => run_id},
+        socket
+      ) do
+    case Gtfs.create_roster_line_from_run(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           day_type_key,
+           run_id
+         ) do
+      {:ok, line} ->
+        socket = socket |> clear_open_work() |> assign(:new_line_id, line.id) |> load_roster()
+
+        {:noreply, put_toast(socket, created_sentence(socket, line, run_id), :done)}
+
+      {:error, reason} ->
+        {:noreply, refuse_open_work(socket, run_id, reason)}
+    end
+  end
+
   # Any other event is ignored. This clause is last among the `handle_event`
   # clauses on purpose: a catch-all placed earlier would shadow the real
   # handlers above it.
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  # What the create did, in the words the grid draws it with: the days it took,
+  # and the line's days off read from the reloaded composition rather than
+  # computed here (INV-15). A line the filter leaves off screen still says what
+  # it is in the toast, because a confirmation nobody can find is not one.
+  defp created_sentence(socket, %{id: id, line_number: number, weekdays: weekdays}, run_id) do
+    built = Enum.find(socket.assigns.roster.lines, &(&1.id == id))
+
+    days = Enum.map_join(weekdays, ", ", &weekday_name/1)
+
+    case built do
+      nil ->
+        "Line #{number} created: run #{run_id}, #{days}."
+
+      line ->
+        "Line #{number} created: run #{run_id}, #{days}. Days off #{RostersComponents.days_off_text(line)}."
+    end
+  end
+
+  # The new line's Monday drawer. `open_slot/4` is the one place that builds a
+  # slot drawer, so the head's entry point and a grid cell produce the same
+  # drawer from the same roster — and neither does so inside `render/1`.
+  defp open_new_line_drawer(socket, line_id) do
+    case open_slot(socket, line_id, 1, nil) do
+      {:ok, slot} -> assign(socket, :slot, slot)
+      :error -> socket
+    end
+  end
+
+  # A refusal is one sentence, on the card it belongs to. The writer's own
+  # answer is what is written out, so the reason on the card and the reason the
+  # writer refused with cannot describe the same refusal differently.
+  defp refuse_open_work(socket, run_id, reason) do
+    text =
+      case reason do
+        # The version went unpublished between the roster read and the write.
+        # The card is still on screen, so the reason goes on the card; the
+        # sentence is the page's own "nothing happened", because a refusal that
+        # is not `Candidates`\'s has no builder wording to give it.
+        :not_found ->
+          @write_refused
+
+        refusal ->
+          RostersComponents.refusal_text(refusal, open_work_context(socket, run_id))
+      end
+
+    socket
+    |> clear_new_line()
+    |> assign(:open_work_refusal, %{run_id: run_id, text: text})
+  end
+
+  defp open_work_context(socket, run_id) do
+    %{
+      run_id: run_id,
+      weekday: nil,
+      line_number: nil,
+      min_rest_minutes: socket.assigns.roster.rules.min_rest_minutes
+    }
+  end
+
+  # The highlight and the refusal are one change deep, and they are cleared
+  # together because they are the same thing: what the last write did.
+  defp clear_open_work(socket) do
+    socket |> clear_new_line() |> assign(:open_work_refusal, nil)
+  end
+
+  defp clear_new_line(socket), do: assign(socket, :new_line_id, nil)
 
   # The weekday arrives from a `phx-value-weekday` attribute, so it is cast
   # rather than compared: a hand-built event naming "9" or "monday" is not a
@@ -575,7 +706,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   # to leave short rest where a builder never would, so the toast says so: the
   # grid carries the warning on the day, and the toast names it here.
   defp saved(socket, short_rests, text) do
-    socket = socket |> assign(:slot, nil) |> load_roster()
+    socket = socket |> assign(:slot, nil) |> clear_open_work() |> load_roster()
 
     if short_rests == [] do
       put_toast(socket, text, :done)
@@ -606,7 +737,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     %{line_id: line_id, weekday: weekday} = socket.assigns.slot
     {:ok, slot} = open_slot(socket, line_id, weekday, socket.assigns.slot.run_id)
 
-    assign(socket, :slot, %{slot | refusal: text})
+    assign(clear_open_work(socket), :slot, %{slot | refusal: text})
   end
 
   defp refusal_context(socket) do
@@ -807,8 +938,20 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
             dir={@dir}
             locked?={@load_state == :unavailable}
             paused_reason={if @load_state == :unavailable, do: paused_reason()}
+            new_line_id={@new_line_id}
           />
         </div>
+
+        <%!-- Open work is below the grid and drawn whenever the roster is, including with no lines at
+        all: the first-use panel points here, and a week with runs but no lines has nothing above it
+        to offer. It is not drawn in the loading or no-runs states, which have said all they have to
+        say and have nothing open to list. --%>
+        <RostersComponents.open_work
+          :if={@roster && @load_state in [:ready, :unavailable]}
+          roster={@roster}
+          locked?={@load_state == :unavailable}
+          refusal={@open_work_refusal}
+        />
       </div>
 
       <RostersComponents.slot_drawer

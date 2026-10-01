@@ -2,12 +2,28 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   @moduledoc """
   Function components for Operations › Rosters.
 
-  The page's head, its states and its grid live here so
+  The page's head, its states, its grid and its open work live here so
   `GtfsPlannerWeb.Gtfs.RostersLive` stays a small state owner. The scope bar,
-  count strip and messages are steps 24 and 25's, the grid is step 26's, and the
-  open work, pick row and export section arrive with the steps that own them —
-  each a new function in this module rather than a branch inside the LiveView's
-  `render/1`.
+  count strip and messages are steps 24 and 25's, the grid is step 26's and the
+  open work is step 30's; the pick row and export section arrive with the steps
+  that own them — each a new function in this module rather than a branch inside
+  the LiveView's `render/1`.
+
+  ## Open work is the composition's, read once
+
+  `open_work/1` draws `Roster.groups` — one group per base day type, each with
+  its label, its day type, its open run-days count and the runs still open on
+  some of its weekdays. It computes nothing about runs itself, and the one
+  decision it renders is `Rosters.Candidates.new_line_availability/3`: the same
+  computation the writer runs under the lock, so "Create Mon–Fri line" is on a
+  card exactly when the writer would accept it and gone exactly when it would
+  refuse (INV-15, and the "Builder availability has one owner" criterion).
+
+  Those derived figures are computed *here*, in the function component, and not
+  in the LiveView's `render/1`. Assigning during a LiveView render invalidates
+  the change tracker for the whole template, which is what made step 29's grid
+  lose every row on a click; a function component owns its own assigns, so this
+  is the safe place for the arithmetic.
 
   The markup follows the design system the restyled Blocks page uses: the page
   carries the shared `.ds-page` scope, the head uses `CoreComponents`'s
@@ -119,8 +135,8 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   run to put in a line, so the action would create an empty line that cannot be
   filled, and the page's one action is already the one that makes runs.
 
-  Step 30 gives the event its real write; until then `add_line` is the head's
-  declared entry point and the guard that covers it, and nothing more.
+  `add_line` is a write: it creates the next numbered line and opens the slot
+  drawer for its Monday, so the entry point is one click from an empty week.
   """
   attr :state, :atom, required: true, values: [:loading, :ready, :no_runs, :unavailable]
 
@@ -534,6 +550,10 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   attr :locked?, :boolean, default: false
   attr :paused_reason, :string, default: nil
 
+  attr :new_line_id, :string,
+    default: nil,
+    doc: "the line a write just created, drawn with the new-line highlight"
+
   def grid(assigns) do
     assigns =
       assigns
@@ -601,7 +621,13 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
           </tr>
         </thead>
         <tbody id="rosters-grid-body">
-          <tr :for={{dom_id, line} <- @rows} id={dom_id} class="rosters-line-row">
+          <tr
+            :for={{dom_id, line} <- @rows}
+            id={dom_id}
+            class="rosters-line-row"
+            data-new={to_string(line.id == @new_line_id)}
+            phx-hook=".RosterNewLine"
+          >
             <th scope="row" class="rosters-line-cell">
               <.line_cell line={line} locked?={@locked?} />
             </th>
@@ -712,6 +738,31 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
           this.rover[row.id] = to
           this.apply()
           days[to].focus()
+        }
+      };
+    </script>
+
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".RosterNewLine">
+      // The row a write just created scrolls itself into view.
+      //
+      // Every row carries the hook, because a colocated hook name is resolved
+      // at compile time and only a literal attribute gets that resolution — a
+      // conditional `phx-hook` reaches the browser unresolved and the page logs
+      // "unknown hook". So the hook is on every row and asks the row's own
+      // `data-new` whether it is the new one, which is one property read on a
+      // handful of rows. `block: "center"` rather than `"start"` so the row
+      // lands with its own week beside it instead of at the top of the grid
+      // with its column headings a screen away.
+      //
+      // A hook, and not `JS.exec` on `phx-mounted`: on LiveView 1.1 a raw JS
+      // string read out of an attribute is executed as a command list, so the
+      // expression is parsed as an unknown command and throws — which aborts
+      // the rest of the patch, including the slot drawer's own mount.
+      export default {
+        mounted() {
+          if (this.el.dataset.new === "true") {
+            this.el.scrollIntoView({block: "center"});
+          }
         }
       };
     </script>
@@ -984,11 +1035,18 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
     """
   end
 
-  defp days_off_text(%{days_off: %{groups: [[1, 2, 3, 4, 5, 6, 7]]}}), do: "All week"
+  @doc """
+  The Days off cell's words, for a page that has to say them outside the grid.
 
-  defp days_off_text(%{days_off: %{groups: [[]]}}), do: "None"
+  The cell reads them in place; the toast that confirms a newly built line says
+  the same thing, and it reads this rather than a second sentence that could
+  describe the same week differently.
+  """
+  def days_off_text(%{days_off: %{groups: [[1, 2, 3, 4, 5, 6, 7]]}}), do: "All week"
 
-  defp days_off_text(%{days_off: %{groups: groups}}) do
+  def days_off_text(%{days_off: %{groups: [[]]}}), do: "None"
+
+  def days_off_text(%{days_off: %{groups: groups}}) do
     Enum.map_join(groups, ", ", &days_off_group/1)
   end
 
@@ -1432,6 +1490,205 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
         </.button>
       </:action>
     </.first_use>
+    """
+  end
+
+  @doc """
+  Open work: one group per base day type, with the runs still open on it.
+
+  The section is the version's own `Roster.groups` and nothing else. Each group
+  carries the weekdays based on its day type, the label those weekdays make
+  ("Mon–Fri"), the day type's own name, its open run-days count and the runs
+  still open on at least one of those weekdays (INV-15). The count beside the
+  heading is the group's own `open_run_days`, so the number above the cards is
+  the number of run-days behind them rather than a second count of the same
+  thing.
+
+  One decision is rendered and it belongs to `Rosters.Candidates`:
+  `new_line_availability/3` decides whether a card offers "Create <label> line",
+  which is the same computation `create_roster_line_from_run/4` runs under the
+  lock. A card with a refused builder therefore shows no button rather than a
+  button whose only answer would be a refusal.
+
+  ## Where the refusal is drawn
+
+  A refused create stays on the card it belongs to, as `PlannerComponents.message`
+  in error tone, with no flash and no toast: the reason is about that run, and a
+  sentence at the foot of the viewport about a card several screens up is a
+  sentence the planner has to find. `refusal` carries the run the refusal names,
+  so only that card shows it, and it is `RostersComponents.refusal_text/2`'s
+  words — the same string the drawer and the disabled group action use.
+  """
+  attr :roster, :map, required: true
+  attr :locked?, :boolean, default: false
+
+  attr :refusal, :map,
+    default: nil,
+    doc: "`%{run_id:, text:}` for one card, or nil. A refusal belongs to its run."
+
+  def open_work(assigns) do
+    assigns = assign(assigns, :groups, open_work_groups(assigns.roster))
+
+    ~H"""
+    <section
+      id="rosters-open-work"
+      aria-labelledby="rosters-open-work-title"
+      class="mt-4 rounded-card border border-subtle bg-white"
+    >
+      <div class="flex flex-wrap items-end justify-between gap-3 border-b border-subtle px-5 py-4">
+        <div>
+          <h2 id="rosters-open-work-title" tabindex="-1" class="text-[22px]">Open work</h2>
+          <p class="mt-1 text-sm text-muted">
+            Runs not yet in a line. Create a Mon–Fri line from a weekday run, or add a run’s day to a
+            line that has it off.
+          </p>
+        </div>
+      </div>
+
+      <div
+        :for={group <- @groups}
+        id={"rosters-open-group-#{group.day_type.key}"}
+        class="border-t border-subtle px-5 py-4 first-of-type:border-t-0"
+      >
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+          <h3 class="text-base font-bold">
+            {group.label}
+            <span class="font-normal text-muted">· {group.day_type.label}</span>
+          </h3>
+          <span class="tabular text-[13px] text-muted">
+            {open_run_days_text(group.open_run_days)}
+          </span>
+        </div>
+
+        <div
+          :if={group.cards != []}
+          class="mt-3 grid grid-cols-[repeat(auto-fill,minmax(236px,1fr))] gap-2"
+        >
+          <.open_run_card
+            :for={card <- group.cards}
+            card={card}
+            locked?={@locked?}
+            refusal={@refusal}
+          />
+        </div>
+
+        <.message
+          :if={group.cards == []}
+          id={"rosters-open-group-#{group.day_type.key}-clear"}
+          kind="success"
+          title={"Every #{group.day_type.label} run is in a line."}
+        />
+      </div>
+    </section>
+    """
+  end
+
+  # The groups, in the composition's own order, with each run's builder answer
+  # resolved once. The availability is a pure function of the roster already on
+  # the socket, so it is decided here rather than stored on the LiveView: an
+  # assign made during a LiveView render is what cost step 29's grid its rows.
+  defp open_work_groups(roster) do
+    Enum.map(roster.groups, fn group ->
+      Map.put(group, :cards, Enum.map(group.open_runs, &open_run_card_data(roster, group, &1)))
+    end)
+  end
+
+  defp open_run_card_data(roster, group, open_run) do
+    key = group.day_type.key
+
+    Map.merge(open_run, %{
+      day_type_key: key,
+      group_label: group.label,
+      weekdays: group.weekdays,
+      availability: Candidates.new_line_availability(roster, key, open_run.run_id)
+    })
+  end
+
+  defp open_run_days_text(1), do: "1 open run-day"
+  defp open_run_days_text(count), do: "#{count} open run-days"
+
+  @doc """
+  One open run's card: what the run is, when it is open, and what can be built
+  from it.
+
+  The figures are the run's own — sign-on, sign-off, paid time, run type — read
+  from the composition's `open_runs/1` entry, and the times are printed by the
+  same helpers the grid prints them with, so a run reads the same in both places
+  (INV-15).
+
+  The weekday chips say which of the group's days the run is still open on. A
+  group of more than one weekday needs them, because "Create Mon–Fri line" is
+  offered only when the run is open on every one of them and the chips are how a
+  planner sees that before reaching for the button. A single-weekday group has
+  nothing to distinguish, so it draws none.
+  """
+  attr :card, :map, required: true
+  attr :locked?, :boolean, default: false
+  attr :refusal, :map, default: nil
+
+  def open_run_card(assigns) do
+    assigns = assign(assigns, :run, assigns.card.run)
+
+    ~H"""
+    <div
+      class="rosters-open-run"
+      id={"rosters-open-run-#{@card.day_type_key}-#{@card.run_id}"}
+      data-run={@card.run_id}
+      data-open-days={Enum.join(@card.open_weekdays, " ")}
+    >
+      <div class="flex items-baseline justify-between gap-2">
+        <strong class="text-base text-strong">Run {@card.run_id}</strong>
+        <span class="text-[13px] text-muted">{run_type_words(@run)}</span>
+      </div>
+
+      <div class="rosters-open-times tabular text-sm">
+        {slot_span(@run.work)}
+        <span class="text-muted">· {hours_minutes(@run.work.paid_secs)} paid</span>
+      </div>
+
+      <div
+        :if={length(@card.weekdays) > 1}
+        class="rosters-day-chips"
+        aria-label={"Open on #{Enum.map_join(@card.open_weekdays, ", ", &weekday_name/1)}"}
+      >
+        <span
+          :for={weekday <- @card.weekdays}
+          class={[
+            "rosters-day-chip",
+            weekday in @card.open_weekdays && "rosters-day-chip-open",
+            weekday not in @card.open_weekdays && "rosters-day-chip-taken"
+          ]}
+          aria-hidden="true"
+        >
+          {short_day(weekday)}
+        </span>
+      </div>
+
+      <div :if={not @locked?} class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+        <.button
+          :if={match?({:ok, _weekdays}, @card.availability)}
+          type="button"
+          id={"rosters-create-line-#{@card.run_id}"}
+          variant="secondary"
+          class="min-h-11 px-3"
+          phx-click="create_line_from_run"
+          phx-value-day_type={@card.day_type_key}
+          phx-value-run={@card.run_id}
+        >
+          Create {@card.group_label} line
+        </.button>
+      </div>
+
+      <.message
+        :if={@refusal && @refusal.run_id == @card.run_id}
+        id={"rosters-create-refusal-#{@card.run_id}"}
+        kind="error"
+        title="No line was created."
+        class="mt-2 border-l-4 border-error-line"
+      >
+        {@refusal.text}
+      </.message>
+    </div>
     """
   end
 

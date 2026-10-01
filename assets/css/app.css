@@ -1342,6 +1342,62 @@ body {
   color: var(--color-warning-fg);
 }
 
+/* ── Open work ───────────────────────────────────────────────────────────────
+   The prototype's open-run card: a bordered white card on the page's own
+   canvas, one grid cell each, with the day chips inside it. A card is a
+   container, not a control, so it takes a card radius and a card border; the
+   day's chip takes a badge radius. */
+#rosters-open-work .rosters-open-run {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  border: 1px solid var(--color-control);
+  border-radius: var(--radius-card);
+  background: #fff;
+  padding: 12px;
+}
+
+#rosters-open-work .rosters-open-run:hover { border-color: var(--color-action); }
+
+#rosters-open-work .rosters-open-times { color: var(--color-strong); }
+
+#rosters-open-work .rosters-day-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+
+#rosters-open-work .rosters-day-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 5px;
+  border-radius: var(--radius-badge);
+  font: 600 12px/1 var(--font-sans);
+}
+
+/* Open is the DS work tint; a day another line already takes the run is muted
+   and struck through, so the chips read as "still available" against "gone"
+   without a second colour. */
+#rosters-open-work .rosters-day-chip-open {
+  background: var(--color-soft);
+  color: var(--color-cyan-800);
+}
+
+#rosters-open-work .rosters-day-chip-taken {
+  color: var(--color-muted);
+  text-decoration: line-through;
+}
+
+/* The row a write just created: a selection tint and a 3px left bar in action
+   ink on the sticky Line cell. The tint is the same token the drawer's chosen
+   candidate row uses, so "the one this page just made" reads the same wherever
+   it appears. The bar is on `th` rather than the row because `th` is the sticky
+   cell and a shadow on the row would scroll out with the table's contents. */
+#rosters-grid .rosters-line-row[data-new='true'] > :is(th, td) {
+  background-color: var(--color-selection);
+}
+
+#rosters-grid .rosters-line-row[data-new='true'] > th {
+  box-shadow: inset 3px 0 0 var(--color-action), 1px 0 0 var(--color-subtle);
+}
+
 /* ── The Runs duty chart ─────────────────────────────────────────────────────
    The same table idea as the Blocks timeline, with the day's own numbers: seven
    fact columns to Blocks' six, and 44px rows because a run is a person. The
