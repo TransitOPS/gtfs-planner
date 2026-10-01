@@ -103,7 +103,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.GroupingApplyTest do
 
       # PM-2: the group's own pattern was joined, so no duplicate was created
       # and nothing is left pending for a later build to pick up.
-      assert patterns_except(scope.organization_id, "pattern_full") == []
+      assert patterns_except(scope.organization_id, "pattern_1_full") == []
       assert Derivation.pending_trip_count(scope.organization_id, scope.version_id, "1") == 0
 
       # The trips the review did not confirm keep their own classification.
@@ -166,7 +166,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.GroupingApplyTest do
       assert summary.trips_linked == 6
 
       # The short order's seven stops become the new pattern's own occurrences.
-      [created] = patterns_except(scope.organization_id, "pattern_full")
+      [created] = patterns_except(scope.organization_id, "pattern_1_full")
       assert length(occurrences(created.id)) == 7
       assert created.direction_id == 0
       assert length(custom_trips(scope.organization_id)) == 21
@@ -508,9 +508,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.GroupingApplyTest do
   # rather than a missing row.
   defp insert_foreign_pattern(scope) do
     other_route = route_fixture(scope.organization_id, scope.version_id, %{route_id: "2"})
-    stop_ids = insert_line_stops(scope.organization_id, scope.version_id)
 
-    insert_pattern(scope.organization_id, scope.version_id, other_route.route_id, stop_ids)
+    # The scenario's own corridor stops, reused: `insert_line_stops/2` would
+    # collide with them on `stops_organization_id_gtfs_version_id_stop_id_index`
+    # because the scope is a route, not a whole organization.
+    insert_pattern(scope.organization_id, scope.version_id, other_route.route_id, scope.stop_ids)
   end
 
   defp insert_supplement(org_id, version_id, all_stops, label, stop_ids, count, service, hour) do

@@ -627,28 +627,24 @@ defmodule GtfsPlanner.Gtfs.MapLineFiles do
         runs
 
       points ->
-        case runs do
-          [%{points: _} = current | earlier] ->
-            if meets?(List.last(current.points), List.first(points)) do
-              [
-                %{
-                  current
-                  | points: current.points ++ points,
-                    joined_from: current.joined_from + 1
-                }
-                | earlier
-              ]
-            else
-              [%{points: points, joined_from: 1} | runs]
-            end
-
-          _ ->
-            [%{points: points, joined_from: 1} | runs]
-        end
+        join_or_start(points, runs)
     end
   end
 
   defp add_piece(_piece, runs), do: runs
+
+  defp join_or_start(points, [%{points: _} = current | earlier]) do
+    if meets?(List.last(current.points), List.first(points)) do
+      [
+        %{current | points: current.points ++ points, joined_from: current.joined_from + 1}
+        | earlier
+      ]
+    else
+      [%{points: points, joined_from: 1} | [current | earlier]]
+    end
+  end
+
+  defp join_or_start(points, runs), do: [%{points: points, joined_from: 1} | runs]
 
   defp name_runs(runs, name) do
     case runs do

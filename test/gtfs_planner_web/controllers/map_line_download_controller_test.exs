@@ -24,6 +24,10 @@ defmodule GtfsPlannerWeb.MapLineDownloadControllerTest do
     {"S3", "40.2", "-74.2"}
   ]
 
+  # The same corridor with each stop's one-based position, which is what an
+  # occurrence carries.
+  @stops_with_positions Enum.with_index(@stops, 1)
+
   test "serves one pattern's map lines as a KML attachment", %{conn: conn} do
     %{organization: organization, version: version, user: user} = editor_context()
     pattern_context(organization, version)
@@ -202,9 +206,8 @@ defmodule GtfsPlannerWeb.MapLineDownloadControllerTest do
           route_pattern_name: "Pattern #{pattern_id}"
         })
 
-      Enum.each(@stops, fn {id, _lat, _lon} ->
-        position = Enum.find_index(@stops, fn {other, _, _} -> other == id end)
-        route_pattern_stop_fixture(pattern, id, position + 1)
+      Enum.each(@stops_with_positions, fn {{id, _lat, _lon}, position} ->
+        route_pattern_stop_fixture(pattern, id, position)
       end)
     end)
 

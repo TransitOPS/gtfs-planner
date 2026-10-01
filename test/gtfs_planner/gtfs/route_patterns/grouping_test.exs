@@ -52,7 +52,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.GroupingTest do
 
     assert group.stop_ids == @full_stops
     assert group.direction_id == nil
-    assert group.trip_ids == Enum.map(1..18, &"trip-#{&1}")
+    # A group's trips are a set: the implementation keeps them in id order so the
+    # same group always reads the same way, which is not numeric order past 9.
+    assert group.trip_ids == Enum.sort(Enum.map(1..18, &"trip-#{&1}"))
     assert group.services == %{"Summer weekday supplement" => 18}
 
     assert Grouping.suggest_direction(group, [group], patterns) ==
@@ -184,7 +186,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.GroupingTest do
     defp row(id, opts \\ []) do
       %{
         id: id,
-        pattern_derivation_state: "left_out",
+        pattern_derivation_state: Keyword.get(opts, :pattern_derivation_state, "left_out"),
         route_pattern_id: Keyword.get(opts, :route_pattern_id),
         timed_pattern_id: Keyword.get(opts, :timed_pattern_id),
         direction_id: Keyword.get(opts, :direction_id),

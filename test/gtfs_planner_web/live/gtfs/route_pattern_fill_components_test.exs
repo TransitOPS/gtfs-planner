@@ -75,7 +75,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternFillComponentsTest do
       custom_trip_count: 0,
       dirty?: false,
       busy?: false,
-      filling?: false
+      filling?: false,
+      version_id: "v1"
     }
 
     assigns = %{task: Map.merge(base, opts)}
@@ -102,6 +103,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternFillComponentsTest do
       dirty?={@task.dirty?}
       busy?={@task.busy?}
       filling?={@task.filling?}
+      version_id={@task.version_id}
     />
     """)
   end

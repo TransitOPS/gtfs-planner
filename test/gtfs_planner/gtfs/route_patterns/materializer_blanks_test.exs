@@ -122,6 +122,14 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.MaterializerBlanksTest do
       route_id = "R-blanks"
       service = weekly_calendar(context, route_id)
 
+      # `route_pattern_fixture/3` writes the pattern row only, so the route and
+      # the corridor's stops are this test's to create before it schedules trips.
+      route_fixture(context.organization.id, context.version.id, %{route_id: route_id})
+
+      for stop_id <- ["A", "B", "C", "D"] do
+        stop_fixture(context.organization.id, context.version.id, %{stop_id: stop_id})
+      end
+
       bundle =
         schedule_pattern_fixture(context.organization.id, context.version.id, %{
           route_id: route_id,

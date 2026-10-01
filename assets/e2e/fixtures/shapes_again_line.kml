@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The journey's path file (spec 27, step 37).
+
+  One LineString along the seeded corridor's own meridian, first stop to last:
+  the thirteen `US 101 Stop 1`–`US 101 Stop 13` coordinates in
+  `test/support/browser_seed.exs`, written longitude-first as KML requires. Every
+  stop therefore sits on the line and in order, which is the `import-good` state
+  the prototype shows: "13 of 13 stops within 330 ft" and "Every stop is on the
+  line".
+
+  The line is drawn slightly east of the stops rather than exactly through them,
+  so the fit is a real measurement of the drawn geometry against the seeded
+  stops instead of a table lookup of identical numbers. The offset is a few
+  hundredths of a degree of longitude at 44°N — about 20 ft, well inside the
+  330 ft the review reports on.
+-->
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>US 101 Coast Highway</name>
+    <Placemark>
+      <name>Coast Highway, first stop to last</name>
+      <LineString>
+        <tessellate>1</tessellate>
+        <coordinates>
+          -124.0485,44.6360
+          -124.0485,44.6610
+          -124.0485,44.6860
+          -124.0485,44.7110
+          -124.0485,44.7360
+          -124.0485,44.7610
+          -124.0485,44.7860
+          -124.0485,44.8110
+          -124.0485,44.8360
+          -124.0485,44.8610
+          -124.0485,44.8860
+          -124.0485,44.9110
+          -124.0485,44.9360
+        </coordinates>
+      </LineString>
+    </Placemark>
+  </Document>
+</kml>

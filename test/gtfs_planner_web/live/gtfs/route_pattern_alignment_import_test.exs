@@ -309,7 +309,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentImportTest do
       assert has_element?(view, "#imported-line-card", "Imported shape IMP-DIV-X")
       assert has_element?(view, "label[for=imported-shape-IMP-DIV-X]", "2 trips")
       assert has_element?(view, "label[for=imported-shape-IMP-DIV-Y]", "1 trip")
-      assert has_element?(view, "#imported-line-card", "Saving the replacement would affect all 3 trips.")
+
+      assert has_element?(
+               view,
+               "#imported-line-card",
+               "Saving the replacement would affect all 3 trips."
+             )
 
       view
       |> element("#imported-shape-form")
