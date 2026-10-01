@@ -630,8 +630,12 @@ defmodule GtfsPlanner.Gtfs.Stations do
   defp rollback_preview_module(_), do: nil
 
   @doc "Moves a child stop on the station diagram when its revision is current."
-  def move_child_stop(%AuditContext{} = audit, id, %{x: x, y: y} = coordinate, expected_revision)
+  def move_child_stop(%AuditContext{} = audit, id, %{x: x, y: y}, expected_revision)
       when is_number(x) and is_number(y) do
+    # String keys, the shape a stored coordinate has: the returned stop is rendered
+    # before any reload, and a no-op move is detected by comparing with the stored map.
+    coordinate = %{"x" => x, "y" => y}
+
     run(audit, :share, fn station ->
       stop = lock_child!(audit, station, id)
       stale!(stop, expected_revision)
