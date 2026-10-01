@@ -1677,6 +1677,22 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
         >
           Create {@card.group_label} line
         </.button>
+
+        <%!-- "Add to line…" is always offered where a card is: it asks the run's own open
+        days which lines have the day off, and the answer is empty only when no line does — which
+        is a sentence the drawer says, not a reason to hide the way there. --%>
+        <.button
+          type="button"
+          id={"rosters-add-to-line-#{@card.run_id}"}
+          data-action="add-to-line"
+          variant="quiet"
+          class="min-h-11 px-3 underline underline-offset-4"
+          phx-click="open_add_to_line"
+          phx-value-day_type={@card.day_type_key}
+          phx-value-run={@card.run_id}
+        >
+          Add to line…
+        </.button>
       </div>
 
       <.message
@@ -2130,4 +2146,246 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
 
   defp plural_days(1), do: "1 working day"
   defp plural_days(count), do: "#{count} working days"
+
+  @doc """
+  The "Add to line" drawer: an open run's day, and the lines that have it off.
+
+  Everything in it is somebody else's answer. The run, its times and the days it
+  is open on are the composition's own `open_runs` entry (INV-15), the lines are
+  `Rosters.Candidates.lines_for_open_run/3` in that function's order — lines
+  where the run keeps every rest first, then the least paid time — and the rest
+  either side of each row is the same `rest_cell/1` the slot drawer prints, so a
+  number means the same thing in both drawers.
+
+  ## The day comes first when there is a choice to make
+
+  A run open on several weekdays has a day to choose before it has a line to
+  choose, so the day choice is drawn above the list and leads the selection: one
+  day open means no choice at all and the drawer says which day it is about.
+
+  ## The footer is one primary
+
+  "Create new line" at the opposite edge, Cancel, then the one primary. The
+  primary is disabled when the drawer has no line to add to, and the panel above
+  it says why — the same rule the slot drawer follows, and for the same reason:
+  a control that vanishes leaves the planner looking for it.
+  """
+  attr :open, :boolean, required: true
+  attr :run, :map, required: true, doc: "the run the composition holds open"
+  attr :open_weekdays, :list, required: true, doc: "the weekdays of its group it is open on"
+  attr :weekday, :integer, required: true, doc: "the day this list is for"
+  attr :lines, :list, required: true, doc: "`Candidates.lines_for_open_run/3` rows"
+  attr :selected_line_id, :string, default: nil
+  attr :day_type_label, :string, required: true
+  attr :group_label, :string, required: true
+  attr :pending?, :boolean, default: false
+  attr :refusal, :string, default: nil
+  attr :min_rest_minutes, :integer, required: true
+  attr :on_close, :string, default: "close_add_to_line"
+
+  def add_to_line_drawer(assigns) do
+    assigns =
+      assigns
+      |> assign(:run_id, assigns.run.run_id)
+      |> assign(:day_name, weekday_name(assigns.weekday))
+      |> assign(:selected, selected_add_line(assigns))
+
+    ~H"""
+    <.drawer
+      id="rosters-add-to-line-drawer"
+      chrome="planner"
+      open={@open}
+      pending={@pending?}
+      on_close={@on_close}
+      class="max-w-[min(100vw,52rem)]"
+      title={"Add run #{@run_id} to a line"}
+      return_focus_id={"rosters-add-to-line-#{@run_id}"}
+    >
+      <:lede>
+        <span id="rosters-add-lede">{@day_type_label} · {@group_label}</span>
+      </:lede>
+
+      <.drawer_scroll>
+        <p id="rosters-add-run" class="text-sm">
+          <strong class="text-strong">Run {@run_id}</strong>
+          · {run_type_words(@run)} ·
+          <span class="tabular">
+            {slot_span(@run.work)} · {hours_minutes(@run.work.paid_secs)} paid
+          </span>
+        </p>
+
+        <fieldset
+          :if={length(@open_weekdays) > 1}
+          id="rosters-add-day"
+          class="min-w-0"
+        >
+          <legend class="text-[13px] font-[650] text-default">Day</legend>
+          <p class="text-[13px] text-muted">
+            Run {@run_id} is open on {plural_open_days(length(@open_weekdays))}.
+          </p>
+          <div
+            role="group"
+            aria-label="Day to add"
+            class="mt-2 inline-flex flex-wrap rounded-control border border-control bg-white p-0.5"
+          >
+            <button
+              :for={day <- @open_weekdays}
+              type="button"
+              id={"rosters-add-day-#{day}"}
+              data-day={day}
+              aria-pressed={to_string(day == @weekday)}
+              aria-label={weekday_name(day)}
+              phx-click="choose_add_day"
+              phx-value-weekday={day}
+              class="min-h-11 min-w-11 rounded-[4px] px-3 text-sm font-semibold text-muted hover:text-strong aria-pressed:bg-navy-800 aria-pressed:text-white"
+            >
+              {short_day(day)}
+            </button>
+          </div>
+        </fieldset>
+
+        <p :if={length(@open_weekdays) == 1} id="rosters-add-day-only" class="text-sm">
+          Open on {@day_name} only.
+        </p>
+
+        <div :if={@lines != []}>
+          <h3 class="text-base font-bold">Lines with {@day_name} off</h3>
+          <p class="mt-1 text-[13px] text-muted">
+            Lines where it keeps the minimum rest come first, then the lines with the fewest paid
+            hours. Minimum rest is {minutes(@min_rest_minutes)}.
+          </p>
+          <div class="mt-3 overflow-x-auto rounded-card border border-subtle">
+            <table class="w-full border-separate border-spacing-0 text-sm">
+              <caption class="sr-only">Lines with {@day_name} off</caption>
+              <thead>
+                <tr class="bg-canvas text-left text-[13px] text-muted">
+                  <th scope="col" class="px-2 py-2 font-semibold">Line</th>
+                  <th scope="col" class="px-2 py-2 font-semibold">Works</th>
+                  <th scope="col" class="px-2 py-2 text-right font-semibold">Paid now</th>
+                  <th scope="col" class="px-2 py-2 font-semibold">Rest before</th>
+                  <th scope="col" class="px-2 py-2 font-semibold">Rest after</th>
+                </tr>
+              </thead>
+              <tbody id="rosters-add-line-rows">
+                <tr
+                  :for={row <- @lines}
+                  id={"rosters-add-line-#{row.line.line_number}"}
+                  class="rosters-pick-row"
+                  data-line-id={row.line.id}
+                  data-selected={to_string(row.line.id == @selected_line_id)}
+                  data-short={to_string(row.short?)}
+                >
+                  <td class="px-2 py-1">
+                    <label class="flex min-h-11 cursor-pointer items-center gap-2.5">
+                      <input
+                        type="radio"
+                        id={"rosters-add-line-choice-#{row.line.line_number}"}
+                        name="rosters-add-line"
+                        value={row.line.id}
+                        checked={row.line.id == @selected_line_id}
+                        phx-click="choose_add_line"
+                        phx-value-line={row.line.id}
+                        class="size-5 accent-action"
+                      />
+                      <span class="font-bold text-strong">Line {row.line.line_number}</span>
+                      <span class="text-[13px] text-muted">
+                        {if row.line.operator, do: "Assigned", else: "Open"}
+                      </span>
+                    </label>
+                  </td>
+                  <td class="px-2 py-1">
+                    {plural_working_days(map_size(row.line.slots))}
+                    <span class="text-muted">
+                      · off {days_off_text(row.line)}
+                    </span>
+                  </td>
+                  <td class="px-2 py-1 text-right tabular-nums">
+                    {hours_minutes(row.line.paid_secs)}
+                  </td>
+                  <td class="px-2 py-1 tabular-nums">
+                    <.rest_cell candidate={row} side={:before} min_rest_minutes={@min_rest_minutes} />
+                  </td>
+                  <td class="px-2 py-1 tabular-nums">
+                    <.rest_cell candidate={row} side={:after} min_rest_minutes={@min_rest_minutes} />
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <.message
+          :if={@lines == []}
+          id="rosters-add-no-line"
+          kind="neutral"
+          title={"No line has #{@day_name} off."}
+        >
+          Create a new line for this run.
+        </.message>
+
+        <.message
+          :if={@refusal}
+          id="rosters-add-refusal"
+          kind="error"
+          title="Nothing was saved."
+        >
+          {@refusal}
+        </.message>
+      </.drawer_scroll>
+
+      <.drawer_footer>
+        <.button
+          type="button"
+          id="rosters-add-new-line"
+          variant="secondary"
+          class="mr-auto min-h-11"
+          phx-click="add_to_new_line"
+          phx-disable-with="Creating…"
+          disabled={@pending?}
+        >
+          Create new line
+        </.button>
+
+        <.button type="button" variant="secondary" class="min-h-11" phx-click={@on_close}>
+          Cancel
+        </.button>
+
+        <.button
+          type="button"
+          id="rosters-add-confirm"
+          class="min-h-11"
+          phx-click="add_to_line"
+          phx-disable-with="Saving…"
+          disabled={@pending? or is_nil(@selected_line_id)}
+        >
+          {if @selected_line_id,
+            do: "Add to line #{selected_line_number(@lines, @selected_line_id)}",
+            else: "Add to line"}
+        </.button>
+      </.drawer_footer>
+    </.drawer>
+    """
+  end
+
+  # The row the primary button names: the drawer's own selection, or the first
+  # row `Candidates` offered when nothing has been chosen. It is drawn rather
+  # than stored twice, so the button and the checked radio cannot disagree.
+  defp selected_add_line(%{selected_line_id: nil, lines: [%{line: line} | _rest]}), do: line.id
+  defp selected_add_line(%{selected_line_id: line_id}), do: line_id
+
+  defp selected_line_number(lines, line_id) do
+    case Enum.find(lines, &(&1.line.id == line_id)) do
+      %{line: %{line_number: number}} -> number
+      _no_line -> nil
+    end
+  end
+
+  # The column counts working days, so it says "days" rather than the grid's
+  # "working days": it sits beside "Paid now", where the reader is comparing two
+  # lines rather than reading one line's week.
+  defp plural_working_days(1), do: "1 day"
+  defp plural_working_days(count), do: "#{count} days"
+
+  defp plural_open_days(1), do: "1 day"
+  defp plural_open_days(count), do: "#{count} days"
 end

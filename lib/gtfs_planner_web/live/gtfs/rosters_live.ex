@@ -75,7 +75,15 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   # The slot drawer's three actions are writes and are listed with it. Opening
   # the drawer and choosing a candidate are reads of the roster already on the
   # socket, so they re-check no membership.
-  @write_events ~w(add_line create_line_from_run set_day set_group clear_day)
+  @write_events ~w(
+    add_line
+    create_line_from_run
+    set_day
+    set_group
+    clear_day
+    add_to_line
+    add_to_new_line
+  )
 
   # A role revoked while the page is open is not an error the reader caused and
   # is not a validation problem, so it is a refusal said once, in the page's own
@@ -134,6 +142,9 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
      # is page state rather than a toast because it belongs to a card, and it is
      # cleared by the next write for the same reason as the toast.
      |> assign(:open_work_refusal, nil)
+     # The add-to-line drawer's data. Like `:slot`, it is built by the event
+     # that changes it and never inside `render/1`, for the same reason.
+     |> assign(:add_to_line, nil)
      |> stream(:roster_lines, [], dom_id: &roster_line_dom_id/1)
      |> attach_hook(:editor_access, :handle_event, &require_editor/3)}
   end
@@ -605,10 +616,282 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     end
   end
 
+  # ── Add an open run to a line ──────────────────────────────────────────────
+  #
+  # Opening the drawer and choosing the day or the line are reads of the roster
+  # this socket already holds, so they re-check no membership and are not in
+  # `@write_events`; the two writes at the bottom of this section are.
+  #
+  # The whole drawer's data is built by `open_add_to_line/4`, for the same reason
+  # the slot drawer's is: an assign made during `render/1` costs the page its
+  # streamed rows. The lines on offer are `Candidates.lines_for_open_run/3`'s
+  # rows in that function's order, so what a planner chooses from is the same
+  # computation on screen and under the lock (INV-15).
+  def handle_event(
+        "open_add_to_line",
+        %{"day_type" => day_type_key, "run" => run_id},
+        socket
+      ) do
+    case open_add_to_line(socket, day_type_key, run_id, nil) do
+      # One overlay at a time: the page has a single drawer slot, so opening
+      # this one closes a slot drawer left open from the grid.
+      {:ok, add} -> {:noreply, socket |> assign(:slot, nil) |> assign(:add_to_line, add)}
+      :error -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("choose_add_day", %{"weekday" => weekday}, socket) do
+    with %{day_type_key: key, run_id: run_id} <- chosen_add_run(socket),
+         {:ok, weekday} <- slot_weekday(weekday),
+         {:ok, add} <- open_add_to_line(socket, key, run_id, weekday) do
+      {:noreply, assign(socket, :add_to_line, add)}
+    else
+      _not_this_drawer -> {:noreply, socket}
+    end
+  end
+
+  # A line this drawer is not offering is not a choice, so the selection stays
+  # where it was rather than naming a line the write could not take. The id is
+  # checked against the drawn rows, which is what keeps a hand-built event from
+  # reaching a line of another version.
+  def handle_event("choose_add_line", %{"line" => line_id}, socket) do
+    case socket.assigns.add_to_line do
+      %{lines: lines} = add ->
+        if Enum.any?(lines, &(&1.line.id == line_id)) do
+          {:noreply, assign(socket, :add_to_line, %{add | selected_line_id: line_id})}
+        else
+          {:noreply, socket}
+        end
+
+      nil ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("close_add_to_line", _params, socket) do
+    {:noreply, assign(socket, :add_to_line, nil)}
+  end
+
+  # The write onto a line that already exists. The roster is re-read and the
+  # drawer closes on success, because the run is no longer open work and the
+  # card it came from is gone; a refusal keeps the drawer with the writer's own
+  # sentence in it, because a refusal that closes a drawer reads as the page
+  # having lost the planner's work.
+  def handle_event("add_to_line", _params, socket) do
+    with %{run_id: run_id, weekday: weekday, selected_line_id: line_id} <- writable_add(socket),
+         number when not is_nil(number) <- add_line_number(socket, line_id),
+         {:ok, result} <-
+           Gtfs.set_roster_slot(
+             socket.assigns.current_organization.id,
+             socket.assigns.current_gtfs_version.id,
+             line_id,
+             weekday,
+             run_id
+           ) do
+      {:noreply,
+       socket
+       |> close_add()
+       |> saved(
+         result.short_rests,
+         "Added run #{run_id} to line #{number} on #{weekday_name(weekday)}."
+       )}
+    else
+      {:error, reason} -> {:noreply, refuse_add_to_line(socket, reason)}
+      _nothing_to_add -> {:noreply, socket}
+    end
+  end
+
+  # "Create new line" is two writes, because the spec asks for a line holding
+  # this run on this day rather than for a line and a later set. The first write
+  # is `create_roster_line/2` and the second is the same `set_roster_slot/5` the
+  # line above uses. A refusal of the second leaves the empty line standing —
+  # deleting it would be a third write hiding a fact the planner needs to see —
+  # and says so, in the drawer, over the roster the second write was refused
+  # against.
+  def handle_event("add_to_new_line", _params, socket) do
+    case writable_add(socket) do
+      %{run_id: run_id, weekday: weekday} -> create_line_for_add(socket, weekday, run_id)
+      _no_writable_add -> {:noreply, socket}
+    end
+  end
+
   # Any other event is ignored. This clause is last among the `handle_event`
   # clauses on purpose: a catch-all placed earlier would shadow the real
   # handlers above it.
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  defp create_line_for_add(socket, weekday, run_id) do
+    case Gtfs.create_roster_line(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id
+         ) do
+      {:ok, line} -> add_run_to_new_line(socket, line, weekday, run_id)
+      {:error, :not_found} -> {:noreply, refuse_add_to_line(socket, :not_found)}
+    end
+  end
+
+  defp add_run_to_new_line(socket, line, weekday, run_id) do
+    case Gtfs.set_roster_slot(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           line.id,
+           weekday,
+           run_id
+         ) do
+      {:ok, result} ->
+        {:noreply,
+         socket
+         |> close_add()
+         |> saved(
+           result.short_rests,
+           "Line #{line.line_number} created with run #{run_id} on #{weekday_name(weekday)}."
+         )}
+
+      {:error, reason} ->
+        # The line exists now, so the roster is re-read before the drawer is
+        # rebuilt: the new empty line belongs in the list the planner is about
+        # to choose from. The refusal is then the drawer's, over that roster.
+        socket = clear_open_work(socket) |> load_roster()
+        add = socket.assigns.add_to_line
+
+        case open_add_to_line(socket, add.day_type_key, run_id, weekday) do
+          {:ok, rebuilt} ->
+            text =
+              add_new_line_refusal(
+                line.line_number,
+                reason,
+                add_refusal_context(rebuilt, line.line_number)
+              )
+
+            {:noreply, assign(socket, :add_to_line, %{rebuilt | refusal: text})}
+
+          # The run is no longer open at all, so there is no drawer to say it in
+          # and the page's own toast is what is left to carry the fact.
+          :error ->
+            {:noreply,
+             put_toast(
+               close_add(socket),
+               add_new_line_refusal(
+                 line.line_number,
+                 reason,
+                 add_refusal_context(add, line.line_number)
+               ),
+               :refused
+             )}
+        end
+    end
+  end
+
+  defp add_new_line_refusal(number, reason, context) do
+    "Line #{number} was created, but the run was not added to it. " <>
+      refusal_words(reason, context)
+  end
+
+  defp refusal_words(:not_found, _context), do: @write_refused
+
+  defp refusal_words(refusal, context),
+    do: RostersComponents.refusal_text(refusal, context)
+
+  defp close_add(socket), do: assign(socket, :add_to_line, nil)
+
+  # The drawer's data for one run on one day. The run has to be one the
+  # composition still holds open, on the day type the card named, and on a
+  # weekday it is open on — so a stale card, a foreign day type or a weekday the
+  # run was taken on is `:error` rather than a drawer describing work that is
+  # not there.
+  #
+  # `weekday` `nil` means "the first day the run is open on", which is what a
+  # click on the card should select.
+  defp open_add_to_line(socket, day_type_key, run_id, weekday) do
+    with roster when not is_nil(roster) <- socket.assigns.roster,
+         group when not is_nil(group) <- add_group(roster, day_type_key),
+         %{run_id: ^run_id} = run <- Enum.find(group.open_runs, &(&1.run_id == run_id)) do
+      open_add_to_line_day(roster, group, run, weekday || List.first(run.open_weekdays))
+    else
+      _not_open_here -> :error
+    end
+  end
+
+  defp open_add_to_line_day(roster, group, run, weekday) do
+    if Enum.member?(run.open_weekdays, weekday) do
+      lines = Candidates.lines_for_open_run(roster, run.run_id, weekday)
+
+      {:ok,
+       %{
+         run: run.run,
+         open_weekdays: run.open_weekdays,
+         run_id: run.run_id,
+         day_type_key: group.day_type.key,
+         day_type_label: group.day_type.label,
+         group_label: group.label,
+         weekday: weekday,
+         lines: lines,
+         # The version's own rest rule, read in with the drawer so a refusal can
+         # name the minimum without the component reaching for the roster.
+         min_rest_minutes: roster.rules.min_rest_minutes,
+         selected_line_id: first_line_id(lines),
+         pending?: false,
+         refusal: nil
+       }}
+    else
+      :error
+    end
+  end
+
+  defp add_group(roster, day_type_key) do
+    Enum.find(roster.groups, &(&1.day_type.key == day_type_key))
+  end
+
+  defp first_line_id([%{line: line} | _rest]), do: line.id
+  defp first_line_id([]), do: nil
+
+  defp chosen_add_run(%{assigns: %{add_to_line: %{day_type_key: key, run_id: run_id}}}),
+    do: %{day_type_key: key, run_id: run_id}
+
+  defp chosen_add_run(_no_drawer), do: nil
+
+  # A write with nothing chosen is not a write, and neither is one against a
+  # drawer the socket no longer holds.
+  defp writable_add(%{assigns: %{add_to_line: %{pending?: false} = add}}), do: add
+  defp writable_add(_no_writable_add), do: nil
+
+  # The number the confirmation names, read from the row the planner chose in
+  # the drawer's own list rather than re-derived.
+  defp add_line_number(socket, line_id) do
+    case socket.assigns.add_to_line do
+      %{lines: lines} ->
+        Enum.find_value(lines, &(&1.line.id == line_id && &1.line.line_number))
+
+      nil ->
+        nil
+    end
+  end
+
+  # A refusal keeps the drawer exactly as it was drawn and puts the writer's own
+  # sentence where the planner is already looking. The list is not rebuilt: the
+  # writer refused, so nothing this socket knows about changed — a run another
+  # line took meanwhile is precisely why the write says so.
+  defp refuse_add_to_line(socket, reason) do
+    add = socket.assigns.add_to_line
+
+    assign(clear_open_work(socket), :add_to_line, %{
+      add
+      | refusal:
+          refusal_words(
+            reason,
+            add_refusal_context(add, add_line_number(socket, add.selected_line_id))
+          )
+    })
+  end
+
+  defp add_refusal_context(add, line_number) do
+    %{
+      run_id: add.run_id,
+      weekday: add.weekday,
+      line_number: line_number,
+      min_rest_minutes: add.min_rest_minutes
+    }
+  end
 
   # What the create did, in the words the grid draws it with: the days it took,
   # and the line's days off read from the reloaded composition rather than
@@ -967,6 +1250,21 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
         pending?={@slot.pending?}
         refusal={@slot.refusal}
         min_rest_minutes={@roster.rules.min_rest_minutes}
+      />
+
+      <RostersComponents.add_to_line_drawer
+        :if={@add_to_line}
+        open
+        run={@add_to_line.run}
+        open_weekdays={@add_to_line.open_weekdays}
+        weekday={@add_to_line.weekday}
+        lines={@add_to_line.lines}
+        selected_line_id={@add_to_line.selected_line_id}
+        day_type_label={@add_to_line.day_type_label}
+        group_label={@add_to_line.group_label}
+        pending?={@add_to_line.pending?}
+        refusal={@add_to_line.refusal}
+        min_rest_minutes={@add_to_line.min_rest_minutes}
       />
     </Layouts.app>
     """
