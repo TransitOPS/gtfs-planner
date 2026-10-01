@@ -35,13 +35,33 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   The organization's realtime answer is not part of the service draft: choosing
   it writes `ExportDefaults.update/3` at once, exactly as the Settings page
   step 26 will, and the service's own fields stay unsaved until Save.
+
+  The approved policy source intake sits beside the hours and booking sections
+  and is deliberately its own form (AC-2, AC-7, AC-12). The editor pastes the
+  policy text their agency authorized, names it, records a revision if the
+  document has one, and accepts it explicitly: acceptance is their statement
+  that this is the authorized text, not an agency or legal certification. The
+  server freezes it through `GtfsPlanner.Agents.Scope.with_source_snapshot/2`
+  together with the service this page already loaded, and hands the returned
+  context to `GtfsPlannerWeb.AgentPanel.set_context/2`, which is the only way
+  the helper's pack is ever mounted here. The `flex_policy` pack mounts only
+  after the scoped load succeeds, and every load rebinds the panel to the plain
+  version context, so a replaced service, a discarded draft and a version
+  switch all drop the accepted source and the conversation it belonged to.
+
+  No part of the intake writes. A validation failure, an over-limit context and
+  a helper that cannot read the service all leave the editor's text, the whole
+  native draft and the one Save exactly where they were.
   """
 
   use GtfsPlannerWeb, :live_view
 
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   import GtfsPlannerWeb.Gtfs.FlexComponents
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
+  alias GtfsPlanner.Agents
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Boundaries
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendars
@@ -52,11 +72,13 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   alias GtfsPlanner.Gtfs.Flex.Export, as: FlexExport
   alias GtfsPlanner.Gtfs.Flex.Geometry
   alias GtfsPlanner.Gtfs.Flex.RiderText
+  alias GtfsPlanner.Gtfs.Flex.Assistant
   alias GtfsPlanner.Gtfs.FlexArea
   alias GtfsPlanner.Gtfs.FlexBookingRule
   alias GtfsPlanner.Gtfs.FlexHours
   alias GtfsPlanner.Gtfs.FlexService
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents
   alias GtfsPlannerWeb.Gtfs.FlexComponents
   alias GtfsPlannerWeb.Layouts
@@ -100,6 +122,25 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   # AC-29: ADA-only detours replace paratransit, which must reach ¾ mile, so
   # choosing ADA-only with no distance chosen yet preselects that distance.
   @ada_distance_m 1_200
+
+  # The approved policy source this page freezes for the helper. The kind and
+  # the payload keys are the `flex_policy` contract `Flex.Assistant.workspace/1`
+  # and the pack's `authorize_context/1` both read, and the whole serialized
+  # context is admitted against `Scope`'s own 65,536-byte bound.
+  @flex_policy_snapshot_kind "flex_policy"
+  @flex_policy_section "hours_booking"
+
+  @flex_policy_too_large "The policy source does not fit in one helper answer of 65,536 bytes for the whole page. Shorten the policy above, or make the change yourself."
+
+  @flex_policy_forbidden "Your access to flex services changed, so the helper stopped."
+
+  @flex_policy_unavailable "This flex service is not available, so the helper cannot read it."
+
+  @flex_policy_review_unavailable "This prepared change cannot be reviewed here yet. Nothing was applied."
+
+  @flex_policy_invalid "The policy source was not accepted. Fix the fields it names."
+
+  @flex_policy_review_stale "That prepared change is no longer current. Nothing was applied."
 
   # The three distances the area editor's routes panel offers, the first three
   # of the reference's `DISTANCES`; the reference's distance for an area service
@@ -226,7 +267,12 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
      |> assign(:area_crossing, nil)
      |> assign(:area_vertices, nil)
      |> assign(:area_simplify_note, nil)
-     |> assign(:area_editable, false)}
+     |> assign(:area_editable, false)
+     |> assign(:flex_policy_form, flex_policy_form(%{}))
+     |> assign(:flex_policy_state, :empty)
+     |> assign(:flex_policy_source, nil)
+     |> assign(:flex_policy_refusal, nil)
+     |> assign(:flex_policy_field_errors, %{})}
   end
 
   @impl true
@@ -960,6 +1006,60 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     end
   end
 
+  # The source is the editor's own authorized text, so typing it never touches
+  # the service draft and never dirties the page: this is not a service change.
+  @impl true
+  def handle_event("flex_policy_source_change", params, socket) do
+    {:noreply, assign(socket, :flex_policy_form, flex_policy_form(flex_policy_params(params)))}
+  end
+
+  @impl true
+  def handle_event("flex_policy_source", params, socket) do
+    values = flex_policy_values(flex_policy_params(params))
+
+    case flex_policy_errors(values) do
+      {:ok, values} ->
+        {:noreply, accept_flex_policy_source(socket, values)}
+
+      {:error, errors} ->
+        {:noreply, refuse_flex_policy_source(socket, values, errors, @flex_policy_invalid)}
+    end
+  end
+
+  # The prepared card's own action, and the only way a review can be opened
+  # (AC-7). The host verifies the intent the session hands back against the
+  # source this page currently holds: the entry id is parsed, the command is
+  # looked up through `Agents.prepared/3` on the session this panel holds, and
+  # the command's source and context digests must equal the accepted snapshot's
+  # own server-computed digests. A forged id, a stale entry, a replaced source
+  # and a command for another service are therefore the same refusal, and none
+  # of them reaches a surface (AC-1, AC-2).
+  #
+  # This step owns the intake, not the review: a command that passes the fence
+  # is reported and applied by nothing, because only the native Save persists
+  # (INV-1). Step 6 replaces the tail of this clause with the review the
+  # `{:flex_policy, command}` map is built for.
+  @impl true
+  def handle_event("agent_review_prepared", %{"entry" => id}, socket) do
+    with {entry_id, ""} <- Integer.parse(id),
+         {:ok, %{command: {:flex_policy, command}}} <-
+           Agents.prepared(
+             socket.assigns.agent_session,
+             socket.assigns.agent_conversation_id,
+             entry_id
+           ),
+         true <- current_flex_policy_command?(socket, command) do
+      {:noreply, assign(socket, :agent_notice, @flex_policy_review_unavailable)}
+    else
+      _stale_or_unknown ->
+        {:noreply, assign(socket, :agent_notice, @flex_policy_review_stale)}
+    end
+  end
+
+  def handle_event("agent_review_prepared", _params, socket) do
+    {:noreply, assign(socket, :agent_notice, @flex_policy_review_stale)}
+  end
+
   # --- rendering --------------------------------------------------------------
 
   @impl true
@@ -1245,6 +1345,20 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
 
                 <.status_section service={@draft} status_action={@status_action} />
               </.form>
+
+              <%!-- The source intake sits beside the hours and booking sections but is its
+              own form: accepting a source is an editor decision about what the helper may
+              read, never a field of the service draft, so it never dirties the page and
+              only native Save persists anything (INV-1). --%>
+              <.flex_policy_source_section
+                form={@flex_policy_form}
+                state={@flex_policy_state}
+                refusal={@flex_policy_refusal}
+                field_errors={@flex_policy_field_errors}
+                source={@flex_policy_source}
+                helper_open?={@agent_open?}
+                service_name={@draft.name || @draft.key || "this service"}
+              />
             </div>
 
             <aside
@@ -1271,6 +1385,35 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
               <.service_map_card service={@draft} />
             </aside>
           </div>
+
+          <%!-- The panel's focus listener belongs to this persistent wrapper, not to the
+          panel: the closing panel cannot own a handler that runs after its own removal,
+          so the wrapper outlives both states of the panel. --%>
+          <div id="flex-policy-helper-focus" phx-hook=".FlexPolicyHelperFocus" class="mt-6">
+            <div :if={@agent_open?} class="flex min-w-0 xl:sticky xl:top-4">
+              <.agent_panel
+                id="agent-panel"
+                title={@agent_title}
+                intro={@agent_intro}
+                examples={@agent_examples}
+                scope_line={"Flex policy · " <> @current_gtfs_version.name}
+                status={@agent_status}
+                entries={@streams.agent_entries}
+                form={@agent_form}
+                notice={@agent_notice}
+                entries_empty?={@agent_entries_empty?}
+                review_label="Review prepared change"
+              />
+            </div>
+          </div>
+
+          <script :type={Phoenix.LiveView.ColocatedHook} name=".FlexPolicyHelperFocus">
+            export default {
+              mounted() {
+                this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+              }
+            }
+          </script>
         </div>
 
         <.save_bar
@@ -1370,7 +1513,40 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     |> assign(:area_distance_choices, @area_distance_choices)
     |> assign_hub_choices()
     |> assign_checks()
+    |> reset_flex_policy()
+    |> mount_flex_policy_panel(version_id)
     |> enter_or_leave_area()
+  end
+
+  # The helper panel is mounted only once the scoped service has loaded, so a
+  # conversation can never be bound to a service this page has not read. A
+  # reload of the same service (their changes, a discarded draft) re-binds the
+  # panel to the plain version context, which drops any accepted source and the
+  # conversation it belonged to.
+  defp mount_flex_policy_panel(socket, version_id) do
+    socket =
+      if socket.assigns[:agent_pack_id] do
+        socket
+      else
+        AgentPanel.mount(socket, "flex_policy")
+      end
+
+    AgentPanel.set_context(socket, Scope.context({:version, version_id}))
+  end
+
+  # A load is the boundary of the accepted source: the editor accepted text for
+  # the service as it was, so a reload starts from no accepted source. The text
+  # they typed is their own draft and is kept.
+  defp reset_flex_policy(socket) do
+    socket
+    |> assign(:flex_policy_state, :empty)
+    |> assign(:flex_policy_source, nil)
+    |> assign(:flex_policy_refusal, nil)
+    |> assign(:flex_policy_field_errors, %{})
+    |> assign(
+      :flex_policy_form,
+      flex_policy_form(Map.take(socket.assigns.flex_policy_form.params, ~w(label revision text)))
+    )
   end
 
   defp calendar_rows(organization_id, version_id) do
@@ -1998,6 +2174,180 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   defp row_error_items(id, changeset) do
     Enum.map(changeset.errors, fn {field, {message, _opts}} -> {"#{id}_#{field}", message} end)
   end
+
+  # --- the approved policy source -------------------------------------------------
+
+  # The acceptance is explicit and the freeze is the server's: the text, its
+  # label and its revision go into `Scope.with_source_snapshot/2` together with
+  # the service this page already loaded, and the context that returns replaces
+  # the panel's own. Nothing is written to the service, the version or an audit
+  # row, and the draft is untouched (AC-2, AC-4).
+  defp accept_flex_policy_source(socket, values) do
+    socket = assign(socket, :flex_policy_form, flex_policy_form(values))
+
+    case freeze_flex_policy_source(socket, values) do
+      {:ok, context} ->
+        socket
+        |> assign(:flex_policy_state, :accepted)
+        |> assign(:flex_policy_source, values)
+        |> assign(:flex_policy_refusal, nil)
+        |> assign(:flex_policy_field_errors, %{})
+        |> AgentPanel.set_context(context)
+
+      {:error, :too_large} ->
+        refuse_flex_policy_source(socket, values, %{}, @flex_policy_too_large)
+
+      {:error, reason} ->
+        refuse_flex_policy_source(socket, values, %{}, flex_policy_refusal(reason))
+    end
+  end
+
+  # Every refusal keeps the whole source text in the form and leaves the native
+  # hours and booking fields exactly as they were: the helper is optional here
+  # and only native Save persists anything (AC-12).
+  defp refuse_flex_policy_source(socket, values, errors, refusal) do
+    state = if refusal == @flex_policy_forbidden, do: :unavailable, else: :refused
+
+    socket
+    |> assign(:flex_policy_state, state)
+    |> assign(:flex_policy_form, flex_policy_form(values))
+    |> assign(:flex_policy_field_errors, errors)
+    |> assign(:flex_policy_refusal, refusal)
+    |> push_event("focus_form_error", %{
+      form_id: "flex-policy-source-form",
+      fallback_id: "flex-policy-source-refusal"
+    })
+  end
+
+  # The saved fingerprint is frozen with the acceptance, so it is read through
+  # the same scoped workspace the pack will read: a service that cannot be
+  # scoped, or whose saved policy is incomplete, never becomes an accepted
+  # source the helper then cannot answer for.
+  defp freeze_flex_policy_source(socket, values) do
+    service = socket.assigns.saved
+    base = Scope.context({:version, socket.assigns.current_gtfs_version.id})
+
+    with {:ok, workspace, _evidence} <-
+           Assistant.workspace(flex_policy_scope(socket, base), service.id) do
+      Scope.with_source_snapshot(base, %{
+        kind: @flex_policy_snapshot_kind,
+        payload: %{
+          "service_id" => service.id,
+          "section" => @flex_policy_section,
+          "source" => %{
+            "text" => values["text"],
+            "label" => values["label"],
+            "revision" => values["revision"],
+            "accepted" => true
+          },
+          "saved_fingerprint" => workspace.fingerprint
+        }
+      })
+    end
+  end
+
+  # The command is current only while the source that produced it is still the
+  # one this page accepted, and only for the service this page loaded. Both
+  # digests are the server's own: the snapshot's from
+  # `Scope.with_source_snapshot/2`, the context's from `Scope.context_digest/1`
+  # over the same context the panel now holds.
+  defp current_flex_policy_command?(
+         socket,
+         %{source_digest: source_digest, context_digest: context_digest}
+       ) do
+    scope = flex_policy_scope(socket, socket.assigns.agent_context)
+
+    case Scope.source_snapshot(scope) do
+      %{kind: @flex_policy_snapshot_kind, payload: %{"service_id" => service_id}, digest: digest} ->
+        service_id == socket.assigns.saved.id and digest == source_digest and
+          Scope.context_digest(scope) == context_digest
+
+      _no_source ->
+        false
+    end
+  end
+
+  # The scope every read on this page is authorized against: the host's own
+  # organization, version, user and pack, with the version identity this page
+  # already holds. `resource_context` is the plain version context for the
+  # workspace read before acceptance, and the panel's current context for the
+  # digest a command claims to belong to.
+  defp flex_policy_scope(socket, resource_context) do
+    %Scope{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      user_id: socket.assigns.current_user.id,
+      user_email: socket.assigns.current_user.email,
+      pack_id: "flex_policy",
+      version_name: socket.assigns.current_gtfs_version.name,
+      resource_context: resource_context
+    }
+  end
+
+  defp flex_policy_errors(values) do
+    errors =
+      %{}
+      |> put_error("label", blank?(values["label"]), "Name the policy document.")
+      |> put_error("text", blank?(values["text"]), "Paste the authorized policy text.")
+      |> put_error("label", too_long?(values["label"]), "Keep the name under 200 characters.")
+      |> put_error(
+        "revision",
+        too_long?(values["revision"]),
+        "Keep the revision under 200 characters."
+      )
+
+    if errors == %{}, do: {:ok, values}, else: {:error, errors}
+  end
+
+  defp put_error(errors, _field, false, _message), do: errors
+  defp put_error(errors, field, true, message), do: Map.put(errors, field, message)
+
+  defp blank?(value), do: is_binary(value) and String.trim(value) == ""
+
+  defp too_long?(value), do: is_binary(value) and String.length(value) > 200
+
+  # A form event arrives nested under the form name; a bare input event arrives
+  # flat, exactly as the Calendars approval form handles it.
+  defp flex_policy_params(params) do
+    case params["flex_policy"] do
+      nested when is_map(nested) -> Map.merge(params, nested)
+      _other -> params
+    end
+  end
+
+  defp flex_policy_values(params) do
+    %{
+      "label" => String.trim(to_string(params["label"] || "")),
+      "revision" => String.trim(to_string(params["revision"] || "")),
+      "text" => to_string(params["text"] || "")
+    }
+  end
+
+  defp flex_policy_form(values) do
+    defaults = %{"label" => "", "revision" => "", "text" => ""}
+    to_form(Map.merge(defaults, Map.take(values, ~w(label revision text))), as: :flex_policy)
+  end
+
+  # The pack's own refusal sentences reach this page unchanged, so the editor
+  # reads the same words the assistant would say (AC-1, AC-6).
+  defp flex_policy_refusal(:forbidden), do: @flex_policy_forbidden
+  defp flex_policy_refusal(:unavailable), do: @flex_policy_unavailable
+
+  defp flex_policy_refusal({:incomplete, :workspace_too_large}),
+    do:
+      "This service's saved policy does not fit in one helper answer. Shorten the policy on this " <>
+        "page, or make the change yourself."
+
+  defp flex_policy_refusal({:incomplete, {:missing_calendar, service_id}}),
+    do:
+      "The calendar #{service_id} this service's saved policy depends on is not in this version. " <>
+        "Fix the hours or booking rule above first."
+
+  defp flex_policy_refusal({:incomplete, _reason}),
+    do: "This service's saved policy is incomplete, so the helper cannot read it yet."
+
+  defp flex_policy_refusal(_reason),
+    do: "The helper cannot read this service right now. Your text is unchanged."
 
   # --- the form's answers ------------------------------------------------------
 

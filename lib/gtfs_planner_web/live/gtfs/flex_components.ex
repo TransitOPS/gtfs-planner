@@ -1420,6 +1420,175 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   end
 
   @doc """
+  Renders the approved policy source intake beside the hours and booking
+  sections (AC-2, AC-13).
+
+  The editor pastes the policy text their agency authorized, names it and
+  optionally records a revision, then accepts it explicitly. Acceptance is the
+  editor saying "this is the authorized text I am working from"; it is not an
+  agency or legal certification, and the copy says so. The text is frozen by
+  `GtfsPlanner.Agents.Scope.with_source_snapshot/2` on the server, never in
+  this template.
+
+  The whole form stays on screen in every state. A refused acceptance, an
+  over-limit context and a helper that cannot answer all leave the editor's
+  text and the native hours and booking fields exactly where they were, because
+  the helper is optional here and only native Save persists anything (AC-12).
+
+  `state` is one of `:empty`, `:accepted`, `:refused` or `:unavailable`, and is
+  what the status region announces. `refusal` is the server's own sentence for
+  the refusal; `field_errors` names the control to fix first.
+  """
+  attr :form, :any, required: true
+  attr :state, :atom, required: true, values: [:empty, :accepted, :refused, :unavailable]
+  attr :refusal, :string, default: nil
+  attr :field_errors, :map, default: %{}
+  attr :source, :map, default: nil
+  attr :helper_open?, :boolean, default: false
+  attr :service_name, :string, required: true
+
+  def flex_policy_source_section(assigns) do
+    ~H"""
+    <section
+      id="sec-flex-policy-source"
+      aria-labelledby="flex-policy-source-title"
+      class="min-w-0 border-t border-subtle pt-5"
+    >
+      <h2 id="flex-policy-source-title" class="text-base font-bold text-strong">
+        Approved policy source
+      </h2>
+      <p class="mt-1 text-sm text-muted">
+        Paste the hours and booking policy your agency authorized for this service. Accepting it
+        lets the helper read this service and prepare a change from it. Accepting is your
+        statement that this is the authorized text, not an agency or legal certification, and
+        nothing is saved until you review the result and press Save changes.
+      </p>
+
+      <p
+        id="flex-policy-source-state"
+        role="status"
+        aria-live="polite"
+        class="mt-2 text-[13px] text-muted"
+      >
+        {source_state_text(assigns)}
+      </p>
+
+      <.message
+        :if={@state == :accepted and @source}
+        id="flex-policy-source-accepted"
+        kind="success"
+        title={"Accepted #{@source["label"]}."}
+      >
+        <span :if={@source["revision"]} class="block">Revision {@source["revision"]}.</span>
+        <span class="block">
+          {byte_size(@source["text"])} bytes accepted. Changing it starts a new helper conversation.
+        </span>
+      </.message>
+
+      <.message
+        :if={@refusal}
+        id="flex-policy-source-refusal"
+        kind="error"
+        title={@refusal}
+        tabindex="-1"
+      >
+        Your text and the hours and booking fields above are unchanged. Edit the source here or
+        make the change yourself.
+      </.message>
+
+      <.form
+        for={@form}
+        id="flex-policy-source-form"
+        phx-hook="FormErrorFocus"
+        phx-change="flex_policy_source_change"
+        phx-submit="flex_policy_source"
+        class="mt-3 grid gap-3 sm:max-w-[560px]"
+      >
+        <.input
+          id="flex-policy-source-label"
+          field={@form[:label]}
+          type="text"
+          label="What this policy document is"
+          maxlength="200"
+          errors={List.wrap(@field_errors["label"])}
+        />
+        <.input
+          id="flex-policy-source-revision"
+          field={@form[:revision]}
+          type="text"
+          label="Revision (optional)"
+          maxlength="200"
+          errors={List.wrap(@field_errors["revision"])}
+        />
+        <.input
+          id="flex-policy-source-text"
+          field={@form[:text]}
+          type="textarea"
+          label="Authorized hours and booking policy"
+          class="textarea min-h-32 w-full"
+          errors={List.wrap(@field_errors["text"])}
+        />
+        <div class="flex flex-wrap items-center gap-3">
+          <.button
+            id="flex-policy-accept"
+            type="submit"
+            variant="primary"
+            class="min-h-11"
+          >
+            Accept policy source
+          </.button>
+          <p :if={@state == :accepted} class="text-[13px] text-muted">
+            Edit the text and accept it again to replace the source the helper reads.
+          </p>
+          <p class="text-[13px] text-muted">
+            Accepting changes what the helper may read for {service_short_name(@service_name)}.
+            It writes nothing.
+          </p>
+        </div>
+      </.form>
+
+      <div class="mt-3 flex flex-wrap items-center gap-3">
+        <.button
+          id="agent-helper-open"
+          type="button"
+          variant="secondary"
+          class="min-h-11"
+          phx-click="agent_open"
+          aria-expanded={to_string(@helper_open?)}
+          aria-controls="agent-panel"
+        >
+          Open helper
+        </.button>
+        <p class="text-[13px] text-muted">
+          The helper reads this service only from the source you accept above. Without one it can
+          still answer, but it will say it has no policy source to work from. The hours and booking
+          fields are always yours to edit and save.
+        </p>
+      </div>
+    </section>
+    """
+  end
+
+  defp source_state_text(%{state: :empty}), do: "No policy source accepted yet."
+
+  defp source_state_text(%{state: :accepted, source: source}) do
+    "Accepted #{source["label"]} for the helper."
+  end
+
+  defp source_state_text(%{state: :accepted}), do: "A policy source is accepted for the helper."
+
+  defp source_state_text(%{state: :refused}),
+    do: "The helper cannot use the policy source as it stands."
+
+  defp source_state_text(%{state: :unavailable}),
+    do: "The helper cannot read this service right now."
+
+  defp service_short_name(name) when is_binary(name),
+    do: name |> String.split(" ") |> Enum.take(3) |> Enum.join(" ")
+
+  defp service_short_name(_name), do: "this service"
+
+  @doc """
   Renders the rider preview: the card a rider sees in a trip planner, built
   only from the draft and the same `RiderText` the export writes.
   """
