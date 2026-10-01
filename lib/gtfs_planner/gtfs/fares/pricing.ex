@@ -112,6 +112,10 @@ defmodule GtfsPlanner.Gtfs.Fares.Pricing do
 
   See the module doc for the result's shape. `total` is `nil` when any ride is
   unpriced, which is also when `passes` is empty.
+
+  A leg's fields are read by either key kind, so a journey saved as
+  `fare_saved_journeys.legs` — which comes back from `jsonb` with string keys —
+  prices exactly as the one the editor priced did.
   """
   @spec price_journey(Rows.t(), map()) :: %{
           total: Decimal.t() | nil,
@@ -125,6 +129,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Pricing do
     {priced, leg_problems} =
       journey
       |> Map.get(:legs, [])
+      |> Enum.map(&atomize_leg/1)
       |> Enum.with_index(1)
       |> Enum.map_reduce([], &price_leg(&1, &2, rows, catalog))
       |> then(fn {legs, problems} -> {legs, Enum.reverse(problems)} end)
@@ -140,6 +145,25 @@ defmodule GtfsPlanner.Gtfs.Fares.Pricing do
       problems: leg_problems ++ state.problems
     }
   end
+
+  # The fields one leg carries, which are the keys `fare_saved_journeys.legs`
+  # stores and the only keys renamed when it comes back from `jsonb` as strings.
+  @leg_fields [:route_id, :from_stop_id, :to_stop_id, :departs, :arrives]
+
+  # A leg read back from `fare_saved_journeys.legs` carries string keys, which
+  # `jsonb` gives every key it stores. The fields are read by atom key below, so
+  # the string-keyed half is renamed here rather than in each read, and only for
+  # the fields a leg holds: a key this module has no atom for is left alone.
+  defp atomize_leg(leg) when is_map(leg) do
+    Enum.reduce(@leg_fields, leg, fn field, acc ->
+      case Map.fetch(acc, Atom.to_string(field)) do
+        {:ok, value} -> acc |> Map.delete(Atom.to_string(field)) |> Map.put(field, value)
+        :error -> acc
+      end
+    end)
+  end
+
+  defp atomize_leg(leg), do: leg
 
   # One leg, priced on its own: the network, the areas, the rules, the fare. The
   # change that may apply to it is worked out in `fold_transfers/2`, which needs

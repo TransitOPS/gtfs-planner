@@ -67,6 +67,14 @@ defmodule GtfsPlanner.Gtfs.Fares do
   imported, which is the only way a rule the newer format cannot express survives
   an export. The choice is refused where there is no imported file to keep.
 
+  `save_journey/2`, `accept_journey_price/3` and `delete_journey/2` are the
+  Checks tab's saved-journey writers (AC-33). A saved journey is one journey
+  the operator priced and kept, so a later price edit can be seen to have moved
+  it: `save_journey/2` prices the journey on the rows the version holds now and
+  stores that total as its expected amount, `accept_journey_price/3` records the
+  new total the operator agreed to, and `delete_journey/2` removes it. All three
+  are scoped to the version, so another version's journey id is not found.
+
   ## How a write is fenced
 
   Every writer in this module runs through the private `write/4` helper, so
@@ -108,9 +116,11 @@ defmodule GtfsPlanner.Gtfs.Fares do
   alias GtfsPlanner.Gtfs.Fares.Interpreter
   alias GtfsPlanner.Gtfs.Fares.Money
   alias GtfsPlanner.Gtfs.Fares.Normalize
+  alias GtfsPlanner.Gtfs.Fares.Pricing
   alias GtfsPlanner.Gtfs.Fares.Transfers
   alias GtfsPlanner.Gtfs.Fares.VersionLock
   alias GtfsPlanner.Gtfs.Fares.Workspace
+  alias GtfsPlanner.Gtfs.FareSavedJourney
   alias GtfsPlanner.Gtfs.FareTimePeriod
   alias GtfsPlanner.Gtfs.FareTransferRule
   alias GtfsPlanner.Gtfs.FareVersionSetting
@@ -195,6 +205,15 @@ defmodule GtfsPlanner.Gtfs.Fares do
   @older_format_inverse :older_format
 
   @undo_older_format_summary "Restored the older format a change replaced"
+
+  # The key a saved-journey change's inverse is named under, which is what
+  # `undo/3` matches on to tell it from an older-format, a time period, a pass
+  # acceptance, a rule, a route group, a fare, a price, a definition or a
+  # conversion. It is its own key because it changes one `fare_saved_journeys`
+  # row rather than any fare row.
+  @journey_inverse :journey
+
+  @undo_journey_summary "Restored the saved journey a change replaced"
 
   # The two sources the Fares v1 files may be written from (R14), as the atoms
   # callers name them beside the `"derived"`/`"imported"` the column stores.
@@ -377,6 +396,16 @@ defmodule GtfsPlanner.Gtfs.Fares do
       ) do
     write(scope, @undo_older_format_summary, @older_format_inverse, fn _setting ->
       undo_older_format(organization_id, gtfs_version_id, operation_id, inverse.older_format)
+    end)
+  end
+
+  def undo(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        operation_id,
+        %{journey: _inverse} = inverse
+      ) do
+    write(scope, @undo_journey_summary, @journey_inverse, fn _setting ->
+      undo_journey(organization_id, gtfs_version_id, operation_id, inverse.journey)
     end)
   end
 
@@ -4061,6 +4090,308 @@ defmodule GtfsPlanner.Gtfs.Fares do
     |> Repo.update_all(set: [older_format: inverse.before, updated_at: DateTime.utc_now()])
 
     :ok
+  end
+
+  # -- Saving, accepting and deleting test journeys ---------------------------------
+
+  @doc """
+  Stores one journey the editor priced, with the total it priced at (AC-33, R15).
+
+  `params` is the journey the Checks tab priced:
+
+      %{name: String.t(),
+        rider_category_id: String.t(),
+        fare_media_id: String.t() | nil,
+        service_date: Date.t(),
+        legs: [%{route_id: String.t(), from_stop_id: String.t(), to_stop_id: String.t(),
+                 departs: non_neg_integer(), arrives: non_neg_integer()}]}
+
+  The journey is priced inside this write, on `Fares.Pricing.price_journey/2`
+  over the rows `Fares.Interpreter.load_rows/2` reads for this version while the
+  version row is locked, so the stored `expected_amount` is the price of the
+  version as it stands at this moment rather than one read before the write.
+
+  A journey whose price is unknown — no fare covers one of its rides — answers
+  `{:error, :no_price}` and writes nothing, because "expected" is the one number
+  a later edit is compared against and a journey with none would be saved as
+  matching forever. A journey with no rides is refused the same way, since it
+  prices nothing.
+
+  The answer carries the stored row under `:journey` beside the operation id and
+  the inverse every writer of this package returns (R15). One `fare_version`
+  change-log entry is recorded, and `undo/3` deletes the row again while it
+  still holds the amount this write stored.
+
+  A version that is not managed answers `{:error, :unmanaged}`, and a pair that
+  is not a published version of that organization answers `{:error, :not_found}`
+  with nothing written.
+  """
+  @spec save_journey(scope(), map()) ::
+          {:ok, %{journey: FareSavedJourney.t(), operation_id: Ecto.UUID.t(), inverse: term()}}
+          | {:error, Ecto.Changeset.t() | atom()}
+  def save_journey(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        params
+      )
+      when is_map(params) do
+    write(scope, journey_save_summary(param(params, :name)), @journey_inverse, fn _setting ->
+      store_journey(organization_id, gtfs_version_id, params)
+    end)
+  end
+
+  @doc """
+  Records the new total of a saved journey the operator agreed to (AC-33, R15).
+
+  The Checks tab shows `Price changed` beside a journey whose total no longer
+  equals its expected amount, and "Accept new price" writes the total it is now
+  showing as the expected one. `amount` is that total, as `Fares.Pricing`
+  priced it on the current rows; it is stored as given, so a caller that rounds
+  the price differently stores its own reading.
+
+  A journey of another organization or another version answers
+  `{:error, :not_found}` and writes nothing (INV-5). One `fare_version`
+  change-log entry is recorded, and `undo/3` puts the previous amount back
+  while the row still holds this one (R15, AC-26).
+  """
+  @spec accept_journey_price(scope(), Ecto.UUID.t(), Decimal.t()) ::
+          {:ok, %{journey: FareSavedJourney.t(), operation_id: Ecto.UUID.t(), inverse: term()}}
+          | {:error, Ecto.Changeset.t() | atom()}
+  def accept_journey_price(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        journey_id,
+        amount
+      )
+      when is_binary(journey_id) do
+    write(
+      scope,
+      journey_accept_summary(organization_id, gtfs_version_id, journey_id),
+      @journey_inverse,
+      fn _setting ->
+        accept_price(organization_id, gtfs_version_id, journey_id, amount)
+      end
+    )
+  end
+
+  @doc """
+  Removes one saved journey (AC-33, R15).
+
+  A journey id of another organization or another version answers
+  `{:error, :not_found}` and deletes nothing (INV-5). One `fare_version`
+  change-log entry is recorded, and `undo/3` puts the row back whole — with the
+  id it had, so a caller holding the deleted id finds the same journey (R15,
+  AC-26).
+  """
+  @spec delete_journey(scope(), Ecto.UUID.t()) ::
+          {:ok, %{operation_id: Ecto.UUID.t(), inverse: term()}} | {:error, atom()}
+  def delete_journey(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        journey_id
+      )
+      when is_binary(journey_id) do
+    summary = journey_delete_summary(organization_id, gtfs_version_id, journey_id)
+
+    write(scope, summary, @journey_inverse, fn _setting ->
+      remove_journey(organization_id, gtfs_version_id, journey_id)
+    end)
+  end
+
+  defp store_journey(organization_id, gtfs_version_id, params) do
+    request = %{
+      rider_category_id: param(params, :rider_category_id),
+      fare_media_id: param(params, :fare_media_id),
+      service_date: param(params, :service_date),
+      legs: param(params, :legs) || []
+    }
+
+    case journey_total(organization_id, gtfs_version_id, request) do
+      nil ->
+        {:error, :no_price}
+
+      total ->
+        attrs =
+          request
+          |> Map.merge(%{name: param(params, :name), expected_amount: total})
+
+        %FareSavedJourney{
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id
+        }
+        |> FareSavedJourney.changeset(attrs)
+        |> Repo.insert()
+        |> case do
+          {:ok, %FareSavedJourney{} = saved} ->
+            {:ok,
+             %{
+               before: [],
+               after: [journey_log_row(saved)],
+               action: "created",
+               inverse: %{action: :stored, id: saved.id, amount: total},
+               reported: %{journey: saved}
+             }}
+
+          {:error, changeset} ->
+            {:error, changeset}
+        end
+    end
+  end
+
+  # A journey with no rides prices nothing, so it is refused the same way an
+  # unpriced one is rather than stored as an expected total of zero.
+  defp journey_total(_organization_id, _gtfs_version_id, %{legs: []}), do: nil
+
+  defp journey_total(organization_id, gtfs_version_id, request) do
+    Pricing.price_journey(
+      Interpreter.load_rows(organization_id, gtfs_version_id),
+      request
+    ).total
+  end
+
+  defp accept_price(organization_id, gtfs_version_id, journey_id, amount) do
+    case fetch_journey(organization_id, gtfs_version_id, journey_id) do
+      nil ->
+        {:error, :not_found}
+
+      %FareSavedJourney{} = journey ->
+        before = journey.expected_amount
+
+        journey
+        |> FareSavedJourney.changeset(%{expected_amount: amount})
+        |> Repo.update()
+        |> case do
+          {:ok, %FareSavedJourney{} = stored} ->
+            {:ok,
+             %{
+               before: [journey_log_row(journey)],
+               after: [journey_log_row(stored)],
+               action: "updated",
+               inverse: %{action: :accepted, id: journey.id, before: before, amount: amount},
+               reported: %{journey: stored}
+             }}
+
+          {:error, changeset} ->
+            {:error, changeset}
+        end
+    end
+  end
+
+  defp remove_journey(organization_id, gtfs_version_id, journey_id) do
+    case fetch_journey(organization_id, gtfs_version_id, journey_id) do
+      nil ->
+        {:error, :not_found}
+
+      %FareSavedJourney{} = journey ->
+        {:ok, _deleted} = Repo.delete(journey)
+
+        {:ok,
+         %{
+           before: [journey_log_row(journey)],
+           after: [],
+           action: "deleted",
+           inverse: %{action: :removed, journey: journey}
+         }}
+    end
+  end
+
+  # Applies a saved-journey inverse. Each of the three writers fences its own
+  # reversal on the row still holding what that write left, so a reversal can
+  # never revert a later change to the same journey (R15, AC-26).
+  defp undo_journey(organization_id, gtfs_version_id, operation_id, inverse) do
+    with :ok <- require_entry(operation_id, organization_id, gtfs_version_id),
+         {:ok, restored} <- undo_journey_change(organization_id, gtfs_version_id, inverse) do
+      {:ok,
+       %{
+         before: restored.before,
+         after: restored.after,
+         inverse: nil,
+         operation_id: operation_id,
+         action: "rolled_back",
+         rolled_back_to_log_id: operation_id
+       }}
+    end
+  end
+
+  defp undo_journey_change(organization_id, gtfs_version_id, %{action: :stored} = inverse) do
+    with %FareSavedJourney{} = journey <-
+           fetch_journey(organization_id, gtfs_version_id, inverse.id),
+         :ok <- require_unchanged_amount(journey.expected_amount, inverse.amount) do
+      {:ok, _deleted} = Repo.delete(journey)
+      {:ok, %{before: [journey_log_row(journey)], after: []}}
+    else
+      nil -> {:error, :stale}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp undo_journey_change(organization_id, gtfs_version_id, %{action: :accepted} = inverse) do
+    with %FareSavedJourney{} = journey <-
+           fetch_journey(organization_id, gtfs_version_id, inverse.id),
+         :ok <- require_unchanged_amount(journey.expected_amount, inverse.amount) do
+      {:ok, stored} =
+        journey
+        |> Ecto.Changeset.change(%{expected_amount: inverse.before})
+        |> Repo.update()
+
+      {:ok, %{before: [journey_log_row(journey)], after: [journey_log_row(stored)]}}
+    else
+      nil -> {:error, :stale}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp undo_journey_change(organization_id, gtfs_version_id, %{action: :removed} = inverse) do
+    if is_nil(fetch_journey(organization_id, gtfs_version_id, inverse.journey.id)) do
+      {:ok, _restored} = Repo.insert(Ecto.Changeset.change(inverse.journey))
+      {:ok, %{before: [], after: [journey_log_row(inverse.journey)]}}
+    else
+      {:error, :stale}
+    end
+  end
+
+  # The row must still hold the amount its writer left, so a reversal can never
+  # revert a later acceptance of the same journey.
+  defp require_unchanged_amount(amount, amount), do: :ok
+  defp require_unchanged_amount(_stored, _expected), do: {:error, :stale}
+
+  defp fetch_journey(organization_id, gtfs_version_id, journey_id) do
+    FareSavedJourney
+    |> where(
+      [row],
+      row.id == ^journey_id and row.organization_id == ^organization_id and
+        row.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.one()
+  end
+
+  # The row a change-log entry names, so the history reads "this journey, at this
+  # expected amount" without carrying its legs.
+  defp journey_log_row(%FareSavedJourney{} = journey) do
+    %{
+      "fare_saved_journeys_id" => journey.id,
+      "name" => journey.name,
+      "expected_amount" => Decimal.to_string(journey.expected_amount, :normal)
+    }
+  end
+
+  # A journey's own fields, read by atom key as the rest of this module's
+  # writers read theirs, and by string key so a form's params are the same map.
+  defp param(params, key), do: Map.get(params, key, Map.get(params, Atom.to_string(key)))
+
+  defp journey_save_summary(name) when is_binary(name) and name != "", do: "Saved #{name}"
+  defp journey_save_summary(_name), do: "Saved a test journey"
+
+  defp journey_accept_summary(organization_id, gtfs_version_id, journey_id) do
+    "Accepted the new price of #{journey_name(organization_id, gtfs_version_id, journey_id)}"
+  end
+
+  defp journey_delete_summary(organization_id, gtfs_version_id, journey_id) do
+    "Deleted #{journey_name(organization_id, gtfs_version_id, journey_id)}"
+  end
+
+  defp journey_name(organization_id, gtfs_version_id, journey_id) do
+    case fetch_journey(organization_id, gtfs_version_id, journey_id) do
+      %FareSavedJourney{name: name} -> "\"#{name}\""
+      nil -> "a saved journey that is no longer there"
+    end
   end
 
   # -- Editing time periods --------------------------------------------------------
