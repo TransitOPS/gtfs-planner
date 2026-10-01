@@ -26,7 +26,9 @@ defmodule GtfsPlanner.Gtfs.Fares do
   `Fares.Conversion` is the first of this package's writers: it builds a
   version's first managed fare set from the four answers of the first-use setup,
   and converts imported fares in later steps. `save_prices/2` is the writer the
-  price grid calls, and `Fares.Transfers` follows.
+  price grid calls, and `Fares.Transfers.save/5` is the writer the transfers
+  matrix's drawer calls: one pair of route groups' transfer policy, with R5's
+  `transfer_count` rule and R6's refusal of a difference that could undercharge.
 
   `preview_price_change/3` and `apply_price_change/3` are the Change prices
   dialog's pair (AC-15). The preview raises no prices and shows the rows a
@@ -98,6 +100,7 @@ defmodule GtfsPlanner.Gtfs.Fares do
   alias GtfsPlanner.Gtfs.Fares.Interpreter
   alias GtfsPlanner.Gtfs.Fares.Money
   alias GtfsPlanner.Gtfs.Fares.Normalize
+  alias GtfsPlanner.Gtfs.Fares.Transfers
   alias GtfsPlanner.Gtfs.Fares.VersionLock
   alias GtfsPlanner.Gtfs.Fares.Workspace
   alias GtfsPlanner.Gtfs.FareTimePeriod
@@ -235,7 +238,10 @@ defmodule GtfsPlanner.Gtfs.Fares do
   untouched. A `save_prices/2` inverse is applied by `undo_prices/3`, which
   restores each row only while it still holds the amount that write left.
   An inverse no writer of this package produces yet is refused with
-  `{:error, :unknown_inverse}` rather than guessed at.
+  `{:error, :unknown_inverse}` rather than guessed at. A `Fares.Transfers.save/5`
+  inverse is applied by `Fares.Transfers.undo_transfer/3`, which restores the
+  pair's own rules and its fee product while each row still holds what the save
+  left (R5).
   """
   @spec undo(scope(), Ecto.UUID.t(), term()) :: write_result()
   def undo(scope, operation_id, %{setup: _inverse} = inverse) do
@@ -329,6 +335,16 @@ defmodule GtfsPlanner.Gtfs.Fares do
     write(scope, @undo_time_period_summary, @time_period_inverse, fn _setting ->
       undo_time_period(organization_id, gtfs_version_id, operation_id, inverse.time_period)
     end)
+  end
+
+  def undo(
+        %{organization_id: _organization_id, gtfs_version_id: _gtfs_version_id} = scope,
+        operation_id,
+        %{
+          transfer: _inverse
+        } = inverse
+      ) do
+    Transfers.undo_transfer(scope, operation_id, inverse.transfer)
   end
 
   def undo(_scope, _operation_id, _inverse), do: {:error, :unknown_inverse}
