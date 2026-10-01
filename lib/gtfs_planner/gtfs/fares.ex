@@ -100,6 +100,14 @@ defmodule GtfsPlanner.Gtfs.Fares do
 
   @undo_fare_summary "Restored the fare a fare change replaced"
 
+  # The key a rider type or payment method change's inverse is named under, which
+  # is what `undo/3` matches on to tell one from a fare or price change. Both
+  # writers share it: each reverses the same two things, the row of the rider
+  # type or payment method and the `fare_products` rows that named it.
+  @definition_inverse :definition
+
+  @undo_definition_summary "Restored the rider type or payment method a change replaced"
+
   @typedoc """
   The arguments every writer of this package takes: the organization and version
   whose fare rows the write touches, and the audit identity its change-log entry
@@ -177,6 +185,16 @@ defmodule GtfsPlanner.Gtfs.Fares do
       ) do
     write(scope, @undo_fare_summary, @fare_inverse, fn _setting ->
       undo_fare(organization_id, gtfs_version_id, operation_id, inverse.fare)
+    end)
+  end
+
+  def undo(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        operation_id,
+        %{definition: _inverse} = inverse
+      ) do
+    write(scope, @undo_definition_summary, @definition_inverse, fn _setting ->
+      undo_definition(organization_id, gtfs_version_id, operation_id, inverse.definition)
     end)
   end
 
@@ -1285,6 +1303,923 @@ defmodule GtfsPlanner.Gtfs.Fares do
     end)
   end
 
+  @doc """
+  Creates or updates one rider type: its name, the page that says who qualifies
+  for it, and whether it is the default one (AC-17).
+
+  `params` is the rider type drawer's own form:
+
+      %{name: String.t(),
+        rider_category_id: String.t() | nil,
+        eligibility_url: String.t() | nil,
+        default?: boolean(),
+        starting: :half | :same | :free | :blank}
+
+  A form with no `rider_category_id` creates a rider type, whose GTFS id is its
+  name as an id — `Students (18-25)` is `students_18_25` — and a name whose id
+  this version already holds answers `{:error, :duplicate_rider_type}`.
+  A form naming a `rider_category_id` updates that rider type and answers
+  `{:error, :not_found}` when this version holds no such rider type, which is
+  what another organization's or version's id is here (INV-5).
+
+  `starting` is the create's starting prices, applied to every fare the version
+  holds, and is what the drawer's preview states (AC-17, R9):
+
+  - `:half` — half the fare's price for the default rider type, rounded to the
+    nearest five cents, which is the rounding R9's setup uses;
+  - `:same` — the fare's own price for the default rider type, for the fares
+    where that price exists;
+  - `:free` — a zero amount for every fare;
+  - `:blank` — no row at all, because blank means not sold (R9).
+
+  A fare the default rider type has no row for gets no row either, since there
+  is no price to start from; `:free` is the choice that sells a fare to a rider
+  type for nothing. An update ignores `starting` entirely: the prices are the
+  grid's to write, through `save_prices/2` or `save_fare/2`.
+
+  `default?` moves the default. R8 allows exactly one rider type to be the
+  default, so setting it clears the flag on whichever rider type held it in the
+  same transaction — the two writes commit together or neither does — and
+  `Normalize.run!/2` raises if the version is ever left with two (INV-1). A
+  version with no rider types at all cannot be managed, so a create never has to
+  worry about leaving none.
+
+  The rider type's own row is the only thing an update writes besides the
+  default flag: the name, the eligibility URL and the flag go through
+  `RiderCategory.changeset/2`, so the URL and the `0`/`1` flag pass the same
+  checks every other write of that row passes.
+  """
+  @spec save_rider_type(scope(), map()) :: write_result()
+  def save_rider_type(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        params
+      )
+      when is_map(params) do
+    case trimmed_name(params) do
+      {:ok, name} ->
+        write(scope, rider_save_summary(params, name), @definition_inverse, fn _setting ->
+          apply_rider_type(organization_id, gtfs_version_id, name, params)
+        end)
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  @doc """
+  Deletes one rider type and the prices that named it (AC-17).
+
+  The default rider type answers `{:error, :default_rider_type}`: R8 does not
+  allow a managed version with no default, so deleting it would leave the
+  version in a state its own normalizer refuses. A rider type another
+  organization or another version holds answers `{:error, :not_found}`, and an
+  unmanaged version answers `{:error, :unmanaged}`.
+
+  Every `fare_products` row of the rider type is deleted with it, so no price
+  names a rider type that is gone, and the rows go into the inverse whole — with
+  the ids they had — so `undo/3` puts them back as they were.
+
+  `expected` is the fence, and carries the `:name` the editor reviewed: a rider
+  type renamed since the drawer opened answers `{:error, {:stale, details}}` and
+  deletes nothing (R15).
+  """
+  @spec delete_rider_type(scope(), String.t(), map()) :: write_result()
+  def delete_rider_type(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        rider_category_id,
+        expected
+      )
+      when is_binary(rider_category_id) and is_map(expected) do
+    summary =
+      "Deleted the rider type \"#{rider_type_name(organization_id, gtfs_version_id, rider_category_id) || rider_category_id}\""
+
+    write(scope, summary, @definition_inverse, fn _setting ->
+      remove_rider_type(organization_id, gtfs_version_id, rider_category_id, expected)
+    end)
+  end
+
+  @doc """
+  Creates or updates one payment method: its name, its GTFS `fare_media_type`
+  and the fares that accept it (AC-18).
+
+  `params` is the payment method drawer's own form:
+
+      %{name: String.t(),
+        fare_media_id: String.t() | nil,
+        fare_media_type: 0..4,
+        fare_product_ids: [String.t()]}
+
+  A form with no `fare_media_id` creates a payment method whose GTFS id is its
+  name as an id, and a name whose id this version already holds answers
+  `{:error, :duplicate_payment_method}`. A `fare_media_type` outside 0–4 answers
+  `{:error, :invalid_media_type}` rather than a changeset, because the five
+  kinds are a choice the drawer offers rather than free text.
+
+  `fare_product_ids` is the whole set of fares that accept this method, and the
+  writer makes the stored rows say so: a fare that accepts it gets one
+  `fare_products` row per rider type it is sold to, at that rider's own price on
+  the fare's cash medium (type 0) — the price a rider pays with the method, which
+  is the price they pay on board until the fare itself is edited to differ by
+  payment method (AC-18). A fare that no longer accepts it has those rows
+  deleted, because a method a fare does not accept is a missing row rather than a
+  zero (R9). A fare with no cash-medium price of its own gets no row: there is
+  no price to copy, and the fare is priced by opening it (AC-18).
+
+  A `fare_product_id` this version does not hold answers `{:error, :not_found}`,
+  so nothing of another version can be written through this writer (INV-5).
+
+  The medium's own row carries the name and the type, and nothing else is
+  implied by it — a payment method appears only in the newer format, because the
+  older one records only whether a rider pays on board (R11).
+  """
+  @spec save_payment_method(scope(), map()) :: write_result()
+  def save_payment_method(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        params
+      )
+      when is_map(params) do
+    case trimmed_name(params) do
+      {:ok, name} ->
+        write(scope, media_save_summary(params, name), @definition_inverse, fn _setting ->
+          apply_payment_method(organization_id, gtfs_version_id, name, params)
+        end)
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  @doc """
+  Deletes one payment method and the prices that named it (AC-18).
+
+  Every `fare_products` row of the medium is deleted with it, so no price names
+  a payment method that is gone, and the rows go into the inverse whole — with
+  the ids they had — so `undo/3` puts them back as they were.
+
+  A payment method of another organization or another version answers
+  `{:error, :not_found}`, and an unmanaged version answers `{:error, :unmanaged}`.
+  A method this version does not hold is the same answer, because a delete of
+  something that is not there has nothing to record.
+
+  `expected` is the fence, and carries the `:name` the editor reviewed (R15).
+  """
+  @spec delete_payment_method(scope(), String.t(), map()) :: write_result()
+  def delete_payment_method(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        fare_media_id,
+        expected
+      )
+      when is_binary(fare_media_id) and is_map(expected) do
+    summary =
+      "Deleted the payment method \"#{media_name(organization_id, gtfs_version_id, fare_media_id) || fare_media_id}\""
+
+    write(scope, summary, @definition_inverse, fn _setting ->
+      remove_payment_method(organization_id, gtfs_version_id, fare_media_id, expected)
+    end)
+  end
+
+  # -- Writing one rider type -------------------------------------------------------
+
+  # The starting prices a rider type can be created with (AC-17). `:blank` writes
+  # no rows at all, which R9 reads as "not sold until you enter prices" — a
+  # missing row rather than a zero.
+  @starting_prices [:half, :same, :free, :blank]
+
+  # The step R9's setup rounds a reduced price to, and the step `:half` rounds to:
+  # the nearest nickel, so a half price never lands on a fraction of a cent a
+  # fare machine cannot take.
+  @nickel Decimal.new("0.05")
+
+  defp apply_rider_type(organization_id, gtfs_version_id, name, params) do
+    categories = version_rider_categories(organization_id, gtfs_version_id)
+
+    with {:ok, rider_id} <- rider_category_id(categories, name, params),
+         {:ok, category} <-
+           write_rider_category(organization_id, gtfs_version_id, rider_id, name, params),
+         {:ok, cleared} <-
+           clear_previous_default(organization_id, gtfs_version_id, category, params),
+         {:ok, prices} <-
+           rider_starting_prices(organization_id, gtfs_version_id, rider_id, params, category) do
+      {:ok,
+       %{
+         before: category_log_row(category, cleared),
+         after: rider_log_row(category, prices.rows_written),
+         action: category.action,
+         inverse: %{
+           operation: :save,
+           schema: RiderCategory,
+           rider_category_id: rider_id,
+           row: category,
+           fare_products: prices.states,
+           cleared_default: cleared
+         }
+       }}
+    end
+  end
+
+  # The GTFS id of the rider type the form names: its name as an id when the form
+  # creates one, refused when this version already holds it, and the id the form
+  # named when it edits one. An id of another version is `:not_found` (INV-5).
+  defp rider_category_id(categories, name, params) do
+    case fare_param(params, :rider_category_id) do
+      nil ->
+        id = fare_slug(name)
+
+        cond do
+          id == "" -> {:error, name_changeset(name, "must have a letter or a number")}
+          Enum.any?(categories, &(&1.rider_category_id == id)) -> {:error, :duplicate_rider_type}
+          true -> {:ok, id}
+        end
+
+      "" ->
+        {:error, :not_found}
+
+      id when is_binary(id) ->
+        if Enum.any?(categories, &(&1.rider_category_id == id)) do
+          {:ok, id}
+        else
+          {:error, :not_found}
+        end
+
+      _other ->
+        {:error, :not_found}
+    end
+  end
+
+  defp version_rider_categories(organization_id, gtfs_version_id) do
+    RiderCategory
+    |> scoped(organization_id, gtfs_version_id)
+    |> order_by([category], category.rider_category_id)
+    |> Repo.all()
+  end
+
+  # The one `rider_categories` row, written through its own changeset so the
+  # eligibility URL and the `0`/`1` default flag pass the same checks every other
+  # write of that row passes. A rider type the version did not hold is a create,
+  # and its entry says so the way every other entity type's does.
+  defp write_rider_category(organization_id, gtfs_version_id, rider_id, name, params) do
+    attrs = %{
+      rider_category_id: rider_id,
+      rider_category_name: name,
+      eligibility_url: blank_to_nil(fare_param(params, :eligibility_url)),
+      is_default_fare_category: default_flag(params)
+    }
+
+    case rider_category_row(organization_id, gtfs_version_id, rider_id) do
+      nil ->
+        changeset =
+          %RiderCategory{}
+          |> RiderCategory.changeset(
+            Map.merge(attrs, %{
+              organization_id: organization_id,
+              gtfs_version_id: gtfs_version_id
+            })
+          )
+
+        case Repo.insert(changeset) do
+          {:ok, row} ->
+            {:ok,
+             %{id: row.id, created?: true, action: "created", before: nil, after: attrs, row: row}}
+
+          {:error, changeset} ->
+            Repo.rollback(changeset)
+        end
+
+      row ->
+        # An update leaves the flag alone unless the form asked to move the
+        # default: a drawer that omits `:default?` is not un-defaulting a rider
+        # type, and R8 would refuse the version if it were.
+        attrs =
+          if Map.has_key?(params, :default?) or Map.has_key?(params, "default?") do
+            attrs
+          else
+            Map.delete(attrs, :is_default_fare_category)
+          end
+
+        case row |> RiderCategory.changeset(attrs) |> Repo.update() do
+          {:ok, updated} ->
+            {:ok,
+             %{
+               id: updated.id,
+               created?: false,
+               action: "updated",
+               before: rider_attrs(row),
+               after: rider_attrs(updated),
+               row: updated
+             }}
+
+          {:error, changeset} ->
+            Repo.rollback(changeset)
+        end
+    end
+  end
+
+  defp rider_category_row(organization_id, gtfs_version_id, rider_id) do
+    RiderCategory
+    |> scoped(organization_id, gtfs_version_id)
+    |> where([category], category.rider_category_id == ^rider_id)
+    |> Repo.one()
+  end
+
+  # R8: exactly one rider type may be the default, so setting one clears the flag
+  # on whichever held it — in this transaction, so a rollback takes both back.
+  # The cleared row is the inverse, so undo puts the flag where it was. A create
+  # moves the default too: the form's box is the same one either way.
+  defp clear_previous_default(organization_id, gtfs_version_id, category, _params) do
+    if category.after[:is_default_fare_category] == 1 do
+      rider_id = category.after[:rider_category_id]
+
+      previous =
+        RiderCategory
+        |> scoped(organization_id, gtfs_version_id)
+        |> where(
+          [row],
+          row.is_default_fare_category == 1 and row.rider_category_id != ^rider_id
+        )
+        |> Repo.one()
+
+      if previous do
+        previous
+        |> Ecto.Changeset.change(%{is_default_fare_category: 0})
+        |> Repo.update!()
+
+        {:ok, previous.rider_category_id}
+      else
+        {:ok, nil}
+      end
+    else
+      {:ok, nil}
+    end
+  end
+
+  # R8 stores the flag as 0 or 1 and `Normalize` counts the 1s, so a rider type
+  # created without the drawer asking for the default stores 0 rather than nil:
+  # the column is what the export writes and an empty cell there reads as
+  # "unset" rather than "not the default". An update that says nothing about it
+  # leaves it alone instead.
+  defp default_flag(params) do
+    case params do
+      %{default?: true} -> 1
+      %{"default?" => true} -> 1
+      _other -> 0
+    end
+  end
+
+  defp rider_attrs(row) do
+    %{
+      rider_category_id: row.rider_category_id,
+      rider_category_name: row.rider_category_name,
+      eligibility_url: row.eligibility_url,
+      is_default_fare_category: row.is_default_fare_category
+    }
+  end
+
+  defp rider_log_row(category, rows_written) do
+    Map.merge(rider_attrs(category.row), %{"prices" => rows_written})
+  end
+
+  defp category_log_row(category, cleared) do
+    rider_attrs(category.row)
+    |> Map.put("default_moved_from", cleared)
+  end
+
+  defp rider_save_summary(params, name) do
+    if fare_param(params, :rider_category_id) do
+      "Updated the rider type \"#{name}\""
+    else
+      "Created the rider type \"#{name}\""
+    end
+  end
+
+  defp rider_type_name(organization_id, gtfs_version_id, rider_id) do
+    case rider_category_row(organization_id, gtfs_version_id, rider_id) do
+      nil -> nil
+      row -> row.rider_category_name
+    end
+  end
+
+  # The starting prices a create writes (AC-17). Only a create has them: an
+  # update's prices are the grid's to write, and a form that named one anyway
+  # does not get to move every fare in the version.
+  defp rider_starting_prices(organization_id, gtfs_version_id, rider_id, params, category) do
+    if category.created? do
+      case starting_choice(params) do
+        {:ok, :blank} ->
+          {:ok, %{states: [], rows_written: 0}}
+
+        {:ok, choice} ->
+          products = version_products(organization_id, gtfs_version_id)
+          media = version_media(organization_id, gtfs_version_id)
+          default_id = default_rider_id(organization_id, gtfs_version_id)
+
+          changes =
+            starting_price_changes(products, media, default_id, rider_id, choice)
+
+          write_starting_prices(organization_id, gtfs_version_id, changes, products)
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    else
+      {:ok, %{states: [], rows_written: 0}}
+    end
+  end
+
+  defp starting_choice(params) do
+    case fare_param(params, :starting) do
+      nil -> {:ok, :blank}
+      choice when choice in @starting_prices -> {:ok, choice}
+      _other -> {:error, :invalid_starting_prices}
+    end
+  end
+
+  # The starting rows go through the grid's own price writer, the way
+  # `save_fare/2` writes its own rows, rather than through `apply_prices/3`: a
+  # create has nothing to review and every cell it writes is one it has just
+  # read, so there is no fence to check and no entry of its own to record (R15).
+  # A refusal from that writer rolls the whole save back.
+  defp write_starting_prices(_organization_id, _gtfs_version_id, [], _products) do
+    {:ok, %{states: [], rows_written: 0}}
+  end
+
+  defp write_starting_prices(organization_id, gtfs_version_id, changes, products) do
+    {:ok, written} = write_prices(organization_id, gtfs_version_id, changes, products)
+
+    {:ok, %{states: written.inverse.fare_products, rows_written: length(changes)}}
+  end
+
+  # One cell per fare the version holds that the default rider type has a price
+  # for, at the amount the chosen starting prices give (AC-17, R9). `:same` and
+  # `:half` are the default's own amount and half of it to the nearest nickel;
+  # `:free` is zero; a fare with no default-rider price gets no cell, because
+  # there is nothing to start from.
+  defp starting_price_changes(products, media, default_id, rider_id, choice) do
+    products
+    |> Enum.group_by(&fare_name/1)
+    |> Enum.flat_map(fn {_name, rows} ->
+      starting_cell(rows, media, default_id, rider_id, choice)
+    end)
+    |> Enum.sort_by(fn change -> change.key end)
+  end
+
+  # The new rider type's one row for one fare, taken from that fare's own row for
+  # the default rider type. Which of the default's rows is the fare's own price is
+  # R11's rule, the same one the older-format projection uses: the fare's
+  # cash-medium (type 0) row, else the row naming no method, else its
+  # lowest-ordered method. A fare the default rider type has no row for gets no
+  # cell, because there is no price to start from.
+  defp starting_cell(rows, media, default_id, rider_id, choice) do
+    adult = rows |> Enum.filter(&(&1.rider_category_id == default_id)) |> base_row(media)
+
+    case adult && starting_amount(adult.amount, choice) do
+      nil ->
+        []
+
+      amount ->
+        [
+          %{
+            key: {adult.fare_product_id, rider_id, adult.fare_media_id},
+            reviewed: nil,
+            amount: amount,
+            name: adult.fare_product_name,
+            currency: adult.currency || @default_currency
+          }
+        ]
+    end
+  end
+
+  defp base_row([], _media), do: nil
+
+  defp base_row(rows, media) do
+    order = Map.new(media, &{&1.fare_media_id, &1.fare_media_type || 0})
+
+    Enum.find(rows, &(Map.get(order, &1.fare_media_id, 99) == 0)) ||
+      Enum.find(rows, &is_nil(&1.fare_media_id)) ||
+      Enum.min_by(rows, &{Map.get(order, &1.fare_media_id, 99), &1.fare_media_id || ""})
+  end
+
+  # The version's own payment methods, in the order `build_media/1` reads them:
+  # the GTFS type first, so cash (0) precedes an app (4).
+  defp version_media(organization_id, gtfs_version_id) do
+    FareMedia
+    |> scoped(organization_id, gtfs_version_id)
+    |> order_by([medium], asc: medium.fare_media_type, asc: medium.fare_media_id)
+    |> Repo.all()
+  end
+
+  # What a new rider type's first row is for one fare: `:same` copies the fare's
+  # own price for the default rider type, `:half` is half of it to the nearest
+  # nickel, and `:free` is zero. A fare with no default-rider price has nothing
+  # to start from, which is what answers `nil` and drops the row.
+  defp starting_amount(nil, _choice), do: nil
+
+  defp starting_amount(_amount, :free), do: Decimal.new(0)
+
+  defp starting_amount(%Decimal{} = amount, :same), do: amount
+
+  defp starting_amount(%Decimal{} = amount, :half) do
+    amount
+    |> Decimal.div(Decimal.new(2))
+    |> Decimal.div(@nickel)
+    |> Decimal.round(0)
+    |> Decimal.mult(@nickel)
+  end
+
+  # Deleting a rider type takes its prices with it, so nothing names a rider type
+  # that is gone. The rows go into the inverse whole, with the ids they had.
+  defp remove_rider_type(organization_id, gtfs_version_id, rider_id, expected) do
+    products = version_products(organization_id, gtfs_version_id)
+    rows = Enum.filter(products, &(&1.rider_category_id == rider_id))
+
+    case rider_category_row(organization_id, gtfs_version_id, rider_id) do
+      nil ->
+        {:error, :not_found}
+
+      category ->
+        if category.is_default_fare_category == 1 do
+          {:error, :default_rider_type}
+        else
+          delete_rider_rows(organization_id, gtfs_version_id, rider_id, category, rows, expected)
+        end
+    end
+  end
+
+  defp delete_rider_rows(
+         organization_id,
+         gtfs_version_id,
+         rider_id,
+         category,
+         rows,
+         expected
+       ) do
+    case name_stale(expected, category.rider_category_name) do
+      [] ->
+        Repo.delete_all(
+          from(row in FareProduct,
+            where:
+              row.organization_id == ^organization_id and
+                row.gtfs_version_id == ^gtfs_version_id and
+                row.rider_category_id == ^rider_id
+          )
+        )
+
+        Repo.delete_all(
+          from(row in RiderCategory,
+            where:
+              row.organization_id == ^organization_id and
+                row.gtfs_version_id == ^gtfs_version_id and
+                row.rider_category_id == ^rider_id
+          )
+        )
+
+        {:ok,
+         %{
+           before: [
+             rider_attrs(category) | Enum.map(rows, &log_row(product_key(&1), &1.amount))
+           ],
+           after: [],
+           action: "deleted",
+           inverse: %{
+             operation: :delete,
+             schema: RiderCategory,
+             rider_category_id: rider_id,
+             row: category,
+             fare_products: Enum.map(rows, &row_snapshot/1)
+           }
+         }}
+
+      stale ->
+        {:error, {:stale, stale}}
+    end
+  end
+
+  # -- Writing one payment method --------------------------------------------------
+
+  defp apply_payment_method(organization_id, gtfs_version_id, name, params) do
+    with {:ok, media_id} <- fare_media_id(organization_id, gtfs_version_id, name, params),
+         {:ok, media_type} <- media_type(params),
+         {:ok, medium} <-
+           write_fare_media(organization_id, gtfs_version_id, media_id, name, media_type),
+         {:ok, accepted} <-
+           accepted_fare_product_ids(organization_id, gtfs_version_id, params),
+         {:ok, prices} <-
+           media_accepted_rows(organization_id, gtfs_version_id, media_id, medium, accepted) do
+      {:ok,
+       %{
+         before: media_log_row(medium, prices.removed),
+         after: media_log_row(medium, prices.added),
+         action: medium.action,
+         inverse: %{
+           operation: :save,
+           schema: FareMedia,
+           fare_media_id: media_id,
+           row: medium,
+           fare_products: prices.states
+         }
+       }}
+    end
+  end
+
+  defp fare_media_id(organization_id, gtfs_version_id, name, params) do
+    case fare_param(params, :fare_media_id) do
+      nil ->
+        id = fare_slug(name)
+        known = version_media_ids(organization_id, gtfs_version_id)
+
+        cond do
+          id == "" -> {:error, name_changeset(name, "must have a letter or a number")}
+          MapSet.member?(known, id) -> {:error, :duplicate_payment_method}
+          true -> {:ok, id}
+        end
+
+      "" ->
+        {:error, :not_found}
+
+      id when is_binary(id) ->
+        if MapSet.member?(version_media_ids(organization_id, gtfs_version_id), id) do
+          {:ok, id}
+        else
+          {:error, :not_found}
+        end
+
+      _other ->
+        {:error, :not_found}
+    end
+  end
+
+  # The five kinds GTFS gives a payment method. The drawer offers them as choice
+  # cards, so a type outside them is a refusal rather than a changeset (AC-18).
+  defp media_type(params) do
+    case fare_param(params, :fare_media_type) do
+      type when is_integer(type) and type in 0..4 -> {:ok, type}
+      _other -> {:error, :invalid_media_type}
+    end
+  end
+
+  defp write_fare_media(organization_id, gtfs_version_id, media_id, name, media_type) do
+    attrs = %{fare_media_id: media_id, fare_media_name: name, fare_media_type: media_type}
+
+    case media_row(organization_id, gtfs_version_id, media_id) do
+      nil ->
+        changeset =
+          %FareMedia{}
+          |> FareMedia.changeset(
+            Map.merge(attrs, %{
+              organization_id: organization_id,
+              gtfs_version_id: gtfs_version_id
+            })
+          )
+
+        case Repo.insert(changeset) do
+          {:ok, row} ->
+            {:ok,
+             %{
+               id: row.id,
+               created?: true,
+               action: "created",
+               before: nil,
+               after: media_attrs(row),
+               row: row
+             }}
+
+          {:error, changeset} ->
+            Repo.rollback(changeset)
+        end
+
+      row ->
+        case row |> FareMedia.changeset(attrs) |> Repo.update() do
+          {:ok, updated} ->
+            {:ok,
+             %{
+               id: updated.id,
+               created?: false,
+               action: "updated",
+               before: media_attrs(row),
+               after: media_attrs(updated),
+               row: updated
+             }}
+
+          {:error, changeset} ->
+            Repo.rollback(changeset)
+        end
+    end
+  end
+
+  defp media_row(organization_id, gtfs_version_id, media_id) do
+    FareMedia
+    |> scoped(organization_id, gtfs_version_id)
+    |> where([medium], medium.fare_media_id == ^media_id)
+    |> Repo.one()
+  end
+
+  defp media_attrs(row) do
+    %{
+      fare_media_id: row.fare_media_id,
+      fare_media_name: row.fare_media_name,
+      fare_media_type: row.fare_media_type
+    }
+  end
+
+  defp media_log_row(medium, rows) do
+    Map.merge(media_attrs(medium.row), %{"prices" => rows})
+  end
+
+  defp media_save_summary(params, name) do
+    if fare_param(params, :fare_media_id) do
+      "Updated the payment method \"#{name}\""
+    else
+      "Created the payment method \"#{name}\""
+    end
+  end
+
+  defp media_name(organization_id, gtfs_version_id, media_id) do
+    case media_row(organization_id, gtfs_version_id, media_id) do
+      nil -> nil
+      row -> row.fare_media_name
+    end
+  end
+
+  # The fares the form says accept this method, each of which must be a fare
+  # this version holds (INV-5). A fare is the group of `fare_products` rows
+  # sharing a `fare_product_name` (the identity `load_workspace/2` and every
+  # other writer here uses), so naming one of its product ids names the fare: the
+  # drawer's checkbox is one per fare, and unticking it must stop the fare being
+  # sold on this method rather than one of its four rider types.
+  defp accepted_fare_product_ids(organization_id, gtfs_version_id, params) do
+    named =
+      params
+      |> fare_param(:fare_product_ids)
+      |> List.wrap()
+      |> Enum.map(&to_string/1)
+      |> Enum.uniq()
+
+    products = version_products(organization_id, gtfs_version_id)
+
+    known = products |> Enum.map(& &1.fare_product_id) |> MapSet.new()
+
+    if Enum.all?(named, &MapSet.member?(known, &1)) do
+      {:ok, fare_product_ids_for(products, MapSet.new(named))}
+    else
+      {:error, :not_found}
+    end
+  end
+
+  # Every `fare_product_id` of the fares the drawer ticked, which is every row of
+  # every product id that shares a ticked one's `fare_product_name`.
+  defp fare_product_ids_for(products, named) do
+    names =
+      products
+      |> Enum.filter(&MapSet.member?(named, &1.fare_product_id))
+      |> Enum.map(&fare_name/1)
+      |> MapSet.new()
+
+    products
+    |> Enum.filter(&MapSet.member?(names, fare_name(&1)))
+    |> Enum.map(& &1.fare_product_id)
+    |> MapSet.new()
+  end
+
+  # AC-18: a fare that accepts a payment method is sold on it, at the price that
+  # method's rider would pay on board. Every rider type the fare has a cash-medium
+  # price for gets a row on this medium at that amount; a fare that stops
+  # accepting it has those rows deleted, because a method a fare does not accept
+  # is a missing row rather than a zero (R9). A fare with no cash-medium price has
+  # nothing to copy and is priced by opening the fare, which is what the drawer
+  # says next to the checkbox.
+  defp media_accepted_rows(organization_id, gtfs_version_id, media_id, _medium, accepted) do
+    products = version_products(organization_id, gtfs_version_id)
+    cash_ids = cash_media_ids(version_media(organization_id, gtfs_version_id))
+
+    changes =
+      for row <- products,
+          row.fare_media_id in cash_ids,
+          change =
+            media_change(products, row, media_id, MapSet.member?(accepted, row.fare_product_id)),
+          change != nil,
+          do: change
+
+    write_media_prices(organization_id, gtfs_version_id, media_id, changes, products)
+  end
+
+  defp write_media_prices(_organization_id, _gtfs_version_id, _media_id, [], _products) do
+    {:ok, %{states: [], added: 0, removed: 0}}
+  end
+
+  defp write_media_prices(organization_id, gtfs_version_id, _media_id, changes, products) do
+    {:ok, written} = write_prices(organization_id, gtfs_version_id, changes, products)
+
+    {:ok,
+     %{
+       states: written.inverse.fare_products,
+       added: length(changes),
+       removed: Enum.count(written.inverse.fare_products, &match?(%{after: nil}, &1))
+     }}
+  end
+
+  # The cash-medium (type 0) methods of this version, which is the price a rider
+  # pays on board and therefore the price another method starts at (AC-18).
+  defp cash_media_ids(media) do
+    for row <- media, row.fare_media_type == 0, do: row.fare_media_id
+  end
+
+  # A fare that accepts the method gets a row at its own cash-medium price; a fare
+  # that does not has its rows on that medium deleted, because a method a fare
+  # does not accept is a missing row rather than a zero (R9).
+  #
+  # A fare that already has a row on this medium is left alone whichever way its
+  # checkbox stands: the amount there is the fare's own per-medium price, which
+  # is what the fare drawer wrote and what AC-18 keeps, and a method the version
+  # already sells on a fare is not something this writer re-prices. Only the rows
+  # this writer created — the ones that simply copy the cash price — are the
+  # cells it may add or remove.
+  defp media_change(products, cash_row, media_id, accepted) do
+    existing =
+      Enum.find(products, fn row ->
+        row.fare_product_id == cash_row.fare_product_id and
+          row.rider_category_id == cash_row.rider_category_id and
+          row.fare_media_id == media_id
+      end)
+
+    case {accepted, existing} do
+      {true, nil} -> media_cell(cash_row, media_id, cash_row.amount)
+      {false, nil} -> nil
+      {true, _row} -> nil
+      {false, _row} -> media_cell(cash_row, media_id, nil)
+    end
+  end
+
+  defp media_cell(row, media_id, amount) do
+    %{
+      key: {row.fare_product_id, row.rider_category_id, media_id},
+      reviewed: nil,
+      amount: amount,
+      name: row.fare_product_name,
+      currency: row.currency || @default_currency
+    }
+  end
+
+  # Deleting a payment method takes its prices with it, so nothing names a method
+  # that is gone. The rows go into the inverse whole, with the ids they had.
+  defp remove_payment_method(organization_id, gtfs_version_id, media_id, expected) do
+    products = version_products(organization_id, gtfs_version_id)
+    rows = Enum.filter(products, &(&1.fare_media_id == media_id))
+
+    case media_row(organization_id, gtfs_version_id, media_id) do
+      nil ->
+        {:error, :not_found}
+
+      medium ->
+        case name_stale(expected, medium.fare_media_name) do
+          [] ->
+            Repo.delete_all(
+              from(row in FareProduct,
+                where:
+                  row.organization_id == ^organization_id and
+                    row.gtfs_version_id == ^gtfs_version_id and
+                    row.fare_media_id == ^media_id
+              )
+            )
+
+            Repo.delete_all(
+              from(row in FareMedia,
+                where:
+                  row.organization_id == ^organization_id and
+                    row.gtfs_version_id == ^gtfs_version_id and
+                    row.fare_media_id == ^media_id
+              )
+            )
+
+            {:ok,
+             %{
+               before: [
+                 media_attrs(medium) | Enum.map(rows, &log_row(product_key(&1), &1.amount))
+               ],
+               after: [],
+               action: "deleted",
+               inverse: %{
+                 operation: :delete,
+                 schema: FareMedia,
+                 fare_media_id: media_id,
+                 row: medium,
+                 fare_products: Enum.map(rows, &row_snapshot/1)
+               }
+             }}
+
+          stale ->
+            {:error, {:stale, stale}}
+        end
+    end
+  end
+
+  defp blank_to_nil(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp blank_to_nil(value), do: value
+
   # -- Writing one fare ------------------------------------------------------------
 
   defp apply_fare(organization_id, gtfs_version_id, name, params) do
@@ -1766,7 +2701,7 @@ defmodule GtfsPlanner.Gtfs.Fares do
   # `:prices` the cell list `save_prices/2` takes, so a fare whose prices have
   # moved since the drawer opened refuses here exactly as a grid save does.
   defp delete_stale(rows, detail, expected, products) do
-    name_stale(rows, expected) ++
+    name_stale(expected, fare_rows_name(rows)) ++
       detail_stale(detail, expected) ++
       case Map.get(expected, :prices) do
         nil -> []
@@ -1774,14 +2709,15 @@ defmodule GtfsPlanner.Gtfs.Fares do
       end
   end
 
-  defp name_stale(rows, expected) do
+  # The name the editor reviewed before confirming the delete, which is the one
+  # fact a rider type or payment method drawer shows besides its type. A form
+  # that reviewed no name has no fence to trip.
+  defp name_stale(expected, stored) do
     case Map.fetch(expected, :name) do
       :error ->
         []
 
       {:ok, name} ->
-        stored = fare_rows_name(rows)
-
         if stored == name do
           []
         else
@@ -2333,6 +3269,159 @@ defmodule GtfsPlanner.Gtfs.Fares do
   # -- Undoing a price change -----------------------------------------------------
 
   # -- Undoing a fare change ------------------------------------------------------
+
+  # Applies a `save_rider_type/2`, `delete_rider_type/3`,
+  # `save_payment_method/2` or `delete_payment_method/3` inverse.
+  #
+  # These four writers share one inverse key, because each changes two things:
+  # the `rider_categories` or `fare_media` row, and the `fare_products` rows that
+  # named it. A save's price rows are checked through the same fence
+  # `save_prices/2`'s inverse uses; a delete's rows must still be gone, and the
+  # definition row a save wrote must still hold what that save left. Anything else
+  # answers `{:error, :stale}` and changes nothing (R15, AC-26).
+  defp undo_definition(organization_id, gtfs_version_id, operation_id, inverse) do
+    with :ok <- require_entry(operation_id, organization_id, gtfs_version_id),
+         :ok <- require_definition_unchanged(organization_id, gtfs_version_id, inverse) do
+      restore_definition(organization_id, gtfs_version_id, inverse)
+
+      {:ok,
+       %{
+         before: [],
+         after: [],
+         inverse: nil,
+         operation_id: operation_id,
+         action: "rolled_back",
+         rolled_back_to_log_id: operation_id
+       }}
+    end
+  end
+
+  # A saved definition's prices must still hold what the write left, and the
+  # definition row itself must still be there; a deleted one's rows and its own
+  # row must still be gone.
+  defp require_definition_unchanged(organization_id, gtfs_version_id, inverse) do
+    stale? =
+      case inverse do
+        %{operation: :save, fare_products: states, row: row, schema: schema} ->
+          require_unchanged(organization_id, gtfs_version_id, states) == {:error, :stale} or
+            not definition_present?(schema, organization_id, gtfs_version_id, row.id) or
+            not definition_untouched?(schema, organization_id, gtfs_version_id, row)
+
+        %{operation: :delete, fare_products: rows, row: row, schema: schema} ->
+          Enum.any?(rows, &fetch_price(organization_id, gtfs_version_id, &1.id)) or
+            definition_present?(schema, organization_id, gtfs_version_id, row.id)
+
+        _other ->
+          true
+      end
+
+    if stale?, do: {:error, :stale}, else: :ok
+  end
+
+  # R15's fence for a saved definition: the row must still hold the values this
+  # write left, not merely still be there. A rider type renamed since the write,
+  # or a method whose name or kind moved, is a later edit the reversal must not
+  # revert on top of.
+  defp definition_untouched?(schema, organization_id, gtfs_version_id, row) do
+    current =
+      from(r in schema,
+        where:
+          r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id and
+            r.id == ^row.id
+      )
+      |> Repo.one()
+
+    current != nil and
+      Enum.all?(row.after, fn {field, value} ->
+        Map.fetch!(current, field) == value
+      end)
+  end
+
+  defp definition_present?(schema, organization_id, gtfs_version_id, id) do
+    Repo.exists?(
+      from(row in schema,
+        where:
+          row.organization_id == ^organization_id and
+            row.gtfs_version_id == ^gtfs_version_id and
+            row.id == ^id
+      )
+    )
+  end
+
+  defp restore_definition(organization_id, gtfs_version_id, inverse) do
+    case inverse do
+      %{operation: :save} = inverse ->
+        restore_prices(organization_id, gtfs_version_id, inverse.fare_products)
+        restore_saved_definition(organization_id, gtfs_version_id, inverse.schema, inverse.row)
+        restore_default(organization_id, gtfs_version_id, inverse)
+
+      %{operation: :delete} = inverse ->
+        Enum.each(inverse.fare_products, &Repo.insert!(Ecto.Changeset.change(&1)))
+        Repo.insert!(Ecto.Changeset.change(inverse.row))
+
+        :ok
+    end
+  end
+
+  # A definition row this write created is deleted again, and a row it changed
+  # goes back to the values it held. Both statements re-assert the version pair,
+  # so a row that moved between versions is never written through this path
+  # (INV-5).
+  defp restore_saved_definition(
+         organization_id,
+         gtfs_version_id,
+         schema,
+         %{before: nil, id: id}
+       ) do
+    Repo.delete_all(
+      from(row in schema,
+        where:
+          row.organization_id == ^organization_id and
+            row.gtfs_version_id == ^gtfs_version_id and
+            row.id == ^id
+      )
+    )
+  end
+
+  defp restore_saved_definition(
+         organization_id,
+         gtfs_version_id,
+         schema,
+         %{before: before, id: id}
+       ) do
+    Repo.update_all(
+      from(row in schema,
+        where:
+          row.organization_id == ^organization_id and
+            row.gtfs_version_id == ^gtfs_version_id and
+            row.id == ^id
+      ),
+      set: Keyword.new(Map.merge(before, %{updated_at: DateTime.utc_now()}))
+    )
+  end
+
+  # The rider type whose default flag this write cleared goes back to being the
+  # default, since R8 needs exactly one and this write is what took it away.
+  # A payment method change moves no flag, and answers `:ok` for this.
+  defp restore_default(organization_id, gtfs_version_id, inverse) do
+    case Map.get(inverse, :cleared_default) do
+      nil ->
+        :ok
+
+      rider_id ->
+        Repo.update_all(
+          from(row in RiderCategory,
+            where:
+              row.organization_id == ^organization_id and
+                row.gtfs_version_id == ^gtfs_version_id and
+                row.rider_category_id == ^rider_id
+          ),
+          set: [is_default_fare_category: 1, updated_at: DateTime.utc_now()]
+        )
+
+        :ok
+    end
+  end
 
   # Applies a `save_fare/2` or `delete_fare/4` inverse.
   #
