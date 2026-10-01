@@ -360,8 +360,11 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   def handle_async(:address_search, {:exit, reason}, socket) do
     Logger.error("Geocoding autocomplete task exited: #{inspect(reason)}")
 
+    # An exit has no generation payload; a closed and reopened drawer is no
+    # longer searching even if LiveView still holds the earlier task reference.
     {:noreply,
-     if(socket.assigns.garage_drawer_open,
+     if(socket.assigns.garage_drawer_open and
+          socket.assigns.address_search_state == :searching,
        do: assign(socket, :address_search_state, :failed),
        else: socket
      )}

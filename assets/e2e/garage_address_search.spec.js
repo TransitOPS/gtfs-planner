@@ -26,6 +26,7 @@ for (const label of ["desktop", "320px"]) {
     await page.locator("#add-garage, #add-garage-empty").click();
     await expect(page.locator("#garage-drawer-overlay")).toHaveAttribute("data-open", "true");
     const address = page.locator("#garage-address input[type='text']");
+    // The browser geocoding adapter holds this query until zz-release runs.
     await address.fill("zz-slow");
     await expect(page.locator("#garage-address-search-status")).toHaveText("Searching addresses…");
     await expect(page.locator("#garage-address-search-status")).toBeVisible();
@@ -33,6 +34,9 @@ for (const label of ["desktop", "320px"]) {
     expect(await bodyFitsViewport(page)).toBe(true);
     await capture(page, `garage-address-searching-${label}`);
     await expect(page.locator("#garage-address-search-status")).toHaveText("Searching addresses…");
+
+    await address.fill("zz-release");
+    await expect(page.locator("#garage-address-search-status")).toHaveText("No matching addresses");
 
     await address.fill("zz-fail");
     await expect(page.locator("#garage-address-search-status")).toContainText(
@@ -43,6 +47,9 @@ for (const label of ["desktop", "320px"]) {
     await expect(address).toHaveValue("zz-fail");
     expect(await bodyFitsViewport(page)).toBe(true);
     await capture(page, `garage-address-failed-${label}`);
+    await expect(page.locator("#garage-address-search-status")).toContainText(
+      "Address search is unavailable.",
+    );
 
     await page.locator("#garage-address-retry").click();
     await expect(page.locator("#garage-address-search-status")).toContainText(

@@ -449,6 +449,60 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
       refute has_element?(view, "#garage-address-search-status")
     end
 
+    test "a failed search from a closed drawer does not mark a reopened drawer failed", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      test_pid = self()
+
+      Mox.expect(GtfsPlanner.GeocodingMock, :autocomplete, fn "Main", _opts ->
+        send(test_pid, {:pending_search, self()})
+
+        receive do
+          :fail_search -> raise "geocoding task failed"
+        end
+      end)
+
+      {:ok, view, _html} = open_editor(conn, user, organization, version)
+      open_add(view)
+      render_hook(view, "live_select_change", %{"text" => "Main", "id" => "garage-address"})
+      assert_receive {:pending_search, task}
+
+      view |> element("#garage-cancel") |> render_click()
+      open_add(view)
+      assert has_element?(view, "dialog#garage-drawer-overlay[data-open='true']")
+      refute has_element?(view, "#garage-address-search-status")
+
+      ref = Process.monitor(task)
+      send(task, :fail_search)
+      assert_receive {:DOWN, ^ref, :process, ^task, reason}
+      refute reason == :normal
+      _ = :sys.get_state(view.pid)
+      refute has_element?(view, "#garage-address-search-status")
+      refute has_element?(view, "#garage-address", "120 Depot Road, Cedar Valley")
+    end
+
+    test "the current search shows retry when its task exits", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      Mox.expect(GtfsPlanner.GeocodingMock, :autocomplete, fn "Main", _opts ->
+        raise "geocoding task failed"
+      end)
+
+      {:ok, view, _html} = open_editor(conn, user, organization, version)
+      open_add(view)
+      render_hook(view, "live_select_change", %{"text" => "Main", "id" => "garage-address"})
+      render_async(view)
+
+      assert has_element?(view, "#garage-address-search-status", "Address search is unavailable.")
+      assert has_element?(view, "#garage-address-retry")
+    end
+
     test "empty results and retry keep the address search recoverable", %{
       conn: conn,
       user: user,
