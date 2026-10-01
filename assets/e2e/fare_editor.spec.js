@@ -928,3 +928,209 @@ test("bulk", async ({ page }, testInfo) => {
 
   await captureReference(page, testInfo, "?state=bulk", "ref-bulk");
 });
+
+// ── setup ───────────────────────────────────────────────────────────────────
+
+// The Prices tab's first-use setup, the fare-free summary, an imported
+// version's read-only view with its conversion review, and the mismatch banner.
+// Each state is proved through the DOM the LiveView renders, and each capture is
+// taken at both prepared viewports beside the prototype state it follows.
+test("setup", async ({ page }, testInfo) => {
+  await routeBlankTiles(page);
+  await logIn(page);
+
+  const found = {};
+  for (const [key, name] of Object.entries(VERSIONS)) {
+    found[key] = await versionIdByName(page, name);
+  }
+
+  const openVersion = async (versionId) => {
+    await page.goto(`/gtfs/${versionId}/settings/fares`);
+    await waitForLiveView(page);
+  };
+
+  // ── the first-use setup ────────────────────────────────────────────────
+  // A version with no fare rows asks the four questions instead of drawing the
+  // grid, and carries its one primary inside the panel rather than in the
+  // header beside it.
+  await openVersion(found.blank);
+
+  await expect(page.locator("#fare-setup")).toBeAttached();
+  await expect(page.locator("#fare-table")).toHaveCount(0);
+  await expect(page.locator("#create-fare")).toHaveCount(0);
+  await expect(page.locator("#setup-create")).toBeAttached();
+  await expect(page.locator("#setup-step-1")).toBeAttached();
+  await expect(page.locator("#setup-step-2")).toBeAttached();
+
+  // The live result card reads the answers as they stand.
+  await expect(page.locator("#setup-result")).toContainText("$1.50");
+  await expect(page.locator("#setup-result")).toContainText("Reduced fare $0.75");
+  await expect(page.locator("#setup-result")).toContainText(
+    "Creates 1 fare, 3 rider types, 1 transfer rule.",
+  );
+
+  // Choosing a different structure changes what is asked, and the card follows.
+  await page.locator("#setup-kind-route").check();
+  await expect(page.locator("#setup-groups")).toBeAttached();
+  await expect(page.locator("#setup-adult")).toHaveCount(0);
+  await expect(page.locator("#setup-group-0-name")).toHaveValue("Local routes");
+  await expect(page.locator("#setup-group-0-price")).toHaveValue("1.50");
+
+  // A third group is the one answer that is not a field.
+  await page.locator("#add-route-group").click();
+  await expect(page.locator("#setup-group-2-name")).toHaveValue("");
+
+  // A price the writer will not read is refused on the field it names, and
+  // nothing is written.
+  await page.locator("#setup-kind-flat").check();
+  await page.locator("#setup-adult").fill("one fifty");
+  await page.locator("#setup-adult").blur();
+  await page.locator("#setup-create").click();
+
+  await expect(page.locator("#fare-setup")).toBeAttached();
+  await expect(page.locator("#setup-error-summary")).toBeAttached();
+  await expect(page.locator("#setup-adult-error")).toBeAttached();
+
+  // ── captures ────────────────────────────────────────────────────────────
+  for (const viewport of [DESKTOP, PHONE]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await openVersion(found.blank);
+
+    await expect(page.locator("#fare-setup")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await capture(page, testInfo, `setup-first-use-${viewport.label}`);
+
+    // The route structure, whose group rows are the widest answer.
+    await page.locator("#setup-kind-route").check();
+    await expect(page.locator("#setup-groups")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await capture(page, testInfo, `setup-first-use-route-${viewport.label}`);
+
+    // The zone structure's own question.
+    await page.locator("#setup-kind-zone").check();
+    await expect(page.locator("#setup-adult")).toHaveValue("1.50");
+    await expect(page.locator("#setup-zone-help")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await capture(page, testInfo, `setup-first-use-zone-${viewport.label}`);
+
+    // A refused answer, with the summary and the field's own reason.
+    await page.locator("#setup-kind-flat").check();
+    await page.locator("#setup-adult").fill("one fifty");
+    await page.locator("#setup-adult").blur();
+    await page.locator("#setup-create").click();
+    await expect(page.locator("#setup-error-summary")).toBeAttached();
+    await capture(page, testInfo, `setup-refused-${viewport.label}`);
+  }
+
+  // Create fares writes the whole set and lands on the Prices grid.
+  await openVersion(found.blank);
+  await page.locator("#setup-adult").fill("1.50");
+  await page.locator("#setup-adult").blur();
+  await page.locator("#setup-create").click();
+
+  await expect(page.locator("#fare-setup")).toHaveCount(0);
+  await expect(page.locator("#fare-table")).toBeAttached();
+  await expect(page.locator("#fare-note")).toContainText("Fares created");
+  await expect(page.locator("#create-fare")).toBeAttached();
+  await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
+  await expect(page.locator("#price-local_ride-reduced")).toHaveValue("$0.75");
+  await expect(page.locator("#price-local_ride-child")).toHaveValue("Free");
+
+  // The fare-free summary is the state the free structure leaves behind. Undo
+  // takes the version back to the setup, so the same version draws it without a
+  // second fixture.
+  await page.locator("#undo-prices").click();
+  await expect(page.locator("#fare-setup")).toBeAttached();
+
+  await openVersion(found.blank);
+  await page.locator("#setup-kind-free").check();
+  await page.locator("#setup-create").click();
+  await expect(page.locator("#fare-free")).toBeAttached();
+
+  for (const viewport of [DESKTOP, PHONE]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await openVersion(found.blank);
+
+    // The summary replaces the grid: there is no price here to type, and the
+    // header carries no primary of its own.
+    await expect(page.locator("#fare-free")).toBeAttached();
+    await expect(page.locator("#fare-table")).toHaveCount(0);
+    await expect(page.locator("#create-fare")).toHaveCount(0);
+    await expect(page.locator("#fare-free-lede")).toContainText("Free");
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await capture(page, testInfo, `setup-free-${viewport.label}`);
+
+    // "Start charging fares" opens the fare the setup wrote, in the same drawer
+    // the grid's own fare names open.
+    await page.locator("#start-charging-fares").click();
+    await expect(page.locator("#fare-drawer")).toBeAttached();
+    await expect(page.locator("#fare-name")).toHaveValue("Free ride");
+    await captureDrawer(page, testInfo, `setup-free-drawer-${viewport.label}`);
+    await page.locator("#fare-drawer-close").click();
+    await expect(page.locator("#fare-drawer")).toHaveCount(0);
+  }
+
+  // ── an imported version ────────────────────────────────────────────────
+  // The stored fares are drawn, and none of them can be typed into.
+  await openVersion(found.unmanaged);
+
+  await expect(page.locator("#unmanaged-fares")).toBeAttached();
+  await expect(page.locator("#edit-fares")).toBeAttached();
+  await expect(page.locator("#unmanaged-v1-table")).toContainText("LOCAL");
+  await expect(page.locator("#fare-table input[name^='price[']")).toHaveCount(0);
+  await expect(page.locator("#change-prices")).toHaveCount(0);
+  await expect(page.locator("#create-fare")).toHaveCount(0);
+
+  await page.locator("#edit-fares").click();
+  await expect(page.locator("#conversion-review")).toBeAttached();
+  await expect(page.locator("#conversion-review-confirm")).toHaveText(
+    "Convert fares",
+  );
+  await expect(page.locator("#conversion-price-differences")).toContainText("0");
+  await expect(page.locator("#conversion-counts")).toContainText("5 fares");
+  await expect(page.locator("#conversion-known-differences")).toBeAttached();
+  await expect(page.locator("#conversion-kept-older")).toContainText("COAST");
+
+  for (const viewport of [DESKTOP, PHONE]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await openVersion(found.unmanaged);
+    await page.locator("#edit-fares").click();
+    await expect(page.locator("#conversion-review")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `setup-conversion-review-${viewport.label}`);
+    await page.locator("#conversion-review-cancel").click();
+  }
+
+  // Convert makes the grid editable, and the imported rows are left as they
+  // were: the version exports what it imported until somebody changes a price.
+  await openVersion(found.unmanaged);
+  await page.locator("#edit-fares").click();
+  await page.locator("#conversion-review-confirm").click();
+
+  await expect(page.locator("#conversion-review")).toHaveCount(0);
+  await expect(page.locator("#fare-table")).toBeAttached();
+  await expect(page.locator("#create-fare")).toBeAttached();
+  await expect(page.locator("#fare-note")).toContainText("Fares converted");
+  await expect(page.locator("#fare-table input[name^='price[']")).not.toHaveCount(0);
+
+  // ── the mismatch banner ────────────────────────────────────────────────
+  await openVersion(found.mismatch);
+
+  await expect(page.locator("#fares-mismatch")).toBeAttached();
+  await expect(page.locator("#fares-mismatch-detail")).toContainText("LOCAL");
+  await expect(page.locator("#fares-mismatch-detail")).toContainText("$1.75");
+
+  for (const viewport of [DESKTOP, PHONE]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await openVersion(found.mismatch);
+    await expect(page.locator("#fares-mismatch")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await capture(page, testInfo, `setup-mismatch-${viewport.label}`);
+  }
+
+  await captureReference(page, testInfo, "?state=first-use", "ref-setup-first-use");
+  await captureReference(page, testInfo, "?state=first-use-route", "ref-setup-route");
+  await captureReference(page, testInfo, "?state=first-use-zone", "ref-setup-zone");
+  await captureReference(page, testInfo, "?state=imported-v1", "ref-setup-imported");
+  await captureReference(page, testInfo, "?state=mismatch", "ref-setup-mismatch");
+});

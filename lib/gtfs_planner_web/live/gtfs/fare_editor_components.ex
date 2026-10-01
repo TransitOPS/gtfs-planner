@@ -73,9 +73,14 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
   attr :transfers?, :boolean, default: false, doc: "whether the version holds a transfer rule"
   attr :dirty?, :boolean, default: false, doc: "whether the Prices tab holds unsaved prices"
 
+  attr :prices_ready?,
+       :boolean,
+       default: true,
+       doc: "whether the Prices tab asks a question of its own instead of drawing the grid"
+
   def header_primary(assigns) do
     ~H"""
-    <%= case header_action(@active_tab, @ready?, @transfers?, @dirty?) do %>
+    <%= case header_action(@active_tab, @ready?, @transfers?, @dirty?, @prices_ready?) do %>
       <% :none -> %>
       <% {:button, id, label, variant, event} -> %>
         <.button
@@ -96,18 +101,25 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
   # Prices names an event, because the fare drawer is the one primary this page
   # owns; the other two belong to the Where and Transfers tabs, whose drawers
   # arrive in their own steps.
-  defp header_action(:prices, true, _transfers?, dirty?),
+  #
+  # Prices has none while the tab is asking its own question — the first-use
+  # setup, the fare-free summary or an imported version's read-only view — because
+  # each of those carries the one primary that answers it and two primaries on
+  # one view is a choice an operator cannot make (AC-43).
+  defp header_action(:prices, true, _transfers?, _dirty?, false), do: :none
+
+  defp header_action(:prices, true, _transfers?, dirty?, _ready?),
     do:
       {:button, "create-fare", "Create fare", if(dirty?, do: "secondary", else: "primary"),
        "open_fare_drawer"}
 
-  defp header_action(:where, true, _transfers?, _dirty?),
+  defp header_action(:where, true, _transfers?, _dirty?, _prices_ready?),
     do: {:button, "add-fare-rule", "Add fare rule", "primary", nil}
 
-  defp header_action(:transfers, true, true, _dirty?),
+  defp header_action(:transfers, true, true, _dirty?, _prices_ready?),
     do: {:button, "add-transfer-rule", "Add transfer rule", "primary", nil}
 
-  defp header_action(_active_tab, _ready?, _transfers?, _dirty?), do: :none
+  defp header_action(_active_tab, _ready?, _transfers?, _dirty?, _prices_ready?), do: :none
 
   @doc """
   Renders the shell's first-paint skeleton.
@@ -200,6 +212,11 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
   attr :edits, :map, required: true
   attr :lens?, :boolean, default: false
   attr :carried, :any, default: nil, doc: "the fare ids the older format carries, as a MapSet"
+
+  attr :readonly?, :boolean,
+    default: false,
+    doc: "the version is unmanaged, so no cell is editable"
+
   attr :class, :any, default: nil
   attr :rest, :global
 
@@ -235,6 +252,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
           /> Show what the older format includes
         </label>
         <.button
+          :if={not @readonly?}
           id="change-prices"
           type="button"
           variant="secondary"
@@ -281,6 +299,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
               >
                 <div class="flex items-end justify-end gap-0.5">
                   <.button
+                    :if={not @readonly?}
                     id={"rider-edit-#{rider.rider_category_id}"}
                     type="button"
                     variant="quiet"
@@ -305,6 +324,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
               </th>
               <th class="w-[1%] border-b border-subtle bg-canvas px-2 py-1 text-right align-bottom">
                 <.button
+                  :if={not @readonly?}
                   id="create-rider"
                   type="button"
                   variant="quiet"
@@ -337,6 +357,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
                     class="border-b border-subtle px-4 py-2 text-left align-top font-normal"
                   >
                     <button
+                      :if={not @readonly?}
                       type="button"
                       id={"fare-open-#{fare_slug(fare)}"}
                       phx-click="open_fare_drawer"
@@ -351,8 +372,14 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
                         {fare_where_text(fare, @workspace)}
                       </span>
                     </button>
+                    <span :if={@readonly?} class="block">
+                      <span class="block text-sm font-bold text-strong">{fare.name}</span>
+                      <span class="block text-[13px] font-normal text-default">
+                        {fare_where_text(fare, @workspace)}
+                      </span>
+                    </span>
                     <span
-                      :if={length(fare.media) < length(@workspace.media)}
+                      :if={@readonly? or length(fare.media) < length(@workspace.media)}
                       class="block text-[12px] text-muted"
                     >
                       {fare_pay_text(fare, @workspace)}
@@ -369,6 +396,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
                         edits={@edits}
                         lens?={@lens?}
                         carried={@carried}
+                        readonly?={@readonly?}
                       />
                     </td>
                   <% end %>
@@ -393,6 +421,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
                         edits={@edits}
                         lens?={@lens?}
                         carried={@carried}
+                        readonly?={@readonly?}
                       />
                     </td>
                   <% end %>
@@ -404,7 +433,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
         </table>
       </div>
 
-      <p class="px-4 py-3 text-[13px] text-muted sm:px-5">
+      <p :if={not @readonly?} class="px-4 py-3 text-[13px] text-muted sm:px-5">
         Type a price and press Tab to move to the next one. Enter
         <b class="font-semibold text-default">Free</b>
         for no charge. Leave a price blank when that rider
@@ -438,6 +467,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
   attr :edits, :map, required: true
   attr :lens?, :boolean, default: false
   attr :carried, :any, default: nil, doc: "the fare ids the older format carries, as a MapSet"
+  attr :readonly?, :boolean, default: false
 
   def price_cell(assigns) do
     ~H"""
@@ -445,7 +475,15 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
       class={["relative", lens_class(@lens?, v1_cell?(@fare, @rider, @medium_id, @carried))]}
       data-lens={lens_state(@lens?, v1_cell?(@fare, @rider, @medium_id, @carried))}
     >
+      <span
+        :if={@readonly?}
+        id={cell_id(@fare, @rider, @medium_id)}
+        class="flex h-11 w-full min-w-[88px] items-center justify-end px-3 text-sm text-strong"
+      >
+        {stored_cell_text(@fare, @rider, @medium_id, @workspace)}
+      </span>
       <input
+        :if={not @readonly?}
         type="text"
         id={cell_id(@fare, @rider, @medium_id)}
         name={"price[#{cell_key(@fare, @rider, @medium_id)}]"}
@@ -902,6 +940,16 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
 
   defp cell_edit_text(%{invalid?: true, text: text}, _currency), do: text
   defp cell_edit_text(%{amount: amount}, currency), do: Money.format(amount, currency) || ""
+
+  # A stored cell's own text: what the version holds, formatted the way the grid
+  # formats an unchanged cell, so a read-only view and the grid never disagree
+  # about a price.
+  defp stored_cell_text(fare, rider, medium_id, workspace) do
+    case stored_amount(fare, rider, medium_id) do
+      nil -> "Not sold"
+      amount -> Money.format(amount, workspace.currency)
+    end
+  end
 
   defp cell_changed?(fare, rider, medium_id, edits) do
     Map.has_key?(edits, cell_key(fare, rider, medium_id))
@@ -2191,6 +2239,835 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
         </p>
       </div>
     </.confirm_dialog>
+    """
+  end
+
+  # -- Setup, fare-free and conversion ------------------------------------------
+
+  @doc """
+  Renders the first-use setup: the four questions a version with no fare rows at
+  all asks before it can price a ride.
+
+  `setup` is the LiveView's own draft, rebuilt from the form on every change:
+  the structure, the adult price or the route groups' own, the rider types the
+  agency charges less for, the transfer answer and its minutes, plus whatever the
+  last submit found. `form` is the `to_form` of the same draft, so the price and
+  minutes fields render through `<.input>` while the choice cards and the
+  checkboxes are named plainly.
+
+  The live result card under the questions recomputes from the draft as it is
+  typed, so the answer is what riders will see rather than a promise about it.
+  Nothing here writes: "Create fares" is the form's own submit, and the writer
+  it reaches is `GtfsPlanner.Gtfs.Fares.Conversion.setup/2`.
+  """
+  attr :setup, :map, required: true
+  attr :form, :any, required: true
+  attr :version_name, :string, required: true
+  attr :published?, :boolean, default: true
+
+  def fare_setup(assigns) do
+    assigns = assign(assigns, :priced?, assigns.setup["kind"] != "free")
+
+    ~H"""
+    <section id="fare-setup" class="rounded-card border border-subtle bg-white px-4 py-5 sm:px-6">
+      <h2 class="font-display text-[26px] font-semibold tracking-[-0.02em] text-strong">
+        Set up fares for {setup_version_phrase(@version_name)}
+      </h2>
+      <p class="mt-1 max-w-[70ch] text-sm text-muted">
+        This version has no fares yet, so trip planners show no price for any ride. Answer the
+        questions below to create a starting set. You can change every price and rule afterwards.
+      </p>
+
+      <.form
+        for={@form}
+        id="fare-setup-form"
+        as={:setup}
+        novalidate
+        phx-change="validate_setup"
+        phx-submit="create_fares"
+        class="mt-6 grid max-w-[760px] gap-7"
+      >
+        <.form_error_summary
+          id="setup-error-summary"
+          title={setup_error_title(length(@setup["failures"]))}
+          failures={@setup["failures"]}
+          class="mb-0"
+        />
+
+        <section class="grid gap-3">
+          <.step_head id="setup-step-1" number={1} title="How do riders pay for a ride?" />
+          <div class="pl-0 sm:pl-10">
+            <.choice_cards
+              id="setup-kind"
+              name="setup[kind]"
+              type="radio"
+              label="Pricing structure"
+              selected={List.wrap(@setup["kind"])}
+              options={setup_structure_options()}
+            />
+          </div>
+        </section>
+
+        <section :if={@priced?} class="grid gap-3">
+          <.step_head
+            id="setup-step-2"
+            number={2}
+            title={setup_price_question(@setup["kind"])}
+          />
+          <div class="pl-0 sm:pl-10">
+            <div :if={@setup["kind"] != "route"} class="grid gap-2">
+              <div class="max-w-[220px]">
+                <label for="setup-adult" class="mb-1 block text-base font-semibold">
+                  {setup_price_label(@setup["kind"])}
+                </label>
+                <.fare_price_input
+                  id="setup-adult"
+                  name="setup[adult]"
+                  value={@setup["adult"]}
+                  label={setup_price_label(@setup["kind"])}
+                  invalid?={@setup["adult_error"] != nil}
+                />
+                <p
+                  :if={@setup["adult_error"]}
+                  id="setup-adult-error"
+                  class="mt-1 flex items-start gap-1.5 text-[13px] font-semibold text-error-fg"
+                >
+                  <.icon name="hero-exclamation-circle" class="mt-px size-4 shrink-0" />
+                  <span>{@setup["adult_error"]}</span>
+                </p>
+                <p :if={setup_price_help(@setup["kind"])} class="mt-1.5 text-sm text-muted">
+                  {setup_price_help(@setup["kind"])}
+                </p>
+              </div>
+              <p :if={@setup["kind"] == "zone"} id="setup-zone-help" class="text-sm text-default">
+                You’ll draw zones and set a price for each pair of zones next.
+              </p>
+            </div>
+
+            <fieldset :if={@setup["kind"] == "route"} id="setup-groups" class="min-w-0">
+              <legend class="sr-only">Route groups and their adult prices</legend>
+              <div class="grid gap-3">
+                <div
+                  :for={group <- Enum.with_index(@setup["groups"])}
+                  class="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_140px]"
+                >
+                  <.input
+                    id={"setup-group-#{elem(group, 1)}-name"}
+                    name={"setup[groups][#{elem(group, 1)}][name]"}
+                    type="text"
+                    label="Route group"
+                    value={elem(group, 0)["name"]}
+                    placeholder="Local routes"
+                    autocomplete="off"
+                    class="min-h-11"
+                  />
+                  <.fare_price_input
+                    id={"setup-group-#{elem(group, 1)}-price"}
+                    name={"setup[groups][#{elem(group, 1)}][price]"}
+                    value={elem(group, 0)["price"]}
+                    label={"#{elem(group, 0)["name"] || "Route group"} adult price"}
+                  />
+                </div>
+              </div>
+              <.button
+                id="add-route-group"
+                type="button"
+                variant="quiet"
+                class="mt-3 min-h-11"
+                phx-click="add_route_group"
+              >
+                <.icon name="hero-plus" class="size-4" /> Add route group
+              </.button>
+              <p class="mt-2 text-[13px] text-muted">
+                You choose which routes belong to each group on Where fares apply. Routes start in
+                the first group.
+              </p>
+            </fieldset>
+          </div>
+        </section>
+
+        <section :if={@priced?} class="grid gap-3">
+          <.step_head id="setup-step-3" number={3} title="Do some riders pay less?">
+            Each becomes a rider type with its own column of prices.
+          </.step_head>
+          <div class="grid pl-0 sm:pl-10">
+            <.fare_checkbox
+              id="setup-reduced"
+              name="setup[reduced]"
+              value="true"
+              checked={@setup["reduced"]}
+              label="Reduced fare for seniors and riders with disabilities, at half price"
+              help="US transit agencies that receive FTA formula funds must offer these riders no more than half the peak fare during off-peak hours."
+            />
+            <.fare_checkbox
+              id="setup-youth"
+              name="setup[youth]"
+              value="true"
+              checked={@setup["youth"]}
+              label="Youth fare"
+              help="Starts at half price. Set the age range on the rider type’s eligibility page."
+            />
+            <.fare_checkbox
+              id="setup-child"
+              name="setup[child]"
+              value="true"
+              checked={@setup["child"]}
+              label="Young children ride free"
+              help="Creates “Children under 6” with free fares. Rename it to match your policy."
+            />
+          </div>
+        </section>
+
+        <section :if={@priced?} class="grid gap-3">
+          <.step_head
+            id="setup-step-4"
+            number={4}
+            title="Can riders change buses without paying again?"
+          />
+          <div class="grid pl-0 sm:pl-10">
+            <.fare_checkbox
+              id="setup-transfer"
+              name="setup[transfer]"
+              value="true"
+              checked={@setup["transfer"]}
+              label={transfer_label(@setup["minutes"])}
+              help="Change the time limit and the number of changes on the Transfers tab."
+            />
+            <div :if={@setup["transfer"]} class="mt-2 max-w-[200px]">
+              <.input
+                id="setup-minutes"
+                field={@form[:minutes]}
+                type="number"
+                label="Free transfers within (minutes)"
+                value={@setup["minutes"]}
+                min="1"
+                errors={List.wrap(@setup["minutes_error"])}
+                phx-debounce="300"
+              />
+            </div>
+          </div>
+        </section>
+
+        <div class="grid gap-3 pl-0 sm:pl-10">
+          <.setup_result setup={@setup} currency={setup_currency(@setup)} />
+          <div class="flex flex-wrap items-center gap-3">
+            <.button id="setup-create" type="submit" class="min-h-11">
+              Create fares
+            </.button>
+          </div>
+        </div>
+      </.form>
+    </section>
+    """
+  end
+
+  @doc """
+  Renders the fare-free summary: the one state where the version holds a fare and
+  the answer is that every ride costs nothing.
+
+  The summary replaces the grid rather than sitting above it, because the grid's
+  whole vocabulary is a price an operator can change and there is none here.
+  "Start charging fares" opens the same fare drawer the grid's own names open, so
+  the next step is editing the fare the setup created rather than answering the
+  setup questions a second time — `Conversion.setup/2` refuses a version that
+  already holds fare rows.
+  """
+  attr :workspace, :map, required: true
+  attr :version_name, :string, required: true
+
+  def fare_free_summary(assigns) do
+    ~H"""
+    <section id="fare-free" class="rounded-card border border-subtle bg-white">
+      <div class="flex flex-wrap items-start gap-5 px-4 py-5 sm:px-6">
+        <span class="flex size-12 shrink-0 items-center justify-center rounded-control bg-canvas text-strong">
+          <.icon name="hero-ticket" class="size-6" />
+        </span>
+        <div class="min-w-0 flex-1 basis-[360px]">
+          <h2 class="font-display text-[26px] font-semibold tracking-[-0.02em] text-strong">
+            Riders ride free
+          </h2>
+          <p id="fare-free-lede" class="mt-1 text-sm text-default">
+            Every ride on every route is free for every rider. Trip planners show “Free” for
+            journeys on {setup_version_phrase(@version_name)}.
+          </p>
+          <dl class="mt-4 grid gap-x-8 gap-y-3 sm:grid-cols-2">
+            <div>
+              <dt class="text-[13px] text-muted">In the exported feed</dt>
+              <dd class="text-sm text-strong">
+                One free fare for all routes, in both GTFS fare formats
+              </dd>
+            </div>
+            <div>
+              <dt class="text-[13px] text-muted">Changed</dt>
+              <dd id="fare-free-changed" class="text-sm text-strong">{changed_by(@workspace)}</dd>
+            </div>
+          </dl>
+        </div>
+        <.button
+          id="start-charging-fares"
+          type="button"
+          class="min-h-11"
+          phx-click="open_fare_drawer"
+          phx-value-fare_product_id={free_fare_product_id(@workspace)}
+          phx-value-opener_id="start-charging-fares"
+        >
+          Start charging fares
+        </.button>
+      </div>
+    </section>
+    """
+  end
+
+  @doc """
+  Renders a version whose fares came from an import and are not editable here.
+
+  The stored fares are shown exactly as they are: the `fare_attributes` rows as
+  adult prices when the import used only the older format, and the version's own
+  `fare_products` rows through the read-only fare table when it used Fares v2.
+  There is no price input anywhere, because every writer of this package refuses
+  an unmanaged version.
+
+  "Edit fares" opens the conversion review, which is the only path from an
+  imported feed to an editable one.
+  """
+  attr :workspace, :map, required: true
+  attr :unmanaged, :map, required: true
+
+  def unmanaged_fares(assigns) do
+    ~H"""
+    <div id="unmanaged-fares" class="grid grid-cols-1 gap-4">
+      <.message
+        id="imported-fares"
+        kind="info"
+        title="These fares came from your imported feed, which uses only the older GTFS fare format"
+      >
+        That format has one adult price per fare and no fare names, so each fare is named after
+        its feed ID. Rename them, and add rider types, passes or payment methods if riders have
+        them. Exports now also include the newer format, built from this table.
+        <:action>
+          <.button
+            id="edit-fares"
+            type="button"
+            variant="secondary"
+            class="min-h-11"
+            phx-click="open_conversion_review"
+            phx-value-opener_id="edit-fares"
+          >
+            <.icon name="hero-pencil-square" class="size-4" /> Edit fares
+          </.button>
+        </:action>
+      </.message>
+
+      <.fare_table
+        :if={@unmanaged.format == :v2}
+        workspace={@workspace}
+        edits={%{}}
+        readonly?
+      />
+
+      <section
+        :if={@unmanaged.format == :v1}
+        id="unmanaged-v1-table"
+        class="overflow-clip rounded-card border border-subtle bg-white"
+      >
+        <div class="border-b border-subtle px-4 py-2.5 sm:px-5">
+          <h2 class="font-sans text-base font-bold tracking-normal text-strong">Fares as imported</h2>
+          <p class="text-[13px] text-muted">
+            {counted(length(@unmanaged.attributes), "fare", "fares")} · one adult price per fare ·
+            prices in {currency_name(@workspace.currency)}
+          </p>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full border-collapse text-sm">
+            <caption class="sr-only">
+              Each imported fare, its adult price and the free transfers it allows.
+            </caption>
+            <thead>
+              <tr>
+                <th
+                  scope="col"
+                  class="min-w-[240px] border-b border-subtle bg-canvas px-4 py-2 text-left text-[13px] font-semibold text-strong"
+                >
+                  Fare
+                </th>
+                <th
+                  scope="col"
+                  class="w-[140px] border-b border-subtle bg-canvas px-4 py-2 text-right text-[13px] font-semibold text-strong"
+                >
+                  Adult price
+                </th>
+                <th
+                  scope="col"
+                  class="border-b border-subtle bg-canvas px-4 py-2 text-left text-[13px] font-semibold text-strong"
+                >
+                  Free transfers
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr :for={attribute <- @unmanaged.attributes} class="hover:bg-canvas/60">
+                <th
+                  scope="row"
+                  class="border-b border-subtle px-4 py-2 text-left align-top font-normal"
+                >
+                  <span class="block text-sm font-bold text-strong">{attribute.fare_id}</span>
+                  <span class="block text-[12px] text-muted">
+                    Named after its feed ID. Riders see this name.
+                  </span>
+                </th>
+                <td class="border-b border-subtle px-4 py-2 text-right align-top tabular-nums text-strong">
+                  {attribute.price |> Money.format(@workspace.currency)}
+                </td>
+                <td class="border-b border-subtle px-4 py-2 align-top text-default">
+                  {transfer_allowance(attribute)}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders the conversion review: what converting this version's imported fares
+  would write, or why it must not.
+
+  `conversion` is the LiveView's whole review state. `:state` is `:ok` with the
+  plan `GtfsPlanner.Gtfs.Fares.Conversion.preview/2` returned — the rows each
+  table would gain, the differences R12 records rather than refuses, and the
+  `contains_id` rules that stay in the older format — or `:refused` with the
+  reasons it answered instead.
+
+  A refused review offers Close alone: there is no Convert button to press over
+  a conversion R12 forbids, so nothing here can be mistaken for one.
+  """
+  attr :conversion, :map, required: true
+  attr :return_focus_id, :string, default: nil
+
+  def conversion_review(assigns) do
+    ~H"""
+    <.confirm_dialog
+      id="conversion-review"
+      chrome="planner"
+      open={true}
+      size="xl"
+      title={conversion_title(@conversion)}
+      confirm_label="Convert fares"
+      pending_label="Converting…"
+      on_confirm="convert_fares"
+      on_cancel="close_conversion_review"
+      cancel_label="Close"
+      return_focus_id={@return_focus_id}
+      single_action={@conversion.state == :refused}
+    >
+      <div id="conversion-review-content" class="grid gap-4">
+        <%= if @conversion.state == :refused do %>
+          <div id="conversion-review-refused" class="grid gap-3">
+            <p class="text-sm font-semibold text-error-fg">
+              These fares can’t be edited here yet, and nothing was written.
+            </p>
+            <ul class="grid gap-2 text-sm">
+              <li
+                :for={reason <- @conversion.reasons}
+                id={"conversion-refusal-#{reason.code}"}
+                class="rounded-card bg-canvas px-3 py-2"
+              >
+                <span class="block font-bold text-strong">{reason.message}</span>
+                <ul :if={reason.examples != []} class="mt-1 list-disc pl-5 text-default">
+                  <li :for={example <- reason.examples}>{example}</li>
+                </ul>
+              </li>
+            </ul>
+          </div>
+        <% else %>
+          <p id="conversion-review-summary" class="text-sm text-default">
+            Converting builds the newer GTFS fare files from these rows.
+          </p>
+
+          <p id="conversion-price-differences" class="text-sm text-default">
+            <span class="font-bold text-strong">
+              {@conversion.plan.price_differences}
+            </span>
+            price differences: no rider is charged a different price, because the conversion is
+            checked against every combination this version can be asked for and a difference
+            refuses the whole conversion.
+          </p>
+
+          <div>
+            <h4 class="text-[13px] font-bold text-strong">What it creates</h4>
+            <ul id="conversion-counts" class="mt-1 grid gap-0.5 text-sm text-default">
+              <li :for={row <- conversion_counts(@conversion.plan)}>{row}</li>
+            </ul>
+          </div>
+
+          <div :if={@conversion.plan.known_differences != []}>
+            <h4 class="text-[13px] font-bold text-strong">What changes for riders</h4>
+            <ul id="conversion-known-differences" class="mt-1 list-disc pl-5 text-sm text-default">
+              <li :for={difference <- @conversion.plan.known_differences}>{difference}</li>
+            </ul>
+          </div>
+
+          <div :if={@conversion.plan.kept_older_only != []}>
+            <h4 class="text-[13px] font-bold text-strong">Kept in the older format</h4>
+            <ul
+              id="conversion-kept-older"
+              class="mt-1 grid gap-1 text-sm text-default"
+            >
+              <li :for={row <- @conversion.plan.kept_older_only}>
+                <span class="font-semibold text-strong">{row.fare_id}</span>
+                {row.reason}
+              </li>
+            </ul>
+          </div>
+
+          <p id="conversion-review-note" class="text-[13px] text-muted">
+            Your imported files are left exactly as they were. Undo reverses the conversion and
+            returns the version to what was imported.
+          </p>
+        <% end %>
+
+        <p
+          :if={@conversion.error}
+          id="conversion-review-error"
+          class="text-sm font-semibold text-error-fg"
+        >
+          {@conversion.error}
+        </p>
+      </div>
+    </.confirm_dialog>
+    """
+  end
+
+  @doc """
+  Renders the mismatch banner for a managed version that still holds the
+  `fare_attributes` its import stored while the export writes the ones derived
+  from the version's own fare rows.
+
+  `differences` is that comparison, already filtered to the fares the two sets
+  price differently. "Keep older format as imported" calls
+  `GtfsPlanner.Gtfs.Fares.set_older_format/2`, which is the only way the stored
+  price survives an export.
+  """
+  attr :differences, :list, required: true
+  attr :currency, :string, default: "USD"
+
+  def fares_mismatch_banner(assigns) do
+    ~H"""
+    <.message
+      id="fares-mismatch"
+      kind="warning"
+      role="status"
+      title="Your imported feed describes these fares twice, and the two descriptions disagree"
+    >
+      <p id="fares-mismatch-detail">
+        {Enum.map_join(@differences, "; ", &mismatch_sentence(&1, @currency))}. This table uses the newer
+        format, which the GTFS reference says to prefer. Exports rebuild the older format from it,
+        so {if length(@differences) == 1,
+          do: "the price above",
+          else: "those prices"} will not be exported.
+      </p>
+      <:action>
+        <.button
+          id="keep-older-format"
+          type="button"
+          variant="secondary"
+          class="min-h-11"
+          phx-click="keep_older_format"
+        >
+          Keep older format as imported
+        </.button>
+      </:action>
+    </.message>
+    """
+  end
+
+  # -- Setup text ---------------------------------------------------------------
+
+  defp setup_structure_options do
+    [
+      %{
+        value: "free",
+        label: "Riders ride free",
+        description: "No fare on any route. Trip planners show “Free”.",
+        detail: "One $0.00 fare"
+      },
+      %{
+        value: "flat",
+        label: "One price for every ride",
+        description: "The same fare on every route and between any stops."
+      },
+      %{
+        value: "route",
+        label: "Price depends on the route",
+        description: "For example local routes and a higher intercity or express fare."
+      },
+      %{
+        value: "zone",
+        label: "Price depends on zones",
+        description: "Riders pay more to travel between zones. You draw zones on a map next."
+      }
+    ]
+  end
+
+  defp setup_price_question("route"), do: "What does an adult pay on each group of routes?"
+  defp setup_price_question(_kind), do: "What does an adult pay?"
+
+  defp setup_price_label("zone"), do: "Adult price inside one zone"
+  defp setup_price_label(_kind), do: "Adult price"
+
+  defp setup_price_help("zone"), do: nil
+  defp setup_price_help(_kind), do: "The price someone pays with cash when they board."
+
+  defp setup_error_title(1), do: "Fix this problem to create fares"
+  defp setup_error_title(_count), do: "Fix these problems to create fares"
+
+  defp setup_version_phrase(nil), do: "this version"
+  defp setup_version_phrase(name), do: "#{name} service"
+
+  defp transfer_label(""), do: "Free transfers of the first boarding"
+  defp transfer_label(minutes), do: "Free transfers within #{minutes} minutes of first boarding"
+
+  # The live result card's own reading of the draft, so what the operator sees
+  # under the questions is what `Conversion.setup/2` will be handed.
+  defp setup_result(assigns) do
+    ~H"""
+    <div
+      id="setup-result"
+      aria-live="polite"
+      class="rounded-card border border-subtle bg-canvas px-4 py-3"
+    >
+      <p class="text-[13px] text-muted">What riders will see</p>
+      <p class="mt-0.5 font-display text-[26px] font-semibold leading-tight tracking-[-0.02em] tabular-nums text-strong">
+        {setup_headline(assigns.setup, assigns.currency)}
+      </p>
+      <p class="mt-1 text-sm text-default">{setup_line(assigns.setup, assigns.currency)}</p>
+      <p class="mt-2 text-sm font-bold text-strong">
+        Creates {setup_creates(assigns.setup, assigns.currency)}. Nothing is saved until you
+        create them.
+      </p>
+    </div>
+    """
+  end
+
+  # A version with no fare rows has no currency of its own to read, so the card
+  # states the currency `Conversion.setup/2` writes its prices in.
+  defp setup_currency(_setup), do: "USD"
+
+  defp setup_headline(%{"kind" => "free"}, _currency), do: "Free"
+
+  defp setup_headline(%{"kind" => "route", "groups" => groups}, currency) do
+    case groups |> Enum.map(&parsed_amount(&1["price"])) |> Enum.reject(&is_nil/1) do
+      [] -> "Add a price"
+      amounts -> Enum.map_join(amounts, " – ", &Money.format(&1, currency))
+    end
+  end
+
+  defp setup_headline(setup, currency), do: setup_amount_text(setup["adult"], currency)
+
+  defp setup_amount_text(text, currency) do
+    case parsed_amount(text) do
+      nil -> "Add a price"
+      amount -> Money.format(amount, currency)
+    end
+  end
+
+  defp setup_line(%{"kind" => "free"}, _currency),
+    do: "Every ride on every route, for every rider."
+
+  defp setup_line(setup, currency) do
+    parts =
+      [
+        setup["reduced"] && "Reduced fare #{half_text(setup, currency)}",
+        setup["child"] && "children under 6 free",
+        setup["transfer"] && transfer_line(setup),
+        not setup["transfer"] && "no free transfers"
+      ]
+      |> Enum.filter(& &1)
+
+    Enum.join(parts, " · ")
+  end
+
+  defp transfer_line(setup) do
+    "free transfers for #{setup["minutes"] || "the time limit you set"} min"
+  end
+
+  # A reduced or youth rider is half the adult price to the nearest nickel, which
+  # is the rule `Conversion.setup/2` writes. Twenty halves make a dime, so the
+  # nearest nickel is the nearest whole of a twentieth.
+  defp half_text(setup, currency) do
+    case parsed_amount(setup["adult"]) do
+      nil -> "—"
+      amount -> Money.format(nickel_half(amount), currency)
+    end
+  end
+
+  defp nickel_half(amount) do
+    amount |> Decimal.div(2) |> Decimal.mult(20) |> Decimal.round(0) |> Decimal.div(20)
+  end
+
+  defp setup_creates(%{"kind" => "free"}, _currency), do: "1 free fare"
+
+  defp setup_creates(%{"kind" => "route"} = setup, _currency) do
+    count = length(setup["groups"])
+
+    Enum.join(
+      [
+        "#{count} #{if count == 1, do: "fare", else: "fares"} and #{count} route #{if count == 1, do: "group", else: "groups"}",
+        rider_count_text(setup),
+        setup["transfer"] && "1 transfer rule"
+      ]
+      |> Enum.filter(& &1),
+      ", "
+    )
+  end
+
+  defp setup_creates(setup, _currency) do
+    Enum.join(
+      [
+        "1 fare",
+        rider_count_text(setup),
+        setup["transfer"] && "1 transfer rule"
+      ]
+      |> Enum.filter(& &1),
+      ", "
+    )
+  end
+
+  defp rider_count_text(setup) do
+    count =
+      1 +
+        Enum.count(
+          [
+            setup["reduced"] && true,
+            setup["youth"] && true,
+            setup["child"] && true
+          ],
+          & &1
+        )
+
+    counted(count, "rider type", "rider types")
+  end
+
+  defp parsed_amount(text) do
+    case Money.parse(to_string(text || "")) do
+      {:ok, amount} -> amount
+      {:error, :invalid} -> nil
+    end
+  end
+
+  # -- Conversion text ----------------------------------------------------------
+
+  @unmanaged_order [
+    "fare_attributes",
+    "fare_rules",
+    "fare_products",
+    "fare_leg_rules",
+    "fare_transfer_rules",
+    "fare_leg_join_rules",
+    "fare_media",
+    "rider_categories",
+    "networks",
+    "fare_time_periods",
+    "fare_product_details",
+    "fare_zones",
+    "route_networks"
+  ]
+
+  @conversion_rows %{
+    "fare_attributes" => {"fare attribute", "fare attributes"},
+    "fare_rules" => {"fare rule", "fare rules"},
+    "fare_products" => {"fare", "fares"},
+    "fare_leg_rules" => {"leg rule", "leg rules"},
+    "fare_transfer_rules" => {"transfer rule", "transfer rules"},
+    "fare_leg_join_rules" => {"read-only rule", "read-only rules"},
+    "fare_media" => {"payment method", "payment methods"},
+    "rider_categories" => {"rider type", "rider types"},
+    "networks" => {"network", "networks"},
+    "route_networks" => {"route group", "route groups"},
+    "fare_time_periods" => {"time period", "time periods"},
+    "fare_product_details" => {"fare detail", "fare details"},
+    "fare_zones" => {"fare zone", "fare zones"}
+  }
+
+  defp conversion_title(%{state: :refused}), do: "These fares can’t be edited here yet"
+  defp conversion_title(_conversion), do: "Convert these fares to the newer format?"
+
+  # The rows the conversion would create, in the order `Fares` counts them, each
+  # as a sentence rather than a bare count.
+  defp conversion_counts(plan) do
+    plan.creates
+    |> Enum.sort_by(fn {table, _count} -> table_index(table) end)
+    |> Enum.reject(fn {_table, count} -> count == 0 end)
+    |> Enum.map(fn {table, count} ->
+      "#{counted(count, conversion_row(table), conversion_rows(table))}"
+    end)
+  end
+
+  defp table_index(table), do: Enum.find_index(@unmanaged_order, &(&1 == table_key(table))) || 0
+
+  defp conversion_row(table), do: conversion_names(table_key(table), "row")
+
+  defp conversion_rows(table), do: conversion_names(table_key(table), "rows")
+
+  # A conversion plan names its tables the way `Fares` counts them, as atoms.
+  defp table_key(table), do: to_string(table)
+
+  defp conversion_names(table, key) do
+    case Map.fetch(@conversion_rows, table) do
+      {:ok, {one, many}} -> if key == "row", do: one, else: many
+      :error -> if key == "row", do: "row", else: "rows"
+    end
+  end
+
+  defp transfer_allowance(%{transfers: nil}), do: "Unlimited transfers"
+  defp transfer_allowance(%{transfers: 0}), do: "No free transfers"
+  defp transfer_allowance(%{transfers: 1}), do: "1 free transfer"
+  defp transfer_allowance(%{transfers: count}), do: "#{count} free transfers"
+
+  defp mismatch_sentence(%{fare_id: fare_id, stored: stored, derived: derived}, currency) do
+    "#{fare_id} costs #{Money.format(stored, currency)} as imported and " <>
+      "#{Money.format(derived, currency)} here"
+  end
+
+  defp free_fare_product_id(workspace) do
+    case List.first(workspace.fares) do
+      nil -> nil
+      fare -> List.first(fare.product_ids)
+    end
+  end
+
+  defp changed_by(%{history: [entry | _]}) do
+    actor = entry.actor_email || "Another editor"
+    "#{actor} · #{history_time(entry.inserted_at)}"
+  end
+
+  defp changed_by(_workspace), do: "just now"
+
+  # One step of a form: a numbered mark and a question, with an optional line of
+  # help. The number is decoration; the question is the heading.
+  attr :id, :string, required: true
+  attr :number, :integer, required: true
+  attr :title, :string, required: true
+  slot :inner_block
+
+  defp step_head(assigns) do
+    ~H"""
+    <div class="flex items-start gap-3">
+      <span
+        aria-hidden="true"
+        class="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-canvas text-[13px] font-bold text-strong"
+      >
+        {@number}
+      </span>
+      <div>
+        <h3 id={@id} class="text-base font-bold text-strong">{@title}</h3>
+        <p :if={@inner_block != []} class="mt-0.5 text-[13px] text-muted">
+          {render_slot(@inner_block)}
+        </p>
+      </div>
+    </div>
     """
   end
 

@@ -50,12 +50,16 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
 
   import GtfsPlannerWeb.Gtfs.FareEditorComponents,
     only: [
+      conversion_review: 1,
       fare_cards: 1,
       fare_delete_dialog: 1,
       fare_drawer: 1,
+      fare_free_summary: 1,
       fare_note: 1,
+      fare_setup: 1,
       fare_table: 1,
       fares_conflict: 1,
+      fares_mismatch_banner: 1,
       header_primary: 1,
       load_error: 1,
       loading: 1,
@@ -64,7 +68,8 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       price_change_dialog: 1,
       price_save_bar: 1,
       rider_delete_dialog: 1,
-      rider_drawer: 1
+      rider_drawer: 1,
+      unmanaged_fares: 1
     ]
 
   import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1]
@@ -72,10 +77,12 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Fares
+  alias GtfsPlanner.Gtfs.Fares.Conversion
   alias GtfsPlanner.Gtfs.Fares.Interpreter
   alias GtfsPlanner.Gtfs.Fares.Money
   alias GtfsPlanner.Gtfs.Fares.Pricing
   alias GtfsPlanner.Gtfs.Fares.Projection
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Layouts
 
@@ -108,6 +115,12 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
      |> assign(:media_delete, nil)
      |> assign(:price_change, nil)
      |> assign(:price_change_focus, nil)
+     |> assign(:setup, nil)
+     |> assign(:setup_form, to_form(%{}, as: :setup))
+     |> assign(:conversion, nil)
+     |> assign(:conversion_focus, nil)
+     |> assign(:prices_mode, :grid)
+     |> assign(:older_mismatches, [])
      |> assign(:drawer_pending?, false)}
   end
 
@@ -264,6 +277,129 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       {:noreply, push_navigate(socket, to: fares_path(version_id, socket.assigns.live_action))}
     else
       {:noreply, socket}
+    end
+  end
+
+  # -- Setup, the fare-free summary and the conversion ------------------------
+
+  # Every answer is one form, so a change carries the whole question set rather
+  # than the control that was touched. The draft is rebuilt from it and nothing
+  # is written: the writer waits for the submit.
+  @impl true
+  def handle_event("validate_setup", %{"setup" => params}, socket) when is_map(params) do
+    case socket.assigns.setup do
+      nil -> {:noreply, socket}
+      setup -> {:noreply, put_setup(socket, setup_draft(setup, params))}
+    end
+  end
+
+  def handle_event("validate_setup", _params, socket), do: {:noreply, socket}
+
+  # The route groups are a list, so adding one is the one answer that is not a
+  # field. The draft is rebuilt from its own full param reading plus the new
+  # empty row, which is the same reading a change event produces.
+  @impl true
+  def handle_event("add_route_group", _params, socket) do
+    case socket.assigns.setup do
+      nil ->
+        {:noreply, socket}
+
+      setup ->
+        groups = setup["groups"] ++ [%{"name" => "", "price" => ""}]
+
+        {:noreply, put_setup(socket, setup_draft(setup, %{"groups" => groups}))}
+    end
+  end
+
+  # The one write this step owns that starts a version: `Conversion.setup/2`
+  # builds the whole fare set from the four answers in one version-locked
+  # transaction, so the grid the operator lands on is the one the writer wrote.
+  @impl true
+  def handle_event("create_fares", %{"setup" => params}, socket) when is_map(params) do
+    case socket.assigns.setup do
+      nil ->
+        {:noreply, socket}
+
+      setup ->
+        setup = setup_draft(setup, params)
+
+        case Conversion.setup(fare_scope(socket), setup_answers(setup)) do
+          {:ok, %{operation_id: operation_id, inverse: inverse}} ->
+            {:noreply,
+             socket
+             |> load_workspace()
+             |> assign(:price_note, %{
+               text:
+                 "Fares created for #{socket.assigns.current_gtfs_version.name} service. Check the prices, then set up transfers and zones if you use them.",
+               undo: [{operation_id, inverse}]
+             })}
+
+          {:error, reason} ->
+            {:noreply, socket |> put_setup(setup) |> refuse_setup(reason)}
+        end
+    end
+  end
+
+  def handle_event("create_fares", _params, socket), do: {:noreply, socket}
+
+  # The review is a read: `Conversion.preview/2` prices every combination this
+  # version can be asked for, on the stored rows and on the rows a conversion
+  # would leave behind, and answers either what it would write or why it must
+  # not. Both answers open the same dialog, so opening it writes nothing.
+  @impl true
+  def handle_event("open_conversion_review", _params, socket) do
+    review =
+      case Conversion.preview(organization_id(socket), version_id(socket)) do
+        {:ok, plan} -> %{state: :ok, plan: plan, reasons: [], error: nil}
+        {:refused, reasons} -> %{state: :refused, plan: nil, reasons: reasons, error: nil}
+      end
+
+    {:noreply,
+     socket
+     |> assign(:conversion, review)
+     |> assign(:conversion_focus, "edit-fares")}
+  end
+
+  @impl true
+  def handle_event("close_conversion_review", _params, socket) do
+    {:noreply, assign(socket, :conversion, nil)}
+  end
+
+  # The apply is exactly the review the operator read: the fingerprint travels
+  # with it, so a fare row that changed after the review refuses the whole
+  # conversion rather than writing over somebody else's edit (AC-13).
+  @impl true
+  def handle_event("convert_fares", _params, socket) do
+    case socket.assigns.conversion do
+      %{state: :ok, plan: plan} ->
+        {:noreply, convert_fares(socket, plan)}
+
+      _other ->
+        {:noreply, socket}
+    end
+  end
+
+  # R14: the stored `fare_attributes` rows and the ones the export derives are
+  # two descriptions of the same prices, and the operator chooses which the
+  # export streams. This is the mismatch banner's writer.
+  @impl true
+  def handle_event("keep_older_format", _params, socket) do
+    case Fares.set_older_format(fare_scope(socket), :imported) do
+      {:ok, %{operation_id: operation_id, inverse: inverse}} ->
+        {:noreply,
+         socket
+         |> load_workspace()
+         |> assign(:price_note, %{
+           text:
+             "Exports keep the older format exactly as imported. Fare edits here won’t change it.",
+           undo: [{operation_id, inverse}]
+         })}
+
+      {:error, reason} ->
+        {:noreply,
+         assign(socket, :price_note, %{
+           text: "The imported format couldn’t be kept (#{reason})."
+         })}
     end
   end
 
@@ -808,6 +944,209 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
         assign(socket, :price_change, %{change | error: "Prices couldn't be changed (#{reason})."})
     end
   end
+
+  defp convert_fares(socket, plan) do
+    case Conversion.apply(fare_scope(socket), plan.fingerprint, []) do
+      {:ok, %{operation_id: operation_id, inverse: inverse}} ->
+        socket
+        |> load_workspace()
+        |> assign(:conversion, nil)
+        |> assign(:conversion_focus, nil)
+        |> assign(:price_note, %{
+          text:
+            "Fares converted to the newer format in #{socket.assigns.current_gtfs_version.name} service.",
+          undo: [{operation_id, inverse}]
+        })
+
+      {:refused, reasons} ->
+        assign(socket, :conversion, %{
+          state: :refused,
+          plan: nil,
+          reasons: reasons,
+          error: "The stored fares changed since the review, so nothing was written."
+        })
+
+      {:error, reason} ->
+        assign(socket, :conversion, refusal(state: :ok, plan: plan, reason: reason))
+    end
+  end
+
+  defp refusal(state: state, plan: plan, reason: reason) do
+    %{
+      state: state,
+      plan: plan,
+      reasons: [],
+      error: "These fares couldn’t be converted (#{reason})."
+    }
+  end
+
+  # -- The setup draft ---------------------------------------------------------
+
+  # The prototype's own defaults: one price for every ride at $1.50, a reduced
+  # fare and free young children, and free transfers within 90 minutes.
+  defp setup_defaults do
+    %{
+      "kind" => "flat",
+      "adult" => "1.50",
+      "groups" => [
+        %{"name" => "Local routes", "price" => "1.50"},
+        %{"name" => "Intercity", "price" => "6.00"}
+      ],
+      "reduced" => true,
+      "youth" => false,
+      "child" => true,
+      "transfer" => true,
+      "minutes" => "90"
+    }
+  end
+
+  # A change carries the whole question set, so the draft is rebuilt from it
+  # rather than merged into: an unticked box is simply absent from the payload,
+  # and a merge would keep the answer the operator just removed.
+  #
+  # The one answer that is not a field — the list of route groups — arrives with
+  # no other answer at all, so the draft is always read through its own full
+  # payload first. Every question is either in this payload or in that one, and
+  # a check box is true exactly when its payload carries "true".
+  defp setup_draft(setup, params) do
+    previous = setup |> then(&Map.merge(setup_defaults(), &1 || %{})) |> setup_params()
+    answered = Map.merge(previous, params)
+
+    %{
+      "kind" => setup_kind(answered["kind"]),
+      "adult" => draft_text(answered["adult"]),
+      "groups" => setup_groups(answered["groups"]),
+      "reduced" => answered["reduced"] == "true",
+      "youth" => answered["youth"] == "true",
+      "child" => answered["child"] == "true",
+      "transfer" => answered["transfer"] == "true",
+      "minutes" => draft_text(answered["minutes"]),
+      "adult_error" => nil,
+      "minutes_error" => nil,
+      "failures" => []
+    }
+  end
+
+  defp draft_text(value), do: to_string(value)
+
+  # The structure is a fixed set the writer names, so anything else arriving is
+  # not read as one of them.
+  defp setup_kind(kind) when kind in ~w(free flat route zone), do: kind
+  defp setup_kind(_kind), do: "flat"
+
+  defp setup_groups(groups) when is_list(groups) do
+    Enum.map(groups, fn
+      %{"name" => name, "price" => price} -> %{"name" => name, "price" => price}
+      _other -> %{"name" => "", "price" => ""}
+    end)
+  end
+
+  defp setup_groups(groups) when is_map(groups) do
+    groups |> Map.values() |> Enum.sort_by(& &1) |> setup_groups()
+  end
+
+  defp setup_groups(_groups) do
+    setup_defaults()["groups"]
+  end
+
+  # The draft as the payload a change event would carry, which is what the
+  # add-a-group answer starts from.
+  defp setup_params(setup) do
+    %{
+      "kind" => setup["kind"],
+      "adult" => setup["adult"],
+      "groups" => setup["groups"],
+      "reduced" => setup["reduced"] && "true",
+      "youth" => setup["youth"] && "true",
+      "child" => setup["child"] && "true",
+      "transfer" => setup["transfer"] && "true",
+      "minutes" => setup["minutes"]
+    }
+  end
+
+  # What `Conversion.setup/2` is handed. The structure is one of the writer's own
+  # four, the prices arrive as the text an operator typed because
+  # `Fares.Money.parse/1` is what reads a price (CR-3), and the minutes are the
+  # whole number of minutes the transfer question names.
+  defp setup_answers(setup) do
+    %{
+      kind: String.to_existing_atom(setup["kind"]),
+      adult: setup["adult"],
+      groups: Enum.map(setup["groups"], &{&1["name"], &1["price"]}),
+      reduced: setup["reduced"],
+      youth: setup["youth"],
+      child: setup["child"],
+      transfer_minutes: transfer_minutes(setup)
+    }
+  end
+
+  defp transfer_minutes(%{"transfer" => true, "minutes" => text}) do
+    case Integer.parse(String.trim(to_string(text))) do
+      {minutes, ""} when minutes > 0 -> minutes
+      _other -> text
+    end
+  end
+
+  defp transfer_minutes(_setup), do: nil
+
+  defp put_setup(socket, setup) do
+    socket
+    |> assign(:setup, setup)
+    |> assign(:setup_form, to_form(setup, as: :setup))
+  end
+
+  # A refused setup names the field whose answer the writer would not read, and
+  # the summary is the list of them rather than the first one the draft holds.
+  defp refuse_setup(socket, reason) do
+    message = setup_reason_message(reason)
+    setup = socket.assigns.setup
+    groups? = setup["kind"] == "route"
+
+    {adult_error, minutes_error, failure_href} =
+      case reason do
+        :invalid_price when groups? ->
+          {nil, nil, "#setup-group-0-price"}
+
+        :invalid_price ->
+          {message, nil, "#setup-adult"}
+
+        :invalid_transfer_minutes ->
+          {nil, message, "#setup-minutes"}
+
+        reason when reason in [:no_groups, :invalid_group, :duplicate_group] ->
+          {nil, nil, "#setup-groups"}
+
+        _other ->
+          {nil, nil, "#setup-kind"}
+      end
+
+    failure = %{href: failure_href, msg: "#{setup_failure_label(failure_href)}: #{message}"}
+
+    put_setup(socket, %{
+      setup
+      | "adult_error" => adult_error,
+        "minutes_error" => minutes_error,
+        "failures" => [failure]
+    })
+  end
+
+  defp setup_failure_label("#setup-adult"), do: "Adult price"
+  defp setup_failure_label("#setup-minutes"), do: "Transfer time limit"
+  defp setup_failure_label("#setup-groups"), do: "Route groups"
+  defp setup_failure_label(_href), do: "Pricing structure"
+
+  defp setup_reason_message(:invalid_price),
+    do: "Enter a price in dollars and cents, such as 1.50, or Free."
+
+  defp setup_reason_message(:invalid_transfer_minutes),
+    do: "Enter the free transfer window as a whole number of minutes, such as 90."
+
+  defp setup_reason_message(:no_groups), do: "Name at least one group of routes."
+  defp setup_reason_message(:invalid_group), do: "Name each group of routes and price it."
+  defp setup_reason_message(:duplicate_group), do: "Give each group of routes its own name."
+  defp setup_reason_message(:unknown_structure), do: "Choose how riders pay for a ride."
+  defp setup_reason_message(:has_fares), do: "This version already holds fares."
+  defp setup_reason_message(_reason), do: "Those answers could not be saved."
 
   defp close_fare_and_media(socket) do
     socket
@@ -1635,6 +1974,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
               ready?={@load_state == :ready}
               transfers?={@workspace != nil and @workspace.transfers != []}
               dirty?={@price_edits != %{} and @load_state == :ready}
+              prices_ready?={@load_state == :ready and @prices_mode == :grid}
             />
           </:actions>
         </.header>
@@ -1654,35 +1994,58 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
           <div :if={@load_state == :ready} id="fare-editor-panel">
             <div :if={@live_action == :prices} id="fare-prices-panel" class="grid gap-4">
               <.fare_note note={@price_note} />
-              <.fares_conflict
-                :if={@price_conflict}
-                conflict={@price_conflict}
-                workspace={@workspace}
+              <.fare_setup
+                :if={@prices_mode == :setup and @setup != nil}
+                setup={@setup}
+                form={@setup_form}
+                version_name={@current_gtfs_version.name}
               />
-              <.form
-                for={@price_form}
-                id="fare-table-form"
-                phx-change="edit_price"
-                class="min-w-0"
-              >
-                <.fare_table
+              <.fare_free_summary
+                :if={@prices_mode == :free}
+                workspace={@workspace}
+                version_name={@current_gtfs_version.name}
+              />
+              <.unmanaged_fares
+                :if={@prices_mode == :unmanaged}
+                workspace={@workspace}
+                unmanaged={@workspace.unmanaged}
+              />
+              <%= if @prices_mode == :grid do %>
+                <.fares_mismatch_banner
+                  :if={@older_mismatches != []}
+                  differences={@older_mismatches}
+                  currency={@workspace.currency}
+                />
+                <.fares_conflict
+                  :if={@price_conflict}
+                  conflict={@price_conflict}
+                  workspace={@workspace}
+                />
+                <.form
+                  for={@price_form}
+                  id="fare-table-form"
+                  phx-change="edit_price"
+                  class="min-w-0"
+                >
+                  <.fare_table
+                    workspace={@workspace}
+                    edits={@price_edits}
+                    lens?={@lens?}
+                    carried={@carried}
+                  />
+                </.form>
+                <.price_save_bar
+                  :if={@price_edits != %{}}
                   workspace={@workspace}
                   edits={@price_edits}
-                  lens?={@lens?}
-                  carried={@carried}
+                  journeys={@price_impacts}
+                  blocked?={blocked?(assigns)}
+                  blocking_reason={blocking_reason(assigns)}
+                  version_name={@current_gtfs_version.name}
+                  published?={published?(@current_gtfs_version)}
                 />
-              </.form>
-              <.price_save_bar
-                :if={@price_edits != %{}}
-                workspace={@workspace}
-                edits={@price_edits}
-                journeys={@price_impacts}
-                blocked?={blocked?(assigns)}
-                blocking_reason={blocking_reason(assigns)}
-                version_name={@current_gtfs_version.name}
-                published?={published?(@current_gtfs_version)}
-              />
-              <.fare_cards workspace={@workspace} history={@workspace.history} />
+                <.fare_cards workspace={@workspace} history={@workspace.history} />
+              <% end %>
             </div>
           </div>
         </div>
@@ -1750,6 +2113,15 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
           published?={published?(@current_gtfs_version)}
           return_focus_id={@price_change_focus}
         />
+
+        <%!-- The conversion review is a dialog rather than a page: it is opened
+          from one button on a read-only table and answers the same way whether
+          it accepts or refuses. --%>
+        <.conversion_review
+          :if={@conversion}
+          conversion={@conversion}
+          return_focus_id={@conversion_focus}
+        />
       </div>
     </Layouts.app>
     """
@@ -1765,13 +2137,90 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
 
     case Gtfs.load_fare_editor(organization_id, gtfs_version_id, []) do
       {:ok, workspace} ->
+        socket = assign(socket, :workspace, workspace)
+
         socket
-        |> assign(:workspace, workspace)
         |> assign(:checks, Fares.Checks.run(organization_id, gtfs_version_id))
+        |> assign(:prices_mode, prices_mode(workspace))
+        |> assign(
+          :older_mismatches,
+          older_mismatches(workspace, organization_id, gtfs_version_id)
+        )
         |> assign(:load_state, :ready)
+        |> refresh_setup()
 
       {:error, :unavailable} ->
         assign(socket, :load_state, :unavailable)
+    end
+  end
+
+  # Which of the Prices tab's four bodies this version is in, decided from the
+  # workspace rather than from a state the tab keeps beside it:
+  #
+  #   * `:setup` — the version stores no fare row at all and is unmanaged, so
+  #     nobody has priced it and the tab asks the first-use questions;
+  #   * `:unmanaged` — the version's fares came from an import and are shown
+  #     read-only until the conversion review makes them editable;
+  #   * `:free` — the version's one fare charges nothing, so there is no price
+  #     to type and the summary replaces the grid;
+  #   * `:grid` — the fare table.
+  #
+  # A version with stored `fare_attributes` rows but no `fare_products` rows has
+  # no workspace fares at all, which is why the stored rows decide `:setup`
+  # rather than an empty fare list. The setup is also gated on the version being
+  # unmanaged: `Conversion.setup/2` refuses a version that holds fare rows, and a
+  # managed version has been through it.
+  defp prices_mode(workspace) do
+    cond do
+      workspace.unmanaged != nil -> :unmanaged
+      workspace.fares == [] and not workspace.managed? -> :setup
+      free_only?(workspace) -> :free
+      true -> :grid
+    end
+  end
+
+  # The setup is open only while the version is in it, so a write that gives the
+  # version its first fare closes it on the same load that redraws the tab.
+  defp refresh_setup(socket) do
+    cond do
+      socket.assigns.prices_mode != :setup -> assign(socket, :setup, nil)
+      is_nil(socket.assigns.setup) -> put_setup(socket, setup_draft(nil, %{}))
+      true -> socket
+    end
+  end
+
+  # The fares the older format's two descriptions disagree about: the stored
+  # `fare_attributes` rows against the ones `Fares.Projection` derives from the
+  # version's own fare rows. An import keeps the feed's own fare id case while
+  # the projection writes its derived id in lower case, so the two sets are
+  # joined by the same slug rule the projection names its rows with — otherwise
+  # the two descriptions of one fare never meet.
+  #
+  # A version whose export already streams the stored rows has nothing to
+  # disagree about and carries no banner, and an unmanaged version is never
+  # projected at all.
+  defp older_mismatches(%{managed?: false}, _organization_id, _version_id), do: []
+
+  defp older_mismatches(%{older_format: "imported"}, _organization_id, _version_id), do: []
+
+  defp older_mismatches(_workspace, organization_id, version_id) do
+    stored =
+      organization_id
+      |> Interpreter.load_rows(version_id)
+      |> Map.fetch!(:fare_attributes)
+      |> Map.new(&{Stop.slugify(&1.fare_id), {&1.fare_id, &1.price}})
+
+    derived =
+      organization_id
+      |> Projection.v1_rows(version_id)
+      |> Map.fetch!("fare_attributes.txt")
+      |> Map.new(&{Stop.slugify(&1.fare_id), &1.price})
+
+    for {key, {fare_id, price}} <- Enum.sort(stored),
+        amount = Map.get(derived, key),
+        not is_nil(amount),
+        not Decimal.equal?(amount, price) do
+      %{fare_id: fare_id, stored: price, derived: amount}
     end
   end
 
@@ -1796,6 +2245,25 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       }
     }
   end
+
+  # The fare-free state: one fare, sold at nothing, to every rider type the
+  # version carries. There is nothing to type a price into, so the summary
+  # replaces the grid.
+  defp free_only?(nil), do: false
+
+  defp free_only?(%{fares: [fare]}) do
+    fare.kind == "single" and
+      Enum.all?(Map.values(fare.prices), &free_amount?/1) and
+      fare.media_prices
+      |> Map.values()
+      |> Enum.flat_map(&Map.values/1)
+      |> Enum.all?(&free_amount?/1)
+  end
+
+  defp free_only?(_workspace), do: false
+
+  defp free_amount?(nil), do: false
+  defp free_amount?(amount), do: Decimal.equal?(amount, 0)
 
   defp organization_id(socket), do: socket.assigns.current_organization.id
   defp version_id(socket), do: socket.assigns.current_gtfs_version.id
