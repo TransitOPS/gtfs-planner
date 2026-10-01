@@ -230,13 +230,16 @@ async function editorVersionId(page) {
   await page.goto("/users/log_in");
   // The form or the app: a journey that visits the editor more than once is
   // already signed in, and the log-in route then redirects to the app rather
-  // than rendering a form.
-  await page.waitForSelector("#gtfs-version-panel, input[name='user[email]']", {
+  // than rendering a form. The version trigger is waited for rather than the
+  // version panel, because the panel is a dropdown that stays hidden until it
+  // is opened and its options are read from the DOM.
+  await page.waitForSelector("#gtfs-version-trigger, input[name='user[email]']", {
     timeout: 30_000,
   });
 
   if (await page.locator('input[name="user[email]"]').count()) {
     await logIn(page);
+    await page.waitForSelector("#gtfs-version-trigger", { timeout: 30_000 });
   }
 
   return versionIdFor(page, ALERTS_VERSION);
