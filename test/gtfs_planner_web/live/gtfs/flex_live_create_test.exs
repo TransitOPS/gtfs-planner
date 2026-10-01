@@ -226,7 +226,9 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveCreateTest do
 
       view
       |> element("#create-form")
-      |> render_submit(%{"create" => %{"kind" => "area", "named" => "one", "name" => "Kept draft"}})
+      |> render_submit(%{
+        "create" => %{"kind" => "area", "named" => "one", "name" => "Kept draft"}
+      })
 
       assert has_element?(view, "#create-save-error", "You no longer have permission")
       assert has_element?(view, "#create-drawer-overlay[data-open='true']")

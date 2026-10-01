@@ -657,7 +657,10 @@ defmodule GtfsPlanner.GtfsTest do
       assert stop.platform_code == nil
     end
 
-    test "a trusted stop import update can set stop_desc", %{organization: org, gtfs_version: version} do
+    test "a trusted stop import update can set stop_desc", %{
+      organization: org,
+      gtfs_version: version
+    } do
       stop = stop_fixture(org.id, version.id)
       assert stop.stop_desc == nil
 
@@ -666,7 +669,10 @@ defmodule GtfsPlanner.GtfsTest do
       assert updated_stop.stop_desc == "Updated description"
     end
 
-    test "a trusted stop import update can set platform_code", %{organization: org, gtfs_version: version} do
+    test "a trusted stop import update can set platform_code", %{
+      organization: org,
+      gtfs_version: version
+    } do
       stop = stop_fixture(org.id, version.id)
       assert stop.platform_code == nil
 

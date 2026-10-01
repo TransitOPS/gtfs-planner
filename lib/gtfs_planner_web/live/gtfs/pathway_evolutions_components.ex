@@ -435,7 +435,8 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
         %{level_id: level.level_id, label: level_label(level), image_url: url}
 
-      {:error, _reason} -> nil
+      {:error, _reason} ->
+        nil
     end
   end
 

@@ -1931,11 +1931,21 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     pattern = socket.assigns.pattern
 
     case Gtfs.apply_alignment_save(pattern.id, draft, choices, fingerprint, audit) do
-      {:ok, result} -> handle_save_result(socket, result)
-      {:error, {:conflict, current}} -> handle_apply_conflict(socket, draft, current)
-      {:error, :stale_review} -> save_notice(assign_applying(socket, false), :stale_review)
-      {:error, {:blocked, blockers}} -> handle_apply_blocked(socket, draft, blockers)
-      {:error, :busy} -> save_notice(assign_applying(socket, false), :busy)
+      {:ok, result} ->
+        handle_save_result(socket, result)
+
+      {:error, {:conflict, current}} ->
+        handle_apply_conflict(socket, draft, current)
+
+      {:error, :stale_review} ->
+        save_notice(assign_applying(socket, false), :stale_review)
+
+      {:error, {:blocked, blockers}} ->
+        handle_apply_blocked(socket, draft, blockers)
+
+      {:error, :busy} ->
+        save_notice(assign_applying(socket, false), :busy)
+
       {:error, :forbidden} ->
         socket
         |> assign_applying(false)
@@ -1944,7 +1954,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
           {:error,
            "You no longer have editor access to this organization. Your draft is still here."}
         )
-      {:error, _reason} -> save_notice(assign_applying(socket, false), :save_error)
+
+      {:error, _reason} ->
+        save_notice(assign_applying(socket, false), :save_error)
     end
   end
 

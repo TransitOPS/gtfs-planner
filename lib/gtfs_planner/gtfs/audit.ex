@@ -759,7 +759,8 @@ defmodule GtfsPlanner.Gtfs.Audit do
   # UUIDs alongside the per-trip before/after snapshot, so one log per affected
   # trip can be reconstructed into the whole command.
   defp put_trip_operation(changed, attrs) do
-    Enum.reduce([:operation_id, :affected_trip_ids, :combination, :undoes], changed, fn key, acc ->
+    Enum.reduce([:operation_id, :affected_trip_ids, :combination, :undoes], changed, fn key,
+                                                                                        acc ->
       case Map.get(attrs, key, Map.get(attrs, Atom.to_string(key))) do
         nil -> acc
         value -> Map.put(acc, Atom.to_string(key), normalize_value(value))

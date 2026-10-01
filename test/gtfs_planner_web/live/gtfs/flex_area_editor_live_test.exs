@@ -260,9 +260,14 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
         })
 
       {:ok, neighbour} =
-        Flex.save_service(flex_audit_fixture(ctx.organization.id, ctx.version.id), neighbour, %{}, [
-          %{key: "a1", name: "Central Newport", source: :drawn, geojson: central_newport()}
-        ])
+        Flex.save_service(
+          flex_audit_fixture(ctx.organization.id, ctx.version.id),
+          neighbour,
+          %{},
+          [
+            %{key: "a1", name: "Central Newport", source: :drawn, geojson: central_newport()}
+          ]
+        )
 
       service = service_named(ctx.organization.id, ctx.version.id, "Newport Dial-a-Ride")
       {:ok, view, _html} = live(ctx.conn, service_path(ctx.version, service))

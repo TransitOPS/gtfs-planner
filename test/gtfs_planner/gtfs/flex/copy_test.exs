@@ -94,7 +94,8 @@ defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
 
       # Inactive services copy too: the copy carries the authoring, not a
       # selection.
-      {:ok, _inactive} = Flex.set_active(flex_audit_fixture(organization.id, source.id), detour.id, false)
+      {:ok, _inactive} =
+        Flex.set_active(flex_audit_fixture(organization.id, source.id), detour.id, false)
 
       before = flex_counts(organization.id, source.id)
 
@@ -176,7 +177,9 @@ defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
 
       {:ok, _source_service} = create_area_service(organization, source)
       {:ok, occupied} = create_area_service(organization, target, "Toledo Dial-a-Ride")
-      {:ok, _inactive} = Flex.set_active(flex_audit_fixture(organization.id, target.id), occupied.id, false)
+
+      {:ok, _inactive} =
+        Flex.set_active(flex_audit_fixture(organization.id, target.id), occupied.id, false)
 
       assert {:error, :target_not_empty} =
                Flex.copy_from_version(flex_audit_fixture(organization.id, target.id), source.id)
@@ -216,7 +219,10 @@ defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
         create_area_service(other_organization, other_version, "Other Dial-a-Ride")
 
       assert {:error, :not_found} =
-               Flex.copy_from_version(flex_audit_fixture(organization.id, target.id), other_version.id)
+               Flex.copy_from_version(
+                 flex_audit_fixture(organization.id, target.id),
+                 other_version.id
+               )
 
       assert {:error, :not_found} =
                Flex.copy_from_version(
@@ -261,13 +267,19 @@ defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
       other_target = gtfs_version_fixture(other_organization.id)
 
       assert {:error, :not_found} =
-               Flex.copy_from_version(flex_audit_fixture(organization.id, other_target.id), source.id)
+               Flex.copy_from_version(
+                 flex_audit_fixture(organization.id, other_target.id),
+                 source.id
+               )
 
       {:ok, staging_target} =
         Versions.create_staging_gtfs_version(organization.id, %{name: "Staging"})
 
       assert {:error, :not_found} =
-               Flex.copy_from_version(flex_audit_fixture(organization.id, staging_target.id), source.id)
+               Flex.copy_from_version(
+                 flex_audit_fixture(organization.id, staging_target.id),
+                 source.id
+               )
 
       assert flex_counts(other_organization.id, other_target.id).services == 0
       assert flex_counts(organization.id, staging_target.id).services == 0
@@ -278,7 +290,9 @@ defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
       source = gtfs_version_fixture(organization.id)
       target = gtfs_version_fixture(organization.id)
 
-      assert {:ok, 0} = Flex.copy_from_version(flex_audit_fixture(organization.id, target.id), source.id)
+      assert {:ok, 0} =
+               Flex.copy_from_version(flex_audit_fixture(organization.id, target.id), source.id)
+
       assert Flex.list_services(organization.id, target.id) == []
     end
 
@@ -296,7 +310,8 @@ defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
           route_id: "R20"
         })
 
-      assert {:ok, 1} = Flex.copy_from_version(flex_audit_fixture(organization.id, target.id), source.id)
+      assert {:ok, 1} =
+               Flex.copy_from_version(flex_audit_fixture(organization.id, target.id), source.id)
 
       # The target has no R20, so the copied reference is the missing route that
       # `Flex.Checks.run/3` reports once step 10 exists; this case pins the
@@ -311,7 +326,10 @@ defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
   # --- helpers ----------------------------------------------------------------
 
   defp create_area_service(organization, version, name \\ "Newport Dial-a-Ride") do
-    Flex.create_service(flex_audit_fixture(organization.id, version.id), %{name: name, kind: :area})
+    Flex.create_service(flex_audit_fixture(organization.id, version.id), %{
+      name: name,
+      kind: :area
+    })
   end
 
   defp create_and_save(organization, version, attrs) do

@@ -613,8 +613,15 @@ defmodule GtfsPlanner.Gtfs.ChangeLogTest do
     end
 
     test "restores pathway fields from snapshot", %{ctx: ctx} do
-      from_s = child_stop_fixture(ctx.organization_id, ctx.gtfs_version_id, ctx.station_stop_id, %{stop_id: "from_pw_rb"})
-      to_s = child_stop_fixture(ctx.organization_id, ctx.gtfs_version_id, ctx.station_stop_id, %{stop_id: "to_pw_rb"})
+      from_s =
+        child_stop_fixture(ctx.organization_id, ctx.gtfs_version_id, ctx.station_stop_id, %{
+          stop_id: "from_pw_rb"
+        })
+
+      to_s =
+        child_stop_fixture(ctx.organization_id, ctx.gtfs_version_id, ctx.station_stop_id, %{
+          stop_id: "to_pw_rb"
+        })
 
       pw =
         pathway_fixture(ctx.organization_id, ctx.gtfs_version_id, from_s.stop_id, to_s.stop_id, %{

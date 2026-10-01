@@ -534,10 +534,13 @@ defmodule GtfsPlanner.Gtfs.Flex.ExportTest do
       })
 
       {:ok, service} =
-        Flex.create_service(flex_audit_fixture(context.organization_id, context.gtfs_version_id), %{
-          name: "Only Feed Shuttle",
-          kind: :area
-        })
+        Flex.create_service(
+          flex_audit_fixture(context.organization_id, context.gtfs_version_id),
+          %{
+            name: "Only Feed Shuttle",
+            kind: :area
+          }
+        )
 
       assert {:ok, _service} =
                Flex.save_service(
@@ -571,10 +574,13 @@ defmodule GtfsPlanner.Gtfs.Flex.ExportTest do
 
       for index <- 1..3 do
         {:ok, service} =
-          Flex.create_service(flex_audit_fixture(context.organization_id, context.gtfs_version_id), %{
-            name: "Hold #{index} Shuttle",
-            kind: :area
-          })
+          Flex.create_service(
+            flex_audit_fixture(context.organization_id, context.gtfs_version_id),
+            %{
+              name: "Hold #{index} Shuttle",
+              kind: :area
+            }
+          )
 
         # No area, so the service is a readiness error and its generated route
         # is absent from the flex zip.
@@ -619,10 +625,13 @@ defmodule GtfsPlanner.Gtfs.Flex.ExportTest do
       })
 
       {:ok, service} =
-        Flex.create_service(flex_audit_fixture(context.organization_id, context.gtfs_version_id), %{
-          name: "Frequent Flex",
-          kind: :area
-        })
+        Flex.create_service(
+          flex_audit_fixture(context.organization_id, context.gtfs_version_id),
+          %{
+            name: "Frequent Flex",
+            kind: :area
+          }
+        )
 
       # 42 half-hour windows make 42 generated trips on the busiest day; no
       # contact is a readiness error, so the route is left out and frequent.

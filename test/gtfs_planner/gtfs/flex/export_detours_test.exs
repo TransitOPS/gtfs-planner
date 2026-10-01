@@ -447,7 +447,8 @@ defmodule GtfsPlanner.Gtfs.Flex.ExportDetoursTest do
           route_id: "1"
         })
 
-      {:ok, _inactive} = Flex.set_active(flex_audit_fixture(organization.id, version.id), route_1.id, false)
+      {:ok, _inactive} =
+        Flex.set_active(flex_audit_fixture(organization.id, version.id), route_1.id, false)
 
       mapper = Export.sequence_mapper(organization.id, version.id)
 
