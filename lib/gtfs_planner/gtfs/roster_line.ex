@@ -9,10 +9,10 @@ defmodule GtfsPlanner.Gtfs.RosterLine do
   `organization_id`, `gtfs_version_id`, `line_number` and `operator_id` are set
   by the writer — `GtfsPlanner.Gtfs.Rosters` — on the struct or with
   `Ecto.Changeset.change/3`, never from submitted parameters, so `changeset/2`
-  casts nothing. What the changeset does declare is the database's own
-  uniqueness: a line number once per version, and an operator holding at most
-  one line per version. A line whose operator was deleted keeps its row with a
-  nil `operator_id` and shows Open.
+  casts nothing. What the changeset does declare is the database's own rules: a
+  line number once per version, an operator holding at most one line per
+  version, and an operator that exists in the line's organization. A line whose
+  operator was deleted keeps its row with a nil `operator_id` and shows Open.
   """
 
   use Ecto.Schema
@@ -47,9 +47,15 @@ defmodule GtfsPlanner.Gtfs.RosterLine do
   A changeset for a line, casting nothing.
 
   Every field is set programmatically by the writer, so there is nothing here to
-  cast; the three declarations map the database's rejections to fields, so
+  cast; the declarations map the database's rejections to fields, so
   `Rosters.create_line/1` and `Rosters.assign_operator/3` can read a refusal off
   the line it belongs to instead of reporting a bare constraint error.
+
+  An operator foreign key can refuse under either of two names: the
+  single-column key, and the organization-scoped one that also refuses another
+  organization's operator. Both are declared because an operator deleted between
+  a lookup and the write breaks both, and PostgreSQL reports whichever it checks
+  first.
   """
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
   def changeset(roster_line, _attrs) do
@@ -61,6 +67,8 @@ defmodule GtfsPlanner.Gtfs.RosterLine do
       name: :roster_lines_organization_id_gtfs_version_id_line_number_index
     )
     |> unique_constraint(:operator_id, name: :roster_lines_one_line_per_operator)
+    |> foreign_key_constraint(:operator_id)
+    |> foreign_key_constraint(:operator_id, name: :roster_lines_operator_id_owner_fkey)
     |> check_constraint(:line_number, name: :line_number_positive)
   end
 end

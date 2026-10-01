@@ -213,9 +213,8 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSchemaTest do
       version = gtfs_version_fixture(org.id)
       foreign = insert_operator(organization_fixture().id, "E4101")
 
-      assert_raise Ecto.ConstraintError, ~r/roster_lines_operator_id_owner_fkey/, fn ->
-        insert_line(org.id, version.id, 1, foreign.id)
-      end
+      assert {:error, changeset} = Repo.insert(line_changeset(org.id, version.id, 1, foreign.id))
+      assert %{operator_id: ["does not exist"]} = errors_on(changeset)
     end
 
     test "deleting an operator empties the line's operator and keeps its organization" do

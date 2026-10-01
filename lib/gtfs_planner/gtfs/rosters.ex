@@ -735,17 +735,29 @@ defmodule GtfsPlanner.Gtfs.Rosters do
       {:ok, saved} ->
         {:ok, %{line_number: saved.line_number}}
 
-      # Only a writer that ignored `Blocking.lock_blocking!/1` can get here: the
-      # holder read above answered every writer that took the lock, and this is
-      # the index refusing on a pick committed between the two. PostgreSQL has
-      # already aborted the statement, and this transaction has nothing else to
-      # write, so it is rolled back with the rejection instead of committed in a
-      # failed state. The refusal cannot be named here — the holder is only
-      # readable on a connection that is no longer in a failed transaction — which
-      # is why the check above is the one that names it.
+      # Two refusals can reach here. An operator deleted after `fetch_operator/2`
+      # read it — `Operations.delete_operator/3` takes no roster lock — makes the
+      # foreign key refuse, and the operator is gone, so it is the `:not_found` a
+      # missing id gets. Any other rejection is the unique index, which only a
+      # writer that ignored `Blocking.lock_blocking!/1` can reach: the holder read
+      # above answered every writer that took the lock, and this is the index
+      # refusing on a pick committed between the two.
+      #
+      # Either way PostgreSQL has already aborted the statement and this
+      # transaction has nothing else to write, so it is rolled back instead of
+      # committed in a failed state. The unique refusal cannot be named here — the
+      # holder is only readable on a connection that is no longer in a failed
+      # transaction — which is why the check above is the one that names it.
       {:error, invalid} ->
-        Repo.rollback(invalid)
+        Repo.rollback(if operator_gone?(invalid), do: :not_found, else: invalid)
     end
+  end
+
+  defp operator_gone?(changeset) do
+    Enum.any?(changeset.errors, fn
+      {:operator_id, {_message, options}} -> options[:constraint] == :foreign
+      _other_error -> false
+    end)
   end
 
   defp holder_line_number(line, operator_id) do
