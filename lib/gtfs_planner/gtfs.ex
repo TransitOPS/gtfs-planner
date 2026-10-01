@@ -53,6 +53,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
   alias GtfsPlanner.Gtfs.Routes
+  alias GtfsPlanner.Gtfs.Rosters
   alias GtfsPlanner.Gtfs.Runs
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Schedules
@@ -5596,6 +5597,244 @@ defmodule GtfsPlanner.Gtfs do
           {:ok, Runs.crew()} | {:error, Ecto.Changeset.t() | :forbidden | :not_found}
   def update_crew_settings(%AuditContext{} = audit, attrs) do
     Runs.update_crew_settings(audit, attrs)
+  end
+
+  @doc """
+  Returns the three roster rules for an organization's GTFS version.
+
+  A version with no stored roster rules returns the researched defaults (600
+  minutes of minimum rest, a warning above 48 weekly hours and an empty base-week
+  choice); the read never writes a row.
+  """
+  @spec get_roster_settings(Ecto.UUID.t(), Ecto.UUID.t()) :: Rosters.roster_settings()
+  def get_roster_settings(organization_id, gtfs_version_id) do
+    Rosters.get_roster_settings(organization_id, gtfs_version_id)
+  end
+
+  @doc """
+  Returns the changeset rendered by the roster settings form.
+
+  `roster` is a value map from `get_roster_settings/2` and `attrs` are the
+  submitted parameters; a value outside its range or a blank input carries the
+  field error. Whether a chosen day type is still current is checked on save,
+  where the version's calendars are in scope.
+  """
+  @spec change_roster_settings(Rosters.roster_settings(), map()) :: Ecto.Changeset.t()
+  def change_roster_settings(roster, attrs) do
+    Rosters.change_roster_settings(roster, attrs)
+  end
+
+  @doc """
+  Stores the three roster rules of an organization's published version.
+
+  Every value is range-checked, and each chosen day-type key must be a day type
+  the version still derives with a date on that weekday. The save locks the
+  editor membership, then the version's `FOR SHARE` lock, then
+  `Blocking.lock_blocking!/1`, so it serializes with every other planning input
+  writer. It replaces only the three roster columns of the version's one settings
+  row, so the Block rules and the crew rules keep their stored values.
+
+  Returns `{:error, :forbidden}` when the actor no longer holds an editor
+  membership, `{:error, :not_found}` when the version is unpublished or belongs to
+  another organization, and `{:error, changeset}` when a value is rejected.
+  """
+  @spec update_roster_settings(AuditContext.t(), map()) ::
+          {:ok, Rosters.roster_settings()}
+          | {:error, Ecto.Changeset.t() | :forbidden | :not_found}
+  def update_roster_settings(%AuditContext{} = audit, attrs) do
+    Rosters.update_roster_settings(audit, attrs)
+  end
+
+  @doc """
+  Loads one organization's whole roster for a published version.
+
+  This is the read every Rosters page step starts from: the version's day types,
+  its derived runs, its stored roster rules and the composition
+  (`Rosters.Roster.build/1`) the grid, the checks and the export all read. It
+  derives the runs exactly as the operations export does, so the page and
+  `run_events.txt` never disagree, and it writes nothing.
+
+  It goes through `catalog_read_adapter()`, so a lost database connection is
+  `{:error, :unavailable}` — the page pauses and offers a retry rather than
+  reporting a version that has no roster. A foreign or unpublished version is
+  `{:error, :not_found}`, the same answers `load_runs/3` gives.
+  """
+  @spec load_roster(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, Rosters.roster_view()} | {:error, :not_found | :unavailable}
+  def load_roster(organization_id, gtfs_version_id) do
+    catalog_read_adapter().load_roster(organization_id, gtfs_version_id)
+  end
+
+  @doc """
+  Creates an empty line on a published version, numbered one above the version's
+  highest line number (1 when it has none).
+
+  A new line has no days: a day off is the absence of a row, so this writes one
+  line and nothing else. The number is read and taken inside the version and
+  blocking locks, so two sessions adding a line at once get two different
+  numbers rather than one line and a refusal. A foreign or unpublished version
+  is `{:error, :not_found}` and an actor who is no longer an editor is
+  `{:error, :forbidden}`, each with nothing written.
+  """
+  @spec create_roster_line(AuditContext.t()) ::
+          {:ok, %{id: Ecto.UUID.t(), line_number: pos_integer()}}
+          | {:error, :forbidden | :not_found}
+  def create_roster_line(%AuditContext{} = audit) do
+    Rosters.create_line(audit)
+  end
+
+  @doc """
+  Creates a new line holding one run on every weekday of that run's own group.
+
+  This is "Create Mon–Fri line". The line is numbered as `create_roster_line/1`
+  numbers it, and the days written are the ones
+  `Rosters.Candidates.new_line_availability/3` returns — every weekday based on the
+  run's day type — each storing the run's current sign-on and sign-off exactly as
+  `set_roster_slot/4` stores one. Weekdays with no such base get no row at all.
+
+  The write happens only when that same availability computation allows it: an
+  unknown run, a day type no weekday is based on, a weekday another line already
+  works the run on, and a week the run's own consecutive days would leave under
+  the minimum rest are all refused by name, and a refusal writes no line at all —
+  not even an empty one. A foreign or unpublished version is `{:error,
+  :not_found}` and an actor who is no longer an editor is `{:error, :forbidden}`.
+  """
+  @spec create_roster_line_from_run(AuditContext.t(), String.t(), String.t()) ::
+          {:ok, %{id: Ecto.UUID.t(), line_number: pos_integer(), weekdays: [1..7]}}
+          | {:error, :forbidden | :not_found | GtfsPlanner.Gtfs.Rosters.Candidates.refusal()}
+  def create_roster_line_from_run(%AuditContext{} = audit, day_type_key, run_id) do
+    Rosters.create_line_from_run(audit, day_type_key, run_id)
+  end
+
+  @doc """
+  Sets one weekday of a line to a run, storing the run's current times.
+
+  This is the slot drawer's write. It replaces whatever run that weekday held,
+  stores the run's own sign-on and sign-off as the runs derive them today — which
+  is what makes a later re-cut show as a stale slot — and answers with the short
+  rests the resulting week would have, because a manual edit may leave short
+  rest where the builder never would.
+
+  An unknown run, a weekday with no base day type, and a run another line already
+  works that day are refused by name and write nothing; so is a line from another
+  version or organization, a malformed id, an unpublished version, or an actor who
+  is no longer an editor (`{:error, :forbidden}`).
+  """
+  @spec set_roster_slot(AuditContext.t(), term(), 1..7, String.t()) ::
+          {:ok, %{short_rests: [GtfsPlanner.Gtfs.Rosters.Checks.short_rest()]}}
+          | {:error, :forbidden | :not_found | GtfsPlanner.Gtfs.Rosters.Candidates.refusal()}
+  def set_roster_slot(%AuditContext{} = audit, line_id, weekday, run_id) do
+    Rosters.set_slot(audit, line_id, weekday, run_id)
+  end
+
+  @doc """
+  Fills every weekday of a group with one run, in one write.
+
+  This is "Set Mon–Fri to run N": the group is every weekday sharing the
+  requested weekday's base day type, and each of its days is written with the
+  run's current sign-on and sign-off, exactly as `set_roster_slot/4` writes one.
+
+  The write is allowed only when `Rosters.Candidates.group_availability/4` says
+  so — the run is open on every day of the group, the line works no different
+  run on any of them, and the resulting week has no short rest. A refusal names
+  its reason and writes nothing, in one transaction, so a group is never half
+  filled. A line from another version or organization, a malformed id, or an
+  unpublished version is `{:error, :not_found}`, and an actor who is no longer an
+  editor is `{:error, :forbidden}`.
+  """
+  @spec set_roster_weekday_group(AuditContext.t(), term(), 1..7, String.t()) ::
+          {:ok, %{weekdays: [1..7]}}
+          | {:error, :forbidden | :not_found | GtfsPlanner.Gtfs.Rosters.Candidates.refusal()}
+  def set_roster_weekday_group(%AuditContext{} = audit, line_id, weekday, run_id) do
+    Rosters.set_weekday_group(audit, line_id, weekday, run_id)
+  end
+
+  @doc """
+  Clears one weekday of a line, returning its run to open work.
+
+  Clearing deletes the `(line, weekday)` row and touches nothing else, so the
+  run it held is no longer held and the composition reports it open again. A day
+  that already holds nothing is `{:ok, :already_off}`. A line id from another
+  version, another organization, or a malformed one is `{:error, :not_found}`
+  and clears nothing, as is an actor who is no longer an editor
+  (`{:error, :forbidden}`).
+  """
+  @spec clear_roster_slot(AuditContext.t(), term(), 1..7) ::
+          {:ok, :cleared | :already_off} | {:error, :forbidden | :not_found}
+  def clear_roster_slot(%AuditContext{} = audit, line_id, weekday) do
+    Rosters.clear_slot(audit, line_id, weekday)
+  end
+
+  @doc """
+  Deletes a line with all of its days and its recorded pick.
+
+  The days go with the line through the foreign key, so every run it held returns
+  to open work and the operator is left holding nothing. `run_days` is how many
+  days the line had, read inside the lock, which is what the confirmation names.
+  A foreign or malformed line id, or an unpublished version, is
+  `{:error, :not_found}` and deletes nothing; so is an actor who is no longer an
+  editor, as `{:error, :forbidden}`.
+  """
+  @spec delete_roster_line(AuditContext.t(), term()) ::
+          {:ok, %{line_number: pos_integer(), run_days: non_neg_integer()}}
+          | {:error, :forbidden | :not_found}
+  def delete_roster_line(%AuditContext{} = audit, line_id) do
+    Rosters.delete_line(audit, line_id)
+  end
+
+  @doc """
+  Records or clears the operator of one line — the pick.
+
+  Nothing about the roster is enforced by recording it: no seniority order and no
+  history. A submitted operator id has to name an operator of the caller's own
+  organization, so an id from another organization is `{:error, :not_found}` and
+  writes nothing. An operator already holding a line in this version is refused
+  as `{:error, {:operator_holds, line_number, display_name}}`; the same operator
+  may hold a line in another version. `nil` clears the pick.
+
+  A line id of another version or organization, a malformed one, or an
+  unpublished version is `{:error, :not_found}` and changes no line; an actor
+  who is no longer an editor is `{:error, :forbidden}`.
+  """
+  @spec assign_roster_operator(AuditContext.t(), term(), term() | nil) ::
+          {:ok, %{line_number: pos_integer()}}
+          | {:error, :forbidden | :not_found | {:operator_holds, pos_integer(), String.t()}}
+  def assign_roster_operator(%AuditContext{} = audit, line_id, operator_id) do
+    Rosters.assign_operator(audit, line_id, operator_id)
+  end
+
+  @doc """
+  Every line an operator holds, across all versions of the organization.
+
+  The delete-operator confirmation names these lines with the version they are
+  in, because one operator may hold a line in each of the organization's
+  versions and a hard delete empties all of them. An operator id that is
+  malformed, missing, unused or of another organization answers `[]`.
+  """
+  @spec roster_operator_holdings(Ecto.UUID.t(), term()) ::
+          [
+            %{
+              gtfs_version_id: Ecto.UUID.t(),
+              version_name: String.t(),
+              line_number: pos_integer()
+            }
+          ]
+  def roster_operator_holdings(organization_id, operator_id) do
+    Rosters.operator_holdings(organization_id, operator_id)
+  end
+
+  @doc """
+  How much of a day type the roster has taken: `%{lines:, slots:}`.
+
+  Read from stored roster rows, not from the derived runs, so the runs rebuild
+  confirmation names the lines and slots a rebuild would change. Organization and
+  version scope the count; a day type nothing is rostered against answers
+  `%{lines: 0, slots: 0}`.
+  """
+  @spec count_roster_slots_for_day_type(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          %{lines: non_neg_integer(), slots: non_neg_integer()}
+  def count_roster_slots_for_day_type(organization_id, gtfs_version_id, day_type_key) do
+    Rosters.count_slots_for_day_type(organization_id, gtfs_version_id, day_type_key)
   end
 
   @doc """

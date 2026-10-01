@@ -1,0 +1,931 @@
+#!/usr/bin/env bash
+#
+# Bring up an isolated stack and run one tester journey against it.
+#
+# Every run gets its own throwaway Postgres (ephemeralpg's `pg_tmp`, loopback
+# only, database `test`) and its own Phoenix port. An inherited
+# GTFS_PLANNER_TEST_DATABASE_URL or DATABASE_URL is discarded before anything
+# starts, so a run can never land on a shared or development database, and no
+# step here drops, resets, rolls back or truncates one. config/test.exs refuses
+# any other host or database name as well.
+#
+# Run output lives under the primary checkout's gitignored `.specs/ux-qa/runs/`,
+# never inside a worktree: `assets/qa/session.mjs` resolves that root from
+# `git rev-parse --git-common-dir`.
+#
+# The subcommands and their exit codes are contract C-2, defined once in the
+# journey-qa skill's `references/harness-contract.md`. `up`, the four tester
+# subcommands, `down`, `replay` and `selfcheck` are all here.
+#
+#   bin/ux-qa up <JRNY-###/slug> [--headed]
+#
+#   step   --run DIR <action> [target flags] [--intent T] [--expect T]
+#   note   --run DIR [--about N|last] --observed T [--confusion none|mild|blocked]
+#   finish --run DIR --claim done|gave-up [--reason T] [--eyes MODE]
+#   report --run DIR
+#   down   --run DIR [--record]
+#   replay [<JRNY-###[/slug]] ...] [--trail FILE] [--headed]
+#   selfcheck [<JRNY-###[/slug]] ...]
+#
+# Exit 0 is success, 1 is a check that failed or a step that was rejected or
+# not ok, and 2 is a harness error: a missing JDK, jar or pg_tmp, or a server
+# that never answered.
+#
+# What `up` does, in order: resolve the scenario and the JDK, refuse to start
+# without them, start the database, build the assets, seed, write
+# `<run>/session.json`, snapshot `<run>/baseline.json`, start Phoenix in the
+# background and wait on `/health`, then open the resident driver and print the
+# run directory and the tester's brief. `--keep` is deliberately not offered:
+# the checks run inside `down`, so nothing needs a lingering server.
+#
+# What `down` does, in order: read the stored result and return its status if
+# the run was already finalized, otherwise run the scenario's check, judge the
+# run from the check's exit code and whether the server is still alive, write
+# `<run>/result.json`, optionally record the replay trail of a passing run,
+# stop only the pids `session.json` names and print the result. The database is
+# the harness's own throwaway server and is left to its own timeout, so a
+# result can be re-read after `down` has exited.
+#
+# What `replay` and `selfcheck` do: resolve the scenarios their arguments
+# name, then for each one bring a fresh stack up, hand a trail to the run's
+# driver and bring the stack down again, rating the outcome from the driver's
+# answer and the run's check. `replay` is a drift detector: it exits 1 at the
+# first failing step and never re-explores. `selfcheck` is the positive control
+# every scenario owes (rule R17): a stack no tester touched has to fail the
+# check, and the scenario's authored reference trail has to pass it.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+# shellcheck source=lib/browser-stack.sh
+source bin/lib/browser-stack.sh
+
+# How long `/health` may take to answer before the server is called a harness
+# error. Mix compiles nothing here, so this is the endpoint's first boot on a
+# warm `_build`, not a bound on a cold build.
+HEALTH_TIMEOUT=180
+
+# The poll interval of that wait. An interval is not a deadline.
+HEALTH_POLL=1
+
+# How long a signalled process may take to stop before `down` kills it, and the
+# poll interval of that wait. An interval is not a deadline.
+STOP_TIMEOUT=10
+STOP_POLL=1
+
+usage() {
+  {
+    echo "usage: bin/ux-qa up <JRNY-###/slug> [--headed]"
+    echo "       bin/ux-qa step --run DIR <action> [target flags] [--intent T] [--expect T]"
+    echo "       bin/ux-qa note --run DIR [--about N|last] --observed T [--confusion none|mild|blocked]"
+    echo "       bin/ux-qa finish --run DIR --claim done|gave-up [--reason T] [--eyes MODE]"
+    echo "       bin/ux-qa report --run DIR"
+    echo "       bin/ux-qa down --run DIR [--record]"
+    echo "       bin/ux-qa replay [<JRNY-###[/slug]] ...] [--trail FILE] [--headed]"
+    echo "       bin/ux-qa selfcheck [<JRNY-###[/slug]] ...]"
+  } >&2
+}
+
+# The environment every subcommand runs in (contract C-2). The database
+# variables are discarded, not overridden: an inherited URL must never decide
+# which database a run writes to, and `CI` goes with them so `start_database`
+# cannot take the branch that reuses a CI service container instead of starting
+# a throwaway server of its own. MIX_TEST_PARTITION is set for the same reason
+# the browser stack sets it, so a run's ExUnit databases are its own.
+export MIX_ENV=test
+export MIX_TEST_PARTITION=${MIX_TEST_PARTITION:-_uxqa}
+export ELIXIR_ERL_OPTIONS=${ELIXIR_ERL_OPTIONS:-+S 4}
+unset GTFS_PLANNER_TEST_DATABASE_URL DATABASE_URL CI
+
+# The JDK the QA server runs the real validator with: the operator's choice
+# first, then the Homebrew JDK the application config already names, then
+# whatever `java` is on PATH.
+resolve_java() {
+  if [ -n "${JAVA_PATH:-}" ]; then
+    echo "$JAVA_PATH"
+    return
+  fi
+
+  if [ -x /opt/homebrew/opt/openjdk@21/bin/java ]; then
+    echo /opt/homebrew/opt/openjdk@21/bin/java
+    return
+  fi
+
+  command -v java || true
+}
+
+# Prints a JSON field of a one-line reply from `drive.mjs`.
+field() {
+  echo "$1" | jq -r "$2"
+}
+
+# The run directory the last `up` created, so `replay` and `selfcheck` do not
+# have to read it back out of `up`'s own output.
+up_run=
+
+# The primary checkout's two trail folders, named by the module that also
+# writes the trails, so this script holds no second path rule for them.
+load_trail_roots() {
+  local roots
+  roots=$(node --input-type=module -e '
+import { gitPrimary, referenceTrailsRoot, replaysRoot } from "./assets/qa/session.mjs";
+
+const primary = gitPrimary();
+
+process.stdout.write([replaysRoot(primary), referenceTrailsRoot(primary)].join("\n"));
+')
+
+  replays_root=$(printf '%s\n' "$roots" | sed -n 1p)
+  reference_trails_root=$(printf '%s\n' "$roots" | sed -n 2p)
+}
+
+# `JRNY-001-import.json` is `JRNY-001/import` with its slash replaced, which is
+# the name `trailFileName` writes. The name comes from that function rather than
+# from a second rule here, so the launcher and the harness cannot disagree; the
+# reverse turns a scenario ID back into the file that holds its trail.
+trail_file_of() {
+  node --input-type=module -e '
+import { trailFileName } from "./assets/qa/session.mjs";
+
+process.stdout.write(trailFileName(process.argv[1]));
+' "$1"
+}
+
+scenario_id_of_trail_file() {
+  local name=${1##*/}
+
+  name=${name%.json}
+
+  # The journey ID is `JRNY-###`, so its own dash is the first one; everything
+  # after it is the scenario slug.
+  if [[ $name =~ ^(JRNY-[0-9]+)-(.*)$ ]]; then
+    printf '%s/%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  fi
+}
+
+# Every trail file in a folder, one scenario ID per line.
+trail_ids_in() {
+  local root="$1" file
+
+  [ -d "$root" ] || return 0
+
+  for file in "$root"/*.json; do
+    [ -f "$file" ] || continue
+    scenario_id_of_trail_file "$file"
+  done
+}
+
+# The scenarios a trail folder answers for: no requested ID means every trail
+# in it, `JRNY-###` the trails that journey recorded, and `JRNY-###/slug` the
+# one scenario, which resolves only when its own trail file exists. A requested
+# scenario with no trail resolves to nothing here, and the caller says so.
+resolve_trail_ids() {
+  local root="$1"
+  shift
+
+  local requested=("$@")
+
+  if [ ${#requested[@]} -eq 0 ]; then
+    trail_ids_in "$root"
+    return 0
+  fi
+
+  local all id scenario
+  all=$(trail_ids_in "$root")
+
+  for id in ${requested[@]+"${requested[@]}"}; do
+    case "$id" in
+      */*)
+        if [ -f "$root/$(trail_file_of "$id")" ]; then
+          printf '%s\n' "$id"
+        fi
+        ;;
+      *)
+        while IFS= read -r scenario; do
+          [ -n "$scenario" ] || continue
+
+          case "$scenario" in
+            "$id"/*) printf '%s\n' "$scenario" ;;
+          esac
+        done <<<"$all"
+        ;;
+    esac
+  done
+}
+
+# The host a database URL names, read with Node rather than a URL parser that
+# would need another dependency.
+url_host() {
+  node -e 'process.stdout.write(new URL(process.argv[1]).hostname)' "$1"
+}
+
+# Homebrew's PostgreSQL first on PATH, the same choice `start_database` makes so
+# the server and the client are the same build. A check reads the run's database
+# with `psql`, and `down` runs in its own shell, so the path it needs is set
+# here rather than inherited from whichever invocation brought the stack up.
+prefer_homebrew_postgres() {
+  local dir
+
+  for dir in /opt/homebrew/opt/postgresql@18/bin /usr/local/opt/postgresql@18/bin; do
+    if [ -x "$dir/psql" ]; then
+      PATH="$dir:$PATH"
+      export PATH
+      return
+    fi
+  done
+}
+
+# Waits for the server to answer /health, or fails the run. A Phoenix that has
+# already exited fails immediately rather than after the whole bound.
+wait_for_health() {
+  local port="$1"
+  local pid="$2"
+  local waited=0
+
+  while [ "$waited" -lt "$HEALTH_TIMEOUT" ]; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "Phoenix exited before /health answered; see the run's phoenix.log" >&2
+      return 1
+    fi
+
+    if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+      return 0
+    fi
+
+    sleep "$HEALTH_POLL"
+    waited=$((waited + HEALTH_POLL))
+  done
+
+  echo "Phoenix did not answer /health within ${HEALTH_TIMEOUT}s; see the run's phoenix.log" >&2
+  return 1
+}
+
+up() {
+  local scenario_id=
+  # Passed on as an optional word: `${h:+...}` keeps the empty case from
+  # expanding an unbound variable under `set -u`.
+  local headed=
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --headed)
+        headed=--headed
+        ;;
+      -*)
+        echo "unknown option for up: $1" >&2
+        usage
+        return 2
+        ;;
+      *)
+        if [ -n "$scenario_id" ]; then
+          echo "up takes one scenario ID" >&2
+          usage
+          return 2
+        fi
+        scenario_id="$1"
+        ;;
+    esac
+    shift
+  done
+
+  if [ -z "$scenario_id" ]; then
+    usage
+    return 2
+  fi
+
+  # Everything a missing dependency would break is checked before a process
+  # starts, so a stack that cannot work is never left half-built.
+  local scenario_json seed java jar
+  scenario_json=$(node assets/qa/drive.mjs scenario --id "$scenario_id" || true)
+
+  # A scenario the journey pages do not declare answers `{"ok":false,...}` and
+  # exits 2, so the diagnostic is keyed on the answer rather than on an
+  # assignment that `set -e` would abort in a plain call and that the
+  # conditional callers would let through.
+  if [ "$(field "$scenario_json" .ok)" != "true" ]; then
+    echo "no scenario \"$scenario_id\"; run bin/ux-qa with a scenario the journey pages declare" >&2
+    return 2
+  fi
+
+  seed=$(field "$scenario_json" .scenario.seed)
+
+  if [ "$seed" = "null" ]; then
+    echo "no scenario \"$scenario_id\"; run bin/ux-qa with a scenario the journey pages declare" >&2
+    return 2
+  fi
+
+  java=$(resolve_java)
+
+  if [ -z "$java" ] || ! "$java" -version >/dev/null 2>&1; then
+    echo "no runnable JDK found (set JAVA_PATH, or install openjdk@21); the QA server runs the real validator" >&2
+    return 2
+  fi
+
+  jar=${GTFS_VALIDATOR_JAR:-priv/gtfs_validator/gtfs-validator-cli.jar}
+
+  if [ ! -f "$jar" ]; then
+    echo "the GTFS validator jar is missing at ${jar}; set GTFS_VALIDATOR_JAR to point at it" >&2
+    return 2
+  fi
+
+  if [ -z "${GTFS_VALIDATOR_JAR:-}" ]; then
+    export GTFS_VALIDATOR_JAR="$jar"
+  fi
+
+  # Run output belongs in the primary checkout's ignored .specs, so a run never
+  # lands in a worktree or in a tree that would commit it.
+  local primary
+  primary=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
+
+  if ! git -C "$primary" check-ignore -q .specs/ux-qa; then
+    echo "${primary}/.specs/ux-qa is not ignored in ${primary}; runs would be committed" >&2
+    return 2
+  fi
+
+  start_database
+
+  if ! command -v psql >/dev/null; then
+    echo "psql not found. Install it with: brew install postgresql@18" >&2
+    return 2
+  fi
+
+  # The database must be this run's own throwaway one before anything writes to
+  # it (rule R14).
+  if [ "$(psql -X -Atc 'select current_database()' "$GTFS_PLANNER_TEST_DATABASE_URL")" != "test" ]; then
+    echo "the database is not a throwaway 'test' database: ${GTFS_PLANNER_TEST_DATABASE_URL}" >&2
+    return 2
+  fi
+
+  if [ "$(url_host "$GTFS_PLANNER_TEST_DATABASE_URL")" != "127.0.0.1" ]; then
+    echo "the database is not on loopback: ${GTFS_PLANNER_TEST_DATABASE_URL}" >&2
+    return 2
+  fi
+
+  # The compile and the seed are checked rather than left to `set -e`: `replay`
+  # and `selfcheck` call `up` from a conditional, where an unchecked failure
+  # would let a stack that cannot work keep going.
+  if [ "${UX_QA_ASSETS_BUILT:-}" = "1" ]; then
+    export UX_QA_ASSETS_BUILT
+  else
+    # Phoenix 1.8 extracts the colocated hooks while the web modules compile, so
+    # the bundle has to run after one; a warm `_build` makes this a no-op.
+    if ! mix compile || ! build_assets; then
+      echo "the QA assets could not be built; the pages would load without their hooks" >&2
+      return 2
+    fi
+
+    export UX_QA_ASSETS_BUILT=1
+  fi
+
+  export UX_QA_SEED="$seed"
+
+  if ! prepare_database test/support/ux_qa_seed.exs; then
+    echo "the throwaway database could not be prepared; no run can be judged" >&2
+    return 2
+  fi
+
+  local port init_json run
+  port=$(free_port)
+
+  init_json=$(node assets/qa/drive.mjs init \
+    --scenario "$scenario_id" \
+    --port "$port" \
+    --db-url "$GTFS_PLANNER_TEST_DATABASE_URL" \
+    --java-path "$java" \
+    ${headed:+"$headed"} || true)
+
+  if [ "$(field "$init_json" .ok)" != "true" ]; then
+    echo "the run could not be initialized for \"$scenario_id\"; no run can be judged" >&2
+    return 2
+  fi
+
+  run=$(field "$init_json" .run)
+
+  # The baseline is captured before the tester acts, so a check that compares
+  # content in seconds has a known starting state to compare against.
+  if ! node assets/qa/baseline.mjs --run "$run"; then
+    echo "the baseline could not be captured for ${run}; no run can be judged" >&2
+    return 2
+  fi
+
+  # From here on the run owns real processes, so a failure stops exactly those
+  # pids and nothing else.
+  local phoenix_pid open_json driver_pid
+  owned_pids=()
+
+  # The server leads a session of its own, so it outlives the shell that asked
+  # for it: `step`, `finish` and `down` are separate invocations, and a process
+  # left in `up`'s group would be killed with that shell instead.
+  phoenix_pid=$(detach_spawn "$run/phoenix.log" env \
+    BROWSER_E2E=true UX_QA_REAL_VALIDATOR=true PHX_SERVER=true \
+    PORT="$port" JAVA_PATH="$java" mix phx.server)
+  owned_pids+=("$phoenix_pid")
+
+  if ! node assets/qa/drive.mjs set-pid --run "$run" --which phoenix --pid "$phoenix_pid" >/dev/null; then
+    echo "the run could not record the server pid; run bin/ux-qa down for $run" >&2
+    return 2
+  fi
+
+  if ! wait_for_health "$port" "$phoenix_pid"; then
+    return 2
+  fi
+
+  open_json=$(node assets/qa/drive.mjs open --run "$run" ${headed:+"$headed"} || true)
+
+  if [ "$(field "$open_json" .ok)" != "true" ]; then
+    echo "the driver could not sign in for \"$scenario_id\"; the run is not usable" >&2
+    return 2
+  fi
+
+  driver_pid=$(field "$open_json" .pid)
+
+  if [ -z "$driver_pid" ] || [ "$driver_pid" = "null" ]; then
+    echo "the driver reported no pid for \"$scenario_id\"; the run is not usable" >&2
+    return 2
+  fi
+
+  owned_pids+=("$driver_pid")
+
+  if ! node assets/qa/drive.mjs set-pid --run "$run" --which driver --pid "$driver_pid" >/dev/null; then
+    echo "the run could not record the driver pid; run bin/ux-qa down for $run" >&2
+    return 2
+  fi
+
+  echo "run: ${run}"
+  echo "brief: ${run}/brief.md"
+  echo "Phoenix: http://127.0.0.1:${port}"
+
+  up_run=$run
+}
+
+# The exit code a `result.json` status returns (contract C-6): a completed goal
+# is 0, an unreached one is 1, and a run that could not be judged is 2.
+status_code() {
+  case "$1" in
+    completed) echo 0 ;;
+    not-completed) echo 1 ;;
+    *) echo 2 ;;
+  esac
+}
+
+# A check's id is declared by the scenario, not by this script, so it is read
+# from the run's own session rather than assumed.
+check_id_of() {
+  local run_dir="$1" scenario_id
+
+  scenario_id=$(jq -r '.scenario' "$run_dir/session.json")
+  node assets/qa/drive.mjs scenario --id "$scenario_id" | jq -r '.scenario.successCheck.id'
+}
+
+# TERM one pid, then KILL it if it is still there after STOP_TIMEOUT. A pid that
+# has already gone is not an error, which is what makes `down` repeatable.
+stop_pid() {
+  local pid="$1" waited=0
+
+  if ! kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+
+  kill "$pid" 2>/dev/null || true
+
+  while [ "$waited" -lt "$STOP_TIMEOUT" ]; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+
+    sleep "$STOP_POLL"
+    waited=$((waited + STOP_POLL))
+  done
+
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "pid ${pid} ignored TERM for ${STOP_TIMEOUT}s; killing it" >&2
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+}
+
+# Brings a run down and returns its status code rather than exiting, so
+# `replay` and `selfcheck` can bring several runs down and still report the
+# worst outcome of the lot. The `down` subcommand is this function's exit code.
+down() {
+  local run_dir='' record='' status=0
+  local phoenix_pid='' driver_pid='' check_exit=0 server_alive=no
+  local check_id='' finalize_json='' result_path=''
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --run)
+        if [ $# -lt 2 ]; then
+          echo "down: --run needs a run directory" >&2
+          return 2
+        fi
+        run_dir="$2"
+        shift
+        ;;
+      --record)
+        record=1
+        ;;
+      -*)
+        echo "unknown option for down: $1" >&2
+        usage
+        return 2
+        ;;
+      *)
+        echo "down takes --run DIR and an optional --record" >&2
+        usage
+        return 2
+        ;;
+    esac
+    shift
+  done
+
+  if [ -z "$run_dir" ] || [ ! -f "$run_dir/session.json" ]; then
+    echo "down needs --run DIR, the run directory 'up' printed; ${run_dir:-no run} has no session.json" >&2
+    return 2
+  fi
+
+  result_path="$run_dir/result.json"
+
+  # A run that was already finalized keeps its first answer. Re-running the
+  # check over a stopped stack would rewrite a result that was already true, so
+  # a second `down` is a read.
+  if [ -f "$result_path" ]; then
+    cat "$result_path"
+    status=$(jq -r '.status' "$result_path")
+    return "$(status_code "$status")"
+  fi
+
+  # From here on the run owns real processes, so a failure below stops exactly
+  # the pids `session.json` names, through the same trap `up` arms.
+  phoenix_pid=$(jq -r '.pids.phoenix // empty' "$run_dir/session.json")
+  driver_pid=$(jq -r '.pids.driver // empty' "$run_dir/session.json")
+  owned_pids=()
+
+  if [ -n "$phoenix_pid" ]; then
+    owned_pids+=("$phoenix_pid")
+  fi
+
+  if [ -n "$driver_pid" ]; then
+    owned_pids+=("$driver_pid")
+  fi
+
+  # The server's own state is half the rating: a run whose server died cannot be
+  # judged from its check alone.
+  if [ -n "$phoenix_pid" ] && kill -0 "$phoenix_pid" 2>/dev/null; then
+    server_alive=yes
+  fi
+
+  if ! check_id=$(check_id_of "$run_dir"); then
+    echo "down: the scenario this run was created for could not be read, so no check was run" >&2
+    return 2
+  fi
+
+  if [ -z "$check_id" ] || [ ! -f "assets/qa/checks/${check_id}.mjs" ]; then
+    echo "no check script for the scenario check: assets/qa/checks/${check_id:-unknown}.mjs" >&2
+    return 2
+  fi
+
+  prefer_homebrew_postgres
+
+  # The check prints its own JSON and nothing else, so the file it writes is the
+  # check's whole answer. Its exit code is the rating, not what it printed: a
+  # check that printed a pass and then crashed is a harness error.
+  node "assets/qa/checks/${check_id}.mjs" --run "$run_dir" >"$run_dir/check.json" || check_exit=$?
+
+  # A check that crashed before printing leaves an empty file, and `finalize`
+  # reads the printed JSON or nothing at all.
+  if [ ! -s "$run_dir/check.json" ]; then
+    rm -f "$run_dir/check.json"
+  fi
+
+  if ! finalize_json=$(node assets/qa/drive.mjs finalize --run "$run_dir" \
+    --check-exit "$check_exit" --server-alive "$server_alive"); then
+    echo "down: result.json could not be written: ${finalize_json}" >&2
+    return 2
+  fi
+
+  status=$(field "$finalize_json" .status)
+
+  # Only a run that reached its goal has a path worth replaying, so `--record`
+  # is honoured exactly when the result is `completed`.
+  if [ -n "$record" ] && [ "$status" = "completed" ]; then
+    node assets/qa/drive.mjs record --run "$run_dir" || echo "down: no replay trail was recorded" >&2
+  fi
+
+  # The driver is asked to close first so its browser shuts down cleanly; a
+  # driver that cannot answer is stopped by pid below like any other process.
+  node assets/qa/drive.mjs close --run "$run_dir" >/dev/null 2>&1 || true
+
+  local pid
+  for pid in ${owned_pids[@]+"${owned_pids[@]}"}; do # shellcheck disable=SC2086
+    stop_pid "$pid"
+  done
+  owned_pids=()
+
+  cat "$result_path"
+  return "$(status_code "$status")"
+}
+
+# Replays one trail on a fresh stack: `up`, the trail through the run's driver,
+# then `down`, which runs the check and stops what `up` started. The run
+# directory travels in `up_run`, so the trail is never handed to a run it does
+# not belong to.
+#
+# Prints one line for the scenario — `ok`, `drift at step N`, `check failed` or
+# `harness error` — and returns 0, 1 or 2 for it. A drift is the driver's own
+# line, which already names the step, the error and the screenshot. A third
+# argument `--local` keeps the captures in the run folder (see `selfcheck`).
+replay_scenario() {
+  local scenario_id="$1" trail="$2" local_flag="${3:-}"
+  local run_dir='' replay_code=0 down_code=0
+
+  # Assets are built once per invocation, not once per scenario; `up` exports
+  # the flag the first time and reads it on the next.
+  if ! up "$scenario_id" ${replay_headed:+"$replay_headed"}; then
+    # A stack that failed to come up may already have started a server, and the
+    # next scenario must not inherit it.
+    stop_owned
+    owned_pids=()
+    echo "${scenario_id}: harness error"
+    return 2
+  fi
+
+  run_dir="$up_run"
+
+  replay_code=0
+  node assets/qa/drive.mjs replay --run "$run_dir" --trail "$trail" ${local_flag:+"$local_flag"} || replay_code=$?
+
+  down_code=0
+  down --run "$run_dir" >/dev/null || down_code=$?
+
+  # The stack is stopped whatever the trail did, so the next scenario starts on
+  # a machine that holds nothing of this one. A `down` that could not finish is
+  # still a stack this invocation started, so the trap's list is cleared only
+  # once the pids are known to be gone.
+  stop_owned
+  owned_pids=()
+
+  if [ "$replay_code" -ne 0 ] || [ "$down_code" -ne 0 ]; then
+    if [ "$replay_code" -gt 1 ] || [ "$down_code" -gt 1 ]; then
+      echo "${scenario_id}: harness error"
+      return 2
+    fi
+
+    if [ "$replay_code" -eq 1 ]; then
+      echo "${scenario_id}: drift"
+      return 1
+    fi
+
+    echo "${scenario_id}: check failed"
+    return 1
+  fi
+
+  echo "${scenario_id}: ok"
+}
+
+replay() {
+  local trail='' replay_headed=''
+  local ids=()
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --trail)
+        if [ $# -lt 2 ]; then
+          echo "replay: --trail needs a trail file" >&2
+          return 2
+        fi
+        trail="$2"
+        shift
+        ;;
+      --headed)
+        replay_headed=--headed
+        ;;
+      -*)
+        echo "unknown option for replay: $1" >&2
+        usage
+        return 2
+        ;;
+      *)
+        ids+=("$1")
+        ;;
+    esac
+    shift
+  done
+
+  load_trail_roots
+
+  # With no IDs the answer is every trail that was recorded, so a replay is
+  # something an operator can run without remembering which journeys were
+  # explored.
+  local resolved
+  resolved=$(resolve_trail_ids "$replays_root" ${ids[@]+"${ids[@]}"})
+
+  if [ -z "$resolved" ]; then
+    if [ ${#ids[@]} -eq 0 ]; then
+      echo "no recorded trails in ${replays_root}; nothing to replay"
+      return 0
+    fi
+
+    echo "no recorded trail for ${ids[*]} in ${replays_root}" >&2
+    return 2
+  fi
+
+  # `--trail` names one trail, so it is only meaningful against one scenario;
+  # replaying it against several would answer each of them with steps the
+  # trail's own scenario never took. This is checked before a single stack is
+  # started rather than after.
+  if [ -n "$trail" ]; then
+    local count=0 scenario
+
+    while IFS= read -r scenario; do
+      [ -n "$scenario" ] && count=$((count + 1))
+    done <<<"$resolved"
+
+    if [ "$count" -ne 1 ]; then
+      echo "replay: --trail needs exactly one scenario ID, not ${count}" >&2
+      return 2
+    fi
+  fi
+
+  local scenario_id worst=0 code
+
+  while IFS= read -r scenario_id; do
+    [ -n "$scenario_id" ] || continue
+
+    local scenario_trail="${trail:-$replays_root/$(trail_file_of "$scenario_id")}"
+
+    code=0
+    replay_scenario "$scenario_id" "$scenario_trail" || code=$?
+
+    if [ "$code" -gt "$worst" ]; then
+      worst="$code"
+    fi
+  done <<<"$resolved"
+
+  return "$worst"
+}
+
+# The two legs of a scenario's positive control (rule R17). The no-op leg
+# brings a stack up, lets the tester do nothing and claims the goal was
+# reached: the check has to fail it, because a check that passes an untouched
+# stack is not looking at the run. The replay leg runs the authored reference
+# trail, which has to reach the goal. A scenario is explorable only when both
+# legs hold on the current commit. The reference trail's captures stay in its
+# run folder, so the shared capture folder keeps the recorded exploration's.
+selfcheck_scenario() {
+  local scenario_id="$1" trail="$2"
+  local run_dir='' check_id='' noop_code=0 replay_code=0 noop_ok=no replay_ok=no
+
+  if ! up "$scenario_id"; then
+    stop_owned
+    owned_pids=()
+    echo "${scenario_id}: harness error"
+    return 2
+  fi
+
+  run_dir="$up_run"
+
+  if ! check_id=$(check_id_of "$run_dir"); then
+    down --run "$run_dir" >/dev/null || true
+    stop_owned
+    owned_pids=()
+    echo "${scenario_id}: harness error"
+    return 2
+  fi
+
+  # The claim is the harness's own, not a tester's: it says the goal was
+  # reached without a single action having been taken.
+  node assets/qa/drive.mjs finish --run "$run_dir" --claim "done" --reason "selfcheck" >/dev/null || true
+
+  down --run "$run_dir" >/dev/null || noop_code=$?
+  stop_owned
+  owned_pids=()
+
+  if [ "$noop_code" -eq 0 ]; then
+    echo "FAIL no-op: check ${check_id} passed without any action" >&2
+  elif [ "$noop_code" -eq 1 ]; then
+    noop_ok=yes
+  else
+    echo "${scenario_id}: harness error"
+    return 2
+  fi
+
+  replay_code=0
+  replay_scenario "$scenario_id" "$trail" --local || replay_code=$?
+
+  case "$replay_code" in
+    0) replay_ok=yes ;;
+    1) replay_ok=no ;;
+    *)
+      echo "selfcheck ${scenario_id}: no-op=${noop_ok} replay=harness-error"
+      return 2
+      ;;
+  esac
+
+  echo "selfcheck ${scenario_id}: no-op=${noop_ok} replay=${replay_ok}"
+
+  if [ "$noop_ok" = yes ] && [ "$replay_ok" = yes ]; then
+    return 0
+  fi
+
+  return 1
+}
+
+selfcheck() {
+  local ids=()
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -*)
+        echo "unknown option for selfcheck: $1" >&2
+        usage
+        return 2
+        ;;
+      *)
+        ids+=("$1")
+        ;;
+    esac
+    shift
+  done
+
+  load_trail_roots
+
+  # A scenario with no reference trail has no positive control yet, so there is
+  # nothing to judge and no stack to start.
+  local resolved
+  resolved=$(resolve_trail_ids "$reference_trails_root" ${ids[@]+"${ids[@]}"})
+
+  if [ -z "$resolved" ]; then
+    if [ ${#ids[@]} -eq 0 ]; then
+      echo "no reference trails in ${reference_trails_root}; no scenario has a positive control yet"
+      return 0
+    fi
+
+    echo "no reference trail for ${ids[*]} in ${reference_trails_root}" >&2
+    return 2
+  fi
+
+  local scenario_id trail worst=0 code
+
+  while IFS= read -r scenario_id; do
+    [ -n "$scenario_id" ] || continue
+
+    trail="$reference_trails_root/$(trail_file_of "$scenario_id")"
+
+    code=0
+    selfcheck_scenario "$scenario_id" "$trail" || code=$?
+
+    if [ "$code" -gt "$worst" ]; then
+      worst="$code"
+    fi
+  done <<<"$resolved"
+
+  return "$worst"
+}
+
+# Stops only the pids this invocation started. A pid that has already gone is
+# ignored, so the trap is safe to run twice.
+stop_owned() {
+  local pid
+
+  for pid in ${owned_pids[@]+"${owned_pids[@]}"}; do # shellcheck disable=SC2086
+    if kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+    fi
+  done
+}
+
+owned_pids=()
+
+trap 'if [ $? -ne 0 ]; then stop_owned; fi' EXIT
+
+case "${1:-}" in
+  up)
+    shift
+    up "$@"
+    ;;
+  step | note | finish | report)
+    # The tester's own words: the driver client owns the vocabularies and
+    # prints the observation, and its exit code is the launcher's.
+    delegate="$1"
+    shift
+    code=0
+    node assets/qa/drive.mjs "$delegate" "$@" || code=$?
+    exit "$code"
+    ;;
+  down)
+    shift
+    down "$@"
+    ;;
+  replay)
+    shift
+    replay "$@"
+    ;;
+  selfcheck)
+    shift
+    selfcheck "$@"
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

@@ -797,6 +797,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
           "disabled:cursor-not-allowed disabled:text-muted disabled:hover:bg-transparent",
           focus_inset()
         ]}
+        aria-label={"Edit trip #{@row.trip_id}"}
         phx-disconnected={JS.set_attribute({"disabled", ""})}
         phx-connected={JS.remove_attribute("disabled")}
       >

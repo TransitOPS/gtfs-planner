@@ -58,6 +58,13 @@ hide = true
 depends = ["elixir:deps", "setup:browser"]
 run = "bin/test-browser"
 
+# Local, on-demand UX QA replay. Not part of `test:*`; CI does not run it.
+# Extra arguments select scenarios (`mise run qa:replay -- JRNY-001/import`);
+# with no arguments every recorded trail is replayed.
+[tasks."qa:replay"]
+depends = ["elixir:deps", "setup:browser"]
+run = "bin/ux-qa replay"
+
 # Linting
 [tasks."lint:nodejs:syntax"]
 depends = ["setup:nodejs"]

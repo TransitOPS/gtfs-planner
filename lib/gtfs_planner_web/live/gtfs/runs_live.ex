@@ -81,6 +81,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      |> assign(:suggest_notice, nil)
      |> assign(:apply_state, :idle)
      |> assign(:rebuild_confirm, false)
+     # What the roster has taken of this day type, read when the confirmation
+     # opens rather than at mount: the count is about the day the reader is
+     # looking at and about the roster as it stands then. Empty until then, so a
+     # confirmation that never opens says nothing.
+     |> assign(:roster_slots, %{lines: 0, slots: 0})
      |> assign(:shares_state, :loading)
      |> assign(:shares, [])
      # The duty chart's state. `sort`/`dir`/`scale` are read from the URL and
@@ -406,7 +411,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         {:noreply, socket}
 
       plan_needs_confirmation?(socket.assigns) ->
-        {:noreply, assign(socket, :rebuild_confirm, true)}
+        {:noreply, open_rebuild_confirm(socket)}
 
       true ->
         do_apply(socket)
@@ -823,6 +828,21 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # rename the reader made is invisible in that diff.
   defp plan_needs_confirmation?(%{plan: %{scope: :replace_all}}), do: true
   defp plan_needs_confirmation?(_assigns), do: false
+
+  # A rebuild renumbers the runs, so the roster's slots against them stop
+  # matching. The confirmation names how much is at stake, read from the stored
+  # roster rows for the day type the reader is previewing — the same count the
+  # Rosters page's own figures come from, not a second computation.
+  defp open_rebuild_confirm(socket) do
+    %{current_organization: organization, current_gtfs_version: version} = socket.assigns
+
+    socket
+    |> assign(
+      :roster_slots,
+      Gtfs.count_roster_slots_for_day_type(organization.id, version.id, socket.assigns.day)
+    )
+    |> assign(:rebuild_confirm, true)
+  end
 
   defp do_apply(socket) do
     %{plan: plan} = socket.assigns
@@ -2075,6 +2095,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         day_label={day_label(@runs_day)}
         open={@rebuild_confirm}
         pending={@apply_state == :pending}
+        roster_slots={@roster_slots}
       />
 
       <RunsComponents.suggest_drawer

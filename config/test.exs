@@ -70,12 +70,20 @@ if database_url do
 end
 
 # Use a deterministic final-validator adapter for browser journeys while ordinary
-# ExUnit cases retain process-owned Mox expectations.
+# ExUnit cases retain process-owned Mox expectations. The QA launcher starts its
+# server with `BROWSER_E2E` so the stubs for external services stay in place, and
+# sets `UX_QA_REAL_VALIDATOR` so validation runs the tracked jar instead of a stub;
+# with it unset every existing run is unchanged.
 validator_module =
-  if System.get_env("BROWSER_E2E") == "true" do
-    GtfsPlanner.Gtfs.BrowserValidator
-  else
-    GtfsPlanner.Gtfs.ValidatorMock
+  cond do
+    System.get_env("BROWSER_E2E") == "true" and System.get_env("UX_QA_REAL_VALIDATOR") == "true" ->
+      GtfsPlanner.Gtfs.Validator
+
+    System.get_env("BROWSER_E2E") == "true" ->
+      GtfsPlanner.Gtfs.BrowserValidator
+
+    true ->
+      GtfsPlanner.Gtfs.ValidatorMock
   end
 
 config :gtfs_planner, :validator_module, validator_module

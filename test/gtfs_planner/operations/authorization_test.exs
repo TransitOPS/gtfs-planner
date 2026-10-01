@@ -6,6 +6,7 @@ defmodule GtfsPlanner.Operations.AuthorizationTest do
   alias GtfsPlanner.Gtfs.DeadheadTime
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Operations.Garage
+  alias GtfsPlanner.Operations.Operator
   alias GtfsPlanner.Operations.Tods
   alias GtfsPlanner.Operations.Vehicle
   alias GtfsPlanner.Operations.VehicleType
@@ -121,6 +122,51 @@ defmodule GtfsPlanner.Operations.AuthorizationTest do
              before
   end
 
+  test "a revoked editor cannot use any operator writer" do
+    organization = organization_fixture()
+    actor = editor_fixture(organization)
+
+    assert {:ok, operator} =
+             Operations.create_operator(organization.id, actor, %{
+               "employee_id" => "E4101",
+               "display_name" => "Aurelia Nowak",
+               "seniority_number" => 7
+             })
+
+    {:ok, parsed} =
+      Tods.parse(
+        :operators,
+        "operators.csv",
+        "employee_id,display_name,seniority_number\nE4101,Renamed,3\nE4200,Bo Silva,9\n"
+      )
+
+    preview = Operations.preview_operator_import(organization.id, parsed)
+    assert [%{employee_id: "E4200"}] = preview.add
+    before = stored_operators(organization.id)
+
+    actor
+    |> membership_for(organization)
+    |> deactivate_membership_fixture()
+
+    assert {:error, :forbidden} =
+             Operations.create_operator(organization.id, actor, %{
+               "employee_id" => "E4300",
+               "display_name" => "Added"
+             })
+
+    assert {:error, :forbidden} =
+             Operations.update_operator(organization.id, actor, operator.id, %{
+               "display_name" => "Changed"
+             })
+
+    assert {:error, :forbidden} = Operations.delete_operator(organization.id, actor, operator.id)
+
+    assert {:error, :forbidden} =
+             Operations.apply_operator_import(organization.id, actor, parsed, preview)
+
+    assert stored_operators(organization.id) == before
+  end
+
   test "an editor of another organization cannot create or delete local assets" do
     organization = organization_fixture()
     other = organization_fixture()
@@ -139,6 +185,10 @@ defmodule GtfsPlanner.Operations.AuthorizationTest do
     assert Repo.get(Garage, garage.id)
     assert length(Operations.list_garages(organization.id)) == 1
     assert Operations.list_garages(other.id) == []
+  end
+
+  defp stored_operators(organization_id) do
+    Repo.all(from(o in Operator, where: o.organization_id == ^organization_id, order_by: o.id))
   end
 
   defp membership_for(actor, organization) do

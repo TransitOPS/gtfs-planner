@@ -36,6 +36,8 @@ defmodule GtfsPlanner.Gtfs.Export do
   alias GtfsPlanner.Gtfs.Flex.Export, as: FlexExport
   alias GtfsPlanner.Gtfs.Flex.Export.FileSpecs, as: FlexFileSpecs
   alias GtfsPlanner.Gtfs.FlexService
+  alias GtfsPlanner.Gtfs.Rosters
+  alias GtfsPlanner.Gtfs.Rosters.AssignmentsExport
   alias GtfsPlanner.Gtfs.Runs
   alias GtfsPlanner.Gtfs.Runs.TodsExport, as: RunsTodsExport
   alias GtfsPlanner.Gtfs.Stop
@@ -487,6 +489,7 @@ defmodule GtfsPlanner.Gtfs.Export do
       warnings =
         movement_warnings(movements) ++
           run_warnings(movements) ++
+          assignment_warnings(movements) ++
           tods_omission_warnings(garages, vehicles) ++ missing_warnings
 
       {:ok, create_zip_archive(file_paths, organization_id, gtfs_version_id), warnings}
@@ -947,6 +950,8 @@ defmodule GtfsPlanner.Gtfs.Export do
           run_day_types: RunsTodsExport.run_day_types(run_days)
         })
 
+      ids = Map.get(rows, :ids, %{service_ids: %{}, movement_trip_ids: %{}})
+
       %{
         rows: rows,
         # `ids` is absent when no day type survived `collect/4` — with no day type
@@ -957,17 +962,45 @@ defmodule GtfsPlanner.Gtfs.Export do
           RunsTodsExport.rows(%{
             day_types: movements.day_types,
             run_days: run_days,
-            ids: Map.get(rows, :ids, %{service_ids: %{}, movement_trip_ids: %{}}),
+            ids: ids,
             garages_by_id: movements.garages_by_id
           }),
+        # The planned assignments, expanded over the very `movements` and
+        # `run_days` the run rows were just built from and hung on the very
+        # `service_ids` those rows used, so `employee_run_dates.txt` can never
+        # name a `(service_id, date)` the same ZIP's supplement does not list or a
+        # run its `run_events.txt` does not carry (INV-14). `nil` when the version
+        # has no roster line, which is what keeps the file and its warnings off a
+        # version that has never been rostered (AC-23).
+        assignment_rows:
+          assignment_rows(organization_id, gtfs_version_id, movements, run_days, ids),
         published?: true
       }
     else
       %{
         rows: empty_movement_rows(),
         run_rows: %{run_events: [], left_out: 0, uncovered: []},
+        assignment_rows: nil,
         published?: false
       }
+    end
+  end
+
+  # `Rosters.export_roster/4` composes the roster from the movements and runs
+  # this export already holds rather than deriving them a second time, and it
+  # answers `nil` for a version with no line (INV-11, INV-15).
+  defp assignment_rows(organization_id, gtfs_version_id, movements, run_days, ids) do
+    case Rosters.export_roster(organization_id, gtfs_version_id, movements, run_days) do
+      nil ->
+        nil
+
+      roster ->
+        AssignmentsExport.rows(%{
+          roster: roster,
+          day_types: movements.day_types,
+          run_days: run_days,
+          services: ids.service_ids
+        })
     end
   end
 
@@ -1009,7 +1042,8 @@ defmodule GtfsPlanner.Gtfs.Export do
       {Tods.routes_supplement_spec(), rows.routes},
       {Tods.trips_supplement_spec(), rows.trips},
       {Tods.stop_times_supplement_spec(), rows.stop_times},
-      {Tods.run_events_spec(), movements.run_rows.run_events}
+      {Tods.run_events_spec(), movements.run_rows.run_events},
+      {Tods.employee_run_dates_spec(), employee_run_date_rows(movements)}
     ]
     |> Enum.reject(fn {_spec, rows} -> rows == [] end)
     |> Enum.map(fn {spec, rows} -> write_tods_file(temp_dir, spec, rows) end)
@@ -1128,6 +1162,41 @@ defmodule GtfsPlanner.Gtfs.Export do
       end)
 
     unpublished ++ left_out ++ uncovered
+  end
+
+  # The planned assignments' rows, or none at all. A version with no roster line
+  # has no roster to expand, and a roster whose every line is open or stale has
+  # nothing to write: either way the file is omitted rather than written empty,
+  # and the warnings below say which of the two it was.
+  defp employee_run_date_rows(%{assignment_rows: nil}), do: []
+  defp employee_run_date_rows(%{assignment_rows: %{rows: rows}}), do: rows
+
+  # The roster-line warnings, in the order a reader meets them: what the file is,
+  # what it deliberately leaves out, and what could not be exported. They appear
+  # only for a version that has roster lines — a version nobody has rostered owes
+  # a consumer no announcement (AC-23).
+  #
+  # The sentences are `AssignmentsExport.sentences/2`'s, the same ones the
+  # Rosters page lists, so a warning a reader has already read on the page cannot
+  # read differently in the ZIP's own report (INV-14).
+  defp assignment_warnings(%{assignment_rows: nil}), do: []
+
+  defp assignment_warnings(%{assignment_rows: assignments}) do
+    file = Tods.employee_run_dates_spec().filename
+
+    for {code, detail} <- AssignmentsExport.sentences(assignments),
+        do: warning(code, detail, file)
+  end
+
+  @roster_line_warning %{
+    code: nil,
+    detail: nil,
+    file: nil,
+    entity_type: "roster_line"
+  }
+
+  defp warning(code, detail, file) do
+    %{@roster_line_warning | code: code, detail: detail, file: file}
   end
 
   # An empty table omits its file rather than exporting an empty one.

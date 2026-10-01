@@ -8,11 +8,12 @@ defmodule GtfsPlannerWeb.ComingSoon do
   heading level its surrounding page needs and the scope label it can resolve at
   runtime.
 
-  `feature/1` answers for the three catalog keys only. Any other key raises, so a
+  `feature/1` answers for the two catalog keys only. Any other key raises, so a
   typo or an unmapped user string cannot render plausible-looking placeholder copy
   for a feature nobody has described. Evolutions left this catalog when
-  `GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive` took over its station route, so
-  that route no longer has placeholder copy to reach for.
+  `GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive` took over its station route, and
+  Rosters left it when `GtfsPlannerWeb.Gtfs.RostersLive` took over the Operations
+  tab, so neither route has placeholder copy to reach for.
   """
 
   use Phoenix.Component
@@ -37,40 +38,11 @@ defmodule GtfsPlannerWeb.ComingSoon do
   feature will let a person do, in the words an operator uses, followed by one
   sentence that says what it covers and where it stops.
 
-  Runs is deliberately absent: `/gtfs/:version/runs` is `Gtfs.RunsLive`, and a
-  Runs entry here would describe a page this catalog no longer renders.
+  Runs and Rosters are deliberately absent: `/gtfs/:version/runs` is
+  `Gtfs.RunsLive` and `/gtfs/:version/rosters` is `Gtfs.RostersLive`, and an
+  entry here would describe pages this catalog no longer renders.
   """
   @spec feature(atom()) :: feature()
-  def feature(:rosters) do
-    %{
-      title: "Rosters",
-      scope: :version,
-      summary: "Group runs into weekly lines and record which operator holds each line.",
-      sections: [
-        %{
-          name: "Build weekly lines",
-          text:
-            "Choose one run or a day off for each day of the week. Create a Monday to Friday line in one step from work that isn’t in a line yet."
-        },
-        %{
-          name: "Check each line",
-          text:
-            "See weekly paid hours, hours over 40, and whether the line has two days off in a row and enough rest between working days."
-        },
-        %{
-          name: "Record who picks each line",
-          text:
-            "Operators pick lines by seniority outside GTFS Planner. Keep a list of operators and record each pick here."
-        },
-        %{
-          name: "Export assignments",
-          text:
-            "Download planned operator assignments for other systems. The plan leaves out vacations, sick days and the extraboard."
-        }
-      ]
-    }
-  end
-
   def feature(:feed_url) do
     %{
       title: "Published feed URL",

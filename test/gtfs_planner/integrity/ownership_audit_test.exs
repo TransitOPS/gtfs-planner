@@ -1,9 +1,12 @@
 defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
   use GtfsPlanner.DataCase, async: false
 
+  alias GtfsPlanner.Gtfs.RosterLine
+  alias GtfsPlanner.Gtfs.RosterLineDay
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.TripRun
   alias GtfsPlanner.Integrity.OwnershipAudit
+  alias GtfsPlanner.Operations.Operator
 
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
@@ -17,7 +20,8 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
     {"route_operating_settings", "required_vehicle_type_id", "vehicle_types"},
     {"blocking_settings", "default_garage_id", "garages"},
     {"vehicles", "garage_id", "garages"},
-    {"vehicles", "vehicle_type_id", "vehicle_types"}
+    {"vehicles", "vehicle_type_id", "vehicle_types"},
+    {"roster_lines", "operator_id", "operators"}
   ]
 
   test "version-owner catalog matches the database ownership columns" do
@@ -58,6 +62,7 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
     route_pattern_fixture(org.id, version.id, %{route_id: route.route_id})
     trip = trip_fixture(org.id, version.id, route.route_id)
     insert_trip_run!(org.id, version.id, trip.id, "R1")
+    insert_roster_day!(insert_roster_line!(org.id, version.id, insert_operator!(org.id).id))
 
     report = OwnershipAudit.run()
     assert report.total == 0
@@ -154,16 +159,41 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
     assert fingerprint("trip_runs") == before
   end
 
+  test "roster day containment detects a line of another version" do
+    org = organization_fixture()
+    version = gtfs_version_fixture(org.id)
+    other_version = gtfs_version_fixture(org.id)
+    line = insert_roster_line!(org.id, other_version.id, nil)
+
+    Repo.query!(
+      "ALTER TABLE roster_line_days DROP CONSTRAINT roster_line_days_roster_lines_owner_fkey"
+    )
+
+    day = insert_roster_day!(%{line | gtfs_version_id: version.id})
+
+    relationship =
+      OwnershipAudit.run().relationships
+      |> Enum.find(&(&1.name == "roster_line_days.roster_line_id→roster_lines"))
+
+    assert relationship.kind == :containment
+    assert relationship.anomalies == 1
+    assert relationship.samples == [day.id]
+  end
+
   test "all organization-only parent links report foreign assets and ignore nulls" do
     org = organization_fixture()
     version = gtfs_version_fixture(org.id)
     foreign_org = organization_fixture()
-    foreign_garage = garage_fixture(foreign_org.id)
-    foreign_type = vehicle_type_fixture(foreign_org.id)
+
+    foreign_parents = %{
+      "garages" => garage_fixture(foreign_org.id).id,
+      "vehicle_types" => vehicle_type_fixture(foreign_org.id).id,
+      "operators" => insert_operator!(foreign_org.id).id
+    }
 
     for {table, column, parent} <- @organization_parents do
       Repo.query!("ALTER TABLE #{table} DROP CONSTRAINT #{table}_#{column}_owner_fkey")
-      parent_id = if parent == "garages", do: foreign_garage.id, else: foreign_type.id
+      parent_id = Map.fetch!(foreign_parents, parent)
       foreign_id = insert_asset_link!(table, column, org.id, version.id, parent_id)
 
       nullable_version =
@@ -275,6 +305,36 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
     {count, checksum}
   end
 
+  defp insert_operator!(org_id) do
+    Repo.insert!(%Operator{
+      organization_id: org_id,
+      employee_id: "E#{System.unique_integer([:positive])}",
+      display_name: "Operator"
+    })
+  end
+
+  defp insert_roster_line!(org_id, version_id, operator_id) do
+    Repo.insert!(%RosterLine{
+      organization_id: org_id,
+      gtfs_version_id: version_id,
+      line_number: System.unique_integer([:positive]),
+      operator_id: operator_id
+    })
+  end
+
+  defp insert_roster_day!(line) do
+    Repo.insert!(%RosterLineDay{
+      roster_line_id: line.id,
+      organization_id: line.organization_id,
+      gtfs_version_id: line.gtfs_version_id,
+      weekday: 1,
+      day_type_key: "WK",
+      run_id: "R1",
+      run_sign_on_secs: 0,
+      run_sign_off_secs: 3600
+    })
+  end
+
   defp insert_trip_run!(org_id, version_id, trip_id, run_id) do
     id = Ecto.UUID.generate()
     now = DateTime.utc_now()
@@ -340,6 +400,16 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
           VALUES ($1, $2, $3, $4, now(), now())
           """,
           base ++ ["VEHICLE_#{id}", asset]
+        )
+
+      "roster_lines" ->
+        Repo.query!(
+          """
+          INSERT INTO roster_lines
+            (id, organization_id, gtfs_version_id, line_number, #{column}, inserted_at, updated_at)
+          VALUES ($1, $2, $3, $4, $5, now(), now())
+          """,
+          base ++ [Ecto.UUID.dump!(version_id), System.unique_integer([:positive]), asset]
         )
     end
 
