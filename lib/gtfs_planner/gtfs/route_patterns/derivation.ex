@@ -304,22 +304,26 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
   defp confirm_selection!(_selection, _review, _route), do: Repo.rollback(:invalid_selection)
 
-  # `:new` plans a pattern, an explicit id must name a pattern of this route, and
-  # an absent target takes the rule-5 candidate head, so an unconfirmed chooser
+  # `:new` plans a pattern, an explicit id must name one of the group's candidates
+  # in the confirmed direction (same route, direction and stop order), and an
+  # absent target takes the rule-5 candidate head, so an unconfirmed chooser
   # still resolves to one deterministic pattern.
   defp resolve_target(selection, group, direction, review, route) do
+    candidates = Grouping.candidates(group, direction, review.pattern_refs)
+
     case Map.get(selection, :target) do
       :new ->
         nil
 
       id when is_binary(id) ->
-        case Map.get(route_patterns(route), cast_pattern_id(id)) do
-          %RoutePattern{} = pattern -> pattern
-          _other -> Repo.rollback(:invalid_selection)
-        end
+        pattern_id = cast_pattern_id(id)
+
+        if Enum.any?(candidates, &(&1.id == pattern_id)),
+          do: Map.fetch!(route_patterns(route), pattern_id),
+          else: Repo.rollback(:invalid_selection)
 
       _absent ->
-        case Grouping.candidates(group, direction, review.pattern_refs) do
+        case candidates do
           [%{id: id} | _rest] -> Map.get(route_patterns(route), id)
           [] -> nil
         end
