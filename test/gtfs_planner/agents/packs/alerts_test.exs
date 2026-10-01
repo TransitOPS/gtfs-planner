@@ -517,6 +517,7 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
     test "accepts every field the answers declare", context do
       route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
       stop = stop_fixture(context.organization.id, context.version.id, stop_attrs("S1", "Elm St"))
+      trip = trip_fixture(context.organization.id, context.version.id, route.route_id)
 
       arguments = %{
         "urgency" => "planned",
@@ -530,7 +531,7 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
           "route_ids" => [route.id],
           "stop_ids" => [stop.id],
           "route_stop_pairs" => [%{"route_id" => route.id, "stop_id" => stop.id}],
-          "trips" => [%{"trip_id" => Ecto.UUID.generate(), "service_date" => "2026-10-05"}],
+          "trips" => [%{"trip_id" => trip.id, "service_date" => "2026-10-05"}],
           "direction_id" => 1,
           "all_routes_at_stops" => true,
           "stretch_from_stop_id" => stop.id,
@@ -579,6 +580,77 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
                Dispatch.call(AlertsPack, context.scope, "propose_changes", arguments)
 
       assert {:alert_changes, %{"situation" => "detour"}} = prepared.command
+    end
+
+    test "refuses a route, stop and departure this alert's version does not have", context do
+      sibling_route =
+        route_fixture(context.organization.id, context.sibling.id, route_attrs("r12", "12"))
+
+      missing = Ecto.UUID.generate()
+
+      assert call(
+               "propose_changes",
+               %{"scope" => %{"route_ids" => [sibling_route.id]}},
+               context.scope
+             ) ==
+               {:tool_error,
+                "Not in this service version: route #{sibling_route.id}. " <>
+                  "Use ids the search tools returned."}
+
+      assert call(
+               "propose_changes",
+               %{"scope" => %{"stop_ids" => [missing], "stretch_from_stop_id" => "12"}},
+               context.scope
+             ) ==
+               {:tool_error,
+                "Not in this service version: stop #{missing}, stop 12. " <>
+                  "Use ids the search tools returned."}
+
+      assert call(
+               "propose_changes",
+               %{
+                 "scope" => %{
+                   "trips" => [%{"trip_id" => missing, "service_date" => "2026-10-05"}]
+                 }
+               },
+               context.scope
+             ) ==
+               {:tool_error,
+                "Not in this service version: trip #{missing}. Use ids the search tools returned."}
+
+      assert {:ok, draft} = call("get_draft", %{}, context.scope)
+      assert draft["revision"] == 1
+    end
+
+    test "accepts a route type the version has and refuses one it does not", context do
+      route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
+
+      assert {:prepared, prepared, _result} =
+               call("propose_changes", %{"scope" => %{"mode_route_type" => 3}}, context.scope)
+
+      assert prepared.command == {:alert_changes, %{"scope" => %{"mode_route_type" => 3}}}
+
+      assert call("propose_changes", %{"scope" => %{"mode_route_type" => 11}}, context.scope) ==
+               {:tool_error,
+                "Not in this service version: route type 11. Use ids the search tools returned."}
+    end
+
+    test "keeps a target the stored alert already names after the version dropped it", context do
+      route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
+
+      {:ok, _saved} =
+        Alerts.save_draft(context.audit, context.alert.id, context.alert.revision, %{
+          "scope" => %{"shape" => "routes", "route_ids" => [route.id]}
+        })
+
+      Repo.delete!(route)
+
+      assert {:prepared, _prepared, %{"status" => "prepared"}} =
+               call(
+                 "propose_changes",
+                 %{"situation" => "delay", "scope" => %{"route_ids" => [route.id]}},
+                 context.scope
+               )
     end
 
     test "refuses a header over the length the fence declares", context do

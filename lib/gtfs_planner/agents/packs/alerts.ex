@@ -28,6 +28,7 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
   alias GtfsPlanner.Alerts
   alias GtfsPlanner.Alerts.Alert
   alias GtfsPlanner.Alerts.Completion
+  alias GtfsPlanner.Alerts.Listing
   alias GtfsPlanner.Alerts.Message
   alias GtfsPlanner.Alerts.MessageAnswer
   alias GtfsPlanner.Alerts.Recurrence
@@ -292,7 +293,7 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
   # exactly what the person was shown. Validation is the same changeset the
   # editor saves through, and it never casts identity, revision, completeness
   # or the derived effect (CR-2).
-  defp run("propose_changes", args, _context, alert) do
+  defp run("propose_changes", args, context, alert) do
     changeset = Alert.draft_changeset(alert, args)
 
     cond do
@@ -303,8 +304,7 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
         {:error, changeset_message(changeset)}
 
       true ->
-        {:prepared, %{summary: summary(alert, changeset), command: {:alert_changes, args}},
-         %{"status" => "prepared"}}
+        prepare(context, alert, changeset, args)
     end
   end
 
@@ -312,6 +312,70 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
     do: {:error, "Unknown tool: " <> name}
 
   # -- Prepared change ------------------------------------------------------
+
+  # `Alerts.save_draft/4` refuses a route, stop, departure or route type this
+  # alert's version does not have, so it is refused here too, naming what to
+  # look up again, instead of a card the editor could only fail to apply.
+  defp prepare(context, alert, changeset, args) do
+    case unknown_targets(context, alert, changeset) do
+      [] ->
+        {:prepared, %{summary: summary(alert, changeset), command: {:alert_changes, args}},
+         %{"status" => "prepared"}}
+
+      unknown ->
+        {:error, unknown_message(unknown)}
+    end
+  end
+
+  # Only what the proposal adds is checked, as the write does: a target already
+  # on the stored alert stays even when the version has since dropped it (R8).
+  defp unknown_targets(context, alert, changeset) do
+    proposed = Ecto.Changeset.apply_changes(changeset)
+    stored = Listing.referenced_ids(alert)
+    labels = Alerts.labels_for(context, proposed)
+
+    unknown_ids =
+      for {kind, referenced} <- Listing.referenced_ids(proposed),
+          id <- referenced -- Map.fetch!(stored, kind),
+          not Map.has_key?(Map.fetch!(labels, kind), canonical_id(id)),
+          do: {kind, id}
+
+    unknown_ids ++ unknown_mode(context, alert, proposed)
+  end
+
+  defp unknown_mode(context, alert, proposed) do
+    mode = proposed.scope && proposed.scope.mode_route_type
+    stored = alert.scope && alert.scope.mode_route_type
+
+    if is_nil(mode) or mode == stored or mode in Alerts.route_types(context),
+      do: [],
+      else: [{:route_type, mode}]
+  end
+
+  # Labels are keyed by the row's canonical UUID, so an upper-case spelling of
+  # a real row is still that row.
+  defp canonical_id(id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, uuid} -> uuid
+      :error -> id
+    end
+  end
+
+  defp unknown_message(unknown) do
+    named =
+      unknown
+      |> Enum.take(5)
+      |> Enum.map_join(", ", fn {kind, id} ->
+        "#{target_name(kind)} #{String.slice("#{id}", 0, 40)}"
+      end)
+
+    "Not in this service version: #{named}. Use ids the search tools returned."
+  end
+
+  defp target_name(:routes), do: "route"
+  defp target_name(:stops), do: "stop"
+  defp target_name(:trips), do: "trip"
+  defp target_name(:route_type), do: "route type"
 
   defp summary(alert, changeset) do
     %{
