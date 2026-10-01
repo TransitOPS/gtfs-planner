@@ -46,6 +46,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
       |> assign(:members_only_you?, false)
       |> assign(:member_feedback, nil)
       |> assign(:organization_save_failed?, false)
+      |> assign(:organization_refusal, nil)
       |> assign(:pending_deactivation, nil)
       |> assign(:deactivation_return_focus_id, nil)
       |> assign(:organization_form, organization_form(socket.assigns.current_organization))
@@ -71,6 +72,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
     socket
     |> assign(:page_title, "Organization settings")
     |> assign(:organization_save_failed?, false)
+    |> assign(:organization_refusal, nil)
     |> assign(:organization_form, organization_form(socket.assigns.current_organization))
   end
 
@@ -427,6 +429,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
     {:noreply,
      socket
      |> assign(:organization_save_failed?, false)
+     |> assign(:organization_refusal, nil)
      |> assign(:organization_form, to_form(changeset))}
   end
 
@@ -444,24 +447,50 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
          |> put_flash(:info, "Organization updated")
          |> push_patch(to: ~p"/admin/users")}
 
-      {:error, reason} when reason in [:forbidden, :not_found] ->
+      {:error, :forbidden} ->
         {:noreply,
-         socket
-         |> put_feedback(
-           "error",
+         refuse_organization_save(
+           socket,
+           org_params,
            "Your administrator access has changed.",
-           "The organization name was not changed. Ask a current organization administrator to change it.",
-           nil
-         )
-         |> push_patch(to: ~p"/admin/users")}
+           "The organization name was not changed. Ask a current organization administrator to change it."
+         )}
+
+      {:error, :not_found} ->
+        {:noreply,
+         refuse_organization_save(
+           socket,
+           org_params,
+           "That organization no longer exists.",
+           "The organization name was not changed."
+         )}
 
       {:error, changeset} ->
         {:noreply,
          socket
          |> assign(:organization_save_failed?, true)
+         |> assign(:organization_refusal, nil)
          |> assign(:organization_form, to_form(%{changeset | action: :validate}))
          |> push_event("focus_form_error", %{form_id: "organization-settings-form"})}
     end
+  end
+
+  # A refused write keeps the drawer open with what was typed and says why
+  # nothing was saved; focus moves to that message.
+  defp refuse_organization_save(socket, org_params, title, detail) do
+    draft =
+      socket.assigns.current_organization
+      |> Organizations.change_organization(allowed_org_params(org_params))
+      |> to_form()
+
+    socket
+    |> assign(:organization_save_failed?, false)
+    |> assign(:organization_form, draft)
+    |> assign(:organization_refusal, %{title: title, detail: detail})
+    |> push_event("focus_form_error", %{
+      form_id: "organization-settings-form",
+      fallback_id: "organization-refusal"
+    })
   end
 
   defp with_resolved_member(socket, user_id, fun) do
@@ -531,6 +560,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
 
   attr :form, Phoenix.HTML.Form, required: true
   attr :save_failed?, :boolean, required: true
+  attr :refusal, :map, default: nil
 
   defp organization_settings_form(assigns) do
     assigns =
@@ -546,6 +576,16 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
       class="flex min-h-0 flex-1 flex-col"
     >
       <div class="grid flex-1 content-start gap-5 overflow-y-auto px-5 py-5 sm:px-6">
+        <.message
+          :if={@refusal}
+          id="organization-refusal"
+          tabindex="-1"
+          kind="error"
+          title={@refusal.title}
+        >
+          {@refusal.detail}
+        </.message>
+
         <.form_error_summary
           id="organization-error-summary"
           title="Changes not saved. Fix this field:"
@@ -705,6 +745,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
             :if={@live_action == :organization_settings}
             form={@organization_form}
             save_failed?={@organization_save_failed?}
+            refusal={@organization_refusal}
           />
         </.drawer>
 

@@ -966,11 +966,8 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       assert Organizations.get_organization!(organization.id).name == "Renamed Org"
     end
 
-    test "saving after the administrator's access was revoked is refused and renames nothing", %{
-      conn: conn,
-      admin_user: admin_user,
-      organization: organization
-    } do
+    test "a rename after the administrator's access was revoked keeps the drawer and the typed name",
+         %{conn: conn, admin_user: admin_user, organization: organization} do
       {:ok, view, _html} = live(conn, ~p"/admin/users/organization-settings")
 
       deactivate_membership_fixture(membership(admin_user.id, organization.id))
@@ -979,10 +976,19 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       |> form("#organization-settings-form", organization: %{name: "Renamed Org"})
       |> render_submit()
 
-      assert_patch(view, ~p"/admin/users")
+      assert has_element?(view, "dialog#organization-settings-drawer-overlay[data-open=true]")
+      assert has_element?(view, "#organization-name[value='Renamed Org']")
 
-      assert view |> element("#member-action-feedback") |> render() =~
+      assert has_element?(
+               view,
+               "#organization-refusal",
                "Your administrator access has changed."
+             )
+
+      assert_push_event(view, "focus_form_error", %{
+        form_id: "organization-settings-form",
+        fallback_id: "organization-refusal"
+      })
 
       assert Organizations.get_organization!(organization.id).name == organization.name
     end

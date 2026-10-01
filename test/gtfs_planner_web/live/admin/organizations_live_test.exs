@@ -456,11 +456,8 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       assert feedback =~ "invite its first administrator"
     end
 
-    test "creating after the system administrator's access was revoked is refused", %{
-      conn: conn,
-      admin_user: admin_user,
-      organization: organization
-    } do
+    test "creating after the system administrator's access was revoked keeps the drawer and the draft",
+         %{conn: conn, admin_user: admin_user, organization: organization} do
       {:ok, view, _html} = live(conn, ~p"/admin/organizations/new")
 
       deactivate_membership_fixture(membership(admin_user.id, organization.id))
@@ -469,19 +466,26 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       |> form("#org-form", organization: %{name: "Refused Org", alias: "refused-org"})
       |> render_submit()
 
-      assert_patch(view, ~p"/admin/organizations")
+      assert has_element?(view, "dialog#org-drawer-overlay[data-open=true]")
+      assert has_element?(view, "#organization-name[value='Refused Org']")
+      assert has_element?(view, "#organization-alias[value='refused-org']")
 
-      assert view |> element("#organization-action-feedback") |> render() =~
+      assert has_element?(
+               view,
+               "#organization-refusal",
                "Your system administrator access has changed."
+             )
+
+      assert_push_event(view, "focus_form_error", %{
+        form_id: "org-form",
+        fallback_id: "organization-refusal"
+      })
 
       refute Organizations.get_organization_by_alias("refused-org")
     end
 
-    test "editing after the system administrator's access was revoked is refused", %{
-      conn: conn,
-      admin_user: admin_user,
-      organization: organization
-    } do
+    test "editing after the system administrator's access was revoked keeps the drawer and the typed name",
+         %{conn: conn, admin_user: admin_user, organization: organization} do
       org = organization_fixture(%{name: "Original Name", alias: "kept-alias"})
       {:ok, view, _html} = live(conn, ~p"/admin/organizations/#{org.id}/edit")
 
@@ -491,12 +495,32 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       |> form("#org-form", organization: %{name: "Refused Name"})
       |> render_submit()
 
-      assert_patch(view, ~p"/admin/organizations")
+      assert has_element?(view, "dialog#org-drawer-overlay[data-open=true]")
+      assert has_element?(view, "#organization-name[value='Refused Name']")
 
-      assert view |> element("#organization-action-feedback") |> render() =~
+      assert has_element?(
+               view,
+               "#organization-refusal",
                "Your system administrator access has changed."
+             )
 
       assert Organizations.get_organization!(org.id).name == "Original Name"
+    end
+
+    test "typing again after a refusal clears the refusal message", %{
+      conn: conn,
+      admin_user: admin_user,
+      organization: organization
+    } do
+      org = organization_fixture(%{name: "Original Name", alias: "kept-alias"})
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations/#{org.id}/edit")
+      deactivate_membership_fixture(membership(admin_user.id, organization.id))
+
+      view |> form("#org-form", organization: %{name: "Refused Name"}) |> render_submit()
+      assert has_element?(view, "#organization-refusal")
+
+      view |> form("#org-form", organization: %{name: "Refused Name 2"}) |> render_change()
+      refute has_element?(view, "#organization-refusal")
     end
 
     test "editing an organization keeps the index behind it and saves changes", %{conn: conn} do
