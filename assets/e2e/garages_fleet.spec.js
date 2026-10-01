@@ -314,7 +314,7 @@ test.describe("Garages, Fleet and operations export", () => {
 
     await expect(page.locator("#garage_lat")).toHaveValue(ADDRESS_LAT);
     await expect(page.locator("#garage_lon")).toHaveValue(ADDRESS_LON);
-    await expect(page.locator("#garage-address-unavailable")).toHaveCount(0);
+    await expect(page.locator("#garage-address-retry")).toHaveCount(0);
 
     await page.setViewportSize(DESKTOP);
     await page.screenshot({ path: testInfo.outputPath("garage-drawer-1440x1000.png") });

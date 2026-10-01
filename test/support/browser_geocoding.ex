@@ -10,7 +10,8 @@ defmodule GtfsPlanner.BrowserGeocoding do
   (`GtfsPlanner.Geocoding.Geoapify`): `{:error, :text_too_short}` below three
   characters, and `{:ok, [GtfsPlanner.Geocoding.Result.t()]}` above it — with one
   deterministic Cedar Valley result so a journey can assert the filled
-  coordinates.
+  coordinates. `zz-slow` delays that result for searching-state captures, and
+  `zz-fail` returns a network error for retry-state captures.
   """
 
   @behaviour GtfsPlanner.Geocoding.Behaviour
@@ -29,6 +30,13 @@ defmodule GtfsPlanner.BrowserGeocoding do
   }
 
   @impl GtfsPlanner.Geocoding.Behaviour
+  def autocomplete("zz-slow", _opts) do
+    Process.sleep(1_500)
+    {:ok, [@selected_result]}
+  end
+
+  def autocomplete("zz-fail", _opts), do: {:error, :network_error}
+
   def autocomplete(text, _opts) when is_binary(text) do
     if String.length(text) < @minimum_query_length do
       {:error, :text_too_short}
