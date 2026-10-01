@@ -229,7 +229,8 @@ defmodule GtfsPlanner.Gtfs.Stations.ChildStopsTest do
       )
 
     assert {:ok, moved} = Stations.move_child_stop(audit, child.id, %{x: 12, y: 34}, 1)
-    assert moved.diagram_coordinate == %{x: 12, y: 34}
+    assert moved.diagram_coordinate == %{"x" => 12, "y" => 34}
+    assert Repo.get!(Stop, child.id).diagram_coordinate == %{"x" => 12, "y" => 34}
     assert moved.lock_version == 2
     assert [%{action: "updated", actor_id: actor_id}] = logs(audit, child)
     assert actor_id == audit.actor_id
