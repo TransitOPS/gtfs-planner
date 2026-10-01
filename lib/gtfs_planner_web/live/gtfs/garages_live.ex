@@ -864,7 +864,10 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
                         type="button"
                         variant="secondary"
                         class="ml-2 min-h-11"
-                        phx-click="retry_address_search"
+                        phx-click={
+                          JS.push("retry_address_search")
+                          |> JS.focus(to: "#garage_address_text_input")
+                        }
                       >
                         Retry search
                       </.button>
