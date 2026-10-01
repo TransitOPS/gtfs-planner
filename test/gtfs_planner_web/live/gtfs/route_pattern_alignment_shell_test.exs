@@ -443,7 +443,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentShellTest do
           editable?: false,
           offline?: false,
           version_name: version.name,
-          organization_name: organization.name
+          organization_name: organization.name,
+          # The path-file panel is not rendered here, but the upload it takes
+          # is a required attr of the task shell.
+          map_line_upload: %Phoenix.LiveView.UploadConfig{}
         )
 
       assert html =~ "alignment-notice"

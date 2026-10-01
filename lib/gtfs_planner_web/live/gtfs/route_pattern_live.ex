@@ -164,7 +164,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:alignment_discard_dialog, nil)
      |> assign(:alignment_delete_dialog, nil)
      |> assign(:alignment_simplify_dialog, nil)
-     |> assign(:alignment_import_dialog, nil)
+     |> assign(:alignment_import_card, nil)
      |> assign(:alignment_notice, nil)
      |> assign(:file_fit, nil)
      |> assign(:alignment_pending, nil)
@@ -273,7 +273,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:alignment_pending, nil)
     |> assign(:alignment_save_notice, nil)
     |> assign(:alignment_forced_local, [])
-    |> assign(:alignment_import_dialog, nil)
+    |> assign(:alignment_import_card, nil)
     |> assign(:file_fit, nil)
     |> assign(:alignment_generate_dialog, nil)
     |> assign(:alignment_generate_notice, nil)
@@ -1118,6 +1118,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   @impl true
   def handle_event("alignment_confirm_import", params, socket) do
     {:noreply, RoutePatternAlignmentEvents.confirm_import(socket, params)}
+  end
+
+  def handle_event("alignment_close_import", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.close_import(socket, params)}
   end
 
   @impl true
@@ -2432,7 +2436,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                           delete_dialog={@alignment_delete_dialog}
                           discard_dialog={@alignment_discard_dialog}
                           simplify_dialog={@alignment_simplify_dialog}
-                          import_dialog={@alignment_import_dialog}
+                          import_card={@alignment_import_card}
                           generation={@alignment_generation}
                           generate_dialog={@alignment_generate_dialog}
                           generate_notice={@alignment_generate_notice}

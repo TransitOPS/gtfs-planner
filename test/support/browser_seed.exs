@@ -1220,6 +1220,113 @@ case Accounts.register_first_admin(%{
       })
     end)
 
+    # ── Imported-only pattern (step 32) ──
+    #
+    # BROWSER_IMPORTED carries one pattern that is still on an imported shape:
+    # no saved segments, and its linked trips reference BROWSER_IMPORTED_SHAPE.
+    # The shape runs the corridor's own meridian and bows east through the
+    # middle, so the imported-line card shows the far stops the fit reports
+    # rather than a clean line.
+    {:ok, imported_route} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: "BROWSER_IMPORTED",
+        route_short_name: "IMP",
+        route_long_name: "US 101 Imported corridor",
+        route_type: 3
+      })
+
+    imported_coordinates = Enum.take(shapes_coordinates, 5)
+
+    imported_stop_ids =
+      Enum.map(1..5, fn index ->
+        {lat, lon} = Enum.at(imported_coordinates, index - 1)
+
+        {:ok, stop} =
+          Gtfs.create_stop(%{
+            stop_id: "BROWSER_IMPORTED_STOP_#{index}",
+            stop_name: "Import Stop #{index}",
+            location_type: 0,
+            stop_lat: Decimal.new(lat),
+            stop_lon: Decimal.new(lon),
+            organization_id: org.id,
+            gtfs_version_id: diagram_version.id
+          })
+
+        stop.stop_id
+      end)
+
+    imported_pattern =
+      GtfsPlanner.GtfsFixtures.route_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: imported_route.route_id,
+        route_pattern_id: "BROWSER-IMPORTED-A",
+        route_pattern_name: "Imported northbound",
+        route_pattern_time_desc: "All day",
+        route_pattern_typicality: 0,
+        direction_id: 0,
+        derivation_key: "d0-#{imported_route.route_id}"
+      })
+
+    imported_stop_ids
+    |> Enum.with_index(1)
+    |> Enum.each(fn {stop_id, position} ->
+      GtfsPlanner.GtfsFixtures.route_pattern_stop_fixture(
+        imported_pattern,
+        stop_id,
+        position
+      )
+    end)
+
+    imported_timing =
+      GtfsPlanner.GtfsFixtures.timed_pattern_fixture(imported_pattern, %{name: "Weekday daytime"})
+
+    Enum.each(1..3, fn index ->
+      trip =
+        GtfsPlanner.GtfsFixtures.trip_fixture(
+          org.id,
+          diagram_version.id,
+          imported_route.route_id,
+          %{
+            trip_id:
+              "BROWSER_IMPORTED_LINKED_" <> String.pad_leading(Integer.to_string(index), 2, "0"),
+            service_id: "BROWSER_SHAPES_SERVICE",
+            trip_headsign: "Lincoln City",
+            direction_id: 0,
+            shape_id: "BROWSER_IMPORTED_SHAPE"
+          }
+        )
+
+      GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(trip, %{
+        route_pattern_id: "BROWSER-IMPORTED-A",
+        timed_pattern_id: imported_timing.id,
+        pattern_derivation_state: "linked"
+      })
+    end)
+
+    # The line bows east across the corridor rather than along it: the middle
+    # point sits about 200 m off the meridian its stops stand on, so the fit
+    # review names the stop it runs wide of, and the two beside it stay inside
+    # the 330 ft the review reads in.
+    Enum.with_index(imported_coordinates, 1)
+    |> Enum.each(fn {{lat, lon}, sequence} ->
+      offset =
+        cond do
+          sequence == 1 or sequence == 5 -> "0"
+          sequence == 3 -> "0.0025"
+          true -> "0.0009"
+        end
+
+      Repo.insert!(%Shape{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        shape_id: "BROWSER_IMPORTED_SHAPE",
+        shape_pt_lat: Decimal.new(lat),
+        shape_pt_lon: Decimal.add(Decimal.new(lon), Decimal.new(offset)),
+        shape_pt_sequence: sequence
+      })
+    end)
+
     # ── Supplied label pair ──
     #
     # The owner carries the stop order and the child carries the owner's id, as
