@@ -5,6 +5,14 @@ This is a web application written using the Phoenix web framework.
 - Use `mix precommit` alias when you are done with all changes and fix any pending issues
 - Use the already included and available `:req` (`Req`) library for HTTP requests, **avoid** `:httpoison`, `:tesla`, and `:httpc`. Req is included by default and is the preferred HTTP client for Phoenix apps
 
+### Scoped writes and LiveView verification
+
+- Derive actor, organization and version identity from trusted server context; scope entity lookups before applying client attributes.
+- In retrying write commands, check current membership inside each transaction attempt before entity locks and revision checks. `Repo.in_transaction?/0` establishes transaction presence, not authorization.
+- Seed edit forms from persisted values, retain drafts after refused writes, and keep `phx-value-*` identity keys consistent with handler parameters.
+- For asynchronous LiveView work, cover both successful results and exits after query replacement, drawer close and reopen. Check the current task and UI lifecycle before changing assigns.
+- Follow [the project safety procedures](docs/engineering-standards.md#scoped-writes-and-verification) for SQL Sandbox failure cases, genuine database interleavings, forged LiveView events, deterministic async fixtures and verification limits.
+
 ### Phoenix v1.8 guidelines
 
 - **Always** begin your LiveView templates with `<Layouts.app flash={@flash} ...>` which wraps all inner content
