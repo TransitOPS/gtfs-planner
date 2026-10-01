@@ -28,6 +28,10 @@ defmodule GtfsPlanner.Gtfs.TransferBarrierTransaction do
   — and re-enters the same transaction, so the case still exercises the production
   retry loop and its attempt budget instead of failing on a harness artifact.
 
+  The `:isolation` option is honoured exactly as `ReviewedApplyTransaction.Repo`
+  honours it, because a reviewed apply may ask for `read_committed` and the case
+  has to run the level the production path runs.
+
   It exists only to force commit order in tests. Nothing in `lib/` uses it, and
   the concurrency case restores the configured module in `on_exit`.
   """
@@ -38,17 +42,21 @@ defmodule GtfsPlanner.Gtfs.TransferBarrierTransaction do
   alias GtfsPlanner.Repo
 
   @replacement_attempts 3
+  @default_isolation "SERIALIZABLE"
+  @isolations [:serializable, :read_committed]
+  @levels %{serializable: "SERIALIZABLE", read_committed: "READ COMMITTED"}
 
   @impl true
   def run(transaction), do: run(transaction, [])
 
   @impl true
-  def run(transaction, _options), do: run_with_retries(transaction, @replacement_attempts)
+  def run(transaction, options) when is_function(transaction, 0) and is_list(options) do
+    run_with_retries(transaction, @replacement_attempts, isolation(options))
+  end
 
-  defp run_with_retries(transaction, attempts) do
+  defp run_with_retries(transaction, attempts, isolation) do
     Repo.transaction(fn ->
-      Repo.query!("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
-
+      Repo.query!("SET TRANSACTION ISOLATION LEVEL #{isolation}")
       result = transaction.()
       maybe_wait()
       result
@@ -67,7 +75,7 @@ defmodule GtfsPlanner.Gtfs.TransferBarrierTransaction do
     # function is unchanged, so the production retry loop still owns the attempts.
     :exit, {:noproc, {DBConnection.Holder, :checkout, _opts}} when attempts > 0 ->
       replace_connection()
-      run_with_retries(transaction, attempts - 1)
+      run_with_retries(transaction, attempts - 1, isolation)
 
     :exit,
     {{:shutdown, %Postgrex.Error{postgres: %{code: code}} = error},
@@ -77,6 +85,13 @@ defmodule GtfsPlanner.Gtfs.TransferBarrierTransaction do
       # Return the server failure to the production retry loop so its attempt
       # budget remains responsible for this retry.
       raise error
+  end
+
+  defp isolation(options) do
+    case Keyword.get(options, :isolation, :serializable) do
+      level when level in @isolations -> @levels[level]
+      _other -> @default_isolation
+    end
   end
 
   defp replace_connection(attempts \\ @replacement_attempts) do

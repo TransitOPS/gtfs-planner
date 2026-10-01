@@ -88,6 +88,19 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   equal-best disagreement elsewhere in the version is returned in `conflicts` rather
   than refused, because that is the native CRUD's existing behavior. Editing an
   exception deliberately is a separate command that does not name it protected.
+
+  `apply_reviewed_policy_change/2` writes one such review. Its lock order is the
+  actor's current editor membership, then the version row `FOR UPDATE`, then the
+  target; it never takes `FOR SHARE` first and never calls the public CRUD, because
+  each of those acquires the share lock the exclusive fence conflicts with. The
+  review's `dependencies_digest` is recomputed from a reloaded state after that
+  fence, on every attempt, and a moved state is `:stale`: a competitor's committed
+  insertion, or a coverage or `stop_time` incidence change under the stored rules
+  the review read, refuses the write between the review and the save. When the
+  state still matches, the same
+  editor changeset, reference checks and prospective rule set the review used are
+  the ones that write, so the manual CRUD's existing outcomes and logs are unchanged
+  and an apply refuses exactly what its review refused.
   """
 
   import Ecto.Changeset
@@ -574,6 +587,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
 
   @typedoc "A reviewed command with its scoped before/after and dependency fingerprint."
   @type policy_review :: %{
+          scope: policy_scope(),
           command: policy_command(),
           before: map() | nil,
           after: map() | nil,
@@ -619,6 +633,171 @@ defmodule GtfsPlanner.Gtfs.Transfers do
     general = load_general_rules(audit)
     policy_dependencies_digest(audit, general)
   end
+
+  @doc """
+  Writes one reviewed general-policy command under the exclusive version fence.
+
+  `review` must be the value `review_policy_change/3` returned for this audit
+  context, and its `scope` must name the same organization and version. Each
+  attempt of this module's retry loop (R8) locks in the documented order: the
+  actor's current editor membership first, then the version row `FOR UPDATE`
+  through `Versions.lock_for_exclusive_write!/2` before any version or entity
+  read. The fence is never an upgrade of a share lock, and the public CRUD is
+  never called, because each of those takes `FOR SHARE` first.
+
+  With the fence held, the full dependency state is reloaded and
+  `dependencies_digest/1` is recomputed from it. A digest that no longer matches
+  the review's is `:stale`, so a competitor's committed insertion, or a
+  coverage or `stop_time` incidence change under the rules the review read,
+  refuses the write rather than applying a decision computed from state that has
+  moved. The digest covers the *stored* rules' dependencies, so a change under the
+  command's own not-yet-written selector is caught instead by the fence and by
+  the reference checks below. A match means the reviewed before/after still
+  describe this version, and the write then reuses the review's own editor
+  changeset, reference checks and prospective rule set, so an apply cannot refuse
+  less than the review did.
+
+  The refusals are `:invalid_input` for a value that is not a review, `:forbidden`
+  for a scope that disagrees with `audit` or a revoked editor role, `:not_found`
+  for a target outside this organization, version or the general types, `:stale`
+  for a changed dependency fingerprint or a moved `expected_updated_at`,
+  `:protected` for a target the command named protected, `{:conflict, witnesses}`
+  for a prospective equal-best disagreement, `{:duplicate, collision}` for a
+  key that already exists, `:busy` when the retries run out, and an
+  `Ecto.Changeset` for attrs the editor changesets or the reference checks reject.
+  Every refusal writes nothing: the whole attempt, including its audit log,
+  rolls back.
+  """
+  @spec apply_reviewed_policy_change(policy_review(), AuditContext.t()) ::
+          {:ok, Transfer.t()} | {:error, write_error()}
+  def apply_reviewed_policy_change(
+        %{command: command, dependencies_digest: digest, scope: scope} = review,
+        %AuditContext{} = audit
+      )
+      when is_binary(digest) and is_map(command) and is_map(scope) do
+    with :ok <- check_apply_scope(scope, audit),
+         {:ok, command} <- validate_policy_command(command) do
+      apply_reviewed_write(review, command, audit)
+    end
+  end
+
+  def apply_reviewed_policy_change(_review, _audit), do: {:error, :invalid_input}
+
+  # READ COMMITTED is the isolation this write needs: its safety rests on the
+  # exclusive version fence it takes itself, and a SERIALIZABLE snapshot is fixed at
+  # the first statement — the actor membership lock, before the fence — so the
+  # post-fence reload could not see a writer that committed while the fence waited.
+  # The retry loop and its `:busy` outcome are unchanged.
+  defp apply_reviewed_write(review, command, audit) do
+    case run_write(
+           fn -> apply_reviewed_policy_change_transaction(review, command, audit) end,
+           @write_attempts,
+           isolation: :read_committed
+         ) do
+      {:error, %Ecto.Changeset{} = changeset} -> duplicate_result(changeset, audit)
+      result -> result
+    end
+  end
+
+  # The review's own scope is the only identity an apply accepts; the audit
+  # context stays authoritative, so a review of another organization or version
+  # is refused before any transaction opens.
+  defp check_apply_scope(
+         %{organization_id: organization_id, gtfs_version_id: version_id},
+         audit
+       ) do
+    if organization_id == audit.organization_id and version_id == audit.gtfs_version_id do
+      :ok
+    else
+      {:error, :forbidden}
+    end
+  end
+
+  defp check_apply_scope(_scope, _audit), do: {:error, :invalid_input}
+
+  defp apply_reviewed_policy_change_transaction(review, command, audit) do
+    Authorization.lock_editor!(audit)
+    Versions.lock_for_exclusive_write!(audit.organization_id, audit.gtfs_version_id)
+
+    general = load_general_rules(audit)
+
+    if policy_dependencies_digest(audit, general) == review.dependencies_digest do
+      do_apply_policy_change(command, audit, general)
+    else
+      Repo.rollback(:stale)
+    end
+  end
+
+  # The same scoped target load and freshness check the review made, re-read under
+  # the fence. A target this command named protected is refused here too, so a
+  # caller cannot hand an apply a review that was built for another command.
+  defp do_apply_policy_change(command, audit, general) do
+    case policy_target(command, audit) do
+      {:ok, target} ->
+        if target && target.id in command.protected_ids do
+          Repo.rollback(:protected)
+        else
+          apply_policy_write(command, audit, general, target)
+        end
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  # A delete has no prospective row, so it cannot join an equal-best witness and
+  # its prospective rule set is never evaluated: the removal itself is the whole
+  # of the change. Its stored values are deleted and audited exactly as the
+  # native writer does, with no reference validation (R8).
+  defp apply_policy_write(%{action: :delete}, audit, _general, target) do
+    delete_audited_transfer(target, audit)
+  end
+
+  defp apply_policy_write(%{action: :create} = command, audit, general, _target) do
+    audit
+    |> new_transfer()
+    |> Transfer.editor_changeset(command.attrs)
+    |> validate_references(audit.organization_id, audit.gtfs_version_id)
+    |> persist_reviewed(general, nil, audit)
+  end
+
+  defp apply_policy_write(%{action: :update} = command, audit, general, target) do
+    target
+    |> Transfer.editor_changeset(command.attrs)
+    |> validate_references(audit.organization_id, audit.gtfs_version_id)
+    |> persist_reviewed(general, target, audit)
+  end
+
+  defp persist_reviewed(%Ecto.Changeset{valid?: false} = changeset, _general, _target, _audit),
+    do: Repo.rollback(changeset)
+
+  # The refusal the review made is re-made here over the same prospective rule
+  # set: the version's general rules with this command's row replaced, added or
+  # removed, and the same coverage and incidence the review read. An apply
+  # therefore refuses exactly what its review refused, never less.
+  defp persist_reviewed(changeset, general, target, audit) do
+    prospective = apply_changes(changeset)
+    rules = prospective_rules(general, target, prospective)
+    {stops, incidence} = load_policy_coverage(audit, rules)
+    conflicts = Overlaps.witnesses(Enum.map(rules, &rule(&1, stops)), incidence)
+
+    if caused_conflict?(conflicts, target, prospective) do
+      Repo.rollback({:conflict, conflicts})
+    else
+      commit_reviewed(changeset, target, audit)
+    end
+  end
+
+  defp commit_reviewed(changeset, nil, audit), do: insert_created_transfer(changeset, audit)
+
+  # An update that changes nothing is the native writer's no-op: the stored row
+  # comes back untouched, with its own `updated_at` and no audit log (R8).
+  defp commit_reviewed(%Ecto.Changeset{changes: changes}, target, _audit)
+       when changes == %{},
+       do: target
+
+  defp commit_reviewed(changeset, target, audit),
+    do: persist_updated_transfer(changeset, target, audit)
 
   # The command is normalized once here, so a review and any apply that replays it
   # see one canonical command rather than the caller's raw map.
@@ -782,6 +961,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
     else
       {:ok,
        %{
+         scope: %{organization_id: audit.organization_id, gtfs_version_id: audit.gtfs_version_id},
          command: command,
          before: target && Transfer.audit_snapshot(target),
          after: prospective && Transfer.audit_snapshot(prospective),
@@ -2062,32 +2242,32 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   # extract one shared loop once package 05's retry-code change merges (spec
   # Deferred work). A serialization failure (40001) or a deadlock (40P01) retries
   # the whole transaction; every other failure is returned unchanged.
-  defp run_write(transaction, attempts \\ @write_attempts) do
-    case run_write_transaction(transaction) do
+  defp run_write(transaction, attempts \\ @write_attempts, options \\ []) do
+    case run_write_transaction(transaction, options) do
       {:ok, result} ->
         {:ok, result}
 
       {:retryable_failure, _error} ->
-        retry_write(transaction, attempts)
+        retry_write(transaction, attempts, options)
 
       {:error, reason} ->
-        retry_write_error(reason, transaction, attempts)
+        retry_write_error(reason, transaction, attempts, options)
     end
   end
 
-  defp retry_write(transaction, attempts) when attempts > 1,
-    do: run_write(transaction, attempts - 1)
+  defp retry_write(transaction, attempts, options) when attempts > 1,
+    do: run_write(transaction, attempts - 1, options)
 
-  defp retry_write(_transaction, _attempts), do: {:error, :busy}
+  defp retry_write(_transaction, _attempts, _options), do: {:error, :busy}
 
-  defp retry_write_error(reason, transaction, attempts) do
+  defp retry_write_error(reason, transaction, attempts, options) do
     if Repo.retryable_conflict?(reason),
-      do: retry_write(transaction, attempts),
+      do: retry_write(transaction, attempts, options),
       else: {:error, reason}
   end
 
-  defp run_write_transaction(transaction) do
-    ReviewedApplyTransaction.adapter().run(transaction)
+  defp run_write_transaction(transaction, options) do
+    call_transaction_module(transaction, options)
   rescue
     error in Postgrex.Error ->
       if Repo.retryable_conflict?(error) do
@@ -2096,6 +2276,14 @@ defmodule GtfsPlanner.Gtfs.Transfers do
         reraise error, __STACKTRACE__
       end
   end
+
+  # A writer that asks for no trusted option keeps the one-argument call every
+  # existing adapter and test double already expects.
+  defp call_transaction_module(transaction, []),
+    do: ReviewedApplyTransaction.adapter().run(transaction)
+
+  defp call_transaction_module(transaction, options),
+    do: ReviewedApplyTransaction.adapter().run(transaction, options)
 
   defp create_general_transaction(attrs, audit) do
     Authorization.lock_editor!(audit)
