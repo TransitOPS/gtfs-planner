@@ -18,7 +18,12 @@ defmodule GtfsPlanner.Alerts.ListingTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Alerts
+  alias GtfsPlanner.Alerts.Alert
+  alias GtfsPlanner.Alerts.Listing
+  alias GtfsPlanner.Alerts.ScopeAnswer
+  alias GtfsPlanner.Alerts.ScopeAnswer.RouteStopPair
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.DisplayClock
 
   @local_now ~N[2026-10-05 10:00:00]
 
@@ -175,13 +180,11 @@ defmodule GtfsPlanner.Alerts.ListingTest do
 
       assert {:ok, tabs} = Alerts.list_alerts(context.audit, @local_now)
 
-      # `second` and `third` share a creation instant, so the UUID fallback keeps
-      # their relative order stable across reads; the edited alert leads.
+      # `second` was saved last and leads, `first` follows, and `third` was only
+      # created, so it keeps the earliest timestamp.
       assert saved.revision == 2
-      assert List.first(tabs.in_progress).alert.id == first.id
 
-      assert Enum.map(tabs.in_progress, & &1.alert.id) |> Enum.sort() ==
-               Enum.sort([first.id, second.id, third.id])
+      assert Enum.map(tabs.in_progress, & &1.alert.id) == [second.id, first.id, third.id]
     end
 
     test "past reads most recently ended first", context do
@@ -191,6 +194,59 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       assert {:ok, tabs} = Alerts.list_alerts(context.audit, @local_now)
 
       assert Enum.map(tabs.past, & &1.alert.id) == [ended_later.id, ended_earlier.id]
+    end
+  end
+
+  # `Date` and `DateTime` structs compare field by field under the default term
+  # sorter, so these cases use values that order differently by calendar and by
+  # field: a month boundary, and two instants in one hour whose microseconds are
+  # reversed against their minutes. The alerts are in-memory structs, so no row
+  # shape is invented beyond the fields `Listing.rows/3` reads.
+  describe "Listing.rows/3 ordering" do
+    test "upcoming reads forward across a month boundary" do
+      november = in_memory(first_date: ~D[2026-11-02])
+      october = in_memory(first_date: ~D[2026-10-30])
+
+      tabs = Listing.rows([november, october], Ecto.UUID.generate(), @local_now)
+
+      assert Enum.map(tabs.upcoming, & &1.alert.id) == [october.id, november.id]
+    end
+
+    test "past reads most recently ended first across a month boundary" do
+      september = in_memory(first_date: ~D[2026-09-01], last_date: ~D[2026-09-30])
+      october = in_memory(first_date: ~D[2026-09-01], last_date: ~D[2026-10-02])
+
+      tabs = Listing.rows([september, october], Ecto.UUID.generate(), @local_now)
+
+      assert Enum.map(tabs.past, & &1.alert.id) == [october.id, september.id]
+    end
+
+    test "in progress reads the later minute first when its microseconds are earlier" do
+      earlier = in_memory(complete: false, updated_at: ~U[2026-10-05 10:00:00.900000Z])
+      later = in_memory(complete: false, updated_at: ~U[2026-10-05 10:25:00.100000Z])
+
+      tabs = Listing.rows([earlier, later], Ecto.UUID.generate(), @local_now)
+
+      assert Enum.map(tabs.in_progress, & &1.alert.id) == [later.id, earlier.id]
+    end
+  end
+
+  describe "Listing.referenced_ids/1" do
+    test "names a route once however many of its stops the alert pairs it with" do
+      alert =
+        in_memory(
+          scope: %ScopeAnswer{
+            route_ids: ["route-14"],
+            route_stop_pairs: [
+              %RouteStopPair{route_id: "route-14", stop_id: "stop-a"},
+              %RouteStopPair{route_id: "route-14", stop_id: "stop-b"},
+              %RouteStopPair{route_id: "route-14", stop_id: "stop-c"}
+            ]
+          }
+        )
+
+      assert Listing.referenced_ids(alert).routes == ["route-14"]
+      assert Listing.referenced_ids(alert).stops == ["stop-a", "stop-b", "stop-c"]
     end
   end
 
@@ -224,11 +280,23 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       assert row.alert.scope.route_ids == [route.id]
     end
 
-    test "a stop of another version does not satisfy an alert's target", context do
+    test "a stop that now belongs to another version does not satisfy an alert's target",
+         context do
+      stop = stop_fixture(context.organization.id, context.version.id, %{stop_id: "s_1"})
+      _alert = stop_closure(context, stop.id)
+
+      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @local_now)
+      assert row.needs_attention? == false
+
+      # The row keeps its UUID and moves to a sibling version of the same
+      # organization, so the alert's identity resolves nowhere in its own version.
       other_version = gtfs_version_fixture(context.organization.id)
 
-      stop = stop_fixture(context.organization.id, other_version.id, %{stop_id: "s_1"})
-      _alert = stop_closure(context, stop.id)
+      {1, _rows} =
+        Repo.update_all(
+          from(s in GtfsPlanner.Gtfs.Stop, where: s.id == ^stop.id),
+          set: [gtfs_version_id: other_version.id]
+        )
 
       assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @local_now)
       assert row.needs_attention? == true
@@ -302,11 +370,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       assert %NaiveDateTime{} = local_now
       assert NaiveDateTime.diff(Alerts.agency_now(context.audit), local_now) in 0..2
 
-      resolution =
-        GtfsPlanner.Gtfs.DisplayClock.resolve_zone(
-          context.organization.id,
-          context.version.id
-        )
+      resolution = DisplayClock.resolve_zone(context.organization.id, context.version.id)
 
       assert resolution.timezone == "America/Los_Angeles"
       assert resolution.fallback? == false
@@ -399,6 +463,17 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       "header" => "Route 1 buses delayed",
       "description" => "Water main work on Main St. Use Route 2 instead."
     }
+  end
+
+  # A complete alert as `Listing.rows/3` reads it, without a stored row.
+  defp in_memory(fields) do
+    struct!(
+      Alert,
+      Map.merge(
+        %{id: Ecto.UUID.generate(), complete: true, first_date: nil, last_date: nil},
+        Map.new(fields)
+      )
+    )
   end
 
   defp save!(audit, alert, attrs) do

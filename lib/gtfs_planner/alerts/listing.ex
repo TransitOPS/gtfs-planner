@@ -137,14 +137,23 @@ defmodule GtfsPlanner.Alerts.Listing do
 
   # Current and Upcoming read forward in time, In progress and Past read most
   # recently changed first. Every order falls back to the row UUID so two alerts
-  # with the same date or timestamp keep a stable order across reads.
+  # with the same date or timestamp keep a stable order across reads. `Date` and
+  # `DateTime` structs compare by field order under the default term sorter, so
+  # each is sorted by an integer that grows with time instead.
   defp order(alerts, tab) when tab in [:current, :upcoming] do
-    Enum.sort_by(alerts, &{&1.first_date == nil, &1.first_date, &1.id})
+    Enum.sort_by(alerts, &{&1.first_date == nil, date_key(&1.first_date), &1.id})
   end
 
-  defp order(alerts, :in_progress), do: sort_descending(alerts, & &1.updated_at)
+  defp order(alerts, :in_progress),
+    do: sort_descending(alerts, &instant_key(&1.updated_at))
 
-  defp order(alerts, :past), do: sort_descending(alerts, & &1.last_date)
+  defp order(alerts, :past), do: sort_descending(alerts, &date_key(&1.last_date))
+
+  defp date_key(nil), do: nil
+  defp date_key(%Date{} = date), do: Date.to_gregorian_days(date)
+
+  defp instant_key(nil), do: nil
+  defp instant_key(%DateTime{} = instant), do: DateTime.to_unix(instant, :microsecond)
 
   # Descending with absent values last, so a row without the value it is ordered
   # by never leads its tab.
@@ -188,7 +197,7 @@ defmodule GtfsPlanner.Alerts.Listing do
       trips: [Enum.map(scope_trips(scope), & &1.trip_id)]
     }
     |> Map.new(fn {table, ids} ->
-      {table, ids |> Enum.flat_map(&List.wrap/1) |> Enum.reject(&is_nil/1)}
+      {table, ids |> Enum.flat_map(&List.wrap/1) |> Enum.reject(&is_nil/1) |> Enum.uniq()}
     end)
   end
 
