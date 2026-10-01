@@ -4621,9 +4621,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       end)
 
     entries = entries |> Enum.reverse() |> List.flatten()
-    stale = stale |> Enum.reverse() |> List.flatten() |> Enum.uniq_by(& &1.id)
+    unhosted = unhosted_entries(connections, day)
 
-    %{entries: entries ++ unhosted_entries(connections, day), stale: stale}
+    stale =
+      [stale |> Enum.reverse() |> List.flatten() | Enum.map(unhosted, & &1.row)]
+      |> List.flatten()
+      |> Enum.uniq_by(& &1.id)
+
+    %{entries: entries ++ unhosted, stale: stale}
   end
 
   # The day's stale records that no connection carries. A record whose pair is
@@ -4680,7 +4685,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
          |> resolve_drawers()
          |> load_unmatched_in_seat()
          |> assign_page_rows_if_loaded()
-         |> put_flash(:info, "Removed #{removed} in-seat records.")}
+         |> put_flash(:info, "Removed #{removed} in-seat #{plural(removed, "record")}.")}
 
       {:error, :stale} ->
         {:noreply,

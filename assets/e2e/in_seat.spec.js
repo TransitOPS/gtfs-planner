@@ -63,7 +63,7 @@ const CONNECTIONS = 15;
 const PLACES = 7;
 const GROUPS = 8;
 const CHECKS_ENTRIES = 5; // 1 conflict + 2 stale the day hosts + 2 unhosted stale
-const STALE_RECORDS = 2; // BIS_SH_A1 not-next, BIS_OLD_T3 stops-changed
+const STALE_RECORDS = 4; // BIS_SH_A1 not-next, BIS_OLD_T3 stops-changed, 2 no-block
 
 // Stop ids, which are what a place's id is, and block ids.
 const FAR_AVENUE = "BIS_FAR_A";
@@ -947,8 +947,9 @@ test.describe("In-seat connections", () => {
 
     await capture(page, testInfo, "checks");
 
-    // Removing the stale records leaves the conflicting pair and the version's
-    // own unmatched rows alone: the two questions are differently scoped.
+    // Removing the day's stale records leaves the conflicting pair alone. The
+    // two no-block rows are stale on this day too, so the version's unmatched
+    // listing empties with them.
     await page.locator("#checks-remove-stale").focus();
     await page.keyboard.press("Enter");
     await expect(page.locator("#remove-stale-dialog")).toBeVisible();
@@ -966,14 +967,15 @@ test.describe("In-seat connections", () => {
     await page.keyboard.press("Enter");
     await expect(page.locator("#remove-stale-dialog")).toBeHidden();
     await expect(page.locator("#checks-remove-stale")).toHaveCount(0);
-    await expect(page.locator("#checks-in-seat-entries li")).toHaveCount(3);
+    await expect(page.locator("#checks-in-seat-entries li")).toHaveCount(1);
     await expect(
       page.locator("#checks-in-seat-entries li[data-kind='conflict']"),
     ).toHaveCount(1);
-    await expect(page.locator("#checks-in-seat-unmatched li")).toHaveCount(2);
-    await expect(page.locator("#checks-remove-unmatched")).toHaveText(
-      "Remove 2 records",
+    await expect(page.locator("#checks-in-seat-unmatched li")).toHaveCount(0);
+    await expect(page.locator("#checks-in-seat-version")).toContainText(
+      "None left.",
     );
+    await expect(page.locator("#checks-remove-unmatched")).toHaveCount(0);
 
     tour.keyboard = {
       viewSwitch: "Space on a Plan view radio",
@@ -987,9 +989,9 @@ test.describe("In-seat connections", () => {
       checks: {
         entries: CHECKS_ENTRIES,
         staleRemoved: STALE_RECORDS,
-        entriesAfter: 3,
+        entriesAfter: 1,
         conflictKept: 1,
-        unmatchedKept: 2,
+        unmatchedKept: 0,
       },
       overflow: !(await fitsViewport(page)),
     };

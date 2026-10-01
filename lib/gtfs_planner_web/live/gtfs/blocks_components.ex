@@ -634,7 +634,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               class="min-h-11"
               phx-click="request_remove_stale"
             >
-              Remove {@stale_count} records that no longer match
+              Remove {@stale_count} {word(
+                @stale_count,
+                "record that no longer matches",
+                "records that no longer match"
+              )}
             </.button>
             <p class="mt-1 text-[13px] text-muted">
               Removes records whose trips aren't consecutive or whose stops changed. The
@@ -648,7 +652,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         them. --%>
         <section id="checks-in-seat-version" class="border-t border-subtle pt-5">
           <h3 class="text-[15px] font-bold text-strong">
-            This version · {length(@unmatched)} in-seat records don't match any block
+            This version · {length(@unmatched)} in-seat {word(
+              length(@unmatched),
+              "record doesn't",
+              "records don't"
+            )} match any block
           </h3>
           <p class="mt-1 text-[13px] text-muted">
             No Blocks view can show these connections. Routes › Transfers lists them under
@@ -679,7 +687,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             class="mt-3 min-h-11"
             phx-click="request_remove_unmatched"
           >
-            Remove {length(@unmatched)} records
+            Remove {length(@unmatched)} {word(length(@unmatched), "record", "records")}
           </.button>
         </section>
       </.drawer_scroll>
@@ -787,11 +795,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # no question, which the caller checks before it renders a button asking it.
   defp removal_copy(scope, count) when count > 0 do
     %{
-      title: "Remove #{count} in-seat records?",
+      title: "Remove #{count} in-seat #{word(count, "record", "records")}?",
       body:
-        "These records no longer match #{scope}. Trips and blocks don't change. " <>
+        "#{word(count, "This record no longer matches", "These records no longer match")} #{scope}. " <>
+          "Trips and blocks don't change. " <>
           "Each deletion is audited; riders will see whatever apps infer from the blocks.",
-      confirm: "Remove #{count} records"
+      confirm: "Remove #{count} #{word(count, "record", "records")}"
     }
   end
 
