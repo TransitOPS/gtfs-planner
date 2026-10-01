@@ -124,6 +124,17 @@ defmodule GtfsPlanner.Agents.DispatchTest.ProbePack do
           "required" => ["bytes"],
           "additionalProperties" => false
         }
+      },
+      %{
+        name: "malformed_evidence_prepare",
+        description: "Returns a prepared change whose evidence is not a map.",
+        activity: "Prepared malformed evidence",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{"bytes" => %{"type" => "integer", "minimum" => 0}},
+          "required" => ["bytes"],
+          "additionalProperties" => false
+        }
       }
     ]
   end
@@ -167,6 +178,18 @@ defmodule GtfsPlanner.Agents.DispatchTest.ProbePack do
       summary: %{title: "Probe change", detail: "1 date", lines: ["Probe · 1 date"]},
       command: {:probe_change, bytes},
       evidence: evidence(bytes)
+    }
+
+    {:prepared, prepared, %{"count" => bytes}}
+  end
+
+  def call("malformed_evidence_prepare", %{"bytes" => bytes}, %Scope{}) do
+    notify("malformed_evidence_prepare")
+
+    prepared = %{
+      summary: %{title: "Probe change", detail: "1 date", lines: ["Probe · 1 date"]},
+      command: {:probe_change, bytes},
+      evidence: [evidence(bytes)]
     }
 
     {:prepared, prepared, %{"count" => bytes}}
@@ -740,6 +763,16 @@ defmodule GtfsPlanner.Agents.DispatchTest do
 
       assert evidence.total == 4
       assert_received {:probe_pack_called, "evidenced_prepare"}
+    end
+
+    test "raises on a prepared change whose own evidence is not a map" do
+      scope = active_scope()
+
+      assert_raise ArgumentError, ~r/tool evidence must be a map/, fn ->
+        Dispatch.call(ProbePack, scope, "malformed_evidence_prepare", ~s|{"bytes":4}|)
+      end
+
+      assert_received {:probe_pack_called, "malformed_evidence_prepare"}
     end
 
     test "accepts the old two-element result form unchanged" do

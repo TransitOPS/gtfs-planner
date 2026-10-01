@@ -340,10 +340,12 @@ defmodule GtfsPlanner.Agents.Dispatch do
       {:prepared, prepared, result} ->
         # A prepared result may carry its own evidence on the prepared map. It is
         # lifted into the same four-element transport every other evidence uses,
-        # so the turn reads one shape whatever the pack returned.
+        # so the turn reads one shape whatever the pack returned. An absent key
+        # is no evidence; a present one in any other shape is a pack defect and
+        # raises, like a declared keyword the fence does not implement.
         case Map.get(prepared, :evidence) do
-          evidence when is_map(evidence) -> prepared_with(prepared, result, evidence)
-          _none -> bounded_result({:prepared, prepared, result}, result)
+          nil -> bounded_result({:prepared, prepared, result}, result)
+          evidence -> prepared_with(prepared, result, evidence)
         end
 
       {:prepared, prepared, result, evidence} ->
