@@ -169,6 +169,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
      |> assign(:dismissed_checks, MapSet.new())
      |> assign(:requested_stop_id, nil)
      |> assign(:requested_add?, false)
+     |> assign(:requested_action, nil)
      |> assign_edit_state()
      |> assign_add_state()
      |> assign_search("", [], [], false)}
@@ -368,6 +369,19 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
           assign(socket, :requested_add?, true)
         else
           assign(socket, :requested_add?, false)
+        end
+
+      # `?action=` is the stop page's More actions arriving here. It is held
+      # until the stop is open, because every action needs the edit panel's own
+      # state behind it, and it is not acted on for a stop this version does not
+      # hold — a stale link opens the browse panel rather than a panel about a
+      # stop nobody can see.
+      socket =
+        case params["action"] do
+          "delete" -> assign(socket, :requested_action, :delete)
+          "replace" -> assign(socket, :requested_action, :replace)
+          "make_station" -> assign(socket, :requested_action, :station)
+          _other -> assign(socket, :requested_action, nil)
         end
 
       {:noreply, start_load(socket)}
@@ -2075,8 +2089,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       |> assign(:requested_stop_id, nil)
       |> assign(:requested_add?, false)
       |> open_edit(stop_id)
+      |> open_requested_action()
     else
-      assign(socket, :requested_stop_id, nil)
+      socket |> assign(:requested_stop_id, nil) |> assign(:requested_action, nil)
     end
   end
 
@@ -2095,6 +2110,17 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   end
 
   defp open_requested_add(socket), do: socket
+
+  # Each action goes through `guard_edit/2`, which is the only way into a panel
+  # and therefore the only place a dirty draft can be lost. From a link the
+  # draft is always empty, so the guard has nothing to ask; it is used anyway,
+  # because a second entry that skipped it is the second exit that loses one.
+  defp open_requested_action(%{assigns: %{requested_action: action}} = socket)
+       when action in [:delete, :replace, :station] do
+    guard_edit(socket, {action})
+  end
+
+  defp open_requested_action(socket), do: assign(socket, :requested_action, nil)
 
   # `?stop=` names one stop and `?add=1` names no stop, so the two cannot both
   # be asked for; the stop wins because it names a subject and the add does not.

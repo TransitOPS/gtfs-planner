@@ -89,15 +89,27 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
   # Kept on one line in the template: a label's text must not carry indentation.
   defp dt_class, do: "text-[13px] font-[650] text-muted sm:flex sm:min-h-11 sm:items-center"
 
+  # A label beside a list of several rows reads against the first of them, not
+  # against the middle of the stack: centred on a four-row list it reads as a
+  # caption for rows two and three.
+  defp dt_class_top, do: "text-[13px] font-[650] text-muted sm:flex sm:pt-2"
+
   attr :label, :string, required: true
   attr :id, :string, default: nil
+
+  attr :top?, :boolean,
+    default: false,
+    doc: "align the label to the top of a tall value rather than its middle"
+
   slot :inner_block, required: true
   slot :hint
 
   defp fact_row(assigns) do
+    assigns = assign(assigns, :dt_class, if(assigns[:top?], do: dt_class_top(), else: dt_class()))
+
     ~H"""
     <div class="grid gap-x-4 gap-y-0.5 border-t border-subtle px-5 py-2 first:border-t-0 sm:grid-cols-[132px_minmax(0,1fr)]">
-      <dt class={dt_class()}>{@label}</dt>
+      <dt class={@dt_class}>{@label}</dt>
       <dd id={@id} class="min-w-0 self-center py-1 text-sm text-strong">
         <span class="flex flex-wrap items-center gap-x-3 gap-y-0.5 sm:min-h-9">
           {render_slot(@inner_block)}
@@ -345,15 +357,316 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
 
   # ── location and service ───────────────────────────────────────────────────
 
+  @doc """
+  The stop page's More actions: the two operations that are not an edit, and
+  the destructive one.
+
+  A `<details>` disclosure rather than a button and a server-rendered menu,
+  because this page has three links and no state: it opens and closes without a
+  round trip, it works with JavaScript off, and it is keyboard operable without
+  an event handler written for the purpose. Each link carries the Map view's
+  `action=` so the panel the editor asked for is the one that opens, rather than
+  the browse panel they would then have to open the panel from.
+
+  The destructive action sits below a rule, says the verb and the object, and
+  is styled in the error colour, so it reads as different in kind from the two
+  that only change which panel is showing.
+  """
+  attr :id, :string, required: true
+  attr :gtfs_version_id, :any, required: true
+  attr :stop_id, :string, required: true
+  attr :stop, :map, required: true
+
+  def stop_more_actions(assigns) do
+    ~H"""
+    <details id={@id} class="relative">
+      <summary class="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-control border border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas [&::-webkit-details-marker]:hidden">
+        More actions <.icon name="hero-chevron-down" class="size-4" />
+      </summary>
+
+      <div
+        class="absolute right-0 top-full z-30 mt-2 w-72 rounded-card border border-subtle bg-white p-2 shadow-float"
+        role="menu"
+        aria-label="More actions for this stop"
+      >
+        <.link
+          :if={@stop.location_type != 1}
+          id="stop-action-make-station"
+          navigate={~p"/gtfs/#{@gtfs_version_id}/stops/map?stop=#{@stop_id}&action=make_station"}
+          role="menuitem"
+          class="flex min-h-11 flex-col justify-center rounded-control px-3 py-2 text-sm text-strong no-underline hover:bg-canvas"
+        >
+          Make this a station…<span class="text-[13px] text-muted">
+            For a stop that is getting more bays
+          </span>
+        </.link>
+
+        <.link
+          id="stop-action-replace"
+          navigate={~p"/gtfs/#{@gtfs_version_id}/stops/map?stop=#{@stop_id}&action=replace"}
+          role="menuitem"
+          class="flex min-h-11 flex-col justify-center rounded-control px-3 py-2 text-sm text-strong no-underline hover:bg-canvas"
+        >
+          Replace with another stop…<span class="text-[13px] text-muted">
+            Moves its patterns and rules to a stop nearby
+          </span>
+        </.link>
+
+        <div class="my-1 border-t border-subtle"></div>
+
+        <.link
+          id="stop-action-delete"
+          navigate={~p"/gtfs/#{@gtfs_version_id}/stops/map?stop=#{@stop_id}&action=delete"}
+          role="menuitem"
+          class="flex min-h-11 items-center rounded-control px-3 text-sm font-semibold text-error-fg no-underline hover:bg-error-bg"
+        >
+          Delete stop…
+        </.link>
+      </div>
+    </details>
+    """
+  end
+
+  @doc """
+  "Where this stop is used": the rows that name it, and nothing else.
+
+  `StopReferences.usage/3` answers with a count per kind and, for the kinds an
+  editor acts on, the rows themselves. Patterns are the rows worth naming —
+  which route, which way, and how much weekday service — because that is what a
+  rider recognises about a stop, and each one links to the pattern editor, which
+  is where the pattern's stops are actually staged. Every other kind is one line
+  with its count.
+
+  The read is asynchronous on the page (`usage_state`), so the card renders a
+  loading region and then the rows rather than blocking the rest of the page on
+  fourteen queries. A read that fails is a warning with a retry, like the page's
+  other regions, and it never reads as "nothing uses this stop".
+  """
+  attr :stop, :map, required: true
+  attr :usage, :any, default: nil
+  attr :usage_state, :atom, required: true, values: [:loading, :ready, :unavailable]
+  attr :gtfs_version_id, :any, required: true
+  attr :zone_name, :any, default: nil
+  attr :class, :any, default: nil
+
+  def usage_card(assigns) do
+    ~H"""
+    <section id="usage-card" aria-labelledby="usage-title" class={[card(), @class]}>
+      <div class="px-5 pb-3 pt-4">
+        <h2 id="usage-title" class={card_title()}>Where this stop is used</h2>
+      </div>
+
+      <%= case @usage_state do %>
+        <% :loading -> %>
+          <div
+            id="usage-loading"
+            role="status"
+            aria-live="polite"
+            class="border-t border-subtle px-5 py-4"
+          >
+            <p class="m-0 text-sm text-muted">Reading what uses this stop…</p>
+          </div>
+        <% :unavailable -> %>
+          <div id="usage-unavailable" class="border-t border-subtle px-5 py-4">
+            <.message kind="warning" title="What uses this stop could not be read">
+              The rest of this page is unaffected. Reload to try again.
+            </.message>
+          </div>
+        <% :ready -> %>
+          <dl class="border-t border-subtle">
+            <.fact_row label="Patterns" top?>
+              <%= if @usage == nil or usage_patterns(@usage) == [] do %>
+                <span id="usage-patterns-none" class="text-muted">
+                  {if @stop.location_type == 1,
+                    do: "No route calls at this station's bays.",
+                    else: "No route serves this stop."}
+                </span>
+              <% else %>
+                <ul id="usage-patterns" class="m-0 grid w-full list-none gap-2 p-0">
+                  <li
+                    :for={pattern <- usage_patterns(@usage)}
+                    id={"usage-pattern-#{usage_dom_id(pattern.route_id)}-#{usage_dom_id(pattern.route_pattern_id)}"}
+                    class="flex flex-wrap items-center gap-2"
+                  >
+                    <.usage_route_badge
+                      short_name={pattern.route_short_name}
+                      color={pattern.route_color}
+                    />
+                    <.text_link
+                      id={"usage-pattern-link-#{usage_dom_id(pattern.route_id)}-#{usage_dom_id(pattern.route_pattern_id)}"}
+                      navigate={
+                        ~p"/gtfs/#{@gtfs_version_id}/routes/#{pattern.route_id}/patterns/#{pattern.route_pattern_id}?task=stops"
+                      }
+                      class="min-h-0 text-sm"
+                    >
+                      toward {pattern.headsign || "the end of the line"}
+                    </.text_link>
+                  </li>
+                </ul>
+                <span id="usage-weekday-trips" class="block text-[13px] text-muted">
+                  {usage_trips_text(@usage)}
+                </span>
+              <% end %>
+            </.fact_row>
+
+            <.fact_row
+              :for={row <- usage_count_rows(@usage, @zone_name)}
+              label={row.label}
+              id={row.dom_id}
+            >
+              <span :if={row.count_text} id={"#{row.dom_id}-count"}>{row.count_text}</span>
+            </.fact_row>
+          </dl>
+      <% end %>
+    </section>
+    """
+  end
+
+  # The routes badge on a pattern row. The usage read joins the route in its own
+  # organization and version and hands the two badge fields across, so the
+  # detail page needs no second query for routes it will not otherwise draw.
+  attr :short_name, :any, required: true
+  attr :color, :any, default: nil
+
+  defp usage_route_badge(assigns) do
+    ~H"""
+    <span
+      class="inline-flex h-6 min-w-7 items-center justify-center rounded-badge px-1.5 text-[13px] font-bold text-white"
+      style={usage_badge_style(assigns.color)}
+    >
+      {@short_name || "?"}
+    </span>
+    """
+  end
+
+  # A feed's route colour is six hexadecimal digits with or without the leading
+  # `#` GTFS writes it without. Anything else is dropped rather than pasted into
+  # a `style` attribute, so a hostile feed cannot close the attribute and
+  # restyle the row; the badge falls back to the page's route blue.
+  defp usage_badge_style("#" <> <<_::binary-size(6)>> = hex), do: "background: #{hex};"
+  defp usage_badge_style(<<_::binary-size(6)>> = hex), do: "background: ##{hex};"
+  defp usage_badge_style(_color), do: "background: #1f5fbf;"
+
+  @doc false
+  def usage_patterns(%{blocking: blocking}) do
+    case Enum.find(blocking, &(&1.key == :route_pattern_stops)) do
+      %{details: details} -> Enum.map(details, &usage_pattern/1)
+      _unused -> []
+    end
+  end
+
+  def usage_patterns(_usage), do: []
+
+  # The usage read's pattern detail carries the badge fields the route join
+  # picked up, so the card needs no second query for routes it will not
+  # otherwise draw. The weekday trip count rides on the wrapper.
+  defp usage_pattern(%{detail: pattern, weekday_trips: trips}) do
+    Map.merge(pattern, %{route_id: pattern.route_id, weekday_trips: trips})
+  end
+
+  defp usage_trips_text(%{blocking: blocking} = usage) do
+    case Enum.find(blocking, &(&1.key == :route_pattern_stops)) do
+      %{details: details} when details != [] ->
+        trips = details |> Enum.map(& &1.weekday_trips) |> Enum.sum()
+
+        if trips == 0 do
+          "No weekday trips recorded for these patterns."
+        else
+          "#{usage_count(trips, "weekday trip", "weekday trips")} stop here on weekdays."
+        end
+
+      _unused ->
+        _ = usage
+        "No weekday trips recorded."
+    end
+  end
+
+  defp usage_trips_text(_usage), do: "No weekday trips recorded."
+
+  # Everything that is not a pattern, one line each with its count. The fare
+  # zone is read from the row the page already loaded rather than from the
+  # usage, because it is the zone the stop is in and not a row that names it.
+  defp usage_count_rows(%{blocking: blocking, descriptive: descriptive}, zone_name) do
+    rows =
+      Enum.flat_map(blocking ++ descriptive, fn
+        %{key: :route_pattern_stops, label: _label, count: _count} ->
+          []
+
+        %{key: key, label: label, count: count} ->
+          [usage_count_row(key, usage_label(key, label), count)]
+      end)
+
+    rows ++ [usage_zone_row(zone_name)]
+  end
+
+  defp usage_count_rows(_usage, zone_name), do: [usage_zone_row(zone_name)]
+
+  # `StopReferences` labels each kind after the table it reads, which is the
+  # right word for a delete review and the wrong one here: this card is about
+  # what an editor touches, and "Map line sections from" is a join table's
+  # name rather than a thing anybody does. The reader's words are here, and a
+  # kind with no word of its own keeps the reference's own label.
+  defp usage_label(:transfers_from, _label), do: "Transfer rules out"
+  defp usage_label(:transfers_to, _label), do: "Transfer rules in"
+  defp usage_label(:fare_leg_join_from, _label), do: "Fare rules out"
+  defp usage_label(:fare_leg_join_to, _label), do: "Fare rules in"
+  defp usage_label(:segments_from, _label), do: "Map lines"
+  defp usage_label(:segments_to, _label), do: "Map lines"
+  defp usage_label(:child_stops, _label), do: "Bays and platforms"
+  defp usage_label(_key, label), do: label
+
+  defp usage_count_row(key, label, count) do
+    %{
+      dom_id: "usage-#{usage_dom_id(key)}",
+      label: label,
+      count_text: usage_count(count, "row", "rows")
+    }
+  end
+
+  defp usage_zone_row(zone_name) do
+    %{
+      dom_id: "usage-zone",
+      label: "Fares",
+      count_text: if(zone_name, do: "Zone #{zone_name}", else: "No fare zone recorded")
+    }
+  end
+
+  defp usage_count(1, singular, _plural), do: "1 #{singular}"
+  defp usage_count(count, _singular, plural), do: "#{count} #{plural}"
+
+  defp usage_dom_id(value) when is_atom(value) and not is_nil(value),
+    do: Atom.to_string(value)
+
+  defp usage_dom_id(value) when is_binary(value) do
+    if String.match?(value, ~r/\A[A-Za-z0-9_-]+\z/) do
+      value
+    else
+      String.replace(value, ~r/[^A-Za-z0-9_-]/, "-")
+    end
+  end
+
+  defp usage_dom_id(_value), do: "unknown"
+
   @doc "Where the place is: what it is called on the ground and its coordinates."
   attr :stop, :map, required: true
   attr :parent, :map, default: nil, doc: "`%{name: String.t(), navigate: String.t()}` or nil"
+  attr :gtfs_version_id, :any, required: true
+  attr :movable?, :boolean, default: false, doc: "the stop has coordinates a move could change"
 
   def location_card(assigns) do
     ~H"""
     <section id="location-card" aria-labelledby="location-title" class={card()}>
-      <div class="px-5 pb-3 pt-4">
+      <div class="flex flex-wrap items-center justify-between gap-3 px-5 pb-3 pt-4">
         <h2 id="location-title" class={card_title()}>Location</h2>
+        <.button
+          :if={@movable?}
+          id="move-on-map"
+          variant="secondary"
+          class="min-h-11"
+          navigate={~p"/gtfs/#{@gtfs_version_id}/stops/map?stop=#{@stop.stop_id}"}
+        >
+          <.icon name="hero-arrows-right-left" class="size-4" /> Move on map
+        </.button>
       </div>
       <dl class="border-t border-subtle">
         <.fact_row :if={@parent} label="Part of">
@@ -1096,7 +1409,12 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
         {"stop_lon", stop.stop_lon && Decimal.to_string(stop.stop_lon, :normal)},
         {"parent_station", stop.parent_station},
         {"level_id", stop.level_id},
-        {"platform_code", stop.platform_code}
+        {"platform_code", stop.platform_code},
+        {"stop_code", stop.stop_code},
+        {"tts_stop_name", stop.tts_stop_name},
+        {"stop_url", stop.stop_url},
+        {"zone_id", stop.zone_id},
+        {"stop_timezone", stop.stop_timezone}
       ]
       |> Enum.reject(fn {name, value} -> name == "parent_station" and not present?(value) end)
 

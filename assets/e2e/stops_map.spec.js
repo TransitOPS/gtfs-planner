@@ -1897,3 +1897,124 @@ test("the list's first-use state @list", async ({ page }, testInfo) => {
 
   await captureReference(page, testInfo, "list", "first-use", "list-ref-");
 });
+
+// ── detail entry points (step 36) ──────────────────────────────────────────
+
+// The stop page is where an editor already is, so it carries the entry points
+// into the Map view's three non-edit operations. This asserts the links are the
+// requests they claim to be: each carries the action, and following one opens
+// that panel rather than the browse panel.
+test("the stop page's entry points @detail", async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+
+  await page.goto(`/gtfs/${versionId}/stops/1434`);
+  await waitForLiveView(page);
+
+  await expect(page.locator("#stop-detail-page")).toBeAttached();
+  await expect(page.locator("#station-title")).toHaveText("US 101 & SE 1st St");
+
+  await expect(page.locator("#edit-stop")).toContainText("Edit stop");
+  await expect(page.locator("#edit-stop")).toHaveAttribute(
+    "href",
+    `/gtfs/${versionId}/stops/map?stop=1434`,
+  );
+
+  // The More actions menu is a <details>, so it opens with the click a person
+  // makes and works without JavaScript.
+  await page.locator("#stop-more-actions summary").click();
+  await expect(page.locator("#stop-action-make-station")).toBeAttached();
+  await expect(page.locator("#stop-action-replace")).toBeAttached();
+  await expect(page.locator("#stop-action-delete")).toBeAttached();
+
+  await expect(page.locator("#stop-action-delete")).toHaveAttribute(
+    "href",
+    `/gtfs/${versionId}/stops/map?stop=1434&action=delete`,
+  );
+
+  await captureBoth(page, testInfo, "stop", "detail-");
+  await captureReference(page, testInfo, "detail", "stop", "detail-ref-");
+
+  // A following link lands on the panel the link asked for, not on the browse
+  // panel an editor would then have to find the operation in again.
+  await page.goto(`/gtfs/${versionId}/stops/1434`);
+  await waitForLiveView(page);
+  await page.locator("#stop-more-actions summary").click();
+  await page.locator("#stop-action-delete").click();
+  await waitForLiveView(page);
+
+  await expect(page.locator("#stops-map-delete-panel")).toBeAttached();
+  await capture(page, testInfo, "detail-action-delete-desktop");
+});
+
+// A station keeps Open floorplans as its one primary; the map is beside it.
+test("the station page's entry points @detail", async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+
+  await page.goto(`/gtfs/${versionId}/stops/ST-NTC`);
+  await waitForLiveView(page);
+
+  await expect(page.locator("#station-title")).toHaveText(
+    "Newport Transit Center",
+  );
+  await expect(page.locator("#open-floorplans")).toContainText(
+    "Open floorplans",
+  );
+  await expect(page.locator("#station-edit-on-map")).toContainText(
+    "Edit on map",
+  );
+  await expect(page.locator("#station-edit-on-map")).toHaveAttribute(
+    "href",
+    `/gtfs/${versionId}/stops/map?stop=ST-NTC`,
+  );
+
+  // A station's own point is not where riders wait, so it has no More actions
+  // and no Move on map.
+  await expect(page.locator("#stop-more-actions")).toHaveCount(0);
+  await expect(page.locator("#move-on-map")).toHaveCount(0);
+
+  await captureBoth(page, testInfo, "station", "detail-");
+});
+
+// The usage card: what names this stop, and where each of those places is
+// edited. The read is asynchronous, so the card is captured after it lands.
+test("where this stop is used @detail", async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+
+  await page.goto(`/gtfs/${versionId}/stops/1434`);
+  await waitForLiveView(page);
+
+  // 1531 is the seed's unserved stop, so the card's empty answer is a real
+  // page rather than a state that cannot be opened.
+  await page.goto(`/gtfs/${versionId}/stops/1531`);
+  await waitForLiveView(page);
+
+  await expect(page.locator("#usage-card")).toBeVisible();
+  await expect(page.locator("#usage-patterns-none")).toHaveText(
+    "No route serves this stop.",
+  );
+
+  // 1433 is the other duplicate, and it is the stop the southbound pattern
+  // actually calls at.
+  await page.goto(`/gtfs/${versionId}/stops/1433`);
+  await waitForLiveView(page);
+  await expect(page.locator("#usage-patterns")).toBeAttached();
+  await expect(page.locator("#usage-weekday-trips")).toBeAttached();
+
+  await captureBoth(page, testInfo, "usage", "detail-");
+  await captureReference(page, testInfo, "detail", "usage", "detail-ref-");
+});

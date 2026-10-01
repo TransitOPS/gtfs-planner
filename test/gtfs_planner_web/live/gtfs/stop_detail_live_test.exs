@@ -1541,6 +1541,241 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
     end
   end
 
+  describe "StopDetailLive - map entry points and usage" do
+    setup %{conn: conn} do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      version = gtfs_version_fixture(organization.id)
+
+      stop =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "MAPSTOP",
+          stop_name: "US 101 & SE 1st St",
+          stop_desc: "Northbound",
+          location_type: 0,
+          stop_lat: Decimal.new("44.63700"),
+          stop_lon: Decimal.new("-124.05310")
+        })
+
+      # The five fields the editor writes are the importer's to write rather
+      # than the fixture's, so they are set the way the importer sets them —
+      # otherwise the disclosure would show a row the editor can fill and the
+      # fixture never could.
+      stop =
+        stop
+        |> Ecto.Changeset.change(%{
+          stop_code: "1434",
+          tts_stop_name: "U S one oh one and south east first",
+          zone_id: "MAPZONE",
+          stop_timezone: "America/Los_Angeles"
+        })
+        |> Repo.update!()
+
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "MR1",
+          route_short_name: "1",
+          route_color: "FF0000"
+        })
+
+      pattern =
+        route_pattern_fixture(organization.id, version.id, %{
+          route_pattern_id: "NB",
+          route_id: route.route_id,
+          direction_id: 0,
+          headsign: "Lincoln City"
+        })
+
+      route_pattern_stop_fixture(pattern, "MAPSTOP", 1)
+
+      %{
+        conn: log_in_user(conn, user, organization: organization),
+        organization: organization,
+        version: version,
+        stop: stop,
+        route: route,
+        pattern: pattern
+      }
+    end
+
+    test "a stop's page offers Edit stop and the three More actions", ctx do
+      {:ok, view, _html} = live(ctx.conn, "/gtfs/#{ctx.version.id}/stops/MAPSTOP")
+
+      assert has_element?(view, "#edit-stop", "Edit stop")
+
+      assert has_element?(
+               view,
+               "#edit-stop[href='/gtfs/#{ctx.version.id}/stops/map?stop=MAPSTOP']"
+             )
+
+      assert has_element?(view, "#stop-more-actions summary", "More actions")
+
+      # Each action names the panel it opens, so the link is the request rather
+      # than a route an editor has to then navigate inside.
+      assert has_element?(
+               view,
+               "#stop-action-make-station[href='/gtfs/#{ctx.version.id}/stops/map?stop=MAPSTOP&action=make_station']"
+             )
+
+      assert has_element?(
+               view,
+               "#stop-action-replace[href='/gtfs/#{ctx.version.id}/stops/map?stop=MAPSTOP&action=replace']"
+             )
+
+      assert has_element?(
+               view,
+               "#stop-action-delete[href='/gtfs/#{ctx.version.id}/stops/map?stop=MAPSTOP&action=delete']"
+             )
+    end
+
+    test "a station keeps Open floorplans primary and gains a secondary Edit on map", ctx do
+      station =
+        stop_fixture(ctx.organization.id, ctx.version.id, %{
+          stop_id: "MAPSTATION",
+          stop_name: "Newport Transit Center",
+          location_type: 1,
+          stop_lat: Decimal.new("44.63600"),
+          stop_lon: Decimal.new("-124.05200")
+        })
+
+      {:ok, view, _html} = live(ctx.conn, "/gtfs/#{ctx.version.id}/stops/#{station.stop_id}")
+
+      assert has_element?(view, "#open-floorplans", "Open floorplans")
+      assert has_element?(view, "#station-edit-on-map", "Edit on map")
+
+      # A station's own point is not where riders wait, so it has no More
+      # actions and no Move on map.
+      refute has_element?(view, "#stop-more-actions")
+      refute has_element?(view, "#move-on-map")
+
+      floorplans = view |> element("#open-floorplans") |> render()
+      assert floorplans =~ "btn-primary"
+
+      on_map = view |> element("#station-edit-on-map") |> render()
+      assert on_map =~ "btn-outline"
+    end
+
+    test "a stop with coordinates offers Move on map beside the Location heading", ctx do
+      {:ok, view, _html} = live(ctx.conn, "/gtfs/#{ctx.version.id}/stops/MAPSTOP")
+
+      assert has_element?(view, "#location-card", "Move on map")
+
+      assert has_element?(
+               view,
+               "#move-on-map[href='/gtfs/#{ctx.version.id}/stops/map?stop=MAPSTOP']"
+             )
+    end
+
+    test "a stop with no coordinates does not offer a move", ctx do
+      stop_fixture(ctx.organization.id, ctx.version.id, %{
+        stop_id: "NOPOINT",
+        stop_name: "Somewhere",
+        location_type: 0,
+        stop_lat: nil,
+        stop_lon: nil
+      })
+
+      {:ok, view, _html} = live(ctx.conn, "/gtfs/#{ctx.version.id}/stops/NOPOINT")
+
+      assert has_element?(view, "#stop-no-location")
+      refute has_element?(view, "#move-on-map")
+    end
+
+    test "Where this stop is used lists its pattern with a link to the pattern editor", ctx do
+      {:ok, view, _html} = live(ctx.conn, "/gtfs/#{ctx.version.id}/stops/MAPSTOP")
+
+      render_async(view, 2_000)
+
+      assert has_element?(view, "#usage-card", "Where this stop is used")
+      assert has_element?(view, "#usage-patterns")
+      assert has_element?(view, "#usage-patterns", "toward Lincoln City")
+
+      # The badge and the link are separate elements: the badge is the route's
+      # own short name on its colour, and the link is where the pattern is
+      # edited.
+      assert view |> element("#usage-patterns li") |> render() =~ "toward Lincoln City"
+
+      # The link goes to the pattern's own page with the stops task open,
+      # because that is where a pattern's stop list is staged.
+      assert has_element?(
+               view,
+               "#usage-pattern-link-MR1-NB[href='/gtfs/#{ctx.version.id}/routes/MR1/patterns/NB?task=stops']"
+             )
+
+      assert has_element?(view, "#usage-weekday-trips")
+    end
+
+    test "a stop nothing serves says so rather than showing an empty list", ctx do
+      stop_fixture(ctx.organization.id, ctx.version.id, %{
+        stop_id: "UNUSED",
+        stop_name: "Unused Stop",
+        location_type: 0,
+        stop_lat: Decimal.new("44.63700"),
+        stop_lon: Decimal.new("-124.05310")
+      })
+
+      {:ok, view, _html} = live(ctx.conn, "/gtfs/#{ctx.version.id}/stops/UNUSED")
+
+      render_async(view, 2_000)
+
+      assert has_element?(view, "#usage-card")
+      assert has_element?(view, "#usage-patterns-none", "No route serves this stop")
+      refute has_element?(view, "#usage-patterns")
+    end
+
+    test "a station's empty answer names its bays rather than the station row", ctx do
+      station =
+        stop_fixture(ctx.organization.id, ctx.version.id, %{
+          stop_id: "LONELY",
+          stop_name: "Lonely Station",
+          location_type: 1,
+          stop_lat: Decimal.new("44.63700"),
+          stop_lon: Decimal.new("-124.05310")
+        })
+
+      {:ok, view, _html} = live(ctx.conn, "/gtfs/#{ctx.version.id}/stops/#{station.stop_id}")
+
+      render_async(view, 2_000)
+
+      # Trips stop at bays, not at the station, so "no route serves this stop"
+      # would be wrong on a station's page even when it is true of its row.
+      assert has_element?(
+               view,
+               "#usage-patterns-none",
+               "No route calls at this station's bays."
+             )
+    end
+
+    test "the GTFS disclosure names the fields the editor just started writing", ctx do
+      {:ok, view, _html} = live(ctx.conn, "/gtfs/#{ctx.version.id}/stops/MAPSTOP")
+
+      for {name, value} <- [
+            {"stop_code", "1434"},
+            {"tts_stop_name", "U S one oh one and south east first"},
+            {"zone_id", "MAPZONE"},
+            {"stop_timezone", "America/Los_Angeles"}
+          ] do
+        assert has_element?(view, "#gtfs-details dt", name)
+
+        field = view |> element("#gtfs-details") |> render()
+
+        assert field =~ name
+        assert field =~ value
+      end
+
+      # stop_url is in the disclosure too, and says so when the feed carries no
+      # value rather than dropping the field.
+      assert view |> element("#gtfs-details") |> render() =~ "stop_url"
+    end
+  end
+
   defp rule!(ctx, attrs),
     do:
       transfer_fixture(ctx.organization.id, ctx.version.id, Map.put_new(attrs, :transfer_type, 0))

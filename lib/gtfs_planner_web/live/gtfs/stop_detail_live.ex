@@ -9,6 +9,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopReferences
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Gtfs.StopDetailComponents
   alias GtfsPlannerWeb.StationWorkspace
@@ -25,6 +26,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
       location_card: 1,
       pathways_card: 1,
       service_card: 1,
+      stop_more_actions: 1,
+      usage_card: 1,
       unavailable: 1
     ]
 
@@ -67,6 +70,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
      |> assign(:journal_targets, %{})
      |> assign(:journal_local_times, %{})
      |> assign(:journal_now, nil)
+     |> assign(:usage, nil)
+     |> assign(:usage_zone_name, nil)
+     |> assign(:usage_state, :loading)
+     |> assign(:usage_for, nil)
      |> stream(:pathways, [])
      |> stream_configure(:journal_recent_entries,
        dom_id: fn entry -> "station-journal-summary-#{entry.id}" end
@@ -77,6 +84,37 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   @impl true
   def handle_params(%{"stop_id" => stop_id} = _params, _uri, socket) do
     {:noreply, socket |> assign(:stop_id, stop_id) |> load_stop()}
+  end
+
+  # "Where this stop is used" reads fourteen tables, so it runs beside the page
+  # rather than in front of it: the location and service cards paint first and
+  # the usage card fills in. The token names the stop it was read for, so an
+  # answer that arrives after the editor moved on is dropped rather than
+  # answering for the wrong stop.
+  @usage_load_key :stop_usage_load
+
+  @impl true
+  def handle_async(@usage_load_key, {:ok, {:ok, {usage, zone_name}}}, socket) do
+    if socket.assigns.usage_for == socket.assigns.stop_id do
+      {:noreply,
+       socket
+       |> assign(:usage, usage)
+       |> assign(:usage_zone_name, zone_name)
+       |> assign(:usage_state, :ready)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_async(@usage_load_key, _result, socket) do
+    # A failed read leaves the card's own unavailable state rather than an empty
+    # list: "nothing uses this stop" and "we could not read it" are different
+    # answers, and only one of them is true.
+    if socket.assigns.usage_for == socket.assigns.stop_id do
+      {:noreply, assign(socket, :usage_state, :unavailable)}
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl true
@@ -301,8 +339,38 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
         |> assign(:parent_station, load_parent(organization_id, gtfs_version.id, stop))
         |> assign(:fare_zone, fare_zone(socket, stop))
         |> assign(:transfer_count, related_transfers(organization_id, gtfs_version.id, stop))
+        |> start_usage_read(stop)
         |> load_regions()
     end
+  end
+
+  # The usage read answers for whatever stop is on the page now, so the assign
+  # that says which stop it is for is set before the task starts rather than
+  # after — otherwise a fast answer could land before the token does.
+  defp start_usage_read(socket, stop) do
+    socket = assign(socket, :usage_for, stop.stop_id)
+
+    if connected?(socket) do
+      organization_id = socket.assigns.current_organization.id
+      gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+      start_async(socket, @usage_load_key, fn ->
+        {:ok,
+         {StopReferences.usage(organization_id, gtfs_version_id, stop),
+          usage_zone_name(organization_id, gtfs_version_id, stop)}}
+      end)
+    else
+      socket
+    end
+  end
+
+  # The fare zone the stop sits in, named by this version. A stop with no zone
+  # is an ordinary answer rather than a missing one.
+  defp usage_zone_name(_organization_id, _gtfs_version_id, %Stop{zone_id: nil}),
+    do: nil
+
+  defp usage_zone_name(organization_id, gtfs_version_id, %Stop{zone_id: zone_id}) do
+    FareZones.zone_names(organization_id, gtfs_version_id, [zone_id])[zone_id]
   end
 
   # A platform, entrance or connection point names its station and inherits the
@@ -681,6 +749,22 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
 
   defp parent_link(_stop, _parent, _gtfs_version_id), do: nil
 
+  # A stop can be moved on the map only when it has coordinates to move: the
+  # map places a pin, and a stop with no point has nothing to drag. A station
+  # is excluded because its bays are the things riders wait at, which is what
+  # its "Edit on map" links to.
+  defp movable?(%{stop: %Stop{location_type: 1}}), do: false
+
+  defp movable?(%{stop: stop}) do
+    present?(stop.stop_lat) and present?(stop.stop_lon)
+  end
+
+  defp movable?(_assigns), do: false
+
+  defp present?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present?(nil), do: false
+  defp present?(_value), do: true
+
   @impl true
   def render(assigns) do
     assigns =
@@ -712,19 +796,49 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
           back={@parent_link && %{label: @parent_link.name, navigate: @parent_link.navigate}}
         >
           <:meta>{@inventory}</:meta>
-          <:actions :if={@station?}>
-            <.editing_control
-              status={@station_editing_status}
-              state={@editing_status_state}
-              current_user={@current_user}
-            />
-            <.button
-              id="open-floorplans"
-              navigate={~p"/gtfs/#{@current_gtfs_version.id}/stops/#{@stop.stop_id}/diagram"}
-              class="min-h-11"
-            >
-              <.icon name="hero-map" class="size-4" /> Open floorplans
-            </.button>
+          <:actions>
+            <%!-- A station keeps Open floorplans as its one primary; the map is
+                   beside it because a station's own coordinates are not where
+                   riders wait, and its bays are edited from the map. --%>
+            <%= if @station? do %>
+              <.editing_control
+                status={@station_editing_status}
+                state={@editing_status_state}
+                current_user={@current_user}
+              />
+              <.button
+                id="station-edit-on-map"
+                variant="secondary"
+                navigate={~p"/gtfs/#{@current_gtfs_version.id}/stops/map?stop=#{@stop.stop_id}"}
+                class="min-h-11"
+              >
+                <.icon name="hero-map" class="size-4" /> Edit on map
+              </.button>
+              <.button
+                id="open-floorplans"
+                navigate={~p"/gtfs/#{@current_gtfs_version.id}/stops/#{@stop.stop_id}/diagram"}
+                class="min-h-11"
+              >
+                <.icon name="hero-map" class="size-4" /> Open floorplans
+              </.button>
+            <% else %>
+              <%!-- A stop's page is where an editor already is, so the two
+                     operations that are not an edit open on the map with the
+                     panel already asked for. --%>
+              <.stop_more_actions
+                id="stop-more-actions"
+                gtfs_version_id={@current_gtfs_version.id}
+                stop_id={@stop.stop_id}
+                stop={@stop}
+              />
+              <.button
+                id="edit-stop"
+                navigate={~p"/gtfs/#{@current_gtfs_version.id}/stops/map?stop=#{@stop.stop_id}"}
+                class="min-h-11"
+              >
+                <.icon name="hero-pencil-square" class="size-4" /> Edit stop
+              </.button>
+            <% end %>
           </:actions>
         </StationWorkspace.station_header>
         <StationWorkspace.station_header
@@ -757,7 +871,12 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
             </div>
 
             <div class="grid items-start gap-6 lg:grid-cols-2">
-              <.location_card stop={@stop} parent={@parent_link} />
+              <.location_card
+                stop={@stop}
+                parent={@parent_link}
+                gtfs_version_id={@current_gtfs_version.id}
+                movable?={movable?(assigns)}
+              />
               <.service_card
                 stop={@stop}
                 access={Stop.resolve_wheelchair_boarding(@stop, @parent_station)}
@@ -770,6 +889,15 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                 in_station?={not is_nil(@parent_link)}
               />
             </div>
+
+            <.usage_card
+              class="mt-6"
+              stop={@stop}
+              usage={@usage}
+              usage_state={@usage_state}
+              gtfs_version_id={@current_gtfs_version.id}
+              zone_name={@usage_zone_name}
+            />
 
             <.inside
               :if={@station?}
