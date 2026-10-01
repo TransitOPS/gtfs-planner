@@ -303,12 +303,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalDeepLinkTest do
           location_type: 1
         })
 
+      other_level =
+        level_fixture(context.organization.id, other_version.id, %{
+          level_id: "dl_v2_level_#{System.unique_integer([:positive])}",
+          level_name: "Version 2 Level",
+          level_index: 0.0
+        })
+
       {:ok, _other_stop_level} =
         Gtfs.create_stop_level(%{
           organization_id: context.organization.id,
           gtfs_version_id: other_version.id,
           stop_id: other_station.id,
-          level_id: context.level.id
+          level_id: other_level.id
         })
 
       other_child =
@@ -317,7 +324,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalDeepLinkTest do
           stop_name: "V2 Child",
           location_type: 0,
           parent_station: other_station.stop_id,
-          level_id: context.level.level_id,
+          level_id: other_level.level_id,
           diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
         })
 

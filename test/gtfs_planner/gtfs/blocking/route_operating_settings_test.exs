@@ -92,8 +92,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
         route_short_name: "99"
       })
 
-      # A row naming a route of another organization is never read.
-      route_operating_setting_fixture(organization.id, foreign_version.id, %{route_id: "99"})
+      # The other organization's setting for its own route is never read.
+      route_operating_setting_fixture(other_organization.id, foreign_version.id, %{
+        route_id: "99"
+      })
 
       assert Gtfs.list_route_operating_settings(organization.id, version.id) == [
                %{route_id: "12", garage_id: nil, required_vehicle_type_id: nil},
