@@ -46,6 +46,9 @@ config :gtfs_planner,
   # Heartbeat interval (in milliseconds) at which the import runner renews its
   # execution/cleanup lease.
   import_runner_heartbeat_ms: 60_000,
+  # Duration (in seconds) a validation run's execution lease remains valid before
+  # `Validations.reconcile_expired/1` may fail the run as `lease_expired`.
+  validation_lease_seconds: 300,
   # Module the export worker runs before it builds a ZIP. Its `run/3` returns
   # `:ok` or `{:error, issues}`; each issue is stored as a run warning.
   otp_preflight_module: GtfsPlanner.Gtfs.Export.Preflight
