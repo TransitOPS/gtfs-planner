@@ -34,7 +34,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveNamingRollbackTest do
     child =
       child_stop_fixture(organization.id, version.id, station.stop_id,
         stop_id: "ORIGINAL_CHILD",
-        stop_name: "Child platform"
+        stop_name: "Child platform",
+        diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
       )
 
     audit = %AuditContext{
@@ -287,8 +288,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveNamingRollbackTest do
     view
   end
 
-  defp open_history(view, type, id) do
-    render_hook(view, "show_history", %{"entity-type" => type, "entity-id" => id})
+  # The History tab and its rollback preview render only inside the drawer of the
+  # selected stop, so the helper selects the stop before opening the tab.
+  defp open_history(view, "stop", id) do
+    render_hook(view, "edit_child_stop", %{"id" => id})
+    view |> element("#stop-tab-history") |> render_click()
     render_async(view, 5_000)
   end
 
