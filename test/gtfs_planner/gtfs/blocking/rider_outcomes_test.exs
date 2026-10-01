@@ -80,6 +80,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.RiderOutcomesTest do
                  gap_secs: 60
                )
                |> RiderOutcomes.hints()
+               |> Enum.filter(&(&1.kind == :route_change))
 
       assert station =~ "from another stop in the same station after 1 min."
 
@@ -91,6 +92,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.RiderOutcomesTest do
                  gap_secs: 60
                )
                |> RiderOutcomes.hints()
+               |> Enum.filter(&(&1.kind == :route_change))
 
       assert nearby =~ "from a stop 60 m away after 1 min."
 
@@ -102,15 +104,17 @@ defmodule GtfsPlanner.Gtfs.Blocking.RiderOutcomesTest do
                  gap_secs: 60
                )
                |> RiderOutcomes.hints()
+               |> Enum.filter(&(&1.kind == :route_change))
 
       assert moves =~ "from another stop after 1 min."
     end
 
     test "a wait over ten minutes adds the wait hint" do
+      # One route, so the wait is the only fact this connection carries.
       connection =
         connection(
           from: trip(1, "R12"),
-          to: trip(2, "R24"),
+          to: trip(2, "R12"),
           handoff: :same_stop,
           gap_secs: 14 * 60
         )
@@ -145,6 +149,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.RiderOutcomesTest do
                  gap_secs: 60
                )
                |> RiderOutcomes.hints()
+               |> Enum.filter(&(&1.kind == :distance))
 
       assert distance ==
                "Stops are 370 m apart; the vehicle moves empty between them. OpenTripPlanner " <>
@@ -238,7 +243,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.RiderOutcomesTest do
       connection =
         connection(
           from: trip(1, "R12"),
-          to: trip(2, "R24", first_stop: stop("UNION", "Union Station")),
+          to: trip(2, "R24", 0, first_stop: stop("UNION", "Union Station")),
           handoff: {:moves, 370}
         )
 
@@ -264,7 +269,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.RiderOutcomesTest do
         connection(
           from: trip(1, "R12"),
           to:
-            trip(2, "R24",
+            trip(2, "R24", 0,
               first_stop: stop("UNION", "Union Station"),
               first_pickup_type: 1
             ),
@@ -285,7 +290,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.RiderOutcomesTest do
       drop_off =
         connection(
           from:
-            trip(1, "R12",
+            trip(1, "R12", 0,
               last_stop: stop("FAIR", "Fairmont"),
               last_drop_off_type: 1
             ),

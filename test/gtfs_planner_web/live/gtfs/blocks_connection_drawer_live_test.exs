@@ -252,8 +252,23 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionDrawerLiveTest do
 
       # Two stops this version cannot place: the move is real, its distance and
       # its driving time are not.
-      here = stop(context, %{stop_id: plain_stop_id("A"), stop_name: "Here"})
-      there = stop(context, %{stop_id: plain_stop_id("B"), stop_name: "There"})
+      # `stop_fixture` fills in the fixture's default coordinates, so the stops
+      # this case needs are built with their coordinates explicitly absent.
+      here =
+        stop(context, %{
+          stop_id: plain_stop_id("A"),
+          stop_name: "Here",
+          stop_lat: nil,
+          stop_lon: nil
+        })
+
+      there =
+        stop(context, %{
+          stop_id: plain_stop_id("B"),
+          stop_name: "There",
+          stop_lat: nil,
+          stop_lon: nil
+        })
 
       a =
         trip(context, %{
