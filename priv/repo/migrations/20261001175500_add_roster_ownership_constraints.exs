@@ -18,8 +18,9 @@ defmodule GtfsPlanner.Repo.Migrations.AddRosterOwnershipConstraints do
   #
   #   * `roster_line_days` names its line by `(roster_line_id, organization_id,
   #     gtfs_version_id)`, so a day cannot sit under a line of another version or
-  #     organization. The single-column `roster_line_id` foreign key stays as the
-  #     cascade that removes a line's days with it.
+  #     organization. It cascades like the single-column `roster_line_id` key it
+  #     sits beside, so deleting a line removes its days whichever key's trigger
+  #     PostgreSQL fires first.
   #   * `roster_lines.operator_id` names its operator by `(operator_id,
   #     organization_id)`, so a line cannot hold another organization's operator.
   #     The single-column foreign key stays too, and it nulls the pick when the
@@ -64,7 +65,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddRosterOwnershipConstraints do
     ADD CONSTRAINT roster_line_days_roster_lines_owner_fkey
     FOREIGN KEY (roster_line_id, organization_id, gtfs_version_id)
     REFERENCES #{qualified_table(:roster_lines)} (id, organization_id, gtfs_version_id)
-    ON DELETE NO ACTION
+    ON DELETE CASCADE
     """)
 
     execute("""
