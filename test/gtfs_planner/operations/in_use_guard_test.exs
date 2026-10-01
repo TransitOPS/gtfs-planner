@@ -30,7 +30,9 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Blocking.DeadheadTimes
   alias GtfsPlanner.Gtfs.DeadheadTime
+  alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RouteOperatingSetting
+  alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Operations.Garage
   alias GtfsPlanner.Operations.Vehicle
@@ -579,7 +581,7 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
           # it lost the race with is deleted.
           assert counts.blocks == 1
           assert Repo.get(Garage, garage.id)
-          assert Repo.get_by(BlockAttribute, garage_id: garage.id)
+          assert Repo.get_by(BlockAttribute, garage_id: garage.id, block_id: "99")
           assert Repo.get(BlockAttribute, orphan.id).garage_id == garage.id
           assert Repo.get(DeadheadTime, driving_time.id)
         after
@@ -620,6 +622,8 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
       from(s in RouteOperatingSetting, where: s.organization_id == ^organization_id)
     )
 
+    Repo.delete_all(from(t in Trip, where: t.organization_id == ^organization_id))
+    Repo.delete_all(from(r in Route, where: r.organization_id == ^organization_id))
     Repo.delete_all(from(v in Vehicle, where: v.organization_id == ^organization_id))
     Repo.delete_all(from(t in VehicleType, where: t.organization_id == ^organization_id))
     Repo.delete_all(from(g in Garage, where: g.organization_id == ^organization_id))

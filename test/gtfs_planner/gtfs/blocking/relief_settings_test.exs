@@ -777,10 +777,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
     end)
   end
 
-  # Deletes exactly the rows the lock case committed, keyed to their own
+  # Deletes exactly the rows the lock cases committed, keyed to their own
   # organization, on an own connection so the deletion is not part of the
-  # sandboxed test transaction. The version's stop rows cascade, so the whole scope
-  # goes with it.
+  # sandboxed test transaction. Every table the cases write carries a version
+  # ownership constraint, so each is cleared before the version itself.
   defp cleanup_committed_scope(scope) do
     unboxed(fn ->
       actor_ids =
@@ -795,9 +795,19 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
         from(m in UserOrgMembership, where: m.organization_id == ^scope.organization_id)
       )
 
-      Repo.delete_all(
-        from(s in GtfsPlanner.Gtfs.Stop, where: s.organization_id == ^scope.organization_id)
-      )
+      for schema <- [
+            ReliefPoint,
+            BlockingSetting,
+            GtfsPlanner.Gtfs.ChangeLog,
+            GtfsPlanner.Gtfs.StopTime,
+            GtfsPlanner.Gtfs.Trip,
+            GtfsPlanner.Gtfs.CalendarAttribute,
+            GtfsPlanner.Gtfs.Calendar,
+            GtfsPlanner.Gtfs.Route,
+            GtfsPlanner.Gtfs.Stop
+          ] do
+        Repo.delete_all(from(row in schema, where: row.organization_id == ^scope.organization_id))
+      end
 
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^scope.organization_id))
       Repo.delete_all(from(o in Organization, where: o.id == ^scope.organization_id))
