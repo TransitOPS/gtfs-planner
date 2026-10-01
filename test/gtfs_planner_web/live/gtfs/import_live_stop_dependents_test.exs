@@ -20,7 +20,6 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveStopDependentsTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.DeadheadTime
   alias GtfsPlanner.Gtfs.FlexService
   alias GtfsPlanner.Gtfs.Import.{ChangeDecision, ChangeRun}
@@ -160,8 +159,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveStopDependentsTest do
   test "a stop with a level is not listed, because a level names the stop by its UUID", context do
     # The level reference is `via: :fk_uuid`: it matches `stops.id`, which does not
     # exist yet for a stop being removed by a natural key. The review cannot count
-    # it and says nothing, which is why step 19 refuses a delete with a level
-    # rather than relying on a count from here.
+    # it and says nothing, which is why `StopEditing.delete_review/2` refuses a
+    # delete with a level rather than relying on a count from here.
     %{view: view, decision_id: decision_id} =
       review_removal(context, "1434", fn ctx ->
         stop = Repo.get_by!(GtfsPlanner.Gtfs.Stop, stop_id: "1434")

@@ -1,28 +1,24 @@
 defmodule GtfsPlanner.Gtfs.StopsMapBudgetTest do
   @moduledoc """
-  Measures the Map view read model at the envelope the research feeds reach
-  (EV-11, CL-10, AC-10).
+  Measures the Map view read model at the envelope real feeds reach.
 
-  The ten feeds measured for this spec top out around ten thousand stops and a
-  few hundred patterns. A version that size loads 600,000 shape points, and the
-  question this answers is whether the map is still a map: a fixed query count,
-  and a payload small enough to push to a browser.
+  The ten feeds measured while designing the Map view top out around ten
+  thousand stops and a few hundred patterns. A version that size loads 600,000
+  shape points, and the question this answers is whether the map is still a map:
+  a fixed query count, and a payload small enough to push to a browser.
 
-  Three numbers are recorded, and only one of them is a gate:
+  Three numbers are measured:
 
     * **query count** — must be identical to the fixed set `StopsMap.load/2`
-      issues for any other version. This is the property AC-10 states, and it is
-      asserted.
+      issues for any other version. That property is asserted.
     * **payload bytes** — the encoded size of `display_payload/2` at a 2.0 m
-      tolerance. The gate is only that the simplified payload is smaller than
-      the unsimplified one, which is what simplification is *for*; an absolute
-      byte budget is not asserted here, because a number nobody has measured on
-      a real feed is a threshold that will fail for the wrong reason. The
-      measured value is written to the evidence artifact and the budget is set
-      from it in the step learning, where a person can see what it was.
-    * **elapsed milliseconds** — printed and recorded, never asserted. This is
-      local Postgres timing, not browser rendering time (the card's proof
-      boundary).
+      tolerance. The only assertion is that the simplified payload is smaller
+      than the unsimplified one, which is what simplification is *for*; an
+      absolute byte budget is not asserted here, because a number nobody has
+      measured on a real feed is a threshold that will fail for the wrong
+      reason. The measured value is printed so a budget can be set from it.
+    * **elapsed milliseconds** — printed, never asserted. This is local
+      Postgres timing, not browser rendering time.
 
   The fixture is written with `Repo.insert_all/3` in chunks of 5,000 inside this
   test's SQL Sandbox transaction, so the shared test database keeps none of it,
@@ -30,7 +26,7 @@ defmodule GtfsPlanner.Gtfs.StopsMapBudgetTest do
   describe the rows that are actually there rather than an empty table.
 
   It is excluded from the default suite by `@moduletag :stops_map_budget`,
-  which `test/test_helper.exs` excludes. Branch review runs it explicitly:
+  which `test/test_helper.exs` excludes. Run it explicitly:
 
       mix test --only stops_map_budget test/gtfs_planner/gtfs/stops_map_budget_test.exs
   """
@@ -57,15 +53,6 @@ defmodule GtfsPlanner.Gtfs.StopsMapBudgetTest do
   # an editor sees.
   @tolerance_m 2.0
 
-  # Where the measurement is written: the card's relative path, overridable with
-  # `GTFS_SPEC_EVIDENCE_DIR` so a run from a throwaway worktree can write into
-  # the canonical spec package rather than the worktree's own `.specs/` copy,
-  # which is not authoritative.
-  @artifact Path.join(
-              System.get_env("GTFS_SPEC_EVIDENCE_DIR", ".specs"),
-              "28-stop-add-edit/evidence/stops-map-payload.json"
-            )
-
   test "the read model stays a fixed set of queries and the payload stays small" do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
@@ -90,61 +77,20 @@ defmodule GtfsPlanner.Gtfs.StopsMapBudgetTest do
     full_bytes = byte_size(Jason.encode!(full_payload))
     payload_bytes = byte_size(Jason.encode!(payload))
 
-    measurement = %{
-      "spec" => ".specs/28-stop-add-edit/spec.md",
-      "step" => 10,
-      "evidence" => "EV-11",
-      "measured_at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
-      "environment" => %{
-        "mix_env" => "test",
-        "elixir_erts" => "#{System.version()}/#{:erlang.system_info(:otp_release)}"
-      },
-      "envelope" => %{
-        "stops" => @stop_count,
-        "patterns" => @pattern_count,
-        "shape_points" => @pattern_count * @shape_points,
-        "route_pattern_stops" => @pattern_count * @stops_per_pattern
-      },
-      "query_count" => query_count,
-      "stops" => length(model.stops),
-      "patterns" => length(model.lines),
-      "served_stops" => Enum.count(model.stops, & &1.served?),
-      "shape_lines" => Enum.count(model.lines, &(&1.source == :shape)),
-      "tolerance_m" => @tolerance_m,
-      "payload_bytes" => payload_bytes,
-      "unsimplified_payload_bytes" => full_bytes,
-      "simplified_ratio" => Float.round(payload_bytes / full_bytes, 4),
-      "line_points" =>
-        Enum.reduce(model.lines, 0, fn line, total -> total + length(line.points) end),
-      "simplified_line_points" =>
-        Enum.reduce(payload.lines, 0, fn line, total -> total + length(line.points) end),
-      "elapsed_ms" => %{
-        "load" => load_ms,
-        "simplify_and_payload" => div(payload_us, 1_000),
-        "unsimplified_payload" => div(full_us, 1_000)
-      },
-      "note" =>
-        "Payload bytes are a local measurement, not a browser render time. The gate is that the " <>
-          "simplified payload is smaller than the unsimplified one; the absolute figure is the " <>
-          "recorded input for the byte budget set in the step learning."
-    }
-
     IO.puts(
-      "EV-11: stops=#{measurement["stops"]} patterns=#{measurement["patterns"]} " <>
+      "stops map budget: stops=#{length(model.stops)} patterns=#{length(model.lines)} " <>
         "queries=#{query_count} payload_bytes=#{payload_bytes} " <>
-        "unsimplified=#{full_bytes} load_ms=#{load_ms}"
+        "unsimplified=#{full_bytes} load_ms=#{load_ms} " <>
+        "payload_ms=#{div(payload_us, 1_000)} unsimplified_ms=#{div(full_us, 1_000)}"
     )
 
-    File.mkdir_p!(Path.dirname(@artifact))
-    write_atomically(@artifact, Jason.encode!(measurement, pretty: true) <> "\n")
-
-    # The measurement is the durable evidence, not the rows. The envelope is
-    # six hundred thousand shape points of WAL on a shared disk, so it is
-    # dropped as soon as the artifact is on disk rather than waiting for the
-    # sandbox rollback at the end of the test.
+    # The measurement is printed above, so the rows are not needed any longer.
+    # The envelope is six hundred thousand shape points of WAL on a shared disk,
+    # so it is dropped now rather than waiting for the sandbox rollback at the
+    # end of the test.
     delete_envelope!()
 
-    # AC-10: the read is a fixed set of queries, not one per pattern. The set
+    # The read is a fixed set of queries, not one per pattern. The set
     # `load/2` issues is five, and 300 patterns must not add to it.
     assert query_count == 5
     assert length(model.stops) == @stop_count
@@ -348,13 +294,5 @@ defmodule GtfsPlanner.Gtfs.StopsMapBudgetTest do
     after
       :telemetry.detach(handler_id)
     end
-  end
-
-  # Written through a sibling temporary file and renamed, so a reader never sees
-  # a half-written measurement.
-  defp write_atomically(path, contents) do
-    temporary = path <> ".tmp"
-    File.write!(temporary, contents)
-    File.rename!(temporary, path)
   end
 end

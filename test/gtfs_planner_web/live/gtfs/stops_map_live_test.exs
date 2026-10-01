@@ -1,8 +1,8 @@
 defmodule GtfsPlannerWeb.Gtfs.StopsMapLiveTest do
   @moduledoc """
-  Merge evidence (EV-23) for the Map view shell: the route, the header and its
-  List | Map switch, the map stage, and the browse panel that lists the stops
-  inside the current view.
+  Tests for the Map view shell: the route, the header and its List | Map
+  switch, the map stage, and the browse panel that lists the stops inside the
+  current view.
 
   The panel's list is the hook's `stop_map_bounds` event turned into rows, so
   the tests write that event by hand rather than driving a browser: a view is
@@ -15,9 +15,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLiveTest do
   working, so `map_unavailable` adds a banner and removes nothing. A version
   with no stops has to read as a version nobody has added stops to yet, not as
   a failed read, so it gets the first-use panel rather than an empty list.
-
-  The focused command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_sa28 ELIXIR_ERL_OPTIONS="+S 4" mix test test/gtfs_planner_web/live/gtfs/stops_map_live_test.exs`.
   """
   use GtfsPlannerWeb.ConnCase, async: false
 
@@ -28,7 +25,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLiveTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Gtfs
 
   setup do
     organization = organization_fixture()

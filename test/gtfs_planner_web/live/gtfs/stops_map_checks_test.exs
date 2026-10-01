@@ -1,13 +1,12 @@
 defmodule GtfsPlannerWeb.Gtfs.StopsMapChecksTest do
   @moduledoc """
-  Merge evidence (EV-27) for the Map view's "things to check" disclosure: the
-  version's placement findings, read after the list rather than with it.
+  Tests for the Map view's "things to check" disclosure: the version's
+  placement findings, read after the list rather than with it.
 
   A finding is worth an editor's time only if it can be acted on, so each row
   names the stops or the pattern it is about, says what the reader should do,
   and offers the action that does it. The distances and the wording are
-  literals from the spec's own rules, not values read back out of the code
-  under test: a pair 1.5 m apart is "5 ft apart" because that is the coarsest
+  literals, not values read back out of the code under test: a pair 1.5 m apart is "5 ft apart" because that is the coarsest
   distance an editor can act on, and a stop is "isn't served" when no pattern
   calls there.
 
@@ -19,9 +18,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapChecksTest do
   Every event names a row by its key, and a key the panel is not showing is
   refused rather than looked up. A forged key must not be able to select a stop
   the editor cannot see.
-
-  The focused command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_sa28 ELIXIR_ERL_OPTIONS="+S 4" mix test test/gtfs_planner_web/live/gtfs/stops_map_checks_test.exs`.
   """
   use GtfsPlannerWeb.ConnCase, async: false
 
@@ -64,7 +60,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapChecksTest do
     view
   end
 
-  # The seed's duplicate pair from the prototype: 1433 and 1434 carry the same
+  # The seed's duplicate pair: 1433 and 1434 carry the same
   # name and sit 1.5 m apart on the same line of longitude, so the distance
   # between them is a latitude difference alone. Both are on a pattern, so the
   # only finding the pair produces is the pair itself.
@@ -224,8 +220,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapChecksTest do
       |> element("#stops-map-checks-duplicate-1433-1434 button", "Review pair")
       |> render_click()
 
-      # The panel's heading is the selection an editor can see before step 30's
-      # edit panel takes it over.
+      # The panel's heading names the stop the editor chose.
       assert has_element?(view, "#stops-map-panel h2", "US 101 & SE 1st St")
       assert has_element?(view, "#stops-map-panel", "ID 1433")
 
@@ -277,9 +272,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapChecksTest do
 
       refute has_element?(first, "#stops-map-checks-duplicate-1433-1434")
 
-      # The disclosure itself goes with its last row, exactly as the prototype
-      # drops it: a summary reading "0 things to check" looks like a read that
-      # failed rather than a version an editor has just cleared.
+      # The disclosure itself goes with its last row: a summary reading "0 things
+      # to check" looks like a read that failed rather than a version an editor
+      # has just cleared.
       refute has_element?(first, "#stops-map-checks")
       assert has_element?(first, "#stops-map-list")
 

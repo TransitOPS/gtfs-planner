@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 //
-// The placement pin and add mode (28-stop-add-edit, step 25; EV-25).
+// The placement pin and add mode.
 //
 // The browser owns no decision here. The server says which mode the map is in
 // and where the pin is; the browser reports what a person did with the

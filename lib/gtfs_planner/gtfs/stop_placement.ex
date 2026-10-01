@@ -6,7 +6,7 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
   only defensible ones: is this a second copy of the stop I just placed, is it on
   the wrong side of the street, is it so far from the line that the shape is
   wrong rather than the stop. Each of those is a threshold, and the thresholds
-  live here and nowhere else (INV-3), so that "why does the editor warn at 5 m
+  live here and nowhere else, so that "why does the editor warn at 5 m
   and not at 6" has one answer.
 
   Every function takes points as `{lon, lat}`, the order the map hook sends
@@ -73,7 +73,7 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
   # renders both: a `dom_id` to address the row, a `kind` to style and test it,
   # copy an editor can act on, an `action` and whatever that action needs. The
   # action never carries a point — it names a stop or a line, and the caller
-  # re-derives the point from what the server holds (INV-4).
+  # re-derives the point from what the server holds.
   @type finding :: %{
           required(:kind) => atom(),
           required(:dom_id) => String.t(),
@@ -845,7 +845,7 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
         wrong_side: [{stop, line}],
         not_served: [stop]}
 
-  which is what step 26's disclosure renders: a pair of stops an editor has to
+  which is what the Map view's "things to check" disclosure renders: a pair of stops an editor has to
   call different, a stop waiting on the far pavement from the vehicle that
   serves it, and a stop nothing serves at all.
 

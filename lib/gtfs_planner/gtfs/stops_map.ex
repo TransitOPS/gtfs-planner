@@ -10,7 +10,7 @@ defmodule GtfsPlanner.Gtfs.StopsMap do
   changes rarely. The count is asserted in `stops_map_test.exs` at one pattern
   and at fifty, and measured again at 300 in the tagged budget test.
 
-  Lines come from saved geometry in the order the spec fixes (4.4): the
+  Lines come from saved geometry, in this order: the
   pattern's own `shape_id` when it has shape rows, otherwise the most common
   `shape_id` among its linked trips, otherwise a straight `:connector` through
   the pattern's located stops in position order. Nothing here calls an

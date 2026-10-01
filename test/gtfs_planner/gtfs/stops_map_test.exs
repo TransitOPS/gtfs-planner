@@ -8,7 +8,7 @@ defmodule GtfsPlanner.Gtfs.StopsMapTest do
   feed, so one pattern and fifty patterns must cost the same. Both counts are
   measured here through a `[:gtfs_planner, :repo, :query]` handler.
 
-  Lines come from saved geometry in the spec's order: the pattern's own shape,
+  Lines come from saved geometry in this order: the pattern's own shape,
   else the most common shape among its linked trips, else a straight connector
   through its located stops. A wrong order draws the wrong road.
 

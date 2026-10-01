@@ -17,7 +17,6 @@ defmodule GtfsPlanner.Gtfs.StopReferencesUsageTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.DeadheadTime
   alias GtfsPlanner.Gtfs.FlexService
   alias GtfsPlanner.Gtfs.JournalEntry

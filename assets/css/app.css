@@ -5280,8 +5280,8 @@ html:has(#schedules-grid) {
 
 /* The stop's name, once the map is close enough for it to be read. The white
    halo is what lets a name sit over a coloured route line and still be read,
-   which is why the prototype paints the outline behind the text rather than
-   adding a box. */
+   which is why the outline is painted behind the text rather than adding a
+   box. */
 .stop-map-label {
   position: absolute;
   left: 16px;

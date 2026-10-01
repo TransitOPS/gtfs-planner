@@ -1,8 +1,8 @@
 defmodule GtfsPlannerWeb.Gtfs.StopsMapCreatedTest do
   @moduledoc """
-  Merge evidence (EV-29) for the panel after a stop is created: which patterns
-  pass the new stop, the two stops it would fall between, the link into the
-  pattern editor, and the way back to an empty draft.
+  Tests for the panel after a stop is created: which patterns pass the new
+  stop, the two stops it would fall between, the link into the pattern editor,
+  and the way back to an empty draft.
 
   The fixture is one route running north up the line of longitude `-124.05310`
   with two patterns on it — `NB` toward Newport and `SB` toward Yaquina — and two
@@ -11,13 +11,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapCreatedTest do
   on the kerb a northbound vehicle stops at and on the far pavement of the
   southbound one, so exactly one of the two patterns may be offered.
 
-  The expectations are literals from the card's cases and from the fixture
-  rows: the pattern named is the fixture's own `NB`, the neighbours are the two
+  The expectations are literals from the fixture rows: the pattern named is the fixture's own `NB`, the neighbours are the two
   stop names written in, and the link's `add_stop` is the ID read back out of the
   row the create command wrote.
-
-  The focused command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_sa28 ELIXIR_ERL_OPTIONS="+S 4" mix test test/gtfs_planner_web/live/gtfs/stops_map_created_test.exs`.
   """
   use GtfsPlannerWeb.ConnCase, async: false
 
@@ -106,7 +102,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapCreatedTest do
       refute has_element?(view, "#stops-map-created-pattern-SB")
 
       # The link carries the stop, and lands on the pattern's stop list rather
-      # than its details: that is the task step 37 opens.
+      # than its details: that is the task `?task=stops` opens.
       assert has_element?(
                view,
                "#stops-map-created-pattern-NB a[href$='?task=stops&add_stop=#{created_id}']",

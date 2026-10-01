@@ -2,7 +2,7 @@ defmodule GtfsPlanner.Gtfs.StopPlacementTest do
   @moduledoc """
   The stop editor's placement judgements, as a table of literal cases.
 
-  These are the thresholds the whole placement UI is built on (INV-3), so each
+  These are the thresholds the whole placement UI is built on, so each
   one is checked either side of its boundary rather than at a comfortable
   distance from it. A threshold that drifts by a metre changes which stops an
   editor is warned about, and a test with round numbers would not notice.

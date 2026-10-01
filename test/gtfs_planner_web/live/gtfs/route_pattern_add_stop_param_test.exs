@@ -1,6 +1,6 @@
 defmodule GtfsPlannerWeb.Gtfs.RoutePatternAddStopParamTest do
   @moduledoc """
-  Merge evidence (EV-37) for `?task=stops&add_stop=<stop_id>`.
+  Tests for `?task=stops&add_stop=<stop_id>`.
 
   The Map view's created panel offers "Add it to a pattern", and that link is
   what brings an editor here: a stop was created, it needs to be on a route, and
@@ -19,11 +19,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAddStopParamTest do
       on a patch as well as on a mount, and a LiveView that staged on every
       params change would grow a list nobody asked for.
 
-  Staging is not saving: the existing Save and review applies it, and this step
-  asserts nothing about what that review does.
-
-  The focused command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_sa28 ELIXIR_ERL_OPTIONS="+S 4" mix test test/gtfs_planner_web/live/gtfs/route_pattern_add_stop_param_test.exs`.
+  Staging is not saving: the existing Save and review applies it, and these
+  tests assert nothing about what that review does.
   """
   use GtfsPlannerWeb.ConnCase, async: false
 
@@ -107,7 +104,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAddStopParamTest do
     "/gtfs/#{version.id}/routes/#{route.route_id}/patterns/#{pattern.route_pattern_id}?#{query}"
   end
 
-  defp staged(ctx, view) do
+  defp staged(_ctx, view) do
     :sys.get_state(view.pid).socket.assigns.staged_occurrences |> Enum.map(& &1.stop_id)
   end
 

@@ -10,8 +10,8 @@ defmodule GtfsPlanner.Gtfs.StopNaming do
   direction word that will not match the sign — because those are the mistakes
   that survive into a published feed and are expensive to find later.
 
-  Both are pure. Where a name comes from is a step 12 and step 27 question; what
-  makes a good one is here.
+  Both are pure. Where a name comes from — the reverse geocoder, the nearby
+  stops query — is the caller's concern; what makes a good one is here.
 
   The connector is a parameter rather than a constant because it varies by feed:
   "Main St & 3rd Ave" and "Main St at 3rd Ave" are both correct, and a version's
@@ -19,8 +19,7 @@ defmodule GtfsPlanner.Gtfs.StopNaming do
   """
 
   # The default when a version has no stops to learn from. " & " is what US
-  # transit feeds overwhelmingly use, and "On & Cross" is the spec's phrasing for
-  # the two-street form.
+  # transit feeds overwhelmingly use, and the two-street form reads "On & Cross".
   @default_connector " & "
 
   # How close an amenity has to be for its name to be worth offering as a place
@@ -92,8 +91,8 @@ defmodule GtfsPlanner.Gtfs.StopNaming do
   editor has asked for amenities.
 
   `neighbour_names` arrives already filtered. The radius that decides which stops
-  count as neighbours belongs with the query that finds them — a step 10 or 27
-  concern — so this function takes the names rather than the coordinates and
+  count as neighbours belongs with the query that finds them, in the Map view,
+  so this function takes the names rather than the coordinates and
   re-deciding the distance here would put a threshold in two places.
 
   The name is `nil` rather than a guess when reverse geocoding found nothing,
@@ -230,7 +229,7 @@ defmodule GtfsPlanner.Gtfs.StopNaming do
   A feed where every `stop_code` equals its `stop_id` has no sign numbering at
   all, which means a sign conflict cannot be resolved by the code and every stop
   needs a code chosen for it. A feed with a low share is doing sign numbering
-  properly, and step 12 can rely on the code to disambiguate.
+  properly, and a caller can rely on the code to disambiguate.
   """
   @spec code_is_id_share([%{stop_id: String.t(), stop_code: String.t() | nil}]) :: float()
   def code_is_id_share([]), do: 0.0

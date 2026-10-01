@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.StopEditingReplaceReviewTest do
   @moduledoc """
-  `StopEditing.replace_review/3` (EV-19, AC-18).
+  `StopEditing.replace_review/3`.
 
   Two things are under test and they are not the same thing. The **refusals**
   are the ones with teeth: each one is a state where carrying references across
@@ -43,7 +43,6 @@ defmodule GtfsPlanner.Gtfs.StopEditingReplaceReviewTest do
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Translation
-  alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
 
@@ -100,9 +99,9 @@ defmodule GtfsPlanner.Gtfs.StopEditingReplaceReviewTest do
       assert {:consecutive_pattern, [id]} = reason(reasons, :consecutive_pattern)
       assert id == pattern.id
 
-      # The spec's worked example: the same pattern, a replacement that is *not*
-      # adjacent, is allowed. An adjacency check that ignored `position` and
-      # compared IDs would refuse this one too.
+      # The same pattern, a replacement that is *not* adjacent, is allowed. An
+      # adjacency check that ignored `position` and compared IDs would refuse
+      # this one too.
       assert {:ok, _review} = review(fixture, "1433", "1500")
     end
 
@@ -583,7 +582,7 @@ defmodule GtfsPlanner.Gtfs.StopEditingReplaceReviewTest do
   # --- staging
 
   # The old stop and its two candidate replacements are seeded up front because
-  # almost every case needs them: 1391 is adjacent in the spec's example, 1500
+  # almost every case needs them: 1391 is adjacent in the pattern, 1500
   # is not, and the difference is the whole point of the adjacency rules.
   defp staged_fixture do
     unboxed(fn ->

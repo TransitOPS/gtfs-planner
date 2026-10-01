@@ -1,11 +1,11 @@
 defmodule GtfsPlanner.Gtfs.StopEditingUpdateTest do
   @moduledoc """
-  `StopEditing.update_stop/4` against a real database (EV-14, AC-13).
+  `StopEditing.update_stop/4` against a real database.
 
   What is under test is the write boundary, not the update: which fields the
   editor owns, which two are not theirs at all, how far a stop may be moved
-  before the command hands the decision back, and — the part INV-2 exists for —
-  that there is no committed change without a matching audit entry.
+  before the command hands the decision back, and that there is no committed
+  change without a matching audit entry.
 
   Every refused case asserts that nothing was written. A move that answers
   `{:review_required, :review}` and still moves the stop is not a review, it is
@@ -33,7 +33,6 @@ defmodule GtfsPlanner.Gtfs.StopEditingUpdateTest do
   alias GtfsPlanner.Gtfs.StopEditing
   alias GtfsPlanner.Gtfs.StopPlacement
   alias GtfsPlanner.Gtfs.StopTime
-  alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
 
@@ -151,9 +150,9 @@ defmodule GtfsPlanner.Gtfs.StopEditingUpdateTest do
 
       assert {:ok, updated} = update_stop(stop, %{"stop_id" => "9999"}, fixture.audit)
 
-      # INV-5. The feed, the rider information and every downstream tool are
-      # keyed on this ID; a draft that carries a different one is a bug in the
-      # form, not an instruction.
+      # The stop ID is not the editor's to change. The feed, the rider
+      # information and every downstream tool are keyed on this ID; a draft that
+      # carries a different one is a bug in the form, not an instruction.
       assert updated.stop_id == "1434"
       assert reloaded(fixture, stop).stop_id == "1434"
     end

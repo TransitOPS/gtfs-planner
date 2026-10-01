@@ -32,8 +32,7 @@ defmodule GtfsPlanner.Support.StopEditingCollisionRunner do
   asserts it arrives as a changeset error on `:stop_id` rather than a collision —
   the other branch of the same `Repo.insert/1` match. Between them both outcomes
   of a rejected insert are covered; the narrow window in which the index fires
-  for a *generated* ID is not, and is recorded as a residual risk in the step
-  learning.
+  for a *generated* ID is not, and remains a residual risk.
 
   ## Why the state lives in the process dictionary
 

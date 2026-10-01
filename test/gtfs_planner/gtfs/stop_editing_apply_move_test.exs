@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.StopEditingApplyMoveTest do
   @moduledoc """
-  `StopEditing.apply_move/4` (EV-17, AC-16).
+  `StopEditing.apply_move/4`.
 
   A move is the one editor command that can leave the map disagreeing with
   itself, so what is under test is mostly what the command *refuses* and what
@@ -46,7 +46,6 @@ defmodule GtfsPlanner.Gtfs.StopEditingApplyMoveTest do
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.Trip
-  alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
 
@@ -101,7 +100,8 @@ defmodule GtfsPlanner.Gtfs.StopEditingApplyMoveTest do
       assert result.stop.stop_lon == Decimal.from_float(@stop_lon)
 
       # P was redrawn and Q was not. Reported as UUIDs so the caller can act
-      # on them; the reasons are the review's, already computed in step 14.
+      # on them; the reasons are the review's, already computed by
+      # `move_review/3`.
       assert [p] = result.redrawn
       assert p == pattern_id(fixture, "P")
       assert [q] = result.stale
@@ -523,13 +523,6 @@ defmodule GtfsPlanner.Gtfs.StopEditingApplyMoveTest do
 
   defp pattern(fixture, route_pattern_id) do
     unboxed(fn -> pattern_row(fixture, route_pattern_id) end)
-  end
-
-  defp stop_lat(fixture) do
-    unboxed(fn ->
-      Repo.one!(from(s in Stop, where: s.id == ^fixture.stops["1434"].id, select: s.stop_lat))
-      |> Decimal.to_float()
-    end)
   end
 
   # The stop's stored position, read back from the database rather than from

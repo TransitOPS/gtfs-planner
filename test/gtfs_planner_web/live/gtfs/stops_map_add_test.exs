@@ -1,11 +1,11 @@
 defmodule GtfsPlannerWeb.Gtfs.StopsMapAddTest do
   @moduledoc """
-  Merge evidence (EV-28) for the Map view's add flow: placing a draft, the
-  reverse geocode that names it, what the placement deserves to be told, the
-  validation, and the audited create.
+  Tests for the Map view's add flow: placing a draft, the reverse geocode that
+  names it, what the placement deserves to be told, the validation, and the
+  audited create.
 
-  The expectations are literals from the card's own cases and from the fixture
-  rows, never values read back out of the code under test. The geometry is
+  The expectations are literals from the fixture rows, never values read back
+  out of the code under test. The geometry is
   worked out on paper: the shape runs north up the line of longitude
   `-124.05310`, so a point `0.000101` degrees east of it is eight metres east,
   and a point `0.0000505` degrees west of it is four metres west — the far
@@ -18,9 +18,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapAddTest do
   form with it. And the create is a command: it authorizes, allocates an ID and
   audits in one transaction, so "a stop was created" is asserted from the row
   and its change log rather than from the panel saying so.
-
-  The focused command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_sa28 ELIXIR_ERL_OPTIONS="+S 4" mix test test/gtfs_planner_web/live/gtfs/stops_map_add_test.exs`.
   """
   use GtfsPlannerWeb.ConnCase, async: false
 
@@ -128,7 +125,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapAddTest do
     )
   end
 
-  # The prototype's pair: 1433 and 1434 carry the same name a metre and a half
+  # The seed's pair: 1433 and 1434 carry the same name a metre and a half
   # apart, and 1434 is the one a draft three metres north of it duplicates.
   defp duplicate_stop(ctx, pattern) do
     stop_fixture(ctx.organization.id, ctx.version.id, %{
@@ -470,8 +467,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapAddTest do
       assert_in_delta Decimal.to_float(stop.stop_lat), 44.6370, 0.00001
       assert_in_delta Decimal.to_float(stop.stop_lon), east_of_line(8.0), 0.00001
 
-      # INV-2: no committed stop without its audit entry, in the same
-      # transaction.
+      # No committed stop without its audit entry, in the same transaction.
       assert [log] = audit_logs(ctx)
       assert log.entity_type == "stop"
       assert log.action == "created"

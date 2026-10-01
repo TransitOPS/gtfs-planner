@@ -42,7 +42,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   server's to answer: `place` and `pin_moved` both write `placement`, and the
   pin the browser draws is the one `push_map_mode/1` last echoed. A refused
   write therefore has nothing behind it — the next echo is the position the
-  server still holds, and nothing was saved to leave behind (INV-4).
+  server still holds, and nothing was saved to leave behind.
   """
 
   use GtfsPlannerWeb, :live_view
@@ -83,29 +83,28 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   # Lines are simplified to this tolerance before they reach the browser. The
-  # step-10 budget measured 2.0 m dropping 77% of the points at a 10,000-stop
-  # envelope, and a point that does not move the road on screen is a point the
-  # editor cannot see. The spec's own rule for the tolerance is the same one:
-  # what an editor can see on the map is the tolerance applied.
+  # payload budget test measured 2.0 m dropping 77% of the points at a
+  # 10,000-stop envelope, and a point that does not move the road on screen is a
+  # point the editor cannot see. The rule for the tolerance is the same one: what
+  # an editor can see on the map is the tolerance applied.
   @line_tolerance_m 2.0
 
   # The browse panel is a working list, not a search result: this is how many
   # stops it will show before it stops being a list an editor can read. The
-  # prototype uses forty; the count is here rather than in the panel because it
-  # is a decision about the model, not about the markup.
+  # count is here rather than in the panel because it is a decision about the
+  # model, not about the markup.
   @panel_limit 40
 
   # A search is an answer, not a list to read: the browse panel's forty rows say
   # "there is more here" and a result list does not. Six stops and four places
-  # are the counts the prototype shows, and they are chosen so a screenful of
-  # them still fits at 390 px.
+  # are chosen so a screenful of them still fits at 390 px.
   @search_stop_limit 6
   @search_place_limit 4
 
   # How far the nearest stops the replace panel offers are looked for, and how
   # many it shows. A replace is a question about the same place, so the radius
-  # is the one a rider would call the same place; the count is the prototype's
-  # and keeps the list inside one screen at 390 px.
+  # is the one a rider would call the same place; the count keeps the list
+  # inside one screen at 390 px.
   @landmark_metres 90.0
   @replace_candidate_metres 260.0
   @replace_candidate_limit 4
@@ -224,7 +223,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
   # Everything the make-station panel owns. The form is a `to_form/2` over the
   # two fields the command casts, so a value the browser invents beyond them
-  # cannot reach it (INV-5).
+  # cannot reach it.
   defp assign_station_state(socket) do
     socket
     |> assign(:station_draft, nil)
@@ -557,10 +556,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   end
 
   def handle_async(:edit_save, {:ok, {:review_required, _band}}, socket) do
-    # The command refused to write and asked the question step 31 answers: a
-    # move past the correction band changes which pattern lines run past the
-    # stop, so it is reviewed rather than saved. The draft is kept exactly as
-    # typed, because the editor's next action is to answer, not to retype.
+    # The command refused to write and asked the question the move review
+    # answers: a move past the correction band changes which pattern lines run
+    # past the stop, so it is reviewed rather than saved. The draft is kept
+    # exactly as typed, because the editor's next action is to answer, not to
+    # retype.
     {:noreply, start_move_review(socket)}
   end
 
@@ -900,8 +900,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
   # The command is the editor's answer and the panel sends only that. The review
   # that produced the fingerprint stays in the assign, so a `fingerprint` posted
-  # by the browser cannot name a deletion the editor was never shown (the step-31
-  # rule, applied to the delete).
+  # by the browser cannot name a deletion the editor was never shown (the rule
+  # `start_apply_move/1` follows, applied to the delete).
   defp start_delete(socket) do
     with %{delete_review: review} when is_map(review) <- socket.assigns,
          %{uuid: uuid} <- socket.assigns.edit_stop do
@@ -1014,7 +1014,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     )
   end
 
-  # The write is the command's own transaction (INV-2): the station and the bay
+  # The write is the command's own transaction: the station and the bay
   # that names it are written together, or neither is.
   defp start_make_station(socket, params) do
     draft = station_draft_merge(socket.assigns.station_draft || %{}, params)
@@ -1362,7 +1362,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # Only the fields the panel owns are read out of the form, and they are mapped
   # to the names `Stop.editor_changeset/2` casts. A stop ID, a zone, a parent or
   # a location type posted alongside them is not in this map, so it cannot reach
-  # the command even if the command were to read it (INV-5).
+  # the command even if the command were to read it.
   # --- moving ----------------------------------------------------------------
 
   # A pin report while the edit panel is open is a move, not a placement: the
@@ -1745,7 +1745,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # "Open <stop>" puts the editor in front of the stop the draft duplicates,
   # without throwing the draft away: the decision is whether this is a second
   # copy of that stop, and that decision needs both stops in view at once.
-  # Step 30 turns the selection into that stop's edit panel.
   def handle_event("open_duplicate", %{"key" => key}, socket) do
     with warning when not is_nil(warning) <-
            Enum.find(add_warnings(socket.assigns), &duplicate_action?(&1, key)),
@@ -1834,8 +1833,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     cond do
       # The replace panel is a question about which stop to keep, so a click on
       # the map answers that question instead of opening the stop that was
-      # clicked. The gate is the panel being open, not the model: the editor was
-      # told any stop on the map can be chosen.
+      # clicked. What decides it is the panel being open, not the model: the
+      # editor was told any stop on the map can be chosen.
       socket.assigns.replace_candidates != [] and stop_in_model?(socket.assigns, stop_id) ->
         {:noreply, choose_replace(socket, stop_id)}
 
@@ -1936,9 +1935,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     do: {:noreply, assign(socket, :checks_open, not socket.assigns.checks_open)}
 
   # "Review pair" and "Show stop" both name a stop, so both do the same thing
-  # here: the panel's heading says which stop, and the map goes to it. Step 33
-  # replaces a duplicate's action with the replace flow, which is a panel of
-  # its own rather than a focus.
+  # here: the panel's heading says which stop, and the map goes to it.
   def handle_event("review_check", %{"key" => key}, socket) do
     case find_check(socket.assigns, key) do
       nil ->
@@ -2067,7 +2064,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     end
   end
 
-  # The wording the prototype measures a finding in: feet to the nearest five
+  # The wording a finding is measured in: feet to the nearest five
   # under a thousand of them, miles with two decimals beyond. A pair a metre and
   # a half apart is "5 ft apart" because that is the coarsest distance an
   # editor can act on.
@@ -2089,7 +2086,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # --- the edit panel -------------------------------------------------------
 
   # A stop ID this version does not hold is refused rather than looked up. The
-  # list, the search and `?stop=` all arrive here, so the model is the one gate:
+  # list, the search and `?stop=` all arrive here, so the model is the one check:
   # an ID outside it would open a panel for a stop the editor cannot see listed.
   defp stop_in_model?(%{model: nil}, _stop_id), do: false
 
@@ -3508,8 +3505,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   defp station_count(nil), do: 0
   defp station_count(%{stops: stops}), do: Enum.count(stops, &(&1.location_type == 1))
 
-  # A chosen search result takes over the panel's heading. Step 30 replaces
-  # this with the edit panel's own heading; until then the selection has to be
+  # A chosen stop takes over the browse panel's heading: the selection has to be
   # visible somewhere, and the heading is the one place the editor is already
   # looking.
   defp panel_title(%{selected_stop_id: stop_id} = assigns) when is_binary(stop_id) do

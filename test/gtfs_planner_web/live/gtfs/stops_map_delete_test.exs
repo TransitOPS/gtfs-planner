@@ -1,6 +1,6 @@
 defmodule GtfsPlannerWeb.Gtfs.StopsMapDeleteTest do
   @moduledoc """
-  Merge evidence (EV-32) for the delete panels.
+  Tests for the delete panels.
 
   What is claimed here is the shape of the answer, not just the write: a stop a
   timetable depends on is refused with every dependent listed and a link to each
@@ -15,11 +15,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapDeleteTest do
   shows the reference that arrived, because a refusal that still showed the old
   list would ask the editor the same question about facts that no longer hold.
 
-  The distances and counts are literals the card names, and the seeds are
-  written through the same tables the commands read.
-
-  The focused command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_sa28 ELIXIR_ERL_OPTIONS="+S 4" mix test test/gtfs_planner_web/live/gtfs/stops_map_delete_test.exs`.
+  The distances and counts are literals, and the seeds are written through the
+  same tables the commands read.
   """
   use GtfsPlannerWeb.ConnCase, async: false
 

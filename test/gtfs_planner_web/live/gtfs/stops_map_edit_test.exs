@@ -1,20 +1,16 @@
 defmodule GtfsPlannerWeb.Gtfs.StopsMapEditTest do
   @moduledoc """
-  Merge evidence (EV-30) for the stop edit panel: opening a stop from the three
-  ways in, its fields, the read-only fare zone, what else uses it, the dirty
-  footer, the unsaved-changes guard on every exit, a stale save and a failed
-  save.
+  Tests for the stop edit panel: opening a stop from the three ways in, its
+  fields, the read-only fare zone, what else uses it, the dirty footer, the
+  unsaved-changes guard on every exit, a stale save and a failed save.
 
-  The expectations are literals from the card's cases and from the fixture rows:
-  the stop names, IDs, zone and sign number are the ones written in below, and
-  the other editor's email is the one the conflicting write was audited with.
+  The expectations are literals from the fixture rows: the stop names, IDs, zone
+  and sign number are the ones written in below, and the other editor's email is
+  the one the conflicting write was audited with.
 
   The write path is exercised through the real command rather than by poking
   assigns, so a case that passes here is a case where the panel, the LiveView and
   `StopEditing.update_stop/4` agree — which is the whole claim.
-
-  The focused command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_sa28 ELIXIR_ERL_OPTIONS="+S 4" mix test test/gtfs_planner_web/live/gtfs/stops_map_edit_test.exs`.
   """
   use GtfsPlannerWeb.ConnCase, async: false
 
@@ -125,8 +121,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapEditTest do
              |> element("#stops-map-edit-panel a[href$='/settings/fares']")
              |> render() =~ "Settings"
 
-      # The zone belongs to Settings › Fares (AC-STOP-023), so a control here
-      # would offer a choice this page cannot honour.
+      # The zone belongs to Settings › Fares, so a control here would offer a
+      # choice this page cannot honour.
       refute has_element?(view, "#stops-map-edit-zone select")
       refute has_element?(view, "#stops-map-edit-panel select[name*='zone']")
     end
@@ -137,8 +133,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapEditTest do
       view = open_map(ctx, stop: "1531")
 
       assert has_element?(view, "#stops-map-edit-panel", "Not served")
-      # Context decision 4: there is no export change in this package, so the
-      # prototype's checkbox would be a control that changes nothing.
+      # The editor does not change the export, so a keep-in-feed checkbox would
+      # be a control that changes nothing.
       refute has_element?(view, "#stops-map-keep-in-feed")
       refute has_element?(view, "input[name*='keep']")
     end
@@ -288,7 +284,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapEditTest do
       stop = Repo.get_by!(Stop, stop_id: "1434")
       assert stop.stop_desc == "By the post office"
 
-      # The audit entry is written in the same transaction (INV-2), and the
+      # The audit entry is written in the same transaction, and the
       # panel reloads the model so the list and the map show the new row.
       log =
         Repo.all(
@@ -410,8 +406,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapEditTest do
       view = open_map(ctx, stop: "1434")
 
       # Served by a pattern, so a move beyond the correction band is a review
-      # rather than a correction. Step 31 replaced this panel's message with the
-      # review itself; stops_map_move_test.exs carries the review's own cases.
+      # rather than a correction. The review itself opens here;
+      # stops_map_move_test.exs carries the review's own cases.
       view
       |> form("#stops-map-edit-form", %{"stop" => %{"stop_lat" => "44.63661"}})
       |> render_submit()

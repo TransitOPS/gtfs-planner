@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.StopEditingMoveReviewTest do
   @moduledoc """
-  `StopEditing.move_review/3` and `Alignments.suggest_stop_pairs/4` (EV-15, AC-14).
+  `StopEditing.move_review/3` and `Alignments.suggest_stop_pairs/4`.
 
   The review is the step where an editor finds out what a drag will cost, so
   what is under test is that it is *complete* and *honest*: every pattern that
@@ -47,7 +47,6 @@ defmodule GtfsPlanner.Gtfs.StopEditingMoveReviewTest do
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Trip
-  alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
 

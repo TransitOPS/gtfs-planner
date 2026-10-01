@@ -1,12 +1,12 @@
 defmodule GtfsPlanner.Gtfs.StopEditing do
   @moduledoc """
-  The commands the stop editor runs, each one an audited transaction (INV-2).
+  The commands the stop editor runs, each one an audited transaction.
 
   Every write to a stop in this app goes through a function in this module, not
-  through a changeset in a LiveView. That is what makes INV-2 checkable rather
-  than aspirational: the audit entry and the mutation are written by the same
-  closure, so there is no interleaving in which a stop changed and nobody wrote
-  down who changed it.
+  through a changeset in a LiveView. That is what makes the audit guarantee
+  checkable rather than aspirational: the audit entry and the mutation are
+  written by the same closure, so there is no interleaving in which a stop
+  changed and nobody wrote down who changed it.
 
   The shape follows `GtfsPlanner.Gtfs.Routes`, which is the established command
   module in this codebase and the one the stop editor's history view already
@@ -60,7 +60,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   # route create, so it gets the same budget rather than a number invented here.
   @attempts 3
 
-  # The fields no surface in this package may write (INV-5). `stop_id` is the
+  # The fields no stop editor surface may write. `stop_id` is the
   # key the feed, the rider information and every downstream tool is joined on;
   # `zone_id` belongs to Settings › Fares; the rest are structure rather than
   # content — moving a stop between types, or re-parenting it onto another
@@ -77,11 +77,11 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
 
   # The reference kinds that mean "a rider can be at this stop". Read through
   # `StopReferences.serving?/2` rather than re-listed as queries here, so the
-  # list of reference columns stays the one list (INV-1).
+  # list of reference columns stays the one list.
   @serving_kinds [:route_pattern_stops, :stop_times, :flex_hubs, :flex_first, :flex_last]
 
   @doc """
-  Saves an editor's changes to an existing stop, audited in the same transaction (AC-13).
+  Saves an editor's changes to an existing stop, audited in the same transaction.
 
   `loaded_updated_at` is the `updated_at` the form was rendered from. If the row
   has moved on since, the answer is `{:error, :stale}` and nothing is written:
@@ -92,7 +92,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
 
     * `{:review_required, :review | :far}` — the coordinates moved further than
       the correction band allows for a stop something serves. The stop is
-      unchanged; step 14's review and step 16's `apply_move/4` take it from
+      unchanged; `move_review/3` and `apply_move/4` take it from
       here. This is deliberately a top-level answer rather than an error: it is
       the next stage of the flow, not a failure.
     * `{:error, :stale | :forbidden | :not_found | :busy | :failed_audit}` — as
@@ -100,7 +100,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
     * `{:error, %Ecto.Changeset{}}` — the draft is invalid.
 
   How far a move may go is `StopPlacement.move_band/2`'s question, not this
-  command's (INV-3): a stop nothing serves is a correction at any distance,
+  command's: a stop nothing serves is a correction at any distance,
   because there is no timetable to contradict, and a served stop is a correction
   to eight metres and a review beyond that.
   """
@@ -130,7 +130,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   def update_stop(_stop_uuid, _attrs, _loaded_updated_at, _audit), do: {:error, :invalid_input}
 
   defp apply_stop_update(stop_uuid, attrs, loaded_updated_at, audit) do
-    # Active organization editors only (AC-12), rechecked inside the transaction
+    # Active organization editors only, rechecked inside the transaction
     # so a denied actor writes nothing. The membership row is locked before the
     # version and the stop, which is what a concurrent deactivation waits on.
     Authorization.lock_editor!(audit)
@@ -183,7 +183,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   # comparing it against the struct an insert returned would report every save
   # as stale. That also means two saves inside one second are not told apart by
   # this check; the `FOR UPDATE` on the stop row is what stops them interleaving,
-  # and this check is what tells the editor. Recorded in the step learning.
+  # and this check is what tells the editor.
   defp current?(current, loaded) do
     case load_timestamp(loaded) do
       {:ok, loaded} ->
@@ -283,7 +283,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   end
 
   @doc """
-  Answers "what would moving this stop do", without writing anything (AC-14).
+  Answers "what would moving this stop do", without writing anything.
 
   Read-only in the strict sense: the routing calls happen first and outside any
   transaction, and the reads that follow take no row locks. A review is a
@@ -460,7 +460,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
     )
   end
 
-  # The order matters and follows the spec: a pattern with nothing to draw is
+  # The order matters: a pattern with nothing to draw is
   # `:no_line` whatever else is true, a pair that could not be routed says so
   # rather than blaming the data, and only then does a section that is still
   # unresolved count as blocked.
@@ -678,7 +678,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   end
 
   @doc """
-  Applies a reviewed move, audited in the same transaction (AC-16).
+  Applies a reviewed move, audited in the same transaction.
 
   `attrs` is the editor's draft and `options` is what the review it was
   answered against produced:
@@ -843,9 +843,9 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
     audit!(stop, audit, "updated", attrs)
   end
 
-  # `:redraw` hands the geometry to step 15; `:keep` writes the coordinates
-  # and nothing else, so every pattern the review listed is stale by
-  # definition — the editor has decided the lines stay as they are.
+  # `:redraw` hands the geometry to `Alignments.redraw_stop_pairs!/3`; `:keep`
+  # writes the coordinates and nothing else, so every pattern the review listed
+  # is stale by definition — the editor has decided the lines stay as they are.
   defp redraw_after_move(moved, reviewed, options, audit) do
     case Map.get(options, :lines, :keep) do
       :redraw ->
@@ -884,7 +884,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   end
 
   @doc """
-  Answers "what would deleting this stop remove", without writing (AC-17).
+  Answers "what would deleting this stop remove", without writing.
 
   Read-only in the same sense `move_review/3` is: it takes no row locks, so
   asking the question does not serialize behind another editor's save.
@@ -948,7 +948,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
 
   @doc """
   Deletes a stop and exactly the descriptive rows `delete_review/2` listed,
-  audited in the same transaction (AC-17).
+  audited in the same transaction.
 
   Answers `{:ok, %{removed: %{atom() => non_neg_integer()}}}`, or one of
 
@@ -1001,8 +1001,8 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   # before the stop row, in the same transaction, so a deleted stop always has
   # the record of what went with it — and never has one while rows still name it,
   # which is what a cascade would do and what makes a cascade unreviewable.
-  # `INV-2`: the audit is written in the same transaction, so a deleted stop with
-  # no history entry rolls back.
+  # The audit is written in the same transaction, so a deleted stop with no
+  # history entry rolls back.
   defp apply_delete(stop, usage, fingerprint, audit) do
     if matches_fingerprint?(fingerprint, delete_fingerprint(stop, usage, audit)) do
       removed = Enum.reduce(usage.descriptive, %{}, &delete_descriptive_item(&1, &2, stop))
@@ -1038,7 +1038,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   end
 
   @doc """
-  Answers "what would replacing the old stop with the new one change" (AC-18).
+  Answers "what would replacing the old stop with the new one change".
 
   Read-only, like `delete_review/2` and `move_review/3`: no locks, no writes, so
   asking does not serialize behind another editor's save.
@@ -1062,9 +1062,8 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
       rather than listed because a trip has no ID to hand back.
 
   Both adjacency checks read `position` and `stop_sequence` rather than ID
-  order, and both are the *refusal* the spec's worked example describes:
-  Route 12 visiting `…, 1433, 1391, …` may replace 1433 with 1434 but not with
-  1391.
+  order. For example, Route 12 visiting `…, 1433, 1391, …` may replace 1433 with
+  1434 but not with 1391.
 
   ## The effects
 
@@ -1080,10 +1079,10 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   not a change**: the existing row is kept and the old one deleted, per
   `:rewrite_keep_existing`. Which rows those are is decided by the entry's own
   `collision_key`, read off the catalog — so this function and
-  `replace_stop/4` never name a table (CR-1). `:rekey_segments` drops a segment
+  `replace_stop/4` never name a table. `:rekey_segments` drops a segment
   that would become `(new, new)` for the same reason.
 
-  `:refuse` entries are the station rows from step 17: a replace is refused
+  `:refuse` entries are the station rows: a replace is refused
   outright while a pathway, a level, a journal entry or an editing status
   exists, because moving references onto a different stop would orphan the
   drawing they describe.
@@ -1264,7 +1263,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
 
   # The rows a rewrite would put on top of a row the replacement already has.
   # `collision_key` is the entry's own uniqueness columns, so this is one
-  # grouped query per entry and never a table name (CR-1). A row whose
+  # grouped query per entry and never a table name. A row whose
   # rewritten key matches an existing row is dropped; the existing row is kept.
   defp collision_drop(ref, row, old, new) when is_map(row) do
     cond do
@@ -1452,12 +1451,12 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   end
 
   @doc """
-  Replaces the old stop with the new one across every reference (AC-19).
+  Replaces the old stop with the new one across every reference.
 
   `options` carries `:fingerprint` — the one `replace_review/3` returned — and
   `:delete_old`, which removes the old stop once its references have moved.
   Every reference kind's own `replace` rule from `StopReferences.all/0` is
-  applied, so this function never names a table (CR-1) and a new reference kind
+  applied, so this function never names a table and a new reference kind
   becomes replaceable by adding one entry to that list.
 
   Answers `{:ok, %{new: Stop.t(), old: Stop.t() | nil, replaced: map()}}`,
@@ -1482,12 +1481,12 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   successful apply and then refuses it.
 
   The collision test is `collision?/4`, the review's own, so the two halves
-  cannot disagree about which rows collide. That carries step 18's two findings
-  with it verbatim: a `nil` in a key column becomes `is_nil/1`, and there is
-  **no** prefilter on the ref's own column, because a deadhead row stores
-  `stop:<id>` rather than the bare ID. The collision keys come from the
+  cannot disagree about which rows collide. That carries the review's two
+  collision rules with it verbatim: a `nil` in a key column becomes `is_nil/1`,
+  and there is **no** prefilter on the ref's own column, because a deadhead row
+  stores `stop:<id>` rather than the bare ID. The collision keys come from the
   catalog's own `collision_key`, which is the authoritative list — including
-  `fare_leg_join_rules`, whose key the step's worked example left out.
+  `fare_leg_join_rules`, whose key is easy to leave out.
   """
   @spec replace_stop(Ecto.UUID.t(), Ecto.UUID.t(), map(), AuditContext.t()) ::
           {:ok, map()}
@@ -1546,7 +1545,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   # `:delete_old` is the editor's own decision, not a rule: with it false the
   # old stop stays in the feed and simply stops being served, which is what
   # "keep it for now, merge it later" means. The audit entry is written before
-  # the delete, so a stop that was removed still has the record of why (INV-2).
+  # the delete, so a stop that was removed still has the record of why.
   defp maybe_delete_old(old, options) do
     if Map.get(options, :delete_old, false) do
       case Repo.delete(old) do
@@ -1749,7 +1748,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   end
 
   @doc """
-  Makes a stop the first bay of a new station (AC-21).
+  Makes a stop the first bay of a new station.
 
   The stop keeps its own GTFS ID and everything that names it — its stop times,
   its transfers, its place in every pattern. A station is created beside it at
@@ -1772,7 +1771,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
     * `{:error, :forbidden | :not_found | :busy | :failed_audit | :invalid_station}` —
       as for `create_stop/2`, plus a station name that yields no ID.
 
-  Both stops are written in one transaction with both audit entries (INV-2): a
+  Both stops are written in one transaction with both audit entries: a
   bay whose station was rolled back would be a bay naming nothing.
   """
   @spec make_station(Ecto.UUID.t(), map(), AuditContext.t()) ::
@@ -1918,7 +1917,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   defp bay_name(name, platform_code), do: "#{name}, Bay #{platform_code}"
 
   @doc """
-  Creates a stop in a version, audited in the same transaction (AC-12).
+  Creates a stop in a version, audited in the same transaction.
 
   `attrs` is the editor's draft. A blank or absent `stop_id` is filled by the
   version's ID rule; anything the editor typed is kept as typed.
@@ -2129,7 +2128,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
 
   def last_change(_organization_id, _gtfs_version_id, _stop_uuid), do: nil
 
-  # Mutation and audit commit together (INV-2). An unrecordable audit rolls the
+  # Mutation and audit commit together. An unrecordable audit rolls the
   # whole closure back, so there is no committed stop without its history entry.
   # The entity type is an atom: `Gtfs.record_change_in_transaction/5` calls
   # `Atom.to_string/1` on it, matching how `Routes` audits a route.

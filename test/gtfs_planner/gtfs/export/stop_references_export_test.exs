@@ -1,4 +1,4 @@
-# Step 020 — Prove the export has no dangling stop references (EV-21)
+# The export has no dangling stop references after the stop editor's commands
 #
 # Production-composition test: the real `StopEditing` commands, then the real
 # export run's `Worker.build/4`, then the zip's own text files parsed here. The
@@ -24,7 +24,6 @@ defmodule GtfsPlanner.Gtfs.Export.StopReferencesExportTest do
   alias GtfsPlanner.Gtfs.StopArea
   alias GtfsPlanner.Gtfs.StopEditing
   alias GtfsPlanner.Gtfs.Translation
-  alias GtfsPlanner.Organizations
   alias GtfsPlanner.Repo
 
   @actor %{id: Ecto.UUID.generate(), email: "stop-refs-export@example.com"}
@@ -81,8 +80,8 @@ defmodule GtfsPlanner.Gtfs.Export.StopReferencesExportTest do
     fixture = seed_network()
 
     # S9 carries only descriptive rows, which is what a delete removes; a stop
-    # with a stop time or a pattern occurrence is refused instead (AC-17), and
-    # the command tests cover that.
+    # with a stop time or a pattern occurrence is refused instead, and the
+    # command tests cover that.
     review = StopEditing.delete_review(stop_id(fixture, "S9").id, fixture.audit)
     assert {:ok, delete_review} = review
 

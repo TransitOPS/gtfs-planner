@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.StopPlacementChecksTest do
   @moduledoc """
-  The version-wide placement checks, as a table of literal cases (EV-12, AC-11).
+  The version-wide placement checks, as a table of literal cases.
 
   `version_checks/1` is what the map's checks disclosure lists, so these cases are
   written as the rows an editor would read: a pair that is or is not a duplicate,

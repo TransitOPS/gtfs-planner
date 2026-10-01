@@ -110,8 +110,7 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
 
   @vias [:string, :array, :fk_uuid]
 
-  # Order follows the reference table in the spec's Architecture 4.3: service and
-  # station rows first, then the descriptive rows, then history.
+  # Service and station rows first, then the descriptive rows, then history.
   @all [
     %{
       key: :stop_times,
@@ -417,8 +416,8 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
   collide — a table whose only unique index is the row's own id, or one where
   the rewritten column is not part of any index.
 
-  The list lives here rather than in the replace command so CR-1 holds: the
-  commands read it off the entry and never name a table. The catalog test
+  The list lives here rather than in the replace command so the commands read
+  it off the entry and never name a table. The catalog test
   proves each list is a real unique index on that table, so the two cannot
   drift.
   """
@@ -762,7 +761,7 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
   # In any real deployment every organization has a route "1", so the join
   # fanned out once per matching row in the whole table: `usage/3` reported a
   # count of 4 beside a list of a hundred duplicates, and anything that summed
-  # the details — the step 14 move review's weekday figure — was off by the
+  # the details — the move review's weekday figure — was off by the
   # size of the database. Found by the review, not by a test of this module.
   defp detail_query(%{key: :route_pattern_stops} = ref, stop) do
     ref

@@ -1,8 +1,7 @@
 defmodule GtfsPlannerWeb.Gtfs.StopsMapSearchTest do
   @moduledoc """
-  Merge evidence (EV-26) for the Map view's search: stops by name or ID in the
-  browse panel, and biased address autocomplete in both the browse panel and add
-  mode.
+  Tests for the Map view's search: stops by name or ID in the browse panel, and
+  biased address autocomplete in both the browse panel and add mode.
 
   Two things have to hold at once, and they pull against each other. Stop search
   is this version's own data and must keep working when the address service does
@@ -18,9 +17,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapSearchTest do
   mode are unchanged by how the editor got there. The expected points below are
   literals from the fixture rows and the mock's result, not values read back out
   of the code under test.
-
-  The focused command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_sa28 ELIXIR_ERL_OPTIONS="+S 4" mix test test/gtfs_planner_web/live/gtfs/stops_map_search_test.exs`.
   """
   use GtfsPlannerWeb.ConnCase, async: false
 
@@ -195,7 +191,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapSearchTest do
 
       view |> element("#stops-map-row-1434") |> render_click()
 
-      # Step 30 put the editor behind every row, so choosing a result opens the
+      # The editor is behind every row, so choosing a result opens the
       # editor for that stop; the heading it has to carry is the one that says
       # which stop this is.
       assert view |> element("#stops-map-edit-panel") |> render() =~ "Stop · ID 1434"

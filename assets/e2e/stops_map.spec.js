@@ -1,4 +1,7 @@
-// Stops Map browser journeys (28-stop-add-edit, step 22 onward; EV-23..EV-38).
+// Stops Map browser journeys: the shell, the drawn map, the placement pin,
+// search, the version checks, add, edit, move, delete, replace and make-station,
+// the entry points from the stop list and the stop page, and one journey across
+// them.
 //
 // Every state this file measures is the committed browser seed
 // (`test/support/browser_seed.exs`, user 8) rendered through the real routes:
@@ -9,14 +12,14 @@
 // the stops-map fixture instead of whichever version the organization opens by
 // default.
 //
-// The `@seed` case is the gate for the seed itself: it signs in, opens the
-// Stops & stations list and proves the seeded stops are there with the names and
-// types the later steps' fixtures name. It depends only on routes that already
-// exist, so a failure here is a seed failure and not a Map view failure.
+// The `@seed` case checks the seed itself: it signs in, opens the Stops &
+// stations list and proves the seeded stops are there with the names and types
+// the later cases' fixtures name. It depends only on routes that already exist,
+// so a failure here is a seed failure and not a Map view failure.
 //
 // Captures are written only when `STOPS_MAP_CAPTURE_DIR` is set, resolved
-// against the assets working directory. They are the visual-loop and QA-tour
-// inputs, not the gate's oracle.
+// against the assets working directory. They are for visual inspection, not
+// assertions.
 import { test, expect } from "@playwright/test";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -39,9 +42,11 @@ const MOBILE = { width: 390, height: 844, label: "mobile" };
 
 const CAPTURE_DIR = process.env.STOPS_MAP_CAPTURE_DIR;
 
-// The spec package lives in the gitignored `.specs/` workspace, which a worktree
-// checkout does not carry; STOPS_MAP_SPEC_ROOT points the reference lookups at
-// the checkout that holds it. The reference captures are skipped without it.
+// The reference prototype is an HTML mock-up that is not committed to this
+// repository. STOPS_MAP_SPEC_ROOT names a directory holding
+// `references/stop-add-edit-prototype.html`; the reference captures, which put
+// the prototype beside the real page for visual comparison, are skipped without
+// it.
 const SPEC_ROOT = process.env.STOPS_MAP_SPEC_ROOT || "";
 const REFERENCE_FILE = SPEC_ROOT
   ? resolve(SPEC_ROOT, "references", "stop-add-edit-prototype.html")
@@ -124,7 +129,7 @@ function viewportLabel(page) {
 }
 
 // One state at both viewports: 1440×900 for the comparison with the reference,
-// and 390×844 for the stacked workspace and the no-horizontal-scroll gate.
+// and 390×844 for the stacked workspace and the no-horizontal-scroll check.
 async function captureBoth(page, testInfo, name, prefix = "shell-") {
   await expectFits(page);
   await capture(page, testInfo, `${prefix}${name}-desktop`);
@@ -136,9 +141,9 @@ async function captureBoth(page, testInfo, name, prefix = "shell-") {
   await page.setViewportSize(DESKTOP);
 }
 
-// The same state from the prototype, at the current viewport, for the
-// side-by-side inspection. Skipped in a checkout that does not carry the
-// package, which is not a failure of this spec.
+// The same state from the reference prototype, at the current viewport, for the
+// side-by-side inspection. Skipped when STOPS_MAP_SPEC_ROOT is unset or the
+// prototype file is missing, which is not a failure of this spec.
 async function captureReference(
   page,
   testInfo,
@@ -240,8 +245,8 @@ async function mapZoom(page) {
 
 // ── seed ──────────────────────────────────────────────────────────────────
 
-// The seed gate. The stop names, the duplicate pair and the station are the
-// fixture the Map view steps build on, so they are asserted here as literals
+// The seed check. The stop names, the duplicate pair and the station are the
+// fixture the Map view cases build on, so they are asserted here as literals
 // rather than read back from the surface's own counts.
 test("the seeded stops map organization @seed", async ({ page }, testInfo) => {
   await page.setViewportSize(DESKTOP);
@@ -277,16 +282,15 @@ test("the seeded stops map organization @seed", async ({ page }, testInfo) => {
   await capture(page, testInfo, "seed-stops-list");
 });
 
-// ── shell (step 23) ───────────────────────────────────────────────────────
+// ── shell ─────────────────────────────────────────────────────────────────
 
 // The Map view's shell: the header with its List | Map switch, the map stage,
 // and the browse panel holding the stops inside the current view. This is the
 // state every later capture starts from, so its assertions are the ones a
 // regression in the shell would break first.
 //
-// The hook is not registered yet (step 24 owns it), so the stage is captured in
-// its loading state — which is one of the four states this shell must show, and
-// is captured as such below.
+// The drawn map has its own cases below; here the stage is captured as the shell
+// leaves it.
 test("the map view shell @shell", async ({ page }, testInfo) => {
   test.setTimeout(180_000);
   await page.setViewportSize(DESKTOP);
@@ -353,7 +357,7 @@ test("the shell at both viewports @shell", async ({ page }, testInfo) => {
   await captureBoth(page, testInfo, "workspace");
 });
 
-// ── render (step 24) ──────────────────────────────────────────────────────
+// ── render ────────────────────────────────────────────────────────────────
 
 // The drawn map: stops as discs with a travel tick, a station as a filled
 // square, a bay as a lettered disc, and every pattern as two parallel lines
@@ -378,7 +382,7 @@ test("the drawn map @render", async ({ page }, testInfo) => {
   // The canvas is focusable, which is what lets the arrow keys pan it once
   // Leaflet's keyboard handling has it.
   await expect(page.locator("#stop-map")).toHaveAttribute("tabindex", "0");
-  // Below the bay gate the station stands in for the bays folded into it; the
+  // Below the bay zoom the station stands in for the bays folded into it; the
   // seed's two are thirteen metres apart and their discs would land on it.
   expect(atFit.bays).toBe(fitZoom >= 18 ? 2 : 0);
   expect(atFit.stops).toBe(fitZoom >= 18 ? 17 : 15);
@@ -397,13 +401,13 @@ test("the drawn map @render", async ({ page }, testInfo) => {
 
   // At the fitted view no stop carries a name: the basemap's own street names
   // are the text at that scale, and the panel's list is where a stop's name
-  // belongs — the prototype paints none here either.
+  // belongs.
   expect(await page.locator("#stop-map .stop-map-label").count()).toBe(0);
 
   // Closed in, the bays separate and take their letters and the stops take their
   // names. The lines stay: a road wide enough on screen carries one line
   // without the offset that keeps two buses apart.
-  // Closed in only as far as the bay gate needs: the feed's own extent is a few
+  // Closed in only as far as the bays need: the feed's own extent is a few
   // blocks, so eight steps would put the camera somewhere past the last stop.
   await zoom(page, Math.max(1, 18 - fitZoom));
   expect((await mapZoom(page)) >= 18).toBe(true);
@@ -496,7 +500,7 @@ test("the drawn map at both viewports @render", async ({ page }, testInfo) => {
   await page.setViewportSize(DESKTOP);
 });
 
-// ── pin (step 25) ─────────────────────────────────────────────────────────
+// ── pin ───────────────────────────────────────────────────────────────────
 
 // Add mode and the placement pin: the crosshair the Enter key places at, the
 // pin a click drops, and the drag and nudge that adjust it. The hook reports
@@ -643,7 +647,7 @@ async function pinPosition(page) {
   });
 }
 
-// ── search (step 26) ───────────────────────────────────────────────────────
+// ── search ─────────────────────────────────────────────────────────────────
 
 // The panel's search: this version's stops by name or ID, and the address
 // service's places, in one field. What this asserts is the round trip the
@@ -744,8 +748,7 @@ test("the panel search @search", async ({ page }, testInfo) => {
   await expectFits(page);
   // Attached rather than in the viewport: the browser adapter's place is in
   // Cedar Valley and this feed is in Newport, so the pin is legitimately off
-  // the canvas the map is showing. Recorded as a step-31 finding rather than
-  // asserted here.
+  // the canvas the map is showing. Not asserted here.
   await expect(page.locator("[data-stop-map-pin]")).toBeAttached();
   await capture(page, testInfo, "search-add-placed-mobile");
   await page.setViewportSize(DESKTOP);
@@ -769,7 +772,7 @@ test("the panel search @search", async ({ page }, testInfo) => {
   await page.setViewportSize(DESKTOP);
 });
 
-// ── checks (step 27) ───────────────────────────────────────────────────────
+// ── checks ─────────────────────────────────────────────────────────────────
 
 // The browse panel's "things to check" disclosure: the version's placement
 // findings, read after the list rather than with it. What this asserts is that
@@ -880,7 +883,7 @@ async function countDisclosureRows(page) {
   return page.locator("#stops-map-checks-items li").count();
 }
 
-// ── add a stop (step 28) ───────────────────────────────────────────────────
+// ── add a stop ─────────────────────────────────────────────────────────────
 
 // Adding a stop, end to end: a point on the map, a name from the streets, the
 // warnings the placement deserves, a refusal the reader can act on, and the
@@ -1198,7 +1201,7 @@ test("the created panel's next steps @created", async ({ page }, testInfo) => {
   await captureReference(page, testInfo, "created", "created", "created-ref-");
 });
 
-// ── edit a stop (step 30) ────────────────────────────────────────────────────
+// ── edit a stop ──────────────────────────────────────────────────────────────
 
 // The edit panel: the stop's own fields, where it is, what uses it, the footer
 // that says whether there is anything to save, and the guard on every way out.
@@ -1251,7 +1254,7 @@ test("the edit panel @edit", async ({ page }, testInfo) => {
   expect(badges.map((text) => text.trim()).sort()).toEqual(["1", "3"]);
 
   // The fare zone is a statement and a way to change it, not a control here:
-  // the zone belongs to Settings › Fares (AC-STOP-023).
+  // the zone belongs to Settings › Fares.
   await expect(page.locator("#stops-map-edit-zone")).toHaveText(
     "Newport local",
   );
@@ -1317,7 +1320,8 @@ test("the edit panel @edit", async ({ page }, testInfo) => {
   await captureBoth(page, testInfo, "discarded", "edit-");
 
   // A stop the feed does not serve says so, and offers no choice about it:
-  // context decision 4 rules the keep-in-feed checkbox out of this panel.
+  // the editor does not change the export, so the panel has no keep-in-feed
+  // checkbox.
   await page.goto(`/gtfs/${versionId}/stops/map?stop=1531`);
   await waitForLiveView(page);
   await expect(page.locator("#stops-map-edit-panel")).toContainText(
@@ -1345,8 +1349,8 @@ test("the edit panel @edit", async ({ page }, testInfo) => {
 
   // The save-failed and conflict states are left to the ExUnit cases: the save
   // submits through the panel's own form, and this journey's presses on that
-  // form did not reach the server, which is recorded in the step learning as a
-  // finding rather than papered over with a synthetic event.
+  // form did not reach the server, which is a known limit of this harness
+  // rather than something to paper over with a synthetic event.
 
   // The prototype's own states for the same moments, captured last because the
   // reference is a file:// page: driving the app and reading the prototype are
@@ -1506,10 +1510,9 @@ test("moving a stop @move", async ({ page }, testInfo) => {
     "Is this the same stop?",
   );
 
-  // Step 30's open finding still stands in this harness: a click on the panel's
-  // own submit button does not reach the server from the browser journey, so
-  // the review states are reached by asking the form to submit itself. The save
-  // outcomes are covered by stops_map_move_test.exs instead.
+  // A click on the panel's own submit button does not reach the server from this
+  // harness, so the review states are reached by asking the form to submit
+  // itself. The save outcomes are covered by stops_map_move_test.exs instead.
   await page.locator("#stops-map-move-back").click();
   await expect(page.locator("#stops-map-edit-panel")).toBeAttached();
 
@@ -1762,7 +1765,7 @@ async function dragPinBy(page, dx, dy) {
 
 // The form asked to submit itself. `requestSubmit` fires the same submit event
 // the button would; it is here because the button click does not reach the
-// server from this harness (step 30's open finding), not because the panel
+// server from this harness (a known limit of the harness), not because the panel
 // needs it.
 async function submitEditForm(page) {
   await page
@@ -1796,7 +1799,7 @@ async function onMapMarkerBox(page) {
   });
 }
 
-// ── list entry points (step 35) ────────────────────────────────────────────
+// ── list entry points ──────────────────────────────────────────────────────
 
 // The list's own header is where an editor who is not on the map reaches the
 // map. The switch says which view is being looked at, and the Add stop primary
@@ -1898,7 +1901,7 @@ test("the list's first-use state @list", async ({ page }, testInfo) => {
   await captureReference(page, testInfo, "list", "first-use", "list-ref-");
 });
 
-// ── detail entry points (step 36) ──────────────────────────────────────────
+// ── detail entry points ────────────────────────────────────────────────────
 
 // The stop page is where an editor already is, so it carries the entry points
 // into the Map view's three non-edit operations. This asserts the links are the
@@ -2019,7 +2022,7 @@ test("where this stop is used @detail", async ({ page }, testInfo) => {
   await captureReference(page, testInfo, "detail", "usage", "detail-ref-");
 });
 
-// ── the whole job, in one session (step 38) ────────────────────────────────
+// ── the whole job, in one session ──────────────────────────────────────────
 
 // One test that does the five things this spec exists for, in the order a
 // person does them: put a stop on the map, put it on a route, move it, find out
@@ -2122,9 +2125,9 @@ test("from a curb to a route @journey", async ({ page }, testInfo) => {
   await expect(page.locator(".stop-map-ghost-marker")).toHaveCount(1);
   await expect(page.locator(".stop-map-distance")).toHaveCount(1);
 
-  // Step 30's harness finding still stands — a click on a panel submit button
-  // does not reach the server from the browser journey — so the review state is
-  // reached by asking the form to submit itself. The write itself, and the
+  // A click on a panel submit button does not reach the server from this
+  // harness, so the review state is reached by asking the form to submit
+  // itself. The write itself, and the
   // out-of-date message the save produces, are the ExUnit claim in
   // stops_map_move_test.exs; what this journey proves is that the review is
   // reachable from the same panel the journey arrived on.

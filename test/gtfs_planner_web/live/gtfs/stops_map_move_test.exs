@@ -1,6 +1,6 @@
 defmodule GtfsPlannerWeb.Gtfs.StopsMapMoveTest do
   @moduledoc """
-  Merge evidence (EV-31) for the move and the move review.
+  Tests for the move and the move review.
 
   Five things are claimed here, and each is asserted through the real view and
   the real commands rather than by poking assigns: a correction saves without a
@@ -10,14 +10,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapMoveTest do
   asks whether this is the same stop and writes nothing until it is answered,
   and a review answered against a stop that has since changed is refused.
 
-  The distances are the literals the card names — 5 ft, 45 ft and 1,000 ft — and
-  so are the outcomes, because both come from the spec's rules rather than from
-  anything the code computes. The routing boundary is faked at HTTP only
+  The distances are literals — 5 ft, 45 ft and 1,000 ft — and so are the
+  outcomes, because both come from the product rules rather than from anything
+  the code computes. The routing boundary is faked at HTTP only
   (`Req.Test`), so `StopEditing.move_review/3` and `apply_move/4` run the real
   `StreetRouting` composition over it.
-
-  The focused command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_sa28 ELIXIR_ERL_OPTIONS="+S 4" mix test test/gtfs_planner_web/live/gtfs/stops_map_move_test.exs`.
   """
   use GtfsPlannerWeb.ConnCase, async: false
 

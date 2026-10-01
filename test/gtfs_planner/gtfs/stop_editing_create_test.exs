@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.StopEditingCreateTest do
   @moduledoc """
-  `StopEditing.create_stop/2` against a real database (EV-13, AC-12).
+  `StopEditing.create_stop/2` against a real database.
 
   These run through the configured `:reviewed_apply_transaction` runner exactly as
   the route command's tests do, so the serializable transaction is the real one
@@ -10,8 +10,8 @@ defmodule GtfsPlanner.Gtfs.StopEditingCreateTest do
 
   What is under test is the boundary, not the insert: who is allowed, whose
   version, what ID a stop gets when the editor did not type one, and — the part
-  INV-2 exists for — that there is no committed stop without a matching audit
-  entry. Every denied case asserts that no row was written, since a refusal that
+  the audit exists for — that there is no committed stop without a matching
+  audit entry. Every denied case asserts that no row was written, since a refusal that
   leaves a row behind is not a refusal.
   """
 
@@ -32,7 +32,6 @@ defmodule GtfsPlanner.Gtfs.StopEditingCreateTest do
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopEditing
-  alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Support.StopEditingCollisionRunner
@@ -356,7 +355,7 @@ defmodule GtfsPlanner.Gtfs.StopEditingCreateTest do
       fixture = create_fixture()
       on_exit(fn -> cleanup_fixture(fixture) end)
 
-      # INV-2: a stop nobody can attribute is not a committed stop. The
+      # A stop nobody can attribute is not a committed stop. The
       # changeset rejects the entry, and the insert has to go with it.
       audit = %{fixture.audit | actor_email: nil}
 

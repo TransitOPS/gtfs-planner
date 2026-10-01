@@ -1,6 +1,6 @@
 defmodule GtfsPlannerWeb.Gtfs.StopsMapReplaceTest do
   @moduledoc """
-  Merge evidence (EV-33) for the replace panel.
+  Tests for the replace panel.
 
   Four things are claimed. The candidates are the nearest stops, in order, in
   the reader's own units; a click on the map chooses the stop to keep rather
@@ -14,11 +14,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapReplaceTest do
   because a panel that renders a refusal and still offers the button is asking
   the editor to press it twice.
 
-  The distances are literals the card names, and the seeds are written through
-  the same tables the commands read.
-
-  The focused command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_sa28 ELIXIR_ERL_OPTIONS="+S 4" mix test test/gtfs_planner_web/live/gtfs/stops_map_replace_test.exs`.
+  The distances are literals, and the seeds are written through the same tables
+  the commands read.
   """
   use GtfsPlannerWeb.ConnCase, async: false
 

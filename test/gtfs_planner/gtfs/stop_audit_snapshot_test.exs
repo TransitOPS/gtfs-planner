@@ -42,8 +42,8 @@ defmodule GtfsPlanner.Gtfs.StopAuditSnapshotTest do
 
   # `stop_fixture/3` goes through `Gtfs.import_create_stop/1`, which uses the importer's
   # permissive `Stop.changeset/2` and so casts none of the four fields under test.
-  # The stop editor casts the first three through `Stop.editor_changeset/2` (step 1)
-  # and Settings › Fares writes `zone_id` directly, so the fixture sets all four the
+  # The stop editor casts the first three through `Stop.editor_changeset/2` and
+  # Settings › Fares writes `zone_id` directly, so the fixture sets all four the
   # way their real writers do.
   defp with_editor_fields(stop, fields) do
     stop

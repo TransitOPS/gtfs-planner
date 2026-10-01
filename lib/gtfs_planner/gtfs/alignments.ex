@@ -1483,7 +1483,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
   @doc """
   Suggests street-routed interior points for every pair of stops around one
-  moved stop (step 14, AC-14).
+  moved stop.
 
   A stop's map line is drawn through the pairs it sits between, so moving it
   changes the interior of at most two of them: the pair it *follows* on each
@@ -1496,7 +1496,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   The new point is always one endpoint and the neighbouring stop's own
   coordinates the other, in the pair's own direction, so a leg's interior is
   oriented the way the pattern runs it. Endpoints are the stop anchors (R5,
-  `[lon, lat]` per INV-1): only interior points are suggested.
+  `[lon, lat]`): only interior points are suggested.
 
   Returns `%{pairs, suggestions, failed}`. A pair whose neighbour has no
   coordinates, or whose routing call fails, appears in `failed` with the
@@ -1796,7 +1796,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
         }
 
   @doc """
-  Redraws the map-line sections a moved stop's pairs cover (step 15, AC-15).
+  Redraws the map-line sections a moved stop's pairs cover.
 
   Runs in the *caller's* transaction, after the stop's new coordinates are
   already written: the anchors the segments resolve against are the stop rows
@@ -1826,7 +1826,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
   A pattern with no `shape_id` is left out of both lists: it had no line to
   redraw, and calling it stale would imply there was one worth saving. Every
-  read and write filters by the caller's organization and version (INV-2).
+  read and write filters by the caller's organization and version.
   """
   @spec redraw_stop_pairs!(Ecto.UUID.t(), Ecto.UUID.t(), map()) :: redraw_result()
   def redraw_stop_pairs!(organization_id, gtfs_version_id, options) when is_map(options) do

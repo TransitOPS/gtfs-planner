@@ -1,8 +1,8 @@
 defmodule GtfsPlanner.Gtfs.StopEditingReplaceTest do
   @moduledoc """
-  `StopEditing.replace_stop/4` (EV-20, AC-19).
+  `StopEditing.replace_stop/4`.
 
-  The review (step 18) says what a replace *would* do. This is the other half:
+  The review says what a replace *would* do. This is the other half:
   the write. What matters here is that the feed the editor ends up with is the
   feed they were shown — every kind moved by its own rule, a colliding row
   deleted rather than raising a unique violation halfway through, and a
@@ -546,7 +546,7 @@ defmodule GtfsPlanner.Gtfs.StopEditingReplaceTest do
     )
   end
 
-  # Every table this step reads or writes, compared as values. A row count
+  # Every table the replace reads or writes, compared as values. A row count
   # would pass a delete-and-reinsert with a new id.
   defp snapshot(fixture) do
     unboxed(fn ->
@@ -668,7 +668,7 @@ defmodule GtfsPlanner.Gtfs.StopEditingReplaceTest do
   # --- staging
 
   # 1433 is the stop being replaced and 1391 is the one taking over, matching
-  # step 18's worked example: 1391 is adjacent in the spec's pattern, so the
+  # as in the review's tests: 1391 is adjacent in that fixture's pattern, so the
   # cases here stage their own patterns and trips rather than reusing one.
   defp staged_fixture do
     unboxed(fn ->

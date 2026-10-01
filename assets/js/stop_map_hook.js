@@ -6,14 +6,14 @@
  * legend controls around it; this hook binds those controls and draws the
  * version's stops and route lines.
  *
- * Protocol (spec.md › Map hook protocol):
+ * Protocol:
  *   hook → server  stop_map_ready {}, stop_map_bounds {south, west, north, east},
  *                  select_stop {stop_id}, map_unavailable {reason}
  *   server → hook  stop_map:scene {payload}
  *
  * Every mount draws from the scene alone and keeps no state outside its own
  * instance, so a remounted or retried map never depends on deltas an earlier
- * mount received (CR-8). The scene is pushed again when the page retries or
+ * mount received. The scene is pushed again when the page retries or
  * when a version change is loaded, and re-applying it is the whole of the
  * update.
  *
@@ -81,16 +81,16 @@ const BAY_RADIUS_PX = 9;
 const MARKER_BOX_PX = STOP_RADIUS_PX * 2 + 8;
 
 // A name is worth painting only where it can be read without landing on its
-// neighbours. The prototype's default map state paints none — the basemap's own
-// street names are the text at that scale, and the panel's list is where a stop's
-// name belongs until the map is closed in past the point where the marks
-// themselves separate.
+// neighbours. The default map state paints none — the basemap's own street
+// names are the text at that scale, and the panel's list is where a stop's name
+// belongs until the map is closed in past the point where the marks themselves
+// separate.
 const LABEL_MIN_ZOOM = 18;
 
 // A station's bays sit metres apart — the seed's two are thirteen — so at any
 // zoom that shows a whole feed their discs land on top of each other and on
-// their own station. The prototype hides them for the same reason, and past
-// this zoom the letters separate and a bay becomes the subject it is.
+// their own station. Below this zoom they are hidden for the same reason, and
+// past it the letters separate and a bay becomes the subject it is.
 const BAY_MIN_ZOOM = 18;
 
 // Two panes so the route lines sit under the stops at every zoom, which is the
@@ -99,10 +99,10 @@ const LINE_PANE = "stopMapLines";
 const MARKER_PANE = "stopMapMarkers";
 const MARKER_PANE_Z_INDEX = "450";
 
-// The placement pin's own numbers. The prototype states the nudge in feet
-// because feet are what a rider measures a curb in; the pin answers in metres
-// because that is what a coordinate pair is denominated in, and the caption and
-// the pin's aria-label both say feet so the two never meet.
+// The placement pin's own numbers. The nudge is stated in feet because feet are
+// what a rider measures a curb in; the pin answers in metres because that is
+// what a coordinate pair is denominated in, and the caption and the pin's
+// aria-label both say feet so the two never meet.
 const NUDGE_METRES = 1;
 const NUDGE_METRES_SHIFTED = 10;
 const METRES_PER_DEGREE = 111_320;
@@ -745,7 +745,7 @@ const StopMap = {
 
       // A white casing under the coloured line: where two routes share a street
       // the casing is what keeps the second line legible over the first, and it
-      // is why the prototype draws every line twice.
+      // is why every line is drawn twice.
       const casing = this._leaflet
         .polyline(points, {
           color: "#ffffff",
@@ -1150,8 +1150,8 @@ function haversineMetres([lon1, lat1], [lon2, lat2]) {
   return 2 * radius * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
-// Feet under a thousand of them and miles over, on the prototype's own rule:
-// a curb is measured in feet and a move across a neighbourhood is not. Both
+// Feet under a thousand of them and miles over: a curb is measured in feet and
+// a move across a neighbourhood is not. Both
 // figures land on a 5-foot step so the label stops flickering as the pin moves.
 function formatDistance(metres) {
   const feet = metres / FEET_PER_METRE;

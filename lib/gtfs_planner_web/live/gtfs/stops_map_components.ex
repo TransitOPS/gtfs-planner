@@ -621,7 +621,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
 
   A row is read-only until something can be done with it. `selectable` marks the
   rows whose activation opens the edit panel, which is now every row the panel
-  lists: step 30 put the panel behind them, so a row that looked pressable and
+  lists: the edit panel is behind them, so a row that looked pressable and
   did nothing is no longer either true or worth keeping.
   """
   attr :row, :map, required: true
@@ -758,10 +758,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
   draft, its errors, the placement, the suggestions and what the placement
   deserves to be told.
 
-  Before a placement the form's fields are dimmed rather than hidden. The
-  prototype shows a paragraph in their place, and a paragraph that is replaced
-  by fields is a layout jump; dimmed fields say the same thing — "they come
-  next" — and keep the panel from moving when the pin lands.
+  Before a placement the form's fields are dimmed rather than hidden. A
+  paragraph in their place would be replaced by fields, which is a layout jump;
+  dimmed fields say the same thing — "they come next" — and keep the panel from
+  moving when the pin lands.
   """
   attr :id, :string, required: true
   attr :kind, :atom, required: true
@@ -1308,9 +1308,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
   The collapsed "Stop ID and feed details" block: the ID, the spoken name and
   the stop's web page.
 
-  It is a button and a region rather than a `<details>` element for step 27's
-  reason: a native disclosure's open state is not the server's, and a re-render
-  would snap it shut under the reader while they are typing an ID into it.
+  It is a button and a region rather than a `<details>` element because a native
+  disclosure's open state is not the server's, and a re-render would snap it
+  shut under the reader while they are typing an ID into it.
 
   For a new stop the ID is editable and prefilled with the version's next one.
   It cannot change after the stop exists, so this is the only place an editor
@@ -1515,20 +1515,19 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
   The stop edit panel: what the stop is, the fields that change it, what else
   names it, and the footer that says whether anything has changed yet.
 
-  The panel owns three things the browse list deliberately did not (step 30).
+  The panel owns three things the browse list deliberately did not.
   It owns the **dirty state**, which the footer states in words rather than by
   greying the Save button alone — a disabled button with no sentence is a control
   an editor has to guess at. It owns the **fare zone**, which is text with a
   link rather than a select, because zone assignment belongs to Settings ›
-  Fares (AC-STOP-023) and a select here would offer a choice this page cannot
+  Fares and a select here would offer a choice this page cannot
   honour. And it owns the **unsaved-changes guard**: Escape, Cancel and choosing
   another stop all pass through the same dialog rather than each inventing its
   own.
 
-  "Not served" is information only. This package does not change the export, so
-  there is no keep-in-feed checkbox here: the prototype's copy was superseded by
-  context decision 4, and a checkbox that changed nothing would be worse than
-  its absence.
+  "Not served" is information only. The editor does not change the export, so
+  there is no keep-in-feed checkbox here, and a checkbox that changed nothing
+  would be worse than its absence.
 
   The `phx-window-keydown` is on the panel rather than the document because the
   panel is the only thing that can be dirty, and a key handler that fires from a
@@ -1572,9 +1571,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
               </h2>
               <div class="mt-1 flex flex-wrap items-center gap-2">
                 <p class="m-0 text-sm text-muted">{edit_subtitle(@stop)}</p>
-                <%!-- The routes beside the ID, as the prototype's heading has
-                     them: a stop is identified to a rider by the routes that
-                     call at it, so the panel says so before any field does. --%>
+                <%!-- The routes beside the ID: a stop is identified to a rider
+                     by the routes that call at it, so the panel says so before
+                     any field does. --%>
                 <span class="flex flex-wrap items-center gap-1">
                   <.route_badge :for={route <- @stop.routes} route={route} />
                 </span>
@@ -1582,9 +1581,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
             </div>
 
             <%!-- More actions is a server-held disclosure rather than a native
-                 `<details>`: step 27's reason applies here too, because a
-                 re-render from a `phx-change` on the form would snap a native
-                 one shut under the editor who opened it. --%>
+                 `<details>`, for the same reason as the "things to check"
+                 disclosure: a re-render from a `phx-change` on the form would
+                 snap a native one shut under the editor who opened it. --%>
             <div class="relative shrink-0">
               <button
                 id="stops-map-edit-more"
@@ -1841,8 +1840,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
                   Fare zone
                 </p>
                 <%!-- Read-only, and a link rather than a select: zone assignment is
-                     Settings › Fares' (AC-STOP-023), so this panel states the
-                     stop's zone and sends the editor where it can be changed. --%>
+                     Settings › Fares', so this panel states the stop's zone and
+                     sends the editor where it can be changed. --%>
                 <p class="m-0 mt-1 text-[15px] text-strong" id="stops-map-edit-zone">
                   {zone_text(@zone_id, @zone_name)}
                 </p>
@@ -2287,9 +2286,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
 
   `StopReferences.usage/3` answers with a count per kind and, for the kinds an
   editor acts on, the rows themselves. Only the blocking list is rendered: a
-  descriptive reference is context for the delete and replace panels (steps 32
-  and 33), and listing it here would make the panel taller than the evidence it
-  carries.
+  descriptive reference is context for the delete and replace panels, and
+  listing it here would make the panel taller than the information it carries.
   """
   attr :id, :string, required: true
   attr :usage, :any, default: nil
@@ -3339,7 +3337,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
   @doc """
   The collapsed "Stop ID and feed details" block.
 
-  The ID is text, not a field: it cannot change (INV-5), and a disabled input
+  The ID is text, not a field: it cannot change, and a disabled input
   still looks editable to a reader who has not been told why. The spoken name
   and the web page are fields, because they are content rather than identity.
   """
@@ -3426,8 +3424,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
 
   # The heading's second line: what kind of stop this is, its ID, and either the
   # routes that call there or the fact that nothing does. "Not served" is the
-  # whole answer for an unserved stop — context decision 4 removed the
-  # keep-in-feed question from the export question entirely.
+  # whole answer for an unserved stop — there is no keep-in-feed question to
+  # ask, because the editor does not change the export.
   defp edit_subtitle(%{location_type: 1} = stop) do
     "Station · ID #{stop.stop_id} · #{stop.bay_count} #{pluralize(stop.bay_count, "bay")}"
   end

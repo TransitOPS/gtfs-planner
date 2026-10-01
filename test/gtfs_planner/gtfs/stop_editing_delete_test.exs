@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.StopEditingDeleteTest do
   @moduledoc """
-  `StopEditing.delete_review/2` and `delete_stop/3` (EV-18, AC-17).
+  `StopEditing.delete_review/2` and `delete_stop/3`.
 
   A delete is the one command in this module that destroys rows somebody else
   built, so what is under test is mostly what it *refuses* to do. A stop a
@@ -280,7 +280,7 @@ defmodule GtfsPlanner.Gtfs.StopEditingDeleteTest do
           )
         end)
 
-      # INV-2: a stop with no history entry is a stop nobody can account for.
+      # A stop with no history entry is a stop nobody can account for.
       # The snapshot is the *pre-delete* row, so the history shows what the
       # stop was.
       assert entry.snapshot["stop_name"] == "Main St"

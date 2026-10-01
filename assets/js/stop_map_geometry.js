@@ -25,9 +25,7 @@
  *
  * Each vertex's direction comes from its neighbours — the previous and the next
  * point, clamped at the ends — so a vertex inside a curve is offset along the
- * average of the two segments it joins rather than along either of them. The
- * prototype's `_offset` in `evidence/prototype-src/map.js` works the same way,
- * and this is that function with the projection replaced by its argument.
+ * average of the two segments it joins rather than along either of them.
  *
  * `project` turns a point into screen coordinates and is called once per point;
  * pass `identity` when the points already are screen coordinates. A polyline

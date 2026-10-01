@@ -487,7 +487,7 @@ describe("drawing stops", () => {
   it("folds a station's bays into it until the map is close enough to separate them", () => {
     // The seed's two bays are thirteen metres apart. At a zoom that shows a
     // whole feed their discs land on the station and on each other, so below
-    // the gate the station stands for all of them.
+    // that zoom the station stands for all of them.
     const { markers } = mount({ stub: createLeafletStub({ zoom: 14 }) });
 
     expect(markers.has("11")).toBe(false);
@@ -571,9 +571,9 @@ describe("drawing stops", () => {
   });
 
   it("writes a stop's name beside its mark only where a name is readable", () => {
-    // The prototype's default map state paints none: at that scale the basemap's
-    // own street names are the text, and the panel's list is where a stop's name
-    // belongs until the map is closed in past the point where the marks separate.
+    // The default map state paints none: at that scale the basemap's own street
+    // names are the text, and the panel's list is where a stop's name belongs
+    // until the map is closed in past the point where the marks separate.
     const { markers: atFeed } = mount({
       stub: createLeafletStub({ zoom: 16 }),
     });
@@ -820,7 +820,7 @@ describe("the basemap", () => {
   });
 });
 
-describe("focusing a finding (step 27)", () => {
+describe("focusing a finding", () => {
   it("moves the view to the named stop and closes in to street zoom", () => {
     const stub = createLeafletStub({ zoom: 12 });
     const { map, focus } = mount({ stub });

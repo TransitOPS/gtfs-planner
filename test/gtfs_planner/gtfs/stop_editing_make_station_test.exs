@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.StopEditingMakeStationTest do
   @moduledoc """
-  `StopEditing.make_station/3` (EV-22, AC-21).
+  `StopEditing.make_station/3`.
 
   The operation is only safe because of what it does *not* do: the stop keeps
   its GTFS ID, so every stop time, transfer and pattern occurrence that names it
@@ -135,7 +135,7 @@ defmodule GtfsPlanner.Gtfs.StopEditingMakeStationTest do
           )
         end)
 
-      # INV-2: the station's creation and the bay's re-parenting commit together,
+      # The station's creation and the bay's re-parenting commit together,
       # so a feed never holds a bay naming a station nobody wrote down.
       assert {"created", "station_newport_city_hall"} in logged
       assert {"updated", "1434"} in logged

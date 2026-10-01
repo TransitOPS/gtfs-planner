@@ -1,6 +1,6 @@
 defmodule GtfsPlannerWeb.Gtfs.StopsMapMakeStationTest do
   @moduledoc """
-  Merge evidence (EV-34) for the make-station panel.
+  Tests for the make-station panel.
 
   Three things are claimed. The panel opens on a station name it can already
   read, so the editor is never faced with an empty field. A landmark within the
@@ -12,9 +12,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapMakeStationTest do
   The create case is driven through the panel and read back from the rows, not
   from the panel's own success state: the claim is that a station exists and the
   stop is its bay, which is a claim about tables.
-
-  The focused command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_sa28 ELIXIR_ERL_OPTIONS="+S 4" mix test test/gtfs_planner_web/live/gtfs/stops_map_make_station_test.exs`.
   """
   use GtfsPlannerWeb.ConnCase, async: false
 

@@ -1,7 +1,7 @@
 defmodule GtfsPlannerWeb.Gtfs.StopsMapActionParamTest do
   @moduledoc """
-  Merge evidence (EV-36) for the stop page's More actions arriving on the Map
-  view as `?action=`.
+  Tests for the stop page's More actions arriving on the Map view as
+  `?action=`.
 
   The stop page offers three operations that are not an edit, and each one is a
   link rather than a button because the editor is leaving the page. A link that
@@ -18,9 +18,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapActionParamTest do
   refused anyway opens its refusal, not a form: the make-station case refuses a
   stop that is already a bay, and a link that opened a form an editor could fill
   and fail to save is a worse answer than the refusal.
-
-  The focused command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_sa28 ELIXIR_ERL_OPTIONS="+S 4" mix test test/gtfs_planner_web/live/gtfs/stops_map_action_param_test.exs`.
   """
   use GtfsPlannerWeb.ConnCase, async: false
 

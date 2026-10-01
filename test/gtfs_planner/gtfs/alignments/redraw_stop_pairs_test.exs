@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.Alignments.RedrawStopPairsTest do
   @moduledoc """
-  `Alignments.redraw_stop_pairs!/3` (EV-16, AC-15).
+  `Alignments.redraw_stop_pairs!/3`.
 
   Moving a stop changes the street its lines should follow, and this is the
   function that draws them. What is under test is that it is *honest* about
@@ -43,7 +43,6 @@ defmodule GtfsPlanner.Gtfs.Alignments.RedrawStopPairsTest do
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.Trip
-  alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
 
@@ -81,7 +80,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.RedrawStopPairsTest do
       # The optimistic lock is what makes a second redraw of the same segment
       # a conflict rather than a silent overwrite, so it has to move. Asserted
       # as a difference because the insert's starting value is the column
-      # default's business, not this step's.
+      # default's business, not this function's.
       assert segment.lock_version == before.lock_version + 1
     end
 
@@ -168,7 +167,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.RedrawStopPairsTest do
       # Two visits and one interior leg: the two stops are the anchors and
       # the routed points sit between them. A redraw that dropped the moved
       # stop's new position would leave the line pointing at where the stop
-      # used to be, which is the whole failure this step exists to prevent.
+      # used to be, which is the whole failure this function exists to prevent.
       points = shape_points(fixture, "SHAPE-P")
 
       assert length(points) == 4
@@ -333,8 +332,8 @@ defmodule GtfsPlanner.Gtfs.Alignments.RedrawStopPairsTest do
   # --- drivers
 
   # The stop move happens first, in the same transaction, because that is the
-  # order step 16's `apply_move/4` uses and because the segments resolve
-  # against the stop rows.
+  # order `apply_move/4` uses and because the segments resolve against the stop
+  # rows.
   defp move_and_redraw(fixture) do
     {:ok, result} =
       unboxed(fn ->

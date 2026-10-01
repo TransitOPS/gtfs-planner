@@ -24,9 +24,8 @@
 #   and the references expect.
 # User 8 (stops map): stops-map@gtfs-planner.test — used by
 #   stops_map.spec.js, in "Stops Map Org" (product: :planner) with "Browser
-#   Stops Map Version": 17 stops on real downtown Newport, Oregon coordinates
-#   (the same stops and shape geometry the stop add/edit prototype draws), two
-#   routes with three patterns on saved lines, a possible-duplicate pair 1.5 m
+#   Stops Map Version": 17 stops on real downtown Newport, Oregon coordinates,
+#   two routes with three patterns on saved lines, a possible-duplicate pair 1.5 m
 #   apart, a relief point, a transfer to a transit-centre bay, a station with a
 #   level, an unserved stop with a translation, and garage "1533".
 #
@@ -10579,16 +10578,14 @@ case Accounts.register_first_admin(%{
         "BROWSER_INTERP_IMPORT pattern with a blank-middle custom trip)"
     )
 
-    # ── Stops Map seed data (28-stop-add-edit, step 22) ──
+    # ── Stops Map seed data ──
     #
     # A planner-product organization of its own, so the Map view journey reads
     # this fixture instead of whichever version another spec left selected. The
-    # stop IDs, coordinates and shape geometry are the ones the stop add/edit
-    # prototype draws (`.specs/28-stop-add-edit/references/`, real downtown
-    # Newport, Oregon over OpenStreetMap), so the seeded map is the same picture
-    # the reference captures show.
+    # stop IDs, coordinates and shape geometry are real downtown Newport, Oregon
+    # over OpenStreetMap.
     #
-    # The seeded problems are the ones the later surfaces exist for:
+    # The seeded problems are the ones the Map view's surfaces exist for:
     #   * 1433 sits 1.5 m from 1434 (possible duplicate, used by one pattern)
     #   * 1434 has a relief point and a transfer to the transit centre's Bay B
     #   * ST-NTC is a station with one level and two bays
@@ -10765,7 +10762,7 @@ case Accounts.register_first_admin(%{
         level_id: stops_map_level.id
       })
 
-    # Shape geometry from the prototype's OpenStreetMap road paths, simplified
+    # Shape geometry from OpenStreetMap road paths, simplified
     # to roughly one point per 28 m: every vertex is a real place, and the
     # inbound Coast Highway path is the outbound one reversed so the two
     # directions sit on the same street rather than on separate lines.
@@ -10941,9 +10938,7 @@ case Accounts.register_first_admin(%{
 
     {stops_map_shape_point_count, nil} = Repo.insert_all(Shape, stops_map_shape_rows)
 
-    # Two routes, one per direction of Coast Highway plus the city loop. Route
-    # "1" and route "3" are the prototype's own short names and colours, so the
-    # map lines read the same as the reference.
+    # Two routes, one per direction of Coast Highway plus the city loop.
     for {route_id, short_name, long_name, color} <- [
           {"1", "1", "Coast Highway", "1F5FBF"},
           {"3", "3", "Newport City Loop", "4B1F78"}
