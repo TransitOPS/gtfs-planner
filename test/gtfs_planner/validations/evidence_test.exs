@@ -19,16 +19,32 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
       refused;
     * an unknown `ALARM` severity is counted exactly under its own key and an
       oversized allowed field is refused instead of silently truncated.
+
+  The notice explanation and inspection-target cases (EV-4) follow: the pinned
+  v8.0.1 `missing_required_field` rule is the only documented one, another
+  stored version and another code disclose unavailable documentation without
+  losing the run's real findings, and the catalog's declared ERROR never
+  overwrites a stored WARNING. A duplicated or missing stop id and a row-only
+  instance resolve to nothing, an encoded stop id cannot escape the version's
+  stops path, and an explicitly requested inspection navigates to an editor
+  while every domain and audit row stays unchanged.
   """
 
   use GtfsPlanner.DataCase, async: true
 
+  alias GtfsPlanner.Agents.Packs.FeedQuality.Remedies
   alias GtfsPlanner.Agents.Scope
+  alias GtfsPlanner.Gtfs.Calendar
+  alias GtfsPlanner.Gtfs.ChangeLog
+  alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Validations.Evidence
   alias GtfsPlanner.Validations.ValidationRun
 
+  import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
@@ -592,6 +608,376 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
     end
   end
 
+  describe "notice explanations" do
+    test "the pinned v8.0.1 rule carries its meaning and its pinned source", %{
+      scope: scope,
+      organization: organization,
+      version: version
+    } do
+      run =
+        completed_run(organization, version, [missing_field_group("ERROR", 170)],
+          validator_version: "8.0.1"
+        )
+
+      assert {:ok, explanation} = Evidence.explain(scope, run.id, "missing_required_field")
+
+      assert explanation.code == "missing_required_field"
+      assert explanation.validator_version == "8.0.1"
+
+      documentation = explanation.documentation
+      assert documentation.status == "available"
+      assert documentation.reason == nil
+      assert documentation.evidence_fields == ["filename", "csvRowNumber", "fieldName"]
+      assert documentation.declared_severity == "ERROR"
+
+      # The explanation is our own paraphrase, bounded and specific: it says what
+      # the rule means and where the notice points, without quoting or fetching
+      # the upstream source at runtime.
+      assert byte_size(documentation.summary) < 1_024
+      assert documentation.summary =~ "empty"
+      assert documentation.summary =~ "file"
+      assert documentation.summary =~ "row"
+      assert documentation.summary =~ "field"
+
+      assert documentation.source_url =~
+               "MobilityData/gtfs-validator/blob/v8.0.1/core/src/main/java/org/mobilitydata/gtfsvalidator/notice/MissingRequiredFieldNotice.java"
+
+      # The run's own evidence stands beside the documentation: 170 total, 3
+      # retained, exactly as the report stored them.
+      assert explanation.findings.severities == %{"ERROR" => 170}
+      assert explanation.findings.total_instances == 170
+      assert explanation.findings.retained_instances == 3
+      assert explanation.findings.completeness == "incomplete"
+    end
+
+    test "an uncaptured version or another code discloses unavailable documentation and keeps the findings",
+         %{scope: scope, organization: organization, version: version} do
+      # The same code, but a run whose validator version this repository never
+      # verified a source for: the pinned rule is not borrowed across versions.
+      other_version =
+        completed_run(organization, version, [missing_field_group("ERROR", 170)],
+          validator_version: "8.0.2"
+        )
+
+      assert {:ok, unverified} =
+               Evidence.explain(scope, other_version.id, "missing_required_field")
+
+      assert unverified.documentation.status == "unavailable"
+      assert unverified.documentation.reason == "not_in_catalog_for_this_version"
+      assert unverified.documentation.summary == nil
+      assert unverified.documentation.source_url == nil
+      assert unverified.documentation.declared_severity == nil
+
+      # The real findings are untouched by the missing documentation.
+      assert unverified.findings.severities == %{"ERROR" => 170}
+      assert unverified.findings.total_instances == 170
+
+      # A legacy row that recorded no version at all is unavailable too, and
+      # says why, rather than inheriting the only pinned rule.
+      legacy = completed_run(organization, version, [missing_field_group("ERROR", 170)])
+
+      assert {:ok, unknown} = Evidence.explain(scope, legacy.id, "missing_required_field")
+      assert unknown.validator_version == nil
+      assert unknown.documentation.status == "unavailable"
+      assert unknown.documentation.reason == "validator_version_not_recorded"
+
+      # Another code of the same verified version is also uncatalogued.
+      run =
+        completed_run(organization, version, [missing_field_group("ERROR", 4)],
+          validator_version: "8.0.1"
+        )
+
+      assert {:ok, other_code} = Evidence.explain(scope, run.id, "unknown_column")
+      assert other_code.documentation.status == "unavailable"
+      assert other_code.documentation.reason == "not_in_catalog_for_this_version"
+      assert other_code.findings.severities == %{}
+      assert other_code.findings.total_instances == 0
+    end
+
+    test "a stored WARNING stays WARNING where the catalog declares ERROR", %{
+      scope: scope,
+      organization: organization,
+      version: version
+    } do
+      # The upstream rule is an ERROR, but this run stored the code as a WARNING
+      # for its own reason; the catalog describes the rule and never restates the
+      # report's severity.
+      run =
+        completed_run(organization, version, [missing_field_group("WARNING", 3)],
+          validator_version: "8.0.1"
+        )
+
+      assert {:ok, explanation} = Evidence.explain(scope, run.id, "missing_required_field")
+
+      assert explanation.documentation.status == "available"
+      assert explanation.documentation.declared_severity == "ERROR"
+      assert explanation.findings.severities == %{"WARNING" => 3}
+      refute explanation.findings.severities == %{"ERROR" => 3}
+    end
+
+    test "a foreign, absent or unsupported run explains nothing", %{
+      scope: scope,
+      organization: organization,
+      version: version
+    } do
+      foreign_organization = organization_fixture()
+      foreign_version = gtfs_version_fixture(foreign_organization.id)
+
+      foreign =
+        completed_run(foreign_organization, foreign_version, [missing_field_group("ERROR", 5)],
+          validator_version: "8.0.1"
+        )
+
+      assert {:error, :unavailable} =
+               Evidence.explain(scope, foreign.id, "missing_required_field")
+
+      assert {:error, :unavailable} =
+               Evidence.explain(scope, Ecto.UUID.generate(), "missing_required_field")
+
+      assert {:error, :invalid_arguments} = Evidence.explain(scope, "", "missing_required_field")
+
+      assert {:error, :invalid_arguments} = Evidence.explain(scope, version.id, "")
+    end
+  end
+
+  describe "inspection targets" do
+    setup %{organization: organization, version: version} do
+      stop = stop_fixture(organization.id, version.id, %{stop_id: "STOP_1", stop_name: "Main St"})
+      route = route_fixture(organization.id, version.id, %{route_id: "R1", route_short_name: "1"})
+      trip = trip_fixture(organization.id, version.id, route.id, %{trip_id: "T1"})
+      calendar = calendar_fixture(organization.id, version.id, %{service_id: "WK"})
+
+      %{stop: stop, route: route, trip: trip, calendar: calendar}
+    end
+
+    test "unique natural keys resolve to typed current targets", context do
+      %{scope: scope, organization: organization, version: version, route: route} = context
+
+      run =
+        completed_run(organization, version, [
+          group_with([%{"stopId" => "STOP_1", "routeId" => "R1", "serviceId" => "WK"}])
+        ])
+
+      assert {:ok, report} = Evidence.findings(scope, %{run_id: run.id})
+      assert [%{instances: [instance]}] = report.groups
+      assert {:ok, location} = Evidence.locate(scope, run.id, instance.ref)
+
+      assert location.context == %{
+               "filename" => "stops.txt",
+               "csvRowNumber" => 3,
+               "stopId" => "STOP_1",
+               "routeId" => "R1",
+               "serviceId" => "WK"
+             }
+
+      assert Enum.map(location.targets, & &1.kind) == ["stop", "route", "calendar"]
+      assert Enum.map(location.targets, & &1.id) == ["STOP_1", "R1", "WK"]
+      assert Enum.map(location.targets, & &1.label) == ["Main St", "1", nil]
+      assert location.unresolved == []
+      assert location.ref == instance.ref
+      assert location.digest == report.digest
+    end
+
+    test "a trip resolves to its own current route, not to the trip", context do
+      %{scope: scope, organization: organization, version: version, route: route} = context
+
+      run = completed_run(organization, version, [group_with([%{"tripId" => "T1"}])])
+      assert {:ok, report} = Evidence.findings(scope, %{run_id: run.id})
+      assert [%{instances: [instance]}] = report.groups
+
+      assert {:ok, location} = Evidence.locate(scope, run.id, instance.ref)
+      assert [%{kind: "route", id: "R1"}] = location.targets
+      assert location.unresolved == []
+
+      # A trip whose route is not a current record of this version resolves to
+      # nothing and says so; it never falls back to some other route.
+      orphan =
+        trip_fixture(organization.id, version.id, Ecto.UUID.generate(), %{trip_id: "T_ORPHAN"})
+
+      assert %Trip{route_id: route_id} = orphan
+      assert route_id == Ecto.UUID.generate()
+
+      orphan_run = completed_run(organization, version, [group_with([%{"tripId" => "T_ORPHAN"}])])
+
+      assert {:ok, orphan_report} = Evidence.findings(scope, %{run_id: orphan_run.id})
+      assert [%{instances: [orphan_instance]}] = orphan_report.groups
+
+      assert {:ok, orphan_location} = Evidence.locate(scope, orphan_run.id, orphan_instance.ref)
+      assert orphan_location.targets == []
+
+      assert orphan_location.unresolved == [
+               %{reason: "trip_route_not_current", field: "tripId", value: "T_ORPHAN"}
+             ]
+    end
+
+    test "a missing or foreign stop id resolves to nothing and states the reason", context do
+      %{scope: scope, organization: organization, version: version} = context
+
+      missing = completed_run(organization, version, [group_with([%{"stopId" => "STOP_NONE"}])])
+      assert {:ok, report} = Evidence.findings(scope, %{run_id: missing.id})
+      assert [%{instances: [instance]}] = report.groups
+
+      assert {:ok, location} = Evidence.locate(scope, missing.id, instance.ref)
+      assert location.targets == []
+
+      assert location.unresolved == [
+               %{reason: "no_current_record", field: "stopId", value: "STOP_NONE"}
+             ]
+
+      # The same stop id in another version is not a current record of this one.
+      other_version = gtfs_version_fixture(organization.id)
+      stop_fixture(organization.id, other_version.id, %{stop_id: "STOP_ELSEWHERE"})
+
+      elsewhere =
+        completed_run(organization, version, [group_with([%{"stopId" => "STOP_ELSEWHERE"}])])
+
+      assert {:ok, elsewhere_report} = Evidence.findings(scope, %{run_id: elsewhere.id})
+      assert [%{instances: [elsewhere_instance]}] = elsewhere_report.groups
+
+      assert {:ok, elsewhere_location} =
+               Evidence.locate(scope, elsewhere.id, elsewhere_instance.ref)
+
+      assert elsewhere_location.targets == []
+
+      assert elsewhere_location.unresolved == [
+               %{reason: "no_current_record", field: "stopId", value: "STOP_ELSEWHERE"}
+             ]
+    end
+
+    test "a row number alone and an unmapped pathway id stay evidence", context do
+      %{scope: scope, organization: organization, version: version} = context
+
+      run =
+        completed_run(organization, version, [
+          group_with([
+            %{"filename" => "stops.txt", "csvRowNumber" => 27},
+            %{"pathwayId" => "P1", "csvRowNumber" => 31}
+          ])
+        ])
+
+      assert {:ok, report} = Evidence.findings(scope, %{run_id: run.id})
+      assert [%{instances: [row_only, pathway]}] = report.groups
+
+      assert {:ok, row_location} = Evidence.locate(scope, run.id, row_only.ref)
+      assert row_location.targets == []
+
+      assert row_location.unresolved == [
+               %{reason: "row_number_is_not_a_record", field: nil, value: nil}
+             ]
+
+      assert row_location.context == %{"filename" => "stops.txt", "csvRowNumber" => 27}
+
+      assert {:ok, pathway_location} = Evidence.locate(scope, run.id, pathway.ref)
+      assert pathway_location.targets == []
+
+      assert pathway_location.unresolved == [
+               %{reason: "no_typed_destination_for_pathway", field: "pathwayId", value: "P1"}
+             ]
+    end
+
+    test "a reference from another report, an unknown group and a bad ref are refused", context do
+      %{scope: scope, organization: organization, version: version} = context
+
+      first = completed_run(organization, version, [group_with([%{"stopId" => "STOP_1"}])])
+      second = completed_run(organization, version, [group_with([%{"stopId" => "STOP_1"}])])
+
+      assert {:ok, first_report} = Evidence.findings(scope, %{run_id: first.id})
+      assert {:ok, second_report} = Evidence.findings(scope, %{run_id: second.id})
+      assert [%{instances: [instance]}] = first_report.groups
+
+      # The two runs have different provenance, so their digests differ and a
+      # reference is only ever resolved inside the report that issued it.
+      refute first_report.digest == second_report.digest
+
+      assert {:error, :stale} = Evidence.locate(scope, first.id, instance.ref)
+      assert {:error, :invalid_arguments} = Evidence.locate(scope, first.id, "not-a-reference")
+      assert {:error, :invalid_arguments} = Evidence.locate(scope, first.id, instance.ref <> "/9")
+
+      # An index past the group's retained samples is refused rather than read
+      # from another group's position.
+      assert {:error, :invalid_arguments} =
+               Evidence.locate(
+                 scope,
+                 first.id,
+                 "#{first_report.digest}/missing_required_field|ERROR/7"
+               )
+
+      assert {:error, :invalid_arguments} =
+               Evidence.locate(
+                 scope,
+                 first.id,
+                 "#{first_report.digest}/missing_required_field|ERROR/x"
+               )
+
+      assert {:error, :invalid_arguments} =
+               Evidence.locate(scope, first.id, "#{first_report.digest}/no_such_code|ERROR/0")
+
+      assert {:error, :unavailable} = Evidence.locate(scope, Ecto.UUID.generate(), instance.ref)
+    end
+  end
+
+  describe "remedies are navigation only" do
+    test "the correction list is empty and navigation is what is offered", context do
+      assert %{corrections: [], navigation: true} = Remedies.list()
+    end
+
+    test "an explicitly requested inspection navigates and changes nothing", context do
+      %{scope: scope, organization: organization, version: version, stop: stop} = context
+
+      run = completed_run(organization, version, [group_with([%{"stopId" => stop.stop_id}])])
+      assert {:ok, report} = Evidence.findings(scope, %{run_id: run.id})
+      assert [%{instances: [instance]}] = report.groups
+
+      before = counts(organization.id, version.id)
+
+      assert {:ok, navigation} = Remedies.prepare(scope, run.id, instance.ref, true)
+
+      assert navigation.navigable
+      assert [%{kind: "stop", id: "STOP_1", label: "Main St"}] = navigation.targets
+      assert navigation.unresolved == []
+
+      # A correction request never edits: the records, the run and the audit
+      # trail are byte-for-byte what they were before the request.
+      assert counts(organization.id, version.id) == before
+      assert Repo.reload!(run).result_json == run.result_json
+      assert Repo.reload!(stop).stop_name == "Main St"
+    end
+
+    test "an unrequested inspection hands back nothing", context do
+      %{scope: scope, organization: organization, version: version, stop: stop} = context
+
+      run = completed_run(organization, version, [group_with([%{"stopId" => stop.stop_id}])])
+      assert {:ok, report} = Evidence.findings(scope, %{run_id: run.id})
+      assert [%{instances: [instance]}] = report.groups
+
+      # The helper's own interest is not a request: nothing is prepared.
+      assert {:error, :not_requested} = Remedies.prepare(scope, run.id, instance.ref, false)
+      assert {:error, :invalid_arguments} = Remedies.prepare(scope, run.id, instance.ref, nil)
+
+      # An instance that names no current record is an explicit unavailable, not
+      # a guess and not a correction.
+      unresolved_run =
+        completed_run(organization, version, [group_with([%{"stopId" => "STOP_NONE"}])])
+
+      assert {:ok, unresolved_report} = Evidence.findings(scope, %{run_id: unresolved_run.id})
+      assert [%{instances: [unresolved_instance]}] = unresolved_report.groups
+
+      assert {:ok, navigation} =
+               Remedies.inspect(scope, unresolved_run.id, unresolved_instance.ref)
+
+      refute navigation.navigable
+      assert navigation.targets == []
+
+      assert navigation.unresolved == [
+               %{reason: "no_current_record", field: "stopId", value: "STOP_NONE"}
+             ]
+
+      # Only typed current records leave this module; the stored sample context
+      # stays where it was read.
+      refute Map.has_key?(navigation, :context)
+    end
+  end
+
   # -- fixtures ---------------------------------------------------------------
 
   defp scope(organization, version, user) do
@@ -617,20 +1003,95 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
     })
     |> Repo.update!()
     |> then(fn run ->
-      if Keyword.get(opts, :engine) || Keyword.get(opts, :result_schema_version) do
+      system_updates =
+        [
+          engine: Keyword.get(opts, :engine),
+          result_schema_version: Keyword.get(opts, :result_schema_version),
+          validator_version: Keyword.get(opts, :validator_version)
+        ]
+        |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+        |> Map.new()
+
+      if system_updates == %{} do
+        run
+      else
         Repo.update_all(
           from(stored in ValidationRun, where: stored.id == ^run.id),
-          set: [
-            engine: Keyword.get(opts, :engine),
-            result_schema_version: Keyword.get(opts, :result_schema_version)
-          ]
+          set: system_updates
         )
 
         Repo.reload!(run)
-      else
-        run
       end
     end)
+  end
+
+  # The pinned rule's own group: a canonical step 2 group of that code, stored
+  # under whichever severity the run actually recorded.
+  defp missing_field_group(severity, total) do
+    %{
+      "code" => "missing_required_field",
+      "severity" => severity,
+      "total_notices" => total,
+      "notices" => samples(),
+      "retained_notices" => 3,
+      "sample_completeness" => "sampled"
+    }
+  end
+
+  # A complete group whose samples carry exactly the given context, so the
+  # reference under test sits at a known index of its own group.
+  defp group_with(contexts) do
+    %{
+      "code" => "missing_required_field",
+      "severity" => "ERROR",
+      "total_notices" => length(contexts),
+      "notices" => Enum.map(contexts, &Map.put_new(&1, "filename", "stops.txt")),
+      "retained_notices" => length(contexts),
+      "sample_completeness" => "complete"
+    }
+  end
+
+  # The observable count of everything a correction request must not change.
+  defp counts(organization_id, version_id) do
+    %{
+      stops:
+        Repo.aggregate(
+          from(s in Stop,
+            where: s.organization_id == ^organization_id and s.gtfs_version_id == ^version_id
+          ),
+          :count
+        ),
+      routes:
+        Repo.aggregate(
+          from(r in Route,
+            where: r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id
+          ),
+          :count
+        ),
+      trips:
+        Repo.aggregate(
+          from(t in Trip,
+            where: t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id
+          ),
+          :count
+        ),
+      calendars:
+        Repo.aggregate(
+          from(c in Calendar,
+            where: c.organization_id == ^organization_id and c.gtfs_version_id == ^version_id
+          ),
+          :count
+        ),
+      runs:
+        Repo.aggregate(
+          from(v in ValidationRun,
+            where: v.organization_id == ^organization_id and v.gtfs_version_id == ^version_id
+          ),
+          :count
+        ),
+      change_logs:
+        Repo.aggregate(from(c in ChangeLog, where: c.organization_id == ^organization_id), :count)
+    }
   end
 
   # A historical wrapper group: its own total says 1 while the embedded upstream

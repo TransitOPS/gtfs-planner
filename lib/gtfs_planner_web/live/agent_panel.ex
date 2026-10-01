@@ -83,8 +83,8 @@ defmodule GtfsPlannerWeb.AgentPanel do
   holds is dropped whole, so no foreign answer can reach the screen even as an
   unlinked card (AC-2).
 
-  Ownership is verified before a path is built, not after: a calendar and a
-  route are looked up in this panel's own organization and version, so a deleted
+  Ownership is verified before a path is built, not after: a calendar, a
+  route and a stop are looked up in this panel's own organization and version, so a deleted
   identity, one belonging to another organization or version, and a kind this
   panel does not name all render as plain text. A calendar identity is owned
   when a weekly row, a metadata anchor or an exception date carries it, which is
@@ -98,7 +98,8 @@ defmodule GtfsPlannerWeb.AgentPanel do
 
   A route reference resolves to that route's own Schedules page, which is the
   page the Schedule helper is bound to; it is the same page the panel already
-  shows, so following it never leaves the scope this panel holds.
+  shows, so following it never leaves the scope this panel holds. A stop
+  reference resolves to that stop's own Detail page in the same way.
 
   A host that applies the assistant's own changes opts in with `auto_apply: true`
   and names the record in `subject_id`. Each settled, unapplied prepared entry is
@@ -668,6 +669,10 @@ defmodule GtfsPlannerWeb.AgentPanel do
     if owned_route?(id, socket), do: route_schedules_path(socket, id)
   end
 
+  defp evidence_link("stop", id, socket) do
+    if owned_stop?(id, socket), do: stop_show_path(socket, id)
+  end
+
   defp evidence_link(_kind, _id, _socket), do: nil
 
   # A calendar identity is taken by a weekly row, a metadata anchor or an
@@ -692,6 +697,19 @@ defmodule GtfsPlannerWeb.AgentPanel do
         socket.assigns.current_organization.id,
         socket.assigns.current_gtfs_version.id,
         route_id
+      )
+    )
+  end
+
+  # A stop identity is the one a stop row carries in this panel's own
+  # organization and version, so an imported ID that names no stop here, or a
+  # stop of another organization or version, does not resolve at all.
+  defp owned_stop?(stop_id, socket) do
+    not is_nil(
+      Gtfs.get_stop_by_stop_id(
+        socket.assigns.current_organization.id,
+        socket.assigns.current_gtfs_version.id,
+        stop_id
       )
     )
   end
@@ -760,6 +778,17 @@ defmodule GtfsPlannerWeb.AgentPanel do
   defp forwardable?(entry) do
     entry.role == :assistant and entry.status == :done and
       not is_nil(entry.prepared) and entry.applied? == false
+  end
+
+  # A stop reference resolves to that stop's own Detail page in this version,
+  # built the way the stop components build it: the version comes from this
+  # panel's own assigns and the imported stop ID is percent-encoded, so an
+  # imported ID containing a slash, a dot segment or a query cannot escape the
+  # version's stops path.
+  defp stop_show_path(socket, stop_id) do
+    version_id = socket.assigns.current_gtfs_version.id
+
+    "/gtfs/" <> version_id <> "/stops/" <> URI.encode(stop_id, &URI.char_unreserved?/1)
   end
 
   ## Session bookkeeping

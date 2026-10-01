@@ -46,11 +46,56 @@ defmodule GtfsPlanner.Validations.Evidence do
   disclosed to the caller. A retained value longer than 128 bytes is refused as
   `:too_large` rather than silently shortened, and so is a result that cannot fit
   32 KiB; both ask the caller to narrow the page instead.
+
+  ## Explanations and inspection targets
+
+  `explain/3` pairs the stored findings of one notice code with a compile-owned
+  catalog entry. The catalog holds one verified rule for one captured validator
+  version - v8.0.1 `missing_required_field` - with its meaning paraphrased and
+  its pinned upstream source named. A run of another version, or another code,
+  discloses unavailable documentation and keeps the run's real findings. No
+  documentation is fetched at runtime, and the catalog's declared severity never
+  replaces the severity the stored report actually carried.
+
+  `locate/3` resolves one instance reference to the current records it names. A
+  natural key is resolved inside the scope's organization and version with a
+  bounded two-row read, so a duplicated key resolves to nothing rather than to
+  an arbitrary row; a `tripId` resolves to its unique current trip and then to
+  that trip's unique route. A CSV row number is not a record identity and never
+  resolves, and a pathway id has no typed destination in this slice, so both stay
+  as evidence with a stated reason. Nothing here transfers correction authority:
+  the result is a list of typed current targets or a reason, never a change.
   """
 
   alias GtfsPlanner.Agents.Scope
+  alias GtfsPlanner.Gtfs.Calendar
+  alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.Trip
+  alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Validations.ValidationRun
+
+  import Ecto.Query
+
+  # One verified rule for one captured validator version. The paraphrase is our
+  # own wording and the source is the pinned upstream file it was read from; a
+  # rule may only be added here with its own pinned source and captured-version
+  # coverage, and nothing is ever retrieved at runtime.
+  @notice_catalog %{
+    {"8.0.1", "missing_required_field"} => %{
+      summary:
+        "A field the specification requires for this record is present in the " <>
+          "file but its value is empty, so the record cannot be read as written. " <>
+          "The notice names the file, the CSV row and the field name, which is " <>
+          "where to fill the value in the source feed.",
+      evidence_fields: ["filename", "csvRowNumber", "fieldName"],
+      declared_severity: "ERROR",
+      source_url:
+        "https://github.com/MobilityData/gtfs-validator/blob/v8.0.1/core/src/" <>
+          "main/java/org/mobilitydata/gtfsvalidator/notice/MissingRequiredFieldNotice.java"
+    }
+  }
 
   @run_types ["mobility_data", "mobility_data_flex"]
   @engines [nil, "mobility_data"]
@@ -68,7 +113,43 @@ defmodule GtfsPlanner.Validations.Evidence do
 
   @row_keys ~w(csvRowNumber rowNumber)
   @id_keys ~w(stopId routeId tripId serviceId pathwayId)
+  # Every natural key but the pathway, which has no typed destination here.
+  @locatable_keys ~w(stopId routeId tripId serviceId)
   @allowed_context_keys ["filename" | @row_keys ++ ["fieldName"] ++ @id_keys]
+
+  @typedoc "One current record a stored instance names, typed for a host link."
+  @type target :: %{kind: String.t(), id: String.t(), label: String.t() | nil}
+
+  @typedoc "One stored notice code with its actual evidence and pinned documentation."
+  @type explanation :: %{
+          digest: String.t(),
+          code: String.t(),
+          validator_version: String.t() | nil,
+          documentation: %{
+            status: String.t(),
+            reason: String.t() | nil,
+            summary: String.t() | nil,
+            source_url: String.t() | nil,
+            evidence_fields: [String.t()],
+            declared_severity: String.t() | nil
+          },
+          findings: %{
+            severities: %{optional(String.t()) => non_neg_integer()},
+            total_instances: non_neg_integer(),
+            retained_instances: non_neg_integer(),
+            completeness: String.t()
+          }
+        }
+
+  @typedoc "One instance's current records, or the reason it names none."
+  @type location :: %{
+          ref: String.t(),
+          digest: String.t(),
+          context: %{optional(String.t()) => String.t() | integer()},
+          excluded_keys: [String.t()],
+          targets: [target()],
+          unresolved: [%{reason: String.t(), field: String.t() | nil, value: String.t() | nil}]
+        }
 
   @typedoc "One bounded page of a scoped completed validation report."
   @type report :: %{
@@ -120,6 +201,55 @@ defmodule GtfsPlanner.Validations.Evidence do
   end
 
   def findings(_scope, _args), do: {:error, :invalid_arguments}
+
+  @doc """
+  Returns the bounded explanation of one stored notice code.
+
+  The run is resolved and read exactly as `findings/2` does, so the explanation
+  describes the same scoped report and the same digest. Documentation comes from
+  the compile-owned catalog and is offered only for the captured version and code
+  it was verified against; any other version or code returns
+  `status: "unavailable"` beside the run's real findings, which are never
+  restated or replaced by the catalog.
+  """
+  @spec explain(Scope.t(), String.t(), String.t()) :: {:ok, explanation()} | {:error, atom()}
+  def explain(%Scope{} = scope, run_ref, code)
+      when is_binary(run_ref) and run_ref != "" and is_binary(code) and code != "" do
+    with :ok <- authorize(scope),
+         {:ok, request} <- run_request(run_ref),
+         {:ok, run} <- fetch_run(scope, request),
+         {:ok, source} <- read_source(run) do
+      bounded(explanation(run, source, code))
+    end
+  end
+
+  def explain(_scope, _run_ref, _code), do: {:error, :invalid_arguments}
+
+  @doc """
+  Resolves one instance reference to the current records it names.
+
+  The reference is the stable `digest/group/index` position `findings/2` returns,
+  so a reference from another report is stale here rather than resolved. Each
+  natural key is read inside the scope's organization and version with a bounded
+  two-row query: exactly one row resolves, none or several do not. A CSV row
+  number never resolves, and a pathway id has no typed destination, so both are
+  reported as unresolved with a reason beside the sample's own context.
+  """
+  @spec locate(Scope.t(), String.t(), String.t()) :: {:ok, location()} | {:error, atom()}
+  def locate(%Scope{} = scope, run_ref, instance_ref)
+      when is_binary(run_ref) and run_ref != "" and is_binary(instance_ref) and
+             instance_ref != "" do
+    with :ok <- authorize(scope),
+         {:ok, request} <- run_request(run_ref),
+         {:ok, run} <- fetch_run(scope, request),
+         {:ok, source} <- read_source(run),
+         {:ok, position} <- parse_instance_ref(source.digest, instance_ref),
+         {:ok, kept, excluded} <- instance_context(source, position) do
+      bounded(location(scope, source, position, kept, excluded))
+    end
+  end
+
+  def locate(_scope, _run_ref, _instance_ref), do: {:error, :invalid_arguments}
 
   # A membership withdrawn mid-conversation is not a different answer, so a
   # refused membership and an unknown run are one indistinguishable result.
@@ -788,6 +918,244 @@ defmodule GtfsPlanner.Validations.Evidence do
   end
 
   defp cursor_payload(_payload), do: {:error, :invalid_arguments}
+
+  # -- explanations ------------------------------------------------------------
+
+  # Both new reads resolve the run through the same scoped path `findings/2`
+  # uses, so an explanation or an inspection target never describes a report the
+  # caller could not have paged.
+  defp run_request(run_ref) do
+    case parse_request(%{run_id: run_ref}) do
+      {:ok, request} -> {:ok, request}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp explanation(%ValidationRun{} = run, source, code) do
+    groups = Enum.filter(source.groups, &(&1.code == code))
+    counted = Enum.filter(groups, &is_integer(&1.total))
+
+    %{
+      digest: source.digest,
+      code: code,
+      validator_version: run.validator_version,
+      documentation: documentation(run.validator_version, code),
+      findings: %{
+        severities: severity_totals(counted),
+        total_instances: counted |> Enum.map(& &1.total) |> Enum.sum(),
+        retained_instances: groups |> Enum.map(& &1.retained) |> Enum.sum(),
+        completeness: completeness(groups)
+      }
+    }
+  end
+
+  # Documentation is offered only for the exact version and code it was verified
+  # against. A run of another version, a code the catalog does not name, and a
+  # run that recorded no version at all all read the same way: the documentation
+  # is unavailable and the run's own findings stand alone beside it. The
+  # catalog's declared severity is disclosure about the upstream rule, never a
+  # replacement for the severity this report actually carried.
+  defp documentation(validator_version, code) do
+    case Map.get(@notice_catalog, {validator_version, code}) do
+      nil ->
+        %{
+          status: "unavailable",
+          reason: unavailable_reason(validator_version),
+          summary: nil,
+          source_url: nil,
+          evidence_fields: [],
+          declared_severity: nil
+        }
+
+      entry ->
+        %{
+          status: "available",
+          reason: nil,
+          summary: entry.summary,
+          source_url: entry.source_url,
+          evidence_fields: entry.evidence_fields,
+          declared_severity: entry.declared_severity
+        }
+    end
+  end
+
+  defp unavailable_reason(nil), do: "validator_version_not_recorded"
+  defp unavailable_reason(_validator_version), do: "not_in_catalog_for_this_version"
+
+  # -- inspection targets -----------------------------------------------------
+
+  # A reference is the stable `digest/group/index` position `findings/2`
+  # presented, and it is parsed from the end because the group key itself may
+  # contain `/` or `|`. A reference issued for another report is stale here
+  # rather than resolved against this one.
+  defp parse_instance_ref(digest, instance_ref) do
+    case String.split(instance_ref, "/") do
+      [ref_digest, group_key, index] -> instance_position(digest, ref_digest, group_key, index)
+      _other -> {:error, :invalid_arguments}
+    end
+  end
+
+  defp instance_position(digest, ref_digest, group_key, index) do
+    with {:ok, index} <- instance_index(index) do
+      if ref_digest == digest,
+        do: {:ok, %{group_key: group_key, index: index}},
+        else: {:error, :stale}
+    end
+  end
+
+  defp instance_index(index) do
+    case Integer.parse(index) do
+      {value, ""} when value >= 0 -> {:ok, value}
+      _other -> {:error, :invalid_arguments}
+    end
+  end
+
+  defp instance_context(source, %{group_key: group_key, index: index}) do
+    group = Enum.find(source.groups, &(&1.key == group_key))
+    instance = group && Enum.find(group.instances, &(&1.index == index))
+
+    case instance do
+      %{raw: raw} -> sanitize(raw)
+      nil -> {:error, :invalid_arguments}
+    end
+  end
+
+  defp location(%Scope{} = scope, source, %{group_key: group_key, index: index}, kept, excluded) do
+    %{
+      ref: "#{source.digest}/#{group_key}/#{index}",
+      digest: source.digest,
+      context: kept,
+      excluded_keys: excluded,
+      targets: targets(scope, kept),
+      unresolved: unresolved(scope, kept)
+    }
+  end
+
+  # Every natural key the sample carried is resolved independently, so a notice
+  # naming both a route and a stop offers both, and one key that resolves to
+  # nothing never hides another that does. One resolution answers both lists, so
+  # a target and the reason beside it can never disagree.
+  defp targets(%Scope{} = scope, kept) do
+    Enum.flat_map(@locatable_keys, fn key ->
+      with value when is_binary(value) <- Map.get(kept, key),
+           {:resolved, target} <- natural(scope, key, value) do
+        [target]
+      else
+        _other -> []
+      end
+    end)
+  end
+
+  # A natural key that names no single current record is stated rather than
+  # dropped, so the caller can say why the sample resolved to nothing.
+  defp unresolved(%Scope{} = scope, kept) do
+    stated =
+      Enum.flat_map(@locatable_keys, fn key ->
+        with value when is_binary(value) <- Map.get(kept, key),
+             {:unresolved, reason} <- natural(scope, key, value) do
+          [%{reason: reason, field: key, value: value}]
+        else
+          _other -> []
+        end
+      end)
+
+    case stated ++ pathway_reasons(kept) do
+      [] -> row_only_reasons(kept)
+      reasons -> reasons
+    end
+  end
+
+  # A pathway id is evidence, but this application has no typed destination to
+  # send a person to for it, so it is stated rather than guessed at.
+  defp pathway_reasons(kept) do
+    case Map.get(kept, "pathwayId") do
+      nil -> []
+      value -> [%{reason: "no_typed_destination_for_pathway", field: "pathwayId", value: value}]
+    end
+  end
+
+  # A CSV row number names a line of a file, not a record; nothing in it can name
+  # a current row, so it stays evidence with that reason stated.
+  defp row_only_reasons(kept) do
+    if Enum.any?(@id_keys -- ["pathwayId"], &Map.has_key?(kept, &1)),
+      do: [],
+      else: [%{reason: "row_number_is_not_a_record", field: nil, value: nil}]
+  end
+
+  defp natural(%Scope{} = scope, "stopId", stop_id) do
+    case natural_row(scope, Stop, :stop_id, stop_id) do
+      {:resolved, stop} -> {:resolved, %{kind: "stop", id: stop.stop_id, label: stop_name(stop)}}
+      {:unresolved, reason} -> {:unresolved, reason}
+    end
+  end
+
+  defp natural(%Scope{} = scope, "routeId", route_id) do
+    case natural_row(scope, Route, :route_id, route_id) do
+      {:resolved, route} ->
+        {:resolved, %{kind: "route", id: route.route_id, label: route_name(route)}}
+
+      {:unresolved, reason} ->
+        {:unresolved, reason}
+    end
+  end
+
+  defp natural(%Scope{} = scope, "serviceId", service_id) do
+    case natural_row(scope, Calendar, :service_id, service_id) do
+      {:resolved, calendar} ->
+        {:resolved, %{kind: "calendar", id: calendar.service_id, label: nil}}
+
+      {:unresolved, reason} ->
+        {:unresolved, reason}
+    end
+  end
+
+  # A trip is not a destination in this application, so it resolves to the route
+  # it currently belongs to, and only when both the trip and that route are
+  # single current records.
+  defp natural(%Scope{} = scope, "tripId", trip_id) do
+    case natural_row(scope, Trip, :trip_id, trip_id) do
+      {:resolved, trip} ->
+        case natural_row(scope, Route, :route_id, trip.route_id) do
+          {:resolved, route} ->
+            {:resolved, %{kind: "route", id: route.route_id, label: route_name(route)}}
+
+          {:unresolved, _reason} ->
+            {:unresolved, "trip_route_not_current"}
+        end
+
+      {:unresolved, reason} ->
+        {:unresolved, reason}
+    end
+  end
+
+  # `Repo.one/2` raises on an ambiguous natural key, so uniqueness is read with a
+  # bounded two-row query inside the scope's organization and version: exactly
+  # one row resolves, none or several do not. A key naming no row of *this*
+  # version - including one that exists only in another version or organization -
+  # is no current record here.
+  defp natural_row(%Scope{} = scope, schema, field, value) do
+    case unique(scope, schema, field, value) do
+      [row] -> {:resolved, row}
+      [] -> {:unresolved, "no_current_record"}
+      _many -> {:unresolved, "duplicate_current_records"}
+    end
+  end
+
+  defp unique(%Scope{} = scope, schema, field, value) do
+    Repo.all(
+      from(row in schema,
+        where:
+          row.organization_id == ^scope.organization_id and
+            row.gtfs_version_id == ^scope.gtfs_version_id and
+            field(row, ^field) == ^value,
+        limit: 2
+      )
+    )
+  end
+
+  defp stop_name(stop), do: stop.stop_name || stop.stop_id
+
+  defp route_name(route), do: route.route_short_name || route.route_long_name || route.route_id
 
   # -- bounds -----------------------------------------------------------------
 

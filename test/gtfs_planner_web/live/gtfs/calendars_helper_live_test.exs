@@ -283,6 +283,59 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsHelperLiveTest do
       assert query_count(LazyHTML.from_fragment(card), "a") == 0
     end
 
+    test "a stop reference links to this version's stop page with an encoded id", context do
+      {view, pid} = open_helper(context)
+
+      here = %{
+        organization_id: context.organization.id,
+        gtfs_version_id: context.version.id,
+        identity: "version:#{context.version.id}"
+      }
+
+      # An imported stop id may carry a slash, a space or a dot segment; the
+      # link stays one path segment inside this version's stops path.
+      stop_fixture(context.organization.id, context.version.id, %{stop_id: "depot/../admin 1"})
+
+      send(
+        view.pid,
+        {:agent_event, pid,
+         {:entry, entry_with_evidence(52, "Stop finding", here, "stop", "depot/../admin 1")}}
+      )
+
+      card = view |> element("#agent-evidence-52-1") |> render()
+      fragment = LazyHTML.from_fragment(card)
+
+      assert query_count(fragment, "a") == 1
+
+      assert [anchor] = LazyHTML.query(fragment, "a")
+
+      assert LazyHTML.attribute(anchor, "href") |> Enum.at(0) ==
+               "/gtfs/#{context.version.id}/stops/depot%2F..%2Fadmin%201"
+    end
+
+    test "a stop id this version does not own renders without a link", context do
+      {view, pid} = open_helper(context)
+
+      here = %{
+        organization_id: context.organization.id,
+        gtfs_version_id: context.version.id,
+        identity: "version:#{context.version.id}"
+      }
+
+      other_version = gtfs_version_fixture(context.organization.id, %{name: "Other Version"})
+      stop_fixture(context.organization.id, other_version.id, %{stop_id: "ELSEWHERE"})
+
+      send(
+        view.pid,
+        {:agent_event, pid,
+         {:entry, entry_with_evidence(53, "Foreign stop", here, "stop", "ELSEWHERE")}}
+      )
+
+      card = view |> element("#agent-evidence-53-1") |> render()
+      assert card =~ "no link for this reference"
+      assert query_count(LazyHTML.from_fragment(card), "a") == 0
+    end
+
     test "the old Calendar tool calls keep working without a card", context do
       {view, pid} = open_helper(context)
 
