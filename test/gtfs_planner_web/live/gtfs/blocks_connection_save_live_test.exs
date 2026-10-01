@@ -411,7 +411,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionSaveLiveTest do
       membership = Accounts.get_user_org_membership(context.user.id, context.organization.id)
       {:ok, _membership} = Accounts.update_user_org_membership(membership, %{roles: []})
 
-      html = view |> element("#connection-save") |> render_click()
+      view |> element("#connection-save") |> render_click()
+
+      # The refusal comes from the write's own transaction, so it arrives with
+      # the asynchronous result rather than with the click.
+      html = render_async(view, 2_000)
 
       assert html =~ @permission_message
       assert stored_transfers(context, a, b) == []

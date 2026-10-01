@@ -5358,6 +5358,7 @@ defmodule GtfsPlanner.Gtfs do
           {:ok, GtfsPlanner.Gtfs.InSeatTransfers.result()}
           | {:error,
              :invalid_choice
+             | :forbidden
              | :not_found
              | :stale
              | {:refused, term()}
@@ -5393,6 +5394,7 @@ defmodule GtfsPlanner.Gtfs do
           | {:error,
              :invalid_input
              | :invalid_choice
+             | :forbidden
              | :too_many
              | :busy
              | {:audit_failed, term()}
@@ -5425,7 +5427,8 @@ defmodule GtfsPlanner.Gtfs do
           AuditContext.t()
         ) ::
           {:ok, pos_integer()}
-          | {:error, :invalid_input | :not_found | :stale | :busy | {:audit_failed, term()}}
+          | {:error,
+             :invalid_input | :forbidden | :not_found | :stale | :busy | {:audit_failed, term()}}
   def remove_in_seat_records(pairs, %AuditContext{} = audit) do
     InSeatTransfers.remove_records(pairs, audit)
   end

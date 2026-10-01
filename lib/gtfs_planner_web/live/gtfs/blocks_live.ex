@@ -599,8 +599,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # The Set-all write: one call to `Gtfs.set_in_seat_connections/3`, the facade
   # for `InSeatTransfers.set_connections/3`, under the version's own audit
   # context (R5, CR-8). The organization, version and actor come from the
-  # socket, never from the event, and the editor role is re-read here exactly as
-  # the block writes and the single connection's save do it.
+  # socket, never from the event, and the write reads the actor's current editor
+  # membership inside its own transaction.
   #
   # The pairs and their `expected` rows are the review's own rows, never the
   # event's, so a crafted `save_bulk` can only write what the review the reader
@@ -609,26 +609,18 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     do: {:noreply, socket}
 
   def handle_event("save_bulk", _params, socket) do
-    if editor_access?(socket) do
-      case bulk_save_request(socket) do
-        {:ok, request} ->
-          {:noreply,
-           socket
-           |> assign(:bulk_error, nil)
-           |> assign(:bulk_pending, true)
-           |> start_async(@save_bulk_key, fn ->
-             {request,
-              Gtfs.set_in_seat_connections(request.entries, request.choice, request.audit)}
-           end)}
+    case bulk_save_request(socket) do
+      {:ok, request} ->
+        {:noreply,
+         socket
+         |> assign(:bulk_error, nil)
+         |> assign(:bulk_pending, true)
+         |> start_async(@save_bulk_key, fn ->
+           {request, Gtfs.set_in_seat_connections(request.entries, request.choice, request.audit)}
+         end)}
 
-        :error ->
-          {:noreply, socket}
-      end
-    else
-      # The refusal is the page flash rather than the review's own sentence: the
-      # review is a non-modal top-layer `<dialog>`, so the flash behind it is the
-      # page's own answer and the write is the thing that matters here.
-      {:noreply, put_flash(socket, :error, @permission_message)}
+      :error ->
+        {:noreply, socket}
     end
   end
 
@@ -646,11 +638,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         _params,
         %{assigns: %{bulk_result: %{undo?: true} = result}} = socket
       ) do
-    if editor_access?(socket) do
-      bulk_restored(socket, result)
-    else
-      {:noreply, put_flash(socket, :error, @permission_message)}
-    end
+    bulk_restored(socket, result)
   end
 
   def handle_event("undo_bulk", _params, socket), do: {:noreply, socket}
@@ -1212,7 +1200,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # The one write the drawer owns: `Gtfs.set_in_seat_connection/5`, the facade for
   # `InSeatTransfers.set_connection/5`, under the version's own audit context (R5,
   # CR-8). The organization, version and actor come from the socket, never from the
-  # event, and the editor role is re-read here exactly as the block writes do it.
+  # event, and the write reads the actor's current editor membership inside its own
+  # transaction.
   #
   # The write runs under `start_async`: it takes the blocking lock, the pair's rows
   # and a retry loop, so the drawer shows that it is working rather than freezing,
@@ -1222,32 +1211,25 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     do: {:noreply, socket}
 
   def handle_event("save_connection", _params, socket) do
-    if editor_access?(socket) do
-      case connection_save_request(socket) do
-        {:ok, request} ->
-          {:noreply,
-           socket
-           |> assign(:connection_error, nil)
-           |> assign(:connection_pending, true)
-           |> start_async(@save_connection_key, fn ->
-             {request,
-              Gtfs.set_in_seat_connection(
-                request.from,
-                request.to,
-                request.choice,
-                request.expected,
-                request.audit
-              )}
-           end)}
+    case connection_save_request(socket) do
+      {:ok, request} ->
+        {:noreply,
+         socket
+         |> assign(:connection_error, nil)
+         |> assign(:connection_pending, true)
+         |> start_async(@save_connection_key, fn ->
+           {request,
+            Gtfs.set_in_seat_connection(
+              request.from,
+              request.to,
+              request.choice,
+              request.expected,
+              request.audit
+            )}
+         end)}
 
-        :error ->
-          {:noreply, socket}
-      end
-    else
-      # The refusal is the page flash rather than the drawer's own sentence: the
-      # drawer is a non-modal top-layer `<dialog>`, so the flash behind it is the
-      # page's own answer and the write is the thing that matters here.
-      {:noreply, put_flash(socket, :error, @permission_message)}
+      :error ->
+        {:noreply, socket}
     end
   end
 
@@ -1259,47 +1241,46 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         _params,
         %{assigns: %{connection_result: %{undo?: true} = result}} = socket
       ) do
-    if editor_access?(socket) do
-      case Gtfs.set_in_seat_connection(
-             result.from,
-             result.to,
-             result.previous,
-             result.expected,
-             result.audit
-           ) do
-        {:ok, _saved} ->
-          {:noreply,
-           socket
-           |> assign(:connection_pending, false)
-           |> assign(:connection_result, %{
-             result
-             | text: restored_text(result.previous),
-               undo?: false,
-               open?: false
-           })
-           |> load_day()
-           |> resolve_drawers()
-           |> assign_page_rows_if_loaded()}
+    case Gtfs.set_in_seat_connection(
+           result.from,
+           result.to,
+           result.previous,
+           result.expected,
+           result.audit
+         ) do
+      {:ok, _saved} ->
+        {:noreply,
+         socket
+         |> assign(:connection_pending, false)
+         |> assign(:connection_result, %{
+           result
+           | text: restored_text(result.previous),
+             undo?: false,
+             open?: false
+         })
+         |> load_day()
+         |> resolve_drawers()
+         |> assign_page_rows_if_loaded()}
 
-        {:error, :stale} ->
-          {:noreply,
-           socket
-           |> assign(:connection_pending, false)
-           |> assign(:connection_result, %{
-             result
-             | text: @connection_undo_refused,
-               undo?: false,
-               open?: true
-           })}
+      {:error, :stale} ->
+        {:noreply,
+         socket
+         |> assign(:connection_pending, false)
+         |> assign(:connection_result, %{
+           result
+           | text: @connection_undo_refused,
+             undo?: false,
+             open?: true
+         })}
 
-        {:error, _reason} ->
-          {:noreply,
-           socket
-           |> assign(:connection_pending, false)
-           |> assign(:connection_result, %{result | undo?: false, open?: false})}
-      end
-    else
-      {:noreply, put_flash(socket, :error, @permission_message)}
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, @permission_message)}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> assign(:connection_pending, false)
+         |> assign(:connection_result, %{result | undo?: false, open?: false})}
     end
   end
 
@@ -1335,9 +1316,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # `InSeatTransfers.remove_records/2`, with the one row the drawer listed and the
   # `updated_at` it showed, so another editor's change between the listing and
   # the confirmation is `:stale` with nothing deleted (R7, INV-4). The
-  # organization, version and actor come from the audit context and the editor
-  # role is re-read here exactly as the other block writes do it, so a forged
-  # event from a viewer is refused rather than deleting anything.
+  # organization, version and actor come from the audit context and the write
+  # reads the actor's current editor membership inside its own transaction, so a
+  # forged event from a viewer is refused rather than deleting anything.
   #
   # The write is one locked row, its audit and the day reload, so it runs in the
   # event itself the way the Undo does; both refusals reload the day as well, so
@@ -1345,16 +1326,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   def handle_event("confirm_remove_record", _params, %{assigns: %{remove_record: nil}} = socket),
     do: {:noreply, socket}
 
-  def handle_event("confirm_remove_record", _params, socket) do
-    if editor_access?(socket) do
-      remove_stale_record(socket)
-    else
-      {:noreply,
-       socket
-       |> assign(:remove_record, nil)
-       |> put_flash(:error, @permission_message)}
-    end
-  end
+  def handle_event("confirm_remove_record", _params, socket), do: remove_stale_record(socket)
 
   # The Checks drawer's two removals, in the same ask/cancel/confirm shape as the
   # trip drawer's one.
@@ -4495,7 +4467,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp operator_marked?(%{marked: nil}, candidate), do: candidate.marked?
   defp operator_marked?(state, candidate), do: candidate.stop_id in state.marked
 
-  # --- editor authority ------------------------------------------------------
+  # --- in-seat record removal ------------------------------------------------
 
   defp remove_stale_record(socket) do
     row = socket.assigns.remove_record.row
@@ -4518,6 +4490,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
          |> resolve_drawers()
          |> assign_page_rows_if_loaded()
          |> put_flash(:error, @remove_record_changed)}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> assign(:remove_record, nil)
+         |> put_flash(:error, @permission_message)}
 
       {:error, _reason} ->
         {:noreply,
@@ -4628,19 +4606,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp remove_in_seat_batch(%{assigns: %{day: nil}} = socket, _removal, _key),
     do: {:noreply, socket}
 
-  defp remove_in_seat_batch(socket, removal, key) do
-    if editor_access?(socket) do
-      do_remove_in_seat_batch(socket, removal, key)
-    else
-      {:noreply,
-       socket
-       |> assign(key, nil)
-       |> assign(:remove_pending, false)
-       |> put_flash(:error, @permission_message)}
-    end
-  end
-
-  defp do_remove_in_seat_batch(socket, %{rows: rows}, key) do
+  defp remove_in_seat_batch(socket, %{rows: rows}, key) do
     case Gtfs.remove_in_seat_records(rows, audit_context(socket)) do
       {:ok, removed} ->
         {:noreply,
@@ -4663,6 +4629,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
          |> load_unmatched_in_seat()
          |> assign_page_rows_if_loaded()
          |> put_flash(:error, @remove_batch_changed)}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> assign(key, nil)
+         |> assign(:remove_pending, false)
+         |> put_flash(:error, @permission_message)}
 
       {:error, _reason} ->
         {:noreply,
@@ -5234,6 +5207,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # failure, a rejected batch — keeps the review open with the rows and boxes the
   # editor left and says that nothing changed, so a retry is one click rather
   # than a rebuilt review.
+  defp bulk_saved(socket, _request, {:error, :forbidden}) do
+    {:noreply,
+     socket
+     |> assign(:bulk_pending, false)
+     |> put_flash(:error, @permission_message)}
+  end
+
   defp bulk_saved(socket, _request, {:error, _reason}) do
     {:noreply, put_bulk_error(socket)}
   end
@@ -5339,18 +5319,24 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     |> Enum.map(&Map.put(&1, :expected, bulk_saved_expected(&1.pair, connections)))
     |> Enum.reject(&(is_nil(&1.expected) or &1.expected == :missing))
     |> Enum.group_by(& &1.previous)
-    |> Enum.reduce({0, []}, fn {choice, group}, {restored, skipped} ->
+    |> Enum.reduce_while({0, []}, fn {choice, group}, {restored, skipped} ->
       call = Enum.map(group, &%{pair: &1.pair, expected: &1.expected})
 
       case Gtfs.set_in_seat_connections(call, choice, audit) do
         {:ok, %{saved: saved, skipped: skipped_pairs}} ->
-          {restored + length(saved), skipped ++ skipped_pairs}
+          {:cont, {restored + length(saved), skipped ++ skipped_pairs}}
+
+        # The editor's membership was revoked, so this call and every later one
+        # write nothing. The caller answers with the permission message.
+        {:error, :forbidden} ->
+          {:halt, :forbidden}
 
         # The whole call failed, so none of its pairs was restored. That is not
         # another editor's change and the result must not claim it is: the pair
         # is named as one the Undo could not put back.
         {:error, _reason} ->
-          {restored, skipped ++ Enum.map(group, &%{pair: &1.pair, reason: :not_restored})}
+          {:cont,
+           {restored, skipped ++ Enum.map(group, &%{pair: &1.pair, reason: :not_restored})}}
       end
     end)
   end
@@ -5370,19 +5356,32 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # the Undo replaced.
   defp bulk_restored(socket, result) do
     connections = bulk_connections(socket.assigns.connections_all)
-    {restored, skipped} = bulk_undo_writes(result, connections)
-    undo_skipped = Enum.map(skipped, &bulk_skip_line(&1, connections))
 
-    {:noreply,
-     socket
-     |> assign(
-       :bulk_result,
-       Map.merge(result, %{restored: restored, undo_skipped: undo_skipped, undo?: false})
-     )
-     |> load_day()
-     |> resolve_drawers()
-     |> assign_page_rows_if_loaded()
-     |> focus_within("bulk-result")}
+    case bulk_undo_writes(result, connections) do
+      # An earlier call of the same Undo may already have committed, so the day
+      # reloads to show what stands now; the result keeps its Undo.
+      :forbidden ->
+        {:noreply,
+         socket
+         |> load_day()
+         |> resolve_drawers()
+         |> assign_page_rows_if_loaded()
+         |> put_flash(:error, @permission_message)}
+
+      {restored, skipped} ->
+        undo_skipped = Enum.map(skipped, &bulk_skip_line(&1, connections))
+
+        {:noreply,
+         socket
+         |> assign(
+           :bulk_result,
+           Map.merge(result, %{restored: restored, undo_skipped: undo_skipped, undo?: false})
+         )
+         |> load_day()
+         |> resolve_drawers()
+         |> assign_page_rows_if_loaded()
+         |> focus_within("bulk-result")}
+    end
   end
 
   # The save's result is current while the drawer is still showing the pair the
@@ -5458,6 +5457,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
        message: connection_refusal_sentence(state)
      })
      |> focus_within("connection-save-message")}
+  end
+
+  defp connection_saved(socket, _request, {:error, :forbidden}) do
+    {:noreply,
+     socket
+     |> assign(:connection_pending, false)
+     |> put_flash(:error, @permission_message)}
   end
 
   defp connection_saved(socket, _request, {:error, _reason}) do

@@ -29,7 +29,9 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
     columns on either side of the change, with one operation id per command.
   - **R4 — the expected-state guard and the lock order.** The write carries the
     `%{id, transfer_type, updated_at}` rows the editor saw; a mismatch under the
-    locks is `:stale` with no write. Locks are taken in the one order: the scoped
+    locks is `:stale` with no write. Locks are taken in the one order: the actor's
+    current editor membership `FOR SHARE` (a revoked editor is `:forbidden` with
+    nothing written), the scoped
     published version `FOR SHARE` read and the calendar reads, then the
     `blocking:<version>` advisory lock, then the named trips and their blocks'
     trips `FOR UPDATE` in UUID order (all inside
@@ -44,7 +46,8 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
     pair that is `:not_found`, `:stale` or `{:refused, state}` is skipped with that
     reason and the rest are committed together; every log of one call shares one
     operation id, and no route-pair rule is stored.
-  - **R7 — explicit removal.** `remove_records/2` deletes exactly the listed
+  - **R7 — explicit removal.** `remove_records/2` locks the actor's membership
+    first, then deletes exactly the listed
     `{id, updated_at}` rows of one version's type 4/5 records, all-or-nothing, and
     audits each deletion with one operation id. It never evaluates R1 and never
     validates references, so a row an import left damaged is still removable, and
@@ -59,7 +62,8 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
 
   import Ecto.Query, warn: false
 
-  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Authorization
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
@@ -111,7 +115,9 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
   on, `expected` the list of `%{id, transfer_type, updated_at}` rows the editor
   saw, sorted by id, and `audit` the audit context naming the organization,
   version and actor (R5). The organization, version and actor come from `audit`
-  alone, so a foreign tenant or version in the request cannot be written.
+  alone, so a foreign tenant or version in the request cannot be written. The
+  actor's current editor membership is locked first inside the transaction, and a
+  missing or revoked editor is `{:error, :forbidden}` with nothing written.
 
   `:stay_on_board` and `:must_reboard` are refused with
   `{:refused, state}` — carrying R1's own state, so a not-next refusal names the
@@ -133,6 +139,7 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
           {:ok, result()}
           | {:error,
              :invalid_choice
+             | :forbidden
              | :not_found
              | :stale
              | {:refused, Blocking.InSeat.state()}
@@ -155,7 +162,8 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
   Set-all review left checked, `choice` the one setting they are all set to, and
   `audit` the audit context naming the organization, version and actor (R5). More
   than #{@max_bulk_pairs} entries, a malformed entry, a repeated pair or an unknown
-  setting is refused before a transaction opens.
+  setting is refused before a transaction opens. A missing or revoked editor is
+  `{:error, :forbidden}` with nothing written.
 
   Every pair is decided by the same rule, guard and per-pair write
   `set_connection/5` uses, so one call cannot answer differently from a single save
@@ -176,6 +184,7 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
           | {:error,
              :invalid_input
              | :invalid_choice
+             | :forbidden
              | :too_many
              | :busy
              | {:audit_failed, term()}
@@ -202,7 +211,8 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
   An empty list or a malformed pair is `{:error, :invalid_input}` before a
   transaction opens. A listed id that names no row of that scope — a missing id, a
   type 0–3 row or a row of another version — is `{:error, :not_found}`, and any
-  stale member is `{:error, :stale}`; both delete nothing. Otherwise every listed
+  stale member is `{:error, :stale}`; both delete nothing. A missing or revoked
+  editor is `{:error, :forbidden}`, also with nothing deleted. Otherwise every listed
   row is deleted, each with its own `"deleted"` change log sharing one operation id
   (INV-5), and the call answers `{:ok, count}`. An audit failure rolls the whole
   batch back, and serialization failures and deadlocks retry up to three attempts
@@ -210,7 +220,8 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
   """
   @spec remove_records([{Ecto.UUID.t(), DateTime.t() | String.t()}], AuditContext.t()) ::
           {:ok, pos_integer()}
-          | {:error, :invalid_input | :not_found | :stale | :busy | {:audit_failed, term()}}
+          | {:error,
+             :invalid_input | :forbidden | :not_found | :stale | :busy | {:audit_failed, term()}}
   def remove_records(pairs, %AuditContext{} = audit) do
     case removal_targets(pairs) do
       {:ok, targets} ->
@@ -227,6 +238,8 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
   # count is what the caller listed, so a filter never widens or narrows it, and
   # the two refusals leave every listed row exactly as it was.
   defp remove_records_transaction(targets, audit, operation_id) do
+    Authorization.lock_editor!(audit)
+
     case cast_removal_targets(targets) do
       {:ok, canonical} ->
         ids = Map.keys(canonical)
@@ -357,6 +370,7 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
   # then the guard, then the write. A refusal is this command's own rollback, so the
   # locks are released with the rest of the transaction and nothing is written.
   defp write_connection({from_trip_id, to_trip_id} = pair, choice, expected, audit, operation_id) do
+    Authorization.lock_editor!(audit)
     endpoints = locked_endpoints!(audit, pair)
     rows = lock_pair_rows!(audit, from_trip_id, to_trip_id)
 
@@ -424,6 +438,7 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
   # written in the reviewer's input order. The result names what changed, never
   # what was merely attempted.
   defp write_entries(entries, choice, audit, operation_id) do
+    Authorization.lock_editor!(audit)
     pairs = Enum.map(entries, & &1.pair)
     checks = Blocking.lock_and_check_connections!(audit, pairs)
     rows_by_pair = lock_pairs_rows!(audit, pairs)
@@ -807,7 +822,7 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
   # An audit failure is the caller's rollback: no record is ever written unaudited
   # (INV-5), and the caller decides whether that is one pair or a whole command.
   defp record_transfer_change(audit, transfer, action, attrs) do
-    case Gtfs.record_change_in_transaction(audit, :transfer, transfer, action, attrs) do
+    case Audit.record_change_in_transaction(audit, :transfer, transfer, action, attrs) do
       {:ok, _log} -> :ok
       {:error, changeset} -> {:error, {:audit_failed, changeset}}
     end
