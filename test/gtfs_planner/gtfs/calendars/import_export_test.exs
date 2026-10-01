@@ -24,6 +24,8 @@ defmodule GtfsPlanner.Gtfs.Calendars.ImportExportTest do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Repo
 
+  alias GtfsPlanner.Gtfs.Import.Failure
+
   alias GtfsPlanner.Gtfs.{
     Agency,
     Calendar,
@@ -416,7 +418,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.ImportExportTest do
           {:ok, _, _, import_token} = ImportRuns.claim_import(org.id, run.id, run.lease_token)
 
           failure =
-            Import.Failure.from_error(:unknown,
+            Failure.from_error(:unknown,
               phase: :phase_1,
               outcome: :failed,
               committed_counts: %{calendar_attributes: 1}
