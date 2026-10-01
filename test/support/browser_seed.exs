@@ -10245,6 +10245,12 @@ case Accounts.register_first_admin(%{
         "BROWSER_INTERP_IMPORT pattern with a blank-middle custom trip)"
     )
 
+    # The seed bulk-loads its rows, and a new database has no planner statistics
+    # until autovacuum's first pass. A query planned before then estimates one row
+    # per table and nests its joins, so the Stops page's routes-serving-stations
+    # lookup runs for about a minute on the first visit. Analyze once the data is in.
+    Repo.query!("ANALYZE")
+
   {:error, changeset} ->
     raise "Browser seed failed: #{inspect(changeset.errors)}"
 end
