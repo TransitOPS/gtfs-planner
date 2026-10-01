@@ -65,6 +65,80 @@ defmodule GtfsPlanner.Agents.SessionTest.SentinelPack do
   end
 end
 
+defmodule GtfsPlanner.Agents.SessionTest.ContextPack do
+  @moduledoc """
+  Test-only pack whose own resource precondition can be withdrawn mid-conversation.
+
+  `authorize_context/1` reads `:agent_context_pack_refuses` from the application
+  environment, so a test can withdraw the pack's precondition after a turn has
+  prepared a change and then prove that the next admission, delivery and prepared
+  lookup refuse it. `prepare/3` returns a real proposal, so a refusal that
+  silently kept one would be visible.
+  """
+
+  @behaviour GtfsPlanner.Agents.Pack
+
+  @config_key :agent_context_pack_refuses
+
+  alias GtfsPlanner.Agents.Scope
+
+  @prepared_summary %{
+    title: "Stop one calendar",
+    detail: "One service date would stop running.",
+    lines: ["SCHOOL_EX stops on 2026-10-12"]
+  }
+
+  @command {:date_change, [~D[2026-10-12]], ["SCHOOL_EX"], []}
+
+  @doc "Withdraws or restores this pack's own precondition."
+  def refuse(flag), do: Application.put_env(:gtfs_planner, @config_key, flag)
+
+  @doc "Restores the default precondition; the test case's `on_exit/1` calls it."
+  def reset, do: Application.delete_env(:gtfs_planner, @config_key)
+
+  @impl true
+  def id, do: "context"
+
+  @impl true
+  def title, do: "Context helper"
+
+  @impl true
+  def intro, do: "I prepare a change while my own context holds."
+
+  @impl true
+  def examples, do: ["Prepare a change."]
+
+  @impl true
+  def skill, do: "Prepare a date change when the conversation's own context allows it."
+
+  @impl true
+  def tools do
+    [
+      %{
+        name: "prepare",
+        description: "Prepares a date change without writing it.",
+        activity: "Prepared a change",
+        parameters: %{"type" => "object", "properties" => %{}, "additionalProperties" => false}
+      }
+    ]
+  end
+
+  @impl true
+  def authorize_context(%Scope{}) do
+    if Application.get_env(:gtfs_planner, @config_key, false),
+      do: {:error, :unavailable},
+      else: :ok
+  end
+
+  @impl true
+  def call("prepare", _args, %Scope{}) do
+    {:prepared, %{summary: @prepared_summary, command: @command}, %{"prepared" => true}}
+  end
+
+  @doc "The proposal `prepare/3` returns, for the tests' expectations."
+  def prepared, do: %{summary: @prepared_summary, command: @command}
+end
+
 defmodule GtfsPlanner.Agents.SessionTest do
   use GtfsPlanner.DataCase, async: false
 
@@ -77,8 +151,10 @@ defmodule GtfsPlanner.Agents.SessionTest do
   alias GtfsPlanner.Agents.Packs.Calendars
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Agents.Session
+  alias GtfsPlanner.Agents.SessionTest.ContextPack
   alias GtfsPlanner.Agents.SessionTest.SentinelPack
   alias GtfsPlanner.Agents.UsageBudget
+  alias GtfsPlanner.Repo
 
   # The test environment routes `GtfsPlanner.Agents.Model` through this plug, so
   # every scripted response below replaces only the HTTP boundary (INV-5).
@@ -92,6 +168,7 @@ defmodule GtfsPlanner.Agents.SessionTest do
   @context_limit_text "This conversation is too large. Start a new conversation or narrow the request."
   @forbidden_text "Your access changed. The helper stopped."
   @allowance_exhausted_text "Daily assistant limit reached. It resets at 00:00 UTC."
+  @unavailable_context_text "This route or calendar is no longer available, so the helper stopped."
 
   @weekdays %{
     monday: 1,
@@ -113,6 +190,7 @@ defmodule GtfsPlanner.Agents.SessionTest do
     # The turn task is not in this process's callers, so the Req.Test plug must
     # be shared and the SQL sandbox must be shared too (`async: false`).
     Req.Test.set_req_test_to_shared()
+    on_exit(&ContextPack.reset/0)
     ensure_turn_supervisor()
 
     organization = organization_fixture()
@@ -866,6 +944,113 @@ defmodule GtfsPlanner.Agents.SessionTest do
     end
   end
 
+  describe "the server-owned resource context" do
+    test "a session bound to another version's route never authorizes", context do
+      other_version = gtfs_version_fixture(context.organization.id)
+      foreign_route = route_fixture(context.organization.id, other_version.id)
+
+      session = start_scope_session(scope_of(context, EchoPack, foreign_route), EchoPack)
+      monitor = Process.monitor(session)
+
+      assert {:error, :unavailable} = Session.attach(session)
+      assert_receive {:DOWN, ^monitor, :process, ^session, :normal}, 2_000
+    end
+
+    test "a deleted route refuses the next send without a provider request", context do
+      route = route_fixture(context.organization.id, context.version.id)
+      session = start_route_session(context, EchoPack, route)
+      attach(session)
+      stub_reply(text_reply("Never sent."))
+
+      monitor = Process.monitor(session)
+
+      assert Scope.authorized_context(scope_of(context, EchoPack, route)) == :ok
+      Repo.delete!(route)
+
+      assert {:error, :unavailable} = Session.send_message(session, "A question")
+
+      refute_received {:model_request, _request}
+      assert_receive {:agent_event, ^session, {:status, :unavailable}}, 2_000
+      assert_receive {:DOWN, ^monitor, :process, ^session, :normal}, 2_000
+    end
+
+    test "a route deleted mid-turn settles the answer and its proposal as unavailable", context do
+      route = route_fixture(context.organization.id, context.version.id)
+      session = start_route_session(context, ContextPack, route)
+      attach(session)
+
+      monitor = Process.monitor(session)
+
+      # The first answer deletes the route and asks for a tool. The turn's own
+      # next authorization then stops it before a second provider request.
+      expect_reply_deleting(route, calls_reply([{"call_1", "prepare", "{}"}], 0.0001))
+
+      assert :ok = Session.send_message(session, "Prepare a change.")
+
+      assert_receive {:agent_event, ^session, {:entry, %{status: :unavailable} = entry}}, 5_000
+
+      assert entry.text == @unavailable_context_text
+      assert entry.prepared == nil
+      # The fence runs before the tool, so the proposal is never prepared and the
+      # activity stays empty; the second provider request is never made.
+      assert entry.activity == []
+      assert length(collect_requests()) == 1
+      assert_receive {:DOWN, ^monitor, :process, ^session, :normal}, 2_000
+    end
+
+    test "a withdrawn pack precondition refuses admission and a prepared lookup", context do
+      session = start_session(context, ContextPack)
+      attach(session)
+      expect_reply(calls_reply([{"call_1", "prepare", "{}"}], 0.0001))
+      stub_reply(text_reply("I prepared the change."))
+
+      assert :ok = Session.send_message(session, "Prepare a change.")
+
+      assert_receive {:agent_event, ^session,
+                      {:entry, %{role: :assistant, status: :done} = entry}},
+                     5_000
+
+      assert entry.prepared == ContextPack.prepared()
+
+      conversation_id = :sys.get_state(session).conversation_id
+      assert {:ok, _prepared} = Session.prepared(session, conversation_id, entry.id)
+
+      monitor = Process.monitor(session)
+
+      # A second conversation opened before the withdrawal is refused at
+      # admission, and the refusal happens before any provider request.
+      refused = start_session(context, ContextPack)
+      attach(refused)
+
+      ContextPack.refuse(true)
+
+      assert {:error, :unavailable} = Session.prepared(session, conversation_id, entry.id)
+      assert_receive {:DOWN, ^monitor, :process, ^session, :normal}, 2_000
+
+      assert {:error, :unavailable} = Session.send_message(refused, "Prepare another change.")
+
+      # Only the two requests of the first turn reached the provider.
+      assert length(collect_requests()) == 2
+    end
+
+    test "a session runs under the approved context it was opened with", context do
+      scope = %{
+        session_scope(context, EchoPack)
+        | resource_context: %{
+            identity: {:version, context.version.id},
+            approved_extension: approved_extension()
+          }
+      }
+
+      assert Scope.authorized_context(scope) == :ok
+
+      session = start_scope_session(scope, EchoPack)
+
+      assert :sys.get_state(session).scope == scope
+      assert %{status: :idle} = attach(session)
+    end
+  end
+
   describe "turn capacity" do
     test "the eight-turn capacity rejects a ninth send and every release frees a slot", context do
       block_requests()
@@ -948,6 +1133,32 @@ defmodule GtfsPlanner.Agents.SessionTest do
       )
 
     start_supervised!(child)
+  end
+
+  # A session bound to one route, the identity a Route schedules page sets.
+  defp start_route_session(context, pack, route) do
+    start_scope_session(scope_of(context, pack, route), pack)
+  end
+
+  defp start_scope_session(scope, pack) do
+    child =
+      Supervisor.child_spec({Session, [scope: scope, pack: pack]},
+        id: {Session, System.unique_integer([:positive])}
+      )
+
+    start_supervised!(child)
+  end
+
+  defp scope_of(context, pack, route) do
+    %{session_scope(context, pack) | resource_context: Scope.context({:route, route.id})}
+  end
+
+  defp approved_extension do
+    %{
+      service_id: "SCHOOL_WD",
+      end_date: ~D[2026-10-12],
+      approval_text: "Extend the weekday calendar through the end of the fall term."
+    }
   end
 
   # Step 9 owns the application's session supervisor; a session started there is
@@ -1150,6 +1361,17 @@ defmodule GtfsPlanner.Agents.SessionTest do
 
     Req.Test.expect(@owner, 1, fn conn ->
       deactivate_membership_fixture(context.membership)
+      respond(conn, test, payload)
+    end)
+  end
+
+  # Answers with `payload` after deleting `route`, so the turn's next
+  # authorization sees that the conversation's own route is gone.
+  defp expect_reply_deleting(route, payload) do
+    test = self()
+
+    Req.Test.expect(@owner, 1, fn conn ->
+      Repo.delete!(route)
       respond(conn, test, payload)
     end)
   end

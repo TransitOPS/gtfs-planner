@@ -8,11 +8,19 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   one SHA-256 catalog fingerprint, so a caller that has not read every page cannot
   mistake a bounded result for complete discovery: a later page whose catalog
   changed is refused with a restart-discovery error. `get_calendar` explains each
-  date of a bounded range. `prepare_date_change` validates dates and targets,
+  date of a bounded range and returns the server evidence for that answer: the
+  exact count of dates that run, the window evaluated, the content digest, the
+  scope it was read under and a typed reference the panel resolves into the
+  calendar page. `prepare_date_change` validates dates and targets,
   resolves names and fingerprints from one catalog read, and runs the existing
   `GtfsPlanner.Gtfs.review_calendar_change/3`, so it returns the command the
   Calendars list can open in its *Change service on a date* review and writes
-  nothing. All three reuse `GtfsPlanner.Gtfs` and never write.
+  nothing. `prepare_calendar_extension` prepares an approved end-date
+  extension. It takes no approval argument at all: the approval is an
+  editor-entered value the Calendars page copied into the scope's resource
+  context, and a request for a different calendar or end date is refused rather
+  than prepared for the approved values. Every tool reuses
+  `GtfsPlanner.Gtfs` and none writes.
   """
 
   @behaviour GtfsPlanner.Agents.Pack
@@ -20,10 +28,13 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Calendar
+  alias GtfsPlanner.Gtfs.ServiceQueries
 
   @list_limit 50
   @range_limit_days 62
   @date_limit 366
+  @approval_preview_length 120
+  @source_ref_service "gtfs_service_queries"
 
   @weekdays [
     {"Mon", :monday},
@@ -36,6 +47,7 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   ]
 
   @changed_catalog "Calendars changed. Start the search again."
+  @source_ref "gtfs_calendars"
 
   @skill_path Path.expand("../../../../priv/agents/packs/calendars/SKILL.md", __DIR__)
   @external_resource @skill_path
@@ -103,6 +115,52 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
         }
       },
       %{
+        name: "summarize_calendar_coverage",
+        description:
+          "Report whether named routes keep recorded service on each of the given dates, using every calendar that runs them. Use service_id to see which other calendars still run a route on a date this calendar does not. At most #{ServiceQueries.coverage_limits().dates} dates and #{ServiceQueries.coverage_limits().routes} routes.",
+        activity: "Checked calendar coverage",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{
+            "service_id" => %{"type" => "string", "maxLength" => 200},
+            "dates" => %{
+              "type" => "array",
+              "items" => %{"type" => "string"},
+              "minItems" => 1,
+              "maxItems" => ServiceQueries.coverage_limits().dates
+            },
+            "route_ids" => %{
+              "type" => "array",
+              "items" => %{"type" => "string", "maxLength" => 200},
+              "minItems" => 1,
+              "maxItems" => ServiceQueries.coverage_limits().routes
+            }
+          },
+          "required" => ["service_id", "dates", "route_ids"],
+          "additionalProperties" => false
+        }
+      },
+      %{
+        name: "get_calendar_usage",
+        description:
+          "Report, for the routes that use this calendar, which of the given dates keep recorded service through this calendar and which keep it only through another one. Use this before asking whether a calendar can end; it never proposes a change.",
+        activity: "Checked calendar usage",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{
+            "service_id" => %{"type" => "string", "maxLength" => 200},
+            "dates" => %{
+              "type" => "array",
+              "items" => %{"type" => "string"},
+              "minItems" => 1,
+              "maxItems" => ServiceQueries.coverage_limits().dates
+            }
+          },
+          "required" => ["service_id", "dates"],
+          "additionalProperties" => false
+        }
+      },
+      %{
         name: "prepare_date_change",
         description:
           "Prepare a change that stops or runs service on specific dates for review. It saves nothing.",
@@ -122,6 +180,25 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
           "required" => ["dates", "stop", "run"],
           "additionalProperties" => false
         }
+      },
+      %{
+        name: "prepare_calendar_extension",
+        description:
+          "Prepare an approved extension of one weekly calendar's end date, listing the dates " <>
+            "that newly run, the routes, trips and closures affected and the dates whose holiday " <>
+            "policy is still unknown. This works only after the editor entered their approval and " <>
+            "the new end date in *Approve a calendar extension* on this page: you cannot supply " <>
+            "the approval yourself. It saves nothing; the editor reviews and applies it.",
+        activity: "Prepared a calendar extension",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{
+            "service_id" => %{"type" => "string", "maxLength" => 200},
+            "end_date" => %{"type" => "string"}
+          },
+          "required" => ["service_id"],
+          "additionalProperties" => false
+        }
       }
     ]
   end
@@ -131,7 +208,15 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
 
   def call("get_calendar", args, %Scope{} = scope), do: get_calendar(args, scope)
 
+  def call("summarize_calendar_coverage", args, %Scope{} = scope),
+    do: summarize_calendar_coverage(args, scope)
+
+  def call("get_calendar_usage", args, %Scope{} = scope), do: get_calendar_usage(args, scope)
+
   def call("prepare_date_change", args, %Scope{} = scope), do: prepare_date_change(args, scope)
+
+  def call("prepare_calendar_extension", args, %Scope{} = scope),
+    do: prepare_calendar_extension(args, scope)
 
   defp list_calendars(args, scope) do
     query = normalize_query(args["query"])
@@ -262,7 +347,247 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   # same message.
   defp read_calendar(service_id, scope, from, to) do
     with {:ok, targets} <- load_targets([service_id], scope) do
-      {:ok, calendar_result(Map.fetch!(targets, service_id), service_id, from, to)}
+      summary = Map.fetch!(targets, service_id)
+      result = calendar_result(summary, service_id, from, to)
+
+      {:ok, result, evidence(summary, result, scope, from, to)}
+    end
+  end
+
+  # The evidence is built from the same catalog summary the result describes, so
+  # the card's count cannot disagree with the rows the model read, and the digest
+  # covers the exact payload that was returned (INV-2). Nothing here is invented:
+  # `source_revision` stays nil until a real native revision exists.
+  defp evidence(summary, result, scope, from, to) do
+    label = name(summary, result["service_id"])
+    running = Enum.count(result["dates"], & &1["runs"])
+
+    %{
+      kind: "calendar_dates",
+      title: label,
+      total: running,
+      total_label: "dates run",
+      completeness: :complete,
+      completeness_reason: nil,
+      facts: [
+        %{label: "Dates evaluated", value: Integer.to_string(length(result["dates"]))},
+        %{label: "Dates that run", value: Integer.to_string(running)},
+        %{label: "Weekly days", value: days_label(summary.calendar)},
+        %{
+          label: "Window",
+          value: Date.to_iso8601(from) <> " to " <> Date.to_iso8601(to)
+        }
+      ],
+      source_ref: @source_ref,
+      digest: digest(result),
+      source_revision: nil,
+      scope: %{
+        organization_id: scope.organization_id,
+        gtfs_version_id: scope.gtfs_version_id,
+        identity: identity_label(scope)
+      },
+      exclusions: [],
+      resources: [%{kind: "calendar", id: result["service_id"], label: label}]
+    }
+  end
+
+  defp digest(result) do
+    result
+    |> Jason.encode!()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp identity_label(scope) do
+    case Scope.identity(scope) do
+      {kind, id} -> "#{kind}:#{id}"
+      nil -> nil
+    end
+  end
+
+  # -- coverage reads ---------------------------------------------------------
+
+  # The two coverage reads answer the calendar-side questions with the same
+  # domain query the Schedule pack uses, so one route/date rule governs both and
+  # neither can report a calendar name in place of date evaluation. The
+  # Calendar page binds the whole version, so the routes are named explicitly and
+  # resolved in scope; a route outside this organization and version is refused
+  # rather than described.
+  defp summarize_calendar_coverage(args, scope) do
+    with {:ok, service_id} <- coverage_service_id(args["service_id"]),
+         {:ok, dates} <- coverage_dates(args["dates"]),
+         {:ok, route_ids} <- coverage_route_ids(args["route_ids"]) do
+      read_coverage(scope, service_id, dates, route_ids, "calendar_coverage", fn _answer ->
+        [
+          %{label: "Calendar under review", value: service_id},
+          %{label: "Routes evaluated", value: Integer.to_string(length(route_ids))},
+          %{label: "Dates evaluated", value: Integer.to_string(length(dates))}
+        ]
+      end)
+    end
+  end
+
+  # The usage read names the routes the calendar itself is used by, so the person
+  # cannot silently widen the question past the routes that would actually be
+  # affected. That list is server-derived from the calendar's own trips.
+  defp get_calendar_usage(args, scope) do
+    with {:ok, service_id} <- coverage_service_id(args["service_id"]),
+         {:ok, dates} <- coverage_dates(args["dates"]),
+         {:ok, route_ids} <- usage_route_ids(service_id, scope) do
+      read_coverage(scope, service_id, dates, route_ids, "calendar_usage", fn _answer ->
+        [
+          %{label: "Calendar under review", value: service_id},
+          %{label: "Routes using this calendar", value: Integer.to_string(length(route_ids))},
+          %{label: "Dates evaluated", value: Integer.to_string(length(dates))}
+        ]
+      end)
+    end
+  end
+
+  defp usage_route_ids(service_id, scope) do
+    case Gtfs.calendar_usage(scope.organization_id, scope.gtfs_version_id, service_id) do
+      {:ok, usage} ->
+        usage.route_ids |> Enum.sort() |> check_route_limit()
+
+      {:error, :not_found} ->
+        {:error, unknown_target_message(service_id)}
+    end
+  end
+
+  defp check_route_limit(route_ids) do
+    if length(route_ids) > ServiceQueries.coverage_limits().routes do
+      {:error,
+       "This calendar is used by more routes than one answer can cover. Name the routes to check."}
+    else
+      {:ok, route_ids}
+    end
+  end
+
+  defp read_coverage(scope, service_id, dates, route_ids, kind, facts) do
+    query_scope = %{
+      organization_id: scope.organization_id,
+      gtfs_version_id: scope.gtfs_version_id,
+      route_id: nil
+    }
+
+    selection = %{dates: dates, route_ids: route_ids, service_id: service_id}
+
+    case ServiceQueries.coverage(query_scope, selection) do
+      {:ok, answer} ->
+        {:ok, coverage_result(answer, dates),
+         coverage_evidence(answer, scope, kind, facts.(answer))}
+
+      {:error, reason} ->
+        {:error, coverage_error(reason)}
+    end
+  end
+
+  defp coverage_result(answer, dates) do
+    %{
+      "dates" => Enum.map(dates, &Date.to_iso8601/1),
+      "records" =>
+        Enum.map(answer.records, fn record ->
+          %{
+            "route_id" => record.route_id,
+            "date" => Date.to_iso8601(record.date),
+            "recorded_service" => record.recorded_service?,
+            "listed_trip_templates" => record.listed_trip_templates,
+            "frequency_templates" => record.frequency_templates,
+            "missing_time_templates" => record.missing_time_templates,
+            "service_ids" => record.service_ids,
+            "alternate_service_ids" => record.alternate_service_ids,
+            "route_state" => Atom.to_string(record.route_state),
+            "absence_reason" => record.absence_reason && Atom.to_string(record.absence_reason)
+          }
+        end),
+      "total" => answer.total,
+      "completeness" => Atom.to_string(answer.completeness),
+      "disclosures" => Enum.map(answer.disclosures, &%{"reason" => Atom.to_string(&1.reason)})
+    }
+  end
+
+  defp coverage_evidence(answer, scope, kind, facts) do
+    %{
+      kind: kind,
+      title: coverage_title(kind, facts),
+      total: answer.total,
+      total_label: "route and date records",
+      completeness: answer.completeness,
+      completeness_reason: coverage_reason(answer),
+      facts: facts,
+      source_ref: @source_ref_service,
+      digest: answer.digest,
+      source_revision: nil,
+      scope: %{
+        organization_id: scope.organization_id,
+        gtfs_version_id: scope.gtfs_version_id,
+        identity: identity_label(scope)
+      },
+      exclusions: [],
+      resources: coverage_resources(answer)
+    }
+  end
+
+  defp coverage_title("calendar_usage", facts),
+    do: "Service on #{fact(facts, "Dates evaluated")} dates"
+
+  defp coverage_title(_kind, facts),
+    do: "#{fact(facts, "Routes evaluated")} routes over #{fact(facts, "Dates evaluated")} dates"
+
+  defp fact(facts, label) do
+    case Enum.find(facts, &(&1.label == label)) do
+      %{value: value} -> value
+      nil -> "the requested"
+    end
+  end
+
+  defp coverage_reason(%{completeness: :complete}), do: nil
+
+  defp coverage_reason(answer) do
+    Enum.map_join(answer.disclosures, " ", & &1.detail)
+  end
+
+  # Each route the answer covers is a typed reference the panel may resolve, and
+  # nothing else is: no model-authored name becomes a reference here.
+  defp coverage_resources(answer) do
+    answer.records
+    |> Enum.map(fn record -> %{kind: "route", id: record.route_id, label: record.route_id} end)
+    |> Enum.uniq_by(& &1.id)
+  end
+
+  defp coverage_service_id(value) when is_binary(value) and value != "", do: {:ok, value}
+  defp coverage_service_id(_value), do: {:error, "A service_id is required."}
+
+  defp coverage_dates(values) when is_list(values) and values != [] do
+    parse_dates(values)
+  end
+
+  defp coverage_dates(_values), do: {:error, "Provide at least one date."}
+
+  defp coverage_route_ids(values) when is_list(values) and values != [] do
+    if Enum.all?(values, &(is_binary(&1) and &1 != "")) do
+      {:ok, values |> Enum.uniq() |> Enum.sort()}
+    else
+      {:error, "route_ids must be a list of route IDs from this service version."}
+    end
+  end
+
+  defp coverage_route_ids(_values), do: {:error, "Name at least one route to check."}
+
+  defp coverage_error(:not_found), do: "A named route is not in this service version."
+  defp coverage_error(:too_many_dates), do: "Ask about fewer dates at a time."
+  defp coverage_error(:too_many_routes), do: "Ask about fewer routes at a time."
+  defp coverage_error(:invalid_selection), do: "That question cannot be answered as asked."
+
+  defp coverage_error({:unreadable_calendar, service_id}),
+    do: "Calendar #{service_id} could not be read, so no complete answer is available."
+
+  defp coverage_error(_reason), do: "That question could not be answered."
+
+  defp days_label(calendar) do
+    case days(calendar) do
+      [] -> "None recorded"
+      labels -> Enum.join(labels, ", ")
     end
   end
 
@@ -340,6 +665,204 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
         {:error, reason} ->
           {:error, prepare_error(reason)}
       end
+    end
+  end
+
+  # -- prepare_calendar_extension -------------------------------------------
+
+  # The approval is not an argument and never comes from the model. The editor
+  # entered it in this page's own form, the page copied the validated approval,
+  # service ID and end date into the scope's resource context, and
+  # `Scope.authorized_context/1` has already resolved that calendar inside the
+  # current organization and version before this tool runs. A model paraphrase,
+  # a pasted approval or an imported GTFS field therefore cannot establish one
+  # (AC-13), and the prepared command carries the approval the editor typed.
+  defp prepare_calendar_extension(args, scope) do
+    with {:ok, approved} <- approved_extension(scope),
+         :ok <- check_approved_target(args["service_id"], approved),
+         {:ok, end_date} <- check_approved_end_date(args["end_date"], approved),
+         {:ok, targets} <- load_targets([approved.service_id], scope) do
+      command =
+        {:save, approved.service_id, %{end_date: end_date, approval_text: approved.approval_text}}
+
+      fingerprints = %{
+        approved.service_id => Map.fetch!(targets, approved.service_id).fingerprint
+      }
+
+      case Gtfs.review_calendar_change(command, fingerprints, Scope.audit_context(scope)) do
+        {:ok, %{extension: extension}} when not is_nil(extension) ->
+          {:prepared, extension_summary(command, targets, extension, approved),
+           extension_result(extension, targets, approved),
+           extension_evidence(extension, scope, targets, approved)}
+
+        {:ok, _review} ->
+          {:error, "That approval did not produce a reviewable extension."}
+
+        {:error, reason} ->
+          {:error, prepare_error(reason)}
+      end
+    end
+  end
+
+  defp approved_extension(scope) do
+    case Scope.approved_extension(scope) do
+      nil ->
+        {:error,
+         "No calendar extension has been approved on this page. Ask the editor to enter their " <>
+           "approval and the new end date in Approve a calendar extension first."}
+
+      approved ->
+        {:ok, approved}
+    end
+  end
+
+  # Naming the approved calendar keeps the model answerable for its choice, but a
+  # different calendar or a different end date is refused instead of quietly
+  # prepared for the values the editor approved.
+  defp check_approved_target(service_id, approved) do
+    if service_id == approved.service_id do
+      :ok
+    else
+      {:error,
+       "The approved extension is for calendar " <>
+         approved.service_id <>
+         ". The editor has to approve that calendar before you can prepare it."}
+    end
+  end
+
+  defp check_approved_end_date(nil, approved), do: {:ok, approved.end_date}
+
+  defp check_approved_end_date(value, approved) do
+    case Date.from_iso8601(String.trim(value)) do
+      {:ok, date} when date == approved.end_date ->
+        {:ok, date}
+
+      _other ->
+        {:error,
+         "The approved extension ends on " <>
+           Date.to_iso8601(approved.end_date) <>
+           ". The editor has to approve that end date before you can prepare it."}
+    end
+  end
+
+  # The saved command carries only the new end date and the approval. Every other
+  # weekly and metadata value is omitted, so the native save retains the stored
+  # calendar and all of its existing exceptions exactly as they are (AC-14).
+  defp extension_summary(command, targets, extension, approved) do
+    target = Map.fetch!(targets, command_service_id(command))
+
+    %{
+      summary: %{
+        title: "Extend #{target_name(target.service_id, targets)}",
+        detail:
+          end_label(extension.previous_end_date) <>
+            " → " <> end_label(extension.requested_end_date),
+        lines: [
+          "Approved by the editor · #{approval_label(approved.approval_text)}",
+          "Newly active dates · #{count_label(extension.newly_active_date_count, "date", "dates")}",
+          "Routes affected · #{count_label(length(extension.routes), "route", "routes")}",
+          "Trips affected · #{count_label(length(extension.trip_identities), "trip", "trips")}",
+          "Closures affected · #{count_label(length(extension.closure_consequences), "closure", "closures")}",
+          "Retained exceptions · #{count_label(length(extension.retained_exceptions), "exception", "exceptions")}",
+          "Unresolved dates · #{count_label(length(extension.unresolved_dates), "date", "dates")}"
+        ]
+      },
+      command: command
+    }
+  end
+
+  defp extension_result(extension, targets, approved) do
+    %{
+      "service_id" => extension.service_id,
+      "name" => target_name(extension.service_id, targets),
+      "approval" => approved.approval_text,
+      "previous_end_date" => Date.to_iso8601(extension.previous_end_date),
+      "requested_end_date" => Date.to_iso8601(extension.requested_end_date),
+      "added_days" => extension.added_days,
+      "newly_active_dates" => Enum.map(extension.newly_active_dates, &Date.to_iso8601/1),
+      "newly_active_date_count" => extension.newly_active_date_count,
+      "routes" =>
+        Enum.map(extension.routes, &%{"route_id" => &1.route_id, "trip_count" => &1.trip_count}),
+      "trips" => Enum.map(extension.trip_identities, &%{"trip_id" => &1.trip_id}),
+      "closures" => Enum.map(extension.closure_consequences, &%{"pathway_id" => &1.pathway_id}),
+      "retained_exceptions" =>
+        Enum.map(
+          extension.retained_exceptions,
+          &%{
+            "date" => Date.to_iso8601(&1.date),
+            "exception_type" => &1.exception_type
+          }
+        ),
+      "unresolved_dates" => Enum.map(extension.unresolved_dates, &Date.to_iso8601/1),
+      "holiday_policy" => Atom.to_string(extension.holiday_policy)
+    }
+  end
+
+  # The card's counts come from the same review the native page regenerates for
+  # Apply, so the assistant's summary and the reviewer's dialog cannot disagree,
+  # and the digest covers the exact impact that was described (INV-2).
+  defp extension_evidence(extension, scope, targets, approved) do
+    result = extension_result(extension, targets, approved)
+
+    %{
+      kind: "calendar_extension",
+      title: "Extension of #{target_name(extension.service_id, targets)}",
+      total: extension.newly_active_date_count,
+      total_label: "dates newly in service",
+      completeness: :complete,
+      completeness_reason: nil,
+      facts: [
+        %{label: "Approval", value: approval_label(approved.approval_text)},
+        %{
+          label: "End date",
+          value:
+            end_label(extension.previous_end_date) <>
+              " → " <> end_label(extension.requested_end_date)
+        },
+        %{label: "Routes", value: Integer.to_string(length(extension.routes))},
+        %{label: "Trips", value: Integer.to_string(length(extension.trip_identities))},
+        %{label: "Closures", value: Integer.to_string(length(extension.closure_consequences))},
+        %{
+          label: "Retained exceptions",
+          value: Integer.to_string(length(extension.retained_exceptions))
+        },
+        %{
+          label: "Future holiday policy",
+          value:
+            "#{length(extension.unresolved_dates)} newly active dates have no recorded exception"
+        }
+      ],
+      source_ref: @source_ref,
+      digest: digest(result),
+      source_revision: nil,
+      scope: %{
+        organization_id: scope.organization_id,
+        gtfs_version_id: scope.gtfs_version_id,
+        identity: identity_label(scope)
+      },
+      exclusions: [],
+      resources: [
+        %{
+          kind: "calendar",
+          id: extension.service_id,
+          label: target_name(extension.service_id, targets)
+        }
+      ]
+    }
+  end
+
+  defp command_service_id({:save, service_id, _attrs}), do: service_id
+
+  defp end_label(date), do: Elixir.Calendar.strftime(date, "%a %b %-d, %Y")
+
+  defp count_label(1, one, _many), do: "1 #{one}"
+  defp count_label(count, _one, many), do: "#{count} #{many}"
+
+  defp approval_label(text) do
+    if String.length(text) > @approval_preview_length do
+      String.slice(text, 0, @approval_preview_length - 1) <> "…"
+    else
+      text
     end
   end
 

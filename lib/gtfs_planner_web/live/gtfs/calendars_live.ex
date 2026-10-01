@@ -46,6 +46,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.Gtfs.CalendarComponents
   alias GtfsPlannerWeb.Gtfs.CalendarCoverage
+  alias GtfsPlannerWeb.Gtfs.CalendarEditorComponents, as: Editor
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -74,6 +75,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   ]
   @prepared_missing_notice "One of these calendars is no longer in this service version. Refresh the list and ask again."
   @prepared_edited_notice "Your edited change was saved. The original prepared change was not applied."
+  @extension_missing_notice "That extension cannot be reviewed from this page. Ask the helper to prepare it again."
+  @max_approval_length 2_000
+  @max_extension_days 366
 
   @impl true
   def mount(_params, _session, socket) do
@@ -117,6 +121,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
      |> assign(:combine_return_focus_id, nil)
      |> assign(:combine_dispatched?, false)
      |> assign_filter_form()
+     |> open_extension_approval()
      |> drop_combination()
      |> close_date_change()
      |> stream_configure(:calendars, dom_id: &"calendar-#{URI.encode_www_form(&1.service_id)}")
@@ -158,6 +163,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       # A result of a superseded review, or of a version the reviewer left, is presentation only:
       # it never rewrites the drawer on screen, and it makes no claim about the transaction that
       # produced it - a committed operation is never described as cancelled here.
+      {:noreply, socket}
+    end
+  end
+
+  def handle_async({:extension_apply, generation}, result, socket) do
+    if generation == socket.assigns.extension_generation do
+      {:noreply, settle_extension(socket, result)}
+    else
       {:noreply, socket}
     end
   end
@@ -337,6 +350,65 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   end
 
   def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
+
+  ## Approved calendar extension
+
+  # The approval is the editor's own words in this page's form. It is validated
+  # here and copied into the helper session's resource context, which is the only
+  # place a pack tool can read it from (INV-4): the model never supplies it, and
+  # nothing is written here.
+  @impl true
+  def handle_event("extension_approval_change", params, socket) do
+    {:noreply,
+     socket
+     |> assign(:extension_form, extension_form(extension_params(params)))
+     |> assign(:extension_errors, %{})
+     |> assign(:extension_notice, nil)}
+  end
+
+  @impl true
+  def handle_event("extension_approval", params, socket) do
+    {:noreply, approve_extension(socket, extension_params(params))}
+  end
+
+  # The reviewer's end date is a native value: changing it re-runs the same review
+  # and produces a different command, which is then an edited native change rather
+  # than the helper's exact one (AC-16).
+  @impl true
+  def handle_event("extension_review_change", params, socket) do
+    {:noreply, change_extension_end_date(socket, extension_review_params(params))}
+  end
+
+  @impl true
+  def handle_event("extension_review", _params, socket) do
+    {:noreply, review_extension(socket)}
+  end
+
+  # A second confirmation while the first is in flight is refused, exactly as for
+  # the date change: the reviewed token is already being applied.
+  @impl true
+  def handle_event("extension_apply", _params, %{assigns: %{extension_pending?: true}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("extension_apply", _params, socket), do: {:noreply, dispatch_extension(socket)}
+
+  @impl true
+  def handle_event("extension_close", _params, socket), do: {:noreply, close_extension(socket)}
+
+  @impl true
+  def handle_event("extension_refresh", _params, socket) do
+    socket = review_extension(socket)
+
+    {:noreply, socket |> assign(:extension_refresh_required?, false) |> reload_calendars()}
+  end
+
+  # The transport hook reports a reconnection. This socket never learns that a
+  # connection dropped, so it is the only place a confirmation whose answer was
+  # lost can be resolved: the current state is re-read and nothing is resent.
+  @impl true
+  def handle_event("extension_reconnect", _params, socket) do
+    {:noreply, reconnect_extension(socket)}
+  end
 
   ## Selection and calendar combination
 
@@ -1396,13 +1468,495 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     |> assign_date_change_form("single", %{})
   end
 
+  ## Approved extension state
+
+  defp open_extension_approval(socket) do
+    socket
+    |> assign(:extension_form, extension_form(%{}))
+    |> assign(:extension_errors, %{})
+    |> assign(:extension_notice, nil)
+    |> assign(:extension_success, nil)
+    |> assign(:extension_open?, false)
+    |> assign(:extension_review, nil)
+    |> assign(:extension_origin, nil)
+    |> assign(:extension_pending?, false)
+    |> assign(:extension_dispatched?, false)
+    |> assign(:extension_generation, 0)
+    |> assign(:extension_status, nil)
+    |> assign(:extension_return_focus, "calendar-extension-approve")
+    |> assign(:extension_refresh_required?, false)
+    |> assign(:extension_review_form, extension_review_form(%{}))
+  end
+
+  defp extension_form(values) do
+    defaults = %{"service_id" => "", "end_date" => "", "approval_text" => ""}
+
+    to_form(Map.merge(defaults, values), as: :extension)
+  end
+
+  defp extension_review_form(values) do
+    to_form(Map.merge(%{"end_date" => ""}, values), as: :extension_review)
+  end
+
+  # A form event arrives nested under the form name; a bare input event arrives flat.
+  defp extension_params(params) do
+    case params["extension"] do
+      nested when is_map(nested) -> Map.merge(params, nested)
+      _other -> params
+    end
+  end
+
+  defp extension_review_params(params) do
+    case params["extension_review"] do
+      nested when is_map(nested) -> Map.merge(params, nested)
+      _other -> params
+    end
+  end
+
+  defp approve_extension(socket, params) do
+    values = %{
+      "service_id" => String.trim(to_string(params["service_id"] || "")),
+      "end_date" => String.trim(to_string(params["end_date"] || "")),
+      "approval_text" => String.trim(to_string(params["approval_text"] || ""))
+    }
+
+    case extension_approval_errors(socket, values) do
+      {:ok, approved} ->
+        context = %{
+          identity: {:version, socket.assigns.current_gtfs_version.id},
+          approved_extension: approved
+        }
+
+        socket
+        |> assign(:extension_form, extension_form(values))
+        |> assign(:extension_errors, %{})
+        |> assign(:extension_notice, extension_approved_message(approved))
+        |> assign(:extension_success, nil)
+        |> AgentPanel.set_context(context)
+
+      {:error, errors} ->
+        socket
+        |> assign(:extension_form, extension_form(values))
+        |> assign(:extension_errors, errors)
+        |> assign(:extension_notice, nil)
+        |> focus_extension_approval()
+    end
+  end
+
+  # Every rule here is the editor's own: the calendar must be a weekly calendar
+  # this version lists, the end date must be a real later date within the fixed
+  # 366-day horizon, and the approval must be the editor's own words. The domain
+  # refuses the same conditions again when it reviews the command, so this
+  # validation only keeps an unusable approval out of the session context.
+  defp extension_approval_errors(socket, values) do
+    case Enum.find(socket.assigns.all_calendars, &(&1.service_id == values["service_id"])) do
+      nil ->
+        {:error, %{service_id: "Choose a calendar from this list."}}
+
+      summary ->
+        approved_end_date_errors(summary, values)
+    end
+  end
+
+  defp approved_end_date_errors(%{kind: kind, calendar: calendar}, values)
+       when kind != :weekly or is_nil(calendar) do
+    _ = values
+    {:error, %{service_id: "Only a weekly calendar can be extended. Use a service date instead."}}
+  end
+
+  defp approved_end_date_errors(summary, values) do
+    case parse_date(values["end_date"]) do
+      {:ok, end_date} -> approved_extension_errors(summary, values, end_date)
+      :error -> {:error, %{end_date: "Choose the new last date of service."}}
+    end
+  end
+
+  defp approved_extension_errors(summary, values, end_date) do
+    cond do
+      values["approval_text"] == "" ->
+        {:error, %{approval_text: "Enter why you are approving this extension."}}
+
+      overlong_approval?(values["approval_text"]) ->
+        {:error, %{approval_text: "Keep the approval under #{@max_approval_length} characters."}}
+
+      not later_end_date?(summary, end_date) ->
+        {:error,
+         %{
+           end_date:
+             "That date is not later than the calendar's current end date, #{CalendarComponents.format_date(summary.calendar.end_date)}."
+         }}
+
+      over_extension_horizon?(summary, end_date) ->
+        {:error,
+         %{
+           end_date:
+             "An extension can add at most #{@max_extension_days} days. Ask the editor to approve a shorter period."
+         }}
+
+      true ->
+        {:ok,
+         %{
+           service_id: values["service_id"],
+           end_date: end_date,
+           approval_text: values["approval_text"]
+         }}
+    end
+  end
+
+  defp overlong_approval?(text), do: String.length(text) > @max_approval_length
+
+  defp later_end_date?(summary, %Date{} = end_date) do
+    Date.compare(end_date, summary.calendar.end_date) == :gt
+  end
+
+  defp over_extension_horizon?(summary, %Date{} = end_date) do
+    Date.diff(end_date, summary.calendar.end_date) > @max_extension_days
+  end
+
+  defp extension_approved_message(approved) do
+    "Approved extending #{approved.service_id} through #{CalendarComponents.format_date(approved.end_date)}. " <>
+      "Ask the helper to prepare it, then review the result before it is applied."
+  end
+
+  defp focus_extension_approval(socket) do
+    push_event(socket, "focus_form_error", %{
+      form_id: "calendar-extension-form",
+      fallback_id: "calendar-extension-errors"
+    })
+  end
+
+  # The review is regenerated from the page's own snapshot and the exact prepared
+  # command, so what the reviewer reads is what Apply will compare (AC-14). The
+  # session's proposal stays untouched: it is released only by an exact apply.
+  defp open_extension_review(socket, entry_id, service_id, attrs) do
+    sources = snapshot_sources(socket.assigns.all_calendars)
+
+    case Map.fetch(sources, service_id) do
+      {:ok, source} ->
+        review_extension_command(socket, entry_id, service_id, attrs, source.fingerprint)
+
+      :error ->
+        assign(socket, :agent_notice, @prepared_missing_notice)
+    end
+  end
+
+  defp review_extension_command(socket, entry_id, service_id, attrs, fingerprint) do
+    command = {:save, service_id, attrs}
+
+    case Gtfs.review_calendar_change(
+           command,
+           %{service_id => fingerprint},
+           audit_context(socket)
+         ) do
+      {:ok, %{extension: extension} = review} when not is_nil(extension) ->
+        socket
+        |> assign(:extension_open?, true)
+        |> assign(:extension_status, nil)
+        |> assign(:extension_refresh_required?, false)
+        |> assign(:extension_review, %{
+          command: command,
+          fingerprint: review.fingerprint,
+          extension: extension,
+          approval_text: attrs[:approval_text],
+          warnings: review.warnings
+        })
+        |> assign(
+          :extension_review_form,
+          extension_review_form(%{"end_date" => Date.to_iso8601(extension.requested_end_date)})
+        )
+        |> assign(:extension_origin, %{
+          session_pid: socket.assigns.agent_session,
+          conversation_id: socket.assigns.agent_conversation_id,
+          entry_id: entry_id,
+          command: command
+        })
+        |> assign(:extension_return_focus, "agent-prepared-#{entry_id}")
+        |> bump_extension_generation()
+
+      {:ok, _review} ->
+        assign(socket, :agent_notice, @extension_missing_notice)
+
+      {:error, reason} ->
+        assign(socket, :agent_notice, extension_review_error_message(reason))
+    end
+  end
+
+  # Re-runs the same review against the current snapshot. A second review never
+  # replaces an open reviewer's own command, and a stale one cannot be reapplied.
+  defp review_extension(socket) do
+    case socket.assigns.extension_review do
+      %{command: {:save, service_id, attrs}} ->
+        fingerprint =
+          socket.assigns.all_calendars
+          |> Enum.find(&(&1.service_id == service_id))
+          |> case do
+            nil -> nil
+            summary -> summary.fingerprint
+          end
+
+        if is_nil(fingerprint) do
+          assign(socket, :agent_notice, @prepared_missing_notice)
+        else
+          review_extension_command(
+            socket,
+            socket.assigns.extension_origin.entry_id,
+            service_id,
+            attrs,
+            fingerprint
+          )
+        end
+
+      nil ->
+        socket
+    end
+  end
+
+  # An edited end date is an edited native value. The approval travels with it,
+  # because the editor approved this calendar's extension and a reviewer's own
+  # change to the date is still reviewed, dated and bounded the same way.
+  defp change_extension_end_date(socket, params) do
+    case socket.assigns.extension_review do
+      %{command: {:save, service_id, %{approval_text: approval_text}}} ->
+        value = String.trim(to_string(params["end_date"] || ""))
+
+        case parse_date(value) do
+          {:ok, date} ->
+            socket
+            |> assign(:extension_review_form, extension_review_form(%{"end_date" => value}))
+            |> review_extension_command(
+              socket.assigns.extension_origin.entry_id,
+              service_id,
+              %{end_date: date, approval_text: approval_text},
+              extension_fingerprint(socket, service_id)
+            )
+
+          :error ->
+            socket
+            |> assign(:extension_review_form, extension_review_form(%{"end_date" => value}))
+            |> assign(:extension_status, %{
+              kind: :failed,
+              title: "That end date could not be read.",
+              message: "Choose a date like 2027-06-30 to review this extension."
+            })
+            |> focus_extension_review()
+        end
+
+      _other ->
+        socket
+    end
+  end
+
+  defp extension_fingerprint(socket, service_id) do
+    case Enum.find(socket.assigns.all_calendars, &(&1.service_id == service_id)) do
+      nil -> nil
+      summary -> summary.fingerprint
+    end
+  end
+
+  defp extension_option(summary), do: summary.name || summary.service_id
+
+  # Only a weekly calendar has an end date to extend, so the approval offers only
+  # those: choosing one that cannot be extended is refused before it is stored.
+  defp extension_options(assigns) do
+    Enum.filter(assigns.all_calendars, &(&1.kind == :weekly and not is_nil(&1.calendar)))
+  end
+
+  defp extension_status_kind(%{extension_status: %{kind: :success}}), do: "success"
+  defp extension_status_kind(%{extension_status: %{kind: :failed}}), do: "error"
+  defp extension_status_kind(_assigns), do: "warning"
+
+  defp extension_review_error_message(:stale_review),
+    do:
+      "These calendars changed in another session. Refresh the list and prepare the extension again."
+
+  defp extension_review_error_message(:extension_requires_weekly_calendar),
+    do: "Only a weekly calendar can be extended this way."
+
+  defp extension_review_error_message(:extension_requires_later_end_date),
+    do: "That end date is not later than the calendar's current end date."
+
+  defp extension_review_error_message(:extension_exceeds_max_days),
+    do: "An extension can add at most #{@max_extension_days} days."
+
+  defp extension_review_error_message(reason), do: extension_write_error_message(reason)
+
+  defp extension_write_error_message(reason), do: write_error_message(reason)
+
+  # The reviewed command and its audit context travel into the task, and the
+  # pending state is assigned before the task starts, so the reviewer sees the
+  # in-flight state before any write begins.
+  defp dispatch_extension(socket) do
+    case socket.assigns.extension_review do
+      %{command: command, fingerprint: fingerprint} ->
+        audit = audit_context(socket)
+        # Every dispatch owns a generation, and the socket carries it: a result
+        # from a superseded review is never presented as the outcome of the one
+        # on screen.
+        generation = socket.assigns.extension_generation + 1
+
+        socket
+        |> assign(:extension_generation, generation)
+        |> assign(:extension_pending?, true)
+        |> assign(:extension_dispatched?, true)
+        |> start_async({:extension_apply, generation}, fn ->
+          {:applied, Gtfs.apply_calendar_change(command, fingerprint, audit)}
+        end)
+
+      nil ->
+        socket
+    end
+  end
+
+  defp bump_extension_generation(socket) do
+    assign(socket, :extension_generation, socket.assigns.extension_generation + 1)
+  end
+
+  # The async task reports the domain's own return value, which is itself a tuple,
+  # so the result is wrapped once and an unexpected shape is reported as an
+  # unconfirmed outcome rather than as a success.
+  defp settle_extension(socket, {:ok, {:applied, {:ok, %{action: :unchanged}}}}),
+    do: extension_unchanged(socket)
+
+  defp settle_extension(socket, {:ok, {:applied, {:ok, result}}}),
+    do: extension_applied(socket, result)
+
+  defp settle_extension(socket, {:ok, {:applied, {:error, :stale_review}}}),
+    do: extension_stale(socket)
+
+  defp settle_extension(socket, {:ok, {:applied, {:error, reason}}}),
+    do: extension_failed(socket, reason)
+
+  defp settle_extension(socket, {:exit, _reason}), do: extension_unconfirmed(socket)
+  defp settle_extension(socket, _unexpected), do: extension_unconfirmed(socket)
+
+  # One receipt per applied handoff: the exact reviewed command is compared with
+  # the proposal inside the originating conversation. An edited command leaves the
+  # card unconfirmed and says so, and a changed native value is never credited as
+  # the helper's change (AC-16).
+  defp extension_applied(socket, result) do
+    socket
+    |> assign(:extension_pending?, false)
+    |> assign(:extension_success, extension_result_message(result, socket))
+    |> record_prepared_applied(socket.assigns.extension_review.command)
+    |> close_extension()
+    |> push_event("focus_scoped_target", %{id: "calendar-extension-approve"})
+    |> reload_calendars()
+  end
+
+  defp extension_unchanged(socket) do
+    socket
+    |> assign(:extension_pending?, false)
+    |> assign(
+      :extension_success,
+      extension_service_label(socket) <> " already runs through the date you reviewed."
+    )
+    |> record_prepared_applied(socket.assigns.extension_review.command)
+    |> close_extension()
+    |> push_event("focus_scoped_target", %{id: "calendar-extension-approve"})
+    |> reload_calendars()
+  end
+
+  # The outcome is the page's own message beside the list, because the review
+  # drawer is closed by an apply: the reviewer still reads what was written and
+  # which date the calendar now ends on.
+  defp extension_result_message(result, socket) do
+    changed = Map.get(result, :changed_count, 0)
+
+    "Extended #{extension_service_label(socket)} through " <>
+      "#{CalendarComponents.format_date(socket.assigns.extension_review.extension.requested_end_date)}. " <>
+      "#{changed} #{if changed == 1, do: "row", else: "rows"} changed."
+  end
+
+  # A stale extension writes nothing and cannot be reapplied. The approval the
+  # editor entered stays, the reviewed token is dropped, and the only action left
+  # is an explicit refresh of the current end date (AC-15).
+  defp extension_stale(socket) do
+    socket
+    |> assign(:extension_pending?, false)
+    |> assign(:extension_dispatched?, false)
+    |> assign(:extension_refresh_required?, true)
+    |> assign(:extension_status, %{
+      kind: :stale,
+      title: "Nothing was extended.",
+      message:
+        "This calendar changed after the review was prepared, so nothing was written. Refresh the " <>
+          "list, review the current end date and extend again."
+    })
+    |> focus_extension_review()
+  end
+
+  defp extension_failed(socket, reason) do
+    socket
+    |> assign(:extension_pending?, false)
+    |> assign(:extension_status, %{
+      kind: :failed,
+      title: "Nothing was extended.",
+      message:
+        "#{extension_write_error_message(reason)} The review is still here, so you can try again."
+    })
+    |> focus_extension_review()
+  end
+
+  # A lost answer is not a rolled-back write: the page says the outcome is
+  # unconfirmed, re-reads the authoritative list and never resends the command
+  # on its own (AC-15, AC-16).
+  defp extension_unconfirmed(socket) do
+    socket
+    |> assign(:extension_pending?, false)
+    |> assign(:extension_dispatched?, false)
+    |> assign(:extension_refresh_required?, true)
+    |> assign(:extension_status, %{
+      kind: :unconfirmed,
+      title: "This extension has no answer yet.",
+      message:
+        "It may still have been applied, so nothing is claimed either way. Refresh the review " <>
+          "after the list reloads, then decide again."
+    })
+    |> focus_extension_review()
+    |> reload_calendars()
+  end
+
+  defp reconnect_extension(socket) do
+    if socket.assigns.extension_dispatched? do
+      extension_unconfirmed(socket)
+    else
+      socket
+    end
+  end
+
+  defp extension_service_label(socket) do
+    socket.assigns.extension_review.extension.service_id
+  end
+
+  defp focus_extension_review(socket) do
+    push_event(socket, "calendar:combine-focus", %{
+      id: "calendar-extension-apply",
+      fallback_id: "calendar-extension-review"
+    })
+  end
+
+  defp close_extension(socket) do
+    socket
+    |> restore_agent_return_focus()
+    |> assign(:extension_open?, false)
+    |> assign(:extension_review, nil)
+    |> assign(:extension_origin, nil)
+    |> assign(:extension_pending?, false)
+    |> assign(:extension_dispatched?, false)
+    |> assign(:extension_status, nil)
+    |> assign(:extension_refresh_required?, false)
+    |> assign(:extension_review_form, extension_review_form(%{}))
+    |> bump_extension_generation()
+  end
+
   ## Prepared-change handoff
 
   # A second handoff never replaces an open drawer's input (AC-28), and a forged
   # or malformed entry id is ignored instead of reaching the session.
   defp review_prepared_change(socket, id) do
     cond do
-      socket.assigns.date_change_open? or socket.assigns.combine_open? ->
+      socket.assigns.date_change_open? or socket.assigns.combine_open? or
+          socket.assigns.extension_open? ->
         socket
 
       not is_binary(id) ->
@@ -1416,6 +1970,17 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     end
   end
 
+  # This page prepares two kinds of change, so the panel's action label is named
+  # per prepared command rather than once for the page: a button label is a
+  # promise, and an editor who asked to stop service is not reviewing an
+  # extension. The panel itself names no pack command (INV-1).
+  defp agent_review_label(%{command: {:save, _service_id, _attrs}}), do: "Review extension"
+
+  defp agent_review_label(%{command: {:date_change, _dates, _remove_from, _add_to}}),
+    do: "Review date change"
+
+  defp agent_review_label(_prepared), do: "Review prepared change"
+
   defp handoff_prepared_change(socket, entry_id) do
     case Agents.prepared(
            socket.assigns.agent_session,
@@ -1424,6 +1989,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
          ) do
       {:ok, %{command: {:date_change, dates, remove_from, add_to}}} ->
         open_prepared_change(socket, entry_id, dates, remove_from, add_to)
+
+      {:ok, %{command: {:save, service_id, attrs}}} ->
+        open_extension_review(socket, entry_id, service_id, attrs)
 
       _stale_or_unknown ->
         assign(socket, :agent_notice, @prepared_missing_notice)
@@ -1466,11 +2034,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   # fail here is presentation - the database write already succeeded - so a stale,
   # reset or dead origin never turns the apply into an error and never touches
   # another entry. An edited command leaves the card unconfirmed and says so.
-  defp record_prepared_applied(%{assigns: %{date_change_origin: nil}} = socket, _command),
-    do: socket
+  defp record_prepared_applied(
+         %{assigns: %{date_change_origin: nil, extension_origin: nil}} = socket,
+         _command
+       ),
+       do: socket
 
   defp record_prepared_applied(%{assigns: assigns} = socket, command) do
-    origin = assigns.date_change_origin
+    origin = assigns.date_change_origin || assigns.extension_origin
 
     case Agents.record_applied(
            origin.session_pid,
@@ -2270,6 +2841,13 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
               />
 
               <.message
+                :if={@extension_success}
+                id="calendars-extension-status"
+                kind="success"
+                title={@extension_success}
+              />
+
+              <.message
                 :if={(@zone && @zone.fallback?) and not @calendars_empty?}
                 id="calendars-timezone-fallback"
                 kind="warning"
@@ -2676,6 +3254,90 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
               >
                 Routes share calendars. Changing a calendar changes every trip that uses it.
               </p>
+
+              <%!-- The approval is the editor's own sentence, entered here and copied into the
+              helper session's context. Nothing is written by this form; the helper prepares a
+              command from it and only a reviewed native apply changes the calendar. --%>
+              <section
+                :if={@calendars_state in [:ready, :refreshing] and not @calendars_empty?}
+                id="calendar-extension-approval"
+                aria-labelledby="calendar-extension-approval-title"
+                class="mt-4 rounded-card border border-subtle bg-white p-4 sm:p-5"
+              >
+                <h2 id="calendar-extension-approval-title" class="text-base font-bold text-strong">
+                  Approve a calendar extension
+                </h2>
+                <p class="mt-1 text-[13px] text-muted">
+                  Approve running a weekly calendar past its current end date. The helper can prepare
+                  the extension from this approval; you still review the result and apply it.
+                </p>
+
+                <.message
+                  :if={@extension_notice}
+                  id="calendar-extension-approved"
+                  kind="success"
+                  title={@extension_notice}
+                />
+
+                <.message
+                  :if={@extension_errors != %{}}
+                  id="calendar-extension-errors"
+                  tabindex="-1"
+                  kind="error"
+                  title={Enum.join(Map.values(@extension_errors), " ")}
+                />
+
+                <.form
+                  for={@extension_form}
+                  id="calendar-extension-form"
+                  phx-hook="FormErrorFocus"
+                  phx-change="extension_approval_change"
+                  phx-submit="extension_approval"
+                  class="mt-3 grid gap-4 sm:max-w-[560px]"
+                >
+                  <div class="max-w-[320px]">
+                    <.input
+                      id="calendar-extension-service"
+                      field={@extension_form[:service_id]}
+                      type="select"
+                      label="Weekly calendar"
+                      prompt="Choose a calendar"
+                      options={
+                        Enum.map(extension_options(assigns), &{extension_option(&1), &1.service_id})
+                      }
+                      errors={List.wrap(@extension_errors["service_id"])}
+                    />
+                  </div>
+                  <div class="max-w-[220px]">
+                    <.input
+                      id="calendar-extension-end-date"
+                      field={@extension_form[:end_date]}
+                      type="date"
+                      label="Run through"
+                      errors={List.wrap(@extension_errors["end_date"])}
+                    />
+                  </div>
+                  <div>
+                    <.input
+                      id="calendar-extension-approval-text"
+                      field={@extension_form[:approval_text]}
+                      type="textarea"
+                      label="Why you are approving it"
+                      maxlength="2000"
+                      class="textarea min-h-20 w-full"
+                      errors={List.wrap(@extension_errors["approval_text"])}
+                    />
+                  </div>
+                  <div class="flex flex-wrap items-center gap-3">
+                    <.button id="calendar-extension-approve" type="submit" class="min-h-11">
+                      Approve extension
+                    </.button>
+                    <p class="text-[13px] text-muted">
+                      Approving records this decision for the helper. It changes no service date.
+                    </p>
+                  </div>
+                </.form>
+              </section>
             </div>
           </div>
 
@@ -2694,6 +3356,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
               form={@agent_form}
               notice={@agent_notice}
               entries_empty?={@agent_entries_empty?}
+              review_label={&agent_review_label/1}
             />
           </div>
         </div>
@@ -2955,6 +3618,117 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
           </.form>
         </.drawer>
 
+        <%!-- A confirmation whose answer was lost is resolved by re-reading the list, never by
+        resending it. The notice lives here, outside the drawer, because the shared dialog hook
+        closes a modal as soon as the socket drops. --%>
+        <div
+          id="calendar-extension-transport"
+          phx-hook=".CalendarExtensionTransport"
+          data-extension-dispatched={to_string(@extension_dispatched?)}
+          data-extension-pending={to_string(@extension_pending?)}
+        >
+          <div id="calendar-extension-connection" phx-update="ignore" role="status" hidden>
+            <div class="mb-5 flex items-start gap-3 rounded-control bg-warning-bg px-4 py-3 text-warning-fg">
+              <.icon name="hero-exclamation-triangle" class="mt-0.5 size-5 shrink-0" />
+              <div class="min-w-0 text-sm">
+                <p class="font-bold">Connection lost. Reconnecting…</p>
+                <p class="mt-0.5" data-extension-connection="idle" hidden>
+                  Nothing has been sent. Your review is still here to confirm.
+                </p>
+                <p class="mt-0.5" data-extension-connection="dispatched" hidden>
+                  Your confirmation was sent and this page has no answer for it, so nothing is
+                  claimed about it. Refresh the review after the list reloads.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <.drawer
+          id="calendar-extension-drawer"
+          chrome="planner"
+          open={@extension_open?}
+          pending={@extension_pending?}
+          on_close="extension_close"
+          title="Review calendar extension"
+          initial_focus={:first_field}
+          return_focus_id={@extension_return_focus}
+          class="max-w-[620px]"
+        >
+          <:lede>Approved end-date extension</:lede>
+          <.form
+            for={@extension_review_form}
+            id="calendar-extension-review-form"
+            phx-hook="FormErrorFocus"
+            phx-change="extension_review_change"
+            class="flex min-h-0 flex-1 flex-col"
+          >
+            <.drawer_scroll>
+              <.message
+                :if={@extension_status}
+                id="calendar-extension-status"
+                tabindex="-1"
+                kind={extension_status_kind(assigns)}
+                title={@extension_status.title}
+              >
+                {@extension_status.message}
+              </.message>
+
+              <div class="max-w-[220px]">
+                <.input
+                  id="calendar-extension-review-end-date"
+                  field={@extension_review_form[:end_date]}
+                  type="date"
+                  label="Run through"
+                  disabled={@extension_pending?}
+                />
+              </div>
+              <p class="mt-2 text-[13px] text-muted">
+                Changing this date changes the extension you apply. Your approval still applies to
+                this calendar.
+              </p>
+
+              <Editor.extension_review
+                :if={@extension_review}
+                id="calendar-extension-impact"
+                extension={@extension_review.extension}
+                approval_text={@extension_review.approval_text}
+              />
+            </.drawer_scroll>
+
+            <.drawer_footer>
+              <.button
+                id="calendar-extension-cancel"
+                type="button"
+                phx-click="extension_close"
+                variant="secondary"
+                class="min-h-11"
+              >
+                Cancel
+              </.button>
+              <.button
+                :if={@extension_refresh_required?}
+                id="calendar-extension-refresh"
+                type="button"
+                phx-click="extension_refresh"
+                variant="secondary"
+                class="min-h-11"
+              >
+                Refresh review
+              </.button>
+              <.button
+                id="calendar-extension-apply"
+                type="button"
+                phx-click="extension_apply"
+                disabled={@extension_pending? or @extension_refresh_required?}
+                class="min-h-11 min-w-[168px]"
+              >
+                {if @extension_pending?, do: "Applying…", else: "Apply extension"}
+              </.button>
+            </.drawer_footer>
+          </.form>
+        </.drawer>
+
         <.drawer
           id="calendar-combine-drawer"
           chrome="planner"
@@ -3104,6 +3878,43 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
         export default {
           mounted() {
             this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+          }
+        }
+      </script>
+
+      <%!--
+      The extension's transport lifecycle only reports what the browser observes about the
+      connection. It never computes a date, never decides that an extension is valid and never
+      resends a confirmation: the reviewed command lives on the server and is sent once, by the
+      reviewer. --%>
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".CalendarExtensionTransport">
+        export default {
+          disconnected() {
+            const notice = this.notice()
+            if (!notice) return
+
+            const dispatched = this.el.dataset.extensionDispatched === "true"
+            for (const line of notice.querySelectorAll("[data-extension-connection]")) {
+              line.hidden = line.dataset.extensionConnection !== (dispatched ? "dispatched" : "idle")
+            }
+            notice.hidden = false
+
+            const apply = document.getElementById("calendar-extension-apply")
+            if (apply) apply.disabled = true
+          },
+
+          reconnected() {
+            const notice = this.notice()
+            if (notice) notice.hidden = true
+
+            const apply = document.getElementById("calendar-extension-apply")
+            if (apply) apply.disabled = this.el.dataset.extensionPending === "true"
+
+            this.pushEvent("extension_reconnect", {})
+          },
+
+          notice() {
+            return this.el.querySelector("#calendar-extension-connection")
           }
         }
       </script>

@@ -56,6 +56,38 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
     test "a prepare_date_change result finishes with the prepared sentence" do
       assert final_text(post(prepared_conversation())) == @prepared_sentence
     end
+
+    test "a departures question asks the seeded route's own first stop after 05:00" do
+      body = post([user("What leaves the first stop after 5:00am?")])
+
+      assert {arguments, "query_departures"} = tool_call(body)
+
+      assert Jason.decode!(arguments) == %{
+               "service_date" => tomorrow(),
+               "stop_id" => "BSS_1",
+               "stop_sequence" => 1,
+               "after" => "05:00",
+               "include_after_midnight" => false
+             }
+    end
+
+    test "a boarding question asks the next service date's occurrences" do
+      body = post([user("Which stops does this route board at?")])
+
+      assert {arguments, "list_boarding_occurrences"} = tool_call(body)
+      assert Jason.decode!(arguments) == %{"service_date" => tomorrow()}
+    end
+
+    test "a Schedule tool result finishes with the Schedule sentence" do
+      messages = [
+        user("What leaves the first stop after 5:00am?"),
+        assistant_tool_call("call_query_departures", "query_departures", %{}),
+        tool_result("call_query_departures", %{"departures" => []})
+      ]
+
+      assert final_text(post(messages)) ==
+               "Three trips leave the first stop after 5:00am."
+    end
   end
 
   describe "the production model client" do
@@ -130,6 +162,8 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
   end
 
   defp user(content), do: %{"role" => "user", "content" => content}
+
+  defp tomorrow, do: Date.to_iso8601(Date.add(Date.utc_today(), 1))
 
   # The messages the turn loop has sent by the time it answers the
   # prepare_date_change call: user request, list_calendars call and result, then

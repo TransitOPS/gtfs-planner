@@ -37,7 +37,7 @@ defmodule GtfsPlanner.Agents.Packs.CalendarsReadTest do
   end
 
   describe "pack declaration" do
-    test "declares exactly the three calendar tools with their activity labels" do
+    test "declares exactly the six calendar tools with their activity labels" do
       assert Calendars.id() == "calendars"
       assert Calendars.title() == "Calendar helper"
 
@@ -52,13 +52,19 @@ defmodule GtfsPlanner.Agents.Packs.CalendarsReadTest do
       assert Enum.map(Calendars.tools(), & &1.name) == [
                "list_calendars",
                "get_calendar",
-               "prepare_date_change"
+               "summarize_calendar_coverage",
+               "get_calendar_usage",
+               "prepare_date_change",
+               "prepare_calendar_extension"
              ]
 
       assert Enum.map(Calendars.tools(), & &1.activity) == [
                "Looked up calendars",
                "Checked a calendar's dates",
-               "Prepared a date change"
+               "Checked calendar coverage",
+               "Checked calendar usage",
+               "Prepared a date change",
+               "Prepared a calendar extension"
              ]
 
       assert Enum.all?(Calendars.tools(), &(&1.parameters["additionalProperties"] == false))
@@ -458,12 +464,17 @@ defmodule GtfsPlanner.Agents.Packs.CalendarsReadTest do
 
   defp list(args, scope), do: Calendars.call("list_calendars", args, scope)
 
+  # `get_calendar/3` answers `{:ok, result, evidence}`; these cases read the
+  # calendar itself, so the helper drops the evidence tuple.
   defp get(service_id, from, to, scope) do
-    Calendars.call(
-      "get_calendar",
-      %{"service_id" => service_id, "from" => from, "to" => to},
-      scope
-    )
+    case Calendars.call(
+           "get_calendar",
+           %{"service_id" => service_id, "from" => from, "to" => to},
+           scope
+         ) do
+      {:ok, result, _evidence} -> {:ok, result}
+      other -> other
+    end
   end
 
   defp date(result, iso_date) do

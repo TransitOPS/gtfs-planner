@@ -16,9 +16,32 @@ defmodule GtfsPlannerWeb.AgentPanel do
   (INV-6). Admission, tool calls and delivered results are authorized inside the
   session and the turn (INV-2), so the panel never decides access itself.
 
+  The panel also holds the conversation's server-owned resource context. `mount/2`
+  binds the whole-version identity of the page it was mounted on, and a host that
+  shows one resource of that version calls `set_context/2` when ordinary
+  navigation changes it. `set_context/2` affects this panel alone: it detaches the
+  prior session, clears this panel's transcript, draft and origin, and returns a
+  socket whose `agent_session` is nil, so a late event or down from the replaced
+  session can no longer reach the new state (INV-1, AC-1). No other tab, session
+  or native form input is touched.
+
   Focus is a client concern with a server trigger: `agent:focus` events must be
   handled by a hook on a wrapper that survives the conditional panel, because the
   closing panel cannot own its own post-removal handler.
+
+  ## Evidence links
+
+  Server evidence may name typed resources. This module, not the component and
+  never the model, decides what those names mean: an allowlisted kind resolves to
+  one application path built from this panel's own version, and anything else
+  resolves to no link at all, which the card states rather than hides (AC-4).
+  Evidence read under another organization, version or resource identity than
+  this panel now holds is dropped whole, so no foreign answer can reach the
+  screen even as an unlinked card (AC-2).
+
+  A route reference resolves to that route's own Schedules page, which is the
+  page the Schedule helper is bound to; it is the same page the panel already
+  shows, so following it never leaves the scope this panel holds.
   """
 
   import Phoenix.Component, only: [assign: 3, to_form: 2]
@@ -42,9 +65,19 @@ defmodule GtfsPlannerWeb.AgentPanel do
 
   @forbidden_notice "Your access changed."
   @unavailable_notice "The helper is unavailable right now."
+  @unavailable_context_notice "This route or calendar is no longer available, so the helper stopped."
   @busy_notice "The helper is still working on your last request."
   @capacity_notice "The helper is busy. Try again shortly."
   @too_long_error "Keep messages under 2,000 characters."
+
+  # The only resource kinds this panel may turn into a link. A kind absent here
+  # renders as plain text, which keeps a new pack's reference from becoming a
+  # path this panel has not reviewed.
+  @evidence_links %{
+    "calendar" => :calendar_show,
+    "calendars_index" => :calendars_index,
+    "route" => :route_schedules
+  }
 
   @doc """
   Adds the panel's assigns, its entries stream and its two hooks to `socket`.
@@ -58,6 +91,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
 
     socket
     |> assign(:agent_pack_id, pack_id)
+    |> assign(:agent_context, Scope.context({:version, socket.assigns.current_gtfs_version.id}))
     |> assign(:agent_title, pack.title())
     |> assign(:agent_intro, pack.intro())
     |> assign(:agent_examples, pack.examples())
@@ -74,6 +108,30 @@ defmodule GtfsPlannerWeb.AgentPanel do
     |> stream(@entries, [])
     |> attach_hook(:agent_panel_events, :handle_event, &handle_event/3)
     |> attach_hook(:agent_panel_info, :handle_info, &handle_info/2)
+  end
+
+  @doc """
+  Replaces this panel's resource context on ordinary host navigation.
+
+  The panel detaches from the session it held, drops that session's monitor and
+  clears its own transcript, draft, notice and origin, so nothing from the old
+  route remains on screen. An unchanged context is a no-op, which keeps a patch
+  that did not move the resource from restarting the conversation. An open panel
+  attaches to the new context's session immediately; a refused one keeps its
+  notice, and the panel's own `agent_*` events stay attached either way.
+  """
+  @spec set_context(Phoenix.LiveView.Socket.t(), Scope.resource_context()) ::
+          Phoenix.LiveView.Socket.t()
+  def set_context(socket, context) do
+    if context == socket.assigns[:agent_context] do
+      socket
+    else
+      socket
+      |> detach_session()
+      |> reset_panel()
+      |> assign(:agent_context, context)
+      |> maybe_reopen()
+    end
   end
 
   ## Events
@@ -123,6 +181,12 @@ defmodule GtfsPlannerWeb.AgentPanel do
 
       {:error, :empty} ->
         {:halt, socket}
+
+      {:error, :unavailable} ->
+        {:halt,
+         socket
+         |> notice(text, @unavailable_context_notice)
+         |> assign(:agent_status, :unavailable)}
 
       {:error, status} ->
         {:halt, assign(socket, :agent_status, status)}
@@ -192,7 +256,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
       {:entry, entry} ->
         {:halt,
          socket
-         |> stream_insert(@entries, entry)
+         |> stream_insert(@entries, resolve_entry_evidence(entry, socket))
          |> assign(:agent_entries_empty?, false)}
 
       {:status, status} ->
@@ -214,8 +278,14 @@ defmodule GtfsPlannerWeb.AgentPanel do
          %{assigns: %{agent_session_monitor: ref}} = socket
        ) do
     # A forbidden session stops itself after broadcasting the access-changed
-    # status; its down must not replace that status with the ended copy.
-    status = if socket.assigns.agent_status == :forbidden, do: :forbidden, else: :ended
+    # status; its down must not replace that status with the ended copy. The same
+    # holds for a session that stopped because its resource context is gone.
+    status =
+      cond do
+        socket.assigns.agent_status == :forbidden -> :forbidden
+        socket.assigns.agent_status == :unavailable -> :unavailable
+        true -> :ended
+      end
 
     {:halt,
      socket
@@ -229,7 +299,138 @@ defmodule GtfsPlannerWeb.AgentPanel do
   defp handle_info({:DOWN, _ref, :process, _pid, _reason}, socket), do: {:halt, socket}
   defp handle_info(_message, socket), do: {:cont, socket}
 
+  ## Evidence resolution
+
+  # Entries arrive from the session, which authorized the turn that produced
+  # them. The panel re-checks the evidence against its own current context before
+  # it becomes a card: an answer read under a scope this panel no longer holds is
+  # dropped, not merely unlinked (AC-2, AC-4).
+  defp resolve_entry_evidence(%{evidence: evidence} = entry, socket) when is_list(evidence) do
+    resolved =
+      evidence
+      |> Enum.map(&resolve_evidence(&1, socket))
+      |> Enum.reject(&is_nil/1)
+
+    Map.put(entry, :evidence, resolved)
+  end
+
+  defp resolve_entry_evidence(entry, _socket), do: entry
+
+  defp resolve_evidence(%{scope: scope} = evidence, socket) do
+    if scoped_here?(scope, socket) do
+      Map.update!(evidence, :resources, fn resources ->
+        Enum.map(resources, &resolve_resource(&1, socket))
+      end)
+    else
+      nil
+    end
+  end
+
+  defp resolve_evidence(_evidence, _socket), do: nil
+
+  defp scoped_here?(
+         %{organization_id: organization_id, gtfs_version_id: version_id, identity: identity},
+         socket
+       ) do
+    organization_id == socket.assigns.current_organization.id and
+      version_id == socket.assigns.current_gtfs_version.id and
+      identity == identity_label(socket.assigns.agent_context)
+  end
+
+  defp scoped_here?(_scope, _socket), do: false
+
+  defp identity_label(%{identity: {kind, id}}), do: "#{kind}:#{id}"
+  defp identity_label(_context), do: nil
+
+  defp resolve_resource(%{kind: kind, id: id} = resource, socket) do
+    Map.put(resource, :link, evidence_link(kind, id, socket))
+  end
+
+  defp resolve_resource(resource, _socket), do: Map.put(resource, :link, nil)
+
+  defp evidence_link(kind, id, socket) do
+    with route when not is_nil(route) <- Map.get(@evidence_links, kind),
+         resolved when is_binary(resolved) <- resolve_path(route, id, socket) do
+      resolved
+    else
+      _other -> nil
+    end
+  end
+
+  defp resolve_path(:calendar_show, id, socket) when is_binary(id), do: calendar_path(socket, id)
+  defp resolve_path(:calendars_index, _id, socket), do: calendars_path(socket)
+
+  defp resolve_path(:route_schedules, id, socket) when is_binary(id),
+    do: route_schedules_path(socket, id)
+
+  defp resolve_path(_kind, _id, _socket), do: nil
+
+  # The paths are built the way the calendar components build them: the version
+  # comes from this panel's own assigns and the service ID is percent-encoded, so
+  # an imported ID can never escape the query parameter.
+  defp calendar_path(socket, service_id) do
+    calendar_base(socket) <> "/show?service_id=" <> URI.encode_www_form(service_id)
+  end
+
+  defp calendars_path(socket), do: calendar_base(socket)
+
+  # A route reference is the route's own Schedules page in this version, built the
+  # way the route components build it: the version comes from this panel's own
+  # assigns and the route ID is percent-encoded, so an imported ID cannot escape
+  # the path.
+  defp route_schedules_path(socket, route_id) do
+    version_id = socket.assigns.current_gtfs_version.id
+
+    "/gtfs/" <> version_id <> "/routes/" <> URI.encode_www_form(route_id) <> "/schedules"
+  end
+
+  defp calendar_base(socket),
+    do: "/gtfs/" <> socket.assigns.current_gtfs_version.id <> "/calendars"
+
   ## Session bookkeeping
+
+  # Releasing the held session first is what keeps a second tab attached: the
+  # session keeps running with its other listener.
+  defp detach_session(socket) do
+    case socket.assigns[:agent_session] do
+      pid when is_pid(pid) -> Agents.detach(pid)
+      _other -> :ok
+    end
+
+    case socket.assigns[:agent_session_monitor] do
+      ref when is_reference(ref) -> Process.demonitor(ref, [:flush])
+      _other -> :ok
+    end
+
+    socket
+    |> assign(:agent_session, nil)
+    |> assign(:agent_session_monitor, nil)
+  end
+
+  # The cleared state is this panel's alone: its transcript, draft, origin and
+  # notice, with the composer ready for the new context.
+  defp reset_panel(socket) do
+    socket
+    |> assign(:agent_conversation_id, nil)
+    |> assign(:agent_status, :idle)
+    |> assign(:agent_notice, nil)
+    |> assign(:agent_entries_empty?, true)
+    |> assign(:agent_form, empty_form())
+    |> assign(:agent_last_message, nil)
+    |> stream(@entries, [], reset: true)
+  end
+
+  defp maybe_reopen(%{assigns: %{agent_open?: true}} = socket) do
+    case Agents.open(scope(socket)) do
+      {:ok, pid, snapshot} ->
+        store_session(socket, pid, snapshot)
+
+      {:error, status} ->
+        refuse(socket, status)
+    end
+  end
+
+  defp maybe_reopen(socket), do: socket
 
   defp store_session(socket, pid, snapshot) do
     previous = socket.assigns[:agent_session]
@@ -249,7 +450,9 @@ defmodule GtfsPlannerWeb.AgentPanel do
     |> assign(:agent_status, snapshot.status)
     |> assign(:agent_entries_empty?, snapshot.entries == [])
     |> assign(:agent_notice, nil)
-    |> stream(@entries, snapshot.entries, reset: true)
+    |> stream(@entries, Enum.map(snapshot.entries, &resolve_entry_evidence(&1, socket)),
+      reset: true
+    )
   end
 
   defp reset_conversation(socket, conversation_id) do
@@ -311,7 +514,8 @@ defmodule GtfsPlannerWeb.AgentPanel do
       user_id: socket.assigns.current_user.id,
       user_email: socket.assigns.current_user.email,
       pack_id: socket.assigns.agent_pack_id,
-      version_name: socket.assigns.current_gtfs_version.name
+      version_name: socket.assigns.current_gtfs_version.name,
+      resource_context: socket.assigns.agent_context
     }
   end
 

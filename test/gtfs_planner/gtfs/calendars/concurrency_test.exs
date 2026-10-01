@@ -21,6 +21,8 @@ defmodule GtfsPlanner.Gtfs.Calendars.ConcurrencyTest do
   alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.ChangeLog
+  alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion
@@ -240,6 +242,195 @@ defmodule GtfsPlanner.Gtfs.Calendars.ConcurrencyTest do
            }
   end
 
+  test "an approved extension survives one trip substitution from a second committed connection",
+       %{supervisor: supervisor} do
+    scope = seed_scope("extension-stale")
+
+    on_exit(fn -> cleanup([scope]) end)
+
+    extension = %{end_date: ~D[2026-03-27], approval_text: "Approved for the March schedule."}
+
+    seed_extension_scope(scope)
+
+    # Two workers are released together, each on its own committing connection. Worker 0
+    # loads the source, reviews the approved extension and applies that token. Worker 1
+    # replaces the service's single trip with another trip on the same route, so the route
+    # identities and the trip count the calendar source fingerprint binds are identical on
+    # both sides of the exchange and only the exact trip identities differ.
+    #
+    # Whichever apply the version row serializes first, exactly one calendar write may
+    # happen: the winner commits the end date and one audit event, and the loser must be
+    # refused rather than write a second time.
+    # Either worker may serialize first: worker 0 may lose its review to the
+    # substitution, and the outcome it reports is whatever it observed.
+    results =
+      race(supervisor, fn index ->
+        if index == 0 do
+          unboxed(fn ->
+            case Gtfs.get_calendar(scope.organization.id, scope.version.id, "race_extension") do
+              {:ok, source} ->
+                case Gtfs.review_calendar_change(
+                       {:save, "race_extension", extension},
+                       %{"race_extension" => source.fingerprint},
+                       scope.audit
+                     ) do
+                  {:ok, review} ->
+                    # The complete impact travels with the token: 20 newly active March
+                    # weekdays, all unresolved because none carries a recorded exception.
+                    assert review.extension.newly_active_date_count == 20
+
+                    assert review.extension.unresolved_dates ==
+                             review.extension.newly_active_dates
+
+                    assert review.extension.holiday_policy == :unresolved
+
+                    Gtfs.apply_calendar_change(
+                      {:save, "race_extension", extension},
+                      review.fingerprint,
+                      scope.audit
+                    )
+
+                  refused ->
+                    refused
+                end
+
+              unavailable ->
+                unavailable
+            end
+          end)
+        else
+          unboxed(fn -> substitute_trip(scope, "RACE_T1", "RACE_T1B") end)
+        end
+      end)
+
+    outcomes = results
+
+    # The substitution committed and the apply wrote at most once: whichever side
+    # lost the race is refused stale rather than writing a second time.
+    assert :ok in outcomes
+    assert Enum.count(outcomes, &match?({:ok, %{action: :save}}, &1)) <= 1
+
+    written? = Enum.any?(outcomes, &match?({:ok, %{action: :save}}, &1))
+
+    # The create's weekly row and anchor, its create audit event, and at most the
+    # single apply audit event. The extension's end date is stored exactly when the
+    # apply won the race.
+    assert identity_state(scope, "race_extension") == %{
+             weekly_rows: 1,
+             exception_rows: 0,
+             attribute_rows: 1,
+             audit_rows: if(written?, do: 2, else: 1)
+           }
+
+    assert unboxed(fn ->
+             Repo.one(
+               from(c in Calendar,
+                 where:
+                   c.organization_id == ^scope.organization.id and
+                     c.gtfs_version_id == ^scope.version.id and c.service_id == "race_extension",
+                 select: c.end_date
+               )
+             )
+           end) == if(written?, do: ~D[2026-03-27], else: ~D[2026-02-27])
+
+    # The substitution is the committed trip set, so a review issued now binds the
+    # current trip identity. When the apply lost the race the very same command
+    # still applies; when it already won, the calendar is extended and the same
+    # command is refused as no longer later.
+    assert unboxed(fn ->
+             {:ok, current} =
+               Gtfs.get_calendar(scope.organization.id, scope.version.id, "race_extension")
+
+             case Gtfs.review_calendar_change(
+                    {:save, "race_extension", extension},
+                    %{"race_extension" => current.fingerprint},
+                    scope.audit
+                  ) do
+               {:ok, review} ->
+                 assert {:ok, %{action: :save}} =
+                          Gtfs.apply_calendar_change(
+                            {:save, "race_extension", extension},
+                            review.fingerprint,
+                            scope.audit
+                          )
+
+                 {:applied, :now}
+
+               {:error, :extension_requires_later_end_date} ->
+                 :already_extended
+             end
+           end) == if(written?, do: :already_extended, else: {:applied, :now})
+  end
+
+  # Commits the reviewed calendar, its route and its single trip before the race.
+  defp seed_extension_scope(scope) do
+    unboxed(fn ->
+      {:ok, _payload} = create_calendar(scope, weekly_attrs("race_extension"))
+
+      {:ok, route} =
+        insert_route(
+          valid_route_attrs(%{route_id: "RACE_R1"})
+          |> Map.put(:organization_id, scope.organization.id)
+          |> Map.put(:gtfs_version_id, scope.version.id)
+        )
+
+      {:ok, _trip} = create_trip(scope, route.id, "RACE_T1", "race_extension")
+
+      :ok
+    end)
+  end
+
+  defp weekly_attrs(service_id) do
+    %{
+      service_id: service_id,
+      name: "Race Extension",
+      kind: :weekly,
+      monday: 1,
+      tuesday: 1,
+      wednesday: 1,
+      thursday: 1,
+      friday: 1,
+      saturday: 0,
+      sunday: 0,
+      start_date: ~D[2026-01-05],
+      end_date: ~D[2026-02-27]
+    }
+  end
+
+  defp create_trip(scope, route_id, trip_id, service_id) do
+    insert_trip(
+      valid_trip_attrs(%{trip_id: trip_id, service_id: service_id})
+      |> Map.put(:organization_id, scope.organization.id)
+      |> Map.put(:gtfs_version_id, scope.version.id)
+      |> Map.put(:route_id, route_id)
+    )
+  end
+
+  # Replaces one trip with another on the same route, leaving the service's route
+  # identities and trip count unchanged.
+  defp substitute_trip(scope, trip_id, replacement_trip_id) do
+    unboxed(fn ->
+      route_id =
+        Repo.one!(
+          from(t in Trip,
+            where: t.organization_id == ^scope.organization.id and t.trip_id == ^trip_id,
+            select: t.route_id
+          )
+        )
+
+      Repo.delete_all(
+        from(t in Trip,
+          where: t.organization_id == ^scope.organization.id and t.trip_id == ^trip_id
+        )
+      )
+
+      {:ok, _replacement} =
+        create_trip(scope, route_id, replacement_trip_id, "race_extension")
+
+      :ok
+    end)
+  end
+
   defp create_calendar(scope, attrs), do: Gtfs.create_calendar(attrs, scope.audit)
 
   # Releases both workers into real contention for the version row while an
@@ -389,12 +580,19 @@ defmodule GtfsPlanner.Gtfs.Calendars.ConcurrencyTest do
 
       Repo.delete_all(from(a in CalendarAttribute, where: a.organization_id in ^organization_ids))
 
+      # The extension case commits routes and trips, so they are cleaned with the
+      # calendar rows they reference.
+      Repo.delete_all(from(t in Trip, where: t.organization_id in ^organization_ids))
+      Repo.delete_all(from(r in Route, where: r.organization_id in ^organization_ids))
+
       Repo.delete_all(from(m in UserOrgMembership, where: m.organization_id in ^organization_ids))
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
       Repo.delete_all(from(u in User, where: u.id in ^user_ids))
       Repo.delete_all(from(o in Organization, where: o.id in ^organization_ids))
 
       refute Repo.exists?(from(c in Calendar, where: c.organization_id in ^organization_ids))
+      refute Repo.exists?(from(t in Trip, where: t.organization_id in ^organization_ids))
+      refute Repo.exists?(from(r in Route, where: r.organization_id in ^organization_ids))
 
       refute Repo.exists?(from(l in ChangeLog, where: l.organization_id in ^organization_ids))
 

@@ -181,6 +181,10 @@ config :gtfs_planner,
        GtfsPlanner.Gtfs.Export.Snapshot.Sandbox
 
 config :gtfs_planner,
+       :gtfs_service_query_snapshot,
+       GtfsPlanner.Gtfs.ServiceQueries.Snapshot.Sandbox
+
+config :gtfs_planner,
        :reviewed_apply_transaction,
        GtfsPlanner.Gtfs.ReviewedApplyTransaction.Sandbox
 

@@ -18,8 +18,30 @@ defmodule GtfsPlannerWeb.AgentComponentsTest do
         text: "Both school calendars run on these five dates.",
         activity: [],
         prepared: nil,
+        evidence: [],
         applied?: false,
         status: :done
+      },
+      overrides
+    )
+  end
+
+  defp evidence(overrides \\ %{}) do
+    Map.merge(
+      %{
+        kind: "read_result",
+        title: "Weekday service",
+        total: 2,
+        total_label: "dates run",
+        completeness: :complete,
+        completeness_reason: nil,
+        facts: [%{label: "Dates evaluated", value: "2"}],
+        source_ref: "gtfs_calendars",
+        digest: String.duplicate("a", 64),
+        source_revision: nil,
+        scope: %{organization_id: "org", gtfs_version_id: "version", identity: "version:version"},
+        exclusions: [],
+        resources: [%{kind: "calendar", id: "WEEKDAY", label: "Weekday service", link: nil}]
       },
       overrides
     )
@@ -279,6 +301,68 @@ defmodule GtfsPlannerWeb.AgentComponentsTest do
       assert count(LazyHTML.query(assistant, "#agent-entry-1 .badge")) == 0
     end
 
+    test "renders the server count, facts, completeness and source above the model prose" do
+      entry_doc = entry_html(%{evidence: [evidence()]}) |> doc()
+
+      assert text(LazyHTML.query(entry_doc, "#agent-evidence-1-1")) =~ "Server result"
+      assert text(LazyHTML.query(entry_doc, "#agent-evidence-1-1")) =~ "2 dates run"
+      assert text(LazyHTML.query(entry_doc, "#agent-evidence-1-1")) =~ "Dates evaluated"
+      assert text(LazyHTML.query(entry_doc, "#agent-evidence-1-1")) =~ "gtfs_calendars"
+      assert text(LazyHTML.query(entry_doc, "#agent-evidence-1-1")) =~ "Complete"
+
+      assert first_attr(LazyHTML.query(entry_doc, "#agent-evidence-1-1"), "data-evidence-kind") ==
+               "read_result"
+
+      # The reply under a card is marked as the model's own words.
+      assert text(LazyHTML.query(entry_doc, "#agent-prose-1")) =~ "Model reply"
+    end
+
+    test "shows an incomplete answer with its reason and no invented total" do
+      entry_doc =
+        entry_html(%{
+          evidence: [
+            evidence(%{
+              completeness: :incomplete,
+              completeness_reason: "Some rows were left out.",
+              exclusions: ["2 later dates"]
+            })
+          ]
+        })
+        |> doc()
+
+      assert text(LazyHTML.query(entry_doc, "#agent-evidence-1-1")) =~ "Incomplete"
+      assert text(LazyHTML.query(entry_doc, "#agent-evidence-1-1")) =~ "Some rows were left out."
+      assert text(LazyHTML.query(entry_doc, "#agent-evidence-1-1")) =~ "Excluded · 2 later dates"
+    end
+
+    test "links only a resource the panel resolved and names the ones it did not" do
+      linked =
+        entry_html(%{
+          evidence: [
+            evidence(%{
+              resources: [
+                %{kind: "calendar", id: "WEEKDAY", label: "Weekday service", link: "/gtfs/v1/x"}
+              ]
+            })
+          ]
+        })
+        |> doc()
+
+      assert first_attr(LazyHTML.query(linked, "#agent-evidence-1-1 a"), "href") == "/gtfs/v1/x"
+
+      unlinked = entry_html(%{evidence: [evidence()]}) |> doc()
+
+      assert text(LazyHTML.query(unlinked, "#agent-evidence-1-1")) =~ "no link for this reference"
+      assert count(LazyHTML.query(unlinked, "#agent-evidence-1-1 a")) == 0
+    end
+
+    test "renders no card and no prose label when the turn produced no evidence" do
+      entry_doc = entry_html() |> doc()
+
+      assert count(LazyHTML.query(entry_doc, "[data-evidence-kind]")) == 0
+      assert count(LazyHTML.query(entry_doc, "#agent-prose-1 .font-bold")) == 0
+    end
+
     test "offers the prepared change for review with its summary" do
       entry_doc = entry_html(%{prepared: prepared()}) |> doc()
 
@@ -297,6 +381,21 @@ defmodule GtfsPlannerWeb.AgentComponentsTest do
       assert first_attr(review, "phx-click") == "agent_review_prepared"
       assert first_attr(review, "phx-value-entry") == "1"
       assert first_attr(LazyHTML.query(entry_doc, "#agent-prepared-1"), "tabindex") == "-1"
+    end
+
+    test "takes the caller's own label for the prepared change it is given" do
+      assigns = %{
+        id: "agent-entry-1",
+        entry: entry(%{prepared: prepared()}),
+        title: "Test helper",
+        review_label: fn %{command: {:date_change, _dates, _stop, _run}} ->
+          "Review date change"
+        end
+      }
+
+      entry_doc = rendered_to_string(~H"<AgentComponents.agent_entry {assigns} />") |> doc()
+
+      assert text(LazyHTML.query(entry_doc, "#agent-review-prepared-1")) == "Review date change"
     end
 
     test "confirms an applied proposal on its stable card and removes the review action" do

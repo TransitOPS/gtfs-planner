@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   @moduledoc """
-  Test-only OpenRouter stand-in for the Calendar helper's browser journeys.
+  Test-only OpenRouter stand-in for the helper browser journeys.
 
   `config/test.exs` selects it only while `BROWSER_E2E` is `true`, because a
   Playwright journey drives the helper in a real browser, where no `Req.Test`
@@ -10,22 +10,56 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
   It answers one deterministic scripted reply per request, choosing on the last
   message the turn loop sent and replying in OpenRouter's chat-completions
-  shape. The script is the Calendars skill's school-break example:
+  shape. The script is the Calendars skill's school-break example plus the A02
+  and A19 service-answer questions of the `Browser Service Answers Version`
+  (`test/support/browser_seed.exs`):
 
     * a `"user"` message mentioning a route gets the Calendars skill's
       out-of-scope sentence;
     * a `"user"` message mentioning school gets a `list_calendars` call with
       `query: "school"`;
-    * the `list_calendars` tool result gets a `prepare_date_change` call that
+    * a `"user"` message asking about dates gets a `get_calendar` call for the
+      next Monday through Sunday of the seeded `SCHOOL_WD` calendar;    * the `list_calendars` tool result gets a `prepare_date_change` call that
       stops `SCHOOL_EX` and `SCHOOL_WD` on the next Monday and Tuesday after
       `Date.utc_today()`; the seeded `Browser Helper Version`
       (`test/support/browser_seed.exs`) resolves the same UTC date, so both
       dates are real service dates;
     * the `prepare_date_change` tool result gets the prepared-change sentence;
+    * the `get_calendar` tool result gets a sentence that contradicts the
+      server's own count on purpose, so the browser journey proves the card and
+      not the prose is the answer;
+    * a `"user"` message asking about departures gets a `query_departures` call
+      for the route's own first stop after 05:00 on the next date the seeded
+      `CAL_DAILY` calendar runs, so the Schedule journey reads a real page's own
+      trip; a message about the seeded holiday instead asks for Central Station
+      occurrence 2 after 18:00 on the shared A02 date;
+    * a `"user"` message about which dates keep service gets a
+      `summarize_calendar_coverage` call for `REGULAR`, H8 and H12 on the two
+      shared A19 dates; a message asking for two months of dates is refused by
+      the dispatch fence before the pack sees it;
+    * a `"user"` message asking which visit at a stop, naming a calendar the
+      version does not have, or naming more dates than one answer covers gets a
+      call the domain refuses, so the browser journey shows the refusal and the
+      next action it names;
+    * a `"user"` message asking to extend a calendar gets a
+      `prepare_calendar_extension` call for the same end date the journey
+      approves in *Approve a calendar extension*, so the tool reads the
+      editor's approval instead of one the model supplied; a message about the
+      service-answer feed asks for that version's `WEEKDAY` calendar and every
+      other message keeps the seeded `SCHOOL_WD` calendar;
+    * a `"user"` message asking whether the provider is reachable gets a 401, so
+      the panel's failed entry, its Retry control and the failure text render
+      from a real provider failure rather than from a scripted turn;
+    * the `query_departures` and `list_boarding_occurrences` tool results get a
+      Schedule sentence, one of which contradicts the server's count on purpose;
+    * the `prepare_calendar_extension` tool result gets the prepared-extension
+      sentence;
     * anything else gets the helper's generic sentence.
   """
 
   @behaviour Plug
+
+  alias GtfsPlanner.Agents.BrowserServiceAnswers
 
   @model "test/model-a"
 
@@ -36,6 +70,29 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   @out_of_scope "That isn't available in Calendars. I can answer questions about calendars and prepare service date changes. To ask for a new ability, contact the TransitOPS team."
   @generic "I can answer questions about calendars and prepare date changes."
   @prepared "I prepared the change. Review it before applying."
+  # Deliberately wrong: the seeded School weekdays calendar runs five of the
+  # seven dates the stand-in asks about, so the card and this sentence disagree
+  # and the journey can show which one the panel treats as the answer.
+  @contradicted_count "Three of those dates run service."
+  @schedule_departures "Three trips leave the first stop after 5:00am."
+  @schedule_occurrences "This route boards at three stops."
+  # Deliberately wrong about the seeded holiday: H8 has two listed departures
+  # after 18:00 at Central Station, so the card and this sentence disagree and
+  # the journey can show which one the panel treats as the answer.
+  @holiday_departures "Five trips leave Central Station after 6:00pm."
+  # Agrees with the seeded coverage: H8's standard calendar has ended on both
+  # dates, and H12 keeps Sunday service through its own calendar.
+  @coverage_answer "H8 has no service on either date. H12 keeps Sunday service through SCHOOL."
+  @too_many_dates "Ask about fewer dates at a time."
+  @unknown_calendar "No calendar with service_id RETIRED in this service version."
+  # The domain refused the call because the seeded loop visits Central Station
+  # twice, so the follow-up names the next action instead of answering anyway.
+  @ambiguous_visit "I did not answer, because Central Station is visited more than once on that date. Ask which visit you mean."
+  @prepared_extension "I prepared the extension. Review it before applying."
+  # The end date the browser journey approves in the Calendars page's own form,
+  # 200 days from today: inside the 366-day horizon, and later than the seeded
+  # calendar's own end date, so the tool can only prepare it from that approval.
+  @extension_days 200
 
   @impl Plug
   def init(opts), do: opts
@@ -45,7 +102,13 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
     {:ok, body, conn} = Plug.Conn.read_body(conn)
     %{"messages" => messages} = Jason.decode!(body)
 
-    Req.Test.json(conn, reply(messages))
+    case reply(messages) do
+      {:status, status, body} ->
+        Req.Test.json(%{conn | status: status}, body)
+
+      body ->
+        Req.Test.json(conn, body)
+    end
   end
 
   defp reply(messages) do
@@ -63,9 +126,99 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
   defp user_reply(content) do
     cond do
-      content =~ ~r/route/i -> text_reply(@out_of_scope)
-      content =~ ~r/school/i -> tool_calls_reply("list_calendars", %{"query" => "school"})
-      true -> text_reply(@generic)
+      content =~ ~r/provider reachable|provider down|provider key/i ->
+        provider_failure()
+
+      content =~ ~r/extend/i ->
+        tool_calls_reply("prepare_calendar_extension", extension_arguments(content))
+
+      service_question?(content) ->
+        service_question_reply(content)
+
+      calendar_question?(content) ->
+        calendar_question_reply(content)
+
+      true ->
+        text_reply(@generic)
+    end
+  end
+
+  defp calendar_question?(content) do
+    Enum.any?([~r/route/i, ~r/dates|week/i, ~r/school/i], &Regex.match?(&1, content))
+  end
+
+  defp calendar_question_reply(content) do
+    cond do
+      content =~ ~r/route/i ->
+        text_reply(@out_of_scope)
+
+      content =~ ~r/dates|week/i ->
+        tool_calls_reply("get_calendar", get_calendar_arguments())
+
+      content =~ ~r/school/i ->
+        tool_calls_reply("list_calendars", %{"query" => "school"})
+    end
+  end
+
+  defp service_question?(content) do
+    Enum.any?(
+      [
+        ~r/central station/i,
+        ~r/keep service|still run/i,
+        ~r/retired calendar/i,
+        ~r/next two months/i,
+        ~r/depart|leaves? |after \d/i,
+        ~r/board|stops? does/i
+      ],
+      &Regex.match?(&1, content)
+    )
+  end
+
+  # The first matching question wins, so a request that names both a calendar and
+  # a departure still gets the branch the scripted journey expects.
+  defp service_question_reply(content) do
+    cond do
+      # The A02 question and its refusals are keyed on Central Station, which no
+      # other scripted journey mentions, so the seeded holidays feed only this
+      # spec's messages.
+      content =~ ~r/central station/i ->
+        holiday_departure_reply(content)
+
+      content =~ ~r/keep service|still run/i ->
+        tool_calls_reply("summarize_calendar_coverage", coverage_arguments())
+
+      content =~ ~r/retired calendar/i ->
+        tool_calls_reply("get_calendar", %{
+          "service_id" => "RETIRED",
+          "from" => Date.to_iso8601(BrowserServiceAnswers.thanksgiving_eve()),
+          "to" => Date.to_iso8601(BrowserServiceAnswers.thanksgiving())
+        })
+
+      content =~ ~r/next two months/i ->
+        tool_calls_reply("summarize_calendar_coverage", over_limit_arguments())
+
+      content =~ ~r/depart|leaves? |after \d/i ->
+        tool_calls_reply("query_departures", departure_arguments())
+
+      content =~ ~r/board|stops? does/i ->
+        tool_calls_reply("list_boarding_occurrences", %{
+          "service_date" => Date.to_iso8601(next_service_date())
+        })
+    end
+  end
+
+  # A real provider failure, so the panel's failed entry, its Retry control and
+  # the unavailable status are the shipped rendering of a rejected request
+  # rather than of a scripted refusal.
+  defp provider_failure, do: {:status, 401, %{"error" => "provider key rejected"}}
+
+  # The A02 question asks for the occurrence the seeded loop makes ambiguous,
+  # and the refusal branches below ask for the calls the domain refuses.
+  defp holiday_departure_reply(content) do
+    if content =~ ~r/which visit/i do
+      tool_calls_reply("query_departures", ambiguous_departure_arguments())
+    else
+      tool_calls_reply("query_departures", holiday_departure_arguments())
     end
   end
 
@@ -73,8 +226,66 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
     case answered_tool(messages, tool_call_id) do
       "list_calendars" -> tool_calls_reply("prepare_date_change", prepare_arguments())
       "prepare_date_change" -> text_reply(@prepared)
+      "get_calendar" -> get_calendar_reply(messages)
+      "query_departures" -> departure_reply(messages)
+      "summarize_calendar_coverage" -> coverage_reply(messages)
+      "list_boarding_occurrences" -> text_reply(@schedule_occurrences)
+      "prepare_calendar_extension" -> text_reply(@prepared_extension)
       _other -> text_reply(@generic)
     end
+  end
+
+  # The seeded A02 answer has two listed departures, so the stand-in's sentence
+  # for that call contradicts the card; the refusal branches keep the generic
+  # Schedule sentence.
+  defp departure_reply(messages) do
+    cond do
+      last_user_content(messages) =~ ~r/which visit/i ->
+        text_reply(@ambiguous_visit)
+
+      mentions_central_station?(messages) ->
+        text_reply(@holiday_departures)
+
+      true ->
+        text_reply(@schedule_departures)
+    end
+  end
+
+  defp coverage_reply(messages) do
+    if last_user_content(messages) =~ ~r/next two months/i do
+      text_reply(@too_many_dates)
+    else
+      text_reply(@coverage_answer)
+    end
+  end
+
+  # The retired-calendar refusal leaves the domain's own sentence behind, so the
+  # panel announces the same next action the tool did.
+  defp get_calendar_reply(messages) do
+    if last_user_content(messages) =~ ~r/retired calendar/i do
+      text_reply(@unknown_calendar)
+    else
+      text_reply(@contradicted_count)
+    end
+  end
+
+  defp last_user_content(messages) do
+    messages
+    |> Enum.reverse()
+    |> Enum.find_value("", fn
+      %{"role" => "user", "content" => content} when is_binary(content) -> content
+      _message -> false
+    end)
+  end
+
+  defp mentions_central_station?(messages) do
+    Enum.any?(messages, fn
+      %{"role" => "user", "content" => content} when is_binary(content) ->
+        content =~ ~r/central station/i
+
+      _message ->
+        false
+    end)
   end
 
   # The turn loop answers a tool call with a `"tool"` message carrying the
@@ -97,6 +308,107 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
   # Next Monday strictly after today, then the Tuesday after it: the seed's
   # Monday-Friday calendars run on both dates.
+  # The next Monday through the Sunday after it: the seeded School weekdays
+  # calendar runs Monday through Friday, so the server answer is five of seven.
+  defp get_calendar_arguments do
+    monday = Date.add(Date.utc_today(), 8 - Date.day_of_week(Date.utc_today()))
+
+    %{
+      "service_id" => "SCHOOL_WD",
+      "from" => Date.to_iso8601(monday),
+      "to" => Date.to_iso8601(Date.add(monday, 6))
+    }
+  end
+
+  # The next date strictly after today: the seeded `CAL_DAILY` calendar runs
+  # every day, so the schedule routes' trips are active on it whatever day the
+  # journey runs. The first stop of the seeded Schedules patterns is `BSS_1` at
+  # sequence 1, and 05:00 is before every seeded departure, so the answer is the
+  # page's own trips rather than an empty read.
+  defp departure_arguments do
+    %{
+      "service_date" => Date.to_iso8601(next_service_date()),
+      "stop_id" => "BSS_1",
+      "stop_sequence" => 1,
+      "after" => "05:00",
+      "include_after_midnight" => false
+    }
+  end
+
+  defp next_service_date, do: Date.add(Date.utc_today(), 1)
+
+  # The tool reads the approval from the server-held context, so the stand-in
+  # can only name the calendar and end date the editor wrote into the page's
+  # own form. A message about the seeded service-answer feed asks for that
+  # version's `WEEKDAY` calendar; every other extension message keeps the school
+  # calendar the other journeys approve.
+  defp extension_arguments(content) do
+    %{
+      "service_id" => extension_service_id(content),
+      "end_date" => Date.to_iso8601(Date.add(Date.utc_today(), @extension_days))
+    }
+  end
+
+  # Each extension journey approves a calendar of its own, so a second approval
+  # of the same calendar would be refused for extending nothing.
+  defp extension_service_id(content) do
+    cond do
+      content =~ ~r/harbor/i -> "WEEKDAY"
+      content =~ ~r/express/i -> "SCHOOL_EX"
+      true -> "SCHOOL_WD"
+    end
+  end
+
+  # The seeded holiday question: Central Station is occurrence 2 on every H8
+  # trip, so the answer can name it instead of guessing which visit was meant.
+  defp holiday_departure_arguments do
+    %{
+      "service_date" => Date.to_iso8601(BrowserServiceAnswers.thanksgiving()),
+      "stop_id" => "CENTRAL",
+      "stop_sequence" => 2,
+      "after" => "18:00",
+      "include_after_midnight" => false
+    }
+  end
+
+  # The same call with the occurrence left out. The seeded loop visits Central
+  # Station twice, so the domain refuses with its occurrence candidates.
+  defp ambiguous_departure_arguments do
+    %{
+      "service_date" => Date.to_iso8601(BrowserServiceAnswers.thanksgiving()),
+      "stop_id" => "CENTRAL",
+      "after" => "18:00",
+      "include_after_midnight" => false
+    }
+  end
+
+  # H8's `REGULAR` service has ended by both dates, while H12 keeps Sunday
+  # service through `SCHOOL`, so the card can show a gap and an alternate.
+  defp coverage_arguments do
+    %{
+      "service_id" => "REGULAR",
+      "dates" =>
+        Enum.map(
+          [BrowserServiceAnswers.nov_first(), BrowserServiceAnswers.nov_sunday()],
+          &Date.to_iso8601/1
+        ),
+      "route_ids" => ["H8", "H12"]
+    }
+  end
+
+  # More dates than the dispatch fence allows, so the turn ends on the fence's
+  # refusal and names the narrowing next action instead of answering.
+  defp over_limit_arguments do
+    %{
+      "service_id" => "REGULAR",
+      "dates" =>
+        BrowserServiceAnswers.range_start()
+        |> then(&Date.range(&1, Date.add(&1, 60)))
+        |> Enum.map(&Date.to_iso8601/1),
+      "route_ids" => ["H8", "H12"]
+    }
+  end
+
   defp prepare_arguments do
     monday = Date.add(Date.utc_today(), 8 - Date.day_of_week(Date.utc_today()))
 

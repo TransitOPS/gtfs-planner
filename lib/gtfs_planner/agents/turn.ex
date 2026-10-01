@@ -5,15 +5,20 @@ defmodule GtfsPlanner.Agents.Turn do
   The loop alternates model calls and tool calls: `Model.complete/2`, the pack's
   tool calls through `Dispatch.call/4`, one tool result message per call, and the
   next model call, at most sixteen model calls per turn. The scope is re-authorized
-  before every provider request, so access withdrawn mid-turn sends no further
-  request and runs no further tool. Only the pack the session chose is named here,
-  and only through its behaviour: this module holds no domain code (INV-1).
+  before every provider request — membership, the server-owned resource context and
+  the pack's own precondition — so access withdrawn mid-turn, a route or version
+  this conversation no longer resolves, or a pack whose precondition is gone sends
+  no further request, runs no further tool and delivers no result (INV-1). Only the
+  pack the session chose is named here, and only through its behaviour: this module
+  holds no domain code (INV-1).
 
   Messages use OpenAI's chat format with string keys. The system message is
   rebuilt from `Prompt.system/2` for every request and never stored in history.
   Tool call arguments pass through unchanged; `Dispatch` validates them and owns
   every tool error message, so exception text and raw arguments never reach the
-  model. A raised pack exception is not rescued: it propagates to the caller,
+  model. A tool may also return server evidence: it is collected on the turn and
+  returned to the caller, never mixed into the model's tool message, so the panel
+  can render the server answer the model's prose may contradict (INV-2). A raised pack exception is not rescued: it propagates to the caller,
   where the session's task boundary owns sanitizing and reporting it. The
   caller's `notify` receives `{:usage, model, cost}`, `{:tool, name}`
   and `{:activity, label}` events for partial outcome logging; tool names are
@@ -52,6 +57,7 @@ defmodule GtfsPlanner.Agents.Turn do
           messages: [map()],
           activity: [String.t()],
           prepared: Pack.prepared() | nil,
+          evidence: [Pack.evidence()],
           tools: [String.t()],
           cost: number(),
           cost_complete: boolean(),
@@ -90,9 +96,14 @@ defmodule GtfsPlanner.Agents.Turn do
   end
 
   defp authorize_and_request(pack, scope, history, acc, calls_made, notify) do
-    case Scope.authorize(scope) do
-      :ok -> consume_and_request(pack, scope, history, acc, calls_made, notify)
-      {:error, :forbidden} -> {:error, :forbidden, progress(acc)}
+    case authorized_context(pack, scope) do
+      :ok ->
+        consume_and_request(pack, scope, history, acc, calls_made, notify)
+
+      {:error, reason} ->
+        # Tagged so a context refusal stays distinct from a provider failure
+        # that carries the same reason atom and settles only one turn.
+        {:error, {:context, reason}, progress(acc)}
     end
   end
 
@@ -100,6 +111,15 @@ defmodule GtfsPlanner.Agents.Turn do
     case UsageBudget.consume(scope.organization_id, scope.user_id) do
       :ok -> request(pack, scope, history, acc, calls_made, notify)
       {:error, :allowance_exhausted} -> {:error, :allowance_exhausted, progress(acc)}
+    end
+  end
+
+  # The provider boundary and the pack boundary are one check, in the session's
+  # order: membership, then the server-owned resource context, then the pack's own
+  # precondition.
+  defp authorized_context(pack, scope) do
+    with :ok <- Scope.authorized_context(scope) do
+      Pack.authorize_context(pack, scope)
     end
   end
 
@@ -125,6 +145,7 @@ defmodule GtfsPlanner.Agents.Turn do
        messages: acc.appended,
        activity: acc.activity,
        prepared: acc.prepared,
+       evidence: acc.evidence,
        tools: acc.tools,
        cost: acc.cost,
        cost_complete: acc.cost_complete,
@@ -138,7 +159,10 @@ defmodule GtfsPlanner.Agents.Turn do
 
     case run_tool_calls(pack, scope, reply.tool_calls, acc, notify) do
       {:forbidden, acc, _messages} ->
-        {:error, :forbidden, progress(acc)}
+        {:error, {:context, :forbidden}, progress(acc)}
+
+      {:unavailable, acc, _messages} ->
+        {:error, {:context, :unavailable}, progress(acc)}
 
       {:ok, acc, tool_messages} ->
         loop(pack, scope, history ++ [assistant | tool_messages], acc, calls_made + 1, notify)
@@ -157,11 +181,11 @@ defmodule GtfsPlanner.Agents.Turn do
       notify.({:tool, name})
 
       case Dispatch.call(pack, scope, call.name, call.arguments) do
-        {:error, :forbidden} ->
-          {:halt, {:forbidden, acc, messages}}
+        {:error, reason} when reason in [:forbidden, :unavailable] ->
+          {:halt, {reason, acc, messages}}
 
         result ->
-          {payload, prepared} = payload(result)
+          {payload, prepared, evidence} = payload(result)
           message = tool_message(call.id, payload)
           notify.({:activity, label})
 
@@ -170,7 +194,8 @@ defmodule GtfsPlanner.Agents.Turn do
             | appended: acc.appended ++ [message],
               activity: acc.activity ++ [label],
               tools: acc.tools ++ [name],
-              prepared: prepared || acc.prepared
+              prepared: prepared || acc.prepared,
+              evidence: acc.evidence ++ evidence
           }
 
           {:cont, {:ok, acc, messages ++ [message]}}
@@ -178,9 +203,14 @@ defmodule GtfsPlanner.Agents.Turn do
     end)
   end
 
-  defp payload({:ok, result}), do: {result, nil}
-  defp payload({:prepared, prepared, result}), do: {result, prepared}
-  defp payload({:tool_error, message}), do: {%{"error" => message}, nil}
+  # Server evidence rides beside the tool result and never inside the model's
+  # message: the panel renders it as the answer while the model keeps reading
+  # only the result payload (INV-2).
+  defp payload({:ok, result}), do: {result, nil, []}
+  defp payload({:ok, result, evidence}), do: {result, nil, [evidence]}
+  defp payload({:prepared, prepared, result}), do: {result, prepared, []}
+  defp payload({:prepared, prepared, result, evidence}), do: {result, prepared, [evidence]}
+  defp payload({:tool_error, message}), do: {%{"error" => message}, nil, []}
 
   defp find_tool(pack, name), do: Enum.find(pack.tools(), &(&1.name == name))
 
@@ -233,6 +263,7 @@ defmodule GtfsPlanner.Agents.Turn do
       activity: [],
       tools: [],
       prepared: nil,
+      evidence: [],
       cost: 0,
       cost_complete: true,
       response_models: []

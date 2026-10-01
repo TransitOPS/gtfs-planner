@@ -54,6 +54,7 @@ defmodule GtfsPlanner.Gtfs.Import do
   alias GtfsPlanner.Gtfs.PathwayEvolutions
   alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions
 
   import Ecto.Query, only: [from: 2]
 
@@ -238,10 +239,19 @@ defmodule GtfsPlanner.Gtfs.Import do
   # counts only become durable after that transaction commits: a Phase 1 failure
   # means every standard count is zero. One fence check at its start covers the
   # non-transactional `insert_batched` calls inside it.
+  #
+  # Phase 1 replaces `calendars`, `calendar_dates`, `trips` and `pathway_evolutions`,
+  # which are the exact rows a reviewed calendar extension binds. After the fence's
+  # run lock, the version row is locked `FOR SHARE` before any row this phase writes,
+  # so an extension apply holding the same version `FOR UPDATE` cannot interleave a
+  # fresh trip or closure set between a review and its apply. A staging or importing
+  # scope locks exactly like a published one, so this does not restrict the normal
+  # import flow.
   defp import_phase_1(categorized, organization_id, gtfs_version_id, topic, fence) do
     result =
       Repo.transaction(fn ->
         if fence, do: fence.()
+        Versions.lock_for_input_write!(organization_id, gtfs_version_id)
         import_phase_1_files(categorized, organization_id, gtfs_version_id, topic)
       end)
 

@@ -36,6 +36,7 @@ alias GtfsPlanner.Accounts
 alias GtfsPlanner.Accounts.User
 alias GtfsPlanner.Accounts.UserToken
 alias GtfsPlanner.AdvancedBlockingFixtures
+alias GtfsPlanner.Agents.BrowserServiceAnswers
 alias GtfsPlanner.Gtfs
 alias GtfsPlanner.Gtfs.Agency
 alias GtfsPlanner.Gtfs.AlignmentSegment
@@ -7358,11 +7359,13 @@ case Accounts.register_first_admin(%{
     #
     # The three calendars are the helper's read and prepare material: two
     # Monday-Friday school calendars the journey stops, and a Sunday calendar
-    # for the substitution case. Dates are relative to this version's
-    # agency-local today (the UTC fallback, because the version has no agency),
-    # so "next Monday" stays a real service date on any run date. Rows are
-    # inserted directly because this fixture supplies scenario data, not an
-    # audited edit.
+    # for the substitution case. `SCHOOL_ROUTE` and its two trips give the
+    # school calendars recorded service, so an approved end-date extension has
+    # the routes and trips it actually affects to name. Dates are relative to
+    # this version's agency-local today (the UTC fallback, because the version
+    # has no agency), so "next Monday" stays a real service date on any run
+    # date. Rows are inserted directly because this fixture supplies scenario
+    # data, not an audited edit.
     {:ok, helper_version} =
       Versions.create_gtfs_version(org.id, %{name: "Browser Helper Version"})
 
@@ -7440,6 +7443,328 @@ case Accounts.register_first_admin(%{
     |> then(&Repo.insert_all(GtfsPlanner.Gtfs.CalendarAttribute, &1))
 
     IO.puts("Browser seed: helper version #{helper_version.name} (id=#{helper_version.id})")
+
+    # ── Service answers (step 7) ──
+    #
+    # The A02/A19 feed the ordinary route and calendar helper journeys read: a
+    # holiday Thursday whose weekday baseline is removed and replaced by an
+    # exception-only calendar, a loop that visits Central Station twice, a
+    # frequency trip boarding 15 minutes after its first stop, a trip with no
+    # readable time, and H12 keeping Sunday service through `SCHOOL` after
+    # `REGULAR` ends. Dates come from `BrowserServiceAnswers`, the same module
+    # the OpenRouter stand-in asks about, so both sides name the same dates.
+    # The version is backdated like the helper version above, so the Browser E2E
+    # Version stays the organization's current one.
+    {:ok, answers_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Service Answers Version"})
+
+    answers_version =
+      Repo.update!(
+        Ecto.Changeset.change(answers_version,
+          published_at: ~U[2020-01-03 00:00:00.000000Z]
+        )
+      )
+
+    {:ok, _answers_agency} =
+      GtfsFixtures.insert_agency(%{
+        organization_id: org.id,
+        gtfs_version_id: answers_version.id,
+        agency_id: "BROWSER_ANSWERS_AGENCY",
+        agency_name: "Browser Answers Transit",
+        agency_url: "https://example.test",
+        agency_timezone: "America/New_York"
+      })
+
+    for {stop_id, stop_name} <- [{"CENTRAL", "Central Station"}, {"HARBOR", "Harbor Yards"}] do
+      {:ok, _stop} =
+        GtfsFixtures.insert_stop(%{
+          stop_id: stop_id,
+          stop_name: stop_name,
+          location_type: 0,
+          organization_id: org.id,
+          gtfs_version_id: answers_version.id
+        })
+    end
+
+    answers_routes =
+      for {route_id, short_name, long_name} <- [
+            {"H8", "8", "Harbor shuttle"},
+            {"H12", "12", "School connector"}
+          ] do
+        {:ok, route} =
+          GtfsFixtures.insert_route(%{
+            organization_id: org.id,
+            gtfs_version_id: answers_version.id,
+            route_id: route_id,
+            route_short_name: short_name,
+            route_long_name: long_name,
+            route_type: 3
+          })
+
+        route
+      end
+      |> Map.new(&{&1.route_id, &1})
+
+    # `WEEKDAY` is the recurring baseline the holiday removes, `REGULAR` is the
+    # calendar the A19 coverage question reviews and `SCHOOL` is H12's alternate
+    # Sunday service. `HOLIDAY` has no weekly row at all: only the exception
+    # below adds its one date.
+    answers_now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    [
+      %{service_id: "WEEKDAY", days: [1, 2, 3, 4, 5]},
+      %{service_id: "REGULAR", days: [1, 2, 3, 4, 5, 6, 7]},
+      %{service_id: "SCHOOL", days: [7]}
+    ]
+    |> Enum.map(fn %{service_id: service_id, days: days} ->
+      weekly =
+        [:monday, :tuesday, :wednesday, :thursday, :friday, :saturday, :sunday]
+        |> Enum.with_index(1)
+        |> Map.new(fn {day, index} -> {day, if(index in days, do: 1, else: 0)} end)
+
+      Map.merge(weekly, %{
+        id: Ecto.UUID.generate(),
+        organization_id: org.id,
+        gtfs_version_id: answers_version.id,
+        service_id: service_id,
+        start_date: BrowserServiceAnswers.range_start(),
+        end_date: BrowserServiceAnswers.range_end(),
+        inserted_at: answers_now,
+        updated_at: answers_now
+      })
+    end)
+    |> then(&Repo.insert_all(Calendar, &1))
+
+    [
+      {"WEEKDAY", BrowserServiceAnswers.thanksgiving(), 2},
+      {"HOLIDAY", BrowserServiceAnswers.thanksgiving(), 1}
+    ]
+    |> Enum.map(fn {service_id, date, exception_type} ->
+      %{
+        id: Ecto.UUID.generate(),
+        organization_id: org.id,
+        gtfs_version_id: answers_version.id,
+        service_id: service_id,
+        date: date,
+        exception_type: exception_type,
+        inserted_at: answers_now,
+        updated_at: answers_now
+      }
+    end)
+    |> then(&Repo.insert_all(GtfsPlanner.Gtfs.CalendarDate, &1))
+
+    [
+      {"WEEKDAY", "Weekday service"},
+      {"REGULAR", "Standard service"},
+      {"SCHOOL", "School Sundays"}
+    ]
+    |> Enum.map(fn {service_id, description} ->
+      %{
+        id: Ecto.UUID.generate(),
+        organization_id: org.id,
+        gtfs_version_id: answers_version.id,
+        service_id: service_id,
+        service_description: description,
+        service_schedule_typicality: 0,
+        inserted_at: answers_now,
+        updated_at: answers_now
+      }
+    end)
+    |> then(&Repo.insert_all(CalendarAttribute, &1))
+
+    answers_h8 = Map.fetch!(answers_routes, "H8")
+    answers_h12 = Map.fetch!(answers_routes, "H12")
+
+    # H8 leaves Harbor Yards first and boards Central Station 15 minutes later,
+    # so Central Station is occurrence 2 on every H8 trip and the holiday
+    # question asks for that occurrence after 18:00. The loop gives Central
+    # Station a second sequence, which is what makes an unqualified question
+    # ambiguous rather than guessed.
+    answers_pattern =
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, answers_version.id, %{
+        route_id: answers_h8.route_id,
+        direction_id: 0,
+        route_pattern_id: "BROWSER-ANSWERS-P1",
+        route_pattern_name: "Harbor Yards – Central",
+        route_pattern_typicality: 1,
+        timing_name: "Holiday",
+        timing_headsign: "Central Station",
+        stops: [
+          {"HARBOR", 0, 0, 1},
+          {"CENTRAL", 900, 900, 1}
+        ]
+      })
+
+    # The ordinary holiday trips are linked to the pattern, so the page's own
+    # schedule rows and the domain read come from the same materialized stop
+    # times. Central Station is 15 minutes after Harbor Yards on this pattern.
+    for {trip_id, start_time} <- [
+          {"SA-1800", "17:45:00"},
+          {"SA-1820", "18:05:00"},
+          {"SA-1910", "18:55:00"},
+          {"SA-LATE", "24:15:00"}
+        ] do
+      GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+        org.id,
+        answers_version.id,
+        answers_h8.route_id,
+        answers_pattern,
+        %{
+          service_id: "HOLIDAY",
+          trip_id: trip_id,
+          start_time: start_time,
+          trip_headsign: "Central Station"
+        }
+      )
+    end
+
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      answers_version.id,
+      answers_h8.route_id,
+      answers_pattern,
+      %{
+        service_id: "HOLIDAY",
+        trip_id: "SA-LOOP",
+        state: "custom",
+        timed_pattern_id: nil,
+        trip_headsign: "Central Station",
+        stop_times: [
+          {"HARBOR", "18:00:00", "18:00:00"},
+          {"CENTRAL", "18:00:00", "18:00:00"},
+          {"HARBOR", "21:00:00", "21:00:00"},
+          {"CENTRAL", "23:50:00", "23:50:00"}
+        ]
+      }
+    )
+
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      answers_version.id,
+      answers_h8.route_id,
+      answers_pattern,
+      %{
+        service_id: "HOLIDAY",
+        trip_id: "SA-FREQ",
+        state: "custom",
+        timed_pattern_id: nil,
+        trip_headsign: "Central Station",
+        stop_times: [
+          {"HARBOR", "20:00:00", "20:00:00"},
+          {"CENTRAL", "20:15:00", "20:15:00"}
+        ],
+        frequencies: [
+          %{start_time: "20:00:00", end_time: "22:00:00", headway_secs: 1200, exact_times: 0},
+          %{start_time: "21:00:00", end_time: "22:00:00", headway_secs: 600, exact_times: 1}
+        ]
+      }
+    )
+
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      answers_version.id,
+      answers_h8.route_id,
+      answers_pattern,
+      %{
+        service_id: "HOLIDAY",
+        trip_id: "SA-UNKNOWN",
+        state: "custom",
+        timed_pattern_id: nil,
+        trip_headsign: "Central Station",
+        stop_times: [
+          {"HARBOR", "19:45:00", "19:45:00"},
+          {"CENTRAL", nil, nil}
+        ]
+      }
+    )
+
+    answers_school_pattern =
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, answers_version.id, %{
+        route_id: answers_h12.route_id,
+        direction_id: 0,
+        route_pattern_id: "BROWSER-ANSWERS-P2",
+        route_pattern_name: "School – Central",
+        route_pattern_typicality: 1,
+        timing_name: "Sunday",
+        timing_headsign: "Central Station",
+        stops: [
+          {"CENTRAL", 0, 0, 1},
+          {"HARBOR", 600, 600, 1}
+        ]
+      })
+
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      answers_version.id,
+      answers_h12.route_id,
+      answers_school_pattern,
+      %{
+        service_id: "SCHOOL",
+        trip_id: "SA12-SUN-FREQ",
+        trip_headsign: "Central Station",
+        frequencies: [%{start_time: "12:00:00", end_time: "14:00:00", headway_secs: 1800}]
+      }
+    )
+
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      answers_version.id,
+      answers_h12.route_id,
+      answers_school_pattern,
+      %{
+        service_id: "SCHOOL",
+        trip_id: "SA12-SUN-UNKNOWN",
+        state: "custom",
+        timed_pattern_id: nil,
+        trip_headsign: "Central Station",
+        stop_times: [
+          {"CENTRAL", nil, nil},
+          {"HARBOR", nil, nil}
+        ]
+      }
+    )
+
+    IO.puts(
+      "Browser seed: service answers version #{answers_version.name} " <>
+        "(id=#{answers_version.id}, holiday #{BrowserServiceAnswers.thanksgiving()})"
+    )
+
+    {1, nil} =
+      Repo.insert_all(Route, [
+        %{
+          id: Ecto.UUID.generate(),
+          organization_id: org.id,
+          gtfs_version_id: helper_version.id,
+          route_id: "SCHOOL_ROUTE",
+          route_short_name: "S",
+          route_long_name: "School connector",
+          route_type: 3,
+          route_color: "0D737D",
+          route_text_color: "FFFFFF",
+          active: true,
+          inserted_at: calendar_now,
+          updated_at: calendar_now
+        }
+      ])
+
+    {2, nil} =
+      Repo.insert_all(
+        Trip,
+        Enum.map(~w(SCH1 SCH2), fn trip_id ->
+          %{
+            id: Ecto.UUID.generate(),
+            organization_id: org.id,
+            gtfs_version_id: helper_version.id,
+            route_id: "SCHOOL_ROUTE",
+            service_id: "SCHOOL_WD",
+            trip_id: trip_id,
+            trip_headsign: "School",
+            direction_id: 0,
+            inserted_at: calendar_now,
+            updated_at: calendar_now
+          }
+        end)
+      )
 
     # The station BXF_CEN with its two platforms and an entrance, plus the three
     # top-level stops the trips call at. Children go through the import changeset,

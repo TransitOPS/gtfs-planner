@@ -26,6 +26,7 @@ defmodule GtfsPlanner.Agents.TurnTest do
   }
 
   @prepare_arguments ~s|{"dates":["2026-10-12","2026-10-13"],"stop":["SCHOOL_EX","SCHOOL_WD"],"run":[]}|
+  @get_calendar_arguments ~s|{"service_id":"SCHOOL_WD","from":"2026-10-05","to":"2026-10-06"}|
   @final_text "I prepared the change. Review it before applying."
 
   setup {Req.Test, :verify_on_exit!}
@@ -228,7 +229,7 @@ defmodule GtfsPlanner.Agents.TurnTest do
         )
       end)
 
-      assert {:error, :forbidden, progress} =
+      assert {:error, {:context, :forbidden}, progress} =
                Turn.run(Calendars, scope, [user_message("Prepare the date change.")], notify())
 
       assert progress.activity == ["Looked up calendars"]
@@ -332,7 +333,8 @@ defmodule GtfsPlanner.Agents.TurnTest do
         [user_message("Which calendars run Monday?")] ++
           first.messages ++ [user_message("And Tuesday?")]
 
-      assert {:error, :forbidden, progress} = Turn.run(Calendars, scope, history, notify())
+      assert {:error, {:context, :forbidden}, progress} =
+               Turn.run(Calendars, scope, history, notify())
 
       assert progress.activity == []
       assert progress.tools == []
@@ -354,7 +356,7 @@ defmodule GtfsPlanner.Agents.TurnTest do
         send(self(), {:notify, event})
       end
 
-      assert {:error, :forbidden, progress} =
+      assert {:error, {:context, :forbidden}, progress} =
                Turn.run(Calendars, scope, [user_message("Which calendars run Monday?")], notify)
 
       assert progress.activity == ["Looked up calendars"]
@@ -388,6 +390,79 @@ defmodule GtfsPlanner.Agents.TurnTest do
 
       assert_in_delta result.cost, 0.0003, 1.0e-12
       refute result.cost_complete
+    end
+  end
+
+  describe "server evidence over the turn" do
+    test "carries the Calendar pack's evidence beside the model prose", %{scope: scope} do
+      expect_reply(calls_reply([{"call_1", "get_calendar", @get_calendar_arguments}], 0.0001))
+      expect_reply(text_reply("Three dates run service.", 0.0002))
+
+      assert {:ok, result} =
+               Turn.run(
+                 Calendars,
+                 scope,
+                 [user_message("Does School weekdays run next week?")],
+                 notify()
+               )
+
+      assert [evidence] = result.evidence
+      assert evidence.kind == "calendar_dates"
+      assert evidence.title == "School weekdays"
+      # 2026-10-05 and 2026-10-06 are Monday and Tuesday, and the seeded
+      # School weekdays calendar runs both.
+      assert evidence.total == 2
+      assert evidence.total_label == "dates run"
+      assert evidence.completeness == :complete
+      assert is_nil(evidence.source_revision)
+      assert evidence.source_ref == "gtfs_calendars"
+      assert evidence.scope.organization_id == scope.organization_id
+      assert evidence.scope.gtfs_version_id == scope.gtfs_version_id
+
+      assert evidence.resources == [
+               %{kind: "calendar", id: "SCHOOL_WD", label: "School weekdays"}
+             ]
+
+      assert %{label: "Dates evaluated", value: "2"} in evidence.facts
+      assert %{label: "Window", value: "2026-10-05 to 2026-10-06"} in evidence.facts
+
+      # The model's sentence contradicts the server count and stays plain text.
+      assert result.text == "Three dates run service."
+    end
+
+    test "sends the evidence to no model message", %{scope: scope} do
+      expect_reply(calls_reply([{"call_1", "get_calendar", @get_calendar_arguments}], 0.0001))
+      expect_reply(text_reply("Two dates run service.", 0.0002))
+
+      assert {:ok, result} =
+               Turn.run(
+                 Calendars,
+                 scope,
+                 [user_message("Does School weekdays run next week?")],
+                 notify()
+               )
+
+      assert result.messages |> Enum.map(& &1["role"]) == ["assistant", "tool", "assistant"]
+      refute result.messages |> Enum.any?(&(Jason.encode!(&1) =~ "gtfs_calendars"))
+
+      [_, tool, _] = result.messages
+      assert Jason.decode!(tool["content"])["service_id"] == "SCHOOL_WD"
+    end
+
+    test "keeps no evidence when a turn fails after the tool answered", %{scope: scope} do
+      expect_reply(calls_reply([{"call_1", "get_calendar", @get_calendar_arguments}], 0.0001))
+      expect_reply(reply("length", %{"content" => "half"}, 0.5))
+
+      assert {:error, :incomplete_response, progress} =
+               Turn.run(
+                 Calendars,
+                 scope,
+                 [user_message("Does School weekdays run next week?")],
+                 notify()
+               )
+
+      assert progress.tools == ["get_calendar"]
+      refute Map.has_key?(progress, :evidence)
     end
   end
 

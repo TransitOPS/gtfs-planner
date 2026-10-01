@@ -24,6 +24,49 @@ defmodule GtfsPlanner.Agents.Pack do
         }
 
   @typedoc """
+  Bounded, server-created evidence for one tool result (INV-2).
+
+  Evidence is the answer the panel trusts. It is built by the pack from the same
+  read as the result it describes, it never contains model output, and the panel
+  renders its counts, completeness, source and receipts from here. The model may
+  contradict it; the prose below the card stays prose.
+
+  `kind` names the answer, `title` its subject, `total`/`total_label` the exact
+  authoritative count and `facts` the server-computed details beside it.
+  `completeness` is `:complete` or `:incomplete` with a `completeness_reason`, so
+  a bounded answer is never shown as a complete one. `source_ref` names the
+  source read, `digest` is its content digest and `source_revision` stays `nil`
+  until a real native revision exists. `scope` records the resolved scope the
+  read ran under, `exclusions` the rows deliberately left out and `resources` the
+  typed references the panel may resolve into allowlisted application links.
+  """
+  @type evidence :: %{
+          required(:kind) => String.t(),
+          required(:title) => String.t(),
+          required(:total) => non_neg_integer(),
+          required(:total_label) => String.t(),
+          required(:completeness) => :complete | :incomplete,
+          required(:source_ref) => String.t(),
+          required(:digest) => String.t(),
+          required(:source_revision) => String.t() | nil,
+          required(:scope) => %{
+            required(:organization_id) => String.t(),
+            required(:gtfs_version_id) => String.t(),
+            required(:identity) => String.t() | nil
+          },
+          required(:exclusions) => [String.t()],
+          required(:resources) => [
+            %{
+              required(:kind) => String.t(),
+              required(:id) => String.t(),
+              optional(:label) => String.t()
+            }
+          ],
+          optional(:completeness_reason) => String.t() | nil,
+          optional(:facts) => [%{required(:label) => String.t(), required(:value) => String.t()}]
+        }
+
+  @typedoc """
   A change a pack prepared but did not apply.
 
   `summary` carries the generic copy the panel renders; `command` is the
@@ -55,9 +98,43 @@ defmodule GtfsPlanner.Agents.Pack do
   @doc """
   Runs one tool for an authorized scope.
 
-  Return `{:error, message}` for a problem the model should read and correct; a
-  raised exception is handled by the caller as a failed turn.
+  A tool with a server-readable answer returns `{:ok, result, evidence}`; a tool
+  with nothing to prove returns `{:ok, result}`. The prepared forms carry the
+  same optional evidence. Return `{:error, message}` for a problem the model
+  should read and correct; a raised exception is handled by the caller as a
+  failed turn.
   """
   @callback call(name :: String.t(), args :: map(), Scope.t()) ::
-              {:ok, map()} | {:prepared, prepared(), map()} | {:error, String.t()}
+              {:ok, map()}
+              | {:ok, map(), evidence()}
+              | {:prepared, prepared(), map()}
+              | {:prepared, prepared(), map(), evidence()}
+              | {:error, String.t()}
+
+  @doc """
+  Optional, code-owned check of the conversation's own resource context.
+
+  It runs before the provider request, every tool, a delivered result and a
+  prepared lookup, so a pack whose own preconditions are gone (a pack that
+  prepared a date change, for example) sends no request, reads no data and hands
+  off nothing. `{:error, :unavailable}` is the single refusal: the same result an
+  absent, foreign or deleted resource produces, so no other organization's or
+  version's metadata can reach the model.
+  """
+  @callback authorize_context(Scope.t()) :: :ok | {:error, :unavailable}
+
+  @optional_callbacks authorize_context: 1
+
+  @doc """
+  Runs `pack`'s optional `authorize_context/1` callback, or `:ok` for a pack
+  without one.
+  """
+  @spec authorize_context(module(), Scope.t()) :: :ok | {:error, :unavailable}
+  def authorize_context(pack, %Scope{} = scope) do
+    if Code.ensure_loaded?(pack) and function_exported?(pack, :authorize_context, 1) do
+      pack.authorize_context(scope)
+    else
+      :ok
+    end
+  end
 end
