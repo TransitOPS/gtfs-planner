@@ -153,6 +153,45 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       assert saved.revision == revision + 1
     end
 
+    test "Continue carries a chosen place on to the routes question", context do
+      %{depot: depot} = stops(context)
+      _route_1 = pattern(context, "R1", [{"S_DEPOT", 0}])
+
+      alert = alert_with(context, %{"urgency" => "now", "situation" => "stop_moved"})
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=place")
+
+      assert has_element?(view, "#alert-place-continue")
+
+      view |> render_change("autosave", %{"place" => %{"stop_id" => depot.id}})
+      view |> element("#alert-place-continue") |> render_click()
+
+      # The place preselects the routes that call at it, so the reader arrives
+      # at the routes question with something already pressed (AC-18).
+      assert has_element?(view, "#alert-question-title", "Which routes are affected?")
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.scope.stop_ids == [depot.id]
+    end
+
+    test "Continue with no place chosen says so and writes nothing", context do
+      _named_stops = stops(context)
+
+      alert = alert_with(context, %{"urgency" => "now", "situation" => "stop_moved"})
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=place")
+
+      revision = alert.revision
+
+      view |> element("#alert-place-continue") |> render_click()
+
+      assert has_element?(view, "#alert-place-error", "Choose the place")
+      assert has_element?(view, "#alert-question-title", "Which stop or station?")
+      assert {:ok, unchanged} = Alerts.get_alert(context.audit, alert.id)
+      assert unchanged.revision == revision
+    end
+
     test "a combobox the editor does not render is refused", context do
       _named_stops = stops(context)
       alert = alert_with(context, %{"urgency" => "now", "situation" => "stop_moved"})

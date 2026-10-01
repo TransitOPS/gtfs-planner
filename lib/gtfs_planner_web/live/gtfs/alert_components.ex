@@ -1101,9 +1101,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   the alert's own version, so the widget cannot offer a stop this alert could
   not store (CR-4). The prototype's "Affected routes at this place" is answered
   by the routes question that follows, which arrives with the serving routes
-  already pressed.
+  already pressed. **Continue** is what carries the reader there, because the
+  place is one combobox answer rather than a card of self-contained choices.
   """
   attr :field, :any, required: true, doc: "the `to_form/2` field the combobox writes to"
+
+  attr :error, :string, default: nil, doc: "why Continue refused to move on, when it did"
 
   def place_question(assigns) do
     ~H"""
@@ -1117,6 +1120,16 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
         placeholder="Stop name or number"
         hint="Search by name, number or platform code. Choosing a result names the place; typing alone does not."
       />
+
+      <p
+        :if={@error}
+        id="alert-place-error"
+        role="alert"
+        tabindex="-1"
+        class="text-sm font-semibold text-error-fg"
+      >
+        {@error}
+      </p>
     </div>
     """
   end

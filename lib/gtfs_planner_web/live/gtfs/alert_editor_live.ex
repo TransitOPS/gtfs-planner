@@ -612,6 +612,25 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     end
   end
 
+  # The place is one combobox answer rather than a self-contained card, so a
+  # chosen result is written at once and Continue is the explicit action that
+  # carries the reader on to the routes question the place preselects. It
+  # refuses while nothing is chosen, so the sequence cannot be walked past a
+  # question the alert depends on (AC-18, INV-2).
+  def handle_event("continue_place", _params, socket) do
+    case socket.assigns.alert do
+      nil ->
+        {:noreply, socket}
+
+      alert ->
+        if present?(scope(alert).stop_ids) do
+          {:noreply, advance_without_writing(socket, alert, :place)}
+        else
+          {:noreply, assign(socket, :stop_error, "Choose the place this alert is about.")}
+        end
+    end
+  end
+
   # The autosave path. Every keystroke that settles reaches here through the
   # form's `phx-change`, carrying the whole form and this editor's base
   # revision in the hidden field. Nothing else writes this row (INV-1).
@@ -3196,7 +3215,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
                     directions={@directions}
                   />
 
-                  <.place_question :if={@step == :place} field={@place_field} />
+                  <.place_question
+                    :if={@step == :place}
+                    field={@place_field}
+                    error={@stop_error}
+                  />
 
                   <.stops_question
                     :if={@step == :stops}
@@ -3283,6 +3306,17 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
                       variant="primary"
                       class="ml-auto"
                       phx-click="continue_routes"
+                    >
+                      Continue
+                    </.button>
+
+                    <.button
+                      :if={@step == :place}
+                      id="alert-place-continue"
+                      type="button"
+                      variant="primary"
+                      class="ml-auto"
+                      phx-click="continue_place"
                     >
                       Continue
                     </.button>
