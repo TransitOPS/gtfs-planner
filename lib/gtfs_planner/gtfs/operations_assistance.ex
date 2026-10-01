@@ -4,10 +4,11 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   domain results so a helper session can explain a day without holding a handle
   on host assigns.
 
-  This step owns `block_day/2`: the block-day projection of one
-  `GtfsPlanner.Gtfs.Blocking.load_day/3` result. The day is loaded by its host
-  (`BlocksLive` through the catalog read adapter) and this module reads no
-  repository, starts no solver and writes no row. The run-day, completed-plan,
+  This module owns `block_day/2` and `run_day/1`: the block-day projection of one
+  `GtfsPlanner.Gtfs.Blocking.load_day/3` result and the run-day projection of one
+  `GtfsPlanner.Gtfs.Runs.load_runs/3` result. The day is loaded by its host
+  (`BlocksLive` and `RunsLive` through the catalog read adapter) and this module
+  reads no repository, starts no solver and writes no row. The completed-plan,
   snapshot-admission and paging functions arrive in the steps that own them.
 
   `block_day/2` returns `{:ok, payload}` with a string-key JSON map, or
@@ -25,6 +26,18 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   enumerated `detail` values - never a whole struct, a foreign map or operator
   text. `C-3` is why the copy is rebuilt field by field rather than taken from
   the loaded day.
+
+  `run_day/1` projects the other half from the one `load_runs/3` read that already
+  holds the day, its crew rules, its derived runs and its fingerprint. It copies
+  `Runs.WorkTime`'s own components - paid, spread, report, travel, break and
+  sign-off seconds, the run's type and its ordered pieces - and `Runs.Checks`'
+  own findings without recomputing any of them, and it never issues a second crew
+  query. A negative break stays a negative number and the `:cannot_reach_piece`
+  error raised against it is copied with it; an unmeasured travel leg keeps its
+  `:unknown` status beside the zero seconds the work time charged it, so an
+  unknown never reads as a measured zero. Uncovered work and orphan assignment
+  counts are carried as the domain reported them, separately labelled from the
+  finding counts rather than summed into one total.
 
   The copy is fresh: nothing in it aliases the loaded day's maps, so the payload
   stays frozen after the host reloads and no host-private handle is followed
@@ -51,7 +64,8 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   """
 
   @schema_version 1
-  @section "blocks"
+  @section_blocks "blocks"
+  @section_runs "runs"
 
   # Refs are namespaced by the package and the section, so a session holding both
   # a block and a run payload cannot resolve one section's ref in the other.
@@ -102,6 +116,48 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
 
   @selection_keys [:selected_block_ids, :selected_trip_ids]
 
+  # What `Runs.load_runs/3` returns, so a hand-assembled map is refused rather
+  # than half-projected, and what `Runs.Day.derive/4` puts inside it.
+  @runs_day_keys [:day, :crew, :assignments, :derived, :orphans, :relief_ready?, :fingerprint]
+  @derived_keys [:runs, :uncovered, :findings, :stats, :axis]
+  @stats_keys [:runs, :by_type, :paid_secs, :vehicle_secs, :uncovered, :problems]
+
+  # The stored crew rules, allowlisted: the five numbers a cut is judged against.
+  @crew_keys [
+    :report_pull_out_minutes,
+    :report_relief_minutes,
+    :sign_off_minutes,
+    :paid_break_max_minutes,
+    :max_spread_minutes
+  ]
+
+  # `Runs.WorkTime`'s own components. Every one of these is the domain's number,
+  # copied: the projection derives no second figure from them.
+  @work_keys [
+    :sign_on_secs,
+    :sign_off_secs,
+    :spread_secs,
+    :vehicle_secs,
+    :report_secs,
+    :travel_secs,
+    :sign_off_allowance_secs,
+    :paid_secs
+  ]
+
+  # The `detail` values each `Runs.Checks` finding carries, allowlisted per code.
+  # `not_at_relief` names its two boundary trips by their database row, so its
+  # keys are the session's own trip refs rather than the row IDs.
+  @run_detail_keys %{
+    cannot_reach_piece: [:piece, :needed_secs, :available_secs, :secs, :stop_id, :after_piece],
+    not_at_relief: [:stop_id, :stop_name],
+    orphan_assignments: [:count],
+    piece_too_long: [:piece, :secs, :limit_secs],
+    spread_too_long: [:secs, :limit_secs],
+    too_many_pieces: [:pieces],
+    travel_unknown: [:from, :to],
+    uncovered_work: [:trips, :secs]
+  }
+
   @typedoc "The selection the host displays, as technical block and trip IDs."
   @type selection :: %{
           optional(:selected_block_ids) => [String.t()],
@@ -123,11 +179,11 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
     with {:ok, day_key} <- day_key(day),
          {:ok, selected} <- read_selection(selection),
          {:ok, scope} <- resolve_scope(day, selected),
-         {:ok, refs} <- refs(day, day_key),
-         {:ok, issues} <- issues(day, scope, refs) do
+         {:ok, refs} <- block_refs(day, day_key),
+         {:ok, issues} <- block_issues(day, scope, refs) do
       content = %{
         "schema_version" => @schema_version,
-        "section" => @section,
+        "section" => @section_blocks,
         "day_key" => day_key,
         "selection" => selection_copy(selected, refs),
         "scope" => scope_copy(scope, refs),
@@ -140,7 +196,7 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
         "plan" => nil
       }
 
-      {:ok, Map.merge(content, identity(day_key, content))}
+      {:ok, Map.merge(content, identity(day_key, content, @section_blocks))}
     else
       _unavailable -> {:error, :unavailable}
     end
@@ -163,14 +219,14 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
 
   defp day_key(_day), do: :error
 
-  defp identity(day_key, content) do
+  defp identity(day_key, content, section) do
     %{
-      "day_ref" => ref(key_digest(day_key), "day", day_key),
+      "day_ref" => ref(key_digest(day_key, section), "day", day_key),
       "source_digest" => digest(content)
     }
   end
 
-  defp key_digest(day_key), do: sha("#{@ref_namespace}|#{@section}|#{day_key}")
+  defp key_digest(day_key, section), do: sha("#{@ref_namespace}|#{section}|#{day_key}")
 
   defp ref(key_digest, kind, key) do
     "#{kind}_" <> binary_part(sha("#{key_digest}|#{kind}|#{key}"), 0, 32)
@@ -285,8 +341,8 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   # The refs of every row the day's findings can name. A finding naming a trip the
   # day does not hold means the copy cannot describe it, so the projection is
   # unavailable rather than quietly losing a row.
-  defp refs(day, day_key) do
-    key_digest = key_digest(day_key)
+  defp block_refs(day, day_key) do
+    key_digest = key_digest(day_key, @section_blocks)
 
     {:ok,
      %{
@@ -325,7 +381,7 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
 
   # The day's own finding order, which `load_day/3` fixes. The paging step sorts
   # on severity, code and refs when it serves a page.
-  defp issues(day, scope, refs) do
+  defp block_issues(day, scope, refs) do
     day.findings
     |> in_scope(scope)
     |> Enum.with_index()
@@ -368,15 +424,16 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   end
 
   # A finding's own key beside its position in the day's list, so two findings of
-  # one code over the same block and trips - two garage shortfalls, say - keep
-  # two refs, while one finding keeps its ref however many rows precede it.
+  # one code over the same block and trips - two garage shortfalls, or one run's
+  # own error and another's - keep two refs, while one finding keeps its ref
+  # however many rows precede it. `Runs.Checks` findings carry no `transfer_id`.
   defp issue_ref(key_digest, finding, position) do
     key =
       [
         Atom.to_string(finding.code),
         finding.block_id || "-",
         Enum.map_join(Enum.sort(finding.trip_ids), ",", &to_string/1),
-        finding.transfer_id || "-",
+        Map.get(finding, :transfer_id) || "-",
         Integer.to_string(position)
       ]
       |> Enum.join("|")
@@ -542,4 +599,376 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
         (finding.code == :fleet_shortfall and Map.get(finding.detail, :garage_id) in scope.garages)
     end)
   end
+
+  # --- run-day projection -------------------------------------------------
+
+  @doc """
+  Projects one loaded runs day into an immutable, JSON-safe payload.
+
+  `runs_day` is a `GtfsPlanner.Gtfs.Runs.load_runs/3` result - the day's blocks,
+  crew rules, assignments, derived runs, findings, orphan count and fingerprint
+  as that one read assembled them. Nothing is retained and no second read is
+  issued: the day is read through the same embedded map, the crew arithmetic is
+  the one `Runs.WorkTime` already performed, and the figures are the ones
+  `Runs.Day.derive/4` derived. The result is `{:error, :unavailable}` for a value
+  that is not that shape, for a day with no selected day type, or for a finding
+  naming a run, block or trip the day does not hold - a projection that cannot
+  describe every row it was given must not present the rest as complete.
+
+  Scope is the whole day: the host has no narrower runs selection to freeze, and
+  the packs narrow a *page* of this snapshot by run refs rather than by
+  re-projecting a subset. `selection` is therefore empty and `completeness` is
+  `complete`; `plan` is `nil` until the plan step owns it.
+  """
+  @spec run_day(map()) :: {:ok, map()} | {:error, :unavailable}
+  def run_day(runs_day) do
+    with {:ok, day_key} <- runs_day_key(runs_day),
+         {:ok, refs} <- run_refs(runs_day, day_key),
+         {:ok, issues} <- run_issues(runs_day, refs),
+         {:ok, entities} <- run_entities(runs_day, refs) do
+      content = %{
+        "schema_version" => @schema_version,
+        "section" => @section_runs,
+        "day_key" => day_key,
+        # Nothing narrows a runs projection yet, so the frozen selection is empty
+        # rather than a second scope the payload does not honour.
+        "selection" => %{"selected_run_refs" => [], "selected_trip_refs" => []},
+        "scope" => run_scope_copy(runs_day, refs),
+        "totals" => Enum.frequencies_by(issues, & &1["code"]),
+        "completeness" => "complete",
+        "exclusions" => unsequenced(runs_day.day, refs),
+        "issues" => issues,
+        "constraints" => run_constraints(runs_day),
+        "entities" => entities,
+        "figures" => figures(runs_day, refs),
+        "orphans" => %{"count" => runs_day.orphans.count},
+        "plan" => nil
+      }
+
+      {:ok, Map.merge(content, identity(day_key, content, @section_runs))}
+    else
+      _unavailable -> {:error, :unavailable}
+    end
+  end
+
+  defp runs_day_key(runs_day) when is_map(runs_day) do
+    day = Map.get(runs_day, :day)
+    derived = Map.get(runs_day, :derived)
+
+    if Enum.all?(@runs_day_keys, &Map.has_key?(runs_day, &1)) and
+         is_map(day) and
+         is_map(derived) and
+         Enum.all?(@derived_keys, &Map.has_key?(derived, &1)) and
+         is_map(Map.get(derived, :stats)) and
+         Enum.all?(@stats_keys, &Map.has_key?(derived.stats, &1)) do
+      day_key(day)
+    else
+      :error
+    end
+  end
+
+  defp runs_day_key(_runs_day), do: :error
+
+  # The refs every run, finding and entity of this day can name. Trips are keyed
+  # twice on purpose: a run finding names a trip by its GTFS ID, while a handover
+  # boundary names the two trips it joins by their rows, and both have to resolve
+  # to the same receipt for the same trip.
+  defp run_refs(runs_day, day_key) do
+    key_digest = key_digest(day_key, @section_runs)
+    trips = all_trips(runs_day.day)
+
+    refs = %{
+      key_digest: key_digest,
+      trips: Map.new(trips, &{&1.id, ref(key_digest, "trip", &1.trip_id)}),
+      trip_ids: Map.new(trips, &{&1.trip_id, ref(key_digest, "trip", &1.trip_id)}),
+      blocks:
+        Map.new(
+          runs_day.day.blocks,
+          &{&1.summary.block_id, ref(key_digest, "block", &1.summary.block_id)}
+        ),
+      runs: Map.new(runs_day.derived.runs, &{&1.run_id, ref(key_digest, "run", &1.run_id)})
+    }
+
+    {:ok, refs}
+  end
+
+  defp run_trip_ref(refs, trip_id), do: Map.get(refs.trip_ids, trip_id)
+
+  defp run_row_ref(refs, row_id), do: Map.get(refs.trips, row_id)
+
+  defp run_ref(refs, run_id), do: Map.get(refs.runs, run_id)
+
+  defp run_scope_copy(runs_day, refs) do
+    %{
+      "mode" => "whole_day",
+      "run_refs" => Enum.map(runs_day.derived.runs, &run_ref(refs, &1.run_id)),
+      "trip_refs" => Enum.map(all_trips(runs_day.day), &run_trip_ref(refs, &1.trip_id)),
+      "block_refs" => Enum.map(runs_day.day.blocks, &block_ref(refs, &1.summary.block_id))
+    }
+  end
+
+  # The day's own finding order, which `Runs.Day.derive/4` fixes by severity. A
+  # finding naming a run, block or trip this day does not hold is unresolvable
+  # here, so the projection is unavailable rather than losing the row.
+  defp run_issues(runs_day, refs) do
+    runs_day.derived.findings
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {finding, position}, {:ok, acc} ->
+      case run_issue(finding, position, refs) do
+        {:ok, issue} -> {:cont, {:ok, acc ++ [issue]}}
+        :error -> {:halt, :error}
+      end
+    end)
+  end
+
+  defp run_issue(finding, position, refs) do
+    with {:ok, run_refs} <- resolve_all(finding.run_ids, &run_ref(refs, &1)),
+         {:ok, trip_refs} <- resolve_all(finding.trip_ids, &finding_trip_ref(finding, refs, &1)),
+         {:ok, detail} <- run_detail(finding, refs) do
+      {:ok,
+       %{
+         "issue_ref" => issue_ref(refs.key_digest, finding, position),
+         "code" => Atom.to_string(finding.code),
+         "severity" => Atom.to_string(finding.severity),
+         "severity_rank" => Map.fetch!(@severity_rank, finding.severity),
+         "run_refs" => run_refs,
+         "block_ref" => block_ref(refs, finding.block_id),
+         "block_id" => finding.block_id,
+         "trip_refs" => trip_refs,
+         "detail" => detail
+       }}
+    end
+  end
+
+  # A finding names its trips by their GTFS ID, except a handover boundary, which
+  # names the two trips it joins by their rows; both resolve to the same receipt.
+  defp finding_trip_ref(%{code: :not_at_relief}, refs, row_id), do: run_row_ref(refs, row_id)
+  defp finding_trip_ref(_finding, refs, trip_id), do: run_trip_ref(refs, trip_id)
+
+  defp resolve_all(values, lookup) do
+    Enum.reduce_while(values, {:ok, []}, fn value, {:ok, acc} ->
+      case lookup.(value) do
+        nil -> {:halt, :error}
+        ref -> {:cont, {:ok, acc ++ [ref]}}
+      end
+    end)
+  end
+
+  # A handover names its two boundary trips by their rows, which the session must
+  # never see: the copy carries the trip's own ref under a key that says so.
+  defp run_detail(%{code: :not_at_relief, detail: detail}, refs) do
+    with {:ok, from_ref} <- row_or_nil(detail, :from_trip_id, refs),
+         {:ok, to_ref} <- row_or_nil(detail, :to_trip_id, refs) do
+      {:ok,
+       %{
+         "stop_id" => Map.get(detail, :stop_id),
+         "stop_name" => Map.get(detail, :stop_name),
+         "from_trip_ref" => from_ref,
+         "to_trip_ref" => to_ref
+       }}
+    end
+  end
+
+  # One unmeasured leg: its ends are planning references, not a JSON-safe value,
+  # so they are carried in the domain's own stored form and an end that cannot be
+  # encoded refuses the projection rather than reaching the payload as a tuple.
+  defp run_detail(%{code: :travel_unknown, detail: detail}, _refs) do
+    with {:ok, from} <- planning_ref(detail, :from),
+         {:ok, to} <- planning_ref(detail, :to) do
+      {:ok, %{"from" => from, "to" => to}}
+    end
+  end
+
+  defp run_detail(finding, _refs) do
+    detail =
+      finding.detail
+      |> Map.take(Map.get(@run_detail_keys, finding.code, []))
+      |> Map.new(fn {key, value} -> {Atom.to_string(key), json_safe(value)} end)
+
+    {:ok, detail}
+  end
+
+  defp row_or_nil(detail, key, refs) do
+    case Map.fetch(detail, key) do
+      {:ok, nil} -> {:ok, nil}
+      {:ok, row_id} -> {:ok, run_row_ref(refs, row_id)}
+      :error -> {:ok, nil}
+    end
+  end
+
+  # The legs the context could not answer, kept as the domain listed them: one
+  # row per unmeasured drive, beside the zero seconds it was charged, so the gap
+  # is visible rather than reading as a free drive.
+  defp unknown_travel(legs) do
+    collect(legs, fn leg ->
+      with {:ok, from} <- encoded_ref(leg.from),
+           {:ok, to} <- encoded_ref(leg.to) do
+        {:ok, %{"from" => from, "to" => to}}
+      end
+    end)
+  end
+
+  defp encoded_ref(ref) do
+    case context_ref(ref) do
+      :unknown -> :error
+      encoded -> {:ok, encoded}
+    end
+  end
+
+  defp planning_ref(detail, key) do
+    case detail |> Map.get(key) |> context_ref() do
+      :unknown -> :error
+      encoded -> {:ok, encoded}
+    end
+  end
+
+  # The stored rules the day's runs were computed against: the five crew rules, the
+  # piece limit, the marked relief points and whether a cut can be planned at all.
+  defp run_constraints(runs_day) do
+    context = runs_day.day.context
+
+    %{
+      "crew" =>
+        runs_day.crew
+        |> Map.take(@crew_keys)
+        |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end),
+      "max_piece_minutes" => context.max_piece_minutes,
+      "planning_inputs" => context.planning?,
+      "relief_ready" => runs_day.relief_ready?,
+      "marked_relief_stops" => MapSet.size(context.relief_stop_ids),
+      "entered_drive_times" => map_size(context.entered_minutes),
+      "default_garage_id" => context.default_garage_id
+    }
+  end
+
+  # The technical identities the issues and the future paging read: one entry per
+  # run carrying `Runs.WorkTime`'s own components and its pieces, one per trip
+  # with the run that serves it - `nil` for work no run covers - and one per
+  # block, shaped as the block projection shapes it so one snapshot reads alike.
+  defp run_entities(runs_day, refs) do
+    runs = runs_day.derived.runs
+    covered = Map.new(runs, fn run -> {run.run_id, run_ref(refs, run.run_id)} end)
+
+    with {:ok, run_rows} <- collect(runs, &run_entity(&1, refs)),
+         {:ok, trips} <-
+           collect(all_trips(runs_day.day), fn trip ->
+             run_id = Map.get(runs_day.assignments, trip.id)
+
+             {:ok,
+              Map.put(trip_entity(trip, refs), "run_ref", run_id && Map.get(covered, run_id))}
+           end) do
+      {:ok,
+       %{
+         "runs" => run_rows,
+         "trips" => trips,
+         "blocks" => Enum.map(runs_day.day.blocks, &block_entity(&1, refs))
+       }}
+    end
+  end
+
+  # Every component here is `Runs.WorkTime`'s own figure. A negative break stays
+  # negative and an unknown leg keeps its `:unknown` status beside the zero
+  # seconds it was charged, because a copy that tidied either would misreport the
+  # run the page is showing.
+  defp run_entity(run, refs) do
+    work = run.work
+
+    with {:ok, pieces} <- run_pieces(run, refs),
+         {:ok, unknown} <- unknown_travel(work.unknown_travel) do
+      {:ok,
+       work
+       |> Map.take(@work_keys)
+       |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+       |> Map.merge(%{
+         "run_ref" => run_ref(refs, run.run_id),
+         "run_id" => run.run_id,
+         "garage_id" => work.garage_id,
+         "type" => Atom.to_string(work.type),
+         "breaks" =>
+           Enum.map(work.breaks, fn break_entry ->
+             %{
+               "secs" => break_entry.secs,
+               "paid?" => break_entry.paid?,
+               "after_piece" => break_entry.after_piece
+             }
+           end),
+         "unknown_travel" => unknown,
+         "pieces" => pieces
+       })}
+    end
+  end
+
+  # Numbered from 1 in the order `Runs.WorkTime` numbers them, because that is
+  # the index `Runs.Checks` names in a `piece_too_long` or `cannot_reach_piece`
+  # detail, so a finding's piece number resolves to a piece here.
+  defp run_pieces(run, refs) do
+    run.pieces
+    |> Enum.sort_by(& &1.start_secs)
+    |> Enum.with_index(1)
+    |> collect(fn {piece, index} ->
+      with {:ok, trip_refs} <- resolve_all(piece.trips, &run_row_ref(refs, &1.id)) do
+        {:ok,
+         %{
+           "piece_index" => index,
+           "block_ref" => block_ref(refs, piece.block_id),
+           "block_id" => piece.block_id,
+           "start_secs" => piece.start_secs,
+           "end_secs" => piece.end_secs,
+           "start_kind" => Atom.to_string(piece.start_kind),
+           "end_kind" => Atom.to_string(piece.end_kind),
+           "trip_refs" => trip_refs
+         }}
+      end
+    end)
+  end
+
+  # The day's own figures, copied: `Runs.Day.derive/4` derived them and this
+  # projection sums nothing of its own. `uncovered` stays its own labelled
+  # work count rather than being added to the issue counts above it.
+  defp figures(runs_day, refs) do
+    stats = runs_day.derived.stats
+
+    %{
+      "runs" => stats.runs,
+      "by_type" => json_safe(stats.by_type),
+      "straight_share" => stats.straight_share,
+      "paid_secs" => stats.paid_secs,
+      "vehicle_secs" => stats.vehicle_secs,
+      "vehicle_share" => stats.vehicle_share,
+      "longest_spread" => longest_spread(stats.longest_spread, refs),
+      "uncovered" => json_safe(stats.uncovered),
+      "problems" => json_safe(stats.problems),
+      "axis" => json_safe(runs_day.derived.axis)
+    }
+  end
+
+  defp longest_spread(nil, _refs), do: nil
+
+  defp longest_spread(spread, refs) do
+    %{
+      "run_ref" => run_ref(refs, spread.run_id),
+      "run_id" => spread.run_id,
+      "secs" => spread.secs
+    }
+  end
+
+  # Rows in the order the day gave them, halting on the first row the projection
+  # cannot describe - the same refusal the findings and the pieces take.
+  defp collect(rows, fun) do
+    Enum.reduce_while(rows, {:ok, []}, fn row, {:ok, acc} ->
+      case fun.(row) do
+        {:ok, row} -> {:cont, {:ok, acc ++ [row]}}
+        :error -> {:halt, :error}
+      end
+    end)
+  end
+
+  # The same `"stop:<id>"` and `"garage:<uuid>"` form `DeadheadTimes` stores and
+  # decodes, so a leg in the copy is the leg the domain measured. A reference of
+  # an unexpected shape is refused rather than guessed at or raised on.
+  defp context_ref({:stop, stop_id}) when is_binary(stop_id) and stop_id != "",
+    do: "stop:" <> stop_id
+
+  defp context_ref({:garage, id}) when is_binary(id), do: "garage:" <> id
+  defp context_ref(_other), do: :unknown
 end
