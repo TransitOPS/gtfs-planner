@@ -18,8 +18,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternMapLineDownloadTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Gtfs.AlignmentSegment
-  alias GtfsPlanner.Organizations
   alias GtfsPlanner.Gtfs.Shape
+  alias GtfsPlanner.Organizations
   alias GtfsPlanner.Repo
 
   # Five stops on a rising line, so a pattern has four sections and a gap in the

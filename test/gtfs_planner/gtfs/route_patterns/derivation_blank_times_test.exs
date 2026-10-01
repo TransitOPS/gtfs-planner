@@ -124,12 +124,13 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationBlankTimesTest do
     test "a stop with an arrival but no departure is custom missing_times", context do
       rows = blank_timed_rows()
 
-      trip =
-        imported_trip(
-          context,
-          "T-half",
-          List.replace_at(rows, 1, %{Enum.at(rows, 1) | departure_time: nil})
-        )
+      # Position 2 is blank in the base rows, so the half pair has to be built:
+      # an arrival with the departure cleared is what a half row looks like.
+      half =
+        Enum.at(rows, 1)
+        |> Map.merge(%{arrival_time: "08:03:00", departure_time: nil})
+
+      trip = imported_trip(context, "T-half", List.replace_at(rows, 1, half))
 
       assert {:ok, _summary} = derive(context)
       assert custom_reason(trip) == "missing_times"
@@ -138,12 +139,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationBlankTimesTest do
     test "a stop with a departure but no arrival is custom missing_times", context do
       rows = blank_timed_rows()
 
-      trip =
-        imported_trip(
-          context,
-          "T-half-departure",
-          List.replace_at(rows, 1, %{Enum.at(rows, 1) | arrival_time: nil})
-        )
+      half =
+        Enum.at(rows, 1)
+        |> Map.merge(%{arrival_time: nil, departure_time: "08:03:00"})
+
+      trip = imported_trip(context, "T-half-departure", List.replace_at(rows, 1, half))
 
       assert {:ok, _summary} = derive(context)
       assert custom_reason(trip) == "missing_times"

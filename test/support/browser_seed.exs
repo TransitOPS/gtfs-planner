@@ -57,8 +57,8 @@ alias GtfsPlanner.Gtfs.Import.Run, as: ImportRun
 alias GtfsPlanner.Gtfs.PathwayEvolution
 alias GtfsPlanner.Gtfs.Route
 alias GtfsPlanner.Gtfs.RoutePattern
-alias GtfsPlanner.Gtfs.RoutePatternStop
 alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
+alias GtfsPlanner.Gtfs.RoutePatternStop
 alias GtfsPlanner.Gtfs.Shape
 alias GtfsPlanner.Gtfs.Stop
 alias GtfsPlanner.Gtfs.StopTime
@@ -1182,6 +1182,15 @@ case Accounts.register_first_admin(%{
       GtfsPlanner.GtfsFixtures.timed_pattern_stop_fixture(shapes_timing, occurrence, offsets)
     end)
 
+    shapes_timing_rows =
+      from(tps in GtfsPlanner.Gtfs.TimedPatternStop,
+        join: o in assoc(tps, :route_pattern_stop),
+        where: tps.timed_pattern_id == ^shapes_timing.id,
+        order_by: [asc: o.position],
+        select: {o.stop_id, o.position, tps.arrival_offset, tps.departure_offset, tps.timepoint}
+      )
+      |> Repo.all()
+
     Enum.each(1..38, fn index ->
       trip =
         GtfsPlanner.GtfsFixtures.trip_fixture(
@@ -1204,6 +1213,39 @@ case Accounts.register_first_admin(%{
         timed_pattern_id: shapes_timing.id,
         pattern_derivation_state: "linked"
       })
+
+      # A linked trip carries the times its pattern's timing gives it. Without
+      # them the link is only a label: saving a map line for BROWSER-SHAPES-A is
+      # refused because every trip on it has 0 stop times, so the journey could
+      # never reach the saved state. The timing's blank rows stay blank, which
+      # is what positions 2..4 are for.
+      shapes_seed_at = diagram_version.inserted_at
+      base = 6 * 3600 + (index - 1) * 600
+
+      time = fn
+        nil -> nil
+        offset -> GtfsPlanner.Gtfs.GtfsTime.format(base + offset)
+      end
+
+      {_inserted, nil} =
+        Repo.insert_all(
+          StopTime,
+          Enum.map(shapes_timing_rows, fn {stop_id, position, arrival, departure, timepoint} ->
+            %{
+              id: Ecto.UUID.generate(),
+              organization_id: org.id,
+              gtfs_version_id: diagram_version.id,
+              trip_id: trip.trip_id,
+              stop_id: stop_id,
+              stop_sequence: position,
+              arrival_time: time.(arrival),
+              departure_time: time.(departure),
+              timepoint: timepoint,
+              inserted_at: shapes_seed_at,
+              updated_at: shapes_seed_at
+            }
+          end)
+        )
     end)
 
     # The imported northbound shape the 18 direction-less trips share, drawn

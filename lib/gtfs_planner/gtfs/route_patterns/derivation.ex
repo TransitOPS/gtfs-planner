@@ -1627,7 +1627,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
        ) do
     case Map.get(context.derived, derivation_key) do
       %RoutePattern{} = pattern ->
-        {existing_derived_target(pattern, entry.sequence, context), progress}
+        # A derived pattern that survived a previous run already owns its
+        # occurrences, so a retry reuses them the way a supplied pattern's are
+        # reused instead of inserting a second copy of the same positions.
+        {existing_target(pattern, entry, context), progress}
 
       nil ->
         create_derived_target(route, group_key, derivation_key, entry, planning, progress)

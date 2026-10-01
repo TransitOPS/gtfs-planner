@@ -13,6 +13,8 @@ defmodule GtfsPlanner.Gtfs.Export.StreamBuilder do
 
   import Ecto.Query
 
+  alias GtfsPlanner.Gtfs.RoutePatterns
+
   @doc """
   Streams records for the given schema filtered by organization and version.
 
@@ -57,12 +59,7 @@ defmodule GtfsPlanner.Gtfs.Export.StreamBuilder do
   defp exported_label_selection(query, GtfsPlanner.Gtfs.Trip, organization_id, gtfs_version_id) do
     from(trip in query,
       left_join:
-        pattern in subquery(
-          GtfsPlanner.Gtfs.RoutePatterns.exported_pattern_ids(
-            organization_id,
-            gtfs_version_id
-          )
-        ),
+        pattern in subquery(RoutePatterns.exported_pattern_ids(organization_id, gtfs_version_id)),
       on:
         pattern.route_id == trip.route_id and
           pattern.route_pattern_id == trip.route_pattern_id,

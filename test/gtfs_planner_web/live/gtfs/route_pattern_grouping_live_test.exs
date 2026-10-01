@@ -125,13 +125,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternGroupingLiveTest do
       build_scenario(organization, version, "GRP3")
 
       {:ok, view, _html} = live(conn, review_path(version, "GRP3"))
-      # The 3 blocked trips are named with their derivation codes, so an operator
-      # can see the review is smaller on purpose rather than silently.
+      # The 3 blocked trips are named in the operator's own words, so the review
+      # reads as smaller on purpose rather than silently.
       blocked = text(view, "#grouping-blocked")
 
       assert blocked =~ "Not offered here: 3 trips with other problems"
-      assert blocked =~ "invalid_chronology"
-      assert blocked =~ "unusable_stops"
+      assert blocked =~ "2 with times out of order"
+      assert blocked =~ "1 that serves a station"
     end
 
     test "writes nothing", %{conn: conn, organization: organization, version: version} do

@@ -572,10 +572,12 @@ test.describe("map lines", () => {
 // therefore answers both groups from the saved pattern, so the review opens with
 // both suggestions preselected and nothing to fill in.
 //
-// The apply is its own test, and it runs last on purpose: the suite shares one
-// seeded database, and applying consumes the 24 trips for good. Both viewports
-// therefore read the review while it still has something to offer, and one test
-// after them is what spends it.
+// The apply is not here: step 37's `journey` block spends these 24 trips,
+// because AC-29's path starts at this list and applies the review as its second
+// step. The suite shares one seeded database with `workers: 1`, so the file's
+// order is the run's order and the apply has to be the last thing to touch
+// them. Both viewports below therefore read the review while it still has
+// something to offer.
 test.describe("grouping review", () => {
   for (const viewport of VIEWPORTS) {
     test(`reviews the left-out trips at ${viewport.width}×${viewport.height}`, async ({
@@ -666,57 +668,6 @@ test.describe("grouping review", () => {
       expect(problems).toEqual([]);
     });
   }
-
-  test("applies the review and reports what it wrote", async ({
-    page,
-  }, testInfo) => {
-    testInfo.setTimeout(120_000);
-
-    const problems = collectPageErrors(page);
-    await page.setViewportSize({ width: 1440, height: 900 });
-    await stubTiles(page);
-    await logIn(page);
-    const versionId = await getVersionId(page);
-
-    await page.goto(
-      `/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns?review=group`,
-    );
-    await waitForLiveView(page);
-
-    const review = page.locator("#grouping-review");
-    await expect(review.locator("#grouping-submit")).toBeEnabled();
-    await review.locator("#grouping-submit").click();
-
-    // The list is what the review hands back, and it names what was written in
-    // the operator's own words, INV-2's promise included.
-    await expect(page).toHaveURL(/\/patterns$/);
-    await expect(page.locator("#patterns-grouped")).toContainText(
-      "Grouped 24 trips into patterns",
-    );
-    await expect(page.locator("#patterns-grouped")).toContainText(
-      "their times did not change",
-    );
-    await expect(page.locator("#patterns-left-out")).toContainText(
-      "3 trips aren’t in a pattern",
-    );
-
-    await capture(page, "grouping-done-production-desktop");
-
-    const referenceCaptured = await captureReference(
-      page,
-      "?state=group-done",
-      "grouping-done-reference-desktop",
-    );
-
-    testInfo.annotations.push({
-      type: "reference-captured",
-      description: referenceCaptured
-        ? "grouping-done-reference-desktop.png"
-        : "prototype absent from this checkout",
-    });
-
-    expect(problems).toEqual([]);
-  });
 });
 
 // ── import result ───────────────────────────────────────────────────────────
@@ -1175,7 +1126,7 @@ test.describe("file import", () => {
       await expect(page.locator("#file-fit-headline")).toContainText(
         "stops within 330 ft",
       );
-      await expect(page.locator("#fit-end")).toContainText("File Stop 13");
+      await expect(page.locator("#fit-end")).toContainText("US 101 Stop 13");
       await expect(page.locator("#fit-create-draft")).toBeEnabled();
       await expect(page.locator("#file-import-restart")).toHaveText(
         "Choose another file",
@@ -1517,9 +1468,9 @@ test.describe("map line copy", () => {
     await expect(tab).toHaveAttribute("phx-value-task", "alignment");
     await expect(tab).toHaveAttribute("aria-current", "page");
     await expect(page.locator("#alignment-task")).toBeVisible();
-    await expect(page.locator("#pattern-save-bar #alignment-save")).toContainText(
-      "Save map line",
-    );
+    await expect(
+      page.locator("#pattern-save-bar #alignment-save"),
+    ).toContainText("Save map line");
 
     await capture(page, "map-line-copy-tab-production-1440");
 
@@ -1553,6 +1504,336 @@ test.describe("map line copy", () => {
       description: existsSync(PATTERN_REFERENCE_PATH)
         ? "map-line-copy-tab-reference-1440.png"
         : "path prototype absent from this checkout",
+    });
+
+    expect(problems).toEqual([]);
+  });
+});
+
+// ── Journey (step 37, AC-29) ─────────────────────────────────────────────────
+//
+// One editor session across the whole feature: the Patterns list, the grouping
+// review that spends the 24 left-out trips, and the pattern's Map line taking a
+// KML file through fit, draft and save.
+//
+// This block is last in the file because it is last in the scenario: applying
+// the review consumes those trips and saving the map line writes over pattern
+// A's sections, so every block above reads the seed as the seed left it.
+//
+// The path file is `assets/e2e/fixtures/shapes_again_line.kml`, built from the
+// thirteen corridor coordinates in `test/support/browser_seed.exs`, so the fit
+// review's "13 of 13" is a measurement of that line against those stops.
+// ────────────────────────────────────────────────────────────────────────────
+
+const LINE_KML_FIXTURE = resolve(
+  REPO_ROOT,
+  "assets",
+  "e2e",
+  "fixtures",
+  "shapes_again_line.kml",
+);
+
+test.describe("journey", () => {
+  test("goes from the patterns list to a saved map line", async ({
+    page,
+  }, testInfo) => {
+    testInfo.setTimeout(240_000);
+
+    const problems = collectPageErrors(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    // 1. The Patterns list, with the 24 groupable trips offered as one action.
+    await page.goto(`/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns`);
+    await waitForLiveView(page);
+
+    await expect(page.locator("#patterns-left-out")).toContainText(
+      "27 trips aren’t in a pattern",
+    );
+    await expect(page.locator("#patterns-left-out-group")).toContainText(
+      "24 trips",
+    );
+
+    await capture(page, "journey-patterns-production-1440");
+
+    const patternsReference = await captureReference(
+      page,
+      "?state=patterns",
+      "journey-patterns-reference-1440",
+    );
+
+    testInfo.annotations.push({
+      type: "reference-captured",
+      description: patternsReference
+        ? "journey-patterns-reference-1440.png"
+        : "prototype absent from this checkout",
+    });
+
+    // Back from the prototype, which carries its own left-out list.
+    await page.goto(`/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns`);
+    await waitForLiveView(page);
+
+    // 2. The review the list opens, the suggestions left as the saved patterns
+    // answer them, and the write that reports what it did.
+    await page.locator("#patterns-left-out-group").click();
+
+    const review = page.locator("#grouping-review");
+    await expect(review).toBeVisible();
+    await expect(review.locator("#grouping-title")).toHaveText(
+      "Group 24 trips into patterns",
+    );
+    await expect(
+      review.locator("input[id^='grouping-direction-'][value='0'][checked]"),
+    ).toHaveCount(2);
+    await expect(review.locator("#grouping-submit")).toBeEnabled();
+
+    await review.locator("#grouping-submit").click();
+
+    await expect(page).toHaveURL(/\/patterns$/);
+    await expect(page.locator("#patterns-grouped")).toContainText(
+      "Grouped 24 trips into patterns",
+    );
+    // INV-2's promise: the operator is told the trips' own times were not moved.
+    await expect(page.locator("#patterns-grouped")).toContainText(
+      "their times did not change",
+    );
+    await expect(page.locator("#patterns-left-out")).toContainText(
+      "3 trips aren’t in a pattern",
+    );
+
+    await capture(page, "journey-group-done-production-1440");
+
+    const doneReference = await captureReference(
+      page,
+      "?state=group-done",
+      "journey-group-done-reference-1440",
+    );
+
+    testInfo.annotations.push({
+      type: "reference-captured",
+      description: doneReference
+        ? "journey-group-done-reference-1440.png"
+        : "prototype absent from this checkout",
+    });
+
+    // 3. Pattern A's Map line, opened as a tab of the pattern it belongs to.
+    await page.goto(
+      `/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns/BROWSER-SHAPES-A?task=alignment`,
+    );
+    await waitForLiveView(page);
+
+    await expect(page.locator("#pattern-task-alignment")).toHaveText(
+      "Map line",
+    );
+    await expect(page.locator("#alignment-task")).toBeVisible();
+
+    // 4. The path file: read, measured against the pattern's stops, and every
+    // stop on it because the line runs the corridor first stop to last.
+    await page.locator("#alignment-open-file-import").click();
+    await page
+      .locator("#map-line-file-upload-input input[type=file]")
+      .setInputFiles(LINE_KML_FIXTURE);
+    await page.locator("#file-import-read").click();
+
+    await expect(page.locator("#file-fit-headline")).toContainText("13 of 13");
+    await expect(page.locator("#file-fit-headline")).toContainText(
+      "stops within 330 ft",
+    );
+    await expect(page.locator("#fit-ok")).toContainText(
+      "Every stop is on the line",
+    );
+    await expect(page.locator("#fit-far")).toHaveCount(0);
+    await expect(page.locator("#fit-direction-reversed")).toHaveCount(0);
+
+    await capture(page, "journey-import-good-production-1440");
+
+    // 5. The draft is editable and unsaved, and the review before the write
+    // names what the save would change.
+    await page.locator("#fit-create-draft").click();
+
+    await expect(page.locator("#file-import-panel")).toHaveCount(0);
+    await expect(page.locator("#alignment-sections")).toContainText("Unsaved");
+    await expect(page.locator("#alignment-save")).toBeEnabled();
+    await expect(page.locator("#alignment-discard")).toBeVisible();
+
+    await capture(page, "journey-draft-production-1440");
+
+    // Save is dispatched through the map hook, so the map has to be up and
+    // holding the model before the button can ask it for the review.
+    await expect(
+      page.locator("#alignment-map-root .leaflet-container"),
+    ).toBeVisible({ timeout: 15000 });
+
+    await page.locator("#alignment-save").click();
+
+    // The dialog chrome always renders, so its open state and the review body
+    // are pinned rather than its visibility alone.
+    const saveDialog = page.locator("#alignment-save-dialog");
+    await expect(saveDialog).toHaveAttribute("data-open", "true", {
+      timeout: 15000,
+    });
+    await expect(saveDialog).toContainText("Who should use these paths?");
+    await expect(saveDialog).toContainText("Only this pattern");
+    await expect(page.locator("#alignment-save-dialog-confirm")).toHaveText(
+      "Save path",
+    );
+
+    await capture(page, "journey-save-review-production-1440");
+
+    await page.waitForFunction(
+      () => {
+        const panel = document.querySelector(
+          "#alignment-save-dialog > div > div",
+        );
+        return panel && getComputedStyle(panel).opacity === "1";
+      },
+      undefined,
+      { timeout: 5000 },
+    );
+
+    await page.locator("#alignment-save-dialog-confirm").click();
+
+    await expect(saveDialog).toHaveAttribute("data-open", "false", {
+      timeout: 15000,
+    });
+
+    // The saved state: the header badge and the export footer both report the
+    // pattern's line as written, and the drafts are gone.
+    await expect(page.locator("#alignment-status")).toHaveText("✓ Exported");
+    await expect(page.locator("#alignment-footer")).toContainText(
+      "Saved paths are included in shapes.txt.",
+    );
+    await expect(page.locator("#alignment-sections")).not.toContainText(
+      "Unsaved",
+    );
+    await expect(page.locator("#alignment-save")).toBeDisabled();
+
+    await capture(page, "journey-saved-production-1440");
+
+    // The prototype halves are captured last: each one leaves the browser on a
+    // `file://` page, and nothing after it may be pressed on the production run.
+    if (existsSync(PATTERN_REFERENCE_PATH)) {
+      for (const [state, name] of [
+        ["import-good", "journey-import-good-reference-1440"],
+        ["draft-file", "journey-draft-reference-1440"],
+        ["save-review", "journey-save-review-reference-1440"],
+        ["saved", "journey-saved-reference-1440"],
+      ]) {
+        await page.goto(`file://${PATTERN_REFERENCE_PATH}?state=${state}`);
+        await page.waitForLoadState("networkidle");
+        await capture(page, name);
+      }
+    }
+
+    testInfo.annotations.push({
+      type: "reference-captured",
+      description: existsSync(PATTERN_REFERENCE_PATH)
+        ? "journey-import-good-reference-1440.png, journey-draft-reference-1440.png, journey-save-review-reference-1440.png, journey-saved-reference-1440.png"
+        : "path prototype absent from this checkout",
+    });
+
+    expect(problems).toEqual([]);
+  });
+});
+
+// ── Running times with blanks (step 37, step 8's deferred capture) ───────────
+//
+// `running-times-blank` is a prototype state this spec never captured, because
+// the seed that carries a timing with blanks was step 18's and predates the
+// step 19 browser slice. `BROWSER-SHAPES-A`'s "Weekday daytime" timing is the
+// imported shape: times at every stop the feed timepointed and none at the
+// three in between.
+//
+// A blank time is the honest record and the task says so: the row is marked
+// "no scheduled time", the legend explains the dash, and the middle inputs are
+// left empty rather than filled in behind the editor's back.
+// ────────────────────────────────────────────────────────────────────────────
+
+test.describe("running times blank", () => {
+  test("shows the blank stops of the corridor timing at 1440×900", async ({
+    page,
+  }, testInfo) => {
+    testInfo.setTimeout(120_000);
+
+    const problems = collectPageErrors(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.goto(
+      `/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns/BROWSER-SHAPES-A?task=timings`,
+    );
+    await waitForLiveView(page);
+
+    await expect(page.locator("#pattern-task-timings")).toContainText(
+      "Running times",
+    );
+    await expect(page.locator("#pattern-task-timings")).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+
+    // The journey's grouping review named and selected its own "Timing A", so
+    // the corridor timing with the blanks is chosen the way an editor chooses
+    // it: from the task's own timing selector.
+    const timingSelect = page.locator("#timing-select");
+    const daytime = await timingSelect
+      .locator("option")
+      .filter({ hasText: "Weekday daytime" })
+      .getAttribute("value");
+
+    expect(daytime).toBeTruthy();
+    await timingSelect.selectOption(daytime);
+    await waitForLiveView(page);
+    await expect(timingSelect).toHaveValue(daytime);
+
+    // Thirteen ordered stops, of which 2 to 4 are passed through without a
+    // scheduled time, so the timing is the imported "timepoint times only"
+    // shape the prototype's `running-times-blank` state shows.
+    const rows = page.locator("#timing-rows tr[id^='timing-row-']");
+    await expect(rows).toHaveCount(13);
+
+    for (const position of [2, 3, 4]) {
+      await expect(page.locator(`#timing-no-time-${position}`)).toContainText(
+        "no scheduled time",
+      );
+      await expect(page.locator(`#timing-arrival-${position}`)).toHaveValue("");
+      await expect(page.locator(`#timing-departure-${position}`)).toHaveValue(
+        "",
+      );
+    }
+
+    await expect(page.locator("[id^='timing-no-time-']")).toHaveCount(3);
+    await expect(page.locator("#timing-arrival-1")).not.toHaveValue("");
+    await expect(page.locator("#timing-arrival-13")).not.toHaveValue("");
+
+    await expect(page.locator("#timing-blank-note")).toContainText(
+      "3 stops don’t have times yet",
+    );
+
+    await expect(page.locator("#timing-blank-legend")).toContainText(
+      "no scheduled time",
+    );
+    await expect(page.locator("#timing-blank-legend")).toContainText(
+      "the first stop and the last stop always need a time",
+    );
+
+    await capture(page, "running-times-blank-production-1440");
+
+    const referenceCaptured = await captureReference(
+      page,
+      "?state=running-times-blank",
+      "running-times-blank-reference-1440",
+    );
+
+    testInfo.annotations.push({
+      type: "reference-captured",
+      description: referenceCaptured
+        ? "running-times-blank-reference-1440.png"
+        : "prototype absent from this checkout",
     });
 
     expect(problems).toEqual([]);

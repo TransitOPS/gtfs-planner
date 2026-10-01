@@ -226,6 +226,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.StopReviewBlanksTest do
         stop_fixture(context.organization.id, context.version.id, %{stop_id: stop_id})
       end
 
+      # The pattern row does not bring its route with it, and the review scopes
+      # its write to one, so the route is created before the pattern is.
+      route_fixture(context.organization.id, context.version.id, %{
+        route_id: "R-blank-review"
+      })
+
       bundle =
         schedule_pattern_fixture(context.organization.id, context.version.id, %{
           route_id: "R-blank-review",
@@ -273,13 +279,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.StopReviewBlanksTest do
       assert {:ok, _applied} =
                Gtfs.apply_review(bundle.pattern.id, operation, fingerprint, context.audit)
 
-      assert Enum.map(
-               timing_rows(bundle.timing.id),
-               &{&1.stop_id, &1.arrival_offset, &1.departure_offset}
-             ) ==
+      assert timing_rows(bundle.timing.id) ==
                [{"A", 0, 0}, {"B", nil, nil}, {"X", nil, nil}, {"C", 600, 600}]
 
-      assert Enum.map(stop_times(trip.id), &{&1.stop_id, &1.arrival_time, &1.departure_time}) ==
+      assert Enum.map(stop_times(trip.trip_id), &{&1.stop_id, &1.arrival_time, &1.departure_time}) ==
                [
                  {"A", "07:00:00", "07:00:00"},
                  {"B", nil, nil},
@@ -345,11 +348,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.StopReviewBlanksTest do
 
   defp timing(rows), do: %{timing_id: "t1", rows: rows}
 
+  # The stop id lives on the occurrence, so the join selects it beside the
+  # offsets rather than leaving the row to answer for it.
   defp timing_rows(timing_id) do
-    TimedPatternStop
-    |> join(:inner, [row], o in assoc(row, :route_pattern_stop))
-    |> where([row], row.timed_pattern_id == ^timing_id)
-    |> order_by([row, o], asc: o.position)
+    from(row in TimedPatternStop,
+      join: o in assoc(row, :route_pattern_stop),
+      where: row.timed_pattern_id == ^timing_id,
+      order_by: [asc: o.position],
+      select: {o.stop_id, row.arrival_offset, row.departure_offset}
+    )
     |> Repo.all()
   end
 

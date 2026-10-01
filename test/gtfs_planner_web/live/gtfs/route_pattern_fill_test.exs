@@ -410,7 +410,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternFillTest do
       assert has_element?(
                view,
                "#timing-blank-note",
-               "1 stop needs times before you can save."
+               "1 stop doesn’t have times yet."
              )
 
       assert has_element?(view, "#timing-blank-fill")

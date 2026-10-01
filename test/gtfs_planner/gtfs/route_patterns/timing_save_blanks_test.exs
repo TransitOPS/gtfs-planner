@@ -144,7 +144,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.TimingSaveBlanksTest do
         row(bundle, 3)
       ]
 
-      assert {:ok, %{fingerprint: fingerprint, proposed: %{rows: [_, second | _]}}} =
+      assert {:ok, %{fingerprint: fingerprint, proposed: {:ok, %{rows: [_, second | _]}}}} =
                Gtfs.review(
                  bundle.pattern.id,
                  {:timing, bundle.timing.id, %{rows: rows}},
@@ -222,8 +222,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.TimingSaveBlanksTest do
       edit_timing_field(view, 4, "departure", "")
       render_click(view, "save_timing")
 
-      assert has_element?(view, "#timing-error-4", "needs arrival and departure times")
-      assert has_element?(view, "#error", "needs arrival and departure times")
+      # The error row names the stop it is about and the shipped copy says how
+      # many times are missing.
+      assert has_element?(view, "#timing-error-4", "SAVE8 Stop 4")
+      assert has_element?(view, "#timing-error-4", "1 stop needs times before you can save")
+      assert has_element?(view, "#error", "1 stop needs times before you can save")
       assert has_element?(view, "#timing-arrival-4[aria-invalid='true']")
       assert timing_offsets(bundle) == [{0, 0}, {240, 300}, {600, 660}, {900, 900}]
     end
@@ -240,7 +243,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.TimingSaveBlanksTest do
       edit_timing_field(view, 1, "departure", "")
       render_click(view, "save_timing")
 
-      assert has_element?(view, "#timing-error-1", "needs arrival and departure times")
+      assert has_element?(view, "#timing-error-1", "SAVE9 Stop 1")
+      assert has_element?(view, "#timing-error-1", "1 stop needs times before you can save")
       assert timing_offsets(bundle) == [{0, 0}, {240, 300}, {600, 660}, {900, 900}]
     end
 
@@ -255,7 +259,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.TimingSaveBlanksTest do
       edit_timing_field(view, 2, "departure", "")
       render_click(view, "save_timing")
 
-      assert has_element?(view, "#timing-error-2", "needs arrival and departure times")
+      assert has_element?(view, "#timing-error-2", "SAVE10 Stop 2")
+      assert has_element?(view, "#timing-error-2", "1 stop needs times before you can save")
       assert has_element?(view, "#timing-departure-2[aria-invalid='true']")
       assert timing_offsets(bundle) == [{0, 0}, {240, 300}, {600, 660}, {900, 900}]
     end
@@ -434,7 +439,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.TimingSaveBlanksTest do
 
   defp row(bundle, index) do
     occurrence = Enum.at(occurrences(bundle), index)
-    stored = bundle.timing.rows |> Enum.at(index)
+    stored = bundle.rows |> Enum.at(index)
 
     %{
       route_pattern_stop_id: occurrence.id,

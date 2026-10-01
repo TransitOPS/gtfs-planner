@@ -19,8 +19,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   import GtfsPlannerWeb.RouteWorkspace, only: [route_header: 1]
 
   alias GtfsPlanner.Gtfs.RoutePattern
-  alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents
   alias GtfsPlannerWeb.Gtfs.LeftOutWording
+  alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents
   alias GtfsPlannerWeb.Gtfs.RoutePatternComponents
 
   @doc """

@@ -731,13 +731,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
       if section.kind in [:missing, :blocked] do
         runs
       else
-        case List.last(runs) do
-          {^index, _} = _ -> runs
-          {first, last} when last == index - 1 -> List.replace_at(runs, -1, {first, index})
-          _ -> runs ++ [{index, index}]
-        end
+        extend_run(runs, index)
       end
     end)
+  end
+
+  # A section that follows the run's last index extends it, a repeat of the same
+  # index keeps it, and anything else opens a new one.
+  defp extend_run(runs, index) do
+    case List.last(runs) do
+      {^index, _} -> runs
+      {first, last} when last == index - 1 -> List.replace_at(runs, -1, {first, index})
+      _ -> runs ++ [{index, index}]
+    end
   end
 
   @doc """

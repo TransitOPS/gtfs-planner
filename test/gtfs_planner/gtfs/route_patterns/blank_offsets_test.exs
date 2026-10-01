@@ -99,7 +99,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.BlankOffsetsTest do
            inserted_at, updated_at)
         VALUES ($1, $2, $3, NULL, 120, now(), now())
         """,
-        [Ecto.UUID.generate(), context.timing.id, context.occurrence.id]
+        [
+          Ecto.UUID.dump!(Ecto.UUID.generate()),
+          Ecto.UUID.dump!(context.timing.id),
+          Ecto.UUID.dump!(context.occurrence.id)
+        ]
       )
     end
   end
@@ -113,7 +117,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.BlankOffsetsTest do
            inserted_at, updated_at)
         VALUES ($1, $2, $3, 120, NULL, now(), now())
         """,
-        [Ecto.UUID.generate(), context.timing.id, context.occurrence.id]
+        [
+          Ecto.UUID.dump!(Ecto.UUID.generate()),
+          Ecto.UUID.dump!(context.timing.id),
+          Ecto.UUID.dump!(context.occurrence.id)
+        ]
       )
     end
   end
