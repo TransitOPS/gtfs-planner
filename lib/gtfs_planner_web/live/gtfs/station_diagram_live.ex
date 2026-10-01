@@ -3980,14 +3980,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           nil -> {:noreply, assign_level_outcome(socket, :not_found)}
         end
 
+      {:ok, %{level: level}} ->
+        {:noreply, finish_level_save(socket, level)}
+
       {:ok, %Gtfs.Level{} = level} ->
         {:noreply,
          socket
          |> finish_level_save(level)
          |> maybe_refresh_history_entries("level", level.id)}
-      {:ok, %{level: level}} ->
-        {:noreply, finish_level_save(socket, level)}
-
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply,
