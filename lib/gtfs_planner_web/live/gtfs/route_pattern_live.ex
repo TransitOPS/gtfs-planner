@@ -2692,16 +2692,22 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   # The state the refusal is shown in is layered onto a fresh read of the review,
   # so the operator sees the groups that are there now rather than a page built
   # from what it saw before.
+  # A route or version that has gone since the review opened leaves no review to
+  # re-read, so the not-found screen the read assigned is what the operator sees.
   defp reload_grouping(socket, selections, state, detail) do
-    grouping = load_grouping(socket).assigns.grouping
+    case load_grouping(socket) do
+      %{assigns: %{grouping: nil}} = reloaded ->
+        reloaded
 
-    assign(socket, :grouping, %{
-      grouping
-      | selections: kept_selections(selections, grouping.preview),
-        state: state,
-        missing_key: missing_key_for(state, detail),
-        failed_reason: detail
-    })
+      %{assigns: %{grouping: grouping}} = reloaded ->
+        assign(reloaded, :grouping, %{
+          grouping
+          | selections: kept_selections(selections, grouping.preview),
+            state: state,
+            missing_key: missing_key_for(state, detail),
+            failed_reason: detail
+        })
+    end
   end
 
   # A group whose stop order no longer exists cannot keep its choice, so the
@@ -2868,14 +2874,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   defp link_offer_target_pattern(socket, marker) do
-    case Gtfs.get_pattern(
-           socket.assigns.current_organization.id,
-           socket.assigns.current_gtfs_version.id,
-           socket.assigns.route_id,
-           marker
-         ) do
-      {:ok, %{pattern: pattern, occurrences: occurrences}} -> {:ok, {pattern, occurrences}}
-      {:error, _reason} -> {:error, :no_offer}
+    with {:ok, marker} <- Ecto.UUID.cast(marker),
+         {:ok, %{pattern: pattern, occurrences: occurrences}} <-
+           Gtfs.get_pattern(
+             socket.assigns.current_organization.id,
+             socket.assigns.current_gtfs_version.id,
+             socket.assigns.route_id,
+             marker
+           ) do
+      {:ok, {pattern, occurrences}}
+    else
+      _no_pattern -> {:error, :no_offer}
     end
   end
 
