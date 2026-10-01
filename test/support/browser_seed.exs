@@ -7358,11 +7358,13 @@ case Accounts.register_first_admin(%{
     #
     # The three calendars are the helper's read and prepare material: two
     # Monday-Friday school calendars the journey stops, and a Sunday calendar
-    # for the substitution case. Dates are relative to this version's
-    # agency-local today (the UTC fallback, because the version has no agency),
-    # so "next Monday" stays a real service date on any run date. Rows are
-    # inserted directly because this fixture supplies scenario data, not an
-    # audited edit.
+    # for the substitution case. `SCHOOL_ROUTE` and its two trips give the
+    # school calendars recorded service, so an approved end-date extension has
+    # the routes and trips it actually affects to name. Dates are relative to
+    # this version's agency-local today (the UTC fallback, because the version
+    # has no agency), so "next Monday" stays a real service date on any run
+    # date. Rows are inserted directly because this fixture supplies scenario
+    # data, not an audited edit.
     {:ok, helper_version} =
       Versions.create_gtfs_version(org.id, %{name: "Browser Helper Version"})
 
@@ -7440,6 +7442,43 @@ case Accounts.register_first_admin(%{
     |> then(&Repo.insert_all(GtfsPlanner.Gtfs.CalendarAttribute, &1))
 
     IO.puts("Browser seed: helper version #{helper_version.name} (id=#{helper_version.id})")
+
+    {1, nil} =
+      Repo.insert_all(Route, [
+        %{
+          id: Ecto.UUID.generate(),
+          organization_id: org.id,
+          gtfs_version_id: helper_version.id,
+          route_id: "SCHOOL_ROUTE",
+          route_short_name: "S",
+          route_long_name: "School connector",
+          route_type: 3,
+          route_color: "0D737D",
+          route_text_color: "FFFFFF",
+          active: true,
+          inserted_at: calendar_now,
+          updated_at: calendar_now
+        }
+      ])
+
+    {2, nil} =
+      Repo.insert_all(
+        Trip,
+        Enum.map(~w(SCH1 SCH2), fn trip_id ->
+          %{
+            id: Ecto.UUID.generate(),
+            organization_id: org.id,
+            gtfs_version_id: helper_version.id,
+            route_id: "SCHOOL_ROUTE",
+            service_id: "SCHOOL_WD",
+            trip_id: trip_id,
+            trip_headsign: "School",
+            direction_id: 0,
+            inserted_at: calendar_now,
+            updated_at: calendar_now
+          }
+        end)
+      )
 
     # The station BXF_CEN with its two platforms and an entrance, plus the three
     # top-level stops the trips call at. Children go through the import changeset,

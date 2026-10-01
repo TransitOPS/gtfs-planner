@@ -1478,6 +1478,137 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
     """
   end
 
+  ## Approved extension review
+
+  @shown_dates 8
+
+  @doc """
+  The complete impact of an approved end-date extension, as the reviewer reads it
+  before Apply.
+
+  Every number here is the domain's own `extension` impact for the exact command
+  under review, so the review and the applied write cannot disagree. The calendar
+  keeps its existing exceptions, and the dates with no recorded exception are
+  named as unresolved rather than as holidays: no agency's holiday policy is
+  inferred for a date this calendar never recorded.
+  """
+  attr :id, :string, required: true, doc: "the impact block's DOM id"
+  attr :extension, :map, required: true, doc: "the reviewed extension impact"
+  attr :approval_text, :string, default: nil, doc: "the editor-entered approval, when prepared"
+
+  def extension_review(assigns) do
+    extension = assigns.extension
+    dates = extension.newly_active_dates
+    visible = Enum.take(dates, @shown_dates)
+
+    assigns =
+      assigns
+      |> assign(:dates, dates)
+      |> assign(:visible_dates, visible)
+      |> assign(:hidden_dates, length(dates) - length(visible))
+      |> assign(:routes, extension.routes)
+      |> assign(:closures, extension.closure_consequences)
+      |> assign(:retained, extension.retained_exceptions)
+      |> assign(:unresolved, extension.unresolved_dates)
+
+    ~H"""
+    <section id={@id} class="grid gap-3 rounded-card bg-canvas p-4">
+      <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <h3 class="text-base font-bold text-strong">Result after applying</h3>
+        <p class="text-sm font-[650] text-strong">
+          {format_date(@extension.previous_end_date)} → {format_date(@extension.requested_end_date)}
+        </p>
+      </div>
+
+      <p :if={@approval_text} id={"#{@id}-approval"} class="text-sm text-default">
+        <span class="font-[650] text-strong">Approval · </span>
+        <span class="italic">{@approval_text}</span>
+      </p>
+
+      <div id={"#{@id}-dates"}>
+        <h4 class="text-sm font-bold text-strong">
+          {plural(@dates |> length(), "date", "dates")} newly in service
+        </h4>
+        <p class="text-[13px] text-muted">
+          The first is {weekday_date(hd(@dates))} and the last is {weekday_date(List.last(@dates))}.
+        </p>
+        <ul class="mt-1 flex flex-wrap gap-1.5">
+          <li
+            :for={date <- @visible_dates}
+            id={"#{@id}-date-#{Date.to_iso8601(date)}"}
+            class="rounded-badge bg-white px-2 py-0.5 text-[13px] font-[650] text-strong"
+          >
+            {weekday_date(date)}
+          </li>
+          <li
+            :if={@hidden_dates > 0}
+            id={"#{@id}-dates-hidden"}
+            class="rounded-badge bg-white px-2 py-0.5 text-[13px] text-muted"
+          >
+            and {plural(@hidden_dates, "more date", "more dates")}
+          </li>
+        </ul>
+        <p :if={@dates == []} class="mt-1 text-sm text-muted">
+          No date newly runs: the calendar already covered this range.
+        </p>
+      </div>
+
+      <div id={"#{@id}-routes"}>
+        <h4 class="text-sm font-bold text-strong">
+          {plural(length(@routes), "route", "routes")} affected
+        </h4>
+        <ul class="mt-1 grid gap-0.5 text-[13px]">
+          <li :for={route <- @routes} class="text-default">
+            <code class="font-mono font-[650] text-strong">{route.route_id}</code>
+            · {plural(route.trip_count, "trip", "trips")}
+          </li>
+        </ul>
+        <p class="mt-1 text-[13px] text-muted">
+          {plural(length(@extension.trip_identities), "trip", "trips")} in total keep their
+          calendar and run on the new dates.
+        </p>
+      </div>
+
+      <div :if={@closures != []} id={"#{@id}-closures"}>
+        <h4 class="text-sm font-bold text-strong">
+          {plural(length(@closures), "closure", "closures")} on this calendar
+        </h4>
+        <ul class="mt-1 grid gap-0.5 text-[13px] text-default">
+          <li :for={closure <- @closures}>
+            <code class="font-mono font-[650] text-strong">{closure.pathway_id}</code>
+            · {plural(length(closure.station_stop_ids), "station", "stations")}
+          </li>
+        </ul>
+      </div>
+
+      <div id={"#{@id}-retained"}>
+        <h4 class="text-sm font-bold text-strong">
+          {plural(length(@retained), "existing date change", "existing date changes")} kept
+        </h4>
+        <p class="text-[13px] text-muted">
+          This extension changes the end date only, so every exception already stored stays as it
+          is.
+        </p>
+      </div>
+
+      <.message
+        id={"#{@id}-unresolved"}
+        kind="warning"
+        title={unresolved_title(@unresolved)}
+        tabindex="-1"
+      >
+        No holiday is assumed for these dates: this calendar has no recorded exception for them, and
+        the agency’s holiday policy is not known here. Check them against the agency’s list before
+        applying.
+      </.message>
+    </section>
+    """
+  end
+
+  defp unresolved_title([]), do: "Every newly active date has a recorded day off"
+  defp unresolved_title([_date]), do: "1 newly active date has no recorded day off"
+  defp unresolved_title(dates), do: "#{length(dates)} newly active dates have no recorded day off"
+
   ## Outcome messages
 
   @doc """

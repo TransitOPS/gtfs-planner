@@ -15,7 +15,12 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   resolves names and fingerprints from one catalog read, and runs the existing
   `GtfsPlanner.Gtfs.review_calendar_change/3`, so it returns the command the
   Calendars list can open in its *Change service on a date* review and writes
-  nothing. All three reuse `GtfsPlanner.Gtfs` and never write.
+  nothing. `prepare_calendar_extension` prepares an approved end-date
+  extension. It takes no approval argument at all: the approval is an
+  editor-entered value the Calendars page copied into the scope's resource
+  context, and a request for a different calendar or end date is refused rather
+  than prepared for the approved values. Every tool reuses
+  `GtfsPlanner.Gtfs` and none writes.
   """
 
   @behaviour GtfsPlanner.Agents.Pack
@@ -28,6 +33,7 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   @list_limit 50
   @range_limit_days 62
   @date_limit 366
+  @approval_preview_length 120
   @source_ref_service "gtfs_service_queries"
 
   @weekdays [
@@ -174,6 +180,25 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
           "required" => ["dates", "stop", "run"],
           "additionalProperties" => false
         }
+      },
+      %{
+        name: "prepare_calendar_extension",
+        description:
+          "Prepare an approved extension of one weekly calendar's end date, listing the dates " <>
+            "that newly run, the routes, trips and closures affected and the dates whose holiday " <>
+            "policy is still unknown. This works only after the editor entered their approval and " <>
+            "the new end date in *Approve a calendar extension* on this page: you cannot supply " <>
+            "the approval yourself. It saves nothing; the editor reviews and applies it.",
+        activity: "Prepared a calendar extension",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{
+            "service_id" => %{"type" => "string", "maxLength" => 200},
+            "end_date" => %{"type" => "string"}
+          },
+          "required" => ["service_id"],
+          "additionalProperties" => false
+        }
       }
     ]
   end
@@ -189,6 +214,9 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   def call("get_calendar_usage", args, %Scope{} = scope), do: get_calendar_usage(args, scope)
 
   def call("prepare_date_change", args, %Scope{} = scope), do: prepare_date_change(args, scope)
+
+  def call("prepare_calendar_extension", args, %Scope{} = scope),
+    do: prepare_calendar_extension(args, scope)
 
   defp list_calendars(args, scope) do
     query = normalize_query(args["query"])
@@ -637,6 +665,204 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
         {:error, reason} ->
           {:error, prepare_error(reason)}
       end
+    end
+  end
+
+  # -- prepare_calendar_extension -------------------------------------------
+
+  # The approval is not an argument and never comes from the model. The editor
+  # entered it in this page's own form, the page copied the validated approval,
+  # service ID and end date into the scope's resource context, and
+  # `Scope.authorized_context/1` has already resolved that calendar inside the
+  # current organization and version before this tool runs. A model paraphrase,
+  # a pasted approval or an imported GTFS field therefore cannot establish one
+  # (AC-13), and the prepared command carries the approval the editor typed.
+  defp prepare_calendar_extension(args, scope) do
+    with {:ok, approved} <- approved_extension(scope),
+         :ok <- check_approved_target(args["service_id"], approved),
+         {:ok, end_date} <- check_approved_end_date(args["end_date"], approved),
+         {:ok, targets} <- load_targets([approved.service_id], scope) do
+      command =
+        {:save, approved.service_id, %{end_date: end_date, approval_text: approved.approval_text}}
+
+      fingerprints = %{
+        approved.service_id => Map.fetch!(targets, approved.service_id).fingerprint
+      }
+
+      case Gtfs.review_calendar_change(command, fingerprints, Scope.audit_context(scope)) do
+        {:ok, %{extension: extension}} when not is_nil(extension) ->
+          {:prepared, extension_summary(command, targets, extension, approved),
+           extension_result(extension, targets, approved),
+           extension_evidence(extension, scope, targets, approved)}
+
+        {:ok, _review} ->
+          {:error, "That approval did not produce a reviewable extension."}
+
+        {:error, reason} ->
+          {:error, prepare_error(reason)}
+      end
+    end
+  end
+
+  defp approved_extension(scope) do
+    case Scope.approved_extension(scope) do
+      nil ->
+        {:error,
+         "No calendar extension has been approved on this page. Ask the editor to enter their " <>
+           "approval and the new end date in Approve a calendar extension first."}
+
+      approved ->
+        {:ok, approved}
+    end
+  end
+
+  # Naming the approved calendar keeps the model answerable for its choice, but a
+  # different calendar or a different end date is refused instead of quietly
+  # prepared for the values the editor approved.
+  defp check_approved_target(service_id, approved) do
+    if service_id == approved.service_id do
+      :ok
+    else
+      {:error,
+       "The approved extension is for calendar " <>
+         approved.service_id <>
+         ". The editor has to approve that calendar before you can prepare it."}
+    end
+  end
+
+  defp check_approved_end_date(nil, approved), do: {:ok, approved.end_date}
+
+  defp check_approved_end_date(value, approved) do
+    case Date.from_iso8601(String.trim(value)) do
+      {:ok, date} when date == approved.end_date ->
+        {:ok, date}
+
+      _other ->
+        {:error,
+         "The approved extension ends on " <>
+           Date.to_iso8601(approved.end_date) <>
+           ". The editor has to approve that end date before you can prepare it."}
+    end
+  end
+
+  # The saved command carries only the new end date and the approval. Every other
+  # weekly and metadata value is omitted, so the native save retains the stored
+  # calendar and all of its existing exceptions exactly as they are (AC-14).
+  defp extension_summary(command, targets, extension, approved) do
+    target = Map.fetch!(targets, command_service_id(command))
+
+    %{
+      summary: %{
+        title: "Extend #{target_name(target.service_id, targets)}",
+        detail:
+          end_label(extension.previous_end_date) <>
+            " → " <> end_label(extension.requested_end_date),
+        lines: [
+          "Approved by the editor · #{approval_label(approved.approval_text)}",
+          "Newly active dates · #{count_label(extension.newly_active_date_count, "date", "dates")}",
+          "Routes affected · #{count_label(length(extension.routes), "route", "routes")}",
+          "Trips affected · #{count_label(length(extension.trip_identities), "trip", "trips")}",
+          "Closures affected · #{count_label(length(extension.closure_consequences), "closure", "closures")}",
+          "Retained exceptions · #{count_label(length(extension.retained_exceptions), "exception", "exceptions")}",
+          "Unresolved dates · #{count_label(length(extension.unresolved_dates), "date", "dates")}"
+        ]
+      },
+      command: command
+    }
+  end
+
+  defp extension_result(extension, targets, approved) do
+    %{
+      "service_id" => extension.service_id,
+      "name" => target_name(extension.service_id, targets),
+      "approval" => approved.approval_text,
+      "previous_end_date" => Date.to_iso8601(extension.previous_end_date),
+      "requested_end_date" => Date.to_iso8601(extension.requested_end_date),
+      "added_days" => extension.added_days,
+      "newly_active_dates" => Enum.map(extension.newly_active_dates, &Date.to_iso8601/1),
+      "newly_active_date_count" => extension.newly_active_date_count,
+      "routes" =>
+        Enum.map(extension.routes, &%{"route_id" => &1.route_id, "trip_count" => &1.trip_count}),
+      "trips" => Enum.map(extension.trip_identities, &%{"trip_id" => &1.trip_id}),
+      "closures" => Enum.map(extension.closure_consequences, &%{"pathway_id" => &1.pathway_id}),
+      "retained_exceptions" =>
+        Enum.map(
+          extension.retained_exceptions,
+          &%{
+            "date" => Date.to_iso8601(&1.date),
+            "exception_type" => &1.exception_type
+          }
+        ),
+      "unresolved_dates" => Enum.map(extension.unresolved_dates, &Date.to_iso8601/1),
+      "holiday_policy" => Atom.to_string(extension.holiday_policy)
+    }
+  end
+
+  # The card's counts come from the same review the native page regenerates for
+  # Apply, so the assistant's summary and the reviewer's dialog cannot disagree,
+  # and the digest covers the exact impact that was described (INV-2).
+  defp extension_evidence(extension, scope, targets, approved) do
+    result = extension_result(extension, targets, approved)
+
+    %{
+      kind: "calendar_extension",
+      title: "Extension of #{target_name(extension.service_id, targets)}",
+      total: extension.newly_active_date_count,
+      total_label: "dates newly in service",
+      completeness: :complete,
+      completeness_reason: nil,
+      facts: [
+        %{label: "Approval", value: approval_label(approved.approval_text)},
+        %{
+          label: "End date",
+          value:
+            end_label(extension.previous_end_date) <>
+              " → " <> end_label(extension.requested_end_date)
+        },
+        %{label: "Routes", value: Integer.to_string(length(extension.routes))},
+        %{label: "Trips", value: Integer.to_string(length(extension.trip_identities))},
+        %{label: "Closures", value: Integer.to_string(length(extension.closure_consequences))},
+        %{
+          label: "Retained exceptions",
+          value: Integer.to_string(length(extension.retained_exceptions))
+        },
+        %{
+          label: "Future holiday policy",
+          value:
+            "#{length(extension.unresolved_dates)} newly active dates have no recorded exception"
+        }
+      ],
+      source_ref: @source_ref,
+      digest: digest(result),
+      source_revision: nil,
+      scope: %{
+        organization_id: scope.organization_id,
+        gtfs_version_id: scope.gtfs_version_id,
+        identity: identity_label(scope)
+      },
+      exclusions: [],
+      resources: [
+        %{
+          kind: "calendar",
+          id: extension.service_id,
+          label: target_name(extension.service_id, targets)
+        }
+      ]
+    }
+  end
+
+  defp command_service_id({:save, service_id, _attrs}), do: service_id
+
+  defp end_label(date), do: Elixir.Calendar.strftime(date, "%a %b %-d, %Y")
+
+  defp count_label(1, one, _many), do: "1 #{one}"
+  defp count_label(count, _one, many), do: "#{count} #{many}"
+
+  defp approval_label(text) do
+    if String.length(text) > @approval_preview_length do
+      String.slice(text, 0, @approval_preview_length - 1) <> "…"
+    else
+      text
     end
   end
 

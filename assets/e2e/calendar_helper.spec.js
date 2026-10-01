@@ -49,7 +49,10 @@ test.describe("helper panel layout", () => {
     test(`opens beside the list at ${viewport.width}x${viewport.height}`, async ({
       page,
     }, testInfo) => {
-      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
       await openCalendars(page);
 
       await expect(page.locator("#agent-panel")).toHaveCount(0);
@@ -75,7 +78,9 @@ test.describe("helper panel layout", () => {
         await expect(page.locator("#calendars-list")).toBeVisible();
       }
 
-      await page.screenshot({ path: testInfo.outputPath(`panel-${viewport.label}.png`) });
+      await page.screenshot({
+        path: testInfo.outputPath(`panel-${viewport.label}.png`),
+      });
 
       await page.locator("#agent-panel-close").click();
 
@@ -87,7 +92,9 @@ test.describe("helper panel layout", () => {
 });
 
 test.describe("drawer review", () => {
-  test("hands the prepared change to the existing drawer review", async ({ page }, testInfo) => {
+  test("hands the prepared change to the existing drawer review", async ({
+    page,
+  }, testInfo) => {
     await page.setViewportSize({ width: 1440, height: 1000 });
     await openCalendars(page);
 
@@ -131,7 +138,10 @@ test.describe("server evidence card", () => {
     test(`shows the server count above contradicting prose at ${viewport.width}x${viewport.height}`, async ({
       page,
     }, testInfo) => {
-      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
       await openCalendars(page);
 
       await page.locator("#agent-helper-open").click();
@@ -140,7 +150,9 @@ test.describe("server evidence card", () => {
       // Helper sessions live in the server process, so start a fresh one.
       await page.locator("#agent-new-conversation").click();
 
-      await page.locator("#agent-composer-input").fill("Which dates run next week?");
+      await page
+        .locator("#agent-composer-input")
+        .fill("Which dates run next week?");
       await page.locator("#agent-send").click();
 
       // The scripted stand-in answers "Three of those dates run service." after
@@ -163,7 +175,9 @@ test.describe("server evidence card", () => {
       const prose = page.locator("#agent-prose-2");
       await expect(prose).toContainText("Model reply");
       await expect(prose).toContainText("Three of those dates run service.");
-      await expect(page.locator("#agent-entries")).toContainText("Three of those dates run service.");
+      await expect(page.locator("#agent-entries")).toContainText(
+        "Three of those dates run service.",
+      );
 
       const fitsViewport = await page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -252,5 +266,204 @@ test.describe("helper journey", () => {
 
     await expect(page.locator("#agent-panel")).toHaveCount(0);
     await expect(page.locator("#agent-helper-open")).toBeFocused();
+  });
+});
+
+// The approved end-date extension journey. The approval is the editor's own
+// sentence in the page's form; the scripted stand-in asks for exactly the
+// calendar and end date the editor approved, because the tool reads the
+// approval from the server-held context and refuses anything else.
+const EXTENSION_DAYS = 200;
+const APPROVAL_TEXT =
+  "Board approved running the school connector through the 2027 spring term.";
+
+function isoDaysFromNow(days) {
+  const date = new Date(Date.now() + days * 86400000);
+  return date.toISOString().slice(0, 10);
+}
+
+async function approveExtension(
+  page,
+  endDate = isoDaysFromNow(EXTENSION_DAYS),
+) {
+  await page.locator("#calendar-extension-approval").scrollIntoViewIfNeeded();
+  await page.selectOption("#calendar-extension-service", "SCHOOL_WD");
+  await page.fill("#calendar-extension-end-date", endDate);
+  await page.fill("#calendar-extension-approval-text", APPROVAL_TEXT);
+  await page.locator("#calendar-extension-approve").click();
+  await expect(page.locator("#calendar-extension-approved")).toContainText(
+    "Approved extending",
+    { timeout: 15_000 },
+  );
+}
+
+async function askForTheExtension(page) {
+  const panel = page.locator("#agent-panel");
+  if (await panel.count()) {
+    await expect(panel).toBeVisible();
+  } else {
+    await page.locator("#agent-helper-open").click();
+    await expect(panel).toBeVisible();
+  }
+
+  // Helper sessions live in the server process, so start a new conversation.
+  await page.locator("#agent-new-conversation").click();
+  await page
+    .locator("#agent-composer-input")
+    .fill("Can we extend the school weekdays calendar?");
+  await page.locator("#agent-send").click();
+
+  const card = page.locator('[id^="agent-prepared-"]').last();
+  await expect(card).toBeVisible({ timeout: 45_000 });
+  return card;
+}
+
+test.describe("approved calendar extension", () => {
+  test("refuses an approval the editor did not write", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openCalendars(page);
+
+    await page.locator("#calendar-extension-approval").scrollIntoViewIfNeeded();
+    await page.selectOption("#calendar-extension-service", "SCHOOL_WD");
+    await page.fill(
+      "#calendar-extension-end-date",
+      isoDaysFromNow(EXTENSION_DAYS),
+    );
+    await page.locator("#calendar-extension-approve").click();
+
+    await expect(page.locator("#calendar-extension-errors")).toContainText(
+      "Enter why you are approving this extension.",
+    );
+    await expect(page.locator("#calendar-extension-approved")).toHaveCount(0);
+  });
+
+  test("prepares the approved extension and reviews its exact impact", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openCalendars(page);
+
+    await approveExtension(page);
+    const card = await askForTheExtension(page);
+
+    // The server evidence card, not the model's sentence, owns the counts.
+    await expect(page.locator("#agent-evidence-2-1")).toContainText(
+      "Server result",
+    );
+    await expect(page.locator("#agent-evidence-2-1")).toContainText(
+      "dates newly in service",
+    );
+    await expect(card).toContainText("Extend School weekdays");
+    await expect(card).toContainText(APPROVAL_TEXT);
+    await expect(card).toContainText("Routes affected · 1 route");
+    await expect(card).toContainText("Review extension");
+
+    await page.locator('[id^="agent-review-prepared-"]').last().click();
+
+    const impact = page.locator("#calendar-extension-impact");
+    await expect(impact).toBeVisible();
+    await expect(impact).toContainText("Result after applying");
+    await expect(impact).toContainText(APPROVAL_TEXT);
+    await expect(impact).toContainText("SCHOOL_ROUTE");
+    // No holiday is inferred for the newly active dates.
+    await expect(impact).toContainText(
+      "newly active dates have no recorded day off",
+    );
+
+    // Cancelling writes nothing and leaves the card ready to review.
+    await page.screenshot({
+      path: testInfo.outputPath("extension-review-1440.png"),
+      animations: "disabled",
+    });
+    await page.locator("#calendar-extension-cancel").click();
+
+    await expect(page.locator("#calendar-extension-impact")).toHaveCount(0);
+    await expect(card).toContainText("Ready to review");
+  });
+
+  for (const viewport of VIEWPORTS) {
+    test(`reviews the extension at ${viewport.width}x${viewport.height}`, async ({
+      page,
+    }, testInfo) => {
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+      await openCalendars(page);
+
+      await approveExtension(page);
+      await askForTheExtension(page);
+      await page.locator('[id^="agent-review-prepared-"]').last().click();
+
+      await expect(page.locator("#calendar-extension-impact")).toBeVisible();
+
+      const fitsViewport = await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      );
+      expect(fitsViewport).toBe(true);
+
+      await page.screenshot({
+        path: testInfo.outputPath(`extension-review-${viewport.label}.png`),
+        animations: "disabled",
+      });
+    });
+  }
+
+  test("applies the exact reviewed command and credits the card", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openCalendars(page);
+
+    await approveExtension(page);
+    const card = await askForTheExtension(page);
+    await page.locator('[id^="agent-review-prepared-"]').last().click();
+    await expect(page.locator("#calendar-extension-impact")).toBeVisible();
+
+    await page.locator("#calendar-extension-apply").click();
+
+    await expect(page.locator("#calendar-extension-impact")).toHaveCount(0);
+    await expect(page.locator("#calendars-extension-status")).toContainText(
+      "Extended SCHOOL_WD",
+    );
+    await expect(card).toContainText("Applied");
+    await expect(page.locator('[id^="agent-review-prepared-"]')).toHaveCount(0);
+
+    await page.screenshot({
+      path: testInfo.outputPath("extension-applied-1440.png"),
+      animations: "disabled",
+    });
+  });
+
+  test("an edited end date applies the edit and is not credited to the helper", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openCalendars(page);
+
+    await approveExtension(page);
+    const card = await askForTheExtension(page);
+    await page.locator('[id^="agent-review-prepared-"]').last().click();
+    await expect(page.locator("#calendar-extension-impact")).toBeVisible();
+
+    const approved = await page
+      .locator("#calendar-extension-review-end-date")
+      .inputValue();
+    const edited = isoDaysFromNow(EXTENSION_DAYS - 60);
+    await page.fill("#calendar-extension-review-end-date", edited);
+    await expect(page.locator("#calendar-extension-impact")).toContainText(
+      new Date(edited).getFullYear().toString(),
+    );
+
+    await page.locator("#calendar-extension-apply").click();
+
+    await expect(page.locator("#calendars-extension-status")).toContainText(
+      "Extended SCHOOL_WD",
+    );
+    await expect(page.locator("#agent-notice")).toContainText(
+      "The original prepared change was not applied.",
+    );
+    await expect(card).toContainText("Ready to review");
+    expect(edited).not.toBe(approved);
   });
 });

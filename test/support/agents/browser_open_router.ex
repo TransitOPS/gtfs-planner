@@ -17,8 +17,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
     * a `"user"` message mentioning school gets a `list_calendars` call with
       `query: "school"`;
     * a `"user"` message asking about dates gets a `get_calendar` call for the
-      next Monday through Sunday of the seeded `SCHOOL_WD` calendar;
-    * the `list_calendars` tool result gets a `prepare_date_change` call that
+      next Monday through Sunday of the seeded `SCHOOL_WD` calendar;    * the `list_calendars` tool result gets a `prepare_date_change` call that
       stops `SCHOOL_EX` and `SCHOOL_WD` on the next Monday and Tuesday after
       `Date.utc_today()`; the seeded `Browser Helper Version`
       (`test/support/browser_seed.exs`) resolves the same UTC date, so both
@@ -31,10 +30,14 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       for the route's own first stop after 05:00 on the next date the seeded
       `CAL_DAILY` calendar runs, so the Schedule journey reads a real page's own
       trip;
-    * a `"user"` message asking which stops a route boards at gets a
-      `list_boarding_occurrences` call for that date;
+    * a `"user"` message asking to extend a calendar gets a
+      `prepare_calendar_extension` call for the seeded `SCHOOL_WD` calendar and
+      the same end date the journey approves in *Approve a calendar extension*,
+      so the tool reads the editor's approval instead of one the model supplied;
     * the `query_departures` and `list_boarding_occurrences` tool results get a
       Schedule sentence, one of which contradicts the server's count on purpose;
+    * the `prepare_calendar_extension` tool result gets the prepared-extension
+      sentence;
     * anything else gets the helper's generic sentence.
   """
 
@@ -55,6 +58,11 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   @contradicted_count "Three of those dates run service."
   @schedule_departures "Three trips leave the first stop after 5:00am."
   @schedule_occurrences "This route boards at three stops."
+  @prepared_extension "I prepared the extension. Review it before applying."
+  # The end date the browser journey approves in the Calendars page's own form,
+  # 200 days from today: inside the 366-day horizon, and later than the seeded
+  # calendar's own end date, so the tool can only prepare it from that approval.
+  @extension_days 200
 
   @impl Plug
   def init(opts), do: opts
@@ -82,6 +90,12 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
   defp user_reply(content) do
     cond do
+      content =~ ~r/extend/i ->
+        tool_calls_reply("prepare_calendar_extension", %{
+          "service_id" => "SCHOOL_WD",
+          "end_date" => Date.to_iso8601(Date.add(Date.utc_today(), @extension_days))
+        })
+
       content =~ ~r/depart|leaves? |after \d/i ->
         tool_calls_reply("query_departures", departure_arguments())
 
@@ -111,6 +125,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       "get_calendar" -> text_reply(@contradicted_count)
       "query_departures" -> text_reply(@schedule_departures)
       "list_boarding_occurrences" -> text_reply(@schedule_occurrences)
+      "prepare_calendar_extension" -> text_reply(@prepared_extension)
       _other -> text_reply(@generic)
     end
   end

@@ -352,7 +352,7 @@ defmodule GtfsPlannerWeb.AgentComponents do
               size="sm"
               class="min-h-11 w-full"
             >
-              Review prepared change
+              {review_label(@entry.prepared.command)}
             </.button>
           </div>
         </section>
@@ -505,6 +505,13 @@ defmodule GtfsPlannerWeb.AgentComponents do
 
   defp composer_locked?(status),
     do: status in [:ended, :forbidden, :unavailable, :limit, :allowance_exhausted]
+
+  # The action names the change the card actually holds, so a calendar extension
+  # is never offered as a generic prepared change. It is read from the server-held
+  # command, never from the model's reply, and it says nothing about an outcome:
+  # whether the change was applied is the entry's own receipt, not this label.
+  defp review_label({:save, _service_id, _attrs}), do: "Review extension"
+  defp review_label(_command), do: "Review prepared change"
 
   defp entry_badge(%{status: :working}), do: {"Working", nil}
 

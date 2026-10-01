@@ -85,6 +85,17 @@ defmodule GtfsPlanner.Agents.Scope do
   def identity(%__MODULE__{resource_context: %{identity: identity}}), do: identity
 
   @doc """
+  The editor's approved extension held in this scope's context, or `nil`.
+
+  This value was copied here by a server-observed native form action, so it is
+  the only approval a pack tool may read: a model paraphrase, a tool argument or
+  an imported GTFS field cannot supply one.
+  """
+  @spec approved_extension(t()) :: approved_extension() | nil
+  def approved_extension(%__MODULE__{resource_context: %{approved_extension: approved}}),
+    do: approved
+
+  @doc """
   The canonical digest of the approved extension in this scope's context.
 
   It is `"none"` without one, so the session key of a conversation that follows an
