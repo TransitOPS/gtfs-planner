@@ -58,6 +58,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   use GtfsPlannerWeb, :live_view
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Rosters.AssignmentsExport
   alias GtfsPlanner.Gtfs.Rosters.Candidates
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Operations.Operator
@@ -185,6 +186,9 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
      |> assign(:roster, nil)
      |> assign(:day_types, [])
      |> assign(:operators_count, 0)
+     # The export section's rows, warnings and counts, computed from the loaded
+     # composition and not inside `render/1`, for the open work's reason.
+     |> assign(:assignments, nil)
      # The URL's three params start at their defaults, which are also the
      # values `rosters_path/3` leaves out of a patch: `/rosters` and
      # `/rosters?filter=all` are the same page, and the short one is the one a
@@ -400,6 +404,21 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
         # composition (a line's own operator is), so this count is the one
         # figure the scope bar needs that the composition does not answer.
         |> assign(:operators_count, length(Operations.list_operators(organization.id)))
+        # The export section reads `AssignmentsExport.rows/1` over the same
+        # roster, day types and `run_days` this composition just produced, with
+        # `services: nil` because the page shows rows and not service IDs. It is
+        # the export's own pure function, so the preview and the warnings are the
+        # file's own view of this snapshot rather than a second reading of it
+        # (INV-14).
+        |> assign(
+          :assignments,
+          AssignmentsExport.rows(%{
+            roster: view.roster,
+            day_types: view.day_types,
+            run_days: view.run_days,
+            services: nil
+          })
+        )
         |> assign(:loaded_version_id, to_string(version.id))
         |> assign(:load_state, roster_state(view.roster))
         # Re-streamed on every read, keyed by line, so a roster that changed
@@ -2546,6 +2565,16 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
           roster={@roster}
           locked?={@load_state == :unavailable}
           refusal={@open_work_refusal}
+        />
+
+        <%!-- The export section is below everything that can change what the file
+        would carry, and it is drawn whenever the roster is: what the export says
+        is a fact about the whole version, not about one line. The loading and
+        no-runs states have nothing to describe there and have said why. --%>
+        <RostersComponents.export_section
+          :if={@roster && @assignments && @load_state in [:ready, :unavailable]}
+          assignments={@assignments}
+          version_id={@current_gtfs_version.id}
         />
 
         <%!-- The operators drawer is inside the page region rather than beside it,

@@ -1175,88 +1175,18 @@ defmodule GtfsPlanner.Gtfs.Export do
   # what it deliberately leaves out, and what could not be exported. They appear
   # only for a version that has roster lines — a version nobody has rostered owes
   # a consumer no announcement (AC-23).
+  #
+  # The sentences are `AssignmentsExport.sentences/2`'s, the same ones the
+  # Rosters page lists, so a warning a reader has already read on the page cannot
+  # read differently in the ZIP's own report (INV-14).
   defp assignment_warnings(%{assignment_rows: nil}), do: []
 
   defp assignment_warnings(%{assignment_rows: assignments}) do
     file = Tods.employee_run_dates_spec().filename
 
-    [
-      planned_warning(assignments, file),
-      other_service_warning(assignments, file),
-      unassigned_warning(assignments, file),
-      stale_warning(assignments, file),
-      left_out_warning(assignments, file)
-    ]
-    |> Enum.reject(&is_nil/1)
+    for {code, detail} <- AssignmentsExport.sentences(assignments),
+        do: warning(code, detail, file)
   end
-
-  # The note that says what the file is not. Present whenever the file has rows,
-  # because a dispatch system that reads planned assignments as actual ones is
-  # the risk this spec accepts rather than one it designs away.
-  defp planned_warning(%{rows: []}, _file), do: nil
-
-  defp planned_warning(_assignments, file) do
-    warning(
-      "tods_assignments_planned",
-      "Planned from the pick. Vacations, sick days and extraboard are not included.",
-      file
-    )
-  end
-
-  defp other_service_warning(%{other_service_dates: []}, _file), do: nil
-
-  # The first three dates in date order and "and N more" only when there are
-  # more, so a long calendar reports its shape rather than its whole length.
-  defp other_service_warning(%{other_service_dates: dates} = assignments, file) do
-    {first_three, rest} = Enum.split(dates, 3)
-
-    listed = first_three |> Enum.map_join(", ", &Date.to_iso8601/1)
-    listed = if rest == [], do: listed, else: "#{listed} and #{length(rest)} more"
-    open = open_run_days(assignments.open_run_days)
-
-    detail =
-      if length(dates) == 1 do
-        "1 date runs different service: #{listed}. No assignment is exported for it; #{open}."
-      else
-        "#{length(dates)} dates run different service: #{listed}. " <>
-          "No assignments are exported for them; #{open}."
-      end
-
-    warning("tods_assignments_other_service", detail, file)
-  end
-
-  defp open_run_days(1), do: "1 run-day stays open"
-  defp open_run_days(n), do: "#{n} run-days stay open"
-
-  defp unassigned_warning(%{unassigned_lines: 0}, _file), do: nil
-
-  defp unassigned_warning(%{unassigned_lines: n}, file) do
-    noun = if n == 1, do: "1 line has", else: "#{n} lines have"
-    warning("tods_assignments_unassigned", "#{noun} no operator.", file)
-  end
-
-  defp stale_warning(%{stale_slots: 0}, _file), do: nil
-
-  defp stale_warning(%{stale_slots: n}, file) do
-    verb = if n == 1, do: "was", else: "were"
-    warning("tods_assignments_stale", "#{n} stale #{slot_noun(n)} #{verb} skipped.", file)
-  end
-
-  defp left_out_warning(%{left_out_slots: 0}, _file), do: nil
-
-  defp left_out_warning(%{left_out_slots: n}, file) do
-    verb =
-      if n == 1, do: "names a run with errors and was", else: "name runs with errors and were"
-
-    warning(
-      "tods_assignments_left_out",
-      "#{n} assigned #{slot_noun(n)} #{verb} left out.",
-      file
-    )
-  end
-
-  defp slot_noun(1), do: "slot"
-  defp slot_noun(_n), do: "slots"
 
   @roster_line_warning %{
     code: nil,

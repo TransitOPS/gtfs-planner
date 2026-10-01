@@ -100,6 +100,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
       sort_header: 1
     ]
 
+  alias GtfsPlanner.Gtfs.Rosters.AssignmentsExport
   alias GtfsPlanner.Gtfs.Rosters.Candidates
   alias GtfsPlanner.Gtfs.Rosters.Checks
   alias GtfsPlannerWeb.CoreComponents
@@ -3133,4 +3134,201 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
       "#{weekday_name(weekday)} now uses #{base.day_type.label}, not #{base.missing_choice}."
     end)
   end
+
+  ## The export section
+
+  # How many rows of the export this page shows. Twenty is a screen's worth at
+  # this row height and enough to see whether the ordering is the one the file
+  # has; the whole file is the export's business, not this page's.
+  @preview_rows 20
+
+  @doc """
+  Renders the page's bottom section: what the operations export would carry for
+  this roster, what it deliberately leaves out, and the first rows of it.
+
+  Every figure here is `AssignmentsExport.rows/1`'s — the same pure function the
+  export calls with `ids.service_ids`, called here with `services: nil` because
+  the page shows rows, not service IDs (INV-14). Nothing is recomputed: the
+  preview's first row is `AssignmentsExport`'s first row, and the warnings are
+  its own sentences, so the page and the ZIP cannot describe the same file two
+  ways.
+
+  ## The note is always here, the warnings only when there are any
+
+  The planned-data note is the section's one unconditional sentence: a reader who
+  has picked a run and is about to send someone to work on it has to be told the
+  file is planned, whether or not this roster happens to have rows today. The
+  warnings are the opposite — each one reports something the export left out, so
+  a roster the export loses nothing from shows a sentence saying so rather than
+  an empty list.
+
+  `date_format` is the only difference between this section's warnings and the
+  export's: the page prints "Oct 12, 2026" where the ZIP's own report prints
+  "2026-10-12".
+  """
+  attr :assignments, :map, required: true, doc: "`AssignmentsExport.rows/1`'s result"
+  attr :version_id, :string, required: true
+
+  def export_section(assigns) do
+    assigns =
+      assigns
+      |> assign(:warnings, warning_sentences(assigns.assignments))
+      |> assign(:preview, Enum.take(assigns.assignments.rows, @preview_rows))
+
+    ~H"""
+    <section
+      id="rosters-export"
+      aria-labelledby="rosters-export-title"
+      class="mt-4 rounded-card border border-subtle bg-white"
+    >
+      <div class="flex flex-wrap items-start justify-between gap-4 border-b border-subtle px-5 py-4">
+        <div class="min-w-0 max-w-[820px]">
+          <h2 id="rosters-export-title" tabindex="-1" class="text-[22px]">
+            Operator assignments in the operations export
+          </h2>
+          <p class="mt-1 text-sm text-muted">
+            The GTFS + operations (TODS) export on GTFS › Export writes each line’s operator for every
+            base-week date of the service period, in <code class="font-mono text-[13px]">employee_run_dates.txt</code>.
+          </p>
+        </div>
+
+        <.button
+          id="rosters-export-link"
+          navigate={~p"/gtfs/#{@version_id}/export?type=operations"}
+          variant="secondary"
+          class="min-h-11"
+        >
+          Open operations export <.icon name="hero-arrow-right" class="size-4" />
+        </.button>
+      </div>
+
+      <div class="grid gap-4 px-5 py-4">
+        <p id="rosters-export-note" class="flex items-start gap-2 text-sm text-strong">
+          <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0 text-cyan-700" />
+          <span>
+            <strong>{planned_heading()}</strong>
+            {planned_tail()}
+          </span>
+        </p>
+
+        <p class="text-sm">
+          With the lines as they are, the export has <strong class="tabular">{assignment_count(length(@assignments.rows))}</strong>:
+          one per operator, run and date.
+        </p>
+
+        <div id="rosters-export-warnings">
+          <.message
+            :if={@warnings != []}
+            kind="warning"
+            title={warning_title(length(@warnings))}
+            role="status"
+            class="border-l-4 border-warning-line"
+          >
+            <ul class="grid gap-2">
+              <li
+                :for={warning <- @warnings}
+                class="border-l-2 border-warning-line pl-3"
+              >
+                {warning}
+              </li>
+            </ul>
+          </.message>
+          <.message :if={@warnings == []} kind="success" title="Nothing is left out.">
+            Every line with an operator is written for every date of the base week.
+          </.message>
+        </div>
+
+        <details id="rosters-export-preview" class="group">
+          <summary class="inline-flex min-h-11 cursor-pointer list-none items-center gap-1.5 text-sm font-[650] text-action hover:underline [&::-webkit-details-marker]:hidden">
+            <.icon
+              name="hero-chevron-right"
+              class="chev size-4 transition-transform group-open:rotate-90"
+            /> Preview first rows
+          </summary>
+          <div
+            :if={@preview != []}
+            class="mt-1 max-w-[720px] overflow-auto rounded-control border border-subtle"
+          >
+            <table class="w-full border-separate border-spacing-0 text-sm">
+              <caption class="sr-only">First assignments in the operations export</caption>
+              <thead>
+                <tr>
+                  <th
+                    scope="col"
+                    class="border-b border-subtle bg-canvas px-3 py-2 text-left text-[13px] font-semibold text-strong"
+                  >
+                    Date
+                  </th>
+                  <th
+                    scope="col"
+                    class="border-b border-subtle bg-canvas px-3 py-2 text-left text-[13px] font-semibold text-strong"
+                  >
+                    Run
+                  </th>
+                  <th
+                    scope="col"
+                    class="border-b border-subtle bg-canvas px-3 py-2 text-left text-[13px] font-semibold text-strong"
+                  >
+                    Employee ID
+                  </th>
+                  <th
+                    scope="col"
+                    class="border-b border-subtle bg-canvas px-3 py-2 text-left text-[13px] font-semibold text-strong"
+                  >
+                    Operator
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr :for={row <- @preview} class="border-b border-subtle last:border-b-0">
+                  <td class="tabular px-3 py-2.5 align-middle">{date_label(row.date)}</td>
+                  <td class="px-3 py-2.5 align-middle font-semibold">{row.run_id}</td>
+                  <td class="px-3 py-2.5 align-middle font-mono text-[13px]">{row.employee_id}</td>
+                  <td class="px-3 py-2.5 align-middle">{row.operator_name}</td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="mt-2 px-3 pb-3 text-[13px] text-muted">
+              Sorted by date, then run. Service IDs are in the file, not here.
+            </p>
+          </div>
+          <p :if={@preview == []} class="mt-1 text-sm text-muted">
+            No line has an operator yet, so the export has no assignments.
+          </p>
+        </details>
+      </div>
+    </section>
+    """
+  end
+
+  # The warnings, as sentences. `AssignmentsExport.sentences/2`'s own words with
+  # this page's date format, so a sentence a planner has read here is the
+  # sentence the ZIP's report carries (INV-14).
+  defp warning_sentences(assignments) do
+    assignments
+    |> AssignmentsExport.sentences(&date_label/1)
+    |> Enum.reject(&(elem(&1, 0) == "tods_assignments_planned"))
+    |> Enum.map(&elem(&1, 1))
+  end
+
+  # The note is one sentence with two halves, and the prototype bolds the first:
+  # what the file is, then what it does not know. Written as two functions over
+  # one source so the split can only ever happen at that full stop.
+  defp planned_heading, do: "Planned from the pick."
+
+  defp planned_tail do
+    AssignmentsExport.planned_note()
+    |> String.replace_prefix("#{planned_heading()} ", "")
+  end
+
+  defp warning_title(1), do: "1 thing the export leaves out"
+  defp warning_title(count), do: "#{count} things the export leaves out"
+
+  defp assignment_count(1), do: "1 assignment"
+  defp assignment_count(count), do: "#{count} assignments"
+
+  # "Oct 12, 2026" — the page's date format. The export's own report writes
+  # ISO dates and the spec asks for this one here; the rest of the sentence is
+  # shared, so only the date differs between the two.
+  defp date_label(date), do: Calendar.strftime(date, "%b %-d, %Y")
 end

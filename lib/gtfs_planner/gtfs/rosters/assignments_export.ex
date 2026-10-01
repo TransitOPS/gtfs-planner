@@ -193,4 +193,101 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignmentsExport do
         end)
     end)
   end
+
+  ## The sentences, shared by the export's warnings and the Rosters page
+
+  # What the file is not, in the words the spec fixes. `planned_note/0` is that
+  # sentence on its own because the page shows it whether or not the file has
+  # rows: a reader looking at the export section has to be told what the numbers
+  # below it mean even when there are none, and a conditional note would leave
+  # the section's one sentence about what it is missing whenever it is empty.
+  @planned_note "Planned from the pick. Vacations, sick days and extraboard are not included."
+
+  @doc """
+  The planned-data note, in the words the export's own warning uses.
+
+  The export raises it as `tods_assignments_planned` only when the file has
+  rows; the page draws it above the preview whether or not it does.
+  """
+  @spec planned_note() :: String.t()
+  def planned_note, do: @planned_note
+
+  @doc """
+  The roster-line warnings as `{code, sentence}` pairs, in reading order.
+
+  These are the sentences `Gtfs.Export` writes as
+  `tods_assignments_*` warnings and the sentences the Rosters page lists, so the
+  two cannot drift (INV-14): there is one wording, and `format_date` is the only
+  thing that differs between them. The export passes ISO dates (`2026-10-12`);
+  the page passes `"Oct 12, 2026"`.
+
+  A warning that has nothing to report is absent rather than zero, and the
+  planned note is present only when `rows` is not empty — the same condition the
+  export file itself is written under.
+  """
+  @spec sentences(result(), (Date.t() -> String.t())) :: [{String.t(), String.t()}]
+  def sentences(result, format_date \\ &Date.to_iso8601/1) do
+    [
+      planned_sentence(result),
+      other_service_sentence(result, format_date),
+      unassigned_sentence(result.unassigned_lines),
+      stale_sentence(result.stale_slots),
+      left_out_sentence(result.left_out_slots)
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp planned_sentence(%{rows: []}), do: nil
+  defp planned_sentence(_result), do: {"tods_assignments_planned", @planned_note}
+
+  # The first three dates in date order and "and N more" only when there are
+  # more, so a long calendar reports its shape rather than its whole length.
+  defp other_service_sentence(%{other_service_dates: []}, _format_date), do: nil
+
+  defp other_service_sentence(%{other_service_dates: dates} = result, format_date) do
+    {first_three, rest} = Enum.split(dates, 3)
+
+    listed = first_three |> Enum.map_join(", ", format_date)
+    listed = if rest == [], do: listed, else: "#{listed} and #{length(rest)} more"
+    open = open_run_days(result.open_run_days)
+
+    detail =
+      if length(dates) == 1 do
+        "1 date runs different service: #{listed}. No assignment is exported for it; #{open}."
+      else
+        "#{length(dates)} dates run different service: #{listed}. " <>
+          "No assignments are exported for them; #{open}."
+      end
+
+    {"tods_assignments_other_service", detail}
+  end
+
+  defp open_run_days(1), do: "1 run-day stays open"
+  defp open_run_days(n), do: "#{n} run-days stay open"
+
+  defp unassigned_sentence(0), do: nil
+
+  defp unassigned_sentence(n) do
+    noun = if n == 1, do: "1 line has", else: "#{n} lines have"
+    {"tods_assignments_unassigned", "#{noun} no operator."}
+  end
+
+  defp stale_sentence(0), do: nil
+
+  defp stale_sentence(n) do
+    verb = if n == 1, do: "was", else: "were"
+    {"tods_assignments_stale", "#{n} stale #{slot_noun(n)} #{verb} skipped."}
+  end
+
+  defp left_out_sentence(0), do: nil
+
+  defp left_out_sentence(n) do
+    verb =
+      if n == 1, do: "names a run with errors and was", else: "name runs with errors and were"
+
+    {"tods_assignments_left_out", "#{n} assigned #{slot_noun(n)} #{verb} left out."}
+  end
+
+  defp slot_noun(1), do: "slot"
+  defp slot_noun(_n), do: "slots"
 end
