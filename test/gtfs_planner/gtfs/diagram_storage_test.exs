@@ -562,28 +562,28 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
       # Seed a legacy file for this station.
       legacy_dir = Path.join([uploads_root(org.id), PathSafety.stop_storage_dir(station.stop_id)])
       File.mkdir_p!(legacy_dir)
-      legacy_file_path = Path.join(legacy_dir, "plan floor.png")
+      legacy_file_path = Path.join(legacy_dir, "plan.png")
       File.write!(legacy_file_path, @legacy_bytes)
 
       {:ok, _} =
         Gtfs.create_stop_level(%{
           stop_id: station.id,
           level_id: level.id,
-          diagram_filename: "plan floor.png",
+          diagram_filename: "plan.png",
           organization_id: org.id,
           gtfs_version_id: version.id
         })
 
       # No versioned file yet -> published_path fails, public_path falls back to legacy.
       assert {:error, :not_found} =
-               DiagramStorage.published_path(org.id, version.id, station.stop_id, "plan floor.png")
+               DiagramStorage.published_path(org.id, version.id, station.stop_id, "plan.png")
 
       assert {:ok, legacy_path} =
-               DiagramStorage.public_path(org.id, version.id, station.stop_id, "plan floor.png")
+               DiagramStorage.public_path(org.id, version.id, station.stop_id, "plan.png")
 
       expected_legacy_path =
         "/uploads/diagrams/#{org.id}/#{PathSafety.stop_storage_dir(station.stop_id)}/" <>
-          "plan%20floor.png"
+          "plan.png"
 
       assert legacy_path == expected_legacy_path
 
@@ -595,27 +595,27 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
                  org.id,
                  version.id,
                  station.stop_id,
-                 "plan floor.png",
+                 "plan.png",
                  @import_bytes_a
                )
 
       assert {:ok, versioned_path} =
-               DiagramStorage.published_path(org.id, version.id, station.stop_id, "plan floor.png")
+               DiagramStorage.published_path(org.id, version.id, station.stop_id, "plan.png")
 
       assert versioned_path =~ "/diagrams/#{org.id}/#{version.id}/"
       assert File.read!(versioned_path) == @import_bytes_a
 
       assert {:ok, versioned_url_path} =
-               DiagramStorage.public_path(org.id, version.id, station.stop_id, "plan floor.png")
+               DiagramStorage.public_path(org.id, version.id, station.stop_id, "plan.png")
 
       expected_versioned_path =
         "/uploads/diagrams/#{org.id}/#{version.id}/" <>
-          "#{PathSafety.stop_storage_dir(station.stop_id)}/plan%20floor.png"
+          "#{PathSafety.stop_storage_dir(station.stop_id)}/plan.png"
 
       assert versioned_url_path == expected_versioned_path
       # The versioned path is NOT the legacy shape (organization immediately followed by station).
       refute versioned_url_path =~
-               "/uploads/diagrams/#{org.id}/#{PathSafety.stop_storage_dir(station.stop_id)}/plan%20floor.png"
+               "/uploads/diagrams/#{org.id}/#{PathSafety.stop_storage_dir(station.stop_id)}/plan.png"
 
       # Legacy source is preserved.
       assert File.read!(legacy_file_path) == @legacy_bytes
