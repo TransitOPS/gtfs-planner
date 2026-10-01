@@ -46,21 +46,38 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
   returns zero rows with narrowing guidance rather than a truncated row that looks
   whole.
 
+    * `import_review/2` describes one **computed native import run**, read
+      without changing anything: the run's own state, serializer version, base
+      source files, and the decisions that are wholly attributable to the
+      selected station. Membership is decided from the current and uploaded
+      parent chain, endpoints and level references, never from a matching
+      natural key, and every excluded decision is counted rather than projected
+      (CL-1, CL-3, INV-2). Reading an import run approves nothing.
+
   Descriptions and free text are stripped. Counts, identifiers, statuses and
   recorded reasons are kept verbatim.
   """
 
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Import.ChangeDecisionSerializer
+  alias GtfsPlanner.Gtfs.Import.ChangeRun
+  alias GtfsPlanner.Gtfs.Import.ChangeRuns
+  alias GtfsPlanner.Gtfs.Level
+  alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.ServiceQueries
   alias GtfsPlanner.Gtfs.StationReport2.Connectivity
   alias GtfsPlanner.Gtfs.StationReport2.DataQuality
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Reachability
   alias GtfsPlanner.Reachability.Envelope
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations.ValidationRun
 
+  import Ecto.Query
+
   @source_kind "station_results"
+  @import_source_kind "station_imports"
   @source_ref "gtfs_station_assistant"
 
   @max_rows 100
@@ -71,6 +88,13 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
   @outcomes ["reachable", "unreachable", "invalid"]
 
   @narrowing_guidance "This answer is too large for one response. Narrow it by mode, outcome or a single pair index."
+  @import_narrowing_guidance "This answer is too large for one response. Ask for a narrower page of the run."
+
+  # A computed review and everything that follows it: the run holds decisions a
+  # station may read. A pending compute, a computing run, a failure, a
+  # cancellation or an expiry holds none.
+  @computed_review_states [:review, :pending_apply, :applying, :partial, :completed]
+  @approved_statuses [:approved, :applied]
 
   @typedoc "One station/run selection read from the scope's source snapshot."
   @type selection :: %{
@@ -90,7 +114,8 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
         }
 
   @typedoc "Why a read refused, before any recorded row was disclosed."
-  @type error :: :forbidden | :unavailable | :no_selected_run | :invalid_selection
+  @type error ::
+          :forbidden | :unavailable | :no_selected_run | :no_computed_review | :invalid_selection
 
   @doc """
   Projects the recorded result of the scope's selected run.
@@ -223,17 +248,47 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
     end
   end
 
+  @doc """
+  Projects one computed native import run as it stands, scoped to one station.
+
+  `filters` accepts only a zero-based `offset`. The answer is a read: it never
+  approves, rejects, prepares or applies a decision, and it never changes the
+  run, its manifest or its statuses (INV-2).
+
+  Only decisions wholly attributable to the selected station are projected. The
+  counts - `version_total`, `station_total`, `excluded_total` and
+  `existing_approved` - describe the rest of the version-wide run, which stays
+  visible in the native review and is never pulled into this answer.
+  """
+  @spec import_review(Scope.t(), %{optional(:offset) => non_neg_integer()}) ::
+          {:ok, map(), map()} | {:error, error()}
+  def import_review(scope, filters \\ %{})
+
+  def import_review(%Scope{} = scope, filters) when is_map(filters) do
+    with {:ok, offset} <- page_offset(filters),
+         {:ok, selection} <- import_selection(scope),
+         {:ok, snapshot} <- import_snapshot(selection) do
+      import_answer(snapshot, offset)
+    end
+  end
+
+  def import_review(_scope, _filters), do: {:error, :invalid_selection}
+
   ## Scoping and authorization
 
   defp selection(%Scope{} = scope, run_requirement) do
+    selection_source(scope, @source_kind, "run_id", run_requirement)
+  end
+
+  defp selection_source(%Scope{} = scope, kind, run_key, run_requirement) do
     with :ok <- Scope.authorized_context(scope),
-         %{kind: @source_kind, payload: payload} <- Scope.source_snapshot(scope),
+         %{kind: ^kind, payload: payload} <- Scope.source_snapshot(scope),
          {:ok, station_id} <- Ecto.UUID.cast(Map.get(payload, "station_id")),
          {:ok, gtfs_version_id} <- Ecto.UUID.cast(scope.gtfs_version_id),
          {:ok, organization_id} <- Ecto.UUID.cast(scope.organization_id),
          station_stop_id when is_binary(station_stop_id) and station_stop_id != "" <-
            Map.get(payload, "station_stop_id"),
-         {:ok, run_id} <- run_id(Map.get(payload, "run_id"), run_requirement) do
+         {:ok, run_id} <- run_id(Map.get(payload, run_key), run_requirement) do
       {:ok,
        %{
          organization_id: organization_id,
@@ -243,8 +298,11 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
          run_id: run_id
        }}
     else
-      {:error, reason} when reason in [:forbidden, :unavailable] -> {:error, reason}
-      _other -> {:error, :unavailable}
+      {:error, reason} when reason in [:forbidden, :unavailable, :no_selected_run] ->
+        {:error, reason}
+
+      _other ->
+        {:error, :unavailable}
     end
   end
 
@@ -509,38 +567,49 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
   # fit returns zero rows with narrowing guidance rather than a partial row that
   # looks whole.
   defp bounded(result, selection, recorded, matched, page, kind) do
-    bounded_result = shrink(result, selection, recorded, matched, page, kind)
+    builder = fn bounded -> evidence(bounded, selection, recorded, matched, page, kind) end
 
-    {:ok, bounded_result, evidence(bounded_result, selection, recorded, matched, page, kind)}
+    bounded_result =
+      shrink(result, "pairs", "returned_pairs", @narrowing_guidance, builder)
+
+    {:ok, bounded_result, builder.(bounded_result)}
   end
 
-  defp shrink(result, selection, recorded, matched, page, kind) do
-    if encoded_bytes(result, evidence(result, selection, recorded, matched, page, kind)) <=
-         @max_encoded_bytes do
+  defp shrink(result, rows_key, counts_key, guidance, builder) do
+    if encoded_bytes(result, builder.(result)) <= @max_encoded_bytes do
       result
     else
-      case result["pairs"] do
+      case result[rows_key] do
         [] ->
           result
-          |> Map.put("pairs", [])
+          |> Map.put(rows_key, [])
           |> Map.put("completeness", "incomplete")
-          |> Map.put("narrowing", @narrowing_guidance)
+          |> Map.put("narrowing", guidance)
 
-        pairs ->
-          shortened = Enum.drop(pairs, 1)
+        rows ->
+          # The tail goes first, so the page keeps the rows that begin at this
+          # answer's offset and the next offset continues from where it stopped.
+          shortened = Enum.drop(rows, -1)
 
           result
-          |> Map.put("pairs", shortened)
-          |> Map.put("counts", adjust_counts(result["counts"], length(shortened)))
+          |> Map.put(rows_key, shortened)
+          |> Map.put("counts", adjust_counts(result["counts"], counts_key, length(shortened)))
+          # A shortened page continues where it actually stopped, so a caller
+          # paging by this offset never steps over the rows the size bound
+          # removed from this answer.
+          |> Map.put("next_offset", offset_of(result["counts"]) + length(shortened))
           |> Map.put("completeness", "incomplete")
-          |> Map.put("narrowing", @narrowing_guidance)
-          |> shrink(selection, recorded, matched, page, kind)
+          |> Map.put("narrowing", guidance)
+          |> shrink(rows_key, counts_key, guidance, builder)
       end
     end
   end
 
-  defp adjust_counts(counts, returned) do
-    Map.put(counts, "returned_pairs", returned)
+  defp offset_of(counts) when is_map(counts), do: Map.get(counts, "offset", 0)
+  defp offset_of(_counts), do: 0
+
+  defp adjust_counts(counts, counts_key, returned) do
+    Map.put(counts, counts_key, returned)
   end
 
   defp evidence(result, selection, recorded, matched, page, kind) do
@@ -755,6 +824,576 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
       }
     end)
   end
+
+  ## The computed import run
+
+  defp page_offset(filters) do
+    case Map.get(filters, :offset, 0) do
+      offset when is_integer(offset) and offset >= 0 -> {:ok, offset}
+      _other -> {:error, :invalid_selection}
+    end
+  end
+
+  defp import_selection(%Scope{} = scope) do
+    selection_source(scope, @import_source_kind, "change_run_id", :require_run)
+  end
+
+  # One repeatable-read snapshot of everything the answer describes: the run, its
+  # persisted decisions, the current rows those decisions speak about and the
+  # stops this run proposes. A writer between two reads cannot make the projected
+  # rows and the reported counts describe different database states.
+  defp import_snapshot(selection) do
+    Repo.transaction(
+      fn ->
+        snapshot_module().begin_read()
+
+        with {:ok, station_snapshot} <-
+               Gtfs.get_station_report_snapshot(
+                 selection.organization_id,
+                 selection.gtfs_version_id,
+                 selection.station_stop_id
+               ),
+             true <- owned_station?(station_snapshot, selection) do
+          computed_run(selection)
+        else
+          _other -> {:error, :unavailable}
+        end
+      end,
+      timeout: :infinity
+    )
+    |> case do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # A foreign, deleted or uncomputed run is one refusal: this scope has no
+  # computed review to read, whatever the run holds.
+  defp computed_run(selection) do
+    case ChangeRuns.get_for_version(
+           selection.organization_id,
+           selection.gtfs_version_id,
+           selection.run_id
+         ) do
+      %ChangeRun{kind: :station_diff, state: state} = run
+      when state in @computed_review_states ->
+        decisions = ChangeRuns.list_decisions(selection.organization_id, run.id)
+
+        {:ok,
+         %{
+           selection: selection,
+           run: run,
+           decisions: decisions,
+           world: station_world(selection, decisions)
+         }}
+
+      _other ->
+        {:error, :no_computed_review}
+    end
+  end
+
+  # Membership follows real parent chains, so the whole scoped stop table is read
+  # rather than only the stops a decision names: a chain two levels up is still
+  # evidence. Proposed stops are layered on top, because their uploaded parent
+  # and level are what those stops become once the decision is applied.
+  defp station_world(selection, decisions) do
+    stops =
+      from(s in Stop,
+        where:
+          s.organization_id == ^selection.organization_id and
+            s.gtfs_version_id == ^selection.gtfs_version_id
+      )
+      |> Repo.all()
+      |> Map.new(&{&1.stop_id, &1})
+
+    levels =
+      from(l in Level,
+        where:
+          l.organization_id == ^selection.organization_id and
+            l.gtfs_version_id == ^selection.gtfs_version_id
+      )
+      |> Repo.all()
+      |> Map.new(&{&1.level_id, &1})
+
+    pathways = pathways_in_scope(selection, decisions)
+
+    %{
+      stops: stops,
+      levels: levels,
+      pathways: pathways,
+      proposed: proposed_stops(decisions, stops)
+    }
+  end
+
+  defp pathways_in_scope(selection, decisions) do
+    case Enum.flat_map(decisions, &decision_natural_keys/1) |> Enum.uniq() do
+      [] ->
+        %{}
+
+      pathway_ids ->
+        from(p in Pathway,
+          where:
+            p.organization_id == ^selection.organization_id and
+              p.gtfs_version_id == ^selection.gtfs_version_id and
+              p.pathway_id in ^pathway_ids
+        )
+        |> Repo.all()
+        |> Map.new(&{&1.pathway_id, &1})
+    end
+  end
+
+  defp decision_natural_keys(%{entity_type: :pathway, natural_key: key}), do: [key]
+  defp decision_natural_keys(_decision), do: []
+
+  defp proposed_stops(decisions, stops) do
+    Enum.reduce(decisions, %{}, fn decision, acc ->
+      case proposed_stop(decision, stops) do
+        nil -> acc
+        stop -> Map.put_new(acc, stop.stop_id, stop)
+      end
+    end)
+  end
+
+  defp proposed_stop(%{entity_type: :stop, action: action} = decision, stops)
+       when action in [:add, :modify, :conflict] do
+    key = blank_to_nil(decision.natural_key)
+    uploaded = decision.uploaded_values || %{}
+    current = Map.get(stops, key)
+
+    if is_nil(key) do
+      nil
+    else
+      %{
+        stop_id: key,
+        parent: blank_to_nil(Map.get(uploaded, "parent_station")) || entry_parent(current),
+        level: blank_to_nil(Map.get(uploaded, "level_id")) || entry_level(current)
+      }
+    end
+  end
+
+  defp proposed_stop(_decision, _stops), do: nil
+
+  ## Membership
+
+  # The parent chain decides membership. A stop is the station's own when it is
+  # the station row, and otherwise when following its parents reaches the
+  # station. A chain that lands on another station, breaks at a missing row or
+  # loops is unresolvable, so the row is excluded rather than guessed at.
+  defp resolve_stop(_world, _station, stop_id, _visited) when stop_id in [nil, ""],
+    do: :unresolvable
+
+  defp resolve_stop(world, station, stop_id, visited) do
+    cond do
+      stop_id == station -> {:station, stop_id}
+      stop_id in visited -> :unresolvable
+      true -> resolve_parent(world, station, stop_id, visited)
+    end
+  end
+
+  defp resolve_parent(world, station, stop_id, visited) do
+    case world_entry(world, stop_id) do
+      nil -> :unresolvable
+      entry -> resolve_stop(world, station, entry_parent(entry), [stop_id | visited])
+    end
+  end
+
+  defp world_entry(world, stop_id) do
+    Map.get(world.proposed, stop_id) || Map.get(world.stops, stop_id)
+  end
+
+  defp entry_parent(%{parent_station: parent}), do: blank_to_nil(parent)
+  defp entry_parent(%{parent: parent}), do: blank_to_nil(parent)
+  defp entry_parent(_entry), do: nil
+
+  defp entry_level(%{level_id: level}), do: blank_to_nil(level)
+  defp entry_level(%{level: level}), do: blank_to_nil(level)
+  defp entry_level(_entry), do: nil
+
+  defp entry_stop_id(%{stop_id: stop_id}), do: stop_id
+
+  defp station_stop?(world, station, stop_id) do
+    match?({:station, _stop_id}, resolve_stop(world, station, stop_id, []))
+  end
+
+  # A stop belongs to the station when its current parent chain and its uploaded
+  # parent chain both resolve to it. The station row itself is a member of its
+  # own review.
+  defp station_attributed?(%{entity_type: type} = decision, world, station) do
+    case type do
+      :stop -> stop_attributed?(decision, world, station)
+      :pathway -> pathway_attributed?(decision, world, station)
+      :level -> level_attributed?(decision, world, station)
+      _other -> false
+    end
+  end
+
+  defp stop_attributed?(decision, world, station) do
+    key = blank_to_nil(decision.natural_key)
+    uploaded = decision.uploaded_values || %{}
+
+    not is_nil(key) and
+      current_stop_resolves?(world, station, key, decision.current_values) and
+      uploaded_stop_resolves?(world, station, key, uploaded)
+  end
+
+  defp current_stop_resolves?(_world, _station, _key, values) when map_size(values) == 0,
+    do: true
+
+  defp current_stop_resolves?(world, station, key, _values),
+    do: station_stop?(world, station, key)
+
+  defp uploaded_stop_resolves?(_world, _station, _key, uploaded) when map_size(uploaded) == 0,
+    do: true
+
+  # An uploaded row that does not restate a parent keeps the one the decided
+  # record already has, so the effective parent - uploaded over current - is what
+  # has to resolve.
+  defp uploaded_stop_resolves?(world, station, key, uploaded) do
+    effective_parent =
+      Map.get(uploaded, "parent_station") || entry_parent(world_entry(world, key))
+
+    station_stop?(world, station, effective_parent)
+  end
+
+  # A pathway belongs to the station only when every endpoint it has - current
+  # and uploaded alike - resolves wholly to it. One endpoint on another station,
+  # or one endpoint that resolves to nothing, excludes the whole pathway.
+  defp pathway_attributed?(decision, world, station) do
+    case decision_endpoints(decision) do
+      [] -> false
+      endpoints -> Enum.all?(endpoints, &station_stop?(world, station, &1))
+    end
+  end
+
+  defp decision_endpoints(decision) do
+    endpoint_pairs(decision.current_values || %{}) ++
+      endpoint_pairs(decision.uploaded_values || %{})
+  end
+
+  defp endpoint_pairs(values) when map_size(values) == 0, do: []
+
+  defp endpoint_pairs(values),
+    do: [Map.get(values, "from_stop_id"), Map.get(values, "to_stop_id")]
+
+  # A level is shared by every stop that references it, current or proposed in
+  # this run. It belongs to the station only when all of them resolve to this
+  # station: a foreign or unresolvable reference makes it shared or unknown, and
+  # no reference at all attributes it to nobody.
+  defp level_attributed?(decision, world, station) do
+    case blank_to_nil(decision.natural_key) do
+      nil ->
+        false
+
+      level_id ->
+        case level_members(world, level_id) do
+          [] -> false
+          members -> Enum.all?(members, &station_stop?(world, station, &1))
+        end
+    end
+  end
+
+  defp level_members(world, level_id) do
+    current =
+      world.stops
+      |> Map.values()
+      |> Enum.filter(&(entry_level(&1) == level_id))
+      |> Enum.map(&entry_stop_id/1)
+
+    proposed =
+      world.proposed
+      |> Map.values()
+      |> Enum.filter(&(entry_level(&1) == level_id))
+      |> Enum.map(&entry_stop_id/1)
+
+    Enum.uniq(current ++ proposed)
+  end
+
+  ## The answer
+
+  defp import_answer(snapshot, offset) do
+    %{selection: selection, run: run, decisions: decisions, world: world} = snapshot
+
+    attributed =
+      Enum.map(decisions, &{&1, station_attributed?(&1, world, selection.station_stop_id)})
+
+    station_rows = for {decision, true} <- attributed, do: decision_row(decision, world)
+
+    excluded =
+      Enum.frequencies_by(attributed, fn {decision, attributed?} ->
+        exclusion_reason(attributed?, decision)
+      end)
+
+    rows = Enum.drop(station_rows, offset) |> Enum.take(@max_rows)
+    more? = length(station_rows) > offset + length(rows)
+    import_digest = import_digest(run, station_rows)
+
+    result =
+      %{
+        "station_stop_id" => selection.station_stop_id,
+        "run_id" => run.id,
+        "state" => to_string(run.state),
+        "serializer_version" => run.serializer_version,
+        "source_files" => source_files(run.source_manifest),
+        "import_digest" => import_digest,
+        "diagnostics" => run_diagnostics(run),
+        "counts" => import_counts(decisions, station_rows, excluded, length(rows), offset),
+        "excluded" => excluded,
+        "decisions" => rows,
+        "filters" => %{"offset" => offset},
+        "next_offset" => if(more?, do: offset + length(rows), else: nil),
+        "completeness" => if(more?, do: "incomplete", else: "complete"),
+        "notes" => import_notes()
+      }
+
+    bounded_import(result, selection, run, station_rows, offset, import_digest)
+  end
+
+  defp exclusion_reason(true, _decision), do: :none
+  defp exclusion_reason(false, %{entity_type: :stop}), do: :unresolvable_or_other_stop
+  defp exclusion_reason(false, %{entity_type: :pathway}), do: :unresolvable_or_other_endpoint
+  defp exclusion_reason(false, %{entity_type: :level}), do: :shared_or_unknown_level
+
+  defp import_counts(decisions, station_rows, excluded, returned, offset) do
+    %{
+      "version_total" => length(decisions),
+      "station_total" => length(station_rows),
+      "excluded_total" => excluded |> Map.delete(:none) |> Map.values() |> Enum.sum(),
+      "existing_approved" => Enum.count(station_rows, &approved_status?/1),
+      "version_approved" => Enum.count(decisions, &(&1.status in @approved_statuses)),
+      "returned_decisions" => returned,
+      "offset" => offset
+    }
+  end
+
+  defp approved_status?(row), do: row["status"] in Enum.map(@approved_statuses, &to_string/1)
+
+  defp import_notes do
+    [
+      "This is a read of one computed native import run. Nothing here approves, rejects, prepares or applies a decision.",
+      "Decisions outside this station stay in the native version-wide review, including the ones already approved there.",
+      "A decision is excluded when its stop, its pathway endpoints or its level references are not wholly inside this station."
+    ]
+  end
+
+  defp decision_row(decision, world) do
+    %{
+      "decision_id" => decision.decision_id,
+      "entity_type" => to_string(decision.entity_type),
+      "natural_key" => decision.natural_key,
+      "action" => to_string(decision.action),
+      "status" => to_string(decision.status),
+      "current_values" => decision.current_values || %{},
+      "uploaded_values" => decision.uploaded_values || %{},
+      "changed_fields" => decision.changed_fields || [],
+      "dependency_keys" => decision.dependency_keys || [],
+      "current_fingerprint" => decision.current_fingerprint,
+      "user_edited" => decision.user_edited == true,
+      "live_fingerprint" => live_fingerprint(decision, world),
+      "fingerprint_state" => fingerprint_state(decision, world),
+      "apply_failure_code" => decision.apply_failure_code
+    }
+  end
+
+  # The stored fingerprint is recomputed from the live record the same way the
+  # fenced apply computes it, so drift is visible while reading rather than only
+  # at apply time. A decision with no current record has nothing to compare.
+  defp live_fingerprint(decision, world) do
+    with %{current_values: current_values} when map_size(current_values) > 0 <- decision,
+         entity when not is_nil(entity) <- live_entity(decision, world) do
+      fingerprint(decision, entity)
+    else
+      _other -> nil
+    end
+  end
+
+  defp fingerprint_state(decision, world) do
+    live = live_fingerprint(decision, world)
+
+    cond do
+      map_size(decision.current_values || %{}) == 0 -> "unrecorded"
+      is_nil(decision.current_fingerprint) -> "unrecorded"
+      is_nil(live) -> "no_current_record"
+      live == decision.current_fingerprint -> "match"
+      true -> "drifted"
+    end
+  end
+
+  defp fingerprint(decision, entity) do
+    case ChangeDecisionSerializer.record_fingerprint(
+           decision.entity_type,
+           entity,
+           Map.keys(decision.current_values || %{})
+         ) do
+      {:ok, fingerprint} -> fingerprint
+      _error -> nil
+    end
+  end
+
+  defp live_entity(%{action: :add}, _world), do: nil
+
+  defp live_entity(decision, world) do
+    case decision.entity_type do
+      :stop -> Map.get(world.stops, decision.natural_key)
+      :pathway -> Map.get(world.pathways, decision.natural_key)
+      :level -> Map.get(world.levels, decision.natural_key)
+    end
+  end
+
+  # The run's own base source files, by name, size and content hash. Other
+  # manifest namespaces and the storage keys inside file entries are hashed into
+  # the digest but never projected, so no storage key or review history reaches
+  # the answer.
+  defp source_files(manifest) when is_map(manifest) do
+    files =
+      manifest
+      |> Map.get(:files, Map.get(manifest, "files"))
+      |> List.wrap()
+      |> Enum.map(&stringify_keys/1)
+      |> Enum.map(&Map.take(&1, ["name", "size", "sha256"]))
+
+    %{
+      "files" => files,
+      "total_bytes" => manifest |> Map.get(:total_bytes, Map.get(manifest, "total_bytes"))
+    }
+  end
+
+  defp source_files(_manifest), do: %{"files" => [], "total_bytes" => nil}
+
+  defp stringify_keys(nil), do: nil
+
+  defp stringify_keys(values) when is_map(values),
+    do: Map.new(values, fn {key, inner} -> {to_string(key), inner} end)
+
+  defp stringify_keys(values),
+    do: Enum.map(values, &stringify_keys/1)
+
+  # The run's own native diagnostics, without the builder's free-text detail.
+  defp run_diagnostics(run) do
+    run.diagnostics
+    |> List.wrap()
+    |> Enum.map(fn diagnostic ->
+      diagnostic
+      |> Map.new(fn {key, value} -> {to_string(key), value} end)
+      |> Map.take(["code", "entity_type", "natural_key"])
+    end)
+  end
+
+  # The import digest is this run's current state: identity, lifecycle, serializer
+  # version and base source files, plus every projected decision's status,
+  # dependencies, values and live fingerprint. Review history is deliberately not
+  # part of it, so appending reviewed evidence does not invalidate the very
+  # confirmation that appended it.
+  defp import_digest(run, rows) do
+    digest(%{
+      "run_id" => run.id,
+      "state" => to_string(run.state),
+      "serializer_version" => run.serializer_version,
+      "base_source_files" => base_source_files(run.source_manifest),
+      "decisions" => Enum.map(rows, &digest_row/1)
+    })
+  end
+
+  defp digest_row(row) do
+    Map.take(row, [
+      "decision_id",
+      "entity_type",
+      "natural_key",
+      "action",
+      "status",
+      "current_values",
+      "uploaded_values",
+      "changed_fields",
+      "dependency_keys",
+      "current_fingerprint",
+      "live_fingerprint"
+    ])
+  end
+
+  defp base_source_files(manifest) when is_map(manifest),
+    do: Map.take(manifest, [:files, :total_bytes, "files", "total_bytes"])
+
+  defp base_source_files(_manifest), do: %{}
+
+  ## Import size bound and evidence
+
+  defp bounded_import(result, selection, run, rows, offset, import_digest) do
+    builder =
+      fn bounded -> evidence_for(bounded, selection, run, rows, offset, import_digest) end
+
+    bounded_result =
+      shrink(result, "decisions", "returned_decisions", @import_narrowing_guidance, builder)
+
+    {:ok, bounded_result, builder.(bounded_result)}
+  end
+
+  defp evidence_for(result, selection, run, rows, offset, import_digest) do
+    complete? = result["completeness"] == "complete"
+    counts = result["counts"]
+
+    %{
+      kind: "station_import_diff",
+      title: "Station import decisions",
+      total: counts["station_total"],
+      total_label: "decisions attributable to this station",
+      completeness: if(complete?, do: :complete, else: :incomplete),
+      completeness_reason: import_completeness_reason(result, counts, length(rows)),
+      source_ref: @source_ref,
+      digest: import_digest,
+      source_revision: nil,
+      scope: scope_field(selection),
+      exclusions: import_exclusion_labels(counts, result),
+      resources: import_resources(selection, run),
+      facts: [
+        %{label: "Run state", value: to_string(run.state)},
+        %{label: "Version-wide decisions", value: counts["version_total"]},
+        %{label: "This station", value: counts["station_total"]},
+        %{label: "Excluded", value: counts["excluded_total"]},
+        %{label: "Already approved here", value: counts["existing_approved"]},
+        %{
+          label: "Returned",
+          value: "#{counts["returned_decisions"]} of #{length(rows)} at offset #{offset}"
+        }
+      ]
+    }
+  end
+
+  defp import_completeness_reason(%{"narrowing" => guidance}, _counts, _total), do: guidance
+
+  defp import_completeness_reason(_result, counts, total) do
+    if counts["returned_decisions"] == total,
+      do: nil,
+      else:
+        "#{counts["returned_decisions"]} of #{total} station decisions are in this answer; the rest are in later pages."
+  end
+
+  defp import_exclusion_labels(counts, result) do
+    labels =
+      result
+      |> Map.get("excluded", %{})
+      |> Enum.sort()
+      |> Enum.map(fn {reason, count} ->
+        "#{count} decisions excluded as #{String.replace(to_string(reason), "_", " ")}"
+      end)
+
+    if counts["version_approved"] > 0,
+      do:
+        labels ++
+          [
+            "#{counts["version_approved"]} decisions in this run are already approved and stay in the native review"
+          ],
+      else: labels
+  end
+
+  defp import_resources(selection, run) do
+    [
+      %{kind: "station_import_run", id: run.id},
+      %{kind: "station", id: selection.station_stop_id, label: selection.station_stop_id}
+    ]
+  end
+
+  defp blank_to_nil(nil), do: nil
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(value), do: value
 
   ## Digests and time
 
