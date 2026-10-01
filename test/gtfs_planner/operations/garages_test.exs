@@ -164,7 +164,7 @@ defmodule GtfsPlanner.Operations.GaragesTest do
       assert {:ok, garage} =
                Operations.create_garage(
                  other.id,
-                 operations_actor(organization.id),
+                 operations_actor(other.id),
                  valid_garage_attrs(%{"garage_id" => "garage_shared"})
                )
 

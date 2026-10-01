@@ -1036,6 +1036,7 @@ defmodule GtfsPlanner.AccountsTest do
       actor: actor
     } do
       other_organization = organization_fixture()
+      organization_membership_fixture(actor, other_organization, ["pathways_studio_admin"])
       email = unique_user_email()
 
       assert {:ok, user} =
