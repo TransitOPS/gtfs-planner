@@ -1034,6 +1034,11 @@ body {
 #rosters-grid thead th.rosters-day-head { text-align: center; }
 #rosters-grid thead th.rosters-col-line { left: 0; z-index: 5; }
 
+/* Weekly paid is a number column, so its sort control is right-aligned with the
+   figures under it. A header reading left over right-aligned numbers is two
+   different grids, and the eye has to choose one of them. */
+#rosters-grid thead th.rosters-col-paid button { width: 100%; justify-content: flex-end; }
+
 #rosters-grid tbody :is(th, td) {
   height: 48px;
   padding: 2px 3px;

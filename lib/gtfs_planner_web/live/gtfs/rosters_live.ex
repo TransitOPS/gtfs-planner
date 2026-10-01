@@ -32,6 +32,17 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   the same composition produced for the count strip step 25 draws — rather than a
   second walk of the day types' runs (INV-15).
 
+  ## The filter and the order are the URL
+
+  `?filter=`, `?sort=` and `?dir=` are read in `handle_params/3` and nowhere
+  else, and `rosters_path/3` is the only way this page writes a path: a filter or
+  an order a reader cannot share, bookmark or step back through is not really
+  the reader's. Every patch is rebuilt from the socket's own state, so changing
+  one of the three never drops the other two, and a value equal to its default
+  is left out — `/rosters` is the all-lines, line-number order the reader
+  bookmarks. An unknown value is the default, so a stale or hand-edited link
+  lands on the page rather than on an error.
+
   ## Writes re-read the membership, and the list is one list
 
   Mount checks the editor role once. The `:editor_access` hook re-reads the
@@ -51,6 +62,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.RostersComponents
+  alias Plug.Conn.Query
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -86,6 +98,14 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
      |> assign(:load_state, :loading)
      |> assign(:roster, nil)
      |> assign(:operators_count, 0)
+     # The URL's three params start at their defaults, which are also the
+     # values `rosters_path/3` leaves out of a patch: `/rosters` and
+     # `/rosters?filter=all` are the same page, and the short one is the one a
+     # reader bookmarks.
+     |> assign(:filter, "all")
+     |> assign(:sort, :line)
+     |> assign(:dir, :asc)
+     |> assign(:shown_count, 0)
      |> assign(:loaded_version_id, nil)
      # The toast is event state, not page state, so it starts empty. Starting it
      # empty is also what makes `RostersComponents.toast/1` render nothing on
@@ -151,10 +171,59 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
 
   def handle_info(_message, socket), do: {:noreply, socket}
 
+  # The filter and the order come from the URL, and the URL is the only source of
+  # them.
+  #
+  # `?filter=`, `?sort=` and `?dir=` are read in `handle_params/3` and nowhere
+  # else, for the reason `?day=` is on the Runs page: a view a reader cannot
+  # link to, bookmark or step back through with the back button is not really
+  # the reader's. There is no separate "selected filter" assign a second code
+  # path could set, so the address bar and the rows cannot disagree.
+  #
+  # A change to any of the three re-streams the rows rather than re-reading the
+  # roster: `ensure_roster_loaded/1` would see its own guard and return the
+  # socket untouched, and the week would keep the order and the rows it had. So
+  # the re-stream is asked for explicitly, where the change is known.
   @impl true
-  def handle_params(_params, _uri, socket) do
-    {:noreply, ensure_roster_loaded(socket)}
+  def handle_params(params, _uri, socket) do
+    filter = filter_value(params["filter"])
+    sort = sort_key(params["sort"])
+    dir = sort_dir(params["dir"])
+
+    view_changed? =
+      socket.assigns.filter != filter or socket.assigns.sort != sort or socket.assigns.dir != dir
+
+    socket =
+      socket
+      |> assign(:filter, filter)
+      |> assign(:sort, sort)
+      |> assign(:dir, dir)
+      |> ensure_roster_loaded()
+
+    {:noreply, if(view_changed?, do: stream_roster_lines(socket), else: socket)}
   end
+
+  # The filters the row bar owns. An unknown value is `all`, so a stale or
+  # hand-edited link lands on the page rather than on an error.
+  defp filter_value("open"), do: "open"
+  defp filter_value("problems"), do: "problems"
+  defp filter_value("stale"), do: "stale"
+  defp filter_value(_filter), do: "all"
+
+  # The sorts this grid owns: the line's own number, its weekly paid time and
+  # the operator who holds it. A key the grid does not have is refused rather
+  # than passed through, because `sort_header/1` resolves its key as an existing
+  # atom and a reader who edits the URL should get the default order, not a
+  # crash.
+  @sort_keys %{"line" => :line, "paid" => :paid, "operator" => :operator}
+
+  defp sort_key(nil), do: :line
+  defp sort_key(key) when is_binary(key), do: Map.get(@sort_keys, key, :line)
+  defp sort_key(key) when is_atom(key) and not is_nil(key), do: sort_key(Atom.to_string(key))
+  defp sort_key(_key), do: :line
+
+  defp sort_dir("desc"), do: :desc
+  defp sort_dir(_dir), do: :asc
 
   # `BlocksLive.ensure_day_loaded/1`'s rule: the disconnected render shows the
   # loading state, and a roster already loaded is not read again. The guard
@@ -187,9 +256,9 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
         |> assign(:load_state, roster_state(view.roster))
         # Re-streamed on every read, keyed by line, so a roster that changed
         # one line's days patches that row rather than redrawing the week. The
-        # stream is what a step that reorders or filters the grid (step 27)
-        # patches instead of the list it is reading.
-        |> stream(:roster_lines, view.roster.lines, reset: true)
+        # stream is what a filter or a sort patches instead of the list it is
+        # reading.
+        |> stream_roster_lines()
 
       {:error, :not_found} ->
         # The session hook already refused a version that is not this
@@ -215,6 +284,61 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
         |> put_flash(:error, @roster_unreadable)
     end
   end
+
+  # The rows on screen are the roster's lines, narrowed by `?filter=` and put in
+  # `?sort=` order. Both are read from the composition the page already has:
+  # a line's findings and stale states are `Roster.build/1`'s words and nothing
+  # here decides what counts as a problem or as a stale slot (INV-15).
+  defp stream_roster_lines(%{assigns: %{roster: nil}} = socket), do: socket
+
+  defp stream_roster_lines(socket) do
+    %{roster: roster, filter: filter, sort: sort, dir: dir} = socket.assigns
+    lines = roster.lines |> Enum.filter(&visible?(&1, filter)) |> sorted(sort, dir)
+
+    # The count is carried rather than read back off the stream: a `LiveStream`
+    # is not enumerable, and the filter row and the empty row both need to know
+    # whether anything was left.
+    socket
+    |> assign(:shown_count, length(lines))
+    |> stream(:roster_lines, lines, reset: true)
+  end
+
+  # An open line is a line nobody has picked, so it is a line the reader is
+  # looking for. A problem is a line the composition has something to say about.
+  defp visible?(line, "open"), do: is_nil(line.operator)
+  defp visible?(line, "problems"), do: line.findings != []
+  defp visible?(line, "stale"), do: stale?(line)
+  defp visible?(_line, "all"), do: true
+
+  defp stale?(line), do: Enum.any?(line.findings, &(&1.code == :stale_slot))
+
+  # Every order ends in the line number, so two lines that compare equal — two
+  # lines with no paid time, two with the same operator — keep a stable order
+  # instead of being reshuffled by every re-stream.
+  defp sorted(lines, :line, dir), do: Enum.sort_by(lines, & &1.line_number, sorter(dir))
+
+  defp sorted(lines, :paid, dir),
+    do: Enum.sort_by(lines, & &1.paid_secs, sorter(dir))
+
+  # Operator orders by display name. An open line has no operator, and it is last
+  # in both directions: it is the one row of the three orders with no name to
+  # place, and a reader sorting by operator is reading names. So the direction
+  # reverses the named lines only.
+  defp sorted(lines, :operator, dir) do
+    assigned = Enum.filter(lines, &(not is_nil(&1.operator)))
+    open = Enum.filter(lines, &is_nil(&1.operator))
+
+    named =
+      Enum.sort_by(assigned, &operator_name(&1), sorter(dir))
+
+    named ++ open
+  end
+
+  defp operator_name(%{operator: %{display_name: name}}), do: String.downcase(name)
+  defp operator_name(_line), do: ""
+
+  defp sorter(:desc), do: :desc
+  defp sorter(:asc), do: :asc
 
   # "No runs" is the composition's own run-day total, not a second walk of the
   # day types (INV-15). A version with day types but no runs to place, and a
@@ -259,14 +383,46 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     {:noreply, load_roster(socket)}
   end
 
-  # "Show stale slots" is a filter, so it lives in the URL like every other
-  # filter on this page: a reader who shares the link afterwards opens the same
-  # rows. Step 27 adds the filter that reads it.
+  @filter_values %{"all" => true, "open" => true, "problems" => true, "stale" => true}
+
+  # The four filter options. This is a URL param and nothing else, for the
+  # reason `?day=` is: a filter a reader cannot share or step back through is
+  # not really the reader's. The path is rebuilt from the socket, so changing the
+  # filter keeps the order they had chosen.
+  def handle_event("set_filter", %{"filter" => filter}, socket) do
+    if Map.has_key?(@filter_values, filter) do
+      {:noreply, push_patch(socket, to: rosters_path(socket, filter))}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("set_filter", _params, socket), do: {:noreply, socket}
+
+  # Sorting the same key again reverses it; any other key starts ascending,
+  # which is `BlocksLive`'s rule and the one a reader has already met.
+  def handle_event("sort", %{"key" => key}, socket) do
+    if Map.has_key?(@sort_keys, key) do
+      dir =
+        if socket.assigns.sort == Map.fetch!(@sort_keys, key),
+          do: toggle_dir(socket.assigns.dir),
+          else: :asc
+
+      {:noreply,
+       push_patch(socket,
+         to: rosters_path(socket, socket.assigns.filter, %{sort: key, dir: dir})
+       )}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("sort", _params, socket), do: {:noreply, socket}
+
+  # "Show stale slots" is the filter that already exists, so it patches the same
+  # URL the filter row patches, keeping whatever order the reader had chosen.
   def handle_event("show_stale", _params, socket) do
-    {:noreply,
-     push_patch(socket,
-       to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/rosters?#{[filter: "stale"]}"
-     )}
+    {:noreply, push_patch(socket, to: rosters_path(socket, "stale"))}
   end
 
   def handle_event("dismiss_toast", _params, socket) do
@@ -277,6 +433,37 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   # clauses on purpose: a catch-all placed earlier would shadow the real
   # handlers above it.
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  defp toggle_dir(:asc), do: :desc
+  defp toggle_dir(_dir), do: :asc
+
+  # The page's own path, with the reader's whole view in it and no default in
+  # it. Every parameter except the filter is read off the socket unless the
+  # caller names it, so a sort never drops a filter the reader had picked and a
+  # filter never drops the order; a value equal to its default is left out
+  # rather than written, so the URL a reader copies for the default view is the
+  # short one and the address bar does not fill with `?filter=all`.
+  defp rosters_path(socket, filter, extra \\ %{}) do
+    sort = to_string(Map.get(extra, :sort) || socket.assigns.sort)
+    dir = to_string(Map.get(extra, :dir) || socket.assigns.dir)
+
+    query =
+      [
+        {"filter", not_the_default(filter, "all")},
+        {"sort", not_the_default(sort, "line")},
+        {"dir", not_the_default(dir, "asc")}
+      ]
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+      |> Query.encode()
+
+    base = "/gtfs/#{socket.assigns.current_gtfs_version.id}/rosters"
+    if query == "", do: base, else: base <> "?" <> query
+  end
+
+  # The value unless it is the default, so the default never appears in the URL.
+  # One rule for all three fields rather than three inline `if`s, so "the default
+  # is omitted" is stated once.
+  defp not_the_default(value, default), do: if(value == default, do: nil, else: value)
 
   @impl true
   def render(assigns) do
@@ -341,9 +528,18 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
           :if={@roster && @load_state in [:ready, :unavailable] && @roster.summary.lines > 0}
           class="rounded-card border border-subtle bg-white"
         >
+          <RostersComponents.filter_row
+            roster={@roster}
+            filter={@filter}
+            shown={@shown_count}
+            locked?={@load_state == :unavailable}
+          />
           <RostersComponents.grid
             roster={@roster}
             rows={@streams.roster_lines}
+            shown={@shown_count}
+            sort={@sort}
+            dir={@dir}
             locked?={@load_state == :unavailable}
             paused_reason={if @load_state == :unavailable, do: paused_reason()}
           />

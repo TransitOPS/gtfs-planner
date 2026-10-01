@@ -35,11 +35,28 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   columns and eight rows — the shape step 26's grid has — and the head's
   editing control is disabled with the reason in `title`, because a control that
   is off with no explanation is a dead end rather than a pause.
+
+  ## The filter row and the orderable headers
+
+  Both are one fact read two ways: which rows are on screen and what order they
+  are in. Neither decides anything — `RostersLive` parses `?filter=`, `?sort=`
+  and `?dir=` and hands this module the answer, and the counts beside the filter
+  labels are the summary the count strip above already shows, not a second count
+  computed here (INV-15).
+
+  The filter is the shared `CoreComponents.segmented_control/1`, as `#runs-view`
+  is on the Runs page: a radio group with a real legend, so it is keyboard
+  operable and announces itself as one control. The Stale option exists only
+  while a slot is stale, for the same reason the count strip's stale message
+  exists then and not before: an option that always says zero is a dead end.
+  The headers are `PlannerComponents.sort_header/1`, which carries `aria-sort`
+  and the indicator; the grid keeps its own sticky chrome in `#rosters-grid`'s
+  CSS, so the header looks the same whether or not it sorts.
   """
 
   use GtfsPlannerWeb, :html
 
-  import GtfsPlannerWeb.PlannerComponents, only: [first_use: 1, message: 1]
+  import GtfsPlannerWeb.PlannerComponents, only: [first_use: 1, message: 1, sort_header: 1]
 
   alias GtfsPlannerWeb.CoreComponents
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
@@ -387,6 +404,74 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   defp minutes(minutes), do: "#{div(minutes, 60)} h #{rem(minutes, 60)} min"
 
   @doc """
+  The row above the grid: which lines are shown, and how many of them.
+
+  The four options are the prototype's. Each carries the count the composition
+  already produced for the count strip above, because a filter that says how
+  many rows it will leave is a filter a reader can choose; one that does not is a
+  guess. `Stale slots` is absent while nothing is stale: an option that can only
+  ever say zero is a control that has no answer.
+
+  The legend is a visible `Show`, not a screen-reader-only one, because the
+  control's own question — show what? — is one the reader looks for.
+  """
+  attr :roster, :map, required: true
+  attr :filter, :string, required: true
+  attr :shown, :integer, required: true
+  attr :locked?, :boolean, default: false
+
+  def filter_row(assigns) do
+    assigns =
+      assigns
+      |> assign(:options, filter_options(assigns.roster.summary))
+      |> assign(:total, assigns.roster.summary.lines)
+      |> assign(:showing_all, assigns.shown == assigns.roster.summary.lines)
+      # A module attribute is not readable inside a `~H` sigil — there `@name`
+      # is an assign — so the pause sentence is put on the assigns.
+      |> assign(:paused_reason, @refresh_paused_reason)
+
+    ~H"""
+    <div class="flex flex-wrap items-center gap-3 border-b border-subtle bg-canvas px-5 py-2">
+      <CoreComponents.segmented_control
+        id="rosters-filter"
+        name="filter"
+        legend="Show"
+        options={@options}
+        value={@filter}
+        event="set_filter"
+        size={:md}
+        appearance={:joined}
+        emphasis={:strong}
+        disabled={@locked?}
+        disabled_reason={if @locked?, do: @paused_reason}
+      />
+      <p id="rosters-filter-count" class="ml-auto text-[13px] text-muted" aria-live="polite">
+        {filter_count(assigns)}
+      </p>
+    </div>
+    """
+  end
+
+  # "All lines 5" rather than the label alone: the count is what turns a filter
+  # into a decision, and it is the same count the strip above already shows.
+  defp filter_options(summary) do
+    [
+      {"All lines #{summary.lines}", "all"},
+      {"Open lines #{summary.open_lines}", "open"},
+      {"Lines with problems #{summary.lines_with_problems}", "problems"}
+    ] ++
+      if(summary.stale_slots > 0, do: [{"Stale slots #{summary.stale_slots}", "stale"}], else: [])
+  end
+
+  defp filter_count(%{showing_all: true, total: total}), do: plural_lines(total)
+
+  defp filter_count(%{shown: shown, total: total}),
+    do: "Showing #{shown} of #{plural_lines(total)}"
+
+  defp plural_lines(1), do: "1 line"
+  defp plural_lines(count), do: "#{count} lines"
+
+  @doc """
   Renders the roster grid: one row per line, seven weekday slots, and the four
   columns that describe the week as a whole.
 
@@ -396,8 +481,11 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   disagree with the count strip above it about the same version.
 
   The rows are a LiveView stream keyed by line, re-streamed on every roster
-  read, so a refresh that changes one line's days patches that row rather than
-  redrawing the week.
+  read and on every change to the filter or the order, so a refresh that changes
+  one line's days patches that row rather than redrawing the week. Whether the
+  filter left any rows is answered by the count the LiveView passes in, not by
+  asking the stream: inside a `phx-update="stream"` container the stream is not a
+  list, and comparing it crashes the diff.
 
   ## Why a slot says one thing and the problems column says another
 
@@ -416,6 +504,13 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   """
   attr :roster, :map, required: true
   attr :rows, :list, required: true, doc: "the streamed `[{dom_id, line}]` rows"
+
+  attr :shown, :integer,
+    required: true,
+    doc: "how many rows the filter left, drawn by the empty row"
+
+  attr :sort, :atom, required: true, doc: "the column the rows are ordered by"
+  attr :dir, :atom, required: true, doc: "the direction they are ordered in"
   attr :locked?, :boolean, default: false
   attr :paused_reason, :string, default: nil
 
@@ -451,7 +546,13 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
         </colgroup>
         <thead>
           <tr>
-            <th scope="col" class="rosters-col-line">Line</th>
+            <.sort_header
+              label="Line"
+              sort_key="line"
+              sort_by={@sort}
+              sort_dir={@dir}
+              class="rosters-col-line"
+            />
             <th
               :for={{day, weekday} <- Enum.with_index(@weekdays, 1)}
               scope="col"
@@ -462,9 +563,21 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
               <span class="sr-only">{Enum.at(@weekday_names, weekday - 1)}</span>
             </th>
             <th scope="col" class="rosters-col-off">Days off</th>
-            <th scope="col" class="rosters-col-paid rosters-num">Weekly paid</th>
+            <.sort_header
+              label="Weekly paid"
+              sort_key="paid"
+              sort_by={@sort}
+              sort_dir={@dir}
+              class="rosters-col-paid rosters-num"
+            />
             <th scope="col" class="rosters-col-problems">Problems</th>
-            <th scope="col" class="rosters-col-operator">Operator</th>
+            <.sort_header
+              label="Operator"
+              sort_key="operator"
+              sort_by={@sort}
+              sort_dir={@dir}
+              class="rosters-col-operator"
+            />
           </tr>
         </thead>
         <tbody id="rosters-grid-body">
@@ -491,6 +604,21 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
             </td>
             <td class="rosters-pad">
               <.operator_cell line={line} locked?={@locked?} />
+            </td>
+          </tr>
+          <tr :if={@shown == 0} class="rosters-no-match">
+            <td colspan="12" class="rosters-pad py-6 text-center text-sm text-muted">
+              No lines match this filter.
+              <button
+                type="button"
+                id="rosters-show-all"
+                phx-click="set_filter"
+                phx-value-filter="all"
+                disabled={@locked?}
+                class="font-semibold text-action underline hover:text-action-hover disabled:no-underline"
+              >
+                Show all lines
+              </button>
             </td>
           </tr>
         </tbody>
