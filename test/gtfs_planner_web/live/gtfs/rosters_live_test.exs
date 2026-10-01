@@ -179,6 +179,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLiveTest do
       for day <- ~w(Mon Tue Wed Thu Fri Sat Sun) do
         assert LazyHTML.text(LazyHTML.query(doc, "#rosters-skeleton")) =~ day
       end
+
       # Each row is the one with an inline height, so the count is the row count
       # rather than a reading of how many divs the pulse wrapper happens to hold.
       assert Enum.count(LazyHTML.query(doc, "#rosters-loading div[style='height:48px']")) == 8
@@ -232,6 +233,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLiveTest do
 
       # Exactly one primary, and it is the one that can fix this.
       assert has_element?(view, "#rosters-go-to-runs.btn-primary")
+
       assert view |> element("#rosters-go-to-runs") |> render() =~
                ~s(href="/gtfs/#{version.id}/runs")
 
