@@ -49,8 +49,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   overwriting whatever the other tab wrote (R6, PM-1).
 
   The save bar reports what actually happened, in the prototype's words:
-  `Saving…` while a write is in flight, `Saved` once the server acknowledged it,
-  `Not saved.` with **Retry** when it refused. A refused save keeps every typed
+  `Saving…` while a change is in flight (the browser's own `phx-change-loading`
+  state, because the server answers a change in one render), `Saved` once the
+  server acknowledged it, `Not saved.` with **Retry** when it refused. A refused save keeps every typed
   value - the form is rebuilt from the refused changeset, not from the row - and
   a stale save raises `#alert-conflict` with exactly two ways forward,
   **Load latest** and **Save as new alert**. There is no action that overwrites a
@@ -313,6 +314,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
      |> assign(:user_roles, socket.assigns[:user_roles] || [])
      |> assign(:alert_id, params["alert_id"])
      |> assign(:alert, nil)
+     |> assign(:loaded_revision, nil)
      |> assign(:preview, empty_preview())
      |> assign(:load_state, :loading)
      |> assign(:mode, mode)
@@ -347,7 +349,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
      |> assign(:timing_occurrences, [])
      |> assign(:timing_error, nil)
      |> assign(:check_in_options, [])
-     |> assign(:notice_value, nil)
+     |> assign(:notice_default, nil)
      |> assign(:browse_scripts?, true)
      |> assign(:message_scripts, %{matching: [], other: []})
      |> assign(:message_checks, [])
@@ -655,6 +657,47 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     end
   end
 
+  # A stretch is the two ends the editor names, and the stops between them are
+  # what the detour skips, so the resolved list is stored beside the pair. The
+  # two selects are fields of the autosave form, so one change carries both ends;
+  # a half pair stores nothing and waits for the other end.
+  #
+  # The slice is taken from one route's own stop order, so a pair of UUIDs from
+  # another version, or two stops no chosen route serves together, resolves
+  # nothing at all.
+  def handle_event("autosave", %{"stretch" => %{"from" => from, "to" => to}}, socket)
+      when is_binary(from) and is_binary(to) do
+    ends = %{"from" => from, "to" => to}
+    socket = assign(socket, :stretch_ends, ends)
+
+    cond do
+      is_nil(socket.assigns.alert) or from == "" or to == "" ->
+        {:noreply, socket}
+
+      true ->
+        case stretch_stops(socket, from, to) do
+          nil ->
+            {:noreply, assign(socket, :stop_error, "Choose two stops on the same route.")}
+
+          {from_id, to_id, stops} ->
+            case write_without_advancing(socket, %{
+                   "scope" => %{
+                     "shape" => "route_stops",
+                     "stop_ids" => stops,
+                     "stretch_from_stop_id" => from_id,
+                     "stretch_to_stop_id" => to_id
+                   }
+                 }) do
+              {:noreply, socket} ->
+                {:noreply, socket |> assign(:stretch_ends, %{}) |> assign(:stop_error, nil)}
+
+              other ->
+                other
+            end
+        end
+    end
+  end
+
   # The service date is a form field inside this same autosave form, so a chosen
   # date arrives as this question's own answer rather than as an event of its
   # own. It is only the date the editor is looking at: **Add date** is what puts
@@ -753,6 +796,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
             {:noreply,
              socket
              |> assign(:alert, current)
+             |> assign(:loaded_revision, current.revision)
              |> assign(:conflict, nil)
              |> assign(:pending_attrs, nil)
              |> assign(:form, draft_form(current))
@@ -859,51 +903,6 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     end
   end
 
-  # A stretch is the two ends the editor names, and the stops between them are
-  # what the detour skips, so the resolved list is stored beside the pair. Each
-  # end is chosen in its own select, so one of them is reported by the event and
-  # the other is the half the editor already chose; a half pair says so rather
-  # than saving something the editor did not name.
-  #
-  # Both ends are re-read through the scoped lookup, and the slice is taken from
-  # the route's own stop order, so a pair of UUIDs from another version resolves
-  # nothing at all.
-  def handle_event("select_stretch", %{"which" => which, "value" => value}, socket)
-      when is_binary(which) do
-    alert = socket.assigns.alert
-    ends = Map.put(socket.assigns.stretch_ends, which, value)
-    stops = stretch_stops(socket, ends["from"], ends["to"], socket.assigns.route_stop_options)
-
-    case {alert, stops} do
-      {nil, _stops} ->
-        {:noreply, socket}
-
-      {_alert, nil} ->
-        {:noreply,
-         socket
-         |> assign(:stretch_ends, ends)
-         |> assign(:stop_error, "Choose both ends of the stretch.")}
-
-      {_alert, stops} ->
-        {from_id, to_id} = {List.first(stops), List.last(stops)}
-
-        case write_without_advancing(socket, %{
-               "scope" => %{
-                 "shape" => "route_stops",
-                 "stop_ids" => stops,
-                 "stretch_from_stop_id" => from_id,
-                 "stretch_to_stop_id" => to_id
-               }
-             }) do
-          {:noreply, socket} ->
-            {:noreply, socket |> assign(:stretch_ends, %{}) |> assign(:stop_error, nil)}
-
-          other ->
-            other
-        end
-    end
-  end
-
   # "All stops still served" is not a detour, so it is answered by changing the
   # situation rather than by answering the question the situation opened.
   def handle_event("all_stops_served", _params, socket) do
@@ -912,14 +911,16 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
         {:noreply, socket}
 
       alert ->
-        case Alerts.save_draft(audit_context(socket), alert.id, alert.revision, %{
-               "situation" => "delay",
-               "scope" => %{
-                 "stop_ids" => [],
-                 "stretch_from_stop_id" => nil,
-                 "stretch_to_stop_id" => nil
-               }
-             }) do
+        attrs = %{
+          "situation" => "delay",
+          "scope" => %{
+            "stop_ids" => [],
+            "stretch_from_stop_id" => nil,
+            "stretch_to_stop_id" => nil
+          }
+        }
+
+        case Alerts.save_draft(audit_context(socket), alert.id, alert.revision, attrs) do
           {:ok, saved} ->
             {:noreply,
              socket
@@ -928,6 +929,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
              |> assign(:save_state, :saved)
              |> rebuild(saved)
              |> push_patch(to: saved_path(socket, saved, advance(saved, :routes, socket)))}
+
+          {:error, :stale, current} ->
+            {:noreply, stale_conflict(socket, current, attrs)}
 
           {:error, reason} ->
             {:noreply, put_flash(socket, :error, write_error_message(reason))}
@@ -963,7 +967,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
         {:noreply, socket}
 
       alert ->
-        answer_and_advance(socket, :shared, alert, %{"scope" => %{"all_routes_at_stops" => false}})
+        # "No" drops the pairs an earlier "yes" stored: an absent embed key is
+        # kept by `cast_embed`, so they are cleared explicitly.
+        answer_and_advance(socket, :shared, alert, %{
+          "scope" => %{"all_routes_at_stops" => false, "route_stop_pairs" => []}
+        })
     end
   end
 
@@ -1057,14 +1065,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
       trips =
         if Enum.any?(chosen, &({&1.trip_id, &1.service_date} == pair)) do
-          Enum.reject(chosen, &({&1.trip_id, &1.service_date} == pair))
+          trip_params(Enum.reject(chosen, &({&1.trip_id, &1.service_date} == pair)))
         else
-          chosen ++ [%{"trip_id" => trip_id, "service_date" => date}]
+          trip_params(chosen) ++ [%{"trip_id" => trip_id, "service_date" => date}]
         end
 
-      write_without_advancing(socket, %{
-        "scope" => %{"shape" => "trips", "trips" => trip_params(trips)}
-      })
+      write_without_advancing(socket, %{"scope" => %{"shape" => "trips", "trips" => trips}})
     else
       _not_offered_on_that_date -> {:noreply, socket}
     end
@@ -1436,18 +1442,33 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   end
 
   defp clear_combobox(other, _kind, _chosen), do: other
-  # The two ends travel as form fields, so a select that changed its value but
-  # not its selection is still readable here.
-  # The slice of the route's own stop list between two named ends, or `nil` when
-  # either end is not a stop of that list.
-  defp stretch_stops(socket, from_id, to_id, options) do
-    known = Alerts.stops_by_id(audit_context(socket), [from_id, to_id])
-    order = Enum.map(options, & &1.id)
+  # The stops between two named ends on the first chosen route that serves both,
+  # in that route's own order, with the ends in that order too. Every other
+  # chosen route that serves both ends adds its own slice, so a stop is skipped
+  # on each route that runs through the stretch. `nil` when no chosen route
+  # serves both ends.
+  defp stretch_stops(socket, from_id, to_id) do
+    audit = audit_context(socket)
 
-    with %{id: from} <- Map.get(known, from_id, %{}),
-         %{id: to} <- Map.get(known, to_id, %{}),
-         a when is_integer(a) <- Enum.find_index(order, &(&1 == from.id)),
-         b when is_integer(b) <- Enum.find_index(order, &(&1 == to.id)) do
+    slices =
+      for route_id <- scope(socket.assigns.alert).route_ids || [],
+          slice = route_slice(Alerts.route_stops(audit, route_id), from_id, to_id),
+          do: slice
+
+    case slices do
+      [] ->
+        nil
+
+      [first | _rest] ->
+        {List.first(first), List.last(first), slices |> Enum.concat() |> Enum.uniq()}
+    end
+  end
+
+  defp route_slice(stops, from_id, to_id) do
+    order = Enum.map(stops, & &1.id)
+
+    with a when is_integer(a) <- Enum.find_index(order, &(&1 == from_id)),
+         b when is_integer(b) <- Enum.find_index(order, &(&1 == to_id)) do
       Enum.slice(order, min(a, b), abs(a - b) + 1)
     else
       _not_on_this_route -> nil
@@ -1553,13 +1574,18 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   end
 
   # The rest of the form travels with the selection, so a typed direction typed
-  # before the pick is saved with it rather than dropped.
-  defp with_scope(%{"alert" => %{"scope" => scope} = params}, answer)
-       when is_map(scope) do
-    put_in(params, ["scope"], Map.merge(scope, answer))
+  # before the pick is saved with it rather than dropped. The place question's
+  # form carries only the base revision and the combobox, so the answer is
+  # merged into whatever `alert` params arrived, scope or no scope, and the
+  # revision stays in them for `base_revision/3`.
+  defp with_scope(params, answer) do
+    alert_params = map_param(params["alert"])
+
+    Map.put(alert_params, "scope", Map.merge(map_param(alert_params["scope"]), answer))
   end
 
-  defp with_scope(params, _answer), do: Map.delete(params, "revision")
+  defp map_param(value) when is_map(value), do: value
+  defp map_param(_value), do: %{}
 
   # `LiveSelect` keeps the option list it first rendered across a parent
   # re-render, so a chosen stop is sent back to its own component with the label
@@ -1731,7 +1757,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # another version, a trip that does not run that day, or a trip of a route the
   # alert does not name is absent from the answer and writes nothing (R1, CR-4).
   defp departure_offered?(socket, alert, trip_id, date) do
-    Enum.any?(departure_lists(alert, socket, date), &(&1.trip_id == trip_id))
+    alert
+    |> departure_lists(socket, date)
+    |> List.flatten()
+    |> Enum.any?(&(&1.trip_id == trip_id))
   end
 
   defp drop_date_pairs(socket, alert, date) do
@@ -1813,7 +1842,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
         timing_error: nil,
         check_in_options: [],
         timing_date_form: timing_date_form(nil),
-        notice_value: nil
+        notice_default: nil
       )
     end
   end
@@ -1839,42 +1868,55 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> assign(:timing_error, error)
     |> assign(:check_in_options, check_in_options(now, alert))
     |> assign(:timing_date_form, timing_date_form(iso_or_nil(socket.assigns.chosen_timing_date)))
-    |> assign(:notice_value, notice_value(socket, alert, NaiveDateTime.to_date(now)))
+    |> assign(:notice_default, notice_default(alert, NaiveDateTime.to_date(now)))
   end
 
   # The offsets the check-in offers, each with the civil time it falls on in the
   # agency's own zone, so the reader sees the clock time they are choosing
   # rather than only an interval (CR-7).
+  #
+  # A stored check-in is its own selected option, labelled with the civil time it
+  # holds. It never equals one of the offsets, because they are measured from a
+  # clock that moves on, so it is listed ahead of them as what the editor chose
+  # and the offsets are what replaces it.
   defp check_in_options(now, alert) do
-    chosen = timing_of(alert) && timing_of(alert).check_in_at
+    offsets =
+      Enum.map(@check_in_offsets, fn minutes ->
+        at = NaiveDateTime.add(now, minutes * 60)
 
-    Enum.map(@check_in_offsets, fn minutes ->
-      at = NaiveDateTime.add(now, minutes * 60)
+        %{
+          value: Integer.to_string(minutes),
+          label: "In #{minutes} minutes · #{Calendar.strftime(at, "%-I:%M %p")}",
+          selected?: false
+        }
+      end)
 
-      %{
-        minutes: minutes,
-        at: at,
-        label: "In #{minutes} minutes · #{Calendar.strftime(at, "%-I:%M %p")}",
-        selected?: not is_nil(chosen) and NaiveDateTime.compare(chosen, at) == :eq
-      }
-    end)
+    case timing_of(alert) do
+      %TimingAnswer{check_in_at: %NaiveDateTime{} = stored} ->
+        [%{value: "stored", label: stored_check_in_label(stored, now), selected?: true} | offsets]
+
+      _no_check_in ->
+        offsets
+    end
   end
 
-  # What the notice input shows: the value the form holds - which is a refused
-  # save's own value when one is on screen - and otherwise the rule's default,
-  # the later of today and seven days before the first date (AC-20). Storing
-  # nothing is what lets the default follow a date the editor changes later.
-  defp notice_value(socket, alert, today) do
-    # `@form[:timing]` is the embed's own field, so the answer is one step
-    # further on: the form behind it is what holds `notice_on`.
-    timing_field = socket.assigns.form && socket.assigns.form[:timing]
-    field = timing_field && timing_field.form[:notice_on]
+  defp stored_check_in_label(stored, now) do
+    time = Calendar.strftime(stored, "%-I:%M %p")
 
-    if is_binary(field && field.value) and field.value != "" do
-      field.value
+    if NaiveDateTime.to_date(stored) == NaiveDateTime.to_date(now) do
+      "Check back at #{time}"
     else
-      iso_or_nil(Recurrence.notice_on(timing_of(alert), today))
+      "Check back #{Calendar.strftime(stored, "%b %-d")}, #{time}"
     end
+  end
+
+  # What riders are told from while the notice input is empty: the later of today
+  # and seven days before the first date (AC-20). It is derived here and never
+  # stored, so it follows a first date the editor changes later.
+  defp notice_default(alert, today) do
+    timing = timing_of(alert)
+
+    iso_or_nil(Recurrence.notice_on(timing && %{timing | notice_on: nil}, today))
   end
 
   defp iso_or_nil(nil), do: nil
@@ -1941,7 +1983,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # regenerated behind their back, and the generation is one revision-checked
   # write like any other answer (AC-22, INV-1).
   defp enter_message_step(socket, alert, step) do
-    if step == :message and needs_generated_message?(alert) do
+    if step == :message and needs_generated_message?(socket, alert) do
       case generated_alert(socket, alert) do
         {:ok, saved} -> {saved, assign(socket, :browse_scripts?, false)}
         :refused -> {alert, assign(socket, :browse_scripts?, browsing_scripts?(alert))}
@@ -1966,6 +2008,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
     case Alerts.save_draft(audit_context(socket), alert.id, alert.revision, attrs) do
       {:ok, saved} -> {:ok, saved}
+      # Another editor wrote between this load and the generation, so the
+      # wording is left to the editor's own first save, which reports the
+      # conflict.
+      {:error, :stale, _current} -> :refused
       {:error, _reason} -> :refused
     end
   end
@@ -2056,13 +2102,31 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp message_of(%Alert{message: nil}), do: %MessageAnswer{}
   defp message_of(%Alert{message: message}), do: message
 
-  # Wording that is neither stored nor the operator's own is generated on
-  # arrival; wording the operator wrote is left alone (FH-22).
-  defp needs_generated_message?(nil), do: false
+  # Wording that is not the operator's own is generated on arrival, and wording
+  # the operator wrote is left alone (FH-22). Generated text is current only
+  # while the facts it was generated from still hold, so text whose stored digest
+  # differs from the current facts is regenerated rather than left naming stops
+  # or dates the alert no longer has. Wording with no `customized` mark that
+  # holds any text was written by somebody, for instance through the assistant,
+  # so it is theirs.
+  defp needs_generated_message?(_socket, nil), do: false
 
-  defp needs_generated_message?(%Alert{} = alert) do
-    is_nil(alert.message) or
-      (message_of(alert).customized != true and blank_text?(message_of(alert).header))
+  defp needs_generated_message?(socket, %Alert{} = alert) do
+    message = message_of(alert)
+
+    cond do
+      is_nil(alert.message) ->
+        true
+
+      message.customized == true ->
+        false
+
+      is_nil(message.customized) ->
+        blank_text?(message.header) and blank_text?(message.description)
+
+      true ->
+        message.fact_digest != alert |> message_facts(socket) |> Message.digest()
+    end
   end
 
   defp browsing_scripts?(nil), do: true
@@ -2071,7 +2135,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # opens the editor and leaves the scripts behind the chooser. The chooser's own
   # state is per arrival rather than remembered across steps: a step that opens
   # with the scripts and no wording to edit is the only case that needs it.
-  defp browsing_scripts?(%Alert{} = alert), do: blank_text?(message_of(alert).header)
+  defp browsing_scripts?(%Alert{} = alert) do
+    message = message_of(alert)
+
+    blank_text?(message.header) and blank_text?(message.description)
+  end
 
   defp blank_text?(nil), do: true
   defp blank_text?(text) when is_binary(text), do: String.trim(text) == ""
@@ -2089,15 +2157,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # -- Autosave ------------------------------------------------------------
 
   defp save(socket, alert, params) do
-    socket =
-      socket
-      |> assign(:pending_attrs, params)
-      |> assign(:save_state, :saving)
+    socket = assign(socket, :pending_attrs, params)
 
     case Alerts.save_draft(
            audit_context(socket),
            alert.id,
-           base_revision(params, alert),
+           base_revision(socket, params, alert),
            castable(params)
          ) do
       {:ok, saved} ->
@@ -2147,12 +2212,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp write_pending(%{assigns: %{pending_attrs: nil}} = socket), do: {:ok, socket}
 
   defp write_pending(%{assigns: %{alert: alert, pending_attrs: params}} = socket) do
-    socket = assign(socket, save_state: :saving)
-
     case Alerts.save_draft(
            audit_context(socket),
            alert.id,
-           base_revision(params, alert),
+           base_revision(socket, params, alert),
            castable(params)
          ) do
       {:ok, saved} ->
@@ -2192,16 +2255,33 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # compared against the revision it was composed on rather than the newest one
   # (R6). A missing or unreadable field falls back to the revision this editor
   # last saw, so a hand-made event cannot claim a revision of its own (CR-2).
-  defp base_revision(params, alert) do
+  defp base_revision(socket, params, alert) do
     case params["revision"] do
       value when is_binary(value) ->
         case Integer.parse(value) do
-          {revision, ""} -> revision
+          {revision, ""} -> own_revision(socket, revision, alert)
           _other -> alert.revision
         end
 
       _other ->
         alert.revision
+    end
+  end
+
+  # A second change composed before the diff for this editor's own previous write
+  # reached the browser still carries the older revision. Every revision from the
+  # one this socket last loaded up to the one it holds was written by this
+  # socket, so such a change is rebased onto the current revision instead of
+  # being refused against the editor's own save. A base older than the load (a
+  # form recovery replaying after a reconnect) or a revision this socket did not
+  # produce stays as sent, and the write is refused if the row moved.
+  defp own_revision(socket, revision, alert) do
+    loaded = socket.assigns.loaded_revision
+
+    if is_integer(loaded) and revision >= loaded and revision < alert.revision do
+      alert.revision
+    else
+      revision
     end
   end
 
@@ -2344,6 +2424,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     case Alerts.get_alert(audit_context(socket), socket.assigns.alert.id) do
       {:ok, latest} ->
         socket
+        |> assign(:loaded_revision, latest.revision)
         |> write_prepared(
           latest,
           candidate.conversation_id,
@@ -2428,20 +2509,24 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     flags = editor_flags(socket, alert)
     keys = steps_for(alert, flags)
     step = step_from(params, keys, socket)
+    refused = refused_draft(socket, alert, step)
     {alert, socket} = enter_message_step(socket, alert, step)
+    # The progress row builds each step's link and check from the alert the
+    # socket holds, so the alert is assigned before the steps are prepared.
+    socket = assign(socket, :alert, alert)
     prepared = prepare_steps(keys, step, flags, socket)
 
     socket
-    |> assign(:alert, alert)
+    |> assign(:loaded_revision, alert && alert.revision)
     |> assign(:load_state, :ready)
     |> assign(:flags, flags)
     |> assign(:steps, prepared)
     |> assign(:step, step)
     |> assign(:preview, preview(socket, alert))
     |> assign(:delete_open?, false)
-    |> assign(:save_state, if(is_nil(alert), do: :idle, else: :saved))
-    |> assign(:conflict, nil)
-    |> assign(:pending_attrs, nil)
+    |> assign(:save_state, refused[:save_state] || if(is_nil(alert), do: :idle, else: :saved))
+    |> assign(:conflict, refused[:conflict])
+    |> assign(:pending_attrs, refused[:pending_attrs])
     |> assign(:review_errors, [])
     |> assign(:route_query, socket.assigns[:route_query] || "")
     |> assign(:route_options, socket.assigns[:route_options] || [])
@@ -2453,10 +2538,34 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> assign(:stretch_ends, %{})
     |> assign(:directions_open?, false)
     |> assign(:chosen_timing_date, socket.assigns[:chosen_timing_date] || nil)
-    |> assign(:form, draft_form(alert || %Alert{}))
+    |> assign(:form, refused[:form] || draft_form(alert || %Alert{}))
     |> prepare_questions(alert)
     |> prepare_assistant(alert)
   end
+
+  # A refused or stale save leaves the typed values only in the form and in the
+  # pending params, and the banner or "Not saved." is the only sign of it.
+  # Walking to another question of the same alert keeps all three, because
+  # reloading the row here would drop the values and report Saved for text that
+  # was never stored (FH-16). The form is kept only while the question is the
+  # same one, since another question builds its own fields from the row.
+  defp refused_draft(socket, %Alert{id: id}, step) do
+    assigns = socket.assigns
+
+    if match?(%Alert{id: ^id}, assigns.alert) and
+         (assigns.conflict != nil or assigns.save_state == :error) do
+      %{
+        save_state: assigns.save_state,
+        conflict: assigns.conflict,
+        pending_attrs: assigns.pending_attrs,
+        form: if(assigns.step == step, do: assigns.form)
+      }
+    else
+      %{}
+    end
+  end
+
+  defp refused_draft(_socket, _alert, _step), do: %{}
 
   # The reads the questions that need more than the alert's own answers take,
   # taken when the row changes rather than in the render function: the route's
@@ -2767,9 +2876,22 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       {:ok, saved} ->
         {:noreply, advance_without_writing(socket, saved, answered)}
 
+      {:error, :stale, current} ->
+        {:noreply, stale_conflict(socket, current, attrs)}
+
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, write_error_message(reason))}
     end
+  end
+
+  # A stale write changed nothing: the editor shows the conflict and keeps the
+  # values it tried to write, so Save as new alert has something to save and
+  # nothing is lost to the other editor's newer revision (R6, AC-16).
+  defp stale_conflict(socket, current, attrs) do
+    socket
+    |> assign(:conflict, current)
+    |> assign(:pending_attrs, attrs)
+    |> assign(:save_state, :error)
   end
 
   # A card's value is the answer's own value, so a number is read back as the
@@ -3069,7 +3191,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <div id="alert-editor" class="ds-page">
+      <div id="alert-editor" class="ds-page group/editor">
         <.back_link id="alert-back-link" navigate={~p"/gtfs/#{@current_gtfs_version.id}/alerts"}>
           Alerts
         </.back_link>
@@ -3271,7 +3393,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
                     now?={not is_nil(@alert) and @alert.urgency == :now}
                     date_form={@timing_date_form}
                     occurrences={@timing_occurrences}
-                    notice_value={@notice_value}
+                    notice_default={@notice_default}
                     check_in_options={@check_in_options}
                     error={@timing_error}
                   />
@@ -3468,9 +3590,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
           described_by="delete-alert-dialog-body"
           return_focus_id="delete-alert"
         >
-          <p id="delete-alert-dialog-body">
-            Delete "{alert_title(@alert)}"? This cannot be undone.
-          </p>
+          <p>Delete {alert_title(@alert)}? This can't be undone.</p>
         </.confirm_dialog>
       </div>
     </Layouts.app>
@@ -3502,7 +3622,6 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # different thing from "Not saved.".
   defp save_status(nil, :idle), do: "No alert saved yet."
   defp save_status(_alert, :idle), do: "Saved."
-  defp save_status(_alert, :saving), do: "Saving…"
   defp save_status(_alert, :saved), do: "Saved"
   defp save_status(_alert, :error), do: "Not saved."
 end

@@ -16,10 +16,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
   publishes one in this package, so Live, Scheduled, Ended, End and feed copy is
   absent here by construction, not by omission (R2, CR-1).
 
-  A row's title is a patch to `/alerts/:id`, which step 14's editor owns. Until
-  that route exists the link still reads as the row's identity and carries its
-  own label, which is what the table needs; the destination is that editor's
-  URL, not a second route defined here.
+  A row's title navigates to `/alerts/:id`, and Create alert to `/alerts/new`.
+  Both are `AlertEditorLive`'s routes, so they are live navigations rather than
+  patches of this page.
   """
 
   use GtfsPlannerWeb, :live_view
@@ -123,14 +122,18 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
     today = DateTime.utc_now() |> DisplayClock.local_date(zone) |> Date.to_iso8601()
     emails = editor_emails(Enum.map(rows, & &1.alert.updated_by_id))
     routes = Alerts.routes_for(audit_context, Enum.map(rows, & &1.alert))
+    local_changes = DisplayClock.localize_many(Enum.map(rows, & &1.alert.updated_at), zone)
 
-    Enum.map(rows, &prepare_row(&1, socket, zone, today, emails, routes))
+    rows
+    |> Enum.zip(local_changes)
+    |> Enum.map(fn {row, local_change} ->
+      prepare_row(row, local_change, socket, today, emails, routes)
+    end)
   end
 
-  defp prepare_row(row, socket, zone, today, emails, routes) do
+  defp prepare_row(row, local_change, socket, today, emails, routes) do
     alert = row.alert
     referenced = Alerts.Listing.referenced_ids(alert)
-    local_change = [alert.updated_at] |> DisplayClock.localize_many(zone) |> List.first()
 
     %{
       # A stream item's `:id` is its DOM identity, so the two streams render the
@@ -144,7 +147,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
       # identity the version no longer has, which is the one the row's Needs
       # attention badge names.
       routes: Enum.flat_map(referenced.routes, &(Map.get(routes, &1, []) |> List.wrap())),
-      system?: referenced.routes == [],
+      # Only an alert that said it is about the whole system, or about a place on
+      # every route, reads "All routes". A draft that has not reached the routes
+      # question, or whose routes were all deselected, names nothing yet.
+      system?: referenced.routes == [] and system_shape?(alert),
       stop_count: referenced.stops |> Enum.uniq() |> length(),
       when_summary: when_summary(alert),
       check_in_label: check_in_label(alert),
@@ -153,6 +159,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
       check_in_due?: row.check_in_due?
     }
   end
+
+  defp system_shape?(%{scope: %{shape: shape}}), do: shape in [:system, :stop_all_routes]
+  defp system_shape?(_alert), do: false
 
   # A saved draft with no header yet is titled by its situation instead of by a
   # blank line, so an In progress row is still nameable in a list.
@@ -259,7 +268,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
           <:actions :if={@alerts_state == :ready and not @alerts_empty?}>
             <.link
               id="create-alert"
-              patch={"/gtfs/#{@current_gtfs_version.id}/alerts/new"}
+              navigate={"/gtfs/#{@current_gtfs_version.id}/alerts/new"}
               class={[
                 "inline-flex min-h-11 items-center gap-2 rounded-control px-4 text-sm font-semibold no-underline",
                 "bg-action text-action-content hover:bg-action-hover"
@@ -295,7 +304,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
             <:action>
               <.link
                 id="create-alert-first-use"
-                patch={"/gtfs/#{@current_gtfs_version.id}/alerts/new"}
+                navigate={"/gtfs/#{@current_gtfs_version.id}/alerts/new"}
                 class={[
                   "inline-flex min-h-11 items-center gap-2 rounded-control px-4 text-sm font-semibold no-underline",
                   "bg-action text-action-content hover:bg-action-hover"

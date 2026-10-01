@@ -197,7 +197,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
       <td class="px-5 py-3 align-top">
         <.link
           id={"alert-link-#{@row.alert.id}"}
-          patch={@row.alert_path}
+          navigate={@row.alert_path}
           class="font-semibold text-strong no-underline hover:text-action hover:underline"
         >
           {@row.title}
@@ -253,7 +253,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
     <li id={"alert-card-#{@row.alert.id}"} class="border-b border-subtle last:border-b-0 px-4 py-3">
       <.link
         id={"alert-card-link-#{@row.alert.id}"}
-        patch={@row.alert_path}
+        navigate={@row.alert_path}
         class="font-semibold text-strong no-underline hover:underline"
       >
         {@row.title}
@@ -1141,9 +1141,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   one a toggle that writes at once, so Back loses nothing and Continue is only
   the action that moves on (AC-17, AC-18).
 
-  The stretch is a `from`/`to` pair over the same list: choosing the two ends
-  resolves the stops between them server-side, because the route's stop order is
-  data and an editor should not have to count stops to describe a detour.
+  The stretch is a `from`/`to` pair over one route's list: the two selects are
+  fields of the editor's autosave form, and choosing both ends resolves the stops
+  between them server-side, because the route's stop order is data and an editor
+  should not have to count stops to describe a detour.
   """
   attr :options, :list,
     required: true,
@@ -1210,8 +1211,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
             </label>
             <select
               id="alert-stretch-from"
-              phx-change="select_stretch"
-              phx-value-which="from"
+              name="stretch[from]"
               aria-label="First skipped stop"
               class="h-11 w-full rounded-control border border-control bg-white px-3 text-sm text-strong"
             >
@@ -1228,8 +1228,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
             </label>
             <select
               id="alert-stretch-to"
-              phx-change="select_stretch"
-              phx-value-which="to"
+              name="stretch[to]"
               aria-label="Last skipped stop"
               class="h-11 w-full rounded-control border border-control bg-white px-3 text-sm text-strong"
             >
@@ -1240,11 +1239,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
             </select>
           </div>
         </div>
-        <.button id="alert-stretch-select" type="button" class="mt-3" phx-click="select_stretch">
-          Select stops
-        </.button>
-        <p class="mt-2 text-[13px] text-muted">
-          Every stop between the two ends is skipped, in the route's own order.
+        <p class="mt-3 text-[13px] text-muted">
+          Choosing both ends skips every stop between them, in the route's own order.
         </p>
       </details>
 
@@ -1529,7 +1525,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
               id={"alert-departure-#{Date.to_iso8601(group.date)}-#{departure.trip_id}"}
               checked={departure.selected?}
               phx-click="toggle_departure"
-              phx-value-trip-id={departure.trip_id}
+              phx-value-trip_id={departure.trip_id}
               phx-value-date={Date.to_iso8601(group.date)}
               class="mt-1 size-5 shrink-0 accent-action"
             />
@@ -1591,9 +1587,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   bounds refuse shows the same message those bounds produce rather than a
   partial list.
 
-  The notice date renders its derived default as its value - the later of the
-  agency's today and seven days before the first date - so the rule is visible
-  before it is typed rather than after it is stored.
+  The notice date is the embed's own field, so it stores only what the editor
+  types. Its derived default - the later of the agency's today and seven days
+  before the first date - is named beside it and is what riders are told from
+  while the field is empty, so the default follows a first date that changes
+  later instead of being frozen by an unrelated edit.
   """
   attr :alert, :any, required: true
   attr :form, :any, required: true
@@ -1604,7 +1602,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
     doc: "the `to_form/2` form the exception-date input writes to"
 
   attr :occurrences, :list, required: true, doc: "`Recurrence.occurrences/1` for the saved answer"
-  attr :notice_value, :string, default: nil
+  attr :notice_default, :string, default: nil
   attr :check_in_options, :list, required: true, doc: "the check-in offsets this editor offers"
   attr :error, :string, default: nil
 
@@ -1627,7 +1625,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
         alert={@alert}
         form={@form}
         date_form={@date_form}
-        notice_value={@notice_value}
+        notice_default={@notice_default}
       />
 
       <div
@@ -1636,7 +1634,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
         class="rounded-card border border-subtle p-4"
       >
         <p id="alert-timing-count" class="text-sm font-bold text-strong">
-          {occurrence_count(@occurrences)}
+          {occurrence_count(@occurrences, timing_of(@alert))}
         </p>
 
         <ol id="alert-timing-occurrences" class="mt-2 grid max-h-72 gap-1 overflow-y-auto">
@@ -1645,8 +1643,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
             id={"alert-timing-occurrence-#{Date.to_iso8601(occurrence.date)}"}
             class="flex flex-wrap items-baseline justify-between gap-2 text-[13px]"
           >
-            <span class="font-semibold text-strong">{long_date(occurrence.date)}</span>
-            <span class="text-muted">{occurrence_window(occurrence)}</span>
+            <span class="font-semibold text-strong">
+              {occurrence_label(occurrence, timing_of(@alert))}
+            </span>
+            <span class="text-muted">{occurrence_window(occurrence, timing_of(@alert))}</span>
           </li>
         </ol>
       </div>
@@ -1746,8 +1746,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
             name="check_in_offset"
             id="timing-check-in"
             label="Remind me to check"
-            options={Enum.map(@check_in_options, &{&1.label, Integer.to_string(&1.minutes)})}
+            options={Enum.map(@check_in_options, &{&1.label, &1.value})}
             value={selected_check_in(@check_in_options)}
+            prompt={if selected_check_in(@check_in_options), do: nil, else: "Choose a time"}
             help="A reminder for staff. The alert stays live until service is confirmed restored."
           />
         </div>
@@ -1789,7 +1790,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   attr :alert, :any, required: true
   attr :form, :any, required: true
   attr :date_form, :any, required: true
-  attr :notice_value, :string, default: nil
+  attr :notice_default, :string, default: nil
 
   defp planned_timing_fields(assigns) do
     ~H"""
@@ -1867,6 +1868,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
             phx-debounce="450"
           />
         </div>
+
+        <.input
+          field={f[:notice_on]}
+          type="date"
+          id="timing-notice-on"
+          label="Riders told from"
+          help={notice_help(@notice_default)}
+        />
       </.inputs_for>
 
       <p
@@ -1952,18 +1961,19 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
           </ul>
         </div>
       </div>
-
-      <.input
-        type="date"
-        name="alert[timing][notice_on]"
-        id="timing-notice-on"
-        label="Riders told from"
-        value={@notice_value}
-        help="Advance notice does not mean the disruption is happening yet. Riders see the alert from this date, and the service change applies from the dates above."
-      />
     </div>
     """
   end
+
+  defp notice_help(default) do
+    "Advance notice does not mean the disruption is happening yet. Riders see the alert from this date, and the service change applies from the dates above." <>
+      notice_default_sentence(default)
+  end
+
+  defp notice_default_sentence(nil), do: ""
+
+  defp notice_default_sentence(default),
+    do: " Left empty, riders are told from #{short_date(Date.from_iso8601!(default))}."
 
   defp timing_zone(%{timing: %{time_zone: zone}}) when is_binary(zone) and zone != "", do: zone
   defp timing_zone(_alert), do: "the agency's own time zone"
@@ -2093,12 +2103,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
     end)
   end
 
-  defp selected_check_in(options) do
-    case Enum.find(options, & &1.selected?) do
-      nil -> nil
-      option -> Integer.to_string(option.minutes)
-    end
-  end
+  defp selected_check_in(options), do: Enum.find_value(options, &(&1.selected? && &1.value))
 
   defp checked?(value), do: value not in [nil, false, "false"]
 
@@ -2106,7 +2111,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
 
   defp date_chip_button_id(kind, date), do: "alert-timing-#{kind}-remove-#{Date.to_iso8601(date)}"
 
-  defp occurrence_count(occurrences) do
+  # A "Once" answer expands to one occurrence that starts on its first date, so
+  # its period is read from the answer: both dates, and the days between them.
+  defp occurrence_count(_occurrences, %{pattern: :continuous, first_date: first, last_date: last})
+       when is_struct(first, Date) and is_struct(last, Date) do
+    "#{Date.diff(last, first) + 1} days: #{short_date(first)} to #{short_date(last)}"
+  end
+
+  defp occurrence_count(occurrences, _timing) do
     first = List.first(occurrences)
     last = List.last(occurrences)
     days = if length(occurrences) == 1, do: "day", else: "days"
@@ -2114,19 +2126,38 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
     "#{length(occurrences)} #{days}: #{short_date(first.date)} to #{short_date(last.date)}"
   end
 
+  defp occurrence_label(occurrence, %{pattern: :continuous, last_date: last})
+       when is_struct(last, Date) do
+    if last == occurrence.date,
+      do: long_date(occurrence.date),
+      else: "#{long_date(occurrence.date)} to #{long_date(last)}"
+  end
+
+  defp occurrence_label(occurrence, _timing), do: long_date(occurrence.date)
+
   # The window one occurrence covers, in the agency's own words: an all-day
   # period is the whole date, and an overnight period says so rather than
   # reading as an end before its start.
-  defp occurrence_window(%{all_day?: true}), do: "All day"
+  defp occurrence_window(%{all_day?: true}, _timing), do: "All day"
 
-  defp occurrence_window(%{starts: nil}), do: "All day"
+  defp occurrence_window(%{starts: nil}, _timing), do: "All day"
 
-  defp occurrence_window(%{starts: starts, ends: nil}), do: clock(starts)
+  defp occurrence_window(%{starts: starts, ends: nil}, _timing), do: clock(starts)
 
-  defp occurrence_window(%{starts: starts, ends: ends}) do
-    overnight = if NaiveDateTime.compare(ends, starts) == :gt, do: "", else: " (next day)"
+  defp occurrence_window(%{starts: starts, ends: ends} = occurrence, timing) do
+    overnight =
+      if Date.compare(NaiveDateTime.to_date(ends), last_day(occurrence, timing)) == :gt,
+        do: " (next day)",
+        else: ""
+
     "#{clock(starts)} to #{clock(ends)}#{overnight}"
   end
+
+  # The civil day the period is meant to end on: a "Once" period's own last
+  # date, and for every other occurrence the day it starts. An end after that day
+  # is the following morning (R12).
+  defp last_day(_occurrence, %{pattern: :continuous, last_date: %Date{} = last}), do: last
+  defp last_day(occurrence, _timing), do: occurrence.date
 
   defp clock(datetime), do: Calendar.strftime(datetime, "%-I:%M %p")
 
@@ -2150,7 +2181,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
       <.live_component
         module={LiveSelectComponent}
         id={@id}
-        field={@field}
+        field={@field[:stop_id]}
         options={[]}
         debounce={200}
         update_min_len={0}
@@ -2810,13 +2841,19 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   **Retry** action when it has not. The status therefore never claims `Saved`
   before the server has actually said so (FH-16).
 
+  The server answers a change in one render, so it never sends `Saving…`. The
+  browser marks `#alert-form` with `phx-change-loading` from the moment a change
+  is sent until the reply is applied, and the status covers its own text with
+  `Saving…` for exactly that time. The bar sits outside the form, so the rule
+  reads the form's class from the editor's `group/editor` wrapper.
+
   **Save and close** is the primary action: it saves and returns to the list, so
   leaving the editor never silently drops what was typed. Delete alert sits at
   the left because it is destructive and must not be the button nearest Save.
   """
   attr :id, :string, default: "alert-save-bar"
   attr :status, :string, required: true
-  attr :state, :atom, required: true, doc: ":idle, :saving, :saved or :error"
+  attr :state, :atom, required: true, doc: ":idle, :saved or :error"
   attr :show_delete?, :boolean, default: false
   attr :back_path, :string, required: true
 
@@ -2834,7 +2871,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
             role="status"
             aria-live="polite"
             class={[
-              "text-[13px]",
+              "relative text-[13px]",
+              "group-has-[#alert-form.phx-change-loading]/editor:text-transparent",
+              "group-has-[#alert-form.phx-change-loading]/editor:after:absolute group-has-[#alert-form.phx-change-loading]/editor:after:left-0 group-has-[#alert-form.phx-change-loading]/editor:after:font-normal group-has-[#alert-form.phx-change-loading]/editor:after:text-muted group-has-[#alert-form.phx-change-loading]/editor:after:content-['Saving…']",
               @state == :error && "font-semibold text-error-fg",
               @state != :error && "text-muted"
             ]}
