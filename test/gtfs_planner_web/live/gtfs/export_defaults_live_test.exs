@@ -279,7 +279,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLiveTest do
     } do
       # This organization answers "Its own schedule file" with flex off.
       {:ok, _defaults} =
-        ExportDefaults.update(organization.id, %{include_flex: false, realtime_source: :own})
+        ExportDefaults.update(organization.id, editor_fixture(organization), %{
+          include_flex: false,
+          realtime_source: :own
+        })
 
       other_organization = organization_fixture()
       other_user = editor_for(other_organization)
@@ -348,7 +351,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLiveTest do
 
       # A saved row reads back through the same radios.
       {:ok, _defaults} =
-        ExportDefaults.update(organization.id, %{
+        ExportDefaults.update(organization.id, editor_fixture(organization), %{
           estimate_missing_times: false,
           estimate_method: :even
         })
@@ -371,7 +374,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} = live(conn, section_path(version))
-      render_async(view)
+      render_async(view, 2_000)
 
       params = %{
         "export_default" => %{
@@ -411,7 +414,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} = live(conn, section_path(version))
-      render_async(view)
+      render_async(view, 2_000)
 
       params = %{
         "export_default" => %{
@@ -432,6 +435,38 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLiveTest do
       assert ExportDefaults.get(organization.id).estimate_method == :even
     end
 
+    test "a mounted editor whose membership is revoked keeps the submitted answers", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, section_path(version))
+
+      user
+      |> then(&Accounts.get_user_org_membership(&1.id, organization.id))
+      |> deactivate_membership_fixture()
+
+      html =
+        view
+        |> form("#export-defaults-form", %{
+          "export_default" => %{
+            "include_flex" => "false",
+            "realtime_source" => "own",
+            "estimate_missing_times" => "false",
+            "estimate_method" => "even"
+          }
+        })
+        |> render_submit()
+
+      assert html =~ "You no longer have permission to edit export defaults."
+      assert has_element?(view, "#estimate-missing-times-blank[checked]")
+      assert has_element?(view, "#estimate-method-even[checked]")
+      assert has_element?(view, "#realtime-source option[value='own'][selected]")
+      refute Repo.get_by(ExportDefault, organization_id: organization.id)
+    end
+
     test "the impact block loads asynchronously with counts, routes and capped trips", %{
       conn: conn,
       user: user,
@@ -448,7 +483,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLiveTest do
       {:ok, view, html} = live(conn, section_path(version))
       assert html =~ "Counting trips with missing times"
 
-      render_async(view)
+      render_async(view, 2_000)
       html = render(view)
 
       assert html =~ "Trips with missing times"
@@ -485,7 +520,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} = live(conn, section_path(version))
-      render_async(view)
+      render_async(view, 2_000)
 
       assert has_element?(
                view,

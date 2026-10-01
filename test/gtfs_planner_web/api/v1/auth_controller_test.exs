@@ -181,7 +181,8 @@ defmodule GtfsPlannerWeb.Api.V1.AuthControllerTest do
     end
 
     test "returns 403 for deactivated user", %{conn: conn, user: user, org: org} do
-      GtfsPlanner.Organizations.deactivate_user_in_organization(user.id, org.id)
+      actor = system_admin_fixture(org)
+      {:ok, _} = GtfsPlanner.Organizations.deactivate_user_in_organization(actor, user.id, org.id)
 
       conn = call_login(conn, %{"email" => user.email, "password" => @password})
 

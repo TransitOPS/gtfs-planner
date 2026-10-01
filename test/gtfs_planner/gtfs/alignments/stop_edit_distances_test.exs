@@ -30,11 +30,13 @@ defmodule GtfsPlanner.Gtfs.Alignments.StopEditDistancesTest do
   alias GtfsPlanner.Repo
 
   defp audit(organization, version) do
+    actor = editor_fixture(organization)
+
     %AuditContext{
       organization_id: organization.id,
       gtfs_version_id: version.id,
-      actor_id: Ecto.UUID.generate(),
-      actor_email: "stop-edit-distances@example.com"
+      actor_id: actor.id,
+      actor_email: actor.email
     }
   end
 

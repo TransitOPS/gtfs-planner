@@ -1,8 +1,8 @@
 defmodule GtfsPlanner.Gtfs.PathwayEvolutions.PathwayDeletionTest do
   @moduledoc """
-  Pathway deletion boundaries through the ordinary `Gtfs` facade
-  (`delete_pathway/1`, `delete_child_stop/4`,
-  `remove_child_stop_from_diagram/5`): a closure-backed pathway returns
+  Pathway deletion boundaries through the trusted pathway import and the scoped station
+  commands (`Stations.delete_child_stop/3`,
+  `Stations.remove_child_stop_from_diagram/3`): a closure-backed pathway returns
   `{:error, :pathway_in_use}` instead of raising the step-1
   `ON DELETE RESTRICT` violation, and every refusal preserves stop
   coordinates, stops, pathways and closures. Expectations are hand-authored
@@ -20,6 +20,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.PathwayDeletionTest do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.PathwayEvolution
+  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
 
@@ -87,7 +88,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.PathwayDeletionTest do
       pathway =
         Gtfs.get_pathway_by_pathway_id(context.organization.id, context.version.id, "PW_ENTRY")
 
-      assert {:error, :pathway_in_use} = Gtfs.delete_pathway(pathway)
+      assert {:error, :pathway_in_use} = Gtfs.apply_import_entity(:remove, :pathway, pathway, %{})
 
       assert %Pathway{pathway_id: "PW_ENTRY"} =
                Gtfs.get_pathway_by_pathway_id(
@@ -103,7 +104,8 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.PathwayDeletionTest do
       pathway =
         Gtfs.get_pathway_by_pathway_id(context.organization.id, context.version.id, "PW_FREE")
 
-      assert {:ok, %Pathway{pathway_id: "PW_FREE"}} = Gtfs.delete_pathway(pathway)
+      assert {:ok, %Pathway{pathway_id: "PW_FREE"}} =
+               Gtfs.apply_import_entity(:remove, :pathway, pathway, %{})
 
       assert Gtfs.get_pathway_by_pathway_id(
                context.organization.id,
@@ -114,17 +116,16 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.PathwayDeletionTest do
     end
   end
 
-  describe "Gtfs.delete_child_stop/4" do
+  describe "Stations.delete_child_stop/3" do
     test "returns pathway_in_use and preserves coordinates, stops, pathways and closures",
          context do
       create_closure(context, "PW_ENTRY")
 
       assert {:error, :pathway_in_use} =
-               Gtfs.delete_child_stop(
-                 context.organization.id,
-                 context.version.id,
-                 "STN_1",
-                 context.entrance.id
+               Stations.delete_child_stop(
+                 context.audit,
+                 context.entrance.id,
+                 context.entrance.lock_version
                )
 
       entrance = Repo.get!(Stop, context.entrance.id)
@@ -149,11 +150,10 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.PathwayDeletionTest do
 
     test "deletes the stop and its pathways when no closure references them", context do
       assert {:ok, _deleted} =
-               Gtfs.delete_child_stop(
-                 context.organization.id,
-                 context.version.id,
-                 "STN_1",
-                 context.entrance.id
+               Stations.delete_child_stop(
+                 context.audit,
+                 context.entrance.id,
+                 context.entrance.lock_version
                )
 
       assert Repo.get(Stop, context.entrance.id) == nil
@@ -174,18 +174,16 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.PathwayDeletionTest do
     end
   end
 
-  describe "Gtfs.remove_child_stop_from_diagram/5" do
+  describe "Stations.remove_child_stop_from_diagram/3" do
     test "returns pathway_in_use and preserves coordinates, stops, pathways and closures",
          context do
       create_closure(context, "PW_ENTRY")
 
       assert {:error, :pathway_in_use} =
-               Gtfs.remove_child_stop_from_diagram(
-                 context.organization.id,
-                 context.version.id,
-                 "STN_1",
+               Stations.remove_child_stop_from_diagram(
+                 context.audit,
                  context.entrance.id,
-                 context.audit
+                 context.entrance.lock_version
                )
 
       entrance = Repo.get!(Stop, context.entrance.id)
@@ -204,12 +202,10 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.PathwayDeletionTest do
 
     test "clears the diagram fields when no closure references the pathways", context do
       assert {:ok, updated} =
-               Gtfs.remove_child_stop_from_diagram(
-                 context.organization.id,
-                 context.version.id,
-                 "STN_1",
+               Stations.remove_child_stop_from_diagram(
+                 context.audit,
                  context.entrance.id,
-                 context.audit
+                 context.entrance.lock_version
                )
 
       assert updated.diagram_coordinate == nil

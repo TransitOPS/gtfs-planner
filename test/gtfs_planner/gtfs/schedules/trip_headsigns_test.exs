@@ -3,8 +3,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripHeadsignsTest do
   Focused coverage for the audited trip headsign writer (EV-6): fenced changes
   write exactly their trips under one shared operation id, a no-op writes
   nothing, a stale reviewed value writes nothing, and an out-of-scope id is
-  rejected. Every call runs inside `Repo.transaction/1` with an `AuditContext`,
-  exactly as the production callers do.
+  rejected. Every helper call holds current editor membership and the
+  published route and pattern locks, as the production callers do.
 
   The focused gate command is deferred to branch review:
   `MIX_ENV=test MIX_TEST_PARTITION=_hs20 mix test
@@ -17,8 +17,10 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripHeadsignsTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
+  alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.Schedules
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
@@ -80,7 +82,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripHeadsignsTest do
     operation_id = Ecto.UUID.generate()
 
     assert {:ok, ^changes} =
-             Repo.transaction(fn ->
+             authorized_transaction(context, fn ->
                Schedules.write_trip_headsigns!(changes, operation_id, context.audit)
              end)
 
@@ -117,7 +119,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripHeadsignsTest do
     ]
 
     assert {:ok, _written} =
-             Repo.transaction(fn ->
+             authorized_transaction(context, fn ->
                Schedules.write_trip_headsigns!(changes, Ecto.UUID.generate(), context.audit)
              end)
 
@@ -141,7 +143,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripHeadsignsTest do
     changes = [%{id: trip_a.id, trip_id: trip_a.trip_id, from: @default, to: @default}]
 
     assert {:ok, []} =
-             Repo.transaction(fn ->
+             authorized_transaction(context, fn ->
                Schedules.write_trip_headsigns!(changes, Ecto.UUID.generate(), context.audit)
              end)
 
@@ -163,7 +165,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripHeadsignsTest do
     operation_id = Ecto.UUID.generate()
 
     assert {:ok, [written]} =
-             Repo.transaction(fn ->
+             authorized_transaction(context, fn ->
                Schedules.write_trip_headsigns!(changes, operation_id, context.audit)
              end)
 
@@ -189,7 +191,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripHeadsignsTest do
     ]
 
     assert {:error, {:stale, [stale]}} =
-             Repo.transaction(fn ->
+             authorized_transaction(context, fn ->
                Schedules.write_trip_headsigns!(changes, Ecto.UUID.generate(), context.audit)
              end)
 
@@ -217,7 +219,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripHeadsignsTest do
     ]
 
     assert {:ok, _written} =
-             Repo.transaction(fn ->
+             authorized_transaction(context, fn ->
                Schedules.write_trip_headsigns!(changes, Ecto.UUID.generate(), context.audit)
              end)
 
@@ -251,7 +253,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripHeadsignsTest do
     ]
 
     assert {:error, :invalid_selection} =
-             Repo.transaction(fn ->
+             authorized_transaction(context, fn ->
                Schedules.write_trip_headsigns!(changes, Ecto.UUID.generate(), context.audit)
              end)
 
@@ -274,11 +276,37 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripHeadsignsTest do
     ghost = [%{id: Ecto.UUID.generate(), trip_id: "ghost", from: @default, to: "Boston"}]
 
     assert {:error, :invalid_selection} =
-             Repo.transaction(fn ->
+             authorized_transaction(context, fn ->
                Schedules.write_trip_headsigns!(ghost, Ecto.UUID.generate(), context.audit)
              end)
 
     assert trip_logs(context) == []
+  end
+
+  test "the helper rejects out-of-transaction invocation before reading or writing", context do
+    [trip | _] = context.trips
+    before_trip = Repo.reload!(trip)
+    before_logs = trip_logs(context)
+
+    assert_raise ArgumentError, ~r/authorized transaction/, fn ->
+      Schedules.write_trip_headsigns!(
+        [%{id: trip.id, trip_id: trip.trip_id, from: @default, to: "Roads End"}],
+        Ecto.UUID.generate(),
+        context.audit
+      )
+    end
+
+    assert Repo.reload!(trip) == before_trip
+    assert trip_logs(context) == before_logs
+  end
+
+  defp authorized_transaction(context, fun) do
+    Repo.transaction(fn ->
+      Authorization.lock_editor!(context.audit)
+      route = RoutePatterns.lock_published_route!(context.audit, context.route.route_id)
+      RoutePatterns.lock_pattern!(route, context.bundle.pattern.id)
+      fun.()
+    end)
   end
 
   defp reloaded_headsigns(trips) do

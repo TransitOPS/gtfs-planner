@@ -8,6 +8,7 @@ defmodule GtfsPlanner.Gtfs.Routes.CreateTest do
   import GtfsPlanner.VersionsFixtures
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.User
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
@@ -15,7 +16,6 @@ defmodule GtfsPlanner.Gtfs.Routes.CreateTest do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Route
-  alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion
@@ -113,6 +113,25 @@ defmodule GtfsPlanner.Gtfs.Routes.CreateTest do
   end
 
   describe "create_editor_route/3 authorization and scope" do
+    test "a deactivated editor cannot create a route or its audit record" do
+      fixture = create_fixture()
+      on_exit(fn -> cleanup_fixture(fixture) end)
+
+      unboxed(fn ->
+        membership =
+          Repo.get_by!(UserOrgMembership,
+            user_id: fixture.actor.id,
+            organization_id: fixture.organization.id
+          )
+
+        deactivate_membership_fixture(membership)
+      end)
+
+      assert {:error, :forbidden} = create_route(route_attrs(), fixture.attempt, fixture.audit)
+      assert scoped_routes(fixture) == []
+      assert created_logs(fixture) == []
+    end
+
     test "a denied actor writes nothing and loses no access" do
       fixture = create_fixture()
       on_exit(fn -> cleanup_fixture(fixture) end)
@@ -416,9 +435,13 @@ defmodule GtfsPlanner.Gtfs.Routes.CreateTest do
         user_fixture(%{email: "route-create-#{System.unique_integer([:positive])}@example.com"})
 
       {:ok, _membership} =
-        Organizations.add_user_to_organization(actor.id, organization.id, [
-          "pathways_studio_editor"
-        ])
+        Accounts.create_user_org_membership(%{
+          user_id: actor.id,
+          organization_id: organization.id,
+          roles: [
+            "pathways_studio_editor"
+          ]
+        })
 
       audit = %AuditContext{
         organization_id: organization.id,

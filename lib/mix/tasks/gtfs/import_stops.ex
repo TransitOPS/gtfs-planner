@@ -237,7 +237,7 @@ defmodule Mix.Tasks.Gtfs.ImportStops do
         gtfs_version_id: gtfs_version_id
       }
 
-      GtfsPlanner.Gtfs.create_stop(attrs)
+      GtfsPlanner.Gtfs.import_create_stop(attrs)
     else
       {:error, reason} ->
         {:error, %Ecto.Changeset{errors: [stop_id: {reason, []}]}}

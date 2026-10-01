@@ -38,6 +38,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.StationJournal.PhotoStorage, as: JournalPhotoStorage
   alias GtfsPlanner.Gtfs.StationJournal.Scope, as: JournalScope
+  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Organizations
@@ -47,7 +48,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias GtfsPlannerWeb.Gtfs.StationJournalMarkers
   alias GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents
   alias GtfsPlannerWeb.StationWorkspace
-  on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+  on_mount({GtfsPlannerWeb.EnsureRole, :require_gtfs_access})
 
   @history_key :history_load
   @journal_load_key :journal_load
@@ -133,6 +134,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:stop_search_form, to_form(%{"stop_id_query" => ""}))
      |> assign(:measurement_enabled, false)
      |> assign(:scale_status, nil)
+     |> assign(:ruler_outcome, nil)
      |> assign(:placement_status, nil)
      |> assign(:ruler_point_a, nil)
      |> assign(:ruler_point_b, nil)
@@ -141,6 +143,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:pending_xy, nil)
      |> assign(:selected_stop_id, nil)
      |> assign(:dragging_stop_id, nil)
+     |> assign(:dragging_stop_revision, nil)
      |> assign(:active_point_id, nil)
      |> assign(:selected_from_stop, nil)
      |> assign(:cross_level_badges_by_stop, %{})
@@ -148,11 +151,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:unassigned_child_stops, [])
      |> assign(:show_level_modal, nil)
      |> assign(:level_form, to_form(%{}))
+     |> assign(:level_outcome, nil)
      |> assign(:level_shared, false)
      |> assign(:level_id_manually_edited, false)
      |> assign(:pathway_error, nil)
+     |> assign(:pathway_outcome, nil)
      |> assign(:pathway_in_use, nil)
      |> assign(:child_stop_error, nil)
+     |> assign(:child_stop_outcome, nil)
      |> assign(:diagram_error, nil)
      |> assign(:upload_phase, :idle)
      |> assign(:pending_diagram_upload, nil)
@@ -182,10 +188,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:show_naming_drawer, false)
      |> assign(:naming_style, :kebab)
      |> assign(:naming_preview, [])
+     |> assign(:naming_fingerprint, nil)
      |> assign(:naming_renamed_stops_count, 0)
      |> assign(:naming_updated_pathways_count, 0)
      |> assign(:naming_applying?, false)
      |> assign(:naming_error, nil)
+     |> assign(:naming_stale?, false)
      |> assign(:naming_status, nil)
      |> assign(:naming_excluded_ids, MapSet.new())
      |> assign(:other_levels, [])
@@ -1224,6 +1232,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           }
           child_stop_form={@child_stop_form}
           child_stop_error={@child_stop_error}
+          child_stop_outcome={@child_stop_outcome}
           platform_options={@platform_options}
           stop_id_mode={@stop_id_mode}
           mode={@mode}
@@ -1270,6 +1279,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           pathway_form_dirty={@pathway_form_dirty}
           has_scale={scale_configured?(@active_stop_level)}
           pathway_error={@pathway_error}
+          pathway_outcome={@pathway_outcome}
           pathway_in_use={@pathway_in_use}
           history_open_for={@history_open_for}
           history_entries={@history_entries}
@@ -1300,6 +1310,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         <.ruler_drawer
           open={@show_ruler_drawer}
           ruler_form={@ruler_form}
+          ruler_outcome={@ruler_outcome}
+          stop_level_revision={if @active_stop_level, do: @active_stop_level.lock_version}
         />
 
         <.level_sidebar
@@ -1309,6 +1321,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           level_mode={@level_mode}
           editing_level_uuid={if @show_level_modal == :edit && @active_level, do: @active_level.id}
           level_shared={@level_shared}
+          level_outcome={@level_outcome}
           history_open_for={@history_open_for}
           history_entries={@history_entries}
           history_state={@history_state}
@@ -1329,6 +1342,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           updated_pathways_count={@naming_updated_pathways_count}
           applying?={@naming_applying?}
           error={@naming_error}
+          stale?={@naming_stale?}
           excluded_ids={@naming_excluded_ids}
         />
 
@@ -1468,7 +1482,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       )
       when entity_type in ["stop", "pathway"] and is_binary(entity_id) do
     if drawer_open_for?(socket, entity_type, entity_id) and
-         entity_belongs_to_current_station?(socket, entity_type, entity_id) do
+         Stations.station_member?(socket.assigns.audit_ctx, entity_type, entity_id) do
       target = draw_map_entity_to_target(entity_type, entity_id)
 
       {:noreply,
@@ -1831,9 +1845,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            |> reset_reposition_state()
            |> assign(:pending_xy, %{x: x, y: y})
            |> assign(:selected_stop_id, nil)
+           |> assign(:editing_child_stop, nil)
            |> assign(:editing_level, false)
            |> assign(:stop_id_mode, :auto)
            |> assign(:child_stop_error, nil)
+           |> assign(:child_stop_outcome, nil)
            |> assign(:child_stop_form, form)}
         end
 
@@ -1868,9 +1884,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> reset_reposition_state()
      |> assign(:pending_xy, %{x: nil, y: nil})
      |> assign(:selected_stop_id, nil)
+     |> assign(:editing_child_stop, nil)
      |> assign(:editing_level, false)
      |> assign(:stop_id_mode, :auto)
      |> assign(:child_stop_error, nil)
+     |> assign(:child_stop_outcome, nil)
      |> assign(:child_stop_form, form)}
   end
 
@@ -1884,9 +1902,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> reset_reposition_state()
      |> assign(:pending_xy, nil)
      |> assign(:selected_stop_id, nil)
+     |> assign(:editing_child_stop, nil)
      |> assign(:active_point_id, nil)
      |> assign(:journal_form_context, nil)
      |> assign(:child_stop_error, nil)
+     |> assign(:child_stop_outcome, nil)
      |> assign(:child_stop_form, to_form(%{}))}
   end
 
@@ -1979,7 +1999,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     station = socket.assigns.station
-    stop = Gtfs.get_stop(id)
+    stop = Enum.find(socket.assigns.child_stops_list, &(to_string(&1.id) == to_string(id)))
 
     cond do
       socket.assigns.mode != :view ->
@@ -2021,7 +2041,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
       true ->
         Logger.debug("drag_start accepted", stop_id: id)
-        {:noreply, assign(socket, :dragging_stop_id, stop.id)}
+
+        {:noreply,
+         socket
+         |> assign(:dragging_stop_id, stop.id)
+         |> assign(:dragging_stop_revision, stop.lock_version)}
     end
   end
 
@@ -2041,7 +2065,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          true <- to_string(dragging_stop_id) == to_string(id),
          {:ok, parsed_x} <- parse_svg_coordinate(x, :x),
          {:ok, parsed_y} <- parse_svg_coordinate(y, :y),
-         %Stop{} = stop <- Gtfs.get_stop(id),
+         %Stop{} = stop <-
+           Enum.find(socket.assigns.child_stops_list, &(to_string(&1.id) == to_string(id))),
+         {:ok, pending_xy} <- stop_diagram_point(stop),
          true <- stop.organization_id == socket.assigns.current_organization.id,
          true <- stop.gtfs_version_id == socket.assigns.current_gtfs_version.id,
          true <-
@@ -2050,37 +2076,40 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              socket.assigns.station.stop_id,
              socket.assigns.platform_stop_ids
            ) do
-      attrs = %{diagram_coordinate: %{"x" => parsed_x, "y" => parsed_y}}
-
       if coords_unchanged?(stop.diagram_coordinate, parsed_x, parsed_y) do
-        {:noreply, assign(socket, :dragging_stop_id, nil)}
+        {:noreply,
+         socket
+         |> assign(:dragging_stop_id, nil)
+         |> assign(:dragging_stop_revision, nil)}
       else
-        case Gtfs.update_stop(stop, attrs) do
+        case Stations.move_child_stop(
+               socket.assigns.audit_ctx,
+               stop.id,
+               %{x: parsed_x, y: parsed_y},
+               socket.assigns.dragging_stop_revision
+             ) do
           {:ok, updated_stop} ->
             Logger.debug("drag_end persisted", stop_id: id, x: parsed_x, y: parsed_y)
 
-            maybe_record_change(
-              socket.assigns.audit_ctx,
-              :stop,
-              stop,
-              updated_stop,
-              attrs
-            )
-
             {:noreply,
              socket
+             |> replace_child_stop_in_list(updated_stop)
              |> stream_insert(:child_stops, updated_stop)
              |> assign(:dragging_stop_id, nil)
+             |> assign(:dragging_stop_revision, nil)
              |> load_pathways_for_level(socket.assigns.active_level)
+             |> push_active_child_stop_markers()
              |> maybe_refresh_history_entries("stop", updated_stop.id)}
 
-          {:error, _changeset} ->
+          {:error, reason} ->
             Logger.debug("drag_end failed to persist", stop_id: id)
 
             {:noreply,
              socket
              |> assign(:dragging_stop_id, nil)
-             |> put_flash(:error, "Failed to re-position stop")}
+             |> assign(:dragging_stop_revision, nil)
+             |> open_edit_sidebar(stop, pending_xy)
+             |> assign_child_stop_outcome(reason, stop.stop_id)}
         end
       end
     else
@@ -2095,6 +2124,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:noreply,
          socket
          |> assign(:dragging_stop_id, nil)
+         |> assign(:dragging_stop_revision, nil)
          |> put_flash(:error, "Invalid drag position")}
     end
   end
@@ -2104,13 +2134,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     {:noreply,
      socket
      |> assign(:dragging_stop_id, nil)
+     |> assign(:dragging_stop_revision, nil)
      |> put_flash(:error, "Invalid drag position")}
   end
 
   @impl true
   def handle_event("drag_cancel", _params, socket) do
     Logger.debug("drag_cancel received", dragging_stop_id: socket.assigns.dragging_stop_id)
-    {:noreply, assign(socket, :dragging_stop_id, nil)}
+
+    {:noreply,
+     socket
+     |> assign(:dragging_stop_id, nil)
+     |> assign(:dragging_stop_revision, nil)}
   end
 
   @impl true
@@ -2138,23 +2173,53 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("edit_child_stop", %{"id" => id} = params, socket) do
-    stop = Gtfs.get_stop!(id)
-
     socket =
-      case stop_diagram_point(stop) do
-        {:ok, pending_xy} ->
-          journal_context = journal_form_context(socket, params["journal_entry_id"])
+      case Stations.get_child_stop(socket.assigns.audit_ctx, id) do
+        %Stop{} = stop ->
+          case stop_diagram_point(stop) do
+            {:ok, pending_xy} ->
+              journal_context = journal_form_context(socket, params["journal_entry_id"])
 
+              socket
+              |> close_journal_panel()
+              |> open_edit_sidebar(stop, pending_xy)
+              |> assign(:journal_form_context, journal_context)
+
+            :error ->
+              put_flash(socket, :error, ~s(Stop "#{stop.stop_id}" has no diagram position))
+          end
+
+        nil ->
           socket
-          |> close_journal_panel()
-          |> open_edit_sidebar(stop, pending_xy)
-          |> assign(:journal_form_context, journal_context)
-
-        :error ->
-          put_flash(socket, :error, ~s(Stop "#{stop.stop_id}" has no diagram position))
+          |> assign(:selected_stop_id, id)
+          |> assign(:editing_child_stop, nil)
+          |> assign(:pending_xy, %{x: nil, y: nil})
+          |> assign(:child_stop_form, to_form(%{}))
+          |> assign_child_stop_outcome(:not_found, nil)
       end
 
     {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("reload_child_stop", _params, socket) do
+    params = socket.assigns.child_stop_form.params || %{}
+    socket = refresh_lists(socket)
+
+    case Stations.get_child_stop(socket.assigns.audit_ctx, socket.assigns.selected_stop_id) do
+      %Stop{} = stop ->
+        {:noreply,
+         socket
+         |> assign(:editing_child_stop, stop)
+         |> assign(
+           :child_stop_form,
+           to_form(Map.put(params, "lock_version", to_string(stop.lock_version)))
+         )
+         |> assign(:child_stop_outcome, nil)}
+
+      nil ->
+        {:noreply, assign_child_stop_outcome(socket, :not_found, nil)}
+    end
   end
 
   @impl true
@@ -2311,139 +2376,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("save_child_stop", params, socket) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-    station = socket.assigns.station
-
     with {:ok, x} <- parse_finite_float(params["x"]),
          {:ok, y} <- parse_finite_float(params["y"]) do
-      location_type = parse_int(params["location_type"] || "3")
-      selected_parent_platform = blank_to_nil(params["parent_platform"])
-      platform_stop_ids = platform_stop_ids_for_station(organization_id, gtfs_version_id, station)
-
-      parent_station =
-        if location_type == 4 and MapSet.member?(platform_stop_ids, selected_parent_platform) do
-          selected_parent_platform
-        else
-          station.stop_id
-        end
-
-      stop_id =
-        if socket.assigns.stop_id_mode == :auto and socket.assigns.selected_stop_id == nil and
-             params["stop_id"] not in [nil, ""] do
-          Gtfs.unique_stop_id(organization_id, gtfs_version_id, params["stop_id"])
-        else
-          params["stop_id"]
-        end
-
-      stop_attrs = %{
-        stop_id: stop_id,
-        stop_name: params["stop_name"],
-        location_type: location_type,
-        parent_station: parent_station,
-        level_id: params["level_id"],
-        wheelchair_boarding: parse_optional_int(params["wheelchair_boarding"]),
-        platform_code: blank_to_nil(params["platform_code"]),
-        stop_lat: params["stop_lat"],
-        stop_lon: params["stop_lon"],
-        diagram_coordinate: %{"x" => x, "y" => y},
-        organization_id: organization_id,
-        gtfs_version_id: gtfs_version_id
-      }
-
-      case socket.assigns.selected_stop_id do
-        nil ->
-          case Gtfs.create_stop(stop_attrs) do
-            {:ok, stop} ->
-              Gtfs.record_change(
-                socket.assigns.audit_ctx,
-                :stop,
-                stop,
-                "created",
-                stop_attrs
-              )
-
-              {:noreply,
-               socket
-               |> stream_insert(:child_stops, stop)
-               |> refresh_lists()
-               |> assign(
-                 :placement_status,
-                 "Stop placed at (#{Float.to_string(x)}, #{Float.to_string(y)})"
-               )
-               |> assign(:pending_xy, nil)
-               |> assign(:selected_stop_id, nil)
-               |> assign(:active_point_id, nil)
-               |> assign(:child_stop_form, to_form(%{}))}
-
-            {:error, changeset} ->
-              {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
-          end
-
-        selected_id ->
-          stop = Gtfs.get_stop!(selected_id)
-
-          stop_attrs_result =
-            if stop_attrs.stop_id in [nil, ""] do
-              case Gtfs.generate_kebab_stop_id(
-                     organization_id,
-                     gtfs_version_id,
-                     stop_attrs.stop_name,
-                     stop.stop_id
-                   ) do
-                {:ok, generated} -> {:ok, %{stop_attrs | stop_id: generated}}
-                {:error, msg} -> {:error, msg}
-              end
-            else
-              {:ok, stop_attrs}
-            end
-
-          {result, applied_attrs} =
-            case stop_attrs_result do
-              {:error, msg} ->
-                changeset =
-                  stop
-                  |> Stop.changeset(stop_attrs)
-                  |> Ecto.Changeset.add_error(:stop_id, msg)
-                  |> Map.put(:action, :validate)
-
-                {{:error, changeset}, stop_attrs}
-
-              {:ok, resolved_attrs} ->
-                update_result =
-                  if resolved_attrs.stop_id != stop.stop_id do
-                    Gtfs.update_stop_with_cascade(stop, resolved_attrs)
-                  else
-                    Gtfs.update_stop(stop, resolved_attrs)
-                  end
-
-                {update_result, resolved_attrs}
-            end
-
-          case result do
-            {:ok, updated_stop} ->
-              Gtfs.record_change(
-                socket.assigns.audit_ctx,
-                :stop,
-                stop,
-                "updated",
-                applied_attrs
-              )
-
-              refresh_plan =
-                child_stop_refresh_plan(stop, updated_stop, socket.assigns.active_level)
-
-              {:noreply,
-               socket
-               |> assign(:placement_status, "Stop updated")
-               |> close_child_stop_drawer_after_save()
-               |> apply_child_stop_save_refresh(refresh_plan, updated_stop)
-               |> maybe_refresh_history_entries("stop", updated_stop.id)}
-
-            {:error, changeset} ->
-              {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
-          end
-      end
+      save_child_stop(socket, params, x, y)
     else
       {:error, :invalid_coordinate} ->
         {:noreply,
@@ -2495,14 +2430,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     if socket.assigns.mode == :add or socket.assigns.measurement_enabled do
       {:noreply, socket}
     else
-      pathway = Gtfs.get_pathway_with_stops!(id)
-      journal_context = journal_form_context(socket, params["journal_entry_id"])
+      case Stations.get_pathway(socket.assigns.audit_ctx, id) do
+        {:ok, pathway} ->
+          journal_context = journal_form_context(socket, params["journal_entry_id"])
 
-      {:noreply,
-       socket
-       |> close_journal_panel()
-       |> open_pathway_drawer(pathway)
-       |> assign(:journal_form_context, journal_context)}
+          {:noreply,
+           socket
+           |> close_journal_panel()
+           |> open_pathway_drawer(pathway)
+           |> assign(:journal_form_context, journal_context)}
+
+        {:error, :not_found} ->
+          {:noreply, assign(socket, :pathway_error, "Pathway not found.")}
+      end
     end
   end
 
@@ -2545,8 +2485,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         if pair_count >= 2 do
           {:noreply, assign(socket, :pathway_error, "This stop pair already has two pathways")}
         else
-          organization_id = socket.assigns.current_organization.id
-          gtfs_version_id = socket.assigns.current_gtfs_version.id
           pathway_id = "pw_#{:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)}"
 
           attrs =
@@ -2555,40 +2493,35 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               from_stop_id: from_stop.stop_id,
               to_stop_id: to_stop.stop_id,
               pathway_mode: 1,
-              is_bidirectional: true,
-              organization_id: organization_id,
-              gtfs_version_id: gtfs_version_id
+              is_bidirectional: true
             }
             |> maybe_put_auto_pathway_length(socket, from_stop, to_stop)
 
-          case Gtfs.create_pathway(attrs) do
+          case Stations.create_pathway(socket.assigns.audit_ctx, attrs) do
             {:ok, pathway} ->
-              Gtfs.record_change(
-                socket.assigns.audit_ctx,
-                :pathway,
-                pathway,
-                "created",
-                attrs
-              )
+              case Stations.get_pathway(socket.assigns.audit_ctx, pathway.id) do
+                {:ok, loaded_pathway} ->
+                  refreshed_socket = refresh_lists(socket)
 
-              loaded_pathway = Gtfs.get_pathway_with_stops!(pathway.id)
-              refreshed_socket = refresh_lists(socket)
+                  pathway_pair =
+                    pair_siblings_for(loaded_pathway, refreshed_socket.assigns.pathways_list)
 
-              pathway_pair =
-                pair_siblings_for(loaded_pathway, refreshed_socket.assigns.pathways_list)
+                  {:noreply,
+                   refreshed_socket
+                   |> assign(:show_pathway_drawer, true)
+                   |> assign(:editing_pathway_pair, pathway_pair)
+                   |> assign(:active_pathway_tab, tab_for_pathway(pathway_pair, loaded_pathway))
+                   |> assign(:pathway_form_dirty, false)
+                   |> assign(:editing_pathway, loaded_pathway)
+                   |> assign(:pathway_form, to_form(pathway_form_params(loaded_pathway)))
+                   |> clear_pathway_refusals()}
 
-              {:noreply,
-               refreshed_socket
-               |> assign(:show_pathway_drawer, true)
-               |> assign(:editing_pathway_pair, pathway_pair)
-               |> assign(:active_pathway_tab, tab_for_pathway(pathway_pair, loaded_pathway))
-               |> assign(:pathway_form_dirty, false)
-               |> assign(:editing_pathway, loaded_pathway)
-               |> assign(:pathway_form, to_form(pathway_form_params(loaded_pathway)))
-               |> clear_pathway_refusals()}
+                {:error, :not_found} ->
+                  {:noreply, show_postwrite_pathway_missing(socket)}
+              end
 
-            {:error, _changeset} ->
-              {:noreply, assign(socket, :pathway_error, "Failed to create pathway")}
+            {:error, reason} ->
+              {:noreply, assign_pathway_outcome(socket, reason)}
           end
         end
     end
@@ -2671,6 +2604,36 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event("reload_pathway", _params, socket) do
+    params = socket.assigns.pathway_form.params || %{}
+    socket = refresh_lists(socket)
+
+    case socket.assigns.editing_pathway do
+      %Pathway{id: id} ->
+        case Stations.get_pathway(socket.assigns.audit_ctx, id) do
+          {:ok, pathway} ->
+            pathway_pair = pair_siblings_for(pathway, socket.assigns.pathways_list)
+
+            {:noreply,
+             socket
+             |> assign(:editing_pathway, pathway)
+             |> assign(:editing_pathway_pair, pathway_pair)
+             |> assign(
+               :pathway_form,
+               to_form(Map.put(params, "lock_version", pathway.lock_version))
+             )
+             |> assign(:pathway_outcome, nil)}
+
+          {:error, :not_found} ->
+            {:noreply, assign_pathway_outcome(socket, :not_found)}
+        end
+
+      _ ->
+        {:noreply, assign_pathway_outcome(socket, :not_found)}
+    end
+  end
+
+  @impl true
   def handle_event("pathway_form_changed", params, socket) do
     form_params =
       case Map.get(params, "pathway") do
@@ -2681,18 +2644,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     {:noreply,
      socket
      |> assign(:pathway_form, to_form(one_way_when_exit_gate(form_params)))
-     |> clear_pathway_refusals()
+     |> assign(pathway_error: nil, pathway_in_use: nil)
      |> assign(:pathway_form_dirty, true)}
   end
 
   @impl true
-  def handle_event("save_ruler", %{"ruler" => %{"distance_meters" => distance_input}}, socket) do
+  def handle_event(
+        "save_ruler",
+        %{"ruler" => %{"distance_meters" => distance_input} = ruler_params},
+        socket
+      ) do
     active_stop_level = socket.assigns.active_stop_level
     point_a = socket.assigns.ruler_point_a
     point_b = socket.assigns.ruler_point_b
 
     socket =
-      assign(socket, :ruler_form, to_form(%{"distance_meters" => distance_input}, as: :ruler))
+      assign(socket, :ruler_form, to_form(ruler_params, as: :ruler))
 
     with %{} <- point_a,
          %{} <- point_b,
@@ -2708,14 +2675,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         scale_meters_per_unit: meters_per_unit
       }
 
-      case Gtfs.save_scale_and_recalculate(
-             stop_level,
+      case Stations.save_scale(
+             socket.assigns.audit_ctx,
+             stop_level.id,
              attrs,
-             socket.assigns.current_organization.id,
-             socket.assigns.current_gtfs_version.id,
-             socket.assigns.active_level.id,
-             socket.assigns.station.id,
-             socket.assigns.audit_ctx
+             parse_int(ruler_params["lock_version"])
            ) do
         {:ok,
          %{
@@ -2731,6 +2695,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           {:noreply,
            socket
            |> assign(:active_stop_level, updated_stop_level)
+           |> assign(:ruler_outcome, nil)
            |> assign(:measurement_enabled, false)
            |> reset_ruler_state()
            |> assign(
@@ -2739,11 +2704,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                kept_status
            )}
 
-        {:error, _reason} ->
+        {:error, reason} ->
           {:noreply,
            socket
            |> assign(:ruler_form, to_form(%{"distance_meters" => distance_input}, as: :ruler))
-           |> assign(:scale_status, "Failed to save scale")}
+           |> assign_ruler_outcome(reason)}
       end
     else
       nil ->
@@ -2767,6 +2732,37 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event("reload_ruler", _params, socket) do
+    params = socket.assigns.ruler_form.params
+
+    case socket.assigns.active_level do
+      %Gtfs.Level{id: level_id} ->
+        stop_level =
+          Gtfs.get_stop_level(
+            socket.assigns.current_organization.id,
+            socket.assigns.current_gtfs_version.id,
+            socket.assigns.station.id,
+            level_id
+          )
+
+        case stop_level do
+          %StopLevel{} ->
+            {:noreply,
+             socket
+             |> assign(:active_stop_level, stop_level)
+             |> assign(:ruler_form, to_form(params, as: :ruler))
+             |> assign(:ruler_outcome, nil)}
+
+          nil ->
+            {:noreply, assign_ruler_outcome(socket, :not_found)}
+        end
+
+      _ ->
+        {:noreply, assign_ruler_outcome(socket, :not_found)}
+    end
+  end
+
+  @impl true
   def handle_event("close_ruler_drawer", _params, socket) do
     {:noreply, reset_ruler_state(socket)}
   end
@@ -2780,7 +2776,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   def handle_event("clear_calibration", _params, socket) do
     case socket.assigns.active_stop_level do
       %StopLevel{} = stop_level ->
-        case Gtfs.clear_stop_level_scale(stop_level) do
+        case Stations.clear_scale(
+               socket.assigns.audit_ctx,
+               stop_level.id,
+               stop_level.lock_version
+             ) do
           {:ok, cleared_stop_level} ->
             {:noreply,
              socket
@@ -2788,8 +2788,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              |> reset_ruler_state()
              |> assign(:scale_status, "Scale removed - pathway measurements unchanged")}
 
-          {:error, _changeset} ->
-            {:noreply, put_flash(socket, :error, "Failed to clear diagram scale")}
+          {:error, reason} ->
+            {:noreply,
+             socket
+             |> assign(:show_ruler_drawer, true)
+             |> assign_ruler_outcome(reason)}
         end
 
       _ ->
@@ -2932,12 +2935,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       image_w = socket.assigns.floorplan_image_w
       image_h = socket.assigns.floorplan_image_h
 
-      case Gtfs.save_and_apply_stop_level_alignment(
+      case Stations.apply_reviewed_alignment(
+             socket.assigns.audit_ctx,
              stop_level_id,
              reviewed_alignment_attrs,
              image_w,
-             image_h,
-             socket.assigns.audit_ctx
+             image_h
            ) do
         {:ok, %{active_stop_level: updated, apply_result: %{updated_stop_count: count}}} ->
           {:noreply,
@@ -3224,10 +3227,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:show_naming_drawer, false)
      |> assign(:naming_style, :kebab)
      |> assign(:naming_preview, [])
+     |> assign(:naming_fingerprint, nil)
      |> assign(:naming_renamed_stops_count, 0)
      |> assign(:naming_updated_pathways_count, 0)
      |> assign(:naming_applying?, false)
      |> assign(:naming_error, nil)
+     |> assign(:naming_stale?, false)
      |> assign(:naming_excluded_ids, MapSet.new())}
   end
 
@@ -3280,9 +3285,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   def handle_event("apply_naming_convention", _params, socket) do
-    org_id = socket.assigns.current_organization.id
-    version_id = socket.assigns.current_gtfs_version.id
-    station_stop_id = socket.assigns.station.stop_id
     style = socket.assigns.naming_style
     excluded = socket.assigns.naming_excluded_ids
 
@@ -3293,7 +3295,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     socket = assign(socket, :naming_applying?, true)
 
-    case Gtfs.apply_station_naming(org_id, version_id, station_stop_id, style, selected_ids) do
+    case Stations.apply_station_naming(
+           socket.assigns.audit_ctx,
+           style,
+           selected_ids,
+           socket.assigns.naming_fingerprint
+         ) do
       {:ok, %{renamed_stops: stops, updated_pathways: pathways}} ->
         status =
           "Renamed #{stops} #{ngettext("child stop", "child stops", stops)}, " <>
@@ -3304,11 +3311,32 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:show_naming_drawer, false)
          |> assign(:naming_style, :kebab)
          |> assign(:naming_preview, [])
+         |> assign(:naming_fingerprint, nil)
          |> assign(:naming_applying?, false)
          |> assign(:naming_error, nil)
+         |> assign(:naming_stale?, false)
          |> assign(:naming_excluded_ids, MapSet.new())
          |> assign(:naming_status, status)
          |> refresh_lists()}
+
+      {:error, :stale_preview} ->
+        socket = load_naming_preview(socket, style)
+
+        socket =
+          if socket.assigns.naming_fingerprint do
+            socket
+            |> assign(:naming_stale?, true)
+            |> assign(
+              :naming_error,
+              "Stop IDs changed since this preview. Review the new preview before applying."
+            )
+          else
+            socket
+          end
+
+        {:noreply,
+         socket
+         |> assign(:naming_applying?, false)}
 
       {:error, reason} ->
         {:noreply,
@@ -3325,17 +3353,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("set_station_editing_status", _params, socket) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-
-    case Gtfs.set_station_editing_status(
-           organization_id,
-           gtfs_version_id,
-           socket.assigns.station,
-           socket.assigns.current_user
-         ) do
+    case Gtfs.set_station_editing_status(socket.assigns.audit_ctx, socket.assigns.station) do
       {:ok, status} ->
         {:noreply, assign(socket, :station_editing_status, status)}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         put_flash(socket, :error, "You no longer have edit access to this organization.")}
 
       {:error, _changeset} ->
         {:noreply, put_flash(socket, :error, "Failed to set station editing status")}
@@ -3344,17 +3368,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("clear_station_editing_status", _params, socket) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    case Gtfs.clear_station_editing_status(socket.assigns.audit_ctx, socket.assigns.station.id) do
+      :ok ->
+        {:noreply, assign(socket, :station_editing_status, nil)}
 
-    :ok =
-      Gtfs.clear_station_editing_status(
-        organization_id,
-        gtfs_version_id,
-        socket.assigns.station.id
-      )
+      {:error, :forbidden} ->
+        {:noreply,
+         put_flash(socket, :error, "You no longer have edit access to this organization.")}
 
-    {:noreply, assign(socket, :station_editing_status, nil)}
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to clear station editing status")}
+    end
   end
 
   @impl true
@@ -3436,7 +3460,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             {:noreply,
              socket
              |> assign(:pathway_form, to_form(updated_params))
-             |> clear_pathway_refusals()}
+             |> assign(pathway_error: nil, pathway_in_use: nil)}
 
           _ ->
             {:noreply,
@@ -3465,181 +3489,57 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       reversed_signposted_as: params["reversed_signposted_as"]
     }
 
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-    station = socket.assigns.station
-
-    pathway = editing_pathway
-
-    cond do
-      is_nil(pathway) ->
-        {:noreply,
-         socket
-         |> assign(:pathway_error, "Pathway not found.")
-         |> assign(:pathway_form, to_form(params))}
-
-      pathway.organization_id != organization_id or pathway.gtfs_version_id != gtfs_version_id ->
-        {:noreply,
-         socket
-         |> assign(:pathway_error, "Unauthorized pathway access.")
-         |> assign(:pathway_form, to_form(params))}
-
-      is_nil(pathway.from_stop) or is_nil(pathway.to_stop) ->
-        {:noreply,
-         socket
-         |> assign(:pathway_error, "Pathway is not fully associated with stops.")
-         |> assign(:pathway_form, to_form(params))}
-
-      not stop_belongs_to_station?(
-        pathway.from_stop,
-        station.stop_id,
-        socket.assigns.platform_stop_ids
-      ) or
-          not stop_belongs_to_station?(
-            pathway.to_stop,
-            station.stop_id,
-            socket.assigns.platform_stop_ids
-          ) ->
-        {:noreply,
-         socket
-         |> assign(:pathway_error, "Unauthorized pathway access.")
-         |> assign(:pathway_form, to_form(params))}
-
-      true ->
-        case Gtfs.update_pathway(pathway, attrs) do
+    case editing_pathway do
+      %Pathway{} = pathway ->
+        case Stations.update_pathway(
+               socket.assigns.audit_ctx,
+               pathway.id,
+               attrs,
+               parse_int(params["lock_version"])
+             ) do
           {:ok, updated_pathway} ->
-            maybe_record_change(
-              socket.assigns.audit_ctx,
-              :pathway,
-              pathway,
-              updated_pathway,
-              attrs
-            )
+            case Stations.get_pathway(socket.assigns.audit_ctx, updated_pathway.id) do
+              {:ok, loaded_pathway} ->
+                {:noreply,
+                 socket
+                 |> apply_pathway_save_refresh(loaded_pathway)
+                 |> close_pathway_drawer_after_save()
+                 |> maybe_refresh_history_entries("pathway", updated_pathway.id)}
 
+              {:error, :not_found} ->
+                {:noreply,
+                 socket
+                 |> refresh_lists()
+                 |> assign(:pathway_form, to_form(params))
+                 |> assign_pathway_outcome(:not_found)}
+            end
+
+          {:error, %Ecto.Changeset{} = changeset} ->
+            {:noreply, assign(socket, :pathway_form, to_form(changeset))}
+
+          {:error, reason} ->
             {:noreply,
              socket
-             |> apply_pathway_save_refresh(pathway, updated_pathway)
-             |> close_pathway_drawer_after_save()
-             |> maybe_refresh_history_entries("pathway", updated_pathway.id)}
-
-          {:error, changeset} ->
-            {:noreply, assign(socket, :pathway_form, to_form(changeset))}
+             |> assign(:pathway_form, to_form(params))
+             |> assign_pathway_outcome(reason)}
         end
+
+      _ ->
+        {:noreply,
+         socket
+         |> assign(:pathway_form, to_form(params))
+         |> assign_pathway_outcome(:not_found)}
     end
   end
 
   @impl true
-  def handle_event("flip_pathway", %{"id" => id}, socket) do
-    pathway =
-      try do
-        Gtfs.get_pathway_with_stops!(id)
-      rescue
-        Ecto.NoResultsError -> nil
-        Ecto.Query.CastError -> nil
-      end
+  def handle_event("flip_pathway", %{"id" => id, "revision" => revision}, socket) do
+    case socket.assigns.editing_pathway do
+      %Pathway{id: ^id} = pathway ->
+        flip_editing_pathway(socket, pathway, revision)
 
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-    station = socket.assigns.station
-
-    cond do
-      is_nil(pathway) ->
+      _ ->
         {:noreply, assign(socket, :pathway_error, "Pathway not found.")}
-
-      pathway.organization_id != organization_id or pathway.gtfs_version_id != gtfs_version_id ->
-        {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
-
-      is_nil(pathway.from_stop) or is_nil(pathway.to_stop) ->
-        {:noreply, assign(socket, :pathway_error, "Pathway is not fully associated with stops.")}
-
-      not stop_belongs_to_station?(
-        pathway.from_stop,
-        station.stop_id,
-        socket.assigns.platform_stop_ids
-      ) or
-          not stop_belongs_to_station?(
-            pathway.to_stop,
-            station.stop_id,
-            socket.assigns.platform_stop_ids
-          ) ->
-        {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
-
-      true ->
-        # Read current form values so pending edits are preserved through the flip.
-        form = socket.assigns.pathway_form
-        form_signposted = form[:signposted_as] && form[:signposted_as].value
-        form_reversed = form[:reversed_signposted_as] && form[:reversed_signposted_as].value
-
-        flip_attrs = %{
-          from_stop_id: pathway.to_stop_id,
-          to_stop_id: pathway.from_stop_id,
-          # Swap signage from form values (preserves pending edits)
-          signposted_as: form_reversed,
-          reversed_signposted_as: form_signposted,
-          # Preserve other pending form edits
-          pathway_mode: parse_int(form[:pathway_mode] && form[:pathway_mode].value),
-          is_bidirectional:
-            (form[:is_bidirectional] && form[:is_bidirectional].value) in [true, "true"],
-          traversal_time:
-            parse_optional_int(form[:traversal_time] && form[:traversal_time].value),
-          length: parse_optional_decimal(form[:length] && form[:length].value),
-          stair_count: parse_optional_int(form[:stair_count] && form[:stair_count].value),
-          min_width: parse_optional_decimal(form[:min_width] && form[:min_width].value)
-        }
-
-        case Gtfs.update_pathway(pathway, flip_attrs) do
-          {:ok, updated_pathway} ->
-            maybe_record_change(
-              socket.assigns.audit_ctx,
-              :pathway,
-              pathway,
-              updated_pathway,
-              flip_attrs
-            )
-
-            refreshed_socket = refresh_lists(socket)
-            reloaded = Gtfs.get_pathway_with_stops!(updated_pathway.id)
-
-            pathway_pair =
-              pair_siblings_for(
-                %{from_stop_id: reloaded.from_stop_id, to_stop_id: reloaded.to_stop_id},
-                refreshed_socket.assigns.pathways_list
-              )
-
-            active_pathway_tab =
-              case pathway_pair do
-                [_first, second] ->
-                  if reloaded.id == second.id, do: :second, else: :first
-
-                _ ->
-                  :first
-              end
-
-            {:noreply,
-             refreshed_socket
-             |> assign(:editing_pathway, reloaded)
-             |> assign(:editing_pathway_pair, pathway_pair)
-             |> assign(:active_pathway_tab, active_pathway_tab)
-             |> assign(:pathway_form, to_form(pathway_form_params(reloaded)))
-             |> assign(:pathway_form_dirty, false)
-             |> clear_pathway_refusals()
-             |> maybe_refresh_history_entries("pathway", reloaded.id)}
-
-          {:error, changeset} ->
-            detail =
-              changeset
-              |> Ecto.Changeset.traverse_errors(fn {msg, _opts} -> msg end)
-              |> Enum.map_join("; ", fn {field, msgs} ->
-                "#{field}: #{Enum.join(msgs, ", ")}"
-              end)
-
-            message =
-              if detail == "",
-                do: "Failed to flip pathway direction.",
-                else: "Failed to flip: #{detail}"
-
-            {:noreply, assign(socket, :pathway_error, message)}
-        end
     end
   end
 
@@ -3707,6 +3607,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      socket
      |> assign(:show_level_modal, :add)
      |> assign(:level_form, form)
+     |> assign(:level_outcome, nil)
      |> assign(:level_mode, :existing)
      |> assign(:level_id_manually_edited, false)}
   end
@@ -3725,7 +3626,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       to_form(%{
         "level_id" => level.level_id,
         "level_name" => level.level_name || "",
-        "level_index" => to_string(level.level_index)
+        "level_index" => to_string(level.level_index),
+        "lock_version" => level.lock_version
       })
 
     level_shared =
@@ -3740,6 +3642,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      socket
      |> assign(:show_level_modal, :edit)
      |> assign(:level_form, form)
+     |> assign(:level_outcome, nil)
      |> assign(:level_shared, level_shared)
      |> assign(:level_id_manually_edited, true)}
   end
@@ -3749,7 +3652,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     {:noreply,
      socket
      |> assign(:show_level_modal, nil)
-     |> assign(:level_form, to_form(%{}))}
+     |> assign(:level_form, to_form(%{}))
+     |> assign(:level_outcome, nil)}
   end
 
   @impl true
@@ -3794,156 +3698,90 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       to_form(%{
         "level_id" => level_id,
         "level_name" => name,
-        "level_index" => current_index
+        "level_index" => current_index,
+        "lock_version" => params["lock_version"] || current_form[:lock_version].value
       })
 
     {:noreply, assign(socket, :level_form, form)}
   end
 
   @impl true
-  def handle_event("save_level", params, socket) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-    station = socket.assigns.station
+  def handle_event("save_level", submitted, socket) do
+    params = Map.get(submitted, "level", submitted)
+    audit = socket.assigns.audit_ctx
 
-    case socket.assigns.show_level_modal do
-      :add ->
-        if socket.assigns.level_mode == :existing do
-          existing_level_id = params["existing_level_id"]
+    result = level_save_result(socket, audit, params)
 
-          cond do
-            existing_level_id in [nil, ""] ->
-              {:noreply, put_flash(socket, :error, "Please select a level to add.")}
+    socket = assign(socket, :level_form, to_form(params))
 
-            level = Gtfs.get_level(existing_level_id) ->
-              case Gtfs.create_stop_level(%{
-                     stop_id: station.id,
-                     level_id: level.id,
-                     organization_id: organization_id,
-                     gtfs_version_id: gtfs_version_id
-                   }) do
-                {:ok, _stop_level} ->
-                  levels_data =
-                    Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
+    case result do
+      # A StopLevel also has a `:level` key (its association), so it matches first.
+      {:ok, %StopLevel{level_id: level_id}} ->
+        {:noreply, finish_stop_level_save(socket, level_id)}
 
-                  levels = Enum.map(levels_data, & &1.level)
+      {:ok, %{level: level}} ->
+        {:noreply, finish_level_save(socket, level)}
 
-                  {:noreply,
-                   socket
-                   |> assign(:levels, levels)
-                   |> assign(:levels_with_floorplan, levels_with_floorplan(levels_data))
-                   |> assign(:active_level, level)
-                   |> assign(:show_level_modal, nil)
-                   |> assign(:level_form, to_form(%{}))
-                   |> refresh_level_and_stop_level_cache(level)}
+      {:ok, %Gtfs.Level{} = level} ->
+        {:noreply,
+         socket
+         |> finish_level_save(level)
+         |> maybe_refresh_history_entries("level", level.id)}
 
-                {:error, changeset} ->
-                  {:noreply, assign(socket, :level_form, to_form(changeset))}
-              end
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply,
+         socket
+         |> assign(:level_form, to_form(changeset))
+         |> assign(:level_outcome, nil)}
 
-            true ->
-              {:noreply, put_flash(socket, :error, "Selected level could not be found.")}
-          end
-        else
-          level_attrs = %{
-            level_id: params["level_id"],
-            level_name: params["level_name"],
-            level_index: parse_int(params["level_index"]),
-            organization_id: organization_id,
-            gtfs_version_id: gtfs_version_id
-          }
+      {:error, :level_required} ->
+        {:noreply,
+         socket
+         |> assign(:level_form, to_form(params))
+         |> assign(:level_outcome, %{
+           kind: "warning",
+           message: "Choose a level to add.",
+           reload?: false,
+           disabled?: false
+         })}
 
-          case Gtfs.create_level(level_attrs) do
-            {:ok, new_level} ->
-              Gtfs.record_change(
-                socket.assigns.audit_ctx,
-                :level,
-                new_level,
-                "created",
-                level_attrs
-              )
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:level_form, to_form(params))
+         |> assign_level_outcome(reason)}
+    end
+  end
 
-              # Create the association
-              {:ok, _stop_level} =
-                Gtfs.create_stop_level(%{
-                  stop_id: station.id,
-                  level_id: new_level.id,
-                  organization_id: organization_id,
-                  gtfs_version_id: gtfs_version_id
-                })
+  @impl true
+  def handle_event("reload_level", _params, socket) do
+    params = socket.assigns.level_form.params
+    socket = refresh_level_choices(socket)
 
-              levels_data =
-                Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
-
-              levels = Enum.map(levels_data, & &1.level)
-              # Refresh available levels list since we added one
-              available_levels = Gtfs.list_all_levels(organization_id, gtfs_version_id)
-
-              {:noreply,
-               socket
-               |> assign(:levels, levels)
-               |> assign(:levels_with_floorplan, levels_with_floorplan(levels_data))
-               |> assign(:available_levels, available_levels)
-               |> assign(:active_level, new_level)
-               |> assign(:show_level_modal, nil)
-               |> assign(:level_form, to_form(%{}))
-               |> refresh_level_and_stop_level_cache(new_level)}
-
-            {:error, changeset} ->
-              {:noreply, assign(socket, :level_form, to_form(changeset))}
-          end
-        end
-
-      :edit ->
-        level = socket.assigns.active_level
-
-        level_attrs = %{
-          level_id: params["level_id"],
-          level_name: params["level_name"],
-          level_index: parse_int(params["level_index"])
-        }
-
-        case Gtfs.update_level_with_cascade(level, level_attrs) do
-          {:ok, updated_level} ->
-            maybe_record_change(
-              socket.assigns.audit_ctx,
-              :level,
-              level,
-              updated_level,
-              Gtfs.entity_snapshot(:level, updated_level)
-            )
-
-            levels_data =
-              Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
-
-            levels = Enum.map(levels_data, & &1.level)
-
+    case socket.assigns.active_level do
+      %Gtfs.Level{id: id} ->
+        case Enum.find(socket.assigns.levels, &(&1.id == id)) do
+          %Gtfs.Level{} = level ->
             {:noreply,
              socket
-             |> assign(:levels, levels)
-             |> assign(:levels_with_floorplan, levels_with_floorplan(levels_data))
-             |> assign(:active_level, updated_level)
-             |> assign(:show_level_modal, nil)
-             |> assign(:level_form, to_form(%{}))
-             |> refresh_level_and_stop_level_cache(updated_level)
-             |> maybe_refresh_history_entries("level", updated_level.id)}
+             |> assign(:active_level, level)
+             |> assign(:level_form, to_form(Map.put(params, "lock_version", level.lock_version)))
+             |> assign(:level_outcome, nil)
+             |> refresh_level_and_stop_level_cache(level)}
 
-          {:error, %Ecto.Changeset{} = changeset} ->
-            {:noreply, assign(socket, :level_form, to_form(changeset))}
-
-          {:error, _reason} ->
-            {:noreply, put_flash(socket, :error, "Failed to update level")}
+          nil ->
+            {:noreply, assign_level_outcome(socket, :not_found)}
         end
 
       _ ->
-        {:noreply, socket}
+        {:noreply, assign_level_outcome(socket, :not_found)}
     end
   end
 
   @impl true
   def handle_event("show_history", %{"entity-type" => type, "entity-id" => id}, socket)
       when type in ["stop", "pathway", "level"] and is_binary(id) do
-    if entity_belongs_to_current_station?(socket, type, id) do
+    if Stations.station_member?(socket.assigns.audit_ctx, type, id) do
       {:noreply,
        socket
        |> cancel_and_reset_drawer_journal()
@@ -4010,13 +3848,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def handle_event("preview_rollback_change_log", %{"log-id" => log_id}, socket)
       when is_binary(log_id) do
-    case Gtfs.get_change_log(log_id) do
-      nil ->
-        {:noreply, put_flash(socket, :error, "Unable to preview rollback: change log not found")}
-
-      log ->
-        handle_rollback_preview_request(socket, log)
-    end
+    handle_rollback_preview_request(socket, log_id)
   end
 
   def handle_event("preview_rollback_change_log", _params, socket) do
@@ -4038,7 +3870,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       when is_binary(log_id) do
     case socket.assigns.rollback_preview do
       %{log: %{id: ^log_id}} = preview ->
-        case Gtfs.rollback_entity(preview.log, socket.assigns.audit_ctx) do
+        case Stations.rollback_entity(
+               socket.assigns.audit_ctx,
+               log_id,
+               Map.get(preview, :expected_revision)
+             ) do
           {:ok, entity} ->
             # The panel takes focus immediately so the destroyed confirm button
             # never strands it on <body>; when the refreshed history arrives,
@@ -4052,6 +3888,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              |> put_flash(:info, "Change reverted.")
              |> focus_history_target("history-#{preview.entity_type}")}
 
+          {:error, {:stale, _revision}} ->
+            {:noreply,
+             socket
+             |> assign(:rollback_preview, Map.put(preview, :outcome, :stale))
+             |> focus_history_target("rollback-outcome")}
+
+          {:error, :not_found} ->
+            {:noreply,
+             socket
+             |> assign(:rollback_preview, Map.put(preview, :outcome, :not_found))
+             |> focus_history_target("rollback-outcome")}
+
           {:error, reason} ->
             {:noreply,
              socket
@@ -4061,12 +3909,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         end
 
       _ ->
+        message =
+          case Stations.rollback_preview(socket.assigns.audit_ctx, log_id) do
+            {:error, :not_found} -> "Unable to revert change: entity no longer exists."
+            _ -> "This change has already been reverted or the preview is stale."
+          end
+
         {:noreply,
          socket
-         |> put_flash(
-           :error,
-           "This change has already been reverted or the preview is stale."
-         )
+         |> put_flash(:error, message)
          |> focus_rollback_fallback(log_id)}
     end
   end
@@ -4355,7 +4206,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           floorplan_rotation_deg: rot
         }
 
-        case Gtfs.save_stop_level_alignment(stop_level, attrs) do
+        case Stations.save_alignment(
+               socket.assigns.audit_ctx,
+               stop_level.id,
+               attrs,
+               stop_level.lock_version
+             ) do
           {:ok, updated} ->
             {:noreply,
              socket
@@ -4379,6 +4235,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                :error,
                alignment_changeset_error_message("Could not save alignment", changeset)
              )}
+
+          {:error, reason} ->
+            {:noreply, assign_alignment_outcome(socket, reason)}
         end
 
       _ ->
@@ -4419,19 +4278,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     case refreshed_socket.assigns.editing_pathway do
       %{id: id} when id == pathway.id ->
-        reloaded = Gtfs.get_pathway_with_stops!(pathway.id)
+        case Stations.get_pathway(refreshed_socket.assigns.audit_ctx, pathway.id) do
+          {:ok, reloaded} ->
+            pathway_pair =
+              pair_siblings_for(
+                %{from_stop_id: reloaded.from_stop_id, to_stop_id: reloaded.to_stop_id},
+                refreshed_socket.assigns.pathways_list
+              )
 
-        pathway_pair =
-          pair_siblings_for(
-            %{from_stop_id: reloaded.from_stop_id, to_stop_id: reloaded.to_stop_id},
-            refreshed_socket.assigns.pathways_list
-          )
+            refreshed_socket
+            |> assign(:editing_pathway, reloaded)
+            |> assign(:editing_pathway_pair, pathway_pair)
+            |> assign(:pathway_form, to_form(pathway_form_params(reloaded)))
+            |> assign(:pathway_form_dirty, false)
 
-        refreshed_socket
-        |> assign(:editing_pathway, reloaded)
-        |> assign(:editing_pathway_pair, pathway_pair)
-        |> assign(:pathway_form, to_form(pathway_form_params(reloaded)))
-        |> assign(:pathway_form_dirty, false)
+          {:error, :not_found} ->
+            assign_pathway_outcome(refreshed_socket, :not_found)
+        end
 
       _ ->
         refreshed_socket
@@ -5675,6 +5538,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp rollback_error_message(:entity_not_found),
     do: "The target entity no longer exists."
 
+  defp rollback_error_message(:not_found),
+    do: "The target entity no longer exists."
+
   defp rollback_error_message(:rollback_log_failed),
     do: "Unable to record the revert. Please try again."
 
@@ -5686,14 +5552,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp rollback_error_message(_), do: "Unable to revert change."
 
-  @spec rollback_preview_for(GtfsPlanner.Gtfs.ChangeLog.t()) :: {:ok, map()} | {:error, atom()}
-  defp rollback_preview_for(log) do
-    with {:ok, entity} <- rollback_preview_entity(log),
-         {:ok, target_snapshot} <- Gtfs.rollback_target_snapshot(log),
-         {:ok, field_changes} <- rollback_preview_field_changes(log, entity, target_snapshot) do
+  @spec rollback_preview_for(map()) :: {:ok, map()} | {:error, atom()}
+  defp rollback_preview_for(
+         %{log: log, entity: entity, current: current, target: target} = scoped
+       ) do
+    with {:ok, field_changes} <- rollback_preview_field_changes(current, target) do
       {:ok,
        %{
          log: log,
+         expected_revision: scoped.expected_revision,
          entity_type: log.entity_type,
          entity_id: log.entity_id,
          entity_name: rollback_entity_name(log.entity_type, entity),
@@ -5722,55 +5589,38 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp rollback_entity_natural_key("level", %Gtfs.Level{} = level), do: level.level_id
   defp rollback_entity_natural_key(_type, _entity), do: nil
 
-  defp handle_rollback_preview_request(socket, log) do
-    if rollback_preview_available?(socket, log) do
-      {:noreply, assign_rollback_preview(socket, log)}
-    else
-      {:noreply, put_flash(socket, :error, "Unable to preview rollback: entity no longer exists")}
+  defp handle_rollback_preview_request(socket, log_id) do
+    case Stations.rollback_preview(socket.assigns.audit_ctx, log_id) do
+      {:ok, scoped} ->
+        case rollback_preview_for(scoped) do
+          {:ok, preview} ->
+            {:noreply, assign(socket, :rollback_preview, preview)}
+
+          {:error, reason} ->
+            {:noreply,
+             socket
+             |> assign(:rollback_preview, nil)
+             |> put_flash(:error, rollback_error_message(reason))}
+        end
+
+      {:error, :not_found} ->
+        {:noreply,
+         socket
+         |> assign(:rollback_preview, nil)
+         |> put_flash(:error, "Unable to preview rollback: entity no longer exists")}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:rollback_preview, nil)
+         |> put_flash(:error, rollback_error_message(reason))}
     end
   end
 
-  defp rollback_preview_available?(socket, log) do
-    rollback_log_in_current_scope?(socket, log) and
-      entity_belongs_to_current_station?(socket, log.entity_type, log.entity_id)
-  end
-
-  defp assign_rollback_preview(socket, log) do
-    case rollback_preview_for(log) do
-      {:ok, preview} ->
-        assign(socket, :rollback_preview, preview)
-
-      {:error, :entity_not_found} ->
-        put_flash(socket, :error, "Unable to preview rollback: entity no longer exists")
-
-      {:error, :already_matches_current} ->
-        socket
-        |> assign(:rollback_preview, nil)
-        |> put_flash(:error, rollback_error_message(:already_matches_current))
-
-      {:error, _reason} ->
-        put_flash(socket, :error, "Unable to preview rollback")
-    end
-  end
-
-  defp rollback_preview_entity(log) do
-    case load_current_entity(log.entity_type, log.entity_id) do
-      nil -> {:error, :entity_not_found}
-      entity -> {:ok, entity}
-    end
-  end
-
-  defp rollback_preview_field_changes(log, entity, target_snapshot) do
-    current_snapshot =
-      log.entity_type
-      |> Gtfs.entity_snapshot(entity)
-      |> stringify_keys()
-
-    target_snapshot = stringify_keys(target_snapshot)
-
+  defp rollback_preview_field_changes(current_snapshot, target_snapshot) do
     field_changes =
-      log
-      |> rollback_preview_keys(current_snapshot, target_snapshot)
+      target_snapshot
+      |> Map.keys()
       |> Enum.reduce([], &rollback_preview_change(&1, current_snapshot, target_snapshot, &2))
       |> Enum.sort_by(& &1.field)
 
@@ -5778,38 +5628,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       {:error, :already_matches_current}
     else
       {:ok, field_changes}
-    end
-  end
-
-  defp rollback_preview_keys(log, current_snapshot, target_snapshot) do
-    previewable_fields = rollback_preview_field_set(log)
-
-    target_snapshot
-    |> Map.keys()
-    |> Kernel.++(Map.keys(current_snapshot))
-    |> Enum.uniq()
-    |> Enum.filter(&MapSet.member?(previewable_fields, &1))
-  end
-
-  defp rollback_preview_field_set(log) do
-    reversible_fields =
-      log.entity_type
-      |> Gtfs.reversible_fields_for()
-      |> MapSet.new()
-
-    changed_fields =
-      log.changed_fields
-      |> Kernel.||(%{})
-      |> Map.keys()
-      |> Enum.map(&to_string/1)
-      |> MapSet.new()
-
-    if MapSet.subset?(changed_fields, reversible_fields) do
-      reversible_fields
-    else
-      log
-      |> Gtfs.rollback_previewable_fields()
-      |> MapSet.new()
     end
   end
 
@@ -5824,112 +5642,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
-  defp load_current_entity("stop", id), do: Gtfs.get_stop(id)
-  defp load_current_entity("pathway", id), do: Gtfs.get_pathway(id)
-  defp load_current_entity("level", id), do: Gtfs.get_level(id)
-  defp load_current_entity(_, _), do: nil
-
-  defp rollback_log_in_current_scope?(socket, log) do
-    log.organization_id == socket.assigns.current_organization.id and
-      log.gtfs_version_id == socket.assigns.current_gtfs_version.id and
-      log.station_stop_id == socket.assigns.station.stop_id
-  end
-
-  defp entity_belongs_to_current_station?(socket, "stop", id) when is_binary(id) do
-    case Gtfs.get_stop(id) do
-      nil ->
-        false
-
-      %Gtfs.Stop{} = stop ->
-        stop.id == socket.assigns.station.id or
-          stop.stop_id == socket.assigns.station.stop_id or
-          stop.parent_station == socket.assigns.station.stop_id or
-          MapSet.member?(socket.assigns.platform_stop_ids, stop.parent_station)
-    end
-  end
-
-  defp entity_belongs_to_current_station?(socket, "pathway", id) when is_binary(id) do
-    case Gtfs.get_pathway(id) do
-      nil ->
-        false
-
-      pathway ->
-        organization_id = socket.assigns.current_organization.id
-        gtfs_version_id = socket.assigns.current_gtfs_version.id
-        station_stop_id = socket.assigns.station.stop_id
-        platform_stop_ids = socket.assigns.platform_stop_ids
-
-        from_stop =
-          Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, pathway.from_stop_id)
-
-        to_stop =
-          Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, pathway.to_stop_id)
-
-        endpoint_matches?(from_stop, station_stop_id, platform_stop_ids) or
-          endpoint_matches?(to_stop, station_stop_id, platform_stop_ids)
-    end
-  end
-
-  defp entity_belongs_to_current_station?(socket, "level", id) when is_binary(id) do
-    Enum.any?(socket.assigns.levels, fn level -> level.id == id end)
-  end
-
-  defp entity_belongs_to_current_station?(_socket, _type, _id), do: false
-
-  defp endpoint_matches?(nil, _station_stop_id, _platform_stop_ids), do: false
-
-  defp endpoint_matches?(%Gtfs.Stop{} = stop, station_stop_id, platform_stop_ids) do
-    stop.parent_station == station_stop_id or
-      MapSet.member?(platform_stop_ids, stop.parent_station)
-  end
-
-  # Records an "updated" change log entry only if the persisted entity actually
-  # differs from the pre-mutation entity. Skips no-op writes that would otherwise
-  # produce empty diff log rows.
-  #
-  # Compares each `attrs` key against the pre-entity value rather than relying
-  # solely on snapshot equality — some tracked fields (e.g. `:diagram_coordinate`)
-  # are not part of the rollback snapshot but still represent meaningful changes.
-  defp maybe_record_change(audit_ctx, entity_type, pre_entity, post_entity, attrs)
-       when is_map(attrs) do
-    if no_op_change?(pre_entity, post_entity, attrs) do
-      :ok
-    else
-      Gtfs.record_change(audit_ctx, entity_type, pre_entity, "updated", attrs)
-    end
-  end
-
-  defp no_op_change?(_pre_entity, _post_entity, attrs) when map_size(attrs) == 0, do: true
-
-  defp no_op_change?(pre_entity, _post_entity, attrs) do
-    Enum.all?(attrs, fn {key, new_value} ->
-      pre_value = entity_field(pre_entity, key)
-      normalize_compare(pre_value) == normalize_compare(new_value)
-    end)
-  end
-
-  defp entity_field(nil, _key), do: nil
-
-  defp entity_field(entity, key) when is_atom(key) do
-    Map.get(entity, key)
-  end
-
-  defp entity_field(entity, key) when is_binary(key) do
-    case safe_to_existing_atom(key) do
-      {:ok, atom} -> Map.get(entity, atom)
-      :error -> nil
-    end
-  end
-
-  defp safe_to_existing_atom(str) do
-    {:ok, String.to_existing_atom(str)}
-  rescue
-    ArgumentError -> :error
-  end
-
-  defp normalize_compare(%Decimal{} = d), do: Decimal.to_string(d)
-  defp normalize_compare(value), do: value
-
   defp coords_unchanged?(%{"x" => current_x, "y" => current_y}, parsed_x, parsed_y) do
     coord_equal?(current_x, parsed_x) and coord_equal?(current_y, parsed_y)
   end
@@ -5940,12 +5652,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp coord_equal?(a, b) do
     to_string(a) == to_string(b)
-  end
-
-  defp stringify_keys(nil), do: %{}
-
-  defp stringify_keys(map) when is_map(map) do
-    Map.new(map, fn {k, v} -> {to_string(k), v} end)
   end
 
   defp handle_stop_selection(id, socket) do
@@ -6103,13 +5809,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     refresh_lists(socket)
   end
 
-  defp apply_pathway_save_refresh(socket, _old_pathway, updated_pathway) do
+  defp apply_pathway_save_refresh(socket, loaded_pathway) do
     active_level = socket.assigns.active_level
-
-    reloaded =
-      updated_pathway.id
-      |> Gtfs.get_pathway_with_stops!()
-      |> merge_active_level_flags(active_level)
+    reloaded = merge_active_level_flags(loaded_pathway, active_level)
 
     badges_before = socket.assigns.cross_level_badges_by_stop
 
@@ -6483,6 +6185,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:ruler_point_b, nil)
     |> assign(:show_ruler_drawer, false)
     |> assign(:ruler_form, to_form(%{"distance_meters" => ""}, as: :ruler))
+    |> assign(:ruler_outcome, nil)
     |> assign(:scale_status, nil)
   end
 
@@ -6600,6 +6303,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp pathway_form_params(pathway) do
     %{
       "pathway_id" => pathway.pathway_id,
+      "lock_version" => pathway.lock_version,
       "pathway_mode" => to_string(pathway.pathway_mode),
       "is_bidirectional" => pathway.is_bidirectional,
       "traversal_time" => pathway.traversal_time,
@@ -6652,7 +6356,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp active_stop_level_for_upload(socket) do
-    station = socket.assigns.station
     active_level = socket.assigns.active_level
 
     cond do
@@ -6663,15 +6366,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         {:ok, socket.assigns.active_stop_level}
 
       true ->
-        Gtfs.create_stop_level(%{
-          stop_id: station.id,
-          level_id: active_level.id,
-          organization_id: socket.assigns.current_organization.id,
-          gtfs_version_id: socket.assigns.current_gtfs_version.id
-        })
+        Stations.add_existing_level(socket.assigns.audit_ctx, active_level.id)
         |> case do
           {:ok, stop_level} -> {:ok, stop_level}
-          {:error, _changeset} -> {:error, "Unable to prepare this level for a diagram."}
+          {:error, :forbidden} -> {:error, "You no longer have edit access to this organization."}
+          {:error, _reason} -> {:error, "Unable to prepare this level for a diagram."}
         end
     end
   end
@@ -6806,6 +6505,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp commit_diagram_candidate(socket, pending) do
     case DiagramStorage.commit_candidate(
+           socket.assigns.audit_ctx,
            socket.assigns.active_stop_level,
            pending.candidate_filename
          ) do
@@ -6915,80 +6615,157 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
-  defp create_pathway_between_stops(socket, from_stop_id, to_stop_id) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
+  defp flip_editing_pathway(socket, %Pathway{id: id} = pathway, revision) do
+    flip_attrs = flip_pathway_attrs(pathway, socket.assigns.pathway_form)
 
+    case Stations.update_pathway(
+           socket.assigns.audit_ctx,
+           id,
+           flip_attrs,
+           parse_int(revision)
+         ) do
+      {:ok, updated_pathway} ->
+        show_flipped_pathway(socket, updated_pathway)
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply, assign(socket, :pathway_error, flip_error_message(changeset))}
+
+      {:error, reason} ->
+        {:noreply, assign_pathway_outcome(socket, reason)}
+    end
+  end
+
+  # Reads current form values so pending edits are preserved through the flip.
+  defp flip_pathway_attrs(%Pathway{} = pathway, form) do
+    %{
+      from_stop_id: pathway.to_stop_id,
+      to_stop_id: pathway.from_stop_id,
+      # Swap signage from form values (preserves pending edits)
+      signposted_as: form_field_value(form, :reversed_signposted_as),
+      reversed_signposted_as: form_field_value(form, :signposted_as),
+      # Preserve other pending form edits
+      pathway_mode: parse_int(form_field_value(form, :pathway_mode)),
+      is_bidirectional: form_field_value(form, :is_bidirectional) in [true, "true"],
+      traversal_time: parse_optional_int(form_field_value(form, :traversal_time)),
+      length: parse_optional_decimal(form_field_value(form, :length)),
+      stair_count: parse_optional_int(form_field_value(form, :stair_count)),
+      min_width: parse_optional_decimal(form_field_value(form, :min_width))
+    }
+  end
+
+  defp form_field_value(form, field), do: form[field] && form[field].value
+
+  defp show_flipped_pathway(socket, updated_pathway) do
+    refreshed_socket = refresh_lists(socket)
+
+    case Stations.get_pathway(socket.assigns.audit_ctx, updated_pathway.id) do
+      {:ok, reloaded} ->
+        pathway_pair =
+          pair_siblings_for(
+            %{from_stop_id: reloaded.from_stop_id, to_stop_id: reloaded.to_stop_id},
+            refreshed_socket.assigns.pathways_list
+          )
+
+        {:noreply,
+         refreshed_socket
+         |> assign(:editing_pathway, reloaded)
+         |> assign(:editing_pathway_pair, pathway_pair)
+         |> assign(:active_pathway_tab, tab_for_pathway(pathway_pair, reloaded))
+         |> assign(:pathway_form, to_form(pathway_form_params(reloaded)))
+         |> assign(:pathway_form_dirty, false)
+         |> clear_pathway_refusals()
+         |> maybe_refresh_history_entries("pathway", reloaded.id)}
+
+      {:error, :not_found} ->
+        {:noreply, assign_pathway_outcome(refreshed_socket, :not_found)}
+    end
+  end
+
+  defp flip_error_message(%Ecto.Changeset{} = changeset) do
+    detail =
+      changeset
+      |> Ecto.Changeset.traverse_errors(fn {msg, _opts} -> msg end)
+      |> Enum.map_join("; ", fn {field, msgs} ->
+        "#{field}: #{Enum.join(msgs, ", ")}"
+      end)
+
+    if detail == "",
+      do: "Failed to flip pathway direction.",
+      else: "Failed to flip: #{detail}"
+  end
+
+  defp create_pathway_between_stops(socket, from_stop_id, to_stop_id) do
     with {:ok, from_stop} <- fetch_intent_stop(socket, from_stop_id),
          {:ok, to_stop} <- fetch_intent_stop(socket, to_stop_id),
          pair_key = normalize_pair_key(from_stop.stop_id, to_stop.stop_id),
          pair_count = Map.get(socket.assigns.pathway_pair_counts || %{}, pair_key, 0),
          false <- pair_count >= 2 do
-      pathway_id = "pw_#{:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)}"
-
-      attrs =
-        %{
-          pathway_id: pathway_id,
-          from_stop_id: from_stop.stop_id,
-          to_stop_id: to_stop.stop_id,
-          pathway_mode: 1,
-          is_bidirectional: true,
-          organization_id: organization_id,
-          gtfs_version_id: gtfs_version_id
-        }
-        |> maybe_put_auto_pathway_length(socket, from_stop, to_stop)
-
-      case Gtfs.create_pathway(attrs) do
-        {:ok, pathway} ->
-          Gtfs.record_change(
-            socket.assigns.audit_ctx,
-            :pathway,
-            pathway,
-            "created",
-            attrs
-          )
-
-          loaded_pathway = Gtfs.get_pathway_with_stops!(pathway.id)
-          refreshed_socket = refresh_lists(socket)
-
-          pathway_pair =
-            pair_siblings_for(loaded_pathway, refreshed_socket.assigns.pathways_list)
-
-          {:noreply,
-           refreshed_socket
-           # Re-stream to remove highlight
-           |> stream_insert(:child_stops, from_stop)
-           |> assign(:editing_pathway_pair, pathway_pair)
-           |> assign(:active_pathway_tab, tab_for_pathway(pathway_pair, loaded_pathway))
-           |> assign(:pathway_form_dirty, false)
-           |> assign(:editing_pathway, loaded_pathway)
-           |> assign(:pathway_form, to_form(pathway_form_params(loaded_pathway)))
-           |> assign(:show_pathway_drawer, true)
-           |> assign(:active_point_id, nil)
-           |> assign(:selected_from_stop, nil)
-           |> assign(
-             :placement_status,
-             "Pathway created #{stop_display_label(from_stop)} → #{stop_display_label(to_stop)}"
-           )
-           |> clear_pathway_refusals()}
-
-        {:error, _changeset} ->
-          {:noreply,
-           socket
-           |> assign(:show_pathway_drawer, false)
-           |> assign(:editing_pathway_pair, [])
-           |> assign(:active_pathway_tab, :first)
-           |> assign(:pathway_form_dirty, false)
-           |> assign(:editing_pathway, nil)
-           |> assign(:active_point_id, nil)
-           |> assign(:pathway_error, "Failed to create pathway")}
-      end
+      create_stop_pair_pathway(socket, from_stop, to_stop)
     else
       true ->
         {:noreply, assign(socket, :pathway_error, "This stop pair already has two pathways")}
 
       {:error, :not_found} ->
         {:noreply, assign(socket, :pathway_error, "Invalid stop selection")}
+    end
+  end
+
+  defp create_stop_pair_pathway(socket, from_stop, to_stop) do
+    pathway_id = "pw_#{:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)}"
+
+    attrs =
+      %{
+        pathway_id: pathway_id,
+        from_stop_id: from_stop.stop_id,
+        to_stop_id: to_stop.stop_id,
+        pathway_mode: 1,
+        is_bidirectional: true
+      }
+      |> maybe_put_auto_pathway_length(socket, from_stop, to_stop)
+
+    case Stations.create_pathway(socket.assigns.audit_ctx, attrs) do
+      {:ok, pathway} ->
+        case Stations.get_pathway(socket.assigns.audit_ctx, pathway.id) do
+          {:ok, loaded_pathway} ->
+            refreshed_socket = refresh_lists(socket)
+
+            pathway_pair =
+              pair_siblings_for(loaded_pathway, refreshed_socket.assigns.pathways_list)
+
+            {:noreply,
+             refreshed_socket
+             # Re-stream to remove highlight
+             |> stream_insert(:child_stops, from_stop)
+             |> assign(:editing_pathway_pair, pathway_pair)
+             |> assign(:active_pathway_tab, tab_for_pathway(pathway_pair, loaded_pathway))
+             |> assign(:pathway_form_dirty, false)
+             |> assign(:editing_pathway, loaded_pathway)
+             |> assign(:pathway_form, to_form(pathway_form_params(loaded_pathway)))
+             |> assign(:show_pathway_drawer, true)
+             |> assign(:active_point_id, nil)
+             |> assign(:selected_from_stop, nil)
+             |> assign(
+               :placement_status,
+               "Pathway created #{stop_display_label(from_stop)} → #{stop_display_label(to_stop)}"
+             )
+             |> clear_pathway_refusals()}
+
+          {:error, :not_found} ->
+            {:noreply, show_postwrite_pathway_missing(socket)}
+        end
+
+      {:error, reason} ->
+        outcome = pathway_outcome(reason)
+
+        {:noreply,
+         socket
+         |> assign(:show_pathway_drawer, false)
+         |> assign(:editing_pathway_pair, [])
+         |> assign(:active_pathway_tab, :first)
+         |> assign(:pathway_form_dirty, false)
+         |> assign(:editing_pathway, nil)
+         |> assign(:active_point_id, nil)
+         |> assign(:pathway_error, outcome.message)}
     end
   end
 
@@ -7018,7 +6795,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     reposition_stops = socket.assigns.reposition_stops
     id = params["id"]
-    stop = if id, do: Gtfs.get_stop(id)
+    stop = Enum.find(reposition_stops, &(to_string(&1.id) == to_string(id)))
 
     cond do
       is_nil(stop) ->
@@ -7041,16 +6818,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       level_id: level_id
     }
 
-    case Gtfs.update_stop(stop, attrs) do
-      {:ok, updated_stop} ->
-        maybe_record_change(
-          socket.assigns.audit_ctx,
-          :stop,
-          stop,
-          updated_stop,
-          attrs
-        )
+    # Re-positioning to the stored position writes nothing and records no history.
+    result =
+      if Stop.editor_changeset(stop, attrs).changes == %{},
+        do: {:ok, stop},
+        else:
+          Stations.update_child_stop(socket.assigns.audit_ctx, stop.id, attrs, stop.lock_version)
 
+    case result do
+      {:ok, updated_stop} ->
         {:noreply,
          socket
          |> refresh_lists()
@@ -7066,8 +6842,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> reset_reposition_state()
          |> maybe_refresh_history_entries("stop", updated_stop.id)}
 
-      {:error, _changeset} ->
-        {:noreply, put_flash(socket, :error, "Failed to re-position stop")}
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> open_edit_sidebar(stop, %{x: x, y: y})
+         |> assign_child_stop_outcome(reason, stop.stop_id)}
     end
   end
 
@@ -7148,7 +6927,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
     with {:ok, uuid} <- Ecto.UUID.cast(id),
-         %Stop{} = stop <- Gtfs.get_stop(uuid),
+         %Stop{} = stop <- Gtfs.get_stop_by_id(organization_id, gtfs_version_id, uuid),
          true <- stop.organization_id == organization_id,
          true <- stop.gtfs_version_id == gtfs_version_id do
       {:ok, stop}
@@ -7219,6 +6998,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     form =
       to_form(%{
+        "lock_version" => to_string(stop.lock_version),
         "stop_id" => stop.stop_id,
         "stop_name" => stop.stop_name,
         "location_type" => to_string(stop.location_type),
@@ -7238,7 +7018,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> stream_insert(:child_stops, stop)
     |> assign(:pending_xy, pending_xy)
     |> assign(:selected_stop_id, stop.id)
+    |> assign(:editing_child_stop, stop)
     |> assign(:child_stop_error, nil)
+    |> assign(:child_stop_outcome, nil)
     |> assign(:active_point_id, stop.id)
     |> assign(:editing_level, false)
     |> assign(:stop_id_mode, :manual)
@@ -7276,7 +7058,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         socket
 
       active_point_id ->
-        case Gtfs.get_stop(active_point_id) do
+        case Gtfs.get_stop_by_id(
+               socket.assigns.current_organization.id,
+               socket.assigns.current_gtfs_version.id,
+               active_point_id
+             ) do
           nil -> socket
           stop -> stream_insert(socket, :child_stops, stop)
         end
@@ -7293,10 +7079,391 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> reset_reposition_state()
     |> assign(:pending_xy, nil)
     |> assign(:selected_stop_id, nil)
+    |> assign(:editing_child_stop, nil)
     |> assign(:active_point_id, nil)
     |> assign(:journal_form_context, nil)
     |> assign(:child_stop_error, nil)
+    |> assign(:child_stop_outcome, nil)
     |> assign(:child_stop_form, to_form(%{}))
+  end
+
+  defp save_child_stop(socket, params, x, y) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station = socket.assigns.station
+
+    location_type = parse_int(params["location_type"] || "3")
+    selected_parent_platform = blank_to_nil(params["parent_platform"])
+    platform_stop_ids = platform_stop_ids_for_station(organization_id, gtfs_version_id, station)
+
+    parent_station =
+      if location_type == 4 and MapSet.member?(platform_stop_ids, selected_parent_platform) do
+        selected_parent_platform
+      else
+        station.stop_id
+      end
+
+    stop_id = submitted_child_stop_id(socket, params, organization_id, gtfs_version_id)
+
+    stop_attrs = %{
+      stop_name: params["stop_name"],
+      location_type: location_type,
+      parent_station: parent_station,
+      level_id: params["level_id"],
+      wheelchair_boarding: parse_optional_int(params["wheelchair_boarding"]),
+      platform_code: blank_to_nil(params["platform_code"]),
+      stop_lat: params["stop_lat"],
+      stop_lon: params["stop_lon"],
+      diagram_coordinate: %{"x" => x, "y" => y}
+    }
+
+    case socket.assigns.selected_stop_id do
+      nil ->
+        create_attrs =
+          stop_attrs
+          |> Map.put(:stop_id, stop_id)
+          |> Map.put(
+            :parent_platform,
+            if(location_type == 4, do: selected_parent_platform, else: nil)
+          )
+
+        place_new_child_stop(socket, params, create_attrs, stop_id, x, y)
+
+      selected_id ->
+        save_child_stop_edit(socket, params, stop_attrs, stop_id, selected_id)
+    end
+  end
+
+  defp submitted_child_stop_id(socket, params, organization_id, gtfs_version_id) do
+    if socket.assigns.stop_id_mode == :auto and socket.assigns.selected_stop_id == nil and
+         params["stop_id"] not in [nil, ""] do
+      Gtfs.unique_stop_id(organization_id, gtfs_version_id, params["stop_id"])
+    else
+      params["stop_id"]
+    end
+  end
+
+  defp place_new_child_stop(socket, params, create_attrs, stop_id, x, y) do
+    case Stations.create_child_stop(socket.assigns.audit_ctx, create_attrs) do
+      {:ok, stop} ->
+        {:noreply,
+         socket
+         |> stream_insert(:child_stops, stop)
+         |> refresh_lists()
+         |> assign(
+           :placement_status,
+           "Stop placed at (#{Float.to_string(x)}, #{Float.to_string(y)})"
+         )
+         |> assign(:pending_xy, nil)
+         |> assign(:selected_stop_id, nil)
+         |> assign(:active_point_id, nil)
+         |> assign(:child_stop_outcome, nil)
+         |> assign(:child_stop_form, to_form(%{}))}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:child_stop_form, to_form(params))
+         |> assign_child_stop_outcome(reason, stop_id)}
+    end
+  end
+
+  defp save_child_stop_edit(socket, params, stop_attrs, stop_id, selected_id) do
+    case socket.assigns.editing_child_stop do
+      %Stop{id: ^selected_id} = stop ->
+        update_editing_child_stop(socket, params, stop, stop_attrs, stop_id)
+
+      _ ->
+        {:noreply,
+         socket
+         |> assign(:child_stop_form, to_form(params))
+         |> assign_child_stop_outcome(:not_found, nil)}
+    end
+  end
+
+  defp update_editing_child_stop(socket, params, %Stop{} = stop, stop_attrs, stop_id) do
+    stop_id_result =
+      if stop_id in [nil, ""] do
+        Gtfs.generate_kebab_stop_id(
+          socket.assigns.current_organization.id,
+          socket.assigns.current_gtfs_version.id,
+          stop_attrs.stop_name,
+          stop.stop_id
+        )
+      else
+        {:ok, stop_id}
+      end
+
+    case stop_id_result do
+      {:ok, resolved_id} ->
+        submit_child_stop_update(socket, params, stop, stop_attrs, resolved_id)
+
+      {:error, message} ->
+        # The submitted (blank) stop ID is part of the changeset so the field is
+        # marked as used and shows the generation error.
+        changeset =
+          stop
+          |> Stop.changeset(Map.put(stop_attrs, :stop_id, stop_id))
+          |> Ecto.Changeset.add_error(:stop_id, message)
+          |> Map.put(:action, :validate)
+
+        {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
+    end
+  end
+
+  defp submit_child_stop_update(socket, params, %Stop{} = stop, stop_attrs, resolved_id) do
+    update_attrs =
+      if resolved_id == stop.stop_id,
+        do: stop_attrs,
+        else: Map.put(stop_attrs, :stop_id, resolved_id)
+
+    case Stations.update_child_stop(
+           socket.assigns.audit_ctx,
+           stop.id,
+           update_attrs,
+           child_stop_revision(socket)
+         ) do
+      {:ok, updated_stop} ->
+        refresh_plan = child_stop_refresh_plan(stop, updated_stop, socket.assigns.active_level)
+
+        {:noreply,
+         socket
+         |> assign(:placement_status, "Stop updated")
+         |> close_child_stop_drawer_after_save()
+         |> apply_child_stop_save_refresh(refresh_plan, updated_stop)
+         |> maybe_refresh_history_entries("stop", updated_stop.id)}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply, assign(socket, :child_stop_form, to_form(changeset))}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:child_stop_form, to_form(params))
+         |> assign_child_stop_outcome(reason, stop.stop_id)}
+    end
+  end
+
+  defp child_stop_revision(socket, stop_id \\ nil) do
+    case socket.assigns.editing_child_stop do
+      %Stop{id: id, lock_version: revision}
+      when is_nil(stop_id) or id == stop_id ->
+        revision
+
+      _ ->
+        nil
+    end
+  end
+
+  defp child_stop_label(socket) do
+    case socket.assigns.editing_child_stop do
+      %Stop{stop_id: stop_id} -> stop_id
+      _ -> "this stop"
+    end
+  end
+
+  defp assign_child_stop_outcome(socket, reason, stop_id) do
+    outcome =
+      case reason do
+        {:stale, _revision} ->
+          %{
+            kind: "warning",
+            message: "This stop changed since you opened it. Your edits are still here.",
+            reload?: true
+          }
+
+        :forbidden ->
+          %{
+            kind: "error",
+            message: "You no longer have edit access to this organization.",
+            reload?: false
+          }
+
+        :not_found ->
+          %{kind: "warning", message: "This stop no longer exists.", reload?: true}
+
+        {:in_use, counts} ->
+          %{
+            kind: "warning",
+            message: "Can't delete #{stop_id}: still used by #{child_stop_uses(counts)}.",
+            reload?: false
+          }
+
+        :busy ->
+          %{
+            kind: "warning",
+            message: "The station is being changed by another action. Try again.",
+            reload?: false
+          }
+
+        _ ->
+          %{kind: "error", message: "The stop could not be saved. Try again.", reload?: false}
+      end
+
+    assign(socket, :child_stop_outcome, outcome)
+  end
+
+  defp level_save_result(socket, audit, params) do
+    case socket.assigns.show_level_modal do
+      :add when socket.assigns.level_mode == :existing ->
+        case params["existing_level_id"] do
+          id when is_binary(id) and id != "" -> Stations.add_existing_level(audit, id)
+          _ -> {:error, :level_required}
+        end
+
+      :add ->
+        attrs = %{
+          level_id: params["level_id"],
+          level_name: params["level_name"],
+          level_index: parse_int(params["level_index"])
+        }
+
+        Stations.create_station_level(audit, attrs, %{})
+
+      :edit ->
+        save_active_level(audit, socket.assigns.active_level, params)
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
+  defp finish_stop_level_save(socket, level_id) do
+    case scoped_level_in_version(socket, level_id) do
+      %Gtfs.Level{} = level -> finish_level_save(socket, level)
+      nil -> assign_level_outcome(socket, :not_found)
+    end
+  end
+
+  defp save_active_level(audit, %Gtfs.Level{id: id} = level, params) do
+    attrs = %{
+      level_id: params["level_id"],
+      level_name: params["level_name"],
+      level_index: parse_int(params["level_index"])
+    }
+
+    # Saving the values the level already has writes nothing and records no history.
+    if Gtfs.Level.editor_changeset(level, attrs).changes == %{},
+      do: {:ok, level},
+      else: Stations.update_level(audit, id, attrs, parse_int(params["lock_version"]))
+  end
+
+  defp save_active_level(_audit, _active_level, _params), do: {:error, :not_found}
+
+  defp child_stop_uses(counts) do
+    counts
+    |> Enum.filter(fn {_key, count} -> count > 0 end)
+    |> Enum.sort_by(fn {key, _count} -> key end)
+    |> Enum.map_join(", ", fn {key, count} ->
+      label = key |> Atom.to_string() |> String.replace("_", " ")
+      label = if count == 1, do: String.trim_trailing(label, "s"), else: label
+      "#{count} #{label}"
+    end)
+  end
+
+  defp finish_level_save(socket, level) do
+    socket = refresh_level_choices(socket)
+
+    case Enum.find(socket.assigns.levels, &(&1.id == level.id)) do
+      %Gtfs.Level{} = attached_level ->
+        socket
+        |> assign(:active_level, attached_level)
+        |> assign(:show_level_modal, nil)
+        |> assign(:level_form, to_form(%{}))
+        |> assign(:level_outcome, nil)
+        |> refresh_level_and_stop_level_cache(attached_level)
+
+      nil ->
+        assign_level_outcome(socket, :not_found)
+    end
+  end
+
+  defp refresh_level_choices(socket) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    station_id = socket.assigns.station.id
+    data = Gtfs.list_levels_for_station(organization_id, version_id, station_id)
+    levels = Enum.map(data, & &1.level)
+    attached_ids = MapSet.new(levels, & &1.id)
+
+    available =
+      Gtfs.list_all_levels(organization_id, version_id)
+      |> Enum.reject(&MapSet.member?(attached_ids, &1.id))
+      |> Enum.sort_by(&(&1.level_name || &1.level_id), :asc)
+
+    socket
+    |> assign(:levels, levels)
+    |> assign(:levels_with_floorplan, levels_with_floorplan(data))
+    |> assign(:available_levels, available)
+  end
+
+  defp scoped_level_in_version(socket, id) do
+    Gtfs.list_all_levels(
+      socket.assigns.current_organization.id,
+      socket.assigns.current_gtfs_version.id
+    )
+    |> Enum.find(&(&1.id == id))
+  end
+
+  defp assign_level_outcome(socket, reason),
+    do: assign(socket, :level_outcome, level_or_ruler_outcome(reason, :level))
+
+  defp assign_ruler_outcome(socket, reason),
+    do: assign(socket, :ruler_outcome, level_or_ruler_outcome(reason, :ruler))
+
+  defp assign_alignment_outcome(socket, reason) do
+    outcome = level_or_ruler_outcome(reason, :level)
+
+    assign(socket, :alignment_preview, %{status: :error, reason: reason, message: outcome.message})
+  end
+
+  defp level_or_ruler_outcome(reason, surface) do
+    item = if surface == :level, do: "level", else: "scale"
+
+    outcome =
+      case reason do
+        {:stale, _revision} ->
+          %{
+            kind: "warning",
+            message: "This #{item} changed since you opened it. Your edits are still here.",
+            reload?: true
+          }
+
+        :forbidden ->
+          %{
+            kind: "error",
+            message: "You no longer have edit access to this organization.",
+            reload?: false
+          }
+
+        :not_found ->
+          %{kind: "warning", message: "This level no longer exists.", reload?: true}
+
+        {:in_use, counts} ->
+          uses =
+            counts
+            |> Enum.filter(fn {_key, count} -> count > 0 end)
+            |> Enum.map_join(", ", fn {key, count} ->
+              "#{count} #{key |> Atom.to_string() |> String.replace("_", " ")}"
+            end)
+
+          %{kind: "warning", message: "This level is still used by #{uses}.", reload?: false}
+
+        :busy ->
+          %{
+            kind: "warning",
+            message: "The station is being changed by another action. Try again.",
+            reload?: false
+          }
+
+        _ ->
+          %{kind: "error", message: "The #{item} could not be saved. Try again.", reload?: false}
+      end
+
+    Map.put(outcome, :disabled?, reason == :forbidden)
   end
 
   # Mirrors the "close_pathway_drawer" handler assigns, plus :pathway_error -> nil,
@@ -7314,11 +7481,69 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> clear_pathway_refusals()
   end
 
-  # AC-12: the closure-backed refusal clears with the plain failure message, so
-  # no stale explanation outlives the pathway it described. Callers reset it
-  # whenever the drawer, the edited pathway or the form changes.
+  # Clear prior pathway messages when the drawer or edited pathway changes.
+  # A revision conflict remains visible while the user edits their draft.
   defp clear_pathway_refusals(socket) do
-    assign(socket, pathway_error: nil, pathway_in_use: nil)
+    assign(socket, pathway_error: nil, pathway_outcome: nil, pathway_in_use: nil)
+  end
+
+  defp assign_pathway_outcome(socket, reason),
+    do: assign(socket, :pathway_outcome, pathway_outcome(reason))
+
+  defp show_postwrite_pathway_missing(socket) do
+    refreshed = socket |> refresh_lists() |> assign_pathway_outcome(:not_found)
+
+    if refreshed.assigns.show_pathway_drawer do
+      refreshed
+    else
+      put_flash(refreshed, :error, "This pathway no longer exists.")
+    end
+  end
+
+  defp pathway_outcome(reason) do
+    case reason do
+      {:stale, _revision} ->
+        %{
+          kind: "warning",
+          message: "This pathway changed since you opened it. Your edits are still here.",
+          reload?: true
+        }
+
+      :forbidden ->
+        %{
+          kind: "error",
+          message: "You no longer have edit access to this organization.",
+          reload?: false
+        }
+
+      :not_found ->
+        %{kind: "warning", message: "This pathway no longer exists.", reload?: true}
+
+      :pathway_in_use ->
+        %{
+          kind: "warning",
+          message: "Can't delete this pathway: a closure plan uses it.",
+          reload?: false
+        }
+
+      {:in_use, counts} ->
+        uses =
+          counts
+          |> Enum.filter(fn {_key, count} -> count > 0 end)
+          |> Enum.map_join(", ", fn {key, count} -> "#{count} #{key}" end)
+
+        %{kind: "warning", message: "Can't delete this pathway: #{uses}.", reload?: false}
+
+      :busy ->
+        %{
+          kind: "warning",
+          message: "The station is being changed by another action. Try again.",
+          reload?: false
+        }
+
+      _ ->
+        %{kind: "error", message: "The pathway could not be saved. Try again.", reload?: false}
+    end
   end
 
   defp restream_mode_dependent_layers(socket) do
@@ -7375,16 +7600,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       |> clear_confirmation()
       |> cancel_and_reset_drawer_journal()
 
-    org_id = socket.assigns.current_organization.id
-    version_id = socket.assigns.current_gtfs_version.id
-    station_stop_id = socket.assigns.station.stop_id
-
-    case Gtfs.remove_child_stop_from_diagram(
-           org_id,
-           version_id,
-           station_stop_id,
+    case Stations.remove_child_stop_from_diagram(
+           socket.assigns.audit_ctx,
            stop_id,
-           socket.assigns.audit_ctx
+           child_stop_revision(socket, stop_id)
          ) do
       {:ok, updated_stop} ->
         {:noreply,
@@ -7393,8 +7612,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> put_flash(:info, "Stop removed from diagram.")
          |> assign(:pending_xy, nil)
          |> assign(:selected_stop_id, nil)
+         |> assign(:editing_child_stop, nil)
          |> assign(:active_point_id, nil)
          |> assign(:child_stop_error, nil)
+         |> assign(:child_stop_outcome, nil)
          |> assign(:child_stop_form, to_form(%{}))
          |> maybe_refresh_history_entries("stop", updated_stop.id)}
 
@@ -7408,16 +7629,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            child_stop_refusal(socket, stop_id, :remove_from_diagram)
          )}
 
-      {:error, :not_found} ->
-        {:noreply,
-         socket
-         |> put_flash(:error, "Stop not found for this station.")
-         |> assign(:pending_xy, nil)
-         |> assign(:selected_stop_id, nil)
-         |> assign(:child_stop_form, to_form(%{}))}
-
-      {:error, _reason} ->
-        {:noreply, put_flash(socket, :error, "Failed to remove stop from diagram")}
+      {:error, reason} ->
+        {:noreply, assign_child_stop_outcome(socket, reason, child_stop_label(socket))}
     end
   end
 
@@ -7427,21 +7640,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       |> clear_confirmation()
       |> cancel_and_reset_drawer_journal()
 
-    org_id = socket.assigns.current_organization.id
-    version_id = socket.assigns.current_gtfs_version.id
-    station_stop_id = socket.assigns.station.stop_id
-
-    case Gtfs.delete_child_stop(org_id, version_id, station_stop_id, stop_id) do
-      {:ok, deleted_stop} ->
-        Gtfs.record_change(socket.assigns.audit_ctx, :stop, deleted_stop, "deleted", %{})
-
+    case Stations.delete_child_stop(
+           socket.assigns.audit_ctx,
+           stop_id,
+           child_stop_revision(socket, stop_id)
+         ) do
+      {:ok, _deleted_stop} ->
         {:noreply,
          socket
          |> refresh_lists()
          |> assign(:pending_xy, nil)
          |> assign(:selected_stop_id, nil)
+         |> assign(:editing_child_stop, nil)
          |> assign(:active_point_id, nil)
          |> assign(:child_stop_error, nil)
+         |> assign(:child_stop_outcome, nil)
          |> assign(:child_stop_form, to_form(%{}))}
 
       # AC-12: a closure-backed pathway connected to this stop refuses the
@@ -7454,13 +7667,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            child_stop_refusal(socket, stop_id, :delete_child_stop)
          )}
 
-      {:error, :not_found} ->
-        {:noreply,
-         socket
-         |> put_flash(:error, "Failed to delete child stop")
-         |> assign(:pending_xy, nil)
-         |> assign(:selected_stop_id, nil)
-         |> assign(:child_stop_form, to_form(%{}))}
+      {:error, reason} ->
+        {:noreply, assign_child_stop_outcome(socket, reason, child_stop_label(socket))}
     end
   end
 
@@ -7471,8 +7679,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       {:ok, pathway} ->
         delete_pathway_and_refresh(socket, pathway)
 
-      {:error, message} ->
-        {:noreply, socket |> assign(:pathway_error, message) |> assign(:pathway_in_use, nil)}
+      {:error, :not_found} ->
+        {:noreply,
+         socket
+         |> assign(:pathway_error, "Pathway not found.")
+         |> assign(:pathway_in_use, nil)}
     end
   end
 
@@ -7561,42 +7772,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp refusal_label(pathway), do: pathway.pathway_id
 
   defp pathway_for_deletion(socket, pathway_id) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-    station = socket.assigns.station
-    pathway = Enum.find(socket.assigns.pathways_list, &(&1.id == pathway_id))
-
-    cond do
-      is_nil(pathway) or pathway.organization_id != organization_id or
-          pathway.gtfs_version_id != gtfs_version_id ->
-        {:error, "Unauthorized pathway access."}
-
-      is_nil(pathway.from_stop) or is_nil(pathway.to_stop) ->
-        {:error, "Pathway is not fully associated with stops."}
-
-      not stop_belongs_to_station?(
-        pathway.from_stop,
-        station.stop_id,
-        socket.assigns.platform_stop_ids
-      ) or
-          not stop_belongs_to_station?(
-            pathway.to_stop,
-            station.stop_id,
-            socket.assigns.platform_stop_ids
-          ) ->
-        {:error, "Unauthorized pathway access."}
-
-      true ->
+    case socket.assigns.editing_pathway do
+      %Pathway{id: ^pathway_id} = pathway ->
         {:ok, pathway}
+
+      _ ->
+        case Enum.find(socket.assigns.pathways_list, &(&1.id == pathway_id)) do
+          %Pathway{} = pathway -> {:ok, pathway}
+          nil -> {:error, :not_found}
+        end
     end
   end
 
   defp delete_pathway_and_refresh(socket, pathway) do
     socket = cancel_and_reset_drawer_journal(socket)
 
-    case Gtfs.delete_pathway(pathway) do
+    case Stations.delete_pathway(
+           socket.assigns.audit_ctx,
+           pathway.id,
+           pathway.lock_version
+         ) do
       {:ok, _deleted_pathway} ->
-        Gtfs.record_change(socket.assigns.audit_ctx, :pathway, pathway, "deleted", %{})
         refreshed_socket = refresh_lists(socket)
 
         remaining_siblings =
@@ -7612,25 +7808,29 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       {:error, :pathway_in_use} ->
         {:noreply, assign(socket, :pathway_in_use, pathway_in_use_refusal(socket, [pathway]))}
 
-      {:error, _changeset} ->
+      {:error, reason} ->
         {:noreply,
          socket
-         |> assign(:pathway_error, "Failed to delete pathway")
+         |> assign_pathway_outcome(reason)
          |> assign(:pathway_in_use, nil)}
     end
   end
 
   defp update_pathway_drawer(refreshed_socket, [remaining_pathway]) do
-    refreshed_pathway = Gtfs.get_pathway_with_stops!(remaining_pathway.id)
+    case Stations.get_pathway(refreshed_socket.assigns.audit_ctx, remaining_pathway.id) do
+      {:ok, refreshed_pathway} ->
+        refreshed_socket
+        |> cancel_and_reset_drawer_journal()
+        |> assign(:show_pathway_drawer, true)
+        |> assign(:editing_pathway_pair, [refreshed_pathway])
+        |> assign(:active_pathway_tab, :first)
+        |> assign(:pathway_form_dirty, false)
+        |> assign(:editing_pathway, refreshed_pathway)
+        |> assign(:pathway_form, to_form(pathway_form_params(refreshed_pathway)))
 
-    refreshed_socket
-    |> cancel_and_reset_drawer_journal()
-    |> assign(:show_pathway_drawer, true)
-    |> assign(:editing_pathway_pair, [refreshed_pathway])
-    |> assign(:active_pathway_tab, :first)
-    |> assign(:pathway_form_dirty, false)
-    |> assign(:editing_pathway, refreshed_pathway)
-    |> assign(:pathway_form, to_form(pathway_form_params(refreshed_pathway)))
+      {:error, :not_found} ->
+        update_pathway_drawer(refreshed_socket, [])
+    end
   end
 
   defp update_pathway_drawer(refreshed_socket, _remaining_siblings) do
@@ -7645,18 +7845,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp do_remove_level_from_station(level_uuid, socket) do
+    revision = socket.assigns.confirmation.lock_version
     socket = clear_confirmation(socket)
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     station = socket.assigns.station
 
-    case Gtfs.remove_level_from_station(
-           organization_id,
-           gtfs_version_id,
-           station.id,
-           station.stop_id,
-           level_uuid
-         ) do
+    case Stations.remove_level_from_station(socket.assigns.audit_ctx, level_uuid, revision) do
       {:ok, :removed} ->
         levels_data =
           Gtfs.list_levels_for_station(organization_id, gtfs_version_id, station.id)
@@ -7680,10 +7875,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:active_level, active_level)
          |> assign(:show_level_modal, nil)
          |> assign(:level_form, to_form(%{}))
+         |> assign(:level_outcome, nil)
          |> refresh_level_and_stop_level_cache(active_level)}
 
-      {:error, _reason} ->
-        {:noreply, put_flash(socket, :error, "Failed to remove level from station.")}
+      {:error, reason} ->
+        {:noreply, assign_level_outcome(socket, reason)}
     end
   end
 
@@ -7737,7 +7933,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp confirmation_payload(socket, "remove_level_from_station", id, origin_id) do
-    with {:ok, level, child_stop_count} <- confirmation_level(socket, id) do
+    with {:ok, level, stop_level, child_stop_count} <- confirmation_level(socket, id) do
       {:ok,
        confirmation(
          :remove_level_from_station,
@@ -7747,7 +7943,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          "Remove level from station?",
          "This unassigns #{child_stop_count} #{pluralize(child_stop_count, "point")} and removes this level's floorplan. The level record stays available.",
          "Remove level"
-       )}
+       )
+       |> Map.put(:lock_version, stop_level.lock_version)}
     end
   end
 
@@ -7774,32 +7971,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp confirmation_pathway(socket, id) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-
-    with {:ok, uuid} <- Ecto.UUID.cast(id),
-         %Pathway{} = pathway <- Gtfs.get_pathway(uuid),
-         true <- pathway.organization_id == organization_id,
-         true <- pathway.gtfs_version_id == gtfs_version_id,
-         loaded_pathway <- Gtfs.get_pathway_with_stops!(uuid),
-         false <- is_nil(loaded_pathway.from_stop),
-         false <- is_nil(loaded_pathway.to_stop),
-         true <-
-           stop_belongs_to_station?(
-             loaded_pathway.from_stop,
-             socket.assigns.station.stop_id,
-             socket.assigns.platform_stop_ids
-           ),
-         true <-
-           stop_belongs_to_station?(
-             loaded_pathway.to_stop,
-             socket.assigns.station.stop_id,
-             socket.assigns.platform_stop_ids
-           ) do
-      {:ok, loaded_pathway}
-    else
-      _ -> {:error, :out_of_scope}
-    end
+    Stations.get_pathway(socket.assigns.audit_ctx, id)
   end
 
   defp confirmation_level(socket, id) do
@@ -7808,15 +7980,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     station = socket.assigns.station
 
     with {:ok, uuid} <- Ecto.UUID.cast(id),
-         level when not is_nil(level) <- Gtfs.get_level(uuid),
+         level when not is_nil(level) <- Enum.find(socket.assigns.levels, &(&1.id == uuid)),
          stop_level when not is_nil(stop_level) <-
            Gtfs.get_stop_level(organization_id, gtfs_version_id, station.id, uuid) do
       count =
         Gtfs.list_child_stops_for_parent(organization_id, gtfs_version_id, station.id)
         |> Enum.count(&(&1.level_id == level.level_id))
 
-      _ = stop_level
-      {:ok, level, count}
+      {:ok, level, stop_level, count}
     else
       _ -> {:error, :out_of_scope}
     end
@@ -7868,33 +8039,49 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp pluralize(_count, singular), do: "#{singular}s"
 
   defp load_naming_preview(socket, style) do
-    org_id = socket.assigns.current_organization.id
-    version_id = socket.assigns.current_gtfs_version.id
-    station_stop_id = socket.assigns.station.stop_id
-
-    case Gtfs.preview_station_naming(org_id, version_id, station_stop_id, style) do
+    case Stations.preview_station_naming(socket.assigns.audit_ctx, style) do
       {:ok, preview} ->
         socket
         |> assign(:naming_preview, preview.rows)
+        |> assign(:naming_fingerprint, preview.fingerprint)
         |> assign(:naming_renamed_stops_count, preview.renamed_stops_count)
         |> assign(:naming_updated_pathways_count, preview.updated_pathways_count)
         |> assign(:naming_error, nil)
+        |> assign(:naming_stale?, false)
         |> assign(:naming_excluded_ids, MapSet.new())
 
       {:error, :no_stops} ->
         socket
         |> assign(:naming_preview, [])
+        |> assign(:naming_fingerprint, nil)
         |> assign(:naming_renamed_stops_count, 0)
         |> assign(:naming_updated_pathways_count, 0)
         |> assign(:naming_error, nil)
+        |> assign(:naming_stale?, false)
 
       {:error, {:naming_collision, collisions}} ->
         socket
         |> assign(:naming_preview, [])
+        |> assign(:naming_fingerprint, nil)
         |> assign(:naming_renamed_stops_count, 0)
         |> assign(:naming_updated_pathways_count, 0)
         |> assign(:naming_applying?, false)
         |> assign(:naming_error, "Naming collision detected: #{Enum.join(collisions, ", ")}")
+        |> assign(:naming_stale?, false)
+
+      {:error, :forbidden} ->
+        socket
+        |> assign(:naming_preview, [])
+        |> assign(:naming_fingerprint, nil)
+        |> assign(:naming_error, "You no longer have edit access to this organization.")
+        |> assign(:naming_stale?, false)
+
+      {:error, _reason} ->
+        socket
+        |> assign(:naming_preview, [])
+        |> assign(:naming_fingerprint, nil)
+        |> assign(:naming_error, "The naming preview is unavailable. Reload the station.")
+        |> assign(:naming_stale?, false)
     end
   end
 
@@ -7902,37 +8089,36 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     preview_ids = naming_preview_id_set(socket.assigns.naming_preview)
     excluded_ids = MapSet.intersection(excluded_ids, preview_ids)
     selected_ids = MapSet.difference(preview_ids, excluded_ids)
-    {updated_pathways_count, error} = naming_selected_preview_state(socket, selected_ids)
+
+    {updated_pathways_count, fingerprint, error} =
+      naming_selected_preview_state(socket, selected_ids)
 
     socket
     |> assign(:naming_excluded_ids, excluded_ids)
     |> assign(:naming_renamed_stops_count, MapSet.size(selected_ids))
     |> assign(:naming_updated_pathways_count, updated_pathways_count)
+    |> assign(:naming_fingerprint, fingerprint)
     |> assign(:naming_error, error)
+    |> assign(:naming_stale?, false)
   end
 
   defp naming_selected_preview_state(socket, selected_ids) do
-    if MapSet.size(selected_ids) == 0 do
-      {0, nil}
-    else
-      org_id = socket.assigns.current_organization.id
-      version_id = socket.assigns.current_gtfs_version.id
-      station_stop_id = socket.assigns.station.stop_id
-      style = socket.assigns.naming_style
+    case Stations.preview_station_naming(
+           socket.assigns.audit_ctx,
+           socket.assigns.naming_style,
+           selected_ids
+         ) do
+      {:ok, preview} ->
+        {preview.updated_pathways_count, preview.fingerprint, nil}
 
-      case Gtfs.preview_station_naming(org_id, version_id, station_stop_id, style, selected_ids) do
-        {:ok, preview} ->
-          {preview.updated_pathways_count, nil}
+      {:error, :no_stops} ->
+        {0, nil, nil}
 
-        {:error, :no_stops} ->
-          {0, nil}
+      {:error, {:naming_collision, collisions}} ->
+        {0, nil, "Naming collision detected: #{Enum.join(collisions, ", ")}"}
 
-        {:error, {:naming_collision, collisions}} ->
-          {0, "Naming collision detected: #{Enum.join(collisions, ", ")}"}
-
-        {:error, reason} ->
-          {0, "Failed to preview naming: #{inspect(reason)}"}
-      end
+      {:error, reason} ->
+        {0, nil, "Failed to preview naming: #{inspect(reason)}"}
     end
   end
 

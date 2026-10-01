@@ -9,7 +9,7 @@ alias GtfsPlanner.Accounts.UserOrgMembership
 org_attrs = %{name: "Pathways Studio", alias: "pathwaysstudio"}
 {:ok, org} =
   case Organizations.get_organization_by_alias(org_attrs.alias) do
-    nil -> Organizations.create_organization(org_attrs)
+    nil -> Organizations.create_organization_unchecked(org_attrs)
     existing_org -> {:ok, existing_org}
   end
 

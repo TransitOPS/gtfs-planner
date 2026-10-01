@@ -15,6 +15,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
   alias GtfsPlanner.Gtfs.Import.ChangeRuns
   alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.RunnerSlots
 
   setup %{conn: conn} do
     organization = organization_fixture()
@@ -30,7 +31,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
     conn = log_in_user(conn, user, organization: organization)
     {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
 
-    %{conn: conn, view: view, organization: organization, version: version}
+    %{conn: conn, view: view, organization: organization, version: version, user: user}
   end
 
   test "the route stages uploads, starts the real runner, and reattaches its persisted review", %{
@@ -95,9 +96,10 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
   test "a pending durable review exposes a reconnect-safe cancellation action", %{
     conn: conn,
     organization: organization,
-    version: version
+    version: version,
+    user: user
   } do
-    actor = %{id: Ecto.UUID.generate(), email: "reviewer@example.com"}
+    actor = %{id: user.id, email: user.email}
     assert {:ok, run} = ChangeRuns.create_pending_compute(organization.id, version.id, actor, [])
 
     {:ok, reconnected, _html} = live(conn, "/gtfs/#{version.id}/import")
@@ -1005,6 +1007,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
       assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 15_000
     end
 
+    # The runner supervisor admits one change run, so the next start needs this one gone.
+    RunnerSlots.await_idle()
     render(view)
   end
 end

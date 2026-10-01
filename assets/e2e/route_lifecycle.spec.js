@@ -1677,8 +1677,9 @@ test.describe("Other routes context", () => {
 
   // The seeded context total for BROWSER_PATTERNS_READY's viewport: every other
   // route of the version whose geometry falls in it. A seed change that adds or
-  // moves a route in that corner changes this number on purpose.
-  const SEEDED_CONTEXT_TOTAL = 66;
+  // moves a route in that corner changes this number on purpose. It includes the
+  // two headsign routes (BROWSER_HEADSIGNS, BROWSER_HEADSIGNS_20).
+  const SEEDED_CONTEXT_TOTAL = 68;
 
   function pngTile() {
     return Buffer.from(
@@ -2027,7 +2028,9 @@ test.describe("Complete route lifecycle journey", () => {
     await expect(page.locator("#flash-info")).toContainText(
       "Pattern created with its first timing",
     );
-    await page.waitForURL(/\/patterns\/[^/?]+\?task=timings$/);
+    // The create navigates with a `link` marker that names the new pattern, so
+    // the editor can offer to link left-out trips to it.
+    await page.waitForURL(/\/patterns\/[^/?]+\?task=timings&link=[^&]+$/);
     const patternId = new URL(page.url()).pathname.split("/").pop();
     await expect(page.locator("#timing-row-1")).toBeVisible();
 

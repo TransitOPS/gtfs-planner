@@ -7,19 +7,36 @@ defmodule GtfsPlanner.Application do
 
   @impl true
   def start(_type, _args) do
+    limits = Application.fetch_env!(:gtfs_planner, :runner_limits)
+
     children =
       [
         GtfsPlannerWeb.Telemetry,
         GtfsPlanner.Repo,
         {DNSCluster, query: Application.get_env(:gtfs_planner, :dns_cluster_query) || :ignore},
         {Phoenix.PubSub, name: GtfsPlanner.PubSub},
+        GtfsPlannerWeb.SessionRevocations,
         {Task.Supervisor, name: GtfsPlanner.TaskSupervisor},
         {DynamicSupervisor,
-         name: GtfsPlanner.Gtfs.Import.RunnerSupervisor, strategy: :one_for_one},
+         name: GtfsPlanner.Reachability.RunnerSupervisor,
+         strategy: :one_for_one,
+         max_children: limits[:reachability]},
         {DynamicSupervisor,
-         name: GtfsPlanner.Gtfs.Import.ChangeRunnerSupervisor, strategy: :one_for_one},
+         name: GtfsPlanner.Validations.RunnerSupervisor,
+         strategy: :one_for_one,
+         max_children: limits[:validation]},
         {DynamicSupervisor,
-         name: GtfsPlanner.Gtfs.Export.RunnerSupervisor, strategy: :one_for_one},
+         name: GtfsPlanner.Gtfs.Import.RunnerSupervisor,
+         strategy: :one_for_one,
+         max_children: limits[:import]},
+        {DynamicSupervisor,
+         name: GtfsPlanner.Gtfs.Import.ChangeRunnerSupervisor,
+         strategy: :one_for_one,
+         max_children: limits[:change]},
+        {DynamicSupervisor,
+         name: GtfsPlanner.Gtfs.Export.RunnerSupervisor,
+         strategy: :one_for_one,
+         max_children: limits[:export]},
         {Registry, keys: :unique, name: GtfsPlanner.Agents.Registry},
         {DynamicSupervisor,
          name: GtfsPlanner.Agents.SessionSupervisor, strategy: :one_for_one, max_children: 200},

@@ -89,7 +89,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsApplyLiveTest do
     [segment | _rest] = day.derived.uncovered
 
     moves = Enum.map(segment.trips, fn trip -> %{trip_id: trip.id, from: nil, to: :new} end)
-    {:ok, _result} = Gtfs.apply_run_moves(w.organization.id, w.version.id, w.day_type_key, moves)
+    {:ok, _result} = Gtfs.apply_run_moves(w.audit, w.day_type_key, moves)
 
     w
   end
@@ -256,7 +256,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsApplyLiveTest do
 
       # A REAL writer, from a different process, as a colleague would.
       {:ok, _settings} =
-        Gtfs.update_crew_settings(w.organization.id, w.version.id, %{paid_break_max_minutes: 42})
+        Gtfs.update_crew_settings(w.audit, %{paid_break_max_minutes: 42})
 
       view |> element("#runs-apply") |> render_click()
 
@@ -283,7 +283,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsApplyLiveTest do
       preview_uncovered(view)
 
       {:ok, _} =
-        Gtfs.update_crew_settings(w.organization.id, w.version.id, %{paid_break_max_minutes: 42})
+        Gtfs.update_crew_settings(w.audit, %{paid_break_max_minutes: 42})
 
       view |> element("#runs-apply") |> render_click()
       render_click(view, "apply_suggestion", %{})
@@ -299,7 +299,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsApplyLiveTest do
       preview_uncovered(view)
 
       {:ok, _} =
-        Gtfs.update_crew_settings(w.organization.id, w.version.id, %{paid_break_max_minutes: 42})
+        Gtfs.update_crew_settings(w.audit, %{paid_break_max_minutes: 42})
 
       view |> element("#runs-apply") |> render_click()
       assert has_element?(view, "#runs-stale")
@@ -462,7 +462,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsApplyLiveTest do
       preview_uncovered(view)
 
       {:ok, _} =
-        Gtfs.update_crew_settings(w.organization.id, w.version.id, %{paid_break_max_minutes: 42})
+        Gtfs.update_crew_settings(w.audit, %{paid_break_max_minutes: 42})
 
       view |> element("#runs-apply") |> render_click()
       assert has_element?(view, "#runs-stale")

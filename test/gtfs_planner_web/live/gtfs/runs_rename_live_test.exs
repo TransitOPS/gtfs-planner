@@ -439,7 +439,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsRenameLiveTest do
       # say `from: 2005`, and it is now called something else, so the optimistic
       # check refuses and the colleague's name stands.
       {:ok, _} =
-        Gtfs.rename_run(w.organization.id, w.version.id, w.day_type_key, "2005", "3007")
+        Gtfs.rename_run(w.audit, w.day_type_key, "2005", "3007")
 
       view |> element("#runs-undo") |> render_click()
 

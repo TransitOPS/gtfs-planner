@@ -2007,7 +2007,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     assigns =
       assigns
       |> assign(:count, count)
-      |> assign(:final?, assigns.dialog.error in [:stale, :not_found])
+      |> assign(:final?, assigns.dialog.error in [:stale, :not_found, :forbidden])
 
     ~H"""
     <.confirm_dialog
@@ -2060,7 +2060,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp keep_label(1), do: "Keep rule"
   defp keep_label(_count), do: "Keep rules"
 
-  # The three refusals the delete facades answer, under the band's own "Nothing
+  # The refusals the delete facades answer, under the band's own "Nothing
   # was deleted.": each reason says what happened to the selection the dialog was
   # built from.
   defp delete_error_text(:stale) do
@@ -2069,6 +2069,10 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
 
   defp delete_error_text(:not_found) do
     "One or more rules were already removed or can’t be deleted here. Close this dialog to see the latest list."
+  end
+
+  defp delete_error_text(:forbidden) do
+    "You no longer have permission to delete transfer rules. Your selection is still here."
   end
 
   defp delete_error_text(_busy) do
@@ -2430,6 +2434,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp open_existing_id(_error), do: nil
 
   defp form_error_title(:busy), do: "Rule not saved"
+  defp form_error_title(:forbidden), do: "Rule not saved"
 
   defp form_error_title({:duplicate, _collision} = error) do
     if in_seat_duplicate?(error),
@@ -2439,6 +2444,10 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
 
   defp form_error_text(:busy) do
     "The server didn’t respond. Nothing was changed and your entries are still here."
+  end
+
+  defp form_error_text(:forbidden) do
+    "You no longer have permission to edit transfer rules. Your entries are still here."
   end
 
   defp form_error_text({:duplicate, _collision} = error) do

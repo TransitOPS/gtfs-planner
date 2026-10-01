@@ -2,11 +2,14 @@ defmodule GtfsPlanner.Gtfs.StopTest do
   use GtfsPlanner.DataCase, async: true
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
+  import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -22,14 +25,11 @@ defmodule GtfsPlanner.Gtfs.StopTest do
       organization: org,
       version: version
     } do
-      assert {:error, %Ecto.Changeset{valid?: false}} = Gtfs.create_stop(%{})
       assert {:error, %Ecto.Changeset{valid?: false}} = Gtfs.import_create_stop(%{})
 
-      assert {:error, %Ecto.Changeset{valid?: false}} =
-               Gtfs.update_stop(
-                 %Stop{organization_id: org.id, gtfs_version_id: version.id},
-                 %{stop_id: nil}
-               )
+      refute Stop.changeset(%Stop{organization_id: org.id, gtfs_version_id: version.id}, %{
+               stop_id: nil
+             }).valid?
 
       assert {:error, %Ecto.Changeset{valid?: false}} =
                Gtfs.import_update_stop(
@@ -47,7 +47,7 @@ defmodule GtfsPlanner.Gtfs.StopTest do
       foreign = %{stop | organization_id: other.id}
 
       assert {:error, :not_found} =
-               Gtfs.create_stop(%{
+               Gtfs.import_create_stop(%{
                  organization_id: other.id,
                  gtfs_version_id: version.id,
                  stop_id: "FOREIGN_STOP"
@@ -60,9 +60,7 @@ defmodule GtfsPlanner.Gtfs.StopTest do
                  stop_id: "UNKNOWN_STOP"
                })
 
-      assert {:error, :not_found} = Gtfs.update_stop(foreign, %{stop_name: "Foreign"})
       assert {:error, :not_found} = Gtfs.import_update_stop(foreign, %{stop_name: "Foreign"})
-      assert {:error, :not_found} = Gtfs.delete_stop(foreign)
 
       # The refused writers rolled their transactions back, so the owned stop is untouched and
       # no row landed under the foreign scope.
@@ -103,13 +101,14 @@ defmodule GtfsPlanner.Gtfs.StopTest do
       organization: org,
       version: version
     } do
-      actor = user_fixture()
+      actor = editor_fixture(org)
 
       audit = %AuditContext{
         organization_id: org.id,
         gtfs_version_id: version.id,
         actor_id: actor.id,
-        actor_email: actor.email
+        actor_email: actor.email,
+        station_stop_id: "AUDIT_STATION"
       }
 
       station =
@@ -119,24 +118,25 @@ defmodule GtfsPlanner.Gtfs.StopTest do
           location_type: 1
         })
 
-      assert {:ok, %Stop{} = renamed} =
-               Gtfs.update_stop_with_cascade(station, %{stop_id: "AUDIT_STATION_RENAMED"})
+      child = child_stop_fixture(org.id, version.id, station.stop_id, %{stop_name: "Old Child"})
 
-      assert renamed.stop_id == "AUDIT_STATION_RENAMED"
+      assert {:ok, %Stop{} = renamed} =
+               Stations.update_child_stop(
+                 audit,
+                 child.id,
+                 %{stop_id: "AUDIT_CHILD_RENAMED"},
+                 child.lock_version
+               )
+
+      assert renamed.stop_id == "AUDIT_CHILD_RENAMED"
 
       # The journal still records one "updated" entry for the stop against its pre-change
       # snapshot, unchanged by the added version lock.
-      assert :ok =
-               Gtfs.record_change(audit, :stop, station, "updated", %{stop_name: "New Name"})
-
-      assert [log] = Gtfs.list_change_logs_for_entity(org.id, version.id, "stop", station.id)
+      assert [log] = Gtfs.list_change_logs_for_entity(org.id, version.id, "stop", child.id)
       assert log.action == "updated"
-      assert log.snapshot["stop_name"] == "Old Station"
+      assert log.snapshot["stop_name"] == "Old Child"
 
-      assert log.changed_fields["stop_name"] == %{
-               "from" => "Old Station",
-               "to" => "New Name"
-             }
+      assert log.changed_fields["stop_id"] == [child.stop_id, "AUDIT_CHILD_RENAMED"]
 
       # The cascade's version share lock did not outlive its transaction.
       assert {:ok, :acquired} = acquire_exclusive_version(org.id, version.id)
@@ -147,7 +147,13 @@ defmodule GtfsPlanner.Gtfs.StopTest do
     setup do
       organization = organization_fixture()
       version = gtfs_version_fixture(organization.id)
-      stop = stop_fixture(organization.id, version.id, %{stop_id: "CODED", stop_name: "Coded"})
+      station = stop_fixture(organization.id, version.id, %{location_type: 1})
+
+      stop =
+        child_stop_fixture(organization.id, version.id, station.stop_id, %{
+          stop_id: "CODED",
+          stop_name: "Coded"
+        })
 
       {1, _} =
         Repo.update_all(from(s in Stop, where: s.id == ^stop.id),
@@ -159,12 +165,17 @@ defmodule GtfsPlanner.Gtfs.StopTest do
           ]
         )
 
-      %{organization: organization, version: version, stop: Repo.get!(Stop, stop.id)}
+      %{
+        organization: organization,
+        version: version,
+        station: station,
+        stop: Repo.get!(Stop, stop.id)
+      }
     end
 
     test "a stop form save cannot change them", %{stop: stop} do
       assert {:ok, saved} =
-               Gtfs.update_stop(stop, %{
+               Gtfs.import_update_stop(stop, %{
                  stop_name: "Renamed",
                  stop_code: nil,
                  tts_stop_name: "Other",
@@ -196,22 +207,38 @@ defmodule GtfsPlanner.Gtfs.StopTest do
     test "a rollback restores the reversible fields and leaves them untouched", %{
       organization: org,
       version: version,
-      stop: stop
+      stop: stop,
+      station: station
     } do
-      actor = user_fixture()
+      actor = editor_fixture(org)
 
       audit = %AuditContext{
         organization_id: org.id,
         gtfs_version_id: version.id,
         actor_id: actor.id,
-        actor_email: actor.email
+        actor_email: actor.email,
+        station_stop_id: station.stop_id
       }
 
-      assert {:ok, renamed} = Gtfs.update_stop(stop, %{stop_name: "Renamed"})
-      assert :ok = Gtfs.record_change(audit, :stop, stop, "updated", %{stop_name: "Renamed"})
+      assert {:ok, renamed} = Gtfs.import_update_stop(stop, %{stop_name: "Renamed"})
+
+      assert {:ok, _audit_log} =
+               Audit.record_change_in_transaction(
+                 audit,
+                 :stop,
+                 stop,
+                 "updated",
+                 %{stop_name: "Renamed"}
+               )
 
       assert [log] = Gtfs.list_change_logs_for_entity(org.id, version.id, "stop", renamed.id)
-      assert {:ok, _restored} = Gtfs.rollback_entity(log, audit)
+
+      assert {:ok, _restored} =
+               Stations.rollback_entity(
+                 audit,
+                 log.id,
+                 persisted_entity_revision(log)
+               )
 
       assert %{
                stop_name: "Coded",

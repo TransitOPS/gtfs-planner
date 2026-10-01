@@ -691,14 +691,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesBulkReviewTest do
       {:ok, _membership} = Accounts.update_user_org_membership(membership, %{roles: []})
       message = ScheduleComponents.error_message(:unauthorized)
 
-      # The open review is still process state; the apply re-reads the role and
-      # refuses before the facade. The strip covers the bar, so the strip itself
-      # says why and disables its primary.
+      # The open review is still process state; the apply transaction re-reads the
+      # role and refuses with :forbidden. The strip covers the bar, so the strip
+      # itself says why and disables its primary.
       render_hook(grid(view), "apply_change", %{})
 
       assigns = assigns(view)
       assert assigns.outcome == nil
-      assert assigns.change.refusal == [{:error, :unauthorized}]
+      assert assigns.change.refusal == [{:error, :forbidden}]
       assert assigns.change.review.fingerprint == fingerprint
       assert has_element?(view, "#strip-consequences", message)
       assert has_element?(view, "#strip-apply[disabled]")

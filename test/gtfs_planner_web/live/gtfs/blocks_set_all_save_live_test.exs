@@ -587,7 +587,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSetAllSaveLiveTest do
       membership = Accounts.get_user_org_membership(context.user.id, context.organization.id)
       {:ok, _membership} = Accounts.update_user_org_membership(membership, %{roles: []})
 
-      html = view |> element("#set-all-review-save") |> render_click()
+      view |> element("#set-all-review-save") |> render_click()
+
+      # The refusal comes from the write's own transaction, so it arrives with
+      # the asynchronous result rather than with the click.
+      html = render_async(view)
 
       assert html =~ @permission_message
 

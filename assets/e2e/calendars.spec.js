@@ -5,11 +5,15 @@ const EDITOR_USER = {
   password: "DiagramTest123!",
 };
 
-// Browser E2E Version's calendars in list order. The last two "Weekday" rows are
-// fixtures other journeys own: BPS_WKDY (the timetable-paste calendar) and
-// BROWSER_CMP_WEEKDAY (the pattern-comparison calendar). Both run Monday to Friday
-// and both have trips, so they take part in the counts and the status filters below.
+// Browser E2E Version's calendars in list order. Three rows are fixtures other
+// journeys own. BROWSER_PATTERN_SERVICE (the headsign and pattern routes' calendar)
+// has no name, so it lists as "Untitled calendar", sorted by its service ID ahead of
+// the named rows; it runs every day and has trips. The last two "Weekday" rows are
+// BPS_WKDY (the timetable-paste calendar) and BROWSER_CMP_WEEKDAY (the
+// pattern-comparison calendar); both run Monday to Friday and have trips. All three
+// take part in the counts and the status filters below.
 const SEEDED_NAMES = [
+  "Untitled calendar",
   "Every day service",
   "Legacy service",
   "Metadata only",
@@ -27,10 +31,22 @@ const SEEDED_COUNT = SEEDED_NAMES.length;
 const PASTE_WEEKDAY_FIRST = "2026-09-08";
 const PASTE_WEEKDAY_LAST = "2027-06-25";
 
-// "before", "during" or "after" BPS_WKDY's service period, for an ISO date.
+// BROWSER_PATTERN_SERVICE keeps the fixture default period, the whole of 2026.
+const PATTERN_SERVICE_FIRST = "2026-01-01";
+const PATTERN_SERVICE_LAST = "2026-12-31";
+
+// "before", "during" or "after" a fixed service period, for an ISO date.
+function servicePhase(date, first, last) {
+  if (date < first) return "before";
+  return date > last ? "after" : "during";
+}
+
 function pasteWeekdayPhase(date) {
-  if (date < PASTE_WEEKDAY_FIRST) return "before";
-  return date > PASTE_WEEKDAY_LAST ? "after" : "during";
+  return servicePhase(date, PASTE_WEEKDAY_FIRST, PASTE_WEEKDAY_LAST);
+}
+
+function patternServicePhase(date) {
+  return servicePhase(date, PATTERN_SERVICE_FIRST, PATTERN_SERVICE_LAST);
 }
 
 const VIEWPORTS = [
@@ -77,14 +93,23 @@ async function agencyToday(page) {
 
 // School days, Unused calendar and the two Weekday fixtures run Monday to Friday, so
 // which calendars run today depends on the agency-local date the list shows, not on
-// the runner's clock. Only BPS_WKDY's fixed dates can also keep it from running.
+// the runner's clock. BPS_WKDY's and BROWSER_PATTERN_SERVICE's fixed dates can also
+// keep them from running.
 async function runsTodayNames(page) {
   const date = await agencyToday(page);
   const weekend = date.getUTCDay() === 0 || date.getUTCDay() === 6;
+  const patternService =
+    patternServicePhase(isoDate(date)) === "during" ? ["Untitled calendar"] : [];
 
-  if (weekend) return ["Every day service"];
+  if (weekend) return [...patternService, "Every day service"];
 
-  const names = ["Every day service", "School days", "Unused calendar", "Weekday"];
+  const names = [
+    ...patternService,
+    "Every day service",
+    "School days",
+    "Unused calendar",
+    "Weekday",
+  ];
   return pasteWeekdayPhase(isoDate(date)) === "during"
     ? [...names, "Weekday"]
     : names;
@@ -274,22 +299,27 @@ test.describe("calendar list", () => {
     });
 
     // Status filters with the documented allowlist.
-    // BPS_WKDY ends on a fixed date, so it joins Legacy service once that date passes.
-    const phase = pasteWeekdayPhase(isoDate(await agencyToday(page)));
+    // BPS_WKDY and BROWSER_PATTERN_SERVICE end on fixed dates, so each joins Legacy
+    // service once its date passes.
+    const today = isoDate(await agencyToday(page));
+    const phase = pasteWeekdayPhase(today);
+    const patternPhase = patternServicePhase(today);
 
     await page.selectOption("#calendar-status", "ended");
-    await expectRows(
-      page,
-      phase === "after" ? ["Legacy service", "Weekday"] : ["Legacy service"],
-    );
+    await expectRows(page, [
+      ...(patternPhase === "after" ? ["Untitled calendar"] : []),
+      "Legacy service",
+      ...(phase === "after" ? ["Weekday"] : []),
+    ]);
 
     await page.selectOption("#calendar-status", "active_today");
     await expectRows(page, await runsTodayNames(page));
 
     // BROWSER_CMP_WEEKDAY is in its period for 30 days either side of today; BPS_WKDY
-    // only between its fixed dates.
+    // and BROWSER_PATTERN_SERVICE only between their fixed dates.
     await page.selectOption("#calendar-status", "active_period");
     await expectRows(page, [
+      ...(patternPhase === "during" ? ["Untitled calendar"] : []),
       "Every day service",
       "School days",
       "Unused calendar",
@@ -307,10 +337,12 @@ test.describe("calendar list", () => {
     await page.selectOption("#calendar-status", "all");
     await expectRows(page, SEEDED_NAMES);
 
-    // The URL carries the state, and reloading it reproduces the list.
+    // The URL carries the state, and reloading it reproduces the list. The unnamed
+    // BROWSER_PATTERN_SERVICE matches through its service ID.
     await page.fill("#calendar-search", "service");
     await page.selectOption("#calendar-status", "all");
     await expectRows(page, [
+      "Untitled calendar",
       "Every day service",
       "Legacy service",
       "Odd service id",
@@ -321,6 +353,7 @@ test.describe("calendar list", () => {
     await page.waitForSelector("#calendars-list-container");
     await expect(page.locator("#calendar-search")).toHaveValue("service");
     await expectRows(page, [
+      "Untitled calendar",
       "Every day service",
       "Legacy service",
       "Odd service id",
@@ -1005,14 +1038,23 @@ async function waitForDrawerReady(page) {
 }
 
 // Every calendar running on a chosen date starts checked for removal, and that
-// includes the two Weekday fixtures other journeys own. A journey that changes only the
-// calendars it names unchecks them, so the review counts just those and the fixtures stay
-// as seeded. BPS_WKDY is listed only while a chosen date falls inside its fixed dates.
-async function uncheckWeekdayFixtures(page, dates) {
+// includes the Weekday and pattern-service fixtures other journeys own. A journey that
+// changes only the calendars it names unchecks them, so the review counts just those and
+// the fixtures stay as seeded. BPS_WKDY and BROWSER_PATTERN_SERVICE are listed only while
+// a chosen date falls inside their fixed dates.
+async function uncheckFixtureCalendars(page, dates) {
   await page.uncheck("#calendar-date-change-remove-BROWSER_CMP_WEEKDAY input");
 
   if (dates.some((date) => pasteWeekdayPhase(date) === "during")) {
     await page.uncheck("#calendar-date-change-remove-BPS_WKDY input");
+  }
+
+  // BROWSER_PATTERN_SERVICE runs every day of its period, so it is checked for
+  // removal on any date inside it.
+  if (dates.some((date) => patternServicePhase(date) === "during")) {
+    await page.uncheck(
+      "#calendar-date-change-remove-BROWSER_PATTERN_SERVICE input",
+    );
   }
 }
 
@@ -1080,7 +1122,7 @@ test.describe("cross-calendar date change drawer", () => {
       // Stop the school calendar and run the unused one instead, in one review.
       await page.uncheck("#calendar-date-change-remove-CAL_DAILY input");
       await page.uncheck("#calendar-date-change-remove-CAL_UNUSED input");
-      await uncheckWeekdayFixtures(page, [serviceDate]);
+      await uncheckFixtureCalendars(page, [serviceDate]);
       await expect(
         page.locator("#calendar-date-change-remove-CAL_DAILY input"),
       ).not.toBeChecked();
@@ -1186,7 +1228,7 @@ test("retains sequential dates, shows pending, recovers a stale write and guards
   await expect(page.locator(`#calendar-date-change-dates-chip-${second}`)).toBeVisible();
   await page.uncheck("#calendar-date-change-remove-CAL_SCHOOL input");
   await page.uncheck("#calendar-date-change-remove-CAL_UNUSED input");
-  await uncheckWeekdayFixtures(page, [first, second]);
+  await uncheckFixtureCalendars(page, [first, second]);
   await page.click("#calendar-date-change-review");
   await expect(page.locator("#calendar-date-change-review-panel")).toBeVisible();
 

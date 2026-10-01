@@ -16,7 +16,7 @@ defmodule GtfsPlanner.Operations do
   calendar or unassigned trips names nothing a person can see or change, so it
   neither counts nor blocks a delete, and the delete clears its reference.
 
-  A garage also owns its entered driving times: `delete_garage/2` deletes the
+  A garage also owns its entered driving times: `delete_garage/3` deletes the
   `deadhead_times` rows whose reference is `"garage:<uuid>"` in the same
   transaction as the guarded delete, and restores them when the delete is
   refused. Garage references are the garage UUID, never the correctable
@@ -26,6 +26,7 @@ defmodule GtfsPlanner.Operations do
   import Ecto.Query, warn: false
   import Ecto.Changeset, only: [put_change: 3]
 
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.BlockAttribute
   alias GtfsPlanner.Gtfs.Blocking.DeadheadTimes
   alias GtfsPlanner.Gtfs.DeadheadTime
@@ -60,14 +61,20 @@ defmodule GtfsPlanner.Operations do
   # is `NO ACTION`, so the attempted delete is what fails closed.
   @garage_constraints [
     :vehicles_garage_id_fkey,
+    :vehicles_garage_id_owner_fkey,
     :block_attributes_garage_id_fkey,
-    :route_operating_settings_garage_id_fkey
+    :block_attributes_garage_id_owner_fkey,
+    :route_operating_settings_garage_id_fkey,
+    :route_operating_settings_garage_id_owner_fkey
   ]
 
   @vehicle_type_constraints [
     :vehicles_vehicle_type_id_fkey,
+    :vehicles_vehicle_type_id_owner_fkey,
     :block_attributes_vehicle_type_id_fkey,
-    :route_operating_settings_required_vehicle_type_id_fkey
+    :block_attributes_vehicle_type_id_owner_fkey,
+    :route_operating_settings_required_vehicle_type_id_fkey,
+    :route_operating_settings_required_vehicle_type_id_owner_fkey
   ]
 
   @type conflict :: %{
@@ -121,11 +128,13 @@ defmodule GtfsPlanner.Operations do
   Creates a garage for the organization and records the acting user.
   """
   @spec create_garage(Ecto.UUID.t(), actor(), map()) ::
-          {:ok, Garage.t()} | {:error, Ecto.Changeset.t()}
+          {:ok, Garage.t()} | {:error, Ecto.Changeset.t() | :forbidden}
   def create_garage(organization_id, actor, attrs) do
-    %Garage{organization_id: organization_id, updated_by_id: actor_id(actor)}
-    |> Garage.changeset(attrs)
-    |> Repo.insert()
+    authorized_write(organization_id, actor, fn ->
+      %Garage{organization_id: organization_id, updated_by_id: actor_id(actor)}
+      |> Garage.changeset(attrs)
+      |> Repo.insert(mode: :savepoint)
+    end)
   end
 
   @doc """
@@ -135,18 +144,20 @@ defmodule GtfsPlanner.Operations do
   changes nothing.
   """
   @spec update_garage(Ecto.UUID.t(), actor(), Ecto.UUID.t(), map()) ::
-          {:ok, Garage.t()} | {:error, Ecto.Changeset.t() | :not_found}
+          {:ok, Garage.t()} | {:error, Ecto.Changeset.t() | :not_found | :forbidden}
   def update_garage(organization_id, actor, id, attrs) do
-    case get_garage(organization_id, id) do
-      nil ->
-        {:error, :not_found}
+    authorized_write(organization_id, actor, fn ->
+      case get_garage(organization_id, id) do
+        nil ->
+          {:error, :not_found}
 
-      garage ->
-        garage
-        |> Garage.changeset(attrs)
-        |> put_change(:updated_by_id, actor_id(actor))
-        |> Repo.update()
-    end
+        garage ->
+          garage
+          |> Garage.changeset(attrs)
+          |> put_change(:updated_by_id, actor_id(actor))
+          |> Repo.update(mode: :savepoint)
+      end
+    end)
   end
 
   @doc """
@@ -163,16 +174,20 @@ defmodule GtfsPlanner.Operations do
   malformed or foreign id returns `{:error, :not_found}`. Never deletes after a
   precheck alone.
   """
-  @spec delete_garage(Ecto.UUID.t(), Ecto.UUID.t()) ::
-          {:ok, Garage.t()} | {:error, {:in_use, in_use_counts()} | :not_found}
-  def delete_garage(organization_id, id) do
-    case get_garage(organization_id, id) do
-      nil ->
-        {:error, :not_found}
-
-      garage ->
-        delete_garage_with_driving_times(organization_id, garage)
-    end
+  @spec delete_garage(Ecto.UUID.t(), actor(), Ecto.UUID.t()) ::
+          {:ok, Garage.t()} | {:error, {:in_use, in_use_counts()} | :not_found | :forbidden}
+  def delete_garage(organization_id, actor, id) do
+    guarded_delete(
+      organization_id,
+      actor,
+      fn -> lock_garage_for_delete(organization_id, id) end,
+      @garage_constraints,
+      fn garage -> garage_in_use_counts(organization_id, garage.id) end,
+      fn garage ->
+        delete_garage_driving_times(organization_id, garage.id)
+        clear_orphan_references(organization_id, :garage_id, :garage_id, garage.id)
+      end
+    )
   end
 
   @doc """
@@ -193,7 +208,7 @@ defmodule GtfsPlanner.Operations do
   and routes that still exist count.
 
   A settings page reads this to name the references in its in-use message, and
-  `delete_garage/2` answers a refused delete with the same counts.
+  `delete_garage/3` answers a refused delete with the same counts.
   """
   @spec garage_in_use_counts(Ecto.UUID.t(), Ecto.UUID.t()) :: in_use_counts()
   def garage_in_use_counts(organization_id, garage_id) do
@@ -322,11 +337,13 @@ defmodule GtfsPlanner.Operations do
   Creates a vehicle type for the organization and records the acting user.
   """
   @spec create_vehicle_type(Ecto.UUID.t(), actor(), map()) ::
-          {:ok, VehicleType.t()} | {:error, Ecto.Changeset.t()}
+          {:ok, VehicleType.t()} | {:error, Ecto.Changeset.t() | :forbidden}
   def create_vehicle_type(organization_id, actor, attrs) do
-    %VehicleType{organization_id: organization_id, updated_by_id: actor_id(actor)}
-    |> VehicleType.changeset(attrs)
-    |> Repo.insert()
+    authorized_write(organization_id, actor, fn ->
+      %VehicleType{organization_id: organization_id, updated_by_id: actor_id(actor)}
+      |> VehicleType.changeset(attrs)
+      |> Repo.insert(mode: :savepoint)
+    end)
   end
 
   @doc """
@@ -334,18 +351,20 @@ defmodule GtfsPlanner.Operations do
   user. Returns `{:error, :not_found}` for a missing, malformed or foreign id.
   """
   @spec update_vehicle_type(Ecto.UUID.t(), actor(), Ecto.UUID.t(), map()) ::
-          {:ok, VehicleType.t()} | {:error, Ecto.Changeset.t() | :not_found}
+          {:ok, VehicleType.t()} | {:error, Ecto.Changeset.t() | :not_found | :forbidden}
   def update_vehicle_type(organization_id, actor, id, attrs) do
-    case get_vehicle_type(organization_id, id) do
-      nil ->
-        {:error, :not_found}
+    authorized_write(organization_id, actor, fn ->
+      case get_vehicle_type(organization_id, id) do
+        nil ->
+          {:error, :not_found}
 
-      vehicle_type ->
-        vehicle_type
-        |> VehicleType.changeset(attrs)
-        |> put_change(:updated_by_id, actor_id(actor))
-        |> Repo.update()
-    end
+        vehicle_type ->
+          vehicle_type
+          |> VehicleType.changeset(attrs)
+          |> put_change(:updated_by_id, actor_id(actor))
+          |> Repo.update(mode: :savepoint)
+      end
+    end)
   end
 
   @doc """
@@ -358,25 +377,24 @@ defmodule GtfsPlanner.Operations do
   same transaction instead of refusing the delete. A missing, malformed or
   foreign id returns `{:error, :not_found}`.
   """
-  @spec delete_vehicle_type(Ecto.UUID.t(), Ecto.UUID.t()) ::
-          {:ok, VehicleType.t()} | {:error, {:in_use, in_use_counts()} | :not_found}
-  def delete_vehicle_type(organization_id, id) do
-    case get_vehicle_type(organization_id, id) do
-      nil ->
-        {:error, :not_found}
-
-      vehicle_type ->
-        counts_fun = fn -> vehicle_type_in_use_counts(organization_id, vehicle_type.id) end
-
-        guarded_delete(vehicle_type, @vehicle_type_constraints, counts_fun, fn ->
-          clear_orphan_references(
-            organization_id,
-            :vehicle_type_id,
-            :required_vehicle_type_id,
-            vehicle_type.id
-          )
-        end)
-    end
+  @spec delete_vehicle_type(Ecto.UUID.t(), actor(), Ecto.UUID.t()) ::
+          {:ok, VehicleType.t()} | {:error, {:in_use, in_use_counts()} | :not_found | :forbidden}
+  def delete_vehicle_type(organization_id, actor, id) do
+    guarded_delete(
+      organization_id,
+      actor,
+      fn -> get_vehicle_type(organization_id, id) end,
+      @vehicle_type_constraints,
+      fn vehicle_type -> vehicle_type_in_use_counts(organization_id, vehicle_type.id) end,
+      fn vehicle_type ->
+        clear_orphan_references(
+          organization_id,
+          :vehicle_type_id,
+          :required_vehicle_type_id,
+          vehicle_type.id
+        )
+      end
+    )
   end
 
   @doc """
@@ -385,7 +403,7 @@ defmodule GtfsPlanner.Operations do
   trips and routes that still exist count.
 
   A settings page reads this to name the references in its in-use message, and
-  `delete_vehicle_type/2` answers a refused delete with the same counts.
+  `delete_vehicle_type/3` answers a refused delete with the same counts.
   """
   @spec vehicle_type_in_use_counts(Ecto.UUID.t(), Ecto.UUID.t()) :: in_use_counts()
   def vehicle_type_in_use_counts(organization_id, vehicle_type_id) do
@@ -463,34 +481,31 @@ defmodule GtfsPlanner.Operations do
   SHARE` for the write so a concurrent parent deletion cannot slip in.
   """
   @spec create_vehicle(Ecto.UUID.t(), actor(), map()) ::
-          {:ok, Vehicle.t()} | {:error, Ecto.Changeset.t() | :not_found}
+          {:ok, Vehicle.t()} | {:error, Ecto.Changeset.t() | :not_found | :forbidden}
   def create_vehicle(organization_id, actor, attrs) do
-    {:ok, outcome} =
-      Repo.transaction(fn ->
-        with {:ok, vehicle_type_id} <-
-               validate_assignment(
-                 organization_id,
-                 VehicleType,
-                 present_assignment(attrs, "vehicle_type_id")
-               ),
-             {:ok, garage_id} <-
-               validate_assignment(
-                 organization_id,
-                 Garage,
-                 present_assignment(attrs, "garage_id")
-               ) do
-          %Vehicle{
-            organization_id: organization_id,
-            updated_by_id: actor_id(actor),
-            vehicle_type_id: vehicle_type_id,
-            garage_id: garage_id
-          }
-          |> Vehicle.changeset(attrs)
-          |> Repo.insert(mode: :savepoint)
-        end
-      end)
-
-    outcome
+    authorized_write(organization_id, actor, fn ->
+      with {:ok, vehicle_type_id} <-
+             validate_assignment(
+               organization_id,
+               VehicleType,
+               present_assignment(attrs, "vehicle_type_id")
+             ),
+           {:ok, garage_id} <-
+             validate_assignment(
+               organization_id,
+               Garage,
+               present_assignment(attrs, "garage_id")
+             ) do
+        %Vehicle{
+          organization_id: organization_id,
+          updated_by_id: actor_id(actor),
+          vehicle_type_id: vehicle_type_id,
+          garage_id: garage_id
+        }
+        |> Vehicle.changeset(attrs)
+        |> Repo.insert(mode: :savepoint)
+      end
+    end)
   end
 
   @doc """
@@ -501,17 +516,14 @@ defmodule GtfsPlanner.Operations do
   vehicle or target returns `{:error, :not_found}` and changes nothing.
   """
   @spec update_vehicle(Ecto.UUID.t(), actor(), Ecto.UUID.t(), map()) ::
-          {:ok, Vehicle.t()} | {:error, Ecto.Changeset.t() | :not_found}
+          {:ok, Vehicle.t()} | {:error, Ecto.Changeset.t() | :not_found | :forbidden}
   def update_vehicle(organization_id, actor, id, attrs) do
-    {:ok, outcome} =
-      Repo.transaction(fn ->
-        case fetch_vehicle(organization_id, id) do
-          nil -> {:error, :not_found}
-          vehicle -> apply_vehicle_update(organization_id, actor, vehicle, attrs)
-        end
-      end)
-
-    outcome
+    authorized_write(organization_id, actor, fn ->
+      case fetch_vehicle(organization_id, id) do
+        nil -> {:error, :not_found}
+        vehicle -> apply_vehicle_update(organization_id, actor, vehicle, attrs)
+      end
+    end)
   end
 
   # Assignment keys that are present are validated and set here, inside the
@@ -554,12 +566,21 @@ defmodule GtfsPlanner.Operations do
   """
   @spec create_vehicle_range(Ecto.UUID.t(), actor(), map()) ::
           {:ok, [Vehicle.t()]}
-          | {:error, {:invalid_range, String.t()} | {:ids_taken, [String.t()]} | :not_found}
+          | {:error,
+             {:invalid_range, String.t()} | {:ids_taken, [String.t()]} | :not_found | :forbidden}
   def create_vehicle_range(organization_id, actor, attrs) do
-    with {:ok, vehicle_ids} <- range_vehicle_ids(attrs) do
-      Repo.transaction(fn -> insert_range_plan(organization_id, actor, attrs, vehicle_ids) end)
-      |> range_outcome(organization_id, vehicle_ids)
-    end
+    Repo.transaction(fn ->
+      authorize_editor!(organization_id, actor)
+
+      case range_vehicle_ids(attrs) do
+        {:ok, vehicle_ids} ->
+          {vehicle_ids, insert_range_plan(organization_id, actor, attrs, vehicle_ids)}
+
+        {:error, reason} ->
+          {[], {:error, reason}}
+      end
+    end)
+    |> range_outcome(organization_id)
   end
 
   # The transaction body: validate the assignment targets, refuse any claimed
@@ -585,15 +606,20 @@ defmodule GtfsPlanner.Operations do
   # A short insert (a concurrent writer claimed part of the range after the
   # recompute) reports the currently taken IDs from a fresh read outside the
   # rolled-back transaction.
-  defp range_outcome({:ok, {:ok, vehicles}}, _organization_id, _vehicle_ids), do: {:ok, vehicles}
+  defp range_outcome({:ok, {_ids, {:ok, vehicles}}}, _organization_id), do: {:ok, vehicles}
 
-  defp range_outcome({:ok, {:ids_taken, taken}}, _organization_id, _vehicle_ids),
+  defp range_outcome({:ok, {_ids, {:ids_taken, taken}}}, _organization_id),
     do: {:error, {:ids_taken, taken}}
 
-  defp range_outcome({:ok, {:error, :not_found} = not_found}, _organization_id, _vehicle_ids),
+  defp range_outcome({:ok, {_ids, {:error, :not_found} = not_found}}, _organization_id),
     do: not_found
 
-  defp range_outcome({:error, {:short_insert, _count}}, organization_id, vehicle_ids) do
+  defp range_outcome({:ok, {_ids, {:error, {:invalid_range, _} = reason}}}, _organization_id),
+    do: {:error, reason}
+
+  defp range_outcome({:error, :forbidden}, _organization_id), do: {:error, :forbidden}
+
+  defp range_outcome({:error, {:short_insert, _count, vehicle_ids}}, organization_id) do
     {:error, {:ids_taken, existing_vehicle_ids(organization_id, vehicle_ids)}}
   end
 
@@ -612,22 +638,20 @@ defmodule GtfsPlanner.Operations do
           actor(),
           [Ecto.UUID.t()],
           {:vehicle_type_id | :garage_id, Ecto.UUID.t() | nil}
-        ) :: {:ok, non_neg_integer()} | {:error, :not_found}
+        ) :: {:ok, non_neg_integer()} | {:error, :not_found | :forbidden}
   def update_vehicles(organization_id, actor, ids, assignment) do
-    with {:ok, ids} <- cast_vehicle_ids(ids),
-         {:ok, field, value} <- bulk_assignment(assignment) do
-      bulk_update_vehicles(organization_id, actor, ids, field, value)
-    end
-  end
-
-  defp bulk_update_vehicles(_organization_id, _actor, [], _field, _value), do: {:ok, 0}
-
-  defp bulk_update_vehicles(organization_id, actor, ids, field, value) do
     Repo.transaction(fn ->
-      update_vehicles_locked(organization_id, actor, ids, field, value)
+      authorize_editor!(organization_id, actor)
+
+      with {:ok, ids} <- cast_vehicle_ids(ids),
+           {:ok, field, value} <- bulk_assignment(assignment) do
+        update_vehicles_locked(organization_id, actor, ids, field, value)
+      end
     end)
     |> bulk_write_outcome()
   end
+
+  defp update_vehicles_locked(_organization_id, _actor, [], _field, _value), do: {:ok, 0}
 
   # The target is locked before the vehicles so a concurrent parent deletion
   # cannot hold the parent while waiting for these rows.
@@ -663,20 +687,20 @@ defmodule GtfsPlanner.Operations do
   deletes nothing, including the rows already selected. An empty list returns
   `{:ok, 0}`; otherwise the deleted count is returned.
   """
-  @spec delete_vehicles(Ecto.UUID.t(), [Ecto.UUID.t()]) ::
-          {:ok, non_neg_integer()} | {:error, :not_found}
-  def delete_vehicles(organization_id, ids) do
-    with {:ok, ids} <- cast_vehicle_ids(ids) do
-      bulk_delete_vehicles(organization_id, ids)
-    end
-  end
+  @spec delete_vehicles(Ecto.UUID.t(), actor(), [Ecto.UUID.t()]) ::
+          {:ok, non_neg_integer()} | {:error, :not_found | :forbidden}
+  def delete_vehicles(organization_id, actor, ids) do
+    Repo.transaction(fn ->
+      authorize_editor!(organization_id, actor)
 
-  defp bulk_delete_vehicles(_organization_id, []), do: {:ok, 0}
-
-  defp bulk_delete_vehicles(organization_id, ids) do
-    Repo.transaction(fn -> delete_vehicles_locked(organization_id, ids) end)
+      with {:ok, ids} <- cast_vehicle_ids(ids) do
+        delete_vehicles_locked(organization_id, ids)
+      end
+    end)
     |> bulk_write_outcome()
   end
+
+  defp delete_vehicles_locked(_organization_id, []), do: {:ok, 0}
 
   defp delete_vehicles_locked(organization_id, ids) do
     with {:ok, locked_ids} <- lock_vehicles(organization_id, ids) do
@@ -702,6 +726,7 @@ defmodule GtfsPlanner.Operations do
 
   defp bulk_write_outcome({:ok, {:ok, count}}), do: {:ok, count}
   defp bulk_write_outcome({:ok, {:error, :not_found}}), do: {:error, :not_found}
+  defp bulk_write_outcome({:error, :forbidden}), do: {:error, :forbidden}
   defp bulk_write_outcome({:error, _reason}), do: {:error, :not_found}
 
   @doc """
@@ -778,10 +803,11 @@ defmodule GtfsPlanner.Operations do
   """
   @spec apply_tods_import(Ecto.UUID.t(), actor(), Tods.parsed(), Tods.preview()) ::
           {:ok, %{added: non_neg_integer(), updated: non_neg_integer()}}
-          | {:error, {:invalid | :preview_changed, Tods.preview()}}
+          | {:error, {:invalid | :preview_changed, Tods.preview()} | :forbidden}
   def apply_tods_import(organization_id, actor, parsed, preview) do
     outcome =
       Repo.transaction(fn ->
+        authorize_editor!(organization_id, actor)
         %{accepted: accepted} = classification = Tods.classify(parsed)
         existing = load_existing(organization_id, parsed.kind, Enum.map(accepted, & &1.id), true)
         fresh = assemble_preview(parsed.kind, accepted, existing, classification)
@@ -818,6 +844,9 @@ defmodule GtfsPlanner.Operations do
 
       {:error, :short_insert} ->
         {:error, {:preview_changed, preview_tods_import(organization_id, parsed)}}
+
+      {:error, :forbidden} ->
+        {:error, :forbidden}
     end
   end
 
@@ -947,7 +976,7 @@ defmodule GtfsPlanner.Operations do
         {:ok, vehicles_by_ids(organization_id, vehicle_ids)}
 
       {count, _} ->
-        Repo.rollback({:short_insert, count})
+        Repo.rollback({:short_insert, count, vehicle_ids})
     end
   end
 
@@ -1089,18 +1118,26 @@ defmodule GtfsPlanner.Operations do
 
   defp fetch_attr(_attrs, _key), do: :__absent__
 
-  # A garage owns its entered driving times, so they are removed in the same
-  # transaction as the guarded delete and restored by the rollback when a
-  # reference refuses it. The reference is the garage UUID.
-  defp delete_garage_with_driving_times(organization_id, garage) do
-    counts_fun = fn -> garage_in_use_counts(organization_id, garage.id) end
+  # Blocking's driving-time writer locks a scoped garage before the deadhead
+  # row. Take that parent lock first here too, before deleting its driving
+  # times or clearing orphan references.
+  defp lock_garage_for_delete(organization_id, id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, id} ->
+        Repo.one(
+          from(g in Garage,
+            where: g.id == ^id and g.organization_id == ^organization_id,
+            lock: "FOR UPDATE"
+          )
+        )
 
-    guarded_delete(garage, @garage_constraints, counts_fun, fn ->
-      delete_garage_driving_times(organization_id, garage.id)
-      clear_orphan_references(organization_id, :garage_id, :garage_id, garage.id)
-    end)
+      :error ->
+        nil
+    end
   end
 
+  # A garage owns its entered driving times; the guarded transaction restores
+  # them with the parent when a reference refuses deletion.
   defp delete_garage_driving_times(organization_id, garage_id) do
     ref = DeadheadTimes.encode_ref({:garage, garage_id})
 
@@ -1193,17 +1230,29 @@ defmodule GtfsPlanner.Operations do
     |> Repo.update_all(set: [{setting_field, nil}])
   end
 
-  # Prepares and attempts the delete in one transaction; a refusal rolls back
-  # the preparation with it.
-  defp guarded_delete(parent, constraint_names, counts_fun, prepare_fun) do
+  # Permission precedes the scoped parent read and every preparation write.
+  # A refusal rolls all preparation back with the attempted delete.
+  defp guarded_delete(organization_id, actor, load_fun, constraint_names, counts_fun, prepare_fun) do
     Repo.transaction(fn ->
-      prepare_fun.()
+      authorize_editor!(organization_id, actor)
 
-      case delete_with_in_use_guard(parent, constraint_names, counts_fun) do
-        {:ok, deleted} -> deleted
-        {:error, {:in_use, counts}} -> Repo.rollback({:in_use, counts})
+      case load_fun.() do
+        nil ->
+          Repo.rollback(:not_found)
+
+        parent ->
+          prepare_and_delete(parent, constraint_names, counts_fun, prepare_fun)
       end
     end)
+  end
+
+  defp prepare_and_delete(parent, constraint_names, counts_fun, prepare_fun) do
+    prepare_fun.(parent)
+
+    case delete_with_in_use_guard(parent, constraint_names, fn -> counts_fun.(parent) end) do
+      {:ok, deleted} -> deleted
+      {:error, {:in_use, counts}} -> Repo.rollback({:in_use, counts})
+    end
   end
 
   # The attempted delete runs in a savepoint so a constraint violation leaves
@@ -1513,5 +1562,20 @@ defmodule GtfsPlanner.Operations do
     |> Map.new()
   end
 
+  defp authorized_write(organization_id, actor, write_fun) do
+    case Repo.transaction(fn ->
+           authorize_editor!(organization_id, actor)
+           write_fun.()
+         end) do
+      {:ok, outcome} -> outcome
+      {:error, :forbidden} -> {:error, :forbidden}
+    end
+  end
+
+  defp authorize_editor!(organization_id, actor) do
+    Authorization.lock_editor!(%{actor_id: actor_id(actor), organization_id: organization_id})
+  end
+
   defp actor_id(%{id: id}), do: id
+  defp actor_id(_), do: nil
 end

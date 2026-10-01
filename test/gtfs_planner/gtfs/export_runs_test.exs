@@ -6,6 +6,7 @@ defmodule GtfsPlanner.Gtfs.ExportRunsTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Gtfs.Export.ArtifactStorage
   alias GtfsPlanner.Gtfs.Export.Run
+  alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Repo
 
@@ -221,6 +222,76 @@ defmodule GtfsPlanner.Gtfs.ExportRunsTest do
     assert pathways.estimate_method == nil
   end
 
+  test "full and operations runs keep the defaults they were created with, and a retry reads the defaults then" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    editor = editor_fixture(organization)
+
+    assert {:ok, _defaults} =
+             ExportDefaults.update(organization.id, editor, %{
+               include_flex: false,
+               estimate_missing_times: false
+             })
+
+    assert {:ok, full} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
+
+    assert {:ok, operations} =
+             ExportRuns.create_pending(organization.id, version.id, @actor, :operations)
+
+    assert snapshot(full) == {false, false, nil}
+    assert snapshot(operations) == {false, false, nil}
+
+    assert {:ok, _defaults} =
+             ExportDefaults.update(organization.id, editor, %{
+               include_flex: true,
+               estimate_missing_times: true,
+               estimate_method: :even
+             })
+
+    assert {:ok, pathways} =
+             ExportRuns.create_pending(organization.id, version.id, @actor, :pathways)
+
+    assert snapshot(pathways) == {false, false, nil}
+    assert snapshot(Repo.get!(Run, full.id)) == {false, false, nil}
+    assert snapshot(Repo.get!(Run, operations.id)) == {false, false, nil}
+
+    assert {:ok, _closed} = ExportRuns.fail_unstarted(organization.id, full.id, 0)
+    prior = Repo.get!(Run, full.id)
+
+    assert {:ok, retry} = ExportRuns.retry(organization.id, full.id)
+    assert retry.id != full.id
+    assert snapshot(retry) == {true, true, :even}
+    assert Repo.get!(Run, full.id) == prior
+  end
+
+  test "a run closed as busy does not replace the latest export" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+
+    assert {:ok, first} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
+
+    assert {:ok, _building, generation, token} =
+             ExportRuns.claim(organization.id, first.id, :build)
+
+    assert {:ok, _failed} =
+             ExportRuns.fail_build(organization.id, first.id, generation, token, "build_failed")
+
+    assert {:ok, refused} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
+    assert refused.id != first.id
+
+    assert {:ok, %Run{state: :failed, failure_code: "busy"}} =
+             ExportRuns.fail_unstarted(organization.id, refused.id, refused.lease_generation)
+
+    assert %Run{id: latest_id} = ExportRuns.latest_for_version(organization.id, version.id, :full)
+    assert latest_id == first.id
+
+    assert {:ok, next} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
+    assert next.id not in [first.id, refused.id]
+
+    assert %Run{id: ^latest_id} =
+             ExportRuns.get_for_version(organization.id, version.id, first.id)
+  end
+
   test "normalizes corrupt ready artifacts after failing the durable row" do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
@@ -332,6 +403,9 @@ defmodule GtfsPlanner.Gtfs.ExportRunsTest do
 
     artifact
   end
+
+  defp snapshot(%Run{} = run),
+    do: {run.include_flex, run.estimate_missing_times, run.estimate_method}
 
   defp expire!(run) do
     from(r in Run, where: r.id == ^run.id)

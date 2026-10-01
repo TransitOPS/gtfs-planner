@@ -8,11 +8,8 @@ defmodule GtfsPlanner.Agents.Scope do
   provider request and tool call.
   """
 
-  alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.UserOrgMembership
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.AuditContext
-
-  @editor_role "pathways_studio_editor"
 
   @enforce_keys [:organization_id, :gtfs_version_id, :user_id, :pack_id]
   defstruct [
@@ -39,16 +36,7 @@ defmodule GtfsPlanner.Agents.Scope do
   """
   @spec authorize(t()) :: :ok | {:error, :forbidden}
   def authorize(%__MODULE__{user_id: user_id, organization_id: organization_id}) do
-    with true <- uuid?(user_id),
-         true <- uuid?(organization_id),
-         %UserOrgMembership{} = membership <-
-           Accounts.get_user_org_membership(user_id, organization_id),
-         true <- is_nil(membership.deactivated_at),
-         true <- editor_role?(membership.roles) do
-      :ok
-    else
-      _other -> {:error, :forbidden}
-    end
+    Authorization.authorize_editor(%{actor_id: user_id, organization_id: organization_id})
   end
 
   @doc """
@@ -64,10 +52,4 @@ defmodule GtfsPlanner.Agents.Scope do
       actor_email: scope.user_email
     }
   end
-
-  defp uuid?(value) when is_binary(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
-  defp uuid?(_value), do: false
-
-  defp editor_role?(roles) when is_list(roles), do: @editor_role in roles
-  defp editor_role?(_roles), do: false
 end

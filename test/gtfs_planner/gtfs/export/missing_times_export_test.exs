@@ -9,6 +9,7 @@
 defmodule GtfsPlanner.Gtfs.Export.MissingTimesExportTest do
   use GtfsPlanner.DataCase, async: false
 
+  import GtfsPlanner.FlexFixtures, only: [flex_audit_fixture: 2]
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -91,7 +92,11 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimesExportTest do
 
   test "a non-estimating run writes stored blanks unchanged", %{root: root} do
     {organization, version} = seed_fillable_version()
-    {:ok, _} = ExportDefaults.update(organization.id, %{estimate_missing_times: false})
+
+    {:ok, _} =
+      ExportDefaults.update(organization.id, editor_fixture(organization), %{
+        estimate_missing_times: false
+      })
 
     {run, claimed, generation, token} = claim_run(organization, version, :full)
 
@@ -115,14 +120,23 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimesExportTest do
 
   test "a snapshot run still estimates after the defaults change", %{root: root} do
     {organization, version} = seed_fillable_version()
-    {:ok, _} = ExportDefaults.update(organization.id, %{estimate_method: :even})
+
+    {:ok, _} =
+      ExportDefaults.update(organization.id, editor_fixture(organization), %{
+        estimate_method: :even
+      })
+
     {:ok, run} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
 
     assert run.estimate_missing_times == true
     assert run.estimate_method == :even
 
     # Changing the defaults after the run exists must not alter the run.
-    {:ok, _} = ExportDefaults.update(organization.id, %{estimate_missing_times: false})
+    {:ok, _} =
+      ExportDefaults.update(organization.id, editor_fixture(organization), %{
+        estimate_missing_times: false
+      })
+
     {:ok, claimed, generation, token} = ExportRuns.claim(organization.id, run.id, :build)
     assert :ok = Worker.build(claimed, generation, token, ExportRuns.topic(run))
 
@@ -167,14 +181,16 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimesExportTest do
     seed_trip_with_blanks(organization.id, version.id, "20", "T20", "08")
 
     {:ok, _service} =
-      Flex.create_service(organization.id, version.id, %{
+      Flex.create_service(flex_audit_fixture(organization.id, version.id), %{
         name: "Valley Line detours",
         kind: :detour,
         route_id: "20"
       })
 
     # Flex stays out of the run, but R3 still doubles the detour route.
-    {:ok, _} = ExportDefaults.update(organization.id, %{include_flex: false})
+    {:ok, _} =
+      ExportDefaults.update(organization.id, editor_fixture(organization), %{include_flex: false})
+
     {run, claimed, generation, token} = claim_run(organization, version, :full)
     assert :ok = Worker.build(claimed, generation, token, ExportRuns.topic(run))
 
@@ -267,7 +283,11 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimesExportTest do
 
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
-    {:ok, _} = ExportDefaults.update(organization.id, %{estimate_missing_times: false})
+
+    {:ok, _} =
+      ExportDefaults.update(organization.id, editor_fixture(organization), %{
+        estimate_missing_times: false
+      })
 
     {:ok, run} = Validations.create_validation_run(organization.id, version.id, "mobility_data")
 

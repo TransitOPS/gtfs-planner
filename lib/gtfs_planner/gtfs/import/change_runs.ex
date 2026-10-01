@@ -5,11 +5,21 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
   This context is the only owner of `gtfs_change_runs` lifecycle fields. Workers
   receive a generation and opaque token at claim time; all later worker writes
   check both against PostgreSQL time before they can alter durable review state.
+
+  Requests made by a user (`create_pending_compute/4,5`, `request_apply/3`,
+  `request_cancel/3`, `retry/3`, `start_over/3`) reauthorize that user inside their
+  transaction, taking the run row first and the user's editor membership next
+  (INV-1). A refused user gets `{:error, :forbidden}` and the run is unchanged.
+  `request_apply/3` and a partial-run `retry/3` also record the requesting user as the
+  run's actor, because that actor is reauthorized for every decision the worker
+  applies and named in its change log.
   """
 
   import Ecto.Query, warn: false
 
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Import.ChangeArtifactStorage
   alias GtfsPlanner.Gtfs.Import.ChangeDecision
@@ -37,7 +47,12 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
 
   def create_pending_compute(_, _, _, _), do: {:error, :invalid_staged_files}
 
-  @doc "Creates a pending run with a preallocated ID for immutable file staging."
+  @doc """
+  Creates a pending run with a preallocated ID for immutable file staging.
+
+  Returns `{:error, :forbidden}` without creating or returning a run when `actor` no
+  longer has an active editor membership in the organization.
+  """
   @spec create_pending_compute(
           Ecto.UUID.t(),
           Ecto.UUID.t(),
@@ -59,10 +74,14 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
 
   def create_pending_compute(_, _, _, _, _), do: {:error, :invalid_staged_files}
 
+  # The scope advisory lock and the active run row come first, then the actor's membership
+  # (INV-1), so a refused actor neither adopts the active run nor inserts one.
   defp create_pending_in_scope(organization_id, gtfs_version_id, actor, staged_files, run_id) do
     lock_scope(organization_id, gtfs_version_id)
+    active = lock_active_run(organization_id, gtfs_version_id)
+    lock_actor!(organization_id, actor)
 
-    case lock_active_run(organization_id, gtfs_version_id) do
+    case active do
       %ChangeRun{} = run -> {{:ok, run}, []}
       nil -> insert_pending_compute(organization_id, gtfs_version_id, actor, staged_files, run_id)
     end
@@ -226,6 +245,50 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     update_closed_run(run, attrs)
   end
 
+  @doc """
+  Closes a pending run whose runner was refused because the supervisor was at
+  capacity (`ChangeRunner.start_compute/4` or `start_apply/4` returned
+  `{:error, :busy}`).
+
+  `generation` is the run's `lease_generation` when the caller started it. A
+  `pending_compute` or `pending_apply` run still at that generation was never
+  claimed; it becomes `failed` with `failure_code` `busy`. A run that was claimed,
+  closed or cancelled in the meantime returns `{:error, :invalid_transition}` and
+  nothing changes. The staged files and any decisions stay, so `retry/3` can run
+  the review again. This is a system closure and does not reauthorize the actor.
+  """
+  @spec fail_unstarted(Ecto.UUID.t(), Ecto.UUID.t(), non_neg_integer()) ::
+          {:ok, ChangeRun.t()} | {:error, :not_found | :invalid_transition}
+  def fail_unstarted(organization_id, run_id, generation) do
+    transaction_with_broadcast(fn ->
+      case lock_run(organization_id, run_id) do
+        nil -> {{:error, :not_found}, []}
+        run -> close_unstarted(run, generation)
+      end
+    end)
+  end
+
+  defp close_unstarted(
+         %ChangeRun{state: state, lease_generation: generation, cancel_requested_at: nil} = run,
+         generation
+       )
+       when state in [:pending_compute, :pending_apply] do
+    now = DateTime.utc_now()
+
+    attrs = %{
+      state: :failed,
+      phase: :cleanup,
+      failure_code: "busy",
+      started_at: run.started_at || now,
+      finished_at: now
+    }
+
+    {:ok, failed} = Repo.update(ChangeRun.system_changeset(run, attrs))
+    {{:ok, failed}, [run.id]}
+  end
+
+  defp close_unstarted(_run, _generation), do: {{:error, :invalid_transition}, []}
+
   @spec set_decision_status(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), :approved | :rejected) ::
           {:ok, ChangeDecision.t()} | {:error, term()}
   def set_decision_status(organization_id, run_id, decision_id, status)
@@ -278,33 +341,43 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
 
   def approve_all(_, _, _), do: {:error, :invalid_decision_action}
 
-  @spec request_apply(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, ChangeRun.t()} | {:error, term()}
-  def request_apply(organization_id, run_id) do
+  @doc """
+  Moves a reviewed run to `:pending_apply` on behalf of `actor`.
+
+  `actor` must hold an active editor membership, otherwise the result is
+  `{:error, :forbidden}` and the run is unchanged. The run's actor becomes `actor`, so the
+  worker reauthorizes, and the change log names, the user who asked for the apply.
+  """
+  @spec request_apply(Ecto.UUID.t(), Ecto.UUID.t(), actor()) ::
+          {:ok, ChangeRun.t()} | {:error, term()}
+  def request_apply(organization_id, run_id, actor) do
     transaction_with_broadcast(fn ->
-      case lock_run(organization_id, run_id) do
+      case lock_run_as_editor(organization_id, run_id, actor) do
         nil -> {{:error, :not_found}, []}
-        %ChangeRun{state: :review} = run -> request_apply_for_review(run)
+        %ChangeRun{state: :review} = run -> request_apply_for_review(run, actor)
         _run -> {{:error, :invalid_transition}, []}
       end
     end)
   end
 
-  defp request_apply_for_review(run) do
+  defp request_apply_for_review(run, actor) do
     if run.serializer_version == ChangeDecisionSerializer.serializer_version() do
-      move_to_pending_apply(run)
+      move_to_pending_apply(run, actor)
     else
       expire_incompatible_review(run)
     end
   end
 
-  defp move_to_pending_apply(run) do
+  defp move_to_pending_apply(run, actor) do
     {:ok, pending} =
       Repo.update(
         ChangeRun.system_changeset(run, %{
           state: :pending_apply,
           phase: :preflight,
           progress_current: 0,
-          progress_total: approved_decision_count(run.id)
+          progress_total: approved_decision_count(run.id),
+          actor_id: actor.id,
+          actor_email: actor.email
         })
       )
 
@@ -325,7 +398,12 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     {{:error, :incompatible_review}, [expired.id]}
   end
 
-  @doc "Applies one approved decision in the caller-owned mutation/audit/checkpoint transaction."
+  @doc """
+  Applies one approved decision in its own mutation/audit/checkpoint transaction.
+
+  The run's actor must still hold an active editor membership when the transaction
+  starts; otherwise it returns `{:error, :forbidden}` and writes nothing.
+  """
   @spec apply_decision(
           Ecto.UUID.t(),
           Ecto.UUID.t(),
@@ -368,17 +446,29 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
         opts
       )
       when is_binary(decision_id) and is_list(opts) do
-    apply_decision_with_options(
-      organization_id,
-      run_id,
-      decision_id,
-      generation,
-      token,
-      context,
-      opts
-    )
+    # `:before_transaction` lets a test pause between decisions, after the previous one committed.
+    with :ok <- invoke_step(opts, :before_transaction) do
+      apply_decision_with_options(
+        organization_id,
+        run_id,
+        decision_id,
+        generation,
+        token,
+        context,
+        opts
+      )
+    end
   end
 
+  # Applying one decision publishes stop/pathway/level rows of the run's version, a combination
+  # input, so the transaction follows INV-1: the fenced run row first (it also rechecks state,
+  # lease and cancellation after the wait), then the run actor's editor membership `FOR SHARE`,
+  # then the version `FOR SHARE`, then the decision and entity rows. The run is first because
+  # lease renewal and `reconcile_expired/1` lock only the run row, and a run-owned
+  # version-exclusive command takes its run before the version; locking the version first made
+  # that pair a lock cycle. The actor comes from the locked run, never from the caller's audit
+  # context, and `valid_audit_context?/2` then requires the context to match the run. A revoked
+  # actor rolls back with `:forbidden`, so the worker stops without marking the decision failed.
   defp apply_decision_with_options(
          organization_id,
          run_id,
@@ -389,10 +479,13 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
          opts
        ) do
     transaction_with_broadcast(fn ->
-      with gtfs_version_id when is_binary(gtfs_version_id) <-
-             run_version_scope(organization_id, run_id),
-           _version <- Versions.lock_for_input_write!(organization_id, gtfs_version_id),
-           {:ok, run} <- fenced_run(organization_id, run_id, generation, token, [:applying]),
+      with {:ok, run} <- fenced_run(organization_id, run_id, generation, token, [:applying]),
+           _membership <-
+             Authorization.lock_editor!(%{
+               actor_id: run.actor_id,
+               organization_id: run.organization_id
+             }),
+           _version <- Versions.lock_for_input_write!(run.organization_id, run.gtfs_version_id),
            :ok <- valid_audit_context?(run, context),
            %ChangeDecision{} = decision <- lock_decision(run.id, decision_id) do
         apply_or_return_decision(run, decision, generation, token, context, opts)
@@ -409,19 +502,6 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
       else
         reraise(e, __STACKTRACE__)
       end
-  end
-
-  # Applying one decision publishes stop/pathway/level rows of the run's version, a combination
-  # input. The run scope is read without a lock first, then the scoped version share lock is taken
-  # before the fenced run row, the decision row and the entity row, so a concurrent calendar
-  # mutation cannot commit between the fingerprint check and the mutation. `fenced_run/5` then
-  # rechecks the run row and its lease after the lock wait.
-  defp run_version_scope(organization_id, run_id) do
-    from(r in ChangeRun,
-      where: r.id == ^run_id and r.organization_id == ^organization_id,
-      select: r.gtfs_version_id
-    )
-    |> Repo.one()
   end
 
   # Step-6 deletion boundary: a closure inserted after the apply precheck
@@ -582,10 +662,17 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
 
   defp lease_lost, do: {{:error, :lease_lost}, []}
 
-  @spec request_cancel(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, ChangeRun.t()} | {:error, term()}
-  def request_cancel(organization_id, run_id) do
+  @doc """
+  Cancels a run that has not started work, or flags a running one for cancellation.
+
+  `actor` must hold an active editor membership, otherwise the result is
+  `{:error, :forbidden}` and the run is unchanged.
+  """
+  @spec request_cancel(Ecto.UUID.t(), Ecto.UUID.t(), actor()) ::
+          {:ok, ChangeRun.t()} | {:error, term()}
+  def request_cancel(organization_id, run_id, actor) do
     transaction_with_broadcast(fn ->
-      case lock_run(organization_id, run_id) do
+      case lock_run_as_editor(organization_id, run_id, actor) do
         nil ->
           {{:error, :not_found}, []}
 
@@ -633,34 +720,44 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     end)
   end
 
-  @spec retry(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, ChangeRun.t()} | {:error, term()}
-  def retry(organization_id, run_id) do
+  @doc """
+  Returns a stopped run to the step that can continue it.
+
+  `actor` must hold an active editor membership, otherwise the result is
+  `{:error, :forbidden}` and the run is unchanged. A partial run goes back to
+  `:pending_apply` under `actor`, so a run closed with `"forbidden"` can be applied by
+  another editor.
+  """
+  @spec retry(Ecto.UUID.t(), Ecto.UUID.t(), actor()) :: {:ok, ChangeRun.t()} | {:error, term()}
+  def retry(organization_id, run_id, actor) do
     case ChangeArtifactStorage.with_root_lock(fn ->
-           retry_with_artifacts(organization_id, run_id)
+           retry_with_artifacts(organization_id, run_id, actor)
          end) do
       {:error, :artifact_storage_unavailable} ->
-        retry_without_artifact_storage_transaction(organization_id, run_id)
+        retry_without_artifact_storage_transaction(organization_id, run_id, actor)
 
       result ->
         result
     end
   end
 
-  defp retry_with_artifacts(organization_id, run_id) do
-    transaction_with_broadcast(fn -> retry_locked_run(organization_id, run_id) end)
+  defp retry_with_artifacts(organization_id, run_id, actor) do
+    transaction_with_broadcast(fn -> retry_locked_run(organization_id, run_id, actor) end)
   end
 
-  defp retry_without_artifact_storage_transaction(organization_id, run_id) do
-    transaction_with_broadcast(fn -> retry_without_artifact_storage(organization_id, run_id) end)
+  defp retry_without_artifact_storage_transaction(organization_id, run_id, actor) do
+    transaction_with_broadcast(fn ->
+      retry_without_artifact_storage(organization_id, run_id, actor)
+    end)
   end
 
-  defp retry_locked_run(organization_id, run_id) do
-    case lock_run(organization_id, run_id) do
+  defp retry_locked_run(organization_id, run_id, actor) do
+    case lock_run_as_editor(organization_id, run_id, actor) do
       nil ->
         {{:error, :not_found}, []}
 
       %ChangeRun{state: :partial} = run ->
-        retry_partial_run(run)
+        retry_partial_run(run, actor)
 
       %ChangeRun{state: state} = run
       when state in [:failed, :interrupted, :cancelled, :expired] ->
@@ -671,13 +768,13 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     end
   end
 
-  defp retry_without_artifact_storage(organization_id, run_id) do
-    case lock_run(organization_id, run_id) do
+  defp retry_without_artifact_storage(organization_id, run_id, actor) do
+    case lock_run_as_editor(organization_id, run_id, actor) do
       nil ->
         {{:error, :not_found}, []}
 
       %ChangeRun{state: :partial} = run ->
-        retry_partial_run(run)
+        retry_partial_run(run, actor)
 
       %ChangeRun{state: state}
       when state in [:failed, :interrupted, :cancelled, :expired] ->
@@ -688,7 +785,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     end
   end
 
-  defp retry_partial_run(run) do
+  defp retry_partial_run(run, actor) do
     {:ok, pending} =
       Repo.update(
         ChangeRun.system_changeset(run, %{
@@ -698,7 +795,9 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
           progress_total: retryable_decision_count(run.id),
           finished_at: nil,
           cancel_requested_at: nil,
-          failure_code: nil
+          failure_code: nil,
+          actor_id: actor.id,
+          actor_email: actor.email
         })
       )
 
@@ -775,11 +874,15 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
 
   The run becomes `:cancelled` with a marker that `latest_for_version/2` reads as "no run",
   so the page stays on the upload step after a reload. Decisions the run already applied
-  stay applied; only its remaining review state is abandoned.
+  stay applied; only its remaining review state is abandoned. `actor` must hold an active
+  editor membership, otherwise the result is `{:error, :forbidden}` and the run is unchanged.
   """
-  @spec start_over(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, ChangeRun.t()} | {:error, term()}
-  def start_over(organization_id, run_id) do
-    case transaction_with_broadcast(fn -> start_over_locked_run(organization_id, run_id) end) do
+  @spec start_over(Ecto.UUID.t(), Ecto.UUID.t(), actor()) ::
+          {:ok, ChangeRun.t()} | {:error, term()}
+  def start_over(organization_id, run_id, actor) do
+    case transaction_with_broadcast(fn ->
+           start_over_locked_run(organization_id, run_id, actor)
+         end) do
       {:ok, run} = result ->
         _ = ChangeArtifactStorage.remove(organization_id, run.gtfs_version_id, run.id)
         result
@@ -789,8 +892,8 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     end
   end
 
-  defp start_over_locked_run(organization_id, run_id) do
-    case lock_run(organization_id, run_id) do
+  defp start_over_locked_run(organization_id, run_id, actor) do
+    case lock_run_as_editor(organization_id, run_id, actor) do
       nil ->
         {{:error, :not_found}, []}
 
@@ -941,6 +1044,24 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     )
     |> Repo.one()
   end
+
+  # INV-1: the run row is locked first, then the requesting user's editor membership.
+  # A missing run is `nil` before any membership is read.
+  defp lock_run_as_editor(organization_id, run_id, actor) do
+    case lock_run(organization_id, run_id) do
+      nil ->
+        nil
+
+      run ->
+        lock_actor!(organization_id, actor)
+        run
+    end
+  end
+
+  # Rolls the transaction back with `:forbidden` unless `actor` holds an active editor
+  # membership in the organization.
+  defp lock_actor!(organization_id, %{id: actor_id}),
+    do: Authorization.lock_editor!(%{actor_id: actor_id, organization_id: organization_id})
 
   defp lock_decision(run_id, decision_id) do
     from(d in ChangeDecision,
@@ -1222,7 +1343,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     }
 
     attrs = Map.merge(decision.uploaded_values, identity_attrs(run, decision))
-    Gtfs.record_change_in_transaction(context, decision.entity_type, current, action, attrs)
+    Audit.record_change_in_transaction(context, decision.entity_type, current, action, attrs)
   end
 
   defp valid_audit_context?(run, %AuditContext{} = context) do

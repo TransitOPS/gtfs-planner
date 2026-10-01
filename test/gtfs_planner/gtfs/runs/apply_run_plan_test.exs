@@ -88,7 +88,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
       assert plan.moves != []
 
       assert {:ok, %{changed_trips: changed, undo: undo}} =
-               Gtfs.apply_run_plan(world.organization.id, world.version.id, plan)
+               Gtfs.apply_run_plan(world.audit, plan)
 
       assert changed == length(plan.moves)
 
@@ -109,7 +109,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
       before = all_rows(world)
 
       assert {:ok, %{changed_trips: 0, undo: []}} =
-               Gtfs.apply_run_plan(world.organization.id, world.version.id, %{plan | moves: []})
+               Gtfs.apply_run_plan(world.audit, %{plan | moves: []})
 
       assert all_rows(world) == before
 
@@ -117,7 +117,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
       # plan still applies. This is the flip side of the `updated_at` rule - a
       # write that changes nothing leaves the fingerprint alone.
       assert {:ok, %{changed_trips: changed}} =
-               Gtfs.apply_run_plan(world.organization.id, world.version.id, plan)
+               Gtfs.apply_run_plan(world.audit, plan)
 
       assert changed == length(plan.moves)
     end
@@ -139,7 +139,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
                )
 
       assert {:error, :stale_plan} =
-               Gtfs.apply_run_plan(world.organization.id, world.version.id, plan)
+               Gtfs.apply_run_plan(world.audit, plan)
 
       assert all_rows(world) == before
     end
@@ -150,14 +150,14 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
       # A colleague moves a trip the plan did not touch. The plan is stale, the
       # colleague's write stands, and the plan adds nothing of its own.
       assert {:ok, _} =
-               Gtfs.apply_run_moves(world.organization.id, world.version.id, world.day_type_key, [
+               Gtfs.apply_run_moves(world.audit, world.day_type_key, [
                  %{trip_id: hd(world.blocks["101"]).id, from: "1001", to: "9999"}
                ])
 
       after_their_write = all_rows(world)
 
       assert {:error, :stale_plan} =
-               Gtfs.apply_run_plan(world.organization.id, world.version.id, plan)
+               Gtfs.apply_run_plan(world.audit, plan)
 
       assert all_rows(world) == after_their_write
     end
@@ -168,13 +168,12 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
 
       assert {:ok, _} =
                Runs.update_crew_settings(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  %{max_spread_minutes: 600}
                )
 
       assert {:error, :stale_plan} =
-               Gtfs.apply_run_plan(world.organization.id, world.version.id, plan)
+               Gtfs.apply_run_plan(world.audit, plan)
 
       assert all_rows(world) == before
     end
@@ -184,12 +183,12 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
       before = all_rows(world)
 
       assert {:ok, _} =
-               Blocking.update_settings(world.organization.id, world.version.id, %{
+               Blocking.update_settings(world.audit, %{
                  min_layover_minutes: 9
                })
 
       assert {:error, :stale_plan} =
-               Gtfs.apply_run_plan(world.organization.id, world.version.id, plan)
+               Gtfs.apply_run_plan(world.audit, plan)
 
       assert all_rows(world) == before
     end
@@ -200,14 +199,13 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
 
       assert {:ok, :ok} =
                Blocking.update_relief_settings(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  %{max_piece_minutes: 330, marked: [world.relief_stop_id, "MS"]}
                )
 
       assert {:error, :stale_plan} =
-               Gtfs.apply_run_plan(world.organization.id, world.version.id, plan)
+               Gtfs.apply_run_plan(world.audit, plan)
 
       assert all_rows(world) == before
     end
@@ -218,14 +216,13 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
 
       assert {:ok, _} =
                Blocking.put_deadhead_time(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  {"stop:VC", "stop:MS"},
                  20
                )
 
       assert {:error, :stale_plan} =
-               Gtfs.apply_run_plan(world.organization.id, world.version.id, plan)
+               Gtfs.apply_run_plan(world.audit, plan)
 
       assert all_rows(world) == before
     end
@@ -243,7 +240,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
                )
 
       assert {:error, :stale_plan} =
-               Gtfs.apply_run_plan(world.organization.id, world.version.id, plan)
+               Gtfs.apply_run_plan(world.audit, plan)
 
       assert all_rows(world) == before
     end
@@ -254,7 +251,13 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
       before = all_rows(theirs)
 
       assert {:error, :not_found} =
-               Gtfs.apply_run_plan(world.organization.id, theirs.version.id, plan)
+               Gtfs.apply_run_plan(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                   world.organization.id,
+                   theirs.version.id
+                 ),
+                 plan
+               )
 
       assert all_rows(theirs) == before
     end
@@ -289,7 +292,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
       tampered = %{plan | moves: plan.moves ++ [%{trip_id: saturday.id, from: nil, to: "2001"}]}
 
       assert {:error, {:invalid_trips, [saturday_id]}} =
-               Gtfs.apply_run_plan(world.organization.id, world.version.id, tampered)
+               Gtfs.apply_run_plan(world.audit, tampered)
 
       assert saturday_id == saturday.id
       assert all_rows(world) == before
@@ -328,7 +331,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
 
       plan = suggest(world, :uncovered_only)
 
-      assert {:ok, _} = Gtfs.apply_run_plan(world.organization.id, world.version.id, plan)
+      assert {:ok, _} = Gtfs.apply_run_plan(world.audit, plan)
 
       still_there =
         Repo.one(
@@ -350,14 +353,13 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
       plan = suggest(world, :uncovered_only)
 
       assert {:ok, %{undo: undo}} =
-               Gtfs.apply_run_plan(world.organization.id, world.version.id, plan)
+               Gtfs.apply_run_plan(world.audit, plan)
 
       refute all_rows(world) == before
 
       assert {:ok, _} =
                Gtfs.apply_run_moves(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  undo
                )
@@ -394,7 +396,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
       # them, so the rollback there is the rollback of real work rather than of
       # a plan that was never applied.
       assert {:ok, %{changed_trips: changed}} =
-               Gtfs.apply_run_plan(world.organization.id, world.version.id, plan)
+               Gtfs.apply_run_plan(world.audit, plan)
 
       assert changed == length(plan.moves)
       refute all_rows(world) == before
@@ -412,7 +414,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
       corrupted = List.update_at(plan.moves, -1, &%{&1 | to: "BAD ID"})
 
       assert {:error, :write_failed} =
-               Gtfs.apply_run_plan(world.organization.id, world.version.id, %{
+               Gtfs.apply_run_plan(world.audit, %{
                  plan
                  | moves: corrupted
                })

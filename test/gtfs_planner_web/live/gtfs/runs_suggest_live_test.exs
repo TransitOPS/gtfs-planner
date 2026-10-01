@@ -96,7 +96,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSuggestLiveTest do
   # with the feature about what a rebuild produces.
   defp with_runs(w) do
     {:ok, plan} = Gtfs.suggest_runs(w.organization.id, w.version.id, w.day_type_key, :replace_all)
-    {:ok, _result} = Gtfs.apply_run_plan(w.organization.id, w.version.id, plan)
+    {:ok, _result} = Gtfs.apply_run_plan(w.audit, plan)
     w
   end
 
@@ -118,7 +118,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSuggestLiveTest do
     moves = Enum.map(segment.trips, fn trip -> %{trip_id: trip.id, from: nil, to: :new} end)
 
     {:ok, _result} =
-      Gtfs.apply_run_moves(w.organization.id, w.version.id, w.day_type_key, moves)
+      Gtfs.apply_run_moves(w.audit, w.day_type_key, moves)
 
     w
   end

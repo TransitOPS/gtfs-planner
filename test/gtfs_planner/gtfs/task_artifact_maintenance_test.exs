@@ -20,7 +20,12 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
   alias GtfsPlanner.Gtfs.TaskArtifactMaintenance
   alias GtfsPlanner.Repo
 
-  @actor %{id: Ecto.UUID.generate(), email: "maintenance@example.com"}
+  # Creating and retrying a change run reauthorize their actor, so the actor is a real active
+  # editor of the organization.
+  defp editor_actor(organization) do
+    editor = editor_fixture(organization)
+    %{id: editor.id, email: editor.email}
+  end
 
   setup do
     root = Path.join(System.tmp_dir!(), "task-maintenance-#{System.unique_integer([:positive])}")
@@ -41,13 +46,14 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
 
   test "reconciles expired import and export executors through one runtime owner" do
     organization = organization_fixture()
+    actor = editor_actor(organization)
     version = gtfs_version_fixture(organization.id)
 
     {:ok, change_run} =
-      ChangeRuns.create_pending_compute(organization.id, version.id, @actor, [])
+      ChangeRuns.create_pending_compute(organization.id, version.id, actor, [])
 
     {:ok, _, _, _} = ChangeRuns.claim(organization.id, change_run.id, :compute)
-    {:ok, export_run} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
+    {:ok, export_run} = ExportRuns.create_pending(organization.id, version.id, actor, :full)
     {:ok, _, _, _} = ExportRuns.claim(organization.id, export_run.id, :build)
 
     from(r in ChangeRun, where: r.id == ^change_run.id)
@@ -63,6 +69,7 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
 
   test "retains interrupted compute sources through maintenance so retry can finish" do
     organization = organization_fixture()
+    actor = editor_actor(organization)
     version = gtfs_version_fixture(organization.id)
     run_id = Ecto.UUID.generate()
 
@@ -75,7 +82,7 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
       ])
 
     {:ok, run} =
-      ChangeRuns.create_pending_compute(organization.id, version.id, @actor, manifest, run_id)
+      ChangeRuns.create_pending_compute(organization.id, version.id, actor, manifest, run_id)
 
     {:ok, _, _, _} = ChangeRuns.claim(organization.id, run.id, :compute)
 
@@ -84,7 +91,7 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
 
     assert :ok = TaskArtifactMaintenance.maintain()
     assert Repo.get!(ChangeRun, run.id).state == :interrupted
-    assert {:ok, pending} = ChangeRuns.retry(organization.id, run.id)
+    assert {:ok, pending} = ChangeRuns.retry(organization.id, run.id, actor)
     assert {:ok, claimed, generation, token} = ChangeRuns.claim(organization.id, run.id, :compute)
     assert :ok = ChangeWorker.compute(claimed, generation, token, ChangeRuns.topic(run))
     assert Repo.get!(ChangeRun, pending.id).state == :review
@@ -117,6 +124,7 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
     end)
 
     organization = organization_fixture()
+    actor = editor_actor(organization)
     version = gtfs_version_fixture(organization.id)
     run_id = Ecto.UUID.generate()
 
@@ -126,7 +134,7 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
       ])
 
     {:ok, run} =
-      ChangeRuns.create_pending_compute(organization.id, version.id, @actor, manifest, run_id)
+      ChangeRuns.create_pending_compute(organization.id, version.id, actor, manifest, run_id)
 
     {:ok, _claimed, generation, token} =
       ChangeRuns.claim(organization.id, run.id, :compute)
@@ -145,7 +153,10 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
 
     assert :ok = TaskArtifactMaintenance.maintain()
     assert {:error, :missing_or_corrupt_artifact} = ChangeArtifactStorage.read(failed)
-    assert {:error, :missing_or_corrupt_artifact} = ChangeRuns.retry(organization.id, run.id)
+
+    assert {:error, :missing_or_corrupt_artifact} =
+             ChangeRuns.retry(organization.id, run.id, actor)
+
     assert Repo.get!(ChangeRun, run.id).state == :failed
   end
 
@@ -176,6 +187,7 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
     end)
 
     organization = organization_fixture()
+    actor = editor_actor(organization)
     version = gtfs_version_fixture(organization.id)
     run_id = Ecto.UUID.generate()
 
@@ -185,7 +197,7 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
       ])
 
     {:ok, run} =
-      ChangeRuns.create_pending_compute(organization.id, version.id, @actor, manifest, run_id)
+      ChangeRuns.create_pending_compute(organization.id, version.id, actor, manifest, run_id)
 
     {:ok, _claimed, generation, token} =
       ChangeRuns.claim(organization.id, run.id, :compute)
@@ -239,7 +251,7 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
       Task.async(fn ->
         Sandbox.allow(Repo, parent, self())
         send(parent, {:retry_started, self()})
-        result = ChangeRuns.retry(organization.id, run.id)
+        result = ChangeRuns.retry(organization.id, run.id, actor)
         send(parent, {:retry_finished, self(), result})
         result
       end)
@@ -265,9 +277,10 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
     end)
 
     organization = organization_fixture()
+    actor = editor_actor(organization)
     version = gtfs_version_fixture(organization.id)
 
-    {:ok, run} = ChangeRuns.create_pending_compute(organization.id, version.id, @actor, [])
+    {:ok, run} = ChangeRuns.create_pending_compute(organization.id, version.id, actor, [])
     {:ok, _claimed, generation, token} = ChangeRuns.claim(organization.id, run.id, :compute)
 
     assert {:ok, _review} =
@@ -324,7 +337,7 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
       Task.async(fn ->
         Sandbox.allow(Repo, parent, self())
         send(parent, {:decision_retry_started, self()})
-        result = ChangeRuns.retry(organization.id, run.id)
+        result = ChangeRuns.retry(organization.id, run.id, actor)
         send(parent, {:decision_retry_finished, self(), result})
         result
       end)
@@ -350,6 +363,7 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
 
   test "does not delete a freshly staged directory before its run row is inserted" do
     organization = organization_fixture()
+    actor = editor_actor(organization)
     version = gtfs_version_fixture(organization.id)
     run_id = Ecto.UUID.generate()
 
@@ -364,7 +378,7 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenanceTest do
              ChangeRuns.create_pending_compute(
                organization.id,
                version.id,
-               @actor,
+               actor,
                manifest,
                run_id
              )

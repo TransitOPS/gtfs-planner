@@ -35,6 +35,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ImportTest do
   alias GtfsPlanner.Gtfs.Import.{Failure, Publication, Recovery, Run}
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Gtfs.PathwayEvolution
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
@@ -90,7 +91,8 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ImportTest do
 
   setup do
     organization = organization_fixture()
-    actor = user_fixture()
+    # Creating a target and publishing reauthorize the actor, so the actor is an active editor.
+    actor = editor_fixture(organization)
 
     %{organization: organization, actor: actor}
   end
@@ -109,7 +111,12 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ImportTest do
           "PW1,WK,0:30:00,01:00:00,1,\n"
 
       assert {:ok, version, result} =
-               Publication.run(run, token, feed() ++ [closures(body)], "import:closures")
+               Publication.run(
+                 run,
+                 token,
+                 StagedImport.stage(feed() ++ [closures(body)]),
+                 "import:closures"
+               )
 
       assert version.publication_status == "published"
       assert Import.Result.publishable?(result)
@@ -158,7 +165,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ImportTest do
       ]
 
       assert {:ok, version, result} =
-               Publication.run(run, token, files, "import:dates-only")
+               Publication.run(run, token, StagedImport.stage(files), "import:dates-only")
 
       assert result.counts.pathway_evolutions == 1
       assert closure_tuples(organization, version) == [{"PW1", "HOLIDAY", 32_400, 54_000}]
@@ -179,7 +186,8 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ImportTest do
             %{filename: "notes.txt", content: "operator notes\n"}
           ]
 
-      assert {:ok, version, result} = Publication.run(run, token, files, "import:extras")
+      assert {:ok, version, result} =
+               Publication.run(run, token, StagedImport.stage(files), "import:extras")
 
       assert result.unrecognized_files == ["notes.txt"]
       assert result.counts.pathway_evolutions == 1
@@ -208,7 +216,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ImportTest do
             ]
 
         assert {:error, _version, %Failure{} = failure} =
-                 Publication.run(run, token, files, "import:rejected-#{code}"),
+                 Publication.run(run, token, StagedImport.stage(files), "import:rejected-#{code}"),
                "expected #{code} to be refused"
 
         assert failure.phase == :phase_1, "wrong phase for #{code}"
@@ -264,7 +272,12 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ImportTest do
       body = "pathway_id,service_id,start_time,end_time\nPW1,WK,09:00:00,15:00:00,1\n"
 
       assert {:error, _version, %Failure{} = failure} =
-               Publication.run(run, token, feed() ++ [closures(body)], "import:bad-header")
+               Publication.run(
+                 run,
+                 token,
+                 StagedImport.stage(feed() ++ [closures(body)]),
+                 "import:bad-header"
+               )
 
       assert failure.phase == :phase_1
       assert failure.failed_file == "pathway_evolutions.txt"
@@ -300,7 +313,9 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ImportTest do
                Publication.run(
                  pathway_run,
                  pathway_token,
-                 feed() ++ [closures(@closure_header <> "OTHER_PW,WK,09:00:00,15:00:00,1\n")],
+                 StagedImport.stage(
+                   feed() ++ [closures(@closure_header <> "OTHER_PW,WK,09:00:00,15:00:00,1\n")]
+                 ),
                  "import:foreign-pathway"
                )
 
@@ -315,7 +330,9 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ImportTest do
                Publication.run(
                  service_run,
                  service_token,
-                 feed() ++ [closures(@closure_header <> "PW1,OTHER_WK,09:00:00,15:00:00,1\n")],
+                 StagedImport.stage(
+                   feed() ++ [closures(@closure_header <> "PW1,OTHER_WK,09:00:00,15:00:00,1\n")]
+                 ),
                  "import:foreign-service"
                )
 
@@ -340,7 +357,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ImportTest do
       files = feed() ++ [closures(first), closures(second)]
 
       assert {:error, _version, %Failure{} = failure} =
-               Publication.run(run, token, files, "import:duplicate-files")
+               Publication.run(run, token, StagedImport.stage(files), "import:duplicate-files")
 
       assert failure.phase == :phase_1
       assert failure.reason_code == "evolution_duplicate"
@@ -372,7 +389,12 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ImportTest do
       body = @closure_header <> Enum.join(distinct) <> "PW1,WK,00:00:00,00:00:30,1\n"
 
       assert {:error, _version, %Failure{} = failure} =
-               Publication.run(run, token, feed() ++ [closures(body)], "import:duplicate-batch")
+               Publication.run(
+                 run,
+                 token,
+                 StagedImport.stage(feed() ++ [closures(body)]),
+                 "import:duplicate-batch"
+               )
 
       assert failure.phase == :phase_1
       assert failure.reason_code == "evolution_duplicate"
@@ -399,13 +421,15 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ImportTest do
       # a new row collides with the existing unique index. The reference pass
       # converts that collision into the bounded duplicate code, and the stored
       # closure is left alone.
-      assert {:ok, first} = Import.import_files(organization.id, version.id, [closures(body)])
+      assert {:ok, first} =
+               StagedImport.import_files(organization.id, version.id, [closures(body)])
+
       assert first.counts.pathway_evolutions == 1
 
       repeat = @closure_header <> "PW1,WK,12:00:00,13:00:00,1\nPW1,WK,09:00:00,15:00:00,1\n"
 
       assert {:error, %Failure{} = failure} =
-               Import.import_files(organization.id, version.id, [closures(repeat)])
+               StagedImport.import_files(organization.id, version.id, [closures(repeat)])
 
       assert failure.phase == :phase_1
       assert failure.reason_code == "evolution_duplicate"
@@ -456,7 +480,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ImportTest do
           ]
 
       assert {:error, failed_version, %Failure{} = failure} =
-               Publication.run(run, token, files, "import:phase-two")
+               Publication.run(run, token, StagedImport.stage(files), "import:phase-two")
 
       assert failure.phase == :phase_2
       assert failed_version.publication_status == "failed"

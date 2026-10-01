@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.Extensions.Import do
   @moduledoc """
-  Imports non-standard GTFS extension data from a decoded manifest and image binaries.
+  Imports non-standard GTFS extension data from a decoded manifest and image files.
 
   Must be called **after** standard GTFS Phase 1 + Phase 2 imports complete,
   so that referenced stops, levels, and routes already exist.
@@ -16,15 +16,19 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
   require Logger
 
   @doc """
-  Imports extensions data from manifest JSON and image binaries.
+  Imports extensions data from manifest JSON and staged image files.
 
   ## Parameters
 
     - `organization_id` - UUID of the organization
     - `gtfs_version_id` - UUID of the GTFS version
     - `manifest_json` - raw JSON binary of `_pathways_extensions.json`
-    - `image_files_by_zip_path` - map of `%{zip_path => binary}`
-    - `opts` - reserved for future use
+    - `image_files_by_zip_path` - map of `%{zip_path => path}` naming the staged file for each
+      image. Each file is read only when its image is restored, one at a time.
+    - `opts` - `:fence`, an optional zero-arity callback run as the first statement of the
+      database transaction. It calls `Repo.rollback/1` when the caller no longer owns the
+      work, so nothing is written and the call returns `{:error, reason}` (INV-4). Image
+      files are written after that transaction commits and are not fenced.
 
   ## Returns
 
@@ -44,7 +48,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
         gtfs_version_id,
         manifest_json,
         image_files_by_zip_path,
-        _opts \\ []
+        opts \\ []
       ) do
     with {:ok, manifest} <- Manifest.decode(manifest_json),
          lookups <- build_lookups(organization_id, gtfs_version_id),
@@ -54,7 +58,8 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
         gtfs_version_id,
         manifest,
         lookups,
-        image_files_by_zip_path
+        image_files_by_zip_path,
+        Keyword.get(opts, :fence)
       )
     end
   end
@@ -145,12 +150,15 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
          gtfs_version_id,
          manifest,
          lookups,
-         image_files_by_zip_path
+         image_files_by_zip_path,
+         fence
        ) do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     result =
       Repo.transaction(fn ->
+        if fence, do: fence.()
+
         coord_count = update_stop_coordinates(manifest.stop_diagram_coordinates, lookups)
 
         sl_count =
@@ -268,26 +276,39 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
          image_files_by_zip_path
        ) do
     Enum.reduce_while(diagram_images, {0, :ok}, fn entry, {written, :ok} ->
-      case Map.fetch(image_files_by_zip_path, entry.zip_path) do
-        {:ok, binary} ->
-          case DiagramStorage.store_import_image(
-                 organization_id,
-                 gtfs_version_id,
-                 entry.station_stop_id,
-                 entry.filename,
-                 binary
-               ) do
-            :ok ->
-              {:cont, {written + 1, :ok}}
-
-            {:error, reason} ->
-              {:halt, {written, {:error, {:write_failed, entry.zip_path, reason}}}}
-          end
-
-        :error ->
-          {:halt, {written, {:error, {:missing_binary, entry.zip_path}}}}
-      end
+      restore_entry(organization_id, gtfs_version_id, entry, image_files_by_zip_path, written)
     end)
+  end
+
+  defp restore_entry(organization_id, gtfs_version_id, entry, image_files_by_zip_path, written) do
+    case Map.fetch(image_files_by_zip_path, entry.zip_path) do
+      {:ok, path} ->
+        case restore_image(organization_id, gtfs_version_id, entry, path) do
+          :ok ->
+            {:cont, {written + 1, :ok}}
+
+          {:error, reason} ->
+            {:halt, {written, {:error, {:write_failed, entry.zip_path, reason}}}}
+        end
+
+      :error ->
+        {:halt, {written, {:error, {:missing_binary, entry.zip_path}}}}
+    end
+  end
+
+  # Reads the staged file at restore time so only one image is in memory at once.
+  # Ceiling: a single image is read whole; `DiagramStorage.store_import_image/5` takes a
+  # binary. Upgrade path: a copy-from-path variant of that function.
+  defp restore_image(organization_id, gtfs_version_id, entry, path) do
+    with {:ok, binary} <- File.read(path) do
+      DiagramStorage.store_import_image(
+        organization_id,
+        gtfs_version_id,
+        entry.station_stop_id,
+        entry.filename,
+        binary
+      )
+    end
   end
 
   # -- helpers ----------------------------------------------------------------

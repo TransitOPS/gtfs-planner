@@ -113,7 +113,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsProblemsLiveTest do
     # runs. It has to be widened here or `piece_too_long` is raised for every
     # run in the fixture and the drawer is never empty.
     {:ok, _} =
-      Gtfs.update_blocking_settings(w.organization.id, w.version.id, %{max_piece_minutes: 720})
+      Gtfs.update_blocking_settings(w.audit, %{max_piece_minutes: 720})
 
     # A tuple is not Enumerable, so `{{a, b}, "1001"}` would hand the inner
     # `for` a tuple of two trips rather than a list to walk.

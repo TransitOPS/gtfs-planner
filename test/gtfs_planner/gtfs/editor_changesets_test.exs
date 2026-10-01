@@ -5,7 +5,6 @@ defmodule GtfsPlanner.Gtfs.EditorChangesetsTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.FeedInfo
 
@@ -175,7 +174,7 @@ defmodule GtfsPlanner.Gtfs.EditorChangesetsTest do
         |> Map.put(:organization_id, context.organization_id)
         |> Map.put(:gtfs_version_id, context.gtfs_version_id)
 
-      assert {:ok, agency} = Gtfs.create_agency(attrs)
+      assert {:ok, agency} = insert_agency(attrs)
       assert agency.agency_timezone == "Not/a_zone"
       assert agency.agency_url == "www.example.com"
     end

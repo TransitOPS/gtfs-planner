@@ -181,6 +181,34 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneEditorTest do
   end
 
   describe "the create form" do
+    test "a revoked editor keeps the submitted zone draft and writes nothing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, zones_path(version))
+      before = FareZones.inventory(organization.id, version.id)
+
+      view |> element("#fare-zone-create") |> render_click()
+      membership = Accounts.get_user_org_membership(user.id, organization.id)
+      deactivate_membership_fixture(membership)
+
+      view
+      |> form("#fare-zone-form", %{
+        "zone" => %{"name" => "Waterfront", "zone_id" => "W", "color" => "teal"}
+      })
+      |> render_submit()
+
+      assert drawer_open?(view)
+      assert text_of(view, "#fare-zone-drawer-error") == @save_failed_message
+      assert attribute(view, "#fare-zone-name", "value") == "Waterfront"
+      assert attribute(view, "#fare-zone-id", "value") == "W"
+      assert checked_color(view) == "teal"
+      assert FareZones.inventory(organization.id, version.id) == before
+    end
+
     test "the header action opens it with the reference's fields, help and note", %{
       conn: conn,
       user: user,

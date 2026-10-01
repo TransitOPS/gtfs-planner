@@ -9,7 +9,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   alias GtfsPlanner.Gtfs.Export.Runner, as: ExportRunner
   alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.ExportRuns
-  alias GtfsPlanner.Gtfs.Validator
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
@@ -30,13 +29,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   import GtfsPlannerWeb.ResultComponents, only: [result_section: 1]
 
-  require Logger
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   # The URL is the single source of truth for the selected export type: only
   # these query values are accepted, and `export_type_from_param/1` maps them
   # onto the atoms `ExportRuns` accepts.
   @export_type_params ~w(full pathways operations)
+
+  @export_busy_message "Another export is running. Try again when it finishes."
+  @validation_busy_message "Another validation is running. Try again when it finishes."
+  @validation_permission_message "You no longer have permission to check this feed. " <>
+                                   "Ask an organization administrator to restore your access."
 
   @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
@@ -57,7 +60,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:export_defaults, nil)
      |> assign(:missing_summary, AsyncResult.loading())
      |> assign(:validation_run_id, nil)
-     |> assign(:validation_task, nil)
      |> assign(:validating, false)
      |> assign(:validation_progress, nil)
      |> assign(:validation_result, nil)
@@ -143,14 +145,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     if socket.assigns.validation_run_id do
       Phoenix.PubSub.unsubscribe(
         GtfsPlanner.PubSub,
-        "validation:#{socket.assigns.validation_run_id}"
+        Validations.topic(socket.assigns.validation_run_id)
       )
     end
 
     {:noreply,
      socket
      |> assign(:validation_run_id, nil)
-     |> assign(:validation_task, nil)
      |> assign(:validating, false)
      |> assign(:validation_progress, nil)
      |> assign(:validation_result, nil)
@@ -176,6 +177,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     else
       {:error, :invalid_transition} ->
         {:noreply, refresh_export_run(socket)}
+
+      {:error, :busy} ->
+        {:noreply, export_busy(socket)}
 
       {:error, :artifact_storage_unavailable} ->
         {:noreply,
@@ -221,9 +225,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     with %{id: run_id} <- socket.assigns.export_run,
          {:ok, run} <- ExportRuns.retry(organization_id, run_id),
          :ok <- subscribe_export_run(run),
-         {:ok, _pid} <- ExportRunner.start_build(organization_id, run.id) do
+         :ok <- ExportRunner.ensure_started(organization_id, run) do
       {:noreply, assign(socket, :export_run, run)}
     else
+      {:error, :busy} ->
+        {:noreply, export_busy(socket)}
+
       _ ->
         {:noreply,
          socket
@@ -242,50 +249,39 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     {:noreply, assign(socket, :validation_progress, progress)}
   end
 
+  # The run's row decides the outcome, so a message that was queued behind a
+  # newer state, or a run that finished before this page subscribed, ends the
+  # same way. A run the page no longer shows (reset, or a newer check) changes nothing.
   @impl Phoenix.LiveView
-  def handle_info({ref, result}, socket) do
-    if socket.assigns.validation_task && socket.assigns.validation_task.ref == ref do
-      handle_validation_result(ref, result, socket)
-    else
-      {:noreply, socket}
-    end
+  def handle_info(
+        {event, run_id},
+        %{assigns: %{validation_run_id: run_id}} = socket
+      )
+      when event in [:validation_completed, :validation_failed] do
+    {:noreply, apply_validation_outcome(socket, Validations.get_validation_run!(run_id))}
   end
 
   @impl Phoenix.LiveView
-  def handle_info({:DOWN, ref, :process, _pid, reason}, socket) do
-    if socket.assigns.validation_task && socket.assigns.validation_task.ref == ref do
-      Logger.error("Validation task crashed: #{inspect(reason)}")
-
-      {:noreply,
-       socket
-       |> assign(:validation_error, :failed)
-       |> assign(:validating, false)
-       |> assign(:validation_task, nil)
-       |> assign(:validation_progress, nil)}
-    else
-      {:noreply, socket}
-    end
+  def handle_info({event, _run_id}, socket)
+      when event in [:validation_completed, :validation_failed] do
+    {:noreply, socket}
   end
 
-  defp handle_validation_result(ref, result, socket) do
-    Process.demonitor(ref, [:flush])
-    socket = apply_validation_result(socket, result)
-
-    {:noreply,
-     socket
-     |> assign(:validating, false)
-     |> assign(:validation_task, nil)}
+  defp apply_validation_outcome(socket, %{status: "completed"} = run) do
+    socket
+    |> assign_persisted_validation_result(run)
+    |> assign(:validating, false)
+    |> assign(:validation_progress, nil)
   end
 
-  defp apply_validation_result(socket, {:ok, %Validator.Result{}}) do
-    run = Validations.get_validation_run!(socket.assigns.validation_run_id)
-    assign_persisted_validation_result(socket, run)
+  defp apply_validation_outcome(socket, %{status: "failed"}) do
+    socket
+    |> assign(:validation_error, :failed)
+    |> assign(:validating, false)
+    |> assign(:validation_progress, nil)
   end
 
-  defp apply_validation_result(socket, {:error, reason}) do
-    Logger.error("Validation failed: #{inspect(reason)}")
-    assign(socket, :validation_error, :failed)
-  end
+  defp apply_validation_outcome(socket, _running_run), do: socket
 
   defp assign_persisted_validation_result(socket, run) do
     if run.organization_id != socket.assigns.current_organization.id do
@@ -523,29 +519,33 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp payload_value(_payload, _key), do: nil
 
   defp run_mobility_data_validation(socket, organization_id, gtfs_version_id, run_type) do
-    case Validations.create_validation_run(organization_id, gtfs_version_id, run_type) do
+    case Validations.start_mobility_data_run(
+           organization_id,
+           gtfs_version_id,
+           run_type,
+           export_actor(socket)
+         ) do
       {:ok, run} ->
-        if connected?(socket) do
-          Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "validation:#{run.id}")
-        end
-
-        validator_module = Application.fetch_env!(:gtfs_planner, :validator_module)
-
-        task =
-          Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
-            validator_module.validate(organization_id, gtfs_version_id, validation_run_id: run.id)
-          end)
+        # Subscribe, then read the row: a run that finished before the
+        # subscription has no message coming.
+        Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, Validations.topic(run.id))
 
         {:noreply,
          socket
          |> assign(:validation_run_id, run.id)
-         |> assign(:validation_task, task)
          |> assign(:validating, true)
          |> assign(:validation_progress, %{phase: :starting, percent: 0})
          |> assign(:validation_result, nil)
-         |> assign(:validation_error, nil)}
+         |> assign(:validation_error, nil)
+         |> apply_validation_outcome(Validations.get_validation_run!(run.id))}
 
-      {:error, _changeset} ->
+      {:error, :busy} ->
+        {:noreply, put_flash(socket, :error, @validation_busy_message)}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, @validation_permission_message)}
+
+      {:error, _reason} ->
         {:noreply, assign(socket, :validation_error, :not_started)}
     end
   end
@@ -611,6 +611,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     do: Operations.tods_file_inventory(organization_id)
 
   defp tods_inventory(_organization_id, _export_type), do: []
+
+  # The runner supervisor is full. The run that never started is already closed,
+  # so the page goes back to the export it was showing and says why.
+  defp export_busy(socket) do
+    socket
+    |> refresh_export_run()
+    |> assign(:export_notice, @export_busy_message)
+  end
 
   defp refresh_export_run(socket) do
     organization_id = socket.assigns.current_organization.id

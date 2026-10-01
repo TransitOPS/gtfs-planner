@@ -94,8 +94,7 @@ defmodule GtfsPlanner.Gtfs.Runs.OrphansTest do
 
       assert {:ok, 2} =
                Gtfs.remove_run_orphans(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key
                )
 
@@ -114,8 +113,7 @@ defmodule GtfsPlanner.Gtfs.Runs.OrphansTest do
 
       assert {:ok, 2} =
                Gtfs.remove_run_orphans(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key
                )
 
@@ -144,15 +142,13 @@ defmodule GtfsPlanner.Gtfs.Runs.OrphansTest do
 
       assert {:ok, 2} =
                Gtfs.remove_run_orphans(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key
                )
 
       assert {:ok, 0} =
                Gtfs.remove_run_orphans(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key
                )
     end
@@ -162,8 +158,7 @@ defmodule GtfsPlanner.Gtfs.Runs.OrphansTest do
 
       assert {:ok, 0} =
                Gtfs.remove_run_orphans(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key
                )
 
@@ -179,8 +174,7 @@ defmodule GtfsPlanner.Gtfs.Runs.OrphansTest do
 
       assert {:ok, 1} =
                Gtfs.remove_run_orphans(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key
                )
 
@@ -201,8 +195,7 @@ defmodule GtfsPlanner.Gtfs.Runs.OrphansTest do
       # there forever.
       assert {:ok, 1} =
                Gtfs.remove_run_orphans(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key
                )
 
@@ -232,8 +225,7 @@ defmodule GtfsPlanner.Gtfs.Runs.OrphansTest do
 
       assert {:ok, 1} =
                Gtfs.remove_run_orphans(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key
                )
 
@@ -259,8 +251,7 @@ defmodule GtfsPlanner.Gtfs.Runs.OrphansTest do
 
       assert {:ok, 0} =
                Gtfs.remove_run_orphans(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key
                )
 
@@ -299,8 +290,7 @@ defmodule GtfsPlanner.Gtfs.Runs.OrphansTest do
 
       assert {:ok, 1} =
                Gtfs.remove_run_orphans(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key
                )
 
@@ -335,8 +325,10 @@ defmodule GtfsPlanner.Gtfs.Runs.OrphansTest do
 
       assert {:error, :not_found} =
                Gtfs.remove_run_orphans(
-                 world.organization.id,
-                 theirs.version.id,
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                   world.organization.id,
+                   theirs.version.id
+                 ),
                  theirs.day_type_key
                )
 
@@ -348,7 +340,7 @@ defmodule GtfsPlanner.Gtfs.Runs.OrphansTest do
       before = all_rows(world)
 
       assert {:error, {:unknown_day_type, day_types}} =
-               Gtfs.remove_run_orphans(world.organization.id, world.version.id, "nope")
+               Gtfs.remove_run_orphans(world.audit, "nope")
 
       assert Enum.map(day_types, & &1.key) == [world.day_type_key]
       assert all_rows(world) == before

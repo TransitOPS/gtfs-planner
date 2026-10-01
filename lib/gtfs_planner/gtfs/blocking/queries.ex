@@ -10,7 +10,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
   and their frequency rows in six queries whatever the trip count: the trips
   themselves, one first and one last `DISTINCT ON (trip_id)` stop-time query, one
   query for the endpoint stops, one for their parent stations and one grouped
-  `frequencies` query. Endpoints are chosen by `stop_sequence` in SQL, never by an
+  `frequencies` query. The endpoint stops are chosen by `stop_sequence` in SQL, never by an
   ordering of clock text, and the clock values are parsed with `GtfsTime.parse/1`
   in Elixir, so `25:10:00` becomes the integer 90_600 and orders after `05:00:00` (CR-3).
 

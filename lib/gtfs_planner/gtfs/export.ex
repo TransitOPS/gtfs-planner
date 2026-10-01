@@ -47,6 +47,8 @@ defmodule GtfsPlanner.Gtfs.Export do
 
   require Logger
 
+  @default_snapshot_timeout_ms 600_000
+
   @type warning :: %{
           code: String.t(),
           detail: String.t(),
@@ -149,7 +151,8 @@ defmodule GtfsPlanner.Gtfs.Export do
 
   `estimate: :distance | :even` fills missing stop times per trip through
   `MissingTimes.fill_trip/3` before the R3 sequence mapper; any other value
-  (including the default nil) writes stored rows unchanged.
+  (including the default nil) writes stored rows unchanged. `run_id` is the
+  option `build_zips/4` documents.
   """
   @spec build_zip(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations, keyword()) ::
           {:ok, binary(), [warning()]}
@@ -157,7 +160,8 @@ defmodule GtfsPlanner.Gtfs.Export do
   def build_zip(organization_id, gtfs_version_id, export_type, opts) do
     case build_zips(organization_id, gtfs_version_id, export_type,
            include_flex: false,
-           estimate: Keyword.get(opts, :estimate)
+           estimate: Keyword.get(opts, :estimate),
+           run_id: Keyword.get(opts, :run_id)
          ) do
       {:ok, %{main: main}, warnings} when is_binary(main) -> {:ok, main, warnings}
       {:ok, %{main: nil, flex: flex}, warnings} when is_binary(flex) -> {:ok, flex, warnings}
@@ -193,19 +197,38 @@ defmodule GtfsPlanner.Gtfs.Export do
   fixed rows are estimated silently. Any other estimate
   value (including the default nil) writes stored rows unchanged.
 
+  `run_id: id` builds the files under that run's private artifact directory,
+  `<root>/export-runs/<organization>/<version>/<run>/.build/`, so
+  `ArtifactStorage.reconcile/2` removes what a killed build leaves behind when
+  the run is not retained. A build without a run (validation, direct callers)
+  has no run directory and writes under the system temporary directory.
+
+  The whole build runs inside `with_read_snapshot/1`, so it shares that
+  function's deadline.
+
   ## Returns
 
   - `{:ok, %{main: zip | nil, flex: zip | nil}, warnings}` on success
+  - `{:error, :snapshot_timeout}` when the snapshot deadline passed
+  - `{:error, :artifact_storage_unavailable}` when `run_id` is given and the
+    artifact root is not configured or cannot be written
   - `{:error, reason}` for a version with nothing to export or a build failure
   """
   @spec build_zips(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations, keyword()) ::
           {:ok, %{main: binary() | nil, flex: binary() | nil}, [warning()]} | {:error, term()}
   def build_zips(organization_id, gtfs_version_id, export_type, opts \\ []) do
+    with {:ok, build_parent} <-
+           build_parent(organization_id, gtfs_version_id, Keyword.get(opts, :run_id)) do
+      build_zips_in(build_parent, organization_id, gtfs_version_id, export_type, opts)
+    end
+  end
+
+  defp build_zips_in(build_parent, organization_id, gtfs_version_id, export_type, opts) do
     include_flex = Keyword.get(opts, :include_flex, false) and export_type != :pathways
     estimate = normalize_estimate(Keyword.get(opts, :estimate))
 
-    temp_dir = generate_temp_dir()
-    flex_dir = generate_temp_dir()
+    temp_dir = generate_temp_dir(build_parent)
+    flex_dir = generate_temp_dir(build_parent)
 
     try do
       File.mkdir_p!(temp_dir)
@@ -262,9 +285,11 @@ defmodule GtfsPlanner.Gtfs.Export do
         Logger.error("GTFS export failed: #{inspect(e)}")
         {:error, "Export failed: #{Exception.message(e)}"}
     after
-      # Always clean up both temp directories
+      # Always clean up both temp directories. The run's `.build` directory goes
+      # too once nothing else builds in it; `rmdir` refuses a non-empty one.
       File.rm_rf(temp_dir)
       File.rm_rf(flex_dir)
+      if build_parent, do: File.rmdir(build_parent)
     end
   end
 
@@ -571,26 +596,107 @@ defmodule GtfsPlanner.Gtfs.Export do
 
   `fun`'s return value is passed through: `Repo.transaction/2` only fails when
   `fun` rolls the transaction back.
+
+  The transaction has a deadline, `:export_snapshot_timeout_ms` (default 600000).
+  When it passes, the pool closes and releases the database connection and the
+  call returns `{:error, :snapshot_timeout}` instead of `fun`'s result. The
+  deadline cannot interrupt `fun` between database calls: `fun` ends at its next
+  query, and a `fun` that makes none ends when the transaction is rolled back at
+  commit.
   """
   @spec with_read_snapshot((-> term())) :: {:ok, term()} | {:error, term()}
   def with_read_snapshot(fun) when is_function(fun, 0) do
-    Repo.transaction(
-      fn ->
-        snapshot_module().begin_read()
-        fun.()
-      end,
-      timeout: :infinity
-    )
+    timeout = snapshot_timeout_ms()
+    started = System.monotonic_time(:millisecond)
+
+    result =
+      try do
+        Repo.transaction(
+          fn ->
+            snapshot_module().begin_read()
+            fun.()
+          end,
+          timeout: timeout
+        )
+      rescue
+        # The pool closes the connection at the deadline, and the caller sees
+        # only a generic closed-connection error on its next query.
+        error in DBConnection.ConnectionError ->
+          if deadline_passed?(started, timeout) do
+            {:error, :rollback}
+          else
+            reraise error, __STACKTRACE__
+          end
+      end
+
+    # A closed connection also reaches the caller as a plain rollback: when `fun`
+    # rescued the error from its last query, or made no further query and the
+    # commit found the connection gone. A rollback after the deadline is that
+    # expiry; `fun` is never reported as having succeeded.
+    case result do
+      {:error, :rollback} ->
+        if deadline_passed?(started, timeout), do: {:error, :snapshot_timeout}, else: result
+
+      other ->
+        other
+    end
   end
+
+  defp deadline_passed?(started, timeout),
+    do: System.monotonic_time(:millisecond) - started >= timeout
 
   defp snapshot_module do
     Application.get_env(:gtfs_planner, :gtfs_export_snapshot, Snapshot.Repo)
   end
 
-  # Generates unique temporary directory path
-  defp generate_temp_dir do
-    unique_id = :erlang.unique_integer([:positive])
-    Path.join(System.tmp_dir!(), "gtfs_export_#{unique_id}")
+  defp snapshot_timeout_ms do
+    Application.get_env(:gtfs_planner, :export_snapshot_timeout_ms, @default_snapshot_timeout_ms)
+  end
+
+  # A run-scoped build writes under the run's private artifact directory, which
+  # `ArtifactStorage` lays out as `<root>/export-runs/<org>/<version>/<run>` and
+  # reconciles, so the files of a build that never reached its cleanup go with a
+  # run that is not retained. `nil` means no run: the system temporary directory.
+  defp build_parent(_organization_id, _gtfs_version_id, nil), do: {:ok, nil}
+
+  defp build_parent(organization_id, gtfs_version_id, run_id) do
+    root = Application.get_env(:gtfs_planner, :gtfs_task_artifacts_path)
+
+    cond do
+      not Enum.all?([organization_id, gtfs_version_id, run_id], &canonical_uuid?/1) ->
+        {:error, :invalid_scope}
+
+      not (is_binary(root) and root != "") ->
+        {:error, :artifact_storage_unavailable}
+
+      true ->
+        parent =
+          Path.join([
+            Path.expand(root),
+            "export-runs",
+            organization_id,
+            gtfs_version_id,
+            run_id,
+            ".build"
+          ])
+
+        # An unusable root is the storage failure the run page explains, not a
+        # generic build error.
+        case File.mkdir_p(parent) do
+          :ok -> {:ok, parent}
+          {:error, _reason} -> {:error, :artifact_storage_unavailable}
+        end
+    end
+  end
+
+  defp canonical_uuid?(value),
+    do: is_binary(value) and match?({:ok, ^value}, Ecto.UUID.cast(value))
+
+  # A unique directory path under the run's `.build` directory, or the system
+  # temporary directory when the build has no run. Unique per build, so two
+  # builds of one run never share files.
+  defp generate_temp_dir(parent) do
+    Path.join(parent || System.tmp_dir!(), "gtfs_export_#{Ecto.UUID.generate()}")
   end
 
   # Builds lookup maps for foreign key resolution

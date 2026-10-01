@@ -629,7 +629,7 @@ defmodule GtfsPlannerWeb.DashboardPathwaysTest do
 
   defp floorplan(ctx, station, level, diagram_filename) do
     {:ok, stop_level} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         stop_id: station.id,
         level_id: level.id,
         diagram_filename: diagram_filename,
@@ -669,10 +669,7 @@ defmodule GtfsPlannerWeb.DashboardPathwaysTest do
   end
 
   defp editing_status(ctx, station, user) do
-    {:ok, status} =
-      Gtfs.set_station_editing_status(ctx.organization.id, ctx.version.id, station, user)
-
-    status
+    station_editing_status_fixture(ctx.organization, ctx.version, station, user)
   end
 
   # One stop edit on a station level: the rail's Continue item, whose link must

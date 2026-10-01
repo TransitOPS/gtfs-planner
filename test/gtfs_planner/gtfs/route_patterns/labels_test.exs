@@ -17,7 +17,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.LabelsTest do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
     route = route_fixture(organization.id, version.id)
-    actor = user_fixture()
+    actor = editor_fixture(organization)
 
     audit = %AuditContext{
       organization_id: organization.id,

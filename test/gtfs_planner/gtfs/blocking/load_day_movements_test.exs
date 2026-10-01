@@ -465,12 +465,13 @@ defmodule GtfsPlanner.Gtfs.Blocking.LoadDayMovementsTest do
       foreign = organization_fixture()
       foreign_version = gtfs_version_fixture(foreign.id)
       foreign_garage = garage_fixture(foreign.id, %{"name" => "Foreign"})
+      foreign_cutaway = vehicle_type_fixture(foreign.id, %{"name" => "Cutaway"})
 
       block_attribute_fixture(foreign.id, foreign_version.id, %{
         service_id: "WK",
         block_id: "101",
         garage_id: foreign_garage.id,
-        vehicle_type_id: cutaway.id
+        vehicle_type_id: foreign_cutaway.id
       })
 
       assert {:ok, day} = Gtfs.load_blocking_day(organization.id, version.id, nil)

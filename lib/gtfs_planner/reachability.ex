@@ -11,9 +11,11 @@ defmodule GtfsPlanner.Reachability do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Routing
   alias GtfsPlanner.Routing.{Route, StationGraph}
+  alias GtfsPlanner.RunnerAdmission
   alias GtfsPlanner.Validations.ValidationRun
 
   @pubsub GtfsPlanner.PubSub
+  @runner_supervisor GtfsPlanner.Reachability.RunnerSupervisor
 
   # A run still active after this long is treated as orphaned by a restart or
   # deploy. Ceiling: a run that legitimately outlasts it is failed while still
@@ -25,7 +27,11 @@ defmodule GtfsPlanner.Reachability do
   @spec start_run(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), keyword()) ::
           {:ok, ValidationRun.t()}
           | {:error,
-             :station_not_found | :run_in_progress | :battery_too_large | Ecto.Changeset.t()}
+             :station_not_found
+             | :run_in_progress
+             | :battery_too_large
+             | :busy
+             | Ecto.Changeset.t()}
   def start_run(organization_id, gtfs_version_id, station_stop_id, opts \\ []) do
     runner = Keyword.get(opts, :runner, Runner)
 
@@ -34,21 +40,28 @@ defmodule GtfsPlanner.Reachability do
          :ok <- check_battery_size(snapshot),
          :ok <- fail_stale_runs(organization_id, gtfs_version_id, station_stop_id),
          {:ok, run} <- insert_run(organization_id, gtfs_version_id, station_stop_id) do
-      case spawn_run(run, station, snapshot, runner) do
-        {:ok, _pid} ->
-          {:ok, Repo.reload!(run)}
+      launch_run(run, station, snapshot, runner)
+    end
+  end
 
-        {:error, reason} ->
-          fail_run(run.id, inspect(reason))
+  defp launch_run(run, station, snapshot, runner) do
+    case spawn_run(run, station, snapshot, runner) do
+      {:ok, _pid} ->
+        {:ok, Repo.reload!(run)}
 
-          Phoenix.PubSub.broadcast(
-            @pubsub,
-            topic(run.id),
-            {:reachability_run_failed, run.id, reason}
-          )
+      # The runner supervisor refuses at its :runner_limits cap before the task
+      # starts, so a busy run has read nothing. Its failure frees the station's
+      # active-run slot for the next attempt.
+      {:error, reason} ->
+        fail_run(run.id, if(reason == :busy, do: "busy", else: inspect(reason)))
 
-          {:ok, Repo.reload!(run)}
-      end
+        Phoenix.PubSub.broadcast(
+          @pubsub,
+          topic(run.id),
+          {:reachability_run_failed, run.id, reason}
+        )
+
+        {:error, reason}
     end
   end
 
@@ -74,6 +87,7 @@ defmodule GtfsPlanner.Reachability do
     |> Repo.one()
   end
 
+  # A run refused at capacity never started, so it is not a result to show.
   @spec list_recent_runs(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), pos_integer()) :: [
           ValidationRun.t()
         ]
@@ -84,7 +98,8 @@ defmodule GtfsPlanner.Reachability do
       r.organization_id == ^organization_id and
         r.gtfs_version_id == ^gtfs_version_id and
         r.run_type == "station_reachability" and
-        fragment("result_json -> 'metadata' ->> 'station_stop_id' = ?", ^station_stop_id)
+        fragment("result_json -> 'metadata' ->> 'station_stop_id' = ?", ^station_stop_id) and
+        (is_nil(r.error_details) or r.error_details != "busy")
     )
     |> order_by([r], desc: r.inserted_at)
     |> limit(^limit)
@@ -350,44 +365,34 @@ defmodule GtfsPlanner.Reachability do
     end)
   end
 
+  # The task holds one slot under the bounded supervisor until it exits, whatever
+  # its result; a start at the cap returns `{:error, :busy}` and runs nothing.
   defp spawn_run(run, _station, snapshot, runner) do
+    RunnerAdmission.start_child(
+      @runner_supervisor,
+      Supervisor.child_spec({Task, fn -> execute_run(run, snapshot, runner) end},
+        restart: :temporary
+      )
+    )
+  end
+
+  defp execute_run(run, snapshot, runner) do
     run_id = run.id
+    started_at = run.started_at
 
-    Task.Supervisor.start_child(GtfsPlanner.TaskSupervisor, fn ->
-      started_at = run.started_at
-
-      try do
-        case runner.run(snapshot, started_at) do
-          {:ok, envelope} ->
-            complete_run(run_id, envelope)
-
-            Phoenix.PubSub.broadcast(
-              @pubsub,
-              topic(run_id),
-              {:reachability_run_completed, run_id}
-            )
-
-          {:error, reason} ->
-            fail_run(run_id, inspect(reason))
-
-            Phoenix.PubSub.broadcast(
-              @pubsub,
-              topic(run_id),
-              {:reachability_run_failed, run_id, reason}
-            )
-        end
-      rescue
-        e ->
-          fail_run(run_id, Exception.message(e))
+    try do
+      case runner.run(snapshot, started_at) do
+        {:ok, envelope} ->
+          complete_run(run_id, envelope)
 
           Phoenix.PubSub.broadcast(
             @pubsub,
             topic(run_id),
-            {:reachability_run_failed, run_id, Exception.message(e)}
+            {:reachability_run_completed, run_id}
           )
-      catch
-        kind, reason ->
-          fail_run(run_id, "#{kind}: #{inspect(reason)}")
+
+        {:error, reason} ->
+          fail_run(run_id, inspect(reason))
 
           Phoenix.PubSub.broadcast(
             @pubsub,
@@ -395,7 +400,25 @@ defmodule GtfsPlanner.Reachability do
             {:reachability_run_failed, run_id, reason}
           )
       end
-    end)
+    rescue
+      e ->
+        fail_run(run_id, Exception.message(e))
+
+        Phoenix.PubSub.broadcast(
+          @pubsub,
+          topic(run_id),
+          {:reachability_run_failed, run_id, Exception.message(e)}
+        )
+    catch
+      kind, reason ->
+        fail_run(run_id, "#{kind}: #{inspect(reason)}")
+
+        Phoenix.PubSub.broadcast(
+          @pubsub,
+          topic(run_id),
+          {:reachability_run_failed, run_id, reason}
+        )
+    end
   end
 
   defp complete_run(run_id, envelope) do

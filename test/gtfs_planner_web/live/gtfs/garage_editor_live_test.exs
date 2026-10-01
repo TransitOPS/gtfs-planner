@@ -23,6 +23,12 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
     city: "Cedar Valley"
   }
 
+  # LiveSelect keeps its option list hidden until the input takes focus, as it does
+  # when someone types, so the options are not in the page until then.
+  defp open_address_options(view) do
+    view |> element("#garage-address") |> render_hook("focus", %{})
+  end
+
   defp editor_setup(_context) do
     organization = organization_fixture()
     user = user_fixture()
@@ -301,6 +307,11 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
   describe "address search" do
     setup :editor_setup
 
+    setup do
+      Mox.set_mox_global()
+      :ok
+    end
+
     test "a geocoding result fills the coordinates", %{
       conn: conn,
       user: user,
@@ -315,6 +326,7 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
       open_add(view)
 
       render_hook(view, "live_select_change", %{"text" => "Depot", "id" => "garage-address"})
+      render_async(view)
 
       # LiveSelect writes the selection into the form's hidden address input, whose
       # change names `garage[address]` as the target.
@@ -326,7 +338,7 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
 
       assert has_element?(view, "#garage_lat[value='44.4759']")
       assert has_element?(view, "#garage_lon[value='-73.2121']")
-      refute has_element?(view, "#garage-address-unavailable")
+      refute has_element?(view, "#garage-address-retry")
     end
 
     test "a failed geocoding call shows the unavailable hint and keeps coordinates editable", %{
@@ -343,12 +355,15 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
       open_add(view)
 
       render_hook(view, "live_select_change", %{"text" => "Depot", "id" => "garage-address"})
+      render_async(view)
 
       assert has_element?(
                view,
-               "#garage-address-unavailable",
-               "Address search isn't available right now. Enter the coordinates instead."
+               "#garage-address-search-status",
+               "Address search is unavailable."
              )
+
+      assert has_element?(view, "#garage-address-retry", "Retry search")
 
       change(
         view,
@@ -358,6 +373,176 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
 
       assert has_element?(view, "#garage_lat[value='44.4503']")
       assert has_element?(view, "#garage_lon[value='-73.2202']")
+    end
+
+    test "a later search wins while the earlier task is still waiting", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      test_pid = self()
+
+      Mox.expect(GtfsPlanner.GeocodingMock, :autocomplete, 2, fn text, _opts ->
+        case text do
+          "Main" ->
+            send(test_pid, {:slow_search, self()})
+
+            receive do
+              {:release_search, :main} -> {:ok, [@selected_result]}
+            after
+              5_000 -> {:error, :timeout}
+            end
+
+          "Main St" ->
+            {:ok, [Map.put(@selected_result, :formatted_address, "Main St, Cedar Valley")]}
+        end
+      end)
+
+      {:ok, view, _html} = open_editor(conn, user, organization, version)
+      open_add(view)
+
+      render_hook(view, "live_select_change", %{"text" => "Main", "id" => "garage-address"})
+      assert_receive {:slow_search, slow_task}
+      assert has_element?(view, "#garage-address-search-status", "Searching addresses…")
+
+      # An ordinary drawer event still completes while the first request waits.
+      change(view, garage_params(name: "Main garage"), "garage[name]")
+      assert has_element?(view, "#garage_garage_id[value='garage_main_garage']")
+
+      render_hook(view, "live_select_change", %{"text" => "Main St", "id" => "garage-address"})
+      render_async(view)
+      open_address_options(view)
+      assert has_element?(view, "#garage-address", "Main St, Cedar Valley")
+
+      ref = Process.monitor(slow_task)
+      send(slow_task, {:release_search, :main})
+      assert_receive {:DOWN, ^ref, :process, ^slow_task, :normal}
+      _ = :sys.get_state(view.pid)
+      assert has_element?(view, "#garage-address", "Main St, Cedar Valley")
+      refute has_element?(view, "#garage-address", "120 Depot Road, Cedar Valley")
+    end
+
+    test "the drawer can close while address search is pending", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      test_pid = self()
+
+      Mox.expect(GtfsPlanner.GeocodingMock, :autocomplete, fn "Main", _opts ->
+        send(test_pid, {:pending_search, self()})
+
+        receive do
+          :release_search -> {:ok, [@selected_result]}
+        after
+          5_000 -> {:error, :timeout}
+        end
+      end)
+
+      {:ok, view, _html} = open_editor(conn, user, organization, version)
+      open_add(view)
+      render_hook(view, "live_select_change", %{"text" => "Main", "id" => "garage-address"})
+      assert_receive {:pending_search, task}
+
+      view |> element("#garage-cancel") |> render_click()
+      assert has_element?(view, "dialog#garage-drawer-overlay[data-open='false']")
+
+      ref = Process.monitor(task)
+      send(task, :release_search)
+      assert_receive {:DOWN, ^ref, :process, ^task, :normal}
+      _ = :sys.get_state(view.pid)
+      refute has_element?(view, "#garage-address-search-status")
+    end
+
+    test "a failed search from a closed drawer does not mark a reopened drawer failed", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      test_pid = self()
+
+      Mox.expect(GtfsPlanner.GeocodingMock, :autocomplete, fn "Main", _opts ->
+        send(test_pid, {:pending_search, self()})
+
+        receive do
+          :fail_search -> raise "geocoding task failed"
+        end
+      end)
+
+      {:ok, view, _html} = open_editor(conn, user, organization, version)
+      open_add(view)
+      render_hook(view, "live_select_change", %{"text" => "Main", "id" => "garage-address"})
+      assert_receive {:pending_search, task}
+
+      view |> element("#garage-cancel") |> render_click()
+      open_add(view)
+      assert has_element?(view, "dialog#garage-drawer-overlay[data-open='true']")
+      refute has_element?(view, "#garage-address-search-status")
+
+      ref = Process.monitor(task)
+      send(task, :fail_search)
+      assert_receive {:DOWN, ^ref, :process, ^task, reason}
+      refute reason == :normal
+      _ = :sys.get_state(view.pid)
+      refute has_element?(view, "#garage-address-search-status")
+      refute has_element?(view, "#garage-address", "120 Depot Road, Cedar Valley")
+    end
+
+    test "the current search shows retry when its task exits", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      Mox.expect(GtfsPlanner.GeocodingMock, :autocomplete, fn "Main", _opts ->
+        raise "geocoding task failed"
+      end)
+
+      {:ok, view, _html} = open_editor(conn, user, organization, version)
+      open_add(view)
+      render_hook(view, "live_select_change", %{"text" => "Main", "id" => "garage-address"})
+      render_async(view)
+
+      assert has_element?(view, "#garage-address-search-status", "Address search is unavailable.")
+      assert has_element?(view, "#garage-address-retry")
+    end
+
+    test "empty results and retry keep the address search recoverable", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      counter = start_supervised!({Agent, fn -> 0 end})
+
+      Mox.expect(GtfsPlanner.GeocodingMock, :autocomplete, 3, fn "Depot", _opts ->
+        case Agent.get_and_update(counter, fn attempt -> {attempt, attempt + 1} end) do
+          0 -> {:ok, []}
+          1 -> {:error, :network_error}
+          _ -> {:ok, [@selected_result]}
+        end
+      end)
+
+      {:ok, view, _html} = open_editor(conn, user, organization, version)
+      open_add(view)
+
+      render_hook(view, "live_select_change", %{"text" => "Depot", "id" => "garage-address"})
+      render_async(view)
+      assert has_element?(view, "#garage-address-search-status", "No matching addresses")
+
+      render_hook(view, "live_select_change", %{"text" => "Depot", "id" => "garage-address"})
+      render_async(view)
+      assert has_element?(view, "#garage-address-retry")
+
+      view |> element("#garage-address-retry") |> render_click()
+      render_async(view)
+      open_address_options(view)
+      assert has_element?(view, "#garage-address", "120 Depot Road, Cedar Valley")
+      refute has_element?(view, "#garage-address-retry")
+      refute has_element?(view, "#garage-form-error")
     end
   end
 

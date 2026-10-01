@@ -33,8 +33,10 @@ defmodule GtfsPlannerWeb.UserAuthTest do
         })
 
       # Deactivate user in organization
+      actor = AccountsFixtures.system_admin_fixture(organization)
+
       {:ok, _membership} =
-        GtfsPlanner.Organizations.deactivate_user_in_organization(user.id, organization.id)
+        GtfsPlanner.Organizations.deactivate_user_in_organization(actor, user.id, organization.id)
 
       # Attempt to log in
       result =

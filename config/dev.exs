@@ -73,6 +73,7 @@ config :gtfs_planner, GtfsPlannerWeb.Endpoint,
 
 # Enable dev routes for dashboard and mailbox
 config :gtfs_planner, dev_routes: true
+config :gtfs_planner, :api_cors_allow_localhost, true
 
 # Do not include metadata nor timestamps in development logs
 config :logger, :default_formatter, format: "[$level] $message\n"

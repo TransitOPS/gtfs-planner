@@ -14,10 +14,10 @@ defmodule GtfsPlanner.Home.PlannerStatusTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Import.Run
   alias GtfsPlanner.Home
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlanner.Validations.ValidationRun
   alias GtfsPlanner.Versions
 
@@ -209,7 +209,7 @@ defmodule GtfsPlanner.Home.PlannerStatusTest do
 
   defp import_calendars(context, calendar_csv, attributes_csv) do
     assert {:ok, _result} =
-             Import.import_files(context.organization.id, context.version.id, [
+             StagedImport.import_files(context.organization.id, context.version.id, [
                %{filename: "calendar.txt", content: calendar_csv},
                %{filename: "calendar_attributes.txt", content: attributes_csv}
              ])

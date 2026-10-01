@@ -3,8 +3,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   import Ecto.Query
 
-  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.Alignments
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Headsigns
@@ -1128,6 +1129,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
          {:ok, stops} <- normalize_stop_ids(attrs),
          :ok <- validate_occurrence_list(stops) do
       run_serializable_write(fn ->
+        Authorization.lock_editor!(audit_context)
         route = lock_published_route!(audit_context, route_id)
         eligible_stops = load_eligible_stops!(route, stops)
 
@@ -1206,6 +1208,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       when is_binary(pattern_id) and is_binary(review_fingerprint) do
     with {:ok, route_id} <- route_id_for_pattern(pattern_id, audit_context) do
       run_serializable_write(fn ->
+        Authorization.lock_editor!(audit_context)
+
         apply_review_transaction(
           pattern_id,
           operation,
@@ -1260,6 +1264,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       when is_binary(pattern_id) and is_list(selections) do
     with {:ok, route_id} <- route_id_for_pattern(pattern_id, audit_context) do
       run_serializable_write(fn ->
+        Authorization.lock_editor!(audit_context)
         route = lock_published_route!(audit_context, route_id)
         pattern = lock_pattern!(route, pattern_id)
         reset_scope_trips!(pattern, scope, selections, audit_context)
@@ -1291,6 +1296,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       when is_binary(pattern_id) and is_map(undo) do
     with {:ok, route_id} <- route_id_for_pattern(pattern_id, audit_context) do
       run_serializable_write(fn ->
+        Authorization.lock_editor!(audit_context)
         route = lock_published_route!(audit_context, route_id)
         pattern = lock_pattern!(route, pattern_id)
         undo_headsign_write!(pattern, undo, audit_context)
@@ -1313,12 +1319,16 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   The owner itself is never touched: it stays a first-class pattern, and it may
   still be referenced by other children.
+
+  Each attempt locks the actor's current editor membership first; a missing or
+  revoked editor is `{:error, :forbidden}` and nothing is written.
   """
   @spec remove_label(String.t(), Ecto.UUID.t(), AuditContext.t()) ::
-          {:ok, RoutePattern.t()} | {:error, :not_found | :not_labelled}
+          {:ok, RoutePattern.t()} | {:error, :forbidden | :not_found | :not_labelled}
   def remove_label(route_id, pattern_id, %AuditContext{} = audit_context)
       when is_binary(route_id) do
     run_serializable_write(fn ->
+      Authorization.lock_editor!(audit_context)
       route = lock_published_route!(audit_context, route_id)
       pattern = lock_pattern!(route, pattern_id)
 
@@ -3709,7 +3719,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp audit!(audit_context, type, entity, action, attrs) do
     context = %{audit_context | station_stop_id: nil}
 
-    case Gtfs.record_change_in_transaction(context, type, entity, action, attrs) do
+    case Audit.record_change_in_transaction(context, type, entity, action, attrs) do
       {:ok, log} -> log
       {:error, changeset} -> Repo.rollback(changeset)
     end
@@ -3923,8 +3933,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   `:timed_pattern` `"created"` entry with the timing `after` snapshot, sharing
   the caller's `operation_id` when one is set on the audit context (AC-22).
 
-  Call only inside `Repo.transaction/1`, after `lock_published_route!/2` and
-  `lock_pattern!/2`. A rows/occurrences count mismatch rolls the transaction
+  Call only inside an early-authorized editor transaction, after
+  `lock_published_route!/2` and `lock_pattern!/2`. The production caller is
+  `Schedules.create_paste_timings!/4`, reached from `Schedules.apply_paste/5`.
+  The transaction guard and audit scope check do not grant permission. A
+  rows/occurrences count mismatch rolls the transaction
   back, as does any changeset failure, which is why this is a bang function:
   errors abort the enclosing transaction instead of returning tuples.
   """
@@ -3944,6 +3957,13 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
         %AuditContext{} = audit_context,
         operation_id \\ nil
       ) do
+    unless Repo.in_transaction?(),
+      do: raise(ArgumentError, "create_pasted_timing! requires an authorized transaction")
+
+    unless pattern.organization_id == audit_context.organization_id and
+             pattern.gtfs_version_id == audit_context.gtfs_version_id,
+           do: Repo.rollback(:not_found)
+
     occurrences = pattern_occurrences(pattern)
 
     if length(rows) != length(occurrences), do: Repo.rollback(:timing_rows_mismatch)

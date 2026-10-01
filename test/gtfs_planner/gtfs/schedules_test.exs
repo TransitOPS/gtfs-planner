@@ -24,6 +24,7 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Schedules
+  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern
@@ -800,8 +801,8 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
                "affected_trip_ids" => [trip.id]
              }
 
-      assert Gtfs.rollback_entity(deleted_log, context.audit) == {:error, :audit_only_entity}
-      assert Gtfs.rollback_target_snapshot(deleted_log) == {:error, :audit_only_entity}
+      assert Stations.rollback_target_snapshot(deleted_log) ==
+               {:error, :audit_only_entity}
 
       assert {:ok, updated_log} =
                Repo.transaction(fn ->
@@ -829,8 +830,8 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
       assert updated_log.changed_fields["before"] == %{"trip_headsign" => "Old"}
       assert updated_log.changed_fields["after"] == %{"trip_headsign" => "New"}
 
-      assert Gtfs.rollback_entity(updated_log, context.audit) == {:error, :audit_only_entity}
-      assert Gtfs.rollback_target_snapshot(updated_log) == {:error, :audit_only_entity}
+      assert Stations.rollback_target_snapshot(updated_log) ==
+               {:error, :audit_only_entity}
     end
   end
 

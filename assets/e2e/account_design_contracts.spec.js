@@ -79,6 +79,9 @@ const DASHBOARD_STATE_ROOTS = [
 
 async function logIn(page, user = EDITOR_USER) {
   await page.goto("/users/log_in");
+  // The form is a LiveView: a field filled or a submit sent before the join is
+  // reset by the first patch or posted without it.
+  await waitForLiveView(page);
   await page.fill('input[name="user[email]"]', user.email);
   await page.fill('input[name="user[password]"]', user.password);
   await page.locator('button:has-text("Log in")').click();
@@ -101,11 +104,17 @@ async function visibleDashboardRoot(page) {
   return null;
 }
 
+// Resolves once the main LiveView has joined, so hook-owned controls such as the
+// account menu are mounted. The server-rendered page is visible before that.
 async function waitForLiveView(page) {
   await page.waitForSelector("[data-phx-main]", { state: "attached" });
   await page.waitForFunction(() => {
     const main = document.querySelector("[data-phx-main]");
-    return main && !main.hasAttribute("data-phx-pending");
+    return (
+      main &&
+      main.classList.contains("phx-connected") &&
+      !main.hasAttribute("data-phx-pending")
+    );
   });
   await page.evaluate(async () => {
     if (document.fonts?.ready) await document.fonts.ready;

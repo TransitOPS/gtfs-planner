@@ -38,6 +38,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Stations
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
   alias GtfsPlannerWeb.Gtfs.StationReport2LiveTest.ControlledSnapshotSource
 
@@ -1930,7 +1932,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
         actor_email: ctx.user.email
       }
 
-      assert {:ok, restored} = Gtfs.rollback_entity(log, audit_ctx)
+      assert {:ok, restored} =
+               Stations.rollback_entity(
+                 audit_ctx,
+                 log.id,
+                 persisted_entity_revision(log)
+               )
+
       assert restored.stop_name == "Entrance One"
 
       assert Gtfs.get_stop_by_stop_id(ctx.organization.id, ctx.gtfs_version.id, "ENT_1").stop_name ==
@@ -2004,6 +2012,53 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
                foreign.stop_name
     end
 
+    test "a stop in another station of the same version is refused", ctx do
+      other_station =
+        stop_fixture(ctx.organization.id, ctx.gtfs_version.id, %{
+          stop_id: "OTHER_REPORT_STATION",
+          location_type: 1
+        })
+
+      foreign_child =
+        child_stop_fixture(
+          ctx.organization.id,
+          ctx.gtfs_version.id,
+          other_station.stop_id,
+          %{stop_id: "OTHER_REPORT_CHILD", stop_name: "Other Station Platform"}
+        )
+
+      render_click(ctx.view, "select_entity", %{
+        "entity_id" => foreign_child.stop_id,
+        "entity_type" => "stop"
+      })
+
+      refute has_element?(ctx.view, "#report-stop-edit-form")
+      assert has_element?(ctx.view, "#report-stop-lookup-error")
+
+      assert Repo.get!(GtfsPlanner.Gtfs.Stop, foreign_child.id).stop_name ==
+               "Other Station Platform"
+    end
+
+    test "a stale save keeps the entered name and shows a focused warning", ctx do
+      open_stop_drawer(ctx.view, "Entrance One")
+      stop = Gtfs.get_stop_by_stop_id(ctx.organization.id, ctx.gtfs_version.id, "ENT_1")
+      assert {:ok, _} = Gtfs.import_update_stop(stop, %{stop_name: "Changed elsewhere"})
+
+      ctx.view
+      |> form("#report-stop-edit-form", stop: %{stop_name: "My draft name"})
+      |> render_submit()
+
+      assert has_element?(ctx.view, "#report-stop-save-error[role='alert']")
+
+      assert has_element?(
+               ctx.view,
+               "#report-stop-edit-form input[name='stop[stop_name]'][value='My draft name']"
+             )
+
+      assert Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id).stop_name == "Changed elsewhere"
+      assert stop_change_logs(ctx) == []
+    end
+
     test "a same-id stop in another version is never the one edited", ctx do
       view = ctx.view
       other_version = gtfs_version_fixture(ctx.organization.id)
@@ -2050,7 +2105,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
         stop_id: "LATE_ARRIVAL",
         stop_name: "Late Arrival",
         location_type: 0,
-        parent_station: nil
+        parent_station: "STATION_1",
+        level_id: "L1"
       })
 
       view |> element("button#report-stop-lookup-retry") |> render_click()
@@ -2106,14 +2162,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     test "a stop that may have no level offers a blank choice", ctx do
       view = ctx.view
 
-      stop_fixture(ctx.organization.id, ctx.gtfs_version.id, %{
-        stop_id: "FREE_1",
-        stop_name: "Free Standing",
-        location_type: 0,
-        parent_station: nil
-      })
-
-      render_click(view, "select_entity", %{"entity_id" => "FREE_1", "entity_type" => "stop"})
+      # Only the station itself has no parent in this station's scope, so its level
+      # is the optional one; a stop outside the station cannot be opened.
+      render_click(view, "select_entity", %{"entity_id" => "STATION_1", "entity_type" => "stop"})
 
       assert level_options(view) == [{"No level", ""}, {"Street (L1)", "L1"}]
       assert has_element?(view, "#stop_level_id option[value=''][selected]")
@@ -2249,18 +2300,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     test "an optional level that no longer exists offers the prompt and No level", ctx do
       view = ctx.view
 
-      stop_fixture(ctx.organization.id, ctx.gtfs_version.id, %{
-        stop_id: "FREE_STALE",
-        stop_name: "Free Stale",
-        location_type: 0,
-        parent_station: nil,
-        level_id: "DOCQA_NO_SUCH_LEVEL"
-      })
+      # The station is the one stop in scope whose level is optional.
+      Repo.update_all(
+        from(s in Stop,
+          where:
+            s.organization_id == ^ctx.organization.id and
+              s.gtfs_version_id == ^ctx.gtfs_version.id and s.stop_id == "STATION_1"
+        ),
+        set: [level_id: "DOCQA_NO_SUCH_LEVEL"]
+      )
 
-      render_click(view, "select_entity", %{
-        "entity_id" => "FREE_STALE",
-        "entity_type" => "stop"
-      })
+      render_click(view, "select_entity", %{"entity_id" => "STATION_1", "entity_type" => "stop"})
 
       assert level_options(view) == [
                {"Choose a level", "DOCQA_NO_SUCH_LEVEL"},
@@ -2269,12 +2319,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
              ]
 
       assert has_element?(view, "#stop_level_id option[value='DOCQA_NO_SUCH_LEVEL'][selected]")
-
-      view |> form("#report-stop-edit-form", stop: %{level_id: ""}) |> render_submit()
-      render_async(view, 5_000)
-
-      stored = Gtfs.get_stop_by_stop_id(ctx.organization.id, ctx.gtfs_version.id, "FREE_STALE")
-      assert is_nil(stored.level_id)
     end
 
     test "the drawer names the exact opener so closing restores it", ctx do

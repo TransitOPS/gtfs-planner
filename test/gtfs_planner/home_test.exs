@@ -5,7 +5,7 @@ defmodule GtfsPlanner.HomeTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
-  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.StationEditingStatus
   alias GtfsPlanner.Home
@@ -22,36 +22,60 @@ defmodule GtfsPlanner.HomeTest do
     zulu_admin = user_fixture(%{email: "zulu-admin@example.test"})
 
     {:ok, _} =
-      Organizations.add_user_to_organization(editor.id, organization.id, [
-        "pathways_studio_editor"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: editor.id,
+        organization_id: organization.id,
+        roles: [
+          "pathways_studio_editor"
+        ]
+      })
 
     {:ok, _} =
-      Organizations.add_user_to_organization(deactivated_admin.id, organization.id, [
-        "pathways_studio_admin"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: deactivated_admin.id,
+        organization_id: organization.id,
+        roles: [
+          "pathways_studio_admin"
+        ]
+      })
 
     {:ok, _} =
-      Organizations.add_user_to_organization(zulu_admin.id, organization.id, [
-        "pathways_studio_admin"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: zulu_admin.id,
+        organization_id: organization.id,
+        roles: [
+          "pathways_studio_admin"
+        ]
+      })
 
     {:ok, _} =
-      Organizations.add_user_to_organization(alpha_admin.id, organization.id, [
-        "pathways_studio_admin"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: alpha_admin.id,
+        organization_id: organization.id,
+        roles: [
+          "pathways_studio_admin"
+        ]
+      })
 
     # Deactivated last, so the organization always keeps another active admin.
     {:ok, _} =
-      Organizations.deactivate_user_in_organization(deactivated_admin.id, organization.id)
+      Organizations.deactivate_user_in_organization(
+        alpha_admin,
+        deactivated_admin.id,
+        organization.id
+      )
 
     other_organization = organization_fixture()
     foreign_admin = user_fixture()
 
     {:ok, _} =
-      Organizations.add_user_to_organization(foreign_admin.id, other_organization.id, [
-        "pathways_studio_admin"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: foreign_admin.id,
+        organization_id: other_organization.id,
+        roles: [
+          "pathways_studio_admin"
+        ]
+      })
 
     assert Home.organization_admins(organization.id) == [
              "alpha-admin@example.test",
@@ -67,19 +91,36 @@ defmodule GtfsPlanner.HomeTest do
     deactivated_member = user_fixture()
 
     {:ok, _} =
-      Organizations.add_user_to_organization(active_editor.id, organization.id, [
-        "pathways_studio_editor"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: active_editor.id,
+        organization_id: organization.id,
+        roles: [
+          "pathways_studio_editor"
+        ]
+      })
 
     {:ok, _} =
-      Organizations.add_user_to_organization(active_admin.id, organization.id, [
-        "pathways_studio_admin"
-      ])
-
-    {:ok, _} = Organizations.add_user_to_organization(deactivated_member.id, organization.id, [])
+      Accounts.create_user_org_membership(%{
+        user_id: active_admin.id,
+        organization_id: organization.id,
+        roles: [
+          "pathways_studio_admin"
+        ]
+      })
 
     {:ok, _} =
-      Organizations.deactivate_user_in_organization(deactivated_member.id, organization.id)
+      Accounts.create_user_org_membership(%{
+        user_id: deactivated_member.id,
+        organization_id: organization.id,
+        roles: []
+      })
+
+    {:ok, _} =
+      Organizations.deactivate_user_in_organization(
+        active_admin,
+        deactivated_member.id,
+        organization.id
+      )
 
     assert Home.member_count(organization.id) == 2
   end
@@ -198,8 +239,7 @@ defmodule GtfsPlanner.HomeTest do
 
     editor = user_fixture()
 
-    assert {:ok, status} =
-             Gtfs.set_station_editing_status(organization.id, gtfs_version.id, station, editor)
+    status = station_editing_status_fixture(organization, gtfs_version, station, editor)
 
     # Pin the persisted time so the localized assertion does not depend on the clock.
     {1, _} =
@@ -219,9 +259,13 @@ defmodule GtfsPlanner.HomeTest do
     admin = user_fixture()
 
     {:ok, _} =
-      Organizations.add_user_to_organization(admin.id, organization.id, [
-        "pathways_studio_admin"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: admin.id,
+        organization_id: organization.id,
+        roles: [
+          "pathways_studio_admin"
+        ]
+      })
 
     assert HomeSourceStub.organization_admins(organization.id) == [admin.email]
     assert HomeSourceStub.member_count(organization.id) == 1

@@ -162,8 +162,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSuggestLiveTest do
     Enum.each(pairs, fn pair ->
       {:ok, _row} =
         Gtfs.put_deadhead_time(
-          context.organization.id,
-          context.version.id,
+          GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+            context.organization.id,
+            context.version.id
+          ),
           {pair.from, pair.to},
           7
         )
@@ -324,16 +326,24 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSuggestLiveTest do
       # The same values the Block rules and Operator changes drawers store, read
       # through their own context writers before the page is ever mounted.
       {:ok, _settings} =
-        Gtfs.update_blocking_settings(context.organization.id, context.version.id, %{
-          min_layover_minutes: 12,
-          max_block_minutes: 600,
-          interlining: :same_stop
-        })
+        Gtfs.update_blocking_settings(
+          GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+            context.organization.id,
+            context.version.id
+          ),
+          %{
+            min_layover_minutes: 12,
+            max_block_minutes: 600,
+            interlining: :same_stop
+          }
+        )
 
       {:ok, _relief} =
         Gtfs.update_relief_settings(
-          context.organization.id,
-          context.version.id,
+          GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+            context.organization.id,
+            context.version.id
+          ),
           day_key!(context, "Weekday"),
           %{max_piece_minutes: 300, marked: []}
         )

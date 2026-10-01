@@ -23,6 +23,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyCreateLiveTest do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.FeedSettings
+  alias GtfsPlanner.GtfsFixtures
 
   @open_drawer "#agency-drawer-overlay[data-open='true']"
   @closed_drawer "#agency-drawer-overlay[data-open='false']"
@@ -59,7 +60,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyCreateLiveTest do
   # nothing a changeset refuses can hide inside a fixture.
   defp create_agency(organization, version, agency_id, name, timezone) do
     {:ok, agency} =
-      Gtfs.create_agency(%{
+      GtfsFixtures.insert_agency(%{
         organization_id: organization.id,
         gtfs_version_id: version.id,
         agency_id: agency_id,
@@ -73,7 +74,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyCreateLiveTest do
 
   defp create_route(organization, version, attrs) do
     {:ok, route} =
-      Gtfs.create_route(
+      GtfsFixtures.insert_route(
         Map.merge(
           %{organization_id: organization.id, gtfs_version_id: version.id, route_type: 3},
           attrs

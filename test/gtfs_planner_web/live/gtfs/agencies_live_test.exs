@@ -7,7 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLiveTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.GtfsFixtures
   alias GtfsPlanner.Versions
 
   defp agencies_path(version_id), do: "/gtfs/#{version_id}/settings/agencies"
@@ -36,7 +36,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLiveTest do
 
   defp create_agency(organization, version, attrs) do
     {:ok, agency} =
-      Gtfs.create_agency(
+      GtfsFixtures.insert_agency(
         Map.merge(%{organization_id: organization.id, gtfs_version_id: version.id}, attrs)
       )
 
@@ -45,7 +45,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLiveTest do
 
   defp create_route(organization, version, attrs) do
     {:ok, route} =
-      Gtfs.create_route(
+      GtfsFixtures.insert_route(
         Map.merge(
           %{organization_id: organization.id, gtfs_version_id: version.id, route_type: 3},
           attrs

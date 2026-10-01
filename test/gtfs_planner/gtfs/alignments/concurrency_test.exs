@@ -67,7 +67,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.ConcurrencyTest do
       unboxed(fn ->
         organization = fresh_org("same-base")
         version = gtfs_version_fixture(organization.id)
-        actor = user_fixture()
+        actor = editor_fixture(organization)
         audit = audit_context(organization, version, actor)
 
         coord_stop(organization.id, version.id, "A", "40.712800", "-74.006000")
@@ -140,7 +140,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.ConcurrencyTest do
       unboxed(fn ->
         organization = fresh_org("first-create")
         version = gtfs_version_fixture(organization.id)
-        actor = user_fixture()
+        actor = editor_fixture(organization)
         audit = audit_context(organization, version, actor)
 
         coord_stop(organization.id, version.id, "A", "40.712800", "-74.006000")
@@ -202,7 +202,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.ConcurrencyTest do
       unboxed(fn ->
         organization = fresh_org("stale-review")
         version = gtfs_version_fixture(organization.id)
-        actor = user_fixture()
+        actor = editor_fixture(organization)
         audit = audit_context(organization, version, actor)
 
         coord_stop(organization.id, version.id, "A", "40.712800", "-74.006000")

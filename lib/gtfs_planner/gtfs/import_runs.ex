@@ -15,10 +15,18 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
   count detail, which is validated by the `Run` changeset against a fixed
   allowlist. Leases use PostgreSQL time only so a stale owner in another process
   or node can never overwrite a newer state.
+
+  User-originated transitions (creating an import target, claiming a cleanup,
+  retrying a publication) and publication itself reauthorize their actor inside
+  the transaction: run row first, then the actor's editor membership, then the
+  version (INV-1). A refused actor rolls back with `{:error, :forbidden}` and
+  writes nothing. Lease expiry, reconciliation and failure closure are system
+  owned and never confer editor rights.
   """
 
   import Ecto.Query, warn: false
 
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
@@ -29,6 +37,10 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
 
   @lease_seconds Application.compile_env(:gtfs_planner, :import_lease_seconds, 300)
   @lease_placeholder ~U[1970-01-01 00:00:00.000000Z]
+
+  # Reason codes of runs that closed before any row was imported, with their staging
+  # version deleted. Neither offers a recovery action.
+  @unimported_reason_codes ~w(busy source_not_installed)
 
   # Macro: applies values to a single run row via `update_all`. DB-time columns
   # use PostgreSQL time: pass `:now` (CURRENT_TIMESTAMP) or `:lease`
@@ -70,12 +82,17 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
 
   The run snapshots the initiating actor id/email and the version name, carries a
   fresh lease token and a database-time expiry, and starts with
-  `counts_complete: false`. Returns `{:ok, %{run: run, version: version}}`.
+  `counts_complete: false`. Returns `{:ok, %{run: run, version: version}}`, or
+  `{:error, :forbidden}` without creating anything when the actor no longer has
+  an active editor membership in the organization.
   """
   @spec create_pending_target(Ecto.UUID.t(), actor(), %{name: String.t()}) ::
-          {:ok, %{run: Run.t(), version: GtfsVersion.t()}} | {:error, Ecto.Changeset.t()}
+          {:ok, %{run: Run.t(), version: GtfsVersion.t()}}
+          | {:error, Ecto.Changeset.t() | :forbidden}
   def create_pending_target(organization_id, actor, %{name: name}) do
     transaction(fn ->
+      lock_actor!(organization_id, actor)
+
       case Versions.create_staging_gtfs_version(organization_id, %{name: name}) do
         {:ok, version} ->
           run_id = Ecto.UUID.generate()
@@ -155,6 +172,111 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
     {:ok, Repo.get!(Run, run.id), Repo.get!(GtfsVersion, version.id)}
   end
 
+  @doc """
+  Closes a pending run whose runner was refused because the supervisor was at
+  capacity (`Runner.start_import/4` returned `{:error, :busy}`).
+
+  The run must still be `pending` under `lease_token`, which proves no runner
+  claimed it. It becomes `failed` with reason `busy`. Its staging version holds
+  no imported rows, so the same transaction deletes it and the version name can
+  be used again; a failed version would keep the name and block the retry.
+
+  A run that was claimed, closed or re-leased in the meantime returns
+  `{:error, :invalid_transition}` and nothing changes. This is a system closure:
+  it does not reauthorize the actor, so a refusal still closes the run after the
+  actor's access is revoked.
+  """
+  @spec fail_unstarted(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, Run.t()} | {:error, :not_found | :invalid_transition}
+  def fail_unstarted(organization_id, run_id, lease_token) do
+    transaction(fn ->
+      run = lock_run(organization_id, run_id)
+
+      case guard_lease(run, ~w(pending), lease_token) do
+        :ok -> close_unstarted(organization_id, run)
+        :not_found -> {:error, :not_found}
+        _stale -> {:error, :invalid_transition}
+      end
+    end)
+  end
+
+  defp close_unstarted(organization_id, run) do
+    from(v in GtfsVersion,
+      where:
+        v.id == ^run.gtfs_version_id and v.organization_id == ^organization_id and
+          v.publication_status == "staging"
+    )
+    |> Repo.delete_all()
+
+    {:ok, _} =
+      run
+      |> Run.system_changeset(%{
+        state: "failed",
+        lease_token: nil,
+        lease_expires_at: nil,
+        finished_at: DateTime.utc_now(),
+        reason_code: "busy"
+      })
+      |> Repo.update()
+
+    {:ok, Repo.get!(Run, run.id)}
+  end
+
+  @doc """
+  Closes a running import whose runner never received its source: the install deadline
+  passed, the caller that was staging the upload exited, or staging failed.
+
+  The run must be `running` under `lease_token` with an unexpired lease, which proves
+  the calling runner still owns it. No worker started, so the importing version holds no
+  imported rows and the same transaction deletes it; its name can be used again, which
+  lets a person resubmit the files they kept. The run becomes `failed` with phase
+  `upload` and reason `source_not_installed`. Like a run closed by `fail_unstarted/3`,
+  it is not listed by `list_recoverable/1`: it left nothing to recover.
+
+  A superseded owner (stale token or expired lease), a run in any other state, another
+  organization's run and an unknown run return
+  `{:error, :invalid_transition | :not_found}` and change nothing, so a runner that lost
+  the run cannot delete a version another owner is importing into.
+  """
+  @spec fail_source_not_installed(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, Run.t()} | {:error, :not_found | :invalid_transition}
+  def fail_source_not_installed(organization_id, run_id, lease_token) do
+    transaction(fn ->
+      run = lock_run(organization_id, run_id)
+
+      case guard_lease(run, ~w(running), lease_token) do
+        :ok -> close_uninstalled(organization_id, run)
+        :not_found -> {:error, :not_found}
+        _stale -> {:error, :invalid_transition}
+      end
+    end)
+  end
+
+  defp close_uninstalled(organization_id, run) do
+    from(v in GtfsVersion,
+      where:
+        v.id == ^run.gtfs_version_id and v.organization_id == ^organization_id and
+          v.publication_status == "importing"
+    )
+    |> Repo.delete_all()
+
+    failure = Failure.from_error(:source_not_installed, phase: :upload)
+
+    {:ok, _} =
+      run
+      |> Run.system_changeset(
+        Map.merge(Failure.to_run_attrs(failure), %{
+          state: Failure.outcome_to_state(failure),
+          lease_token: nil,
+          lease_expires_at: nil,
+          finished_at: DateTime.utc_now()
+        })
+      )
+      |> Repo.update()
+
+    {:ok, Repo.get!(Run, run.id)}
+  end
+
   # --- lease claim / renew --------------------------------------------------
 
   @doc """
@@ -211,11 +333,13 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
   end
 
   @doc """
-  Renews the active lease on a pending or running run using database time.
+  Renews the active lease on a pending, running or cleaning run using database
+  time.
 
   The stored lease token must match; a stale owner (wrong token, already
   terminated run, or cross-organization request) receives `{:error, :lease_lost}`
-  and writes nothing (AC-8).
+  and writes nothing (AC-8). A cleanup runner renews the `cleaning` lease the same
+  way an import runner renews `running` (AC-33).
   """
   @spec renew_lease(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
           :ok | {:error, :lease_lost}
@@ -226,7 +350,7 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
           {:error, :lease_lost}
 
         run ->
-          case guard_lease(run, ~w(pending running), lease_token) do
+          case guard_lease(run, ~w(pending running cleaning), lease_token) do
             :ok ->
               lease_current? =
                 from(r in Run,
@@ -251,6 +375,53 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
           end
       end
     end)
+  end
+
+  # --- owner fence ----------------------------------------------------------
+
+  @doc """
+  Fences a run-owned write: inside the caller's transaction, locks the run row
+  `FOR SHARE` and returns it only when the run is in one of `expected_states`,
+  holds `lease_token`, and its lease has not expired in database time.
+
+  Otherwise it rolls the caller's transaction back with `:lease_lost`, so a
+  superseded owner commits nothing. Call it as the first statement of each
+  write transaction (INV-4). Outside `Repo.transaction/1` it raises
+  `ArgumentError`, because the share lock would end with the statement.
+
+  Inside a transaction the lock lasts until it ends, so a handover that needs
+  the row `FOR UPDATE` (`reconcile_expired/1`, a terminal closure) waits for a
+  batch that already passed the check, and every later batch fails it. The check
+  never takes a membership lock; cleanup and batch writes are system-owned.
+
+  The predicate is part of the locking read, so a row another transaction
+  changed while this one waited is re-evaluated against its committed state.
+  Expiry is judged at `CURRENT_TIMESTAMP`, the transaction's start, as in
+  `renew_lease/3` and `reconcile_expired/1`; that is why the check comes first.
+  """
+  @spec assert_owner!(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t() | nil, [String.t()]) ::
+          Run.t()
+  def assert_owner!(organization_id, run_id, lease_token, expected_states) do
+    if not Repo.in_transaction?() do
+      raise ArgumentError,
+            "assert_owner!/4 holds a row lock and must run inside Repo.transaction/1"
+    end
+
+    owner_run(organization_id, run_id, lease_token, expected_states) ||
+      Repo.rollback(:lease_lost)
+  end
+
+  defp owner_run(_organization_id, _run_id, nil, _expected_states), do: nil
+
+  defp owner_run(organization_id, run_id, lease_token, expected_states) do
+    from(r in Run,
+      where:
+        r.id == ^run_id and r.organization_id == ^organization_id and
+          r.state in ^expected_states and r.lease_token == ^lease_token and
+          r.lease_expires_at >= fragment("CURRENT_TIMESTAMP"),
+      lock: "FOR SHARE"
+    )
+    |> Repo.one()
   end
 
   # --- terminal: fail / publish --------------------------------------------
@@ -316,6 +487,11 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
   The conditional predicate (run running with the matching lease token, version
   importing) means a concurrent `fail_import` that attempts to close the same run
   loses the race: only one of the two lock-and-write sequences can win (AC-5).
+
+  The run's actor must still hold an active editor membership when the lease is
+  confirmed: the membership is locked after the run and before the version, and
+  a revoked actor returns `{:error, :forbidden}` with the version unpublished
+  and the run still `running`, so the caller can record the publication failure.
   """
   @spec publish_import(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), Result.t()) ::
           {:ok, Run.t(), GtfsVersion.t()} | {:error, term()}
@@ -328,6 +504,8 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
         run ->
           case guard_lease(run, ~w(running), lease_token) do
             :ok ->
+              lock_actor!(organization_id, %{id: run.actor_id})
+
               case Versions.publish_importing_gtfs_version(organization_id, run.gtfs_version_id) do
                 {:ok, version} ->
                   {:ok, _} =
@@ -425,13 +603,17 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
   It reuses the existing database-time publication transition and never calls
   `Import.import_files/4` (AC-9). A run in any other state, or a version not in
   `importing`, is rejected (`:invalid_transition` / `:not_publishable`).
+
+  `actor` is the user asking for the retry, not the run's original actor. Without
+  an active editor membership the call returns `{:error, :forbidden}` and
+  changes nothing.
   """
-  @spec retry_publication(Ecto.UUID.t(), Ecto.UUID.t()) ::
+  @spec retry_publication(Ecto.UUID.t(), Ecto.UUID.t(), actor()) ::
           {:ok, Run.t(), GtfsVersion.t()}
-          | {:error, :not_found | :invalid_transition | :not_publishable}
-  def retry_publication(organization_id, run_id) do
+          | {:error, :not_found | :invalid_transition | :not_publishable | :forbidden}
+  def retry_publication(organization_id, run_id, actor) do
     transaction(fn ->
-      case lock_run(organization_id, run_id) do
+      case lock_run_as_editor(organization_id, run_id, actor) do
         nil ->
           {:error, :not_found}
 
@@ -477,14 +659,15 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
   `cleanup_failed`) are eligible; a run already `cleaning` (claimed) or terminal
   returns `:already_claimed` / `:invalid_transition`. A competing claim while a
   cleaning lease is held receives `{:error, :already_claimed}` (AC-11). The
-  cleanup actor is snapshotted.
+  cleanup actor is snapshotted and must hold an active editor membership;
+  otherwise the claim returns `{:error, :forbidden}` and changes nothing.
   """
   @spec claim_cleanup(Ecto.UUID.t(), Ecto.UUID.t(), actor()) ::
           {:ok, Run.t(), GtfsVersion.t(), Ecto.UUID.t()}
-          | {:error, :not_found | :invalid_transition | :already_claimed}
+          | {:error, :not_found | :invalid_transition | :already_claimed | :forbidden}
   def claim_cleanup(organization_id, run_id, actor) do
     transaction(fn ->
-      case lock_run(organization_id, run_id) do
+      case lock_run_as_editor(organization_id, run_id, actor) do
         nil ->
           {:error, :not_found}
 
@@ -762,7 +945,9 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
   Returns the runs visible to the recovery UI for an organization, ordered
   deterministically by `updated_at DESC, id`. This includes both the active
   (pending/running/cleaning) and the recoverable terminal-but-unpublished states
-  so the LiveView can render every in-flight and recoverable card.
+  so the LiveView can render every in-flight and recoverable card. A run closed
+  by `fail_unstarted/3` or `fail_source_not_installed/3` is not listed: it
+  imported nothing and left nothing to recover.
   """
   @spec list_recoverable(Ecto.UUID.t()) :: [Run.t()]
   def list_recoverable(organization_id) do
@@ -771,6 +956,7 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
     from(r in Run,
       where: r.organization_id == ^organization_id,
       where: r.state in ^display_states,
+      where: r.state != "failed" or coalesce(r.reason_code, "") not in @unimported_reason_codes,
       order_by: [desc: r.updated_at, desc: r.id]
     )
     |> Repo.all()
@@ -800,6 +986,25 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
     )
     |> Repo.one()
   end
+
+  # INV-1: the run row is locked first, then the requesting user's editor
+  # membership. A missing run is `nil` before any membership is read.
+  defp lock_run_as_editor(organization_id, run_id, actor) do
+    case lock_run(organization_id, run_id) do
+      nil ->
+        nil
+
+      run ->
+        lock_actor!(organization_id, actor)
+        run
+    end
+  end
+
+  # Rolls the transaction back with `:forbidden` unless `actor` holds an active
+  # editor membership in the organization. A nil `id` (a legacy run without an
+  # actor) is refused the same way.
+  defp lock_actor!(organization_id, %{id: actor_id}),
+    do: Authorization.lock_editor!(%{actor_id: actor_id, organization_id: organization_id})
 
   # Verifies the locked run is in an expected state AND holds the supplied,
   # unexpired lease token. Returns `:ok` when all hold, `:lease_lost` when the

@@ -9,7 +9,10 @@
 // The fixtures come from `test/support/browser_seed.exs`. The "Browser Transfers
 // Version" carries the transfer network — a station with two platform children
 // and an entrance, three routes, five trips and eight general rules plus two
-// in-seat records — and the "Browser E2E Version" carries no transfers at all.
+// in-seat records — and the "Catalog Empty Version" carries no routes, stops or
+// transfers at all. The "Browser E2E Version" is not a first-use version: the
+// timetable-paste fixture gives it two timed transfers, and only that journey's
+// replace, which removes trip BPS_1209 with them, empties it.
 // Rule ids are random per seed, so every journey finds a rule by the copy it
 // renders rather than by an id; only the seeded stop ids are literal.
 //
@@ -30,7 +33,7 @@ const EDITOR_USER = {
 };
 
 const TRANSFERS_VERSION = "Browser Transfers Version";
-const FIRST_USE_VERSION = "Browser E2E Version";
+const FIRST_USE_VERSION = "Catalog Empty Version";
 const ROUTE = "BXF_24";
 
 // The whole-station default is the one station rule with no route on either side.
@@ -531,7 +534,7 @@ test.describe("Transfers", () => {
     await expect(ruleRow(page, "Transfer Market Street", "Transfer Harbor")).toHaveCount(1);
   });
 
-  test("related: the route's View transfers link lists exactly the rules it counts", async ({
+  test("related: the route's Transfers here link lists exactly the rules it counts", async ({
     page,
   }, testInfo) => {
     await logIn(page);
@@ -543,8 +546,9 @@ test.describe("Transfers", () => {
     await expect(link).toBeVisible();
     await waitForLiveView(page);
 
-    const summary = await page.locator("#route-transfers-summary").innerText();
-    const count = Number(summary.match(/^(\d+) transfer rules? mentions?/)[1]);
+    // The link's label carries the count: "Transfers here (N)".
+    const label = await link.innerText();
+    const count = Number(label.match(/^Transfers here \((\d+)\)$/)[1]);
     expect(count).toBeGreaterThan(0);
 
     await link.click();

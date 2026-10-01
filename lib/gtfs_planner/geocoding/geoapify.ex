@@ -13,11 +13,11 @@ defmodule GtfsPlanner.Geocoding.Geoapify do
     if String.length(text) < 3 do
       {:error, :text_too_short}
     else
-      fetch_from_api(text, [])
+      fetch_from_api(text)
     end
   end
 
-  defp fetch_from_api(text, _opts) do
+  defp fetch_from_api(text) do
     api_key = Application.get_env(:gtfs_planner, :geoapify_api_key)
 
     if is_nil(api_key) do
@@ -31,7 +31,15 @@ defmodule GtfsPlanner.Geocoding.Geoapify do
         filter: "countrycode:us"
       }
 
-      case Req.get("https://api.geoapify.com/v1/geocode/autocomplete", params: params) do
+      request_options =
+        [
+          params: params,
+          receive_timeout: 5_000,
+          retry: :transient,
+          max_retries: 1
+        ] ++ Application.get_env(:gtfs_planner, :geocoding_req_options, [])
+
+      case Req.get("https://api.geoapify.com/v1/geocode/autocomplete", request_options) do
         {:ok, %{status: 200, body: %{"results" => results}}} ->
           parse_results(results)
 

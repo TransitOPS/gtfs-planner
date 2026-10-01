@@ -56,10 +56,10 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
   A route insert resolves its agency under the same version row lock (R4, INV-1).
   `lock_agency_for_reference!/3` share-locks the published version and then returns the
   version's single agency for a blank choice, or the listed agency for a provided choice,
-  rolling back `:agency_required` or `:agency_not_found` instead. Every route write calls
-  it inside the insert's own transaction through `Gtfs.create_version_route/3`, so an
-  insert serializes against an agency deletion and can never commit against an agency
-  that no longer exists (AC-26).
+  rolling back `:agency_required` or `:agency_not_found` instead. A route insert that
+  calls it inside its own transaction serializes against an agency deletion and cannot
+  commit against an agency that no longer exists (AC-26); `Routes.create_editor_route/3`
+  gets the same guarantee by resolving the agency under the version's `FOR UPDATE` lock.
 
   Outside import and test fixtures this module is the application's writer of `agencies`
   and `feed_info` rows and of the agency columns they own (INV-5).
@@ -67,8 +67,7 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
 
   import Ecto.Query, warn: false
 
-  alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.UserOrgMembership
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.Attribution
@@ -83,7 +82,6 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
   alias GtfsPlanner.Versions.GtfsVersion
 
   @published_status "published"
-  @editor_role "pathways_studio_editor"
   @no_attribution_id "(no ID)"
 
   @type scope :: AuditContext.t()
@@ -265,7 +263,7 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
     attrs = stringify_keys(attrs)
 
     Repo.transaction(fn ->
-      authorize_editor!(audit_context)
+      Authorization.lock_editor!(audit_context)
       lock_version!(audit_context)
 
       audit_context
@@ -307,7 +305,7 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
     attrs = attrs |> stringify_keys() |> Map.drop(["agency_timezone", "agency_id"])
 
     Repo.transaction(fn ->
-      authorize_editor!(audit_context)
+      Authorization.lock_editor!(audit_context)
       share_version!(audit_context)
 
       audit_context
@@ -349,7 +347,7 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
 
       zone ->
         Repo.transaction(fn ->
-          authorize_editor!(audit_context)
+          Authorization.lock_editor!(audit_context)
           share_version!(audit_context)
 
           audit_context
@@ -394,7 +392,7 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
 
       zone ->
         Repo.transaction(fn ->
-          authorize_editor!(audit_context)
+          Authorization.lock_editor!(audit_context)
           lock_version!(audit_context)
 
           audit_context
@@ -443,7 +441,7 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
           | {:error, :forbidden | :not_found | :last_agency | :target_required | :invalid_target}
   def review_agency_deletion(%AuditContext{} = audit_context, id, target_id) do
     Repo.transaction(fn ->
-      authorize_editor!(audit_context)
+      Authorization.lock_editor!(audit_context)
       share_version!(audit_context)
 
       audit_context
@@ -489,7 +487,7 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
           | {:error, :forbidden | :not_found | :stale_review}
   def delete_agency(%AuditContext{} = audit_context, id, target_id, fingerprint) do
     Repo.transaction(fn ->
-      authorize_editor!(audit_context)
+      Authorization.lock_editor!(audit_context)
       lock_version!(audit_context)
       deletion_locked!(audit_context, id, target_id, fingerprint)
     end)
@@ -549,7 +547,7 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
           | {:error, Ecto.Changeset.t() | :forbidden | :not_found | :stale}
   def save_feed_info(%AuditContext{} = audit_context, attrs, token) when is_map(attrs) do
     Repo.transaction(fn ->
-      authorize_editor!(audit_context)
+      Authorization.lock_editor!(audit_context)
       share_version!(audit_context)
 
       audit_context
@@ -676,32 +674,6 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
       |> Repo.one()
     end
   end
-
-  defp authorize_editor!(%AuditContext{} = audit_context) do
-    case authorize_editor(audit_context) do
-      :ok -> :ok
-      {:error, reason} -> Repo.rollback(reason)
-    end
-  end
-
-  defp authorize_editor(%AuditContext{
-         actor_id: actor_id,
-         organization_id: organization_id
-       }) do
-    with true <- uuid?(actor_id),
-         true <- uuid?(organization_id),
-         %UserOrgMembership{} = membership <-
-           Accounts.get_user_org_membership(actor_id, organization_id),
-         true <- is_nil(membership.deactivated_at),
-         true <- editor_role?(membership.roles) do
-      :ok
-    else
-      _other -> {:error, :forbidden}
-    end
-  end
-
-  defp editor_role?(roles) when is_list(roles), do: @editor_role in roles
-  defp editor_role?(_roles), do: false
 
   defp uuid?(value) when is_binary(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
   defp uuid?(_value), do: false

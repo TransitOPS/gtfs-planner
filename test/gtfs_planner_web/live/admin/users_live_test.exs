@@ -54,7 +54,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
           user_fixture(%{email: email})
       end
 
-    {:ok, _membership} =
+    {:ok, membership} =
       Accounts.create_user_org_membership(%{
         user_id: user.id,
         organization_id: organization.id,
@@ -62,7 +62,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       })
 
     if Map.get(attrs, :deactivated?, false) do
-      {:ok, _} = Organizations.deactivate_user_in_organization(user.id, organization.id)
+      deactivate_membership_fixture(membership)
     end
 
     user
@@ -578,6 +578,24 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
 
       assert view |> element("#member-action-feedback") |> render() =~ "pending@example.com"
     end
+
+    test "resend after the administrator's access was revoked is refused and sends nothing", %{
+      conn: conn,
+      admin_user: admin_user,
+      organization: organization
+    } do
+      pending = member_fixture(organization, %{email: "pending@example.com", invited?: true})
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+
+      deactivate_membership_fixture(membership(admin_user.id, organization.id))
+      view |> element("#resend-invite-#{pending.id}") |> render_click()
+
+      assert view |> element("#member-action-feedback") |> render() =~
+               "Your administrator access has changed."
+
+      refute Repo.get_by(UserToken, user_id: pending.id, context: "invite")
+      assert_no_email_sent()
+    end
   end
 
   # ----------------------------------------------------------------------------
@@ -946,6 +964,33 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
 
       assert_patch(view, ~p"/admin/users")
       assert Organizations.get_organization!(organization.id).name == "Renamed Org"
+    end
+
+    test "a rename after the administrator's access was revoked keeps the drawer and the typed name",
+         %{conn: conn, admin_user: admin_user, organization: organization} do
+      {:ok, view, _html} = live(conn, ~p"/admin/users/organization-settings")
+
+      deactivate_membership_fixture(membership(admin_user.id, organization.id))
+
+      view
+      |> form("#organization-settings-form", organization: %{name: "Renamed Org"})
+      |> render_submit()
+
+      assert has_element?(view, "dialog#organization-settings-drawer-overlay[data-open=true]")
+      assert has_element?(view, "#organization-name[value='Renamed Org']")
+
+      assert has_element?(
+               view,
+               "#organization-refusal",
+               "Your administrator access has changed."
+             )
+
+      assert_push_event(view, "focus_form_error", %{
+        form_id: "organization-settings-form",
+        fallback_id: "organization-refusal"
+      })
+
+      assert Organizations.get_organization!(organization.id).name == organization.name
     end
 
     test "the organization form rejects a blank name and keeps the drawer open", %{

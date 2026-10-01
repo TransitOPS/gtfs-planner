@@ -590,7 +590,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsCrewRulesLiveTest do
       w = world(ctx)
 
       {:ok, _} =
-        Gtfs.update_blocking_settings(w.organization.id, w.version.id, %{max_piece_minutes: 240})
+        Gtfs.update_blocking_settings(w.audit, %{max_piece_minutes: 240})
 
       view = open(ctx, w)
       show_crew(view)
@@ -612,7 +612,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsCrewRulesLiveTest do
       w = world(ctx)
 
       {:ok, _} =
-        Gtfs.update_blocking_settings(w.organization.id, w.version.id, %{max_piece_minutes: 240})
+        Gtfs.update_blocking_settings(w.audit, %{max_piece_minutes: 240})
 
       before = stored_row(w)
       view = open(ctx, w)

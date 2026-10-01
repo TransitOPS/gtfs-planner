@@ -29,7 +29,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     ChangeRun,
     ChangeRunner,
     ChangeRuns,
-    ParseError
+    ParseError,
+    SourceStorage
   }
 
   alias GtfsPlanner.Gtfs.Import.Run
@@ -53,6 +54,19 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   @name_required_message "Enter a name for the new version."
   @name_taken_message "A version with this name already exists"
+
+  @permission_error "You no longer have permission to import GTFS data. " <>
+                      "Ask an organization administrator to restore your access."
+
+  # Upload limits for a feed import. A staged upload set may total every file at its
+  # limit, so the per-run storage budget is their product; the artifact root's own
+  # capacity limit still applies.
+  @max_upload_entries 50
+  @max_upload_file_bytes 200_000_000
+  @max_import_run_bytes @max_upload_entries * @max_upload_file_bytes
+
+  @import_busy_message "Another import is running. Try again when it finishes."
+  @change_busy_message "Another change review is running. Try again when it finishes."
 
   @source_options [
     %{
@@ -121,8 +135,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      |> assign(:user_roles, user_roles)
      |> allow_upload(:gtfs_files,
        accept: ~w(.txt .csv .zip),
-       max_entries: 50,
-       max_file_size: 200_000_000
+       max_entries: @max_upload_entries,
+       max_file_size: @max_upload_file_bytes
      )
      |> allow_upload(:diff_files,
        accept: ~w(.txt .csv .zip),
@@ -367,7 +381,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         {:noreply, socket}
 
       binary_id ->
-        case ImportRuns.retry_publication(organization_id, binary_id) do
+        case ImportRuns.retry_publication(organization_id, binary_id, socket.assigns.current_user) do
           {:ok, _run, _version} ->
             # Publication retry closes synchronously; enqueue the same durable
             # reload path used by runner broadcasts so the card is removed and
@@ -378,6 +392,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
              socket
              |> assign(:recovery_announce, "Publishing version")
              |> assign(:processing_publish, binary_id)}
+
+          {:error, :forbidden} ->
+            {:noreply,
+             socket
+             |> assign(:processing_publish, nil)
+             |> put_flash(:error, @permission_error)}
 
           {:error, _reason} ->
             {:noreply, assign(socket, :processing_publish, nil)}
@@ -411,6 +431,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
              |> assign(:pending_discard_run_id, nil)
              |> assign(:pending_discard_name, nil)
              |> assign(:recovery_announce, "Cleanup in progress")}
+
+          {:error, :busy} ->
+            {:noreply, discard_refused(socket, @import_busy_message, @import_busy_message)}
 
           {:error, _reason} ->
             {:noreply, discard_refused(socket)}
@@ -485,10 +508,18 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   def handle_event("start-over-diff", _params, socket) do
     with %ChangeRun{} = run <- socket.assigns[:change_run],
          {:ok, _started_over} <-
-           ChangeRuns.start_over(socket.assigns.current_organization.id, run.id) do
+           ChangeRuns.start_over(
+             socket.assigns.current_organization.id,
+             run.id,
+             socket.assigns.current_user
+           ) do
       handle_event("reset-diff", %{}, socket)
     else
-      _ -> {:noreply, refresh_change_review(socket)}
+      {:error, :forbidden} ->
+        {:noreply, socket |> put_flash(:error, @permission_error) |> refresh_change_review()}
+
+      _ ->
+        {:noreply, refresh_change_review(socket)}
     end
   end
 
@@ -531,7 +562,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     case socket.assigns[:change_run] do
       %ChangeRun{} = run ->
         Phoenix.PubSub.unsubscribe(GtfsPlanner.PubSub, ChangeRuns.topic(run))
-        _ = ChangeRuns.request_cancel(socket.assigns.current_organization.id, run.id)
+
+        _ =
+          ChangeRuns.request_cancel(
+            socket.assigns.current_organization.id,
+            run.id,
+            socket.assigns.current_user
+          )
+
         socket
 
       _ ->
@@ -870,15 +908,20 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   # The delete could not start, for example because someone else claimed it
   # first. Say so where the list is, not only to assistive technology.
   defp discard_refused(socket) do
+    discard_refused(
+      socket,
+      "Could not claim the failed version for cleanup",
+      "That version couldn’t be deleted. It may already be deleting, or its state changed. Check its status below and try again."
+    )
+  end
+
+  defp discard_refused(socket, announce, error) do
     socket
     |> assign(:processing_discard, false)
     |> assign(:pending_discard_run_id, nil)
     |> assign(:pending_discard_name, nil)
-    |> assign(:recovery_announce, "Could not claim the failed version for cleanup")
-    |> assign(
-      :recovery_error,
-      "That version couldn’t be deleted. It may already be deleting, or its state changed. Check its status below and try again."
-    )
+    |> assign(:recovery_announce, announce)
+    |> assign(:recovery_error, error)
   end
 
   defp clear_discarded_notice(socket), do: assign(socket, :discarded_name, nil)
@@ -907,17 +950,43 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
            ChangeRuns.create_pending_compute(organization_id, version_id, actor, manifest, run_id) do
       if run.id != run_id, do: ChangeArtifactStorage.remove(organization_id, version_id, run_id)
       Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ChangeRuns.topic(run))
-      _ = ChangeRunner.start_compute(organization_id, run.id)
+      {socket, run} = start_change_runner(socket, :compute, run)
 
       socket
       |> assign(:change_run, run)
       |> assign(:diff_filter, :all)
       |> refresh_change_review()
     else
+      {:error, :forbidden} ->
+        # The files were staged before the run was refused; nothing owns them.
+        _ = ChangeArtifactStorage.remove(organization_id, version_id, run_id)
+        put_flash(socket, :error, @permission_error)
+
       {:error, reason} ->
         socket
         |> assign(:diff_blockers, [%{reason: reason}])
         |> assign(:diff_step, :upload)
+    end
+  end
+
+  # Starts the runner for a pending change run. When the runner supervisor is at
+  # its cap the run never started, so it is closed as failed and the user is told
+  # to try again; Retry review runs it from the same files and decisions.
+  defp start_change_runner(socket, operation, %ChangeRun{} = run) do
+    start =
+      if operation == :compute,
+        do: &ChangeRunner.start_compute/2,
+        else: &ChangeRunner.start_apply/2
+
+    case start.(run.organization_id, run.id) do
+      {:error, :busy} ->
+        case ChangeRuns.fail_unstarted(run.organization_id, run.id, run.lease_generation) do
+          {:ok, failed} -> {put_flash(socket, :error, @change_busy_message), failed}
+          {:error, _reason} -> {socket, run}
+        end
+
+      _started ->
+        {socket, run}
     end
   end
 
@@ -997,11 +1066,16 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp request_change_apply(socket) do
     with %ChangeRun{} = run <- socket.assigns[:change_run],
          {:ok, pending} <-
-           ChangeRuns.request_apply(socket.assigns.current_organization.id, run.id) do
+           ChangeRuns.request_apply(
+             socket.assigns.current_organization.id,
+             run.id,
+             socket.assigns.current_user
+           ) do
       Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ChangeRuns.topic(pending))
-      _ = ChangeRunner.start_apply(socket.assigns.current_organization.id, pending.id)
+      {socket, pending} = start_change_runner(socket, :apply, pending)
       socket |> assign(:change_run, pending) |> refresh_change_review()
     else
+      {:error, :forbidden} -> put_flash(socket, :error, @permission_error)
       _ -> socket
     end
   end
@@ -1009,26 +1083,38 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp cancel_change_run(socket) do
     with %ChangeRun{} = run <- socket.assigns[:change_run],
          {:ok, changed} <-
-           ChangeRuns.request_cancel(socket.assigns.current_organization.id, run.id) do
+           ChangeRuns.request_cancel(
+             socket.assigns.current_organization.id,
+             run.id,
+             socket.assigns.current_user
+           ) do
       socket |> assign(:change_run, changed) |> refresh_change_review()
     else
+      {:error, :forbidden} -> put_flash(socket, :error, @permission_error)
       _ -> socket
     end
   end
 
   defp retry_change_run(socket) do
     with %ChangeRun{} = run <- socket.assigns[:change_run],
-         {:ok, retry} <- ChangeRuns.retry(socket.assigns.current_organization.id, run.id) do
+         {:ok, retry} <-
+           ChangeRuns.retry(
+             socket.assigns.current_organization.id,
+             run.id,
+             socket.assigns.current_user
+           ) do
       Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ChangeRuns.topic(retry))
 
-      case retry.state do
-        :pending_apply -> _ = ChangeRunner.start_apply(retry.organization_id, retry.id)
-        :pending_compute -> _ = ChangeRunner.start_compute(retry.organization_id, retry.id)
-        _ -> :ok
-      end
+      {socket, retry} =
+        case retry.state do
+          :pending_apply -> start_change_runner(socket, :apply, retry)
+          :pending_compute -> start_change_runner(socket, :compute, retry)
+          _ -> {socket, retry}
+        end
 
       socket |> assign(:change_run, retry) |> refresh_change_review()
     else
+      {:error, :forbidden} -> put_flash(socket, :error, @permission_error)
       _ -> socket
     end
   end
@@ -1502,6 +1588,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     >
       Nothing was published, and {version_display_name(@version)} is unchanged.
       <%= case @reason do %>
+        <% {:upload_consumption_failed, :artifact_capacity_exceeded} -> %>
+          These files exceed the import storage limit. Upload fewer or smaller files.
         <% {:upload_consumption_failed, detail} -> %>
           We couldn’t read the uploaded files. Choose them again and retry.
           <details class="mt-1">
@@ -2530,15 +2618,22 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp run_count(_run, _key), do: 0
 
   # Create exactly one staging target + pending run, subscribe to its stable
-  # topic, consume the uploads into memory, and hand the run + lease token to a
-  # supervised Runner that claims and executes the import. The route/current
-  # version is never a write destination, and no task reference is owned by the
-  # socket: the Runner is durable and survives disconnect (AC-6).
+  # topic, and ask the supervised Runner to take the run. The Runner is admitted
+  # and claims the run before a single upload byte is read, then waits while this
+  # process copies the uploads into the run's private directory and installs them.
+  # The route/current version is never a write destination, and no task reference
+  # is owned by the socket: the Runner is durable and survives disconnect once the
+  # source is installed (AC-6). The run exists before any file is staged, so the
+  # orphan sweep never sees a staged directory without its run.
   defp create_and_start_import(socket, _form_data, version_name) do
     organization_id = socket.assigns.current_organization.id
     actor = %{id: socket.assigns.current_user.id, email: socket.assigns.current_user.email}
 
     case ImportRuns.create_pending_target(organization_id, actor, %{name: version_name}) do
+      {:error, :forbidden} ->
+        # Nothing was created. The form and the chosen files stay as they are.
+        {:noreply, put_flash(socket, :error, @permission_error)}
+
       {:error, changeset} ->
         # Pre-consumption changeset error (blank/duplicate name): return to the
         # form, preserve every upload entry, focus/announce the error,
@@ -2566,12 +2661,51 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         # broadcast is missed.
         Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ImportRuns.topic(run.id))
 
-        case consume_import_files(socket) do
-          {:ok, uploaded_files} ->
-            # Hand the pending run + lease token to the supervised runner. The
-            # runner re-claims in init and executes publication through
-            # ImportRuns, broadcasting {:import_run_changed, run.id} on closure.
-            Runner.start_import(organization_id, run.id, run.lease_token, uploaded_files)
+        case Runner.start_import(organization_id, run.id, run.lease_token, caller: self()) do
+          {:ok, runner} ->
+            stage_and_install_source(socket, runner, run, target)
+
+          {:error, :busy} ->
+            refuse_unstarted_import(socket, run, version_name)
+
+          {:error, _claim_failure} ->
+            # No runner owns the run, so the staging target is closed here.
+            failed = fail_target_best_effort(run, target)
+            Phoenix.PubSub.unsubscribe(GtfsPlanner.PubSub, ImportRuns.topic(run.id))
+
+            {:noreply,
+             socket
+             |> assign(:import_target, failed)
+             |> assign(:import_result, {:error, failed, :import_not_started})}
+        end
+    end
+  end
+
+  # The runner supervisor is full. Nothing was staged, and the uploads are still in
+  # the form, so the same Import click works once the other import finishes.
+  defp refuse_unstarted_import(socket, run, version_name) do
+    organization_id = socket.assigns.current_organization.id
+
+    _ = ImportRuns.fail_unstarted(organization_id, run.id, run.lease_token)
+    Phoenix.PubSub.unsubscribe(GtfsPlanner.PubSub, ImportRuns.topic(run.id))
+
+    {:noreply,
+     socket
+     |> assign(:form, to_form(%{"version_name" => version_name}, as: :gtfs_import_form))
+     |> put_flash(:error, @import_busy_message)}
+  end
+
+  # Stages the uploads and hands their descriptors to the runner that is waiting for
+  # them. The runner executes publication through ImportRuns, broadcasting
+  # {:import_run_changed, run.id} on closure.
+  defp stage_and_install_source(socket, runner, run, target) do
+    organization_id = socket.assigns.current_organization.id
+
+    case stage_import_files(socket, organization_id, run.id) do
+      {:ok, staged_files} ->
+        case Runner.install_source(runner, staged_files) do
+          :ok ->
+            drop_import_files(socket)
 
             {:noreply,
              socket
@@ -2583,43 +2717,51 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
              |> assign(:published_version, nil)
              |> assign(:import_progress, nil)}
 
-          {:error, reason} ->
-            # Post-create consumption/read error: fail the exact pending target,
-            # start no runner, and render target-specific feedback.
-            failed = fail_target_best_effort(run, target)
-
-            {:noreply,
-             socket
-             |> assign(:import_target, failed)
-             |> assign(:import_result, {:error, failed, {:upload_consumption_failed, reason}})
-             |> assign(:importing, false)
-             |> assign(:import_progress, nil)}
+          {:error, _stopped} ->
+            # The runner passed its install deadline and closed the run while the
+            # copy was still running. `stage/4` may have recreated the directory
+            # after the runner removed it, so remove it again.
+            _ = SourceStorage.remove(organization_id, run.id)
+            source_refused(socket, target, :source_not_installed)
         end
+
+      {:error, reason} ->
+        # Post-create staging error: the runner closes the run as `source_not_installed`,
+        # deletes the empty staging version and removes whatever was written. No worker
+        # starts, and the same name can be submitted again.
+        _ = Runner.cancel_source(runner)
+        source_refused(socket, target, reason)
     end
   end
 
-  # Consume upload entries by reading each temporary path through the configured
-  # production file adapter (`File` by default). Reads use `read/1`, never
-  # `read!/1`, so a read failure is a value we can act on rather than a raise.
-  defp consume_import_files(socket) do
-    reader = import_file_reader()
+  # A set that is over the storage limit stays selected so the person can remove
+  # files from it. After any other refusal the person chooses the files again.
+  defp source_refused(socket, target, reason) do
+    if reason != :artifact_capacity_exceeded, do: drop_import_files(socket)
 
-    results =
+    {:noreply,
+     socket
+     |> assign(:import_result, {:error, target, {:upload_consumption_failed, reason}})
+     |> assign(:importing, false)
+     |> assign(:import_progress, nil)}
+  end
+
+  # Copies the uploads from their temporary paths into the run's private directory
+  # without reading them into memory, and leaves the entries in the upload so a
+  # start that is refused keeps the chosen files in the form. `drop_import_files/1`
+  # removes them once the import no longer needs them. Staging takes the whole set
+  # in one call so the size budgets and the all-or-nothing cleanup cover it.
+  defp stage_import_files(socket, organization_id, run_id) do
+    uploads =
       consume_uploaded_entries(socket, :gtfs_files, fn %{path: path}, entry ->
-        case reader.read(path) do
-          {:ok, content} -> {:ok, {:ok, %{filename: entry.client_name, content: content}}}
-          {:error, reason} -> {:ok, {:error, reason}}
-        end
+        {:postpone, %{path: path, filename: entry.client_name}}
       end)
 
-    case Enum.find(results, &match?({:error, _}, &1)) do
-      {:error, reason} -> {:error, reason}
-      nil -> {:ok, for({:ok, file} <- results, do: file)}
-    end
+    SourceStorage.stage(organization_id, run_id, uploads, max_run_bytes: @max_import_run_bytes)
   end
 
-  defp import_file_reader do
-    Application.get_env(:gtfs_planner, :import_file_reader, File)
+  defp drop_import_files(socket) do
+    consume_uploaded_entries(socket, :gtfs_files, fn _meta, _entry -> {:ok, nil} end)
   end
 
   # Best-effort conditional closure of a still-unpublished target. A published
@@ -2863,6 +3005,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     unterminated_quote: "a quoted value isn’t closed",
     malformed_quote: "a quoted value is malformed",
     forbidden_control_character: "it contains an invalid line break or tab",
+    record_too_long: "a row is longer than 1,048,576 bytes",
     archive_unreadable: "the zip couldn’t be opened",
     archive_too_large: "the zip is too large once unpacked",
     nested_archive: "the zip contains another zip",
@@ -2871,7 +3014,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     duplicate_natural_key: "two rows use the same ID",
     blank_natural_key: "a row has no ID",
     semantic_row: "a row has a value that isn’t allowed",
-    unexpected_parser_failure: "the file couldn’t be read"
+    unexpected_parser_failure: "the file couldn’t be read",
+    busy: "another change review is running"
   }
 
   defp reason_phrase(reason) when is_atom(reason),

@@ -11,6 +11,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
+  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Repo
@@ -19,7 +20,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
     route = route_fixture(organization.id, version.id)
-    actor = user_fixture()
+    actor = editor_fixture(organization)
 
     audit = %AuditContext{
       organization_id: organization.id,
@@ -47,8 +48,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
 
     [log] =
       Repo.all(
-        from log in ChangeLog,
+        from(log in ChangeLog,
           where: log.entity_type == "route_pattern" and log.entity_id == ^pattern.id
+        )
       )
 
     assert log.station_stop_id == nil
@@ -56,7 +58,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
     assert log.changed_fields["after"]["route_pattern_name"] == "Crosstown"
     refute Enum.any?(Gtfs.reversible_fields_for("route_pattern"))
     refute Enum.any?(Gtfs.reversible_fields_for("timed_pattern"))
-    assert {:error, :audit_only_entity} = Gtfs.rollback_target_snapshot(log)
+    assert {:error, :audit_only_entity} = Stations.rollback_target_snapshot(log)
 
     assert ChangeLog.changeset(%ChangeLog{}, %{
              entity_type: "timed_pattern",
@@ -70,20 +72,22 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
            }).valid?
   end
 
-  test "an invalid actor-bound audit prevents the pattern mutation from committing", context do
+  test "an invalid actor is forbidden before the pattern mutation", context do
     bad_audit = %{context.audit | actor_id: nil}
 
-    assert {:error, %Ecto.Changeset{}} =
+    assert {:error, :forbidden} =
              Gtfs.create_pattern(context.route.route_id, attrs(context.stops), bad_audit)
 
     refute Repo.exists?(
-             from pattern in RoutePattern,
+             from(pattern in RoutePattern,
                where: pattern.organization_id == ^context.organization.id
+             )
            )
 
     refute Repo.exists?(
-             from log in ChangeLog,
+             from(log in ChangeLog,
                where: log.organization_id == ^context.organization.id
+             )
            )
   end
 
@@ -160,14 +164,16 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
 
     timing =
       Repo.one!(
-        from timing in TimedPattern,
+        from(timing in TimedPattern,
           where: timing.route_pattern_id == ^pattern.id and timing.name == "Timing B"
+        )
       )
 
     [created_log] =
       Repo.all(
-        from log in ChangeLog,
+        from(log in ChangeLog,
           where: log.entity_type == "timed_pattern" and log.entity_id == ^timing.id
+        )
       )
 
     stable_identity = "#{timing.id}:#{pattern.route_pattern_id}"
@@ -193,10 +199,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
 
     [updated_log] =
       Repo.all(
-        from log in ChangeLog,
+        from(log in ChangeLog,
           where:
             log.entity_type == "timed_pattern" and log.entity_id == ^timing.id and
               log.action == "updated"
+        )
       )
 
     assert updated_log.entity_external_id == stable_identity
@@ -220,10 +227,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
 
     [deleted_log] =
       Repo.all(
-        from log in ChangeLog,
+        from(log in ChangeLog,
           where:
             log.entity_type == "timed_pattern" and log.entity_id == ^timing.id and
               log.action == "deleted"
+        )
       )
 
     assert deleted_log.entity_external_id == stable_identity
@@ -259,10 +267,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
 
     [log] =
       Repo.all(
-        from log in ChangeLog,
+        from(log in ChangeLog,
           where:
             log.entity_type == "route_pattern" and log.entity_id == ^pattern.id and
               log.action == "updated"
+        )
       )
 
     before_snapshot = log.changed_fields["before"]["to"]
@@ -288,7 +297,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
              Gtfs.create_pattern(context.route.route_id, attrs(context.stops), context.audit)
 
     [timing] =
-      Repo.all(from timing in TimedPattern, where: timing.route_pattern_id == ^pattern.id)
+      Repo.all(from(timing in TimedPattern, where: timing.route_pattern_id == ^pattern.id))
 
     before_pattern = Repo.get!(RoutePattern, pattern.id)
     before_timing = Repo.get!(TimedPattern, timing.id)
@@ -331,15 +340,16 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
 
   defp occurrences(pattern) do
     Repo.all(
-      from occurrence in RoutePatternStop,
+      from(occurrence in RoutePatternStop,
         where: occurrence.route_pattern_id == ^pattern.id,
         order_by: [asc: occurrence.position]
+      )
     )
   end
 
   defp timing_row_values(timing_id) do
     Repo.all(
-      from row in TimedPatternStop,
+      from(row in TimedPatternStop,
         join: occurrence in RoutePatternStop,
         on: occurrence.id == row.route_pattern_stop_id,
         where: row.timed_pattern_id == ^timing_id,
@@ -353,6 +363,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
           drop_off_type: row.drop_off_type,
           stop_headsign: row.stop_headsign
         }
+      )
     )
   end
 

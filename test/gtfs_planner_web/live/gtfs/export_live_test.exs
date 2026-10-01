@@ -10,16 +10,40 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs.Export.ArtifactStorage
   alias GtfsPlanner.Gtfs.Export.Run
   alias GtfsPlanner.Gtfs.Export.RunnerSupervisor
   alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.ExportRuns
+  alias GtfsPlanner.Gtfs.Validator
   alias GtfsPlanner.Gtfs.Validator.Result
   alias GtfsPlanner.Gtfs.ValidatorMock
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.RunnerSlots
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Validations.ValidationRun
+
+  @validation_supervisor GtfsPlanner.Validations.RunnerSupervisor
+  @fake_java Path.expand("../../../support/fixtures/fake_validator.sh", __DIR__)
+
+  # Trip EXP_TD has blank middle times anchored 08:00 and 08:10 over stored
+  # distances 0/200/400/2400/3000: the distance estimate gives 40/80/480 second
+  # shares and the even estimate 150 seconds each.
+  @distance_times [
+    {"EXP_D1", "08:00:00"},
+    {"EXP_D2", "08:00:40"},
+    {"EXP_D3", "08:01:20"},
+    {"EXP_D4", "08:08:00"},
+    {"EXP_D5", "08:10:00"}
+  ]
+  @even_times [
+    {"EXP_D1", "08:00:00"},
+    {"EXP_D2", "08:02:30"},
+    {"EXP_D3", "08:05:00"},
+    {"EXP_D4", "08:07:30"},
+    {"EXP_D5", "08:10:00"}
+  ]
 
   @actor %{id: Ecto.UUID.generate(), email: "exporter@example.com"}
 
@@ -176,6 +200,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
     setup :set_mox_global
     setup :verify_on_exit!
 
+    # The validator runs in a task owned by a `Validations.Runner`; wait for any
+    # runner still holding the slot before the sandbox owner goes away.
+    setup do
+      on_exit(fn -> RunnerSlots.await_idle() end)
+      :ok
+    end
+
     test "shows the verdict and links the full results when a check finishes", %{
       conn: conn,
       user: user,
@@ -189,7 +220,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       view |> element("#run-validation") |> render_click()
       assert has_element?(view, "#check-progress")
 
-      await_validation(view)
+      release_validation(view)
 
       assert has_element?(view, "#mobility-summary-metrics [data-count=warnings]", "3")
       assert has_element?(view, "#check-verdict", "Review the 3 warnings.")
@@ -212,7 +243,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
       view |> element("#run-validation") |> render_click()
-      await_validation(view)
+      release_validation(view)
       assert has_element?(view, "#check-verdict", "No errors or warnings.")
 
       view |> element("#reset-validation") |> render_click()
@@ -228,22 +259,272 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       organization: organization,
       gtfs_version: version
     } do
+      hold_validator({:error, :validator_unavailable})
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+      view |> element("#run-validation") |> render_click()
+
+      release_validation(view)
+
+      assert has_element?(view, "#validation-error-panel", "The check couldn’t finish.")
+      assert has_element?(view, "#run-validation", "Try again")
+      refute has_element?(view, "#validation-error-panel", "validator_unavailable")
+    end
+
+    @tag :capture_log
+    test "says the check could not finish when the validator task crashes", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
       test_pid = self()
 
       Mox.stub(ValidatorMock, :validate, fn _organization_id, _version_id, _opts ->
         send(test_pid, {:validator_task, self()})
-        {:error, :validator_unavailable}
+
+        receive do
+          :release -> raise "validator crashed"
+        end
       end)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
       view |> element("#run-validation") |> render_click()
 
-      await_validation(view)
+      release_validation(view)
 
       assert has_element?(view, "#validation-error-panel", "The check couldn’t finish.")
-      assert has_element?(view, "#run-validation", "Try again")
-      refute has_element?(view, "#validation-error-panel", "validator_unavailable")
+
+      assert [%ValidationRun{status: "failed", error_details: "executor_lost"}] =
+               Validations.list_validation_runs(organization.id, version.id)
+    end
+
+    test "says another validation is running while the slot is taken and works once it is free",
+         %{conn: conn, user: user, organization: organization, gtfs_version: version} do
+      stub_validator(%{errors: 0, warnings: 0, infos: 4})
+
+      {:ok, held} =
+        Validations.start_mobility_data_run(organization.id, version.id, "mobility_data", user)
+
+      assert_receive {:validator_task, held_task}, 5_000
+      {held_runner, held_ref} = monitor_validation_runner()
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+      view |> element("#run-validation") |> render_click()
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               "Another validation is running. Try again when it finishes."
+             )
+
+      assert has_element?(view, "#run-validation", "Check feed")
+      refute has_element?(view, "#check-progress")
+
+      assert [%ValidationRun{status: "failed", error_details: "busy"}] =
+               refused_validation_runs(organization, version, held)
+
+      send(held_task, :release)
+      assert_receive {:DOWN, ^held_ref, :process, ^held_runner, :normal}, 5_000
+      _ = :sys.get_state(@validation_supervisor)
+
+      view |> element("#run-validation") |> render_click()
+      assert has_element?(view, "#check-progress")
+
+      release_validation(view)
+
+      assert has_element?(view, "#check-verdict", "No errors or warnings.")
+    end
+
+    test "ignores the outcome of a run it is not showing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      stub_validator(%{errors: 0, warnings: 2, infos: 0})
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+      view |> element("#run-validation") |> render_click()
+
+      send(view.pid, {:validation_completed, Ecto.UUID.generate()})
+      send(view.pid, {:validation_failed, Ecto.UUID.generate()})
+
+      assert has_element?(view, "#check-progress")
+      refute has_element?(view, "#validation-error-panel")
+
+      release_validation(view)
+
+      assert has_element?(view, "#check-verdict", "Review the 2 warnings.")
+    end
+
+    test "refuses a check after the reader's editor role is revoked and starts no run", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      {:ok, _membership} =
+        user.id
+        |> Accounts.get_user_org_membership(organization.id)
+        |> Accounts.update_user_org_membership(%{roles: []})
+
+      view |> element("#run-validation") |> render_click()
+
+      assert has_element?(
+               view,
+               "#flash-error",
+               "You no longer have permission to check this feed."
+             )
+
+      assert has_element?(view, "#run-validation", "Check feed")
+      assert Validations.list_validation_runs(organization.id, version.id) == []
+    end
+  end
+
+  describe "feed check through the real validator" do
+    setup :set_mox_global
+    setup :verify_on_exit!
+
+    # ExportLive, Validations.Runner, Validator and Export all run for real. The
+    # validator module is the mock only so the test can hold the task before it
+    # starts: on release it hands the call to `Validator.validate/3` unchanged. The
+    # Java process is the one replaced boundary (`fake_validator.sh`).
+    setup %{organization: organization, gtfs_version: version} do
+      test_pid = self()
+
+      Mox.stub(ValidatorMock, :validate, fn organization_id, version_id, opts ->
+        send(test_pid, {:validator_task, self()})
+
+        receive do
+          :release -> Validator.validate(organization_id, version_id, opts)
+        end
+      end)
+
+      put_env(:java_path, @fake_java)
+      seed_distance_sensitive_trip(organization, version)
+      temp_dirs_before = validation_temp_dirs()
+
+      on_exit(fn -> RunnerSlots.await_idle() end)
+
+      %{temp_dirs_before: temp_dirs_before}
+    end
+
+    test "validates with the current estimate defaults, not an earlier export's snapshot", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version,
+      temp_dirs_before: temp_dirs_before
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      # An export made under the default (distance) estimate.
+      start_export_and_wait(view)
+      prior = latest_full_run(organization, version)
+      assert %Run{state: :ready, estimate_method: :distance} = prior
+      prior_bytes = artifact_bytes(prior)
+      assert trip_times(prior_bytes) == @distance_times
+
+      # A validation after it estimates by the same default.
+      first_copy = zip_copy_path()
+      put_env(:gtfs_validator_path, "report@" <> first_copy)
+      view |> element("#run-validation") |> render_click()
+      release_validation(view)
+
+      assert has_element?(view, "#check-verdict", "No errors or warnings.")
+      assert trip_times(File.read!(first_copy)) == @distance_times
+
+      # Changing the default changes the next validation and no export that exists.
+      view |> element("#reset-validation") |> render_click()
+
+      {:ok, _defaults} =
+        ExportDefaults.update(organization.id, editor_fixture(organization), %{
+          estimate_method: :even
+        })
+
+      second_copy = zip_copy_path()
+      put_env(:gtfs_validator_path, "report@" <> second_copy)
+      view |> element("#run-validation") |> render_click()
+      release_validation(view)
+
+      assert has_element?(view, "#check-verdict", "No errors or warnings.")
+      assert trip_times(File.read!(second_copy)) == @even_times
+
+      unchanged = Repo.get!(Run, prior.id)
+      assert unchanged.estimate_method == :distance
+      assert unchanged.artifact_sha256 == prior.artifact_sha256
+      assert artifact_bytes(unchanged) == prior_bytes
+
+      # Neither validation left its working files behind.
+      assert validation_temp_dirs() -- temp_dirs_before == []
+    end
+
+    test "refuses a second validation while the first is held and frees everything after it ends",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: version,
+           temp_dirs_before: temp_dirs_before
+         } do
+      put_env(:gtfs_validator_path, "report")
+
+      {:ok, held} =
+        Validations.start_mobility_data_run(organization.id, version.id, "mobility_data", user)
+
+      assert_receive {:validator_task, held_task}, 5_000
+      {held_runner, held_ref} = monitor_validation_runner()
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+      view |> element("#run-validation") |> render_click()
+
+      assert has_element?(view, "#flash-error", "Another validation is running.")
+      refute_receive {:validator_task, _task}
+      assert validation_temp_dirs() -- temp_dirs_before == []
+
+      send(held_task, :release)
+      assert_receive {:DOWN, ^held_ref, :process, ^held_runner, :normal}, 10_000
+      _ = :sys.get_state(@validation_supervisor)
+
+      assert %ValidationRun{status: "completed"} = Repo.get!(ValidationRun, held.id)
+      assert validation_temp_dirs() -- temp_dirs_before == []
+      assert DynamicSupervisor.count_children(@validation_supervisor).active == 0
+    end
+
+    @tag :capture_log
+    test "a cancelled run stops its Java process, removes its files and frees the slot", %{
+      organization: organization,
+      gtfs_version: version,
+      user: user,
+      temp_dirs_before: temp_dirs_before
+    } do
+      put_env(:gtfs_validator_path, "sleep")
+
+      {:ok, run} =
+        Validations.start_mobility_data_run(organization.id, version.id, "mobility_data", user)
+
+      assert_receive {:validator_task, task}, 5_000
+      task_ref = Process.monitor(task)
+      {runner, runner_ref} = monitor_validation_runner()
+      send(task, :release)
+
+      # Shutting the runner down cancels the validator. It is still exporting (the
+      # Java process is then never launched) or running it (the process is killed).
+      :ok = DynamicSupervisor.terminate_child(@validation_supervisor, runner)
+
+      assert_receive {:DOWN, ^task_ref, :process, ^task, _reason}
+      assert_receive {:DOWN, ^runner_ref, :process, ^runner, :shutdown}
+      assert DynamicSupervisor.count_children(@validation_supervisor).active == 0
+      assert validation_temp_dirs() -- temp_dirs_before == []
+      assert %ValidationRun{status: "running"} = Repo.get!(ValidationRun, run.id)
     end
   end
 
@@ -466,9 +747,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       refute has_element?(view, "#export-warning-panel")
 
       assert {:ok, _garage} =
-               Operations.update_garage(organization.id, operations_actor(), garage.id, %{
-                 "garage_id" => "garage_main"
-               })
+               Operations.update_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 garage.id,
+                 %{
+                   "garage_id" => "garage_main"
+                 }
+               )
 
       start_export_and_wait(view, "#retry-export")
 
@@ -695,7 +981,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
            gtfs_version: version
          } do
       seed_estimable_trip(organization, version)
-      assert {:ok, _} = ExportDefaults.update(organization.id, %{estimate_missing_times: false})
+
+      assert {:ok, _} =
+               ExportDefaults.update(organization.id, editor_fixture(organization), %{
+                 estimate_missing_times: false
+               })
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
@@ -772,7 +1062,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
 
       refute has_element?(view, "#export-stale-settings")
 
-      assert {:ok, _} = ExportDefaults.update(organization.id, %{estimate_missing_times: false})
+      assert {:ok, _} =
+               ExportDefaults.update(organization.id, editor_fixture(organization), %{
+                 estimate_missing_times: false
+               })
+
       {:ok, stale_view, _html} = live(conn, "/gtfs/#{version.id}/export")
       render_async(stale_view)
 
@@ -796,7 +1090,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
            organization: organization,
            gtfs_version: version
          } do
-      assert {:ok, _} = ExportDefaults.update(organization.id, %{estimate_missing_times: false})
+      assert {:ok, _} =
+               ExportDefaults.update(organization.id, editor_fixture(organization), %{
+                 estimate_missing_times: false
+               })
 
       assert {:ok, run} =
                ExportRuns.create_pending(organization.id, version.id, @actor, :full)
@@ -994,37 +1291,147 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
     |> Repo.update!()
   end
 
-  # The validator runs in a task under the LiveView's supervisor. The stub reports
-  # its own pid, so `await_validation/1` can wait for the task to exit (its reply
-  # is already in the LiveView's mailbox by then) and then let the LiveView drain
-  # it.
+  # The validator runs in a task owned by a `Validations.Runner`. The stub reports
+  # its task pid and holds until `release_validation/1` lets it return, so the test
+  # always finds the runner alive.
   defp stub_validator(summary) do
+    hold_validator(
+      {:ok,
+       %Result{
+         summary: summary,
+         notices: [],
+         duration_ms: 1,
+         validated_at: DateTime.utc_now()
+       }}
+    )
+  end
+
+  defp hold_validator(outcome) do
     test_pid = self()
 
-    Mox.stub(ValidatorMock, :validate, fn _organization_id, _version_id, opts ->
+    Mox.stub(ValidatorMock, :validate, fn _organization_id, _version_id, _opts ->
       send(test_pid, {:validator_task, self()})
-      run = opts |> Keyword.fetch!(:validation_run_id) |> Validations.get_validation_run!()
-      {:ok, running} = Validations.mark_running(run)
 
-      result = %Result{
-        summary: summary,
-        notices: [],
-        duration_ms: 1,
-        validated_at: DateTime.utc_now()
-      }
-
-      {:ok, _completed} = Validations.mark_completed(running, result)
-      {:ok, result}
+      receive do
+        :release -> outcome
+      end
     end)
   end
 
-  defp await_validation(view) do
+  defp monitor_validation_runner do
+    [{_id, runner, _type, _modules}] = DynamicSupervisor.which_children(@validation_supervisor)
+    {runner, Process.monitor(runner)}
+  end
+
+  # Lets the held validator return, waits for its runner to write the outcome and
+  # exit (it broadcasts first), then lets the LiveView drain the message.
+  defp release_validation(view) do
     assert_receive {:validator_task, task_pid}, 5_000
-    ref = Process.monitor(task_pid)
-    assert_receive {:DOWN, ^ref, :process, ^task_pid, _reason}, 5_000
+    {runner, ref} = monitor_validation_runner()
+    send(task_pid, :release)
+    assert_receive {:DOWN, ^ref, :process, ^runner, _reason}, 10_000
+    _ = :sys.get_state(@validation_supervisor)
     _ = :sys.get_state(view.pid)
     render(view)
   end
+
+  defp refused_validation_runs(organization, version, held_run) do
+    organization.id
+    |> Validations.list_validation_runs(version.id)
+    |> Enum.reject(&(&1.id == held_run.id))
+  end
+
+  defp validation_temp_dirs do
+    System.tmp_dir!() |> Path.join("gtfs_validation_*") |> Path.wildcard() |> Enum.sort()
+  end
+
+  defp zip_copy_path do
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "export-live-validator-#{System.unique_integer([:positive])}.zip"
+      )
+
+    on_exit(fn -> File.rm(path) end)
+    path
+  end
+
+  defp latest_full_run(organization, version),
+    do: ExportRuns.latest_for_version(organization.id, version.id, :full)
+
+  defp artifact_bytes(%Run{} = run) do
+    {:ok, path} =
+      ArtifactStorage.verify(%{
+        run_id: run.id,
+        organization_id: run.organization_id,
+        gtfs_version_id: run.gtfs_version_id,
+        key: run.artifact_key,
+        size: run.artifact_size_bytes,
+        sha256: run.artifact_sha256
+      })
+
+    File.read!(path)
+  end
+
+  # {stop_id, arrival_time} of trip EXP_TD in stop order, from a feed ZIP's bytes.
+  defp trip_times(zip_binary) do
+    {:ok, entries} = :zip.unzip(zip_binary, [:memory])
+
+    {_name, content} =
+      Enum.find(entries, fn {name, _content} -> List.to_string(name) == "stop_times.txt" end)
+
+    [header | lines] = content |> to_string() |> String.split("\n", trim: true)
+    columns = String.split(header, ",")
+
+    lines
+    |> Enum.map(fn line -> columns |> Enum.zip(String.split(line, ",")) |> Map.new() end)
+    |> Enum.filter(&(&1["trip_id"] == "EXP_TD"))
+    |> Enum.sort_by(&String.to_integer(&1["stop_sequence"]))
+    |> Enum.map(&{&1["stop_id"], &1["arrival_time"]})
+  end
+
+  defp put_env(key, value) do
+    previous = Application.fetch_env(:gtfs_planner, key)
+    Application.put_env(:gtfs_planner, key, value)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, old} -> Application.put_env(:gtfs_planner, key, old)
+        :error -> Application.delete_env(:gtfs_planner, key)
+      end
+    end)
+  end
+
+  defp seed_distance_sensitive_trip(organization, version) do
+    for index <- 1..5 do
+      stop_fixture(organization.id, version.id, %{stop_id: "EXP_D#{index}"})
+    end
+
+    route_fixture(organization.id, version.id, %{route_id: "EXP_RD", route_short_name: "12"})
+
+    trip_fixture(organization.id, version.id, "EXP_RD", %{
+      trip_id: "EXP_TD",
+      service_id: "EXP_SVD"
+    })
+
+    distances = ["0", "200", "400", "2400", "3000"]
+
+    for sequence <- 1..5 do
+      time = anchor_time(sequence)
+
+      stop_time_fixture(organization.id, version.id, "EXP_TD", "EXP_D#{sequence}", %{
+        stop_sequence: sequence,
+        arrival_time: time,
+        departure_time: time,
+        timepoint: if(time, do: 1),
+        shape_dist_traveled: Decimal.new(Enum.at(distances, sequence - 1))
+      })
+    end
+  end
+
+  defp anchor_time(1), do: "08:00:00"
+  defp anchor_time(5), do: "08:10:00"
+  defp anchor_time(_sequence), do: nil
 
   defp inventory_count(view, filename) do
     view

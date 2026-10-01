@@ -403,7 +403,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPlanSummaryLiveTest do
       # that. S1 and S2 are marked so the run between them really is unrelieved.
       long_trip!(context, "T1B", "101", "06:40:00", "07:40:00")
 
-      update_settings(context.organization.id, version.id, %{max_piece_minutes: 60})
+      update_settings(editor_audit_fixture(context.organization.id, version.id), %{
+        max_piece_minutes: 60
+      })
+
       relief_point_fixture(context.organization.id, version.id, %{stop_id: "S1"})
       relief_point_fixture(context.organization.id, version.id, %{stop_id: "S2"})
 
@@ -427,7 +430,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPlanSummaryLiveTest do
          %{version: version} = context do
       seed_plan!(context, cutaways: 4)
 
-      update_settings(context.organization.id, version.id, %{max_piece_minutes: 330})
+      update_settings(editor_audit_fixture(context.organization.id, version.id), %{
+        max_piece_minutes: 330
+      })
 
       {:ok, view, _html} = live(editor_conn(context), blocks_path(version.id))
 

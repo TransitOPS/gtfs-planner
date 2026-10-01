@@ -20,6 +20,7 @@ defmodule GtfsPlanner.Gtfs.TransferImportExportTest do
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Import.CsvParser
+  alias GtfsPlanner.Support.StagedImport
 
   @headers "from_stop_id,to_stop_id,from_route_id,to_route_id,from_trip_id,to_trip_id," <>
              "transfer_type,min_transfer_time"
@@ -137,7 +138,7 @@ defmodule GtfsPlanner.Gtfs.TransferImportExportTest do
 
       files = [%{filename: "transfers.txt", content: transfers_csv}]
 
-      assert {:ok, result} = Import.import_files(organization.id, version.id, files)
+      assert {:ok, result} = StagedImport.import_files(organization.id, version.id, files)
       assert result.counts[:transfers] == 4
 
       assert MapSet.new(stored_transfer_rows(organization.id, version.id)) ==
@@ -159,7 +160,7 @@ defmodule GtfsPlanner.Gtfs.TransferImportExportTest do
         end)
 
       assert {:ok, reimport_result} =
-               Import.import_files(organization.id, second_version.id, reimport_files)
+               StagedImport.import_files(organization.id, second_version.id, reimport_files)
 
       assert reimport_result.counts[:transfers] == 4
 
@@ -191,7 +192,7 @@ defmodule GtfsPlanner.Gtfs.TransferImportExportTest do
 
       files = [%{filename: "transfers.txt", content: transfers_csv}]
 
-      assert {:ok, result} = Import.import_files(organization.id, version.id, files)
+      assert {:ok, result} = StagedImport.import_files(organization.id, version.id, files)
       assert result.counts[:transfers] == 7
       assert Gtfs.count_transfers(organization.id, version.id) == 7
 
@@ -221,7 +222,7 @@ defmodule GtfsPlanner.Gtfs.TransferImportExportTest do
       files = [%{filename: "transfers.txt", content: transfers_csv}]
 
       assert {:error, %Import.Failure{} = failure} =
-               Import.import_files(organization.id, version.id, files)
+               StagedImport.import_files(organization.id, version.id, files)
 
       assert failure.reason_code == "row_invalid"
       assert failure.failed_file == "transfers.txt"
@@ -243,7 +244,7 @@ defmodule GtfsPlanner.Gtfs.TransferImportExportTest do
       files = [%{filename: "transfers.txt", content: transfers_csv}]
 
       assert {:error, %Import.Failure{} = failure} =
-               Import.import_files(organization.id, version.id, files)
+               StagedImport.import_files(organization.id, version.id, files)
 
       assert failure.reason_code == "row_invalid"
       assert failure.failed_file == "transfers.txt"
@@ -265,7 +266,7 @@ defmodule GtfsPlanner.Gtfs.TransferImportExportTest do
       files = [%{filename: "transfers.txt", content: transfers_csv}]
 
       assert {:error, %Import.Failure{} = failure} =
-               Import.import_files(organization.id, version.id, files)
+               StagedImport.import_files(organization.id, version.id, files)
 
       assert failure.reason_code == "constraint_violation"
       assert failure.failed_file == "transfers.txt"
@@ -288,7 +289,7 @@ defmodule GtfsPlanner.Gtfs.TransferImportExportTest do
       files = [%{filename: "transfers.txt", content: transfers_csv}]
 
       assert {:error, %Import.Failure{} = failure} =
-               Import.import_files(organization.id, second_version.id, files)
+               StagedImport.import_files(organization.id, second_version.id, files)
 
       assert failure.reason_code == "constraint_violation"
       assert failure.failed_file == "transfers.txt"

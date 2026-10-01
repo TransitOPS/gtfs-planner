@@ -3,29 +3,14 @@ defmodule GtfsPlanner.Gtfs do
   The Gtfs context.
   """
 
-  @structured_audit_entity_types [
-    :route_pattern,
-    "route_pattern",
-    :timed_pattern,
-    "timed_pattern",
-    :route_pattern_build,
-    "route_pattern_build",
-    :calendar,
-    "calendar",
-    :trip,
-    "trip",
-    :transfer,
-    "transfer",
-    :pathway_evolution,
-    "pathway_evolution"
-  ]
-
   import Ecto.Query, warn: false
+  import GtfsPlanner.Gtfs.Stations, only: [descendant_stop_ids_query: 3]
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.AlignmentInference
-  alias GtfsPlanner.Gtfs.AlignmentSegment
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.Area
   alias GtfsPlanner.Gtfs.AuditContext
@@ -36,7 +21,6 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.Calendars
-  alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.CatalogReadAdapter
   alias GtfsPlanner.Gtfs.Coordinates
@@ -50,7 +34,6 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.FareRule
   alias GtfsPlanner.Gtfs.FareTransferRule
   alias GtfsPlanner.Gtfs.FeedInfo
-  alias GtfsPlanner.Gtfs.FeedSettings
   alias GtfsPlanner.Gtfs.FloorplanTransform
   alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.Level
@@ -79,7 +62,6 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.StationEditingStatus
   alias GtfsPlanner.Gtfs.StationJournal
   alias GtfsPlanner.Gtfs.StationJournal.Scope
-  alias GtfsPlanner.Gtfs.StationNaming
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopArea
   alias GtfsPlanner.Gtfs.StopLevel
@@ -90,10 +72,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Transfers
   alias GtfsPlanner.Gtfs.Translation
   alias GtfsPlanner.Gtfs.Trip
-  alias GtfsPlanner.Validations.WalkabilityTest
   alias GtfsPlanner.Versions
-
-  require Logger
 
   @default_catalog_read_adapter CatalogReadAdapter.Repo
   @default_reviewed_apply_transaction ReviewedApplyTransaction.Repo
@@ -584,7 +563,7 @@ defmodule GtfsPlanner.Gtfs do
           Ecto.UUID.t(),
           DateTime.t() | String.t() | nil,
           AuditContext.t()
-        ) :: {:ok, Transfer.t()} | {:error, :not_found | :stale | :busy}
+        ) :: {:ok, Transfer.t()} | {:error, :forbidden | :not_found | :stale | :busy}
   def delete_general_transfer(id, expected_updated_at, %AuditContext{} = audit) do
     Transfers.delete_general(id, expected_updated_at, audit)
   end
@@ -606,7 +585,8 @@ defmodule GtfsPlanner.Gtfs do
   retry up to three attempts before `:busy` (R8).
   """
   @spec delete_general_transfers([{Ecto.UUID.t(), DateTime.t() | String.t()}], AuditContext.t()) ::
-          {:ok, pos_integer()} | {:error, :invalid_input | :not_found | :stale | :busy}
+          {:ok, pos_integer()}
+          | {:error, :invalid_input | :forbidden | :not_found | :stale | :busy}
   def delete_general_transfers(pairs, %AuditContext{} = audit) do
     Transfers.delete_general_many(pairs, audit)
   end
@@ -1123,12 +1103,12 @@ defmodule GtfsPlanner.Gtfs do
     do: StationJournal.list_entries(scope, opts)
 
   @spec close_journal_entry(Scope.t(), Ecto.UUID.t()) ::
-          {:ok, JournalEntry.t()} | {:error, :not_found | Ecto.Changeset.t()}
+          {:ok, JournalEntry.t()} | {:error, :not_found | :forbidden | Ecto.Changeset.t()}
   def close_journal_entry(%Scope{} = scope, entry_id),
     do: StationJournal.close_entry(scope, entry_id)
 
   @spec reopen_journal_entry(Scope.t(), Ecto.UUID.t()) ::
-          {:ok, JournalEntry.t()} | {:error, :not_found | Ecto.Changeset.t()}
+          {:ok, JournalEntry.t()} | {:error, :not_found | :forbidden | Ecto.Changeset.t()}
   def reopen_journal_entry(%Scope{} = scope, entry_id),
     do: StationJournal.reopen_entry(scope, entry_id)
 
@@ -1143,11 +1123,6 @@ defmodule GtfsPlanner.Gtfs do
         ) :: {:ok, GtfsPlanner.Gtfs.JournalPhoto.t()} | {:error, atom() | Ecto.Changeset.t()}
   def create_journal_photo(%Scope{} = scope, attrs, upload),
     do: StationJournal.create_photo(scope, attrs, upload)
-
-  @spec refresh_pin_coordinates_for_stop_level(StopLevel.t(), pos_integer(), pos_integer()) ::
-          {:ok, non_neg_integer()} | {:error, term()}
-  def refresh_pin_coordinates_for_stop_level(%StopLevel{} = stop_level, image_w, image_h),
-    do: StationJournal.refresh_pin_coordinates_for_stop_level(stop_level, image_w, image_h)
 
   @doc """
   Normalizes a route status filter to its canonical URL presentation.
@@ -1259,78 +1234,6 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Creates a route.
-
-  ## Examples
-
-      iex> create_route(%{organization_id: org_id, gtfs_version_id: version_id, route_id: "R1", route_type: 3, route_short_name: "1"})
-      {:ok, %Route{}}
-
-      iex> create_route(%{route_id: nil})
-      {:error, %Ecto.Changeset{}}
-  """
-  def create_route(attrs \\ %{}) do
-    %Route{}
-    |> Route.changeset(attrs)
-    |> Repo.insert()
-  end
-
-  @doc """
-  Creates a route in a GTFS version, resolving its agency under the version row lock (R4,
-  INV-1).
-
-  `organization_id` and `gtfs_version_id` scope the insert and are never taken from
-  `attrs`; `attrs` carry the route fields and may name an `agency_id`, as a string or atom
-  key. One transaction share-locks the published version row and resolves the agency
-  through `GtfsPlanner.Gtfs.FeedSettings.lock_agency_for_reference!/3`, so the insert
-  serializes against an agency deletion, creation or timezone change for the same version
-  (INV-2, AC-26) and a route can never commit against an agency that no longer exists.
-
-  ## Returns
-
-  - `{:ok, %Route{}}` with the resolved `agency_id`
-  - `{:error, %Ecto.Changeset{}}` for attrs the route changeset refuses
-  - `{:error, :not_found}` when the scope is not a published version of the organization
-  - `{:error, :agency_required}` when the version has no agency
-  - `{:error, :agency_not_found}` when the choice is not one of the version's agencies
-
-  ## Examples
-
-      iex> create_version_route(org_id, version_id, %{route_id: "R1", route_type: 3, route_short_name: "1"})
-      {:ok, %Route{}}
-  """
-  @spec create_version_route(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
-          {:ok, Route.t()}
-          | {:error, Ecto.Changeset.t() | :not_found | :agency_required | :agency_not_found}
-  def create_version_route(organization_id, gtfs_version_id, attrs) when is_map(attrs) do
-    # String keys, so the scope and the resolved agency override any key form the caller
-    # sent and the changeset reads one shape.
-    attrs = Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
-
-    Repo.transaction(fn ->
-      agency_id =
-        FeedSettings.lock_agency_for_reference!(
-          organization_id,
-          gtfs_version_id,
-          attrs["agency_id"]
-        )
-
-      attrs
-      |> Map.merge(%{
-        "organization_id" => organization_id,
-        "gtfs_version_id" => gtfs_version_id,
-        "agency_id" => agency_id
-      })
-      |> then(&Route.changeset(%Route{}, &1))
-      |> Repo.insert()
-      |> case do
-        {:ok, route} -> route
-        {:error, changeset} -> Repo.rollback(changeset)
-      end
-    end)
-  end
-
-  @doc """
   Reads the version-scoped agency options and mode counts the create drawer
   presents (R3, R2).
 
@@ -1363,8 +1266,7 @@ defmodule GtfsPlanner.Gtfs do
 
   See `GtfsPlanner.Gtfs.Routes.create_editor_route/3` for the attempt contract
   and error surface. The public facade signature is the seam-`S-2` contract:
-  the insert stays inside `Routes.create_editor_route/3` until package 13's
-  `Gtfs.create_version_route/3` lands.
+  the insert stays inside `Routes.create_editor_route/3`.
   """
   @spec create_editor_route(map(), map(), AuditContext.t()) :: {:ok, map()} | {:error, term()}
   def create_editor_route(attrs, attempt, %AuditContext{} = audit_context),
@@ -1751,36 +1653,6 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Gets a single level.
-
-  Returns nil if the Level does not exist.
-
-  ## Examples
-
-      iex> get_level(id)
-      %Level{}
-
-      iex> get_level(Ecto.UUID.generate())
-      nil
-  """
-  def get_level(id), do: Repo.get(Level, id)
-
-  @doc """
-  Gets a single level.
-
-  Raises `Ecto.NoResultsError` if the Level does not exist.
-
-  ## Examples
-
-      iex> get_level!(id)
-      %Level{}
-
-      iex> get_level!(Ecto.UUID.generate())
-      ** (Ecto.NoResultsError)
-  """
-  def get_level!(id), do: Repo.get!(Level, id)
-
-  @doc """
   Gets a level by its level_id within an organization and GTFS version.
 
   Returns nil if the level does not exist.
@@ -1800,154 +1672,6 @@ defmodule GtfsPlanner.Gtfs do
           l.level_id == ^level_id
     )
     |> Repo.one()
-  end
-
-  @doc """
-  Creates a level.
-
-  ## Examples
-
-      iex> create_level(%{organization_id: org_id, gtfs_version_id: version_id, level_id: "L1", level_index: 0.0})
-      {:ok, %Level{}}
-
-      iex> create_level(%{level_id: nil})
-      {:error, %Ecto.Changeset{}}
-  """
-  def create_level(attrs \\ %{}) do
-    %Level{}
-    |> Level.changeset(attrs)
-    |> Repo.insert()
-    |> broadcast([:levels, :created])
-  end
-
-  @doc """
-  Updates a level.
-
-  ## Examples
-
-      iex> update_level(level, %{level_name: "Ground Floor"})
-      {:ok, %Level{}}
-
-      iex> update_level(level, %{level_id: nil})
-      {:error, %Ecto.Changeset{}}
-  """
-  def update_level(%Level{} = level, attrs) do
-    level
-    |> Level.changeset(attrs)
-    |> Repo.update()
-    |> broadcast([:levels, :updated])
-  end
-
-  @doc """
-  Updates a level, cascading level_id changes to all referencing entities
-  within the same organization and GTFS version.
-
-  When level_id is unchanged, delegates to update_level/2.
-  """
-  def update_level_with_cascade(%Level{} = level, attrs) do
-    new_level_id = attrs[:level_id] || attrs["level_id"]
-
-    if new_level_id == level.level_id or is_nil(new_level_id) do
-      update_level(level, attrs)
-    else
-      mapping = %{level.level_id => new_level_id}
-      now = DateTime.utc_now()
-
-      multi =
-        Ecto.Multi.new()
-        |> Ecto.Multi.run(:update_level, fn _repo, _changes ->
-          level
-          |> Level.changeset(attrs)
-          |> Repo.update()
-        end)
-        |> Ecto.Multi.run(:cascade_references, fn repo, _changes ->
-          {:ok,
-           update_level_id_references(
-             repo,
-             mapping,
-             level.organization_id,
-             level.gtfs_version_id,
-             now
-           )}
-        end)
-
-      case Repo.transaction(multi) do
-        {:ok, %{update_level: updated_level}} ->
-          broadcast({:ok, updated_level}, [:levels, :updated])
-
-        {:error, :update_level, changeset, _changes} ->
-          {:error, changeset}
-
-        {:error, _step, reason, _changes} ->
-          {:error, reason}
-      end
-    end
-  end
-
-  @doc """
-  Deletes a stop_level association.
-  """
-  def delete_stop_level(%StopLevel{} = stop_level) do
-    Repo.delete(stop_level)
-    |> broadcast([:stop_levels, :deleted])
-  end
-
-  @doc """
-  Updates a stop_level's diagram filename.
-  """
-  def update_stop_level_diagram(%StopLevel{} = stop_level, filename) do
-    stop_level
-    |> StopLevel.changeset(%{
-      diagram_filename: filename,
-      scale_point_a: nil,
-      scale_point_b: nil,
-      scale_distance_meters: nil,
-      scale_meters_per_unit: nil
-    })
-    |> Repo.update()
-    |> broadcast([:stop_levels, :updated])
-  end
-
-  @doc """
-  Updates a stop_level's diagram calibration.
-  """
-  def update_stop_level_scale(%StopLevel{} = stop_level, attrs) do
-    stop_level
-    |> StopLevel.scale_changeset(attrs)
-    |> Repo.update()
-    |> broadcast([:stop_levels, :updated])
-  end
-
-  @doc """
-  Updates a stop_level's floorplan alignment.
-  """
-  def update_stop_level_alignment(%StopLevel{} = stop_level, attrs) do
-    stop_level
-    |> StopLevel.alignment_changeset(attrs)
-    |> Repo.update()
-    |> broadcast([:stop_levels, :updated])
-  end
-
-  @doc """
-  Saves a stop_level's floorplan alignment.
-  """
-  def save_stop_level_alignment(%StopLevel{} = stop_level, attrs) do
-    stop_level
-    |> StopLevel.alignment_changeset(attrs)
-    |> Repo.update()
-    |> broadcast([:stop_levels, :updated])
-  end
-
-  @doc """
-  Clears a stop_level's floorplan alignment.
-  """
-  def clear_stop_level_alignment(%StopLevel{} = stop_level) do
-    update_stop_level_alignment(stop_level, %{
-      floorplan_center_lat: nil,
-      floorplan_center_lon: nil,
-      floorplan_scale_mpp: nil,
-      floorplan_rotation_deg: nil
-    })
   end
 
   @doc """
@@ -2308,11 +2032,6 @@ defmodule GtfsPlanner.Gtfs do
 
   defp publish_preview_result({:ok, result}) do
     %{active_stop_level: stop_level, changed_stops: changed_stops, rows: rows} = result
-    broadcast({:ok, stop_level}, [:stop_levels, :updated])
-
-    Enum.each(changed_stops, fn stop ->
-      broadcast({:ok, stop}, [:stops, :updated])
-    end)
 
     {:ok,
      %{
@@ -2624,17 +2343,10 @@ defmodule GtfsPlanner.Gtfs do
   defp publish_reviewed_result({:ok, result}) do
     %{
       active_stop_level: stop_level,
-      changed_stops: changed_stops,
       updated_stop_count: updated_count,
       unchanged_count: unchanged_count,
       unplaced_count: unplaced_count
     } = result
-
-    broadcast({:ok, stop_level}, [:stop_levels, :updated])
-
-    Enum.each(changed_stops, fn stop ->
-      broadcast({:ok, stop}, [:stops, :updated])
-    end)
 
     {:ok,
      %{
@@ -2657,61 +2369,111 @@ defmodule GtfsPlanner.Gtfs do
          expected_fingerprint,
          %AuditContext{} = audit_ctx
        ) do
+    Authorization.lock_editor!(audit_ctx)
+
     # Reviewed alignment rewrites child stop geometry, a combination input, so the scoped version
     # share lock is taken before the stop-level `FOR UPDATE`, the fingerprint comparison and every
     # child update. The surrounding serializable transaction and its whole-transaction retry stay
     # exactly as they were.
-    Versions.lock_for_input_write!(audit_ctx.organization_id, audit_ctx.gtfs_version_id)
+    version = Versions.lock_for_input_write!(audit_ctx.organization_id, audit_ctx.gtfs_version_id)
 
-    case load_stop_level_for_update_scoped(stop_level_id, audit_ctx) do
+    if version.publication_status != "published" or is_nil(version.published_at),
+      do: Repo.rollback(:not_found)
+
+    station =
+      from(s in Stop,
+        where:
+          s.organization_id == ^audit_ctx.organization_id and
+            s.gtfs_version_id == ^audit_ctx.gtfs_version_id and
+            s.stop_id == ^audit_ctx.station_stop_id and s.location_type == 1,
+        lock: "FOR SHARE"
+      )
+      |> Repo.one()
+
+    if is_nil(station), do: Repo.rollback(:not_found)
+
+    case load_stop_level_for_update_scoped(stop_level_id, audit_ctx, station.id) do
       nil ->
         Repo.rollback(:not_found)
 
       %StopLevel{} = stop_level ->
-        with {:ok, projection} <-
-               build_alignment_projection(
-                 stop_level.id,
-                 proposed_alignment,
-                 image_w,
-                 image_h,
-                 lock: "FOR UPDATE"
-               ),
-             :ok <- verify_review_fingerprint(projection, expected_fingerprint),
-             {:ok, updated_stop_level} <-
-               stop_level
-               |> StopLevel.alignment_changeset(proposed_alignment)
-               |> Repo.update(),
-             {:ok, changed_stops} <-
-               persist_changed_stops_with_audit(
-                 projection,
-                 audit_ctx
-               ),
-             {:ok, _pin_count} <-
-               StationJournal.refresh_pin_coordinates_for_stop_level(
-                 updated_stop_level,
-                 image_w,
-                 image_h
-               ) do
-          %{
-            active_stop_level: updated_stop_level,
-            changed_stops: changed_stops,
-            rows: projection.rows,
-            updated_stop_count: length(changed_stops),
-            unchanged_count: projection.unchanged_count,
-            unplaced_count: projection.unplaced_count
-          }
-        else
-          {:error, reason} -> Repo.rollback(reason)
-        end
+        write_reviewed_alignment(
+          stop_level,
+          proposed_alignment,
+          image_w,
+          image_h,
+          expected_fingerprint,
+          audit_ctx
+        )
     end
   end
 
-  defp load_stop_level_for_update_scoped(stop_level_id, %AuditContext{} = audit_ctx) do
+  defp write_reviewed_alignment(
+         %StopLevel{} = stop_level,
+         proposed_alignment,
+         image_w,
+         image_h,
+         expected_fingerprint,
+         %AuditContext{} = audit_ctx
+       ) do
+    alignment_changeset = StopLevel.alignment_changeset(stop_level, proposed_alignment)
+
+    alignment_changeset =
+      if alignment_changeset.changes == %{} do
+        Ecto.Changeset.force_change(alignment_changeset, :updated_at, DateTime.utc_now())
+      else
+        alignment_changeset
+      end
+
+    with {:ok, projection} <-
+           build_alignment_projection(
+             stop_level.id,
+             proposed_alignment,
+             image_w,
+             image_h,
+             lock: "FOR UPDATE"
+           ),
+         :ok <- verify_review_fingerprint(projection, expected_fingerprint),
+         {:ok, updated_stop_level} <-
+           Repo.update(alignment_changeset),
+         {:ok, _alignment_log} <-
+           Audit.record_change_in_transaction(
+             audit_ctx,
+             :stop_level,
+             stop_level,
+             "updated",
+             alignment_changeset.changes
+           ),
+         {:ok, changed_stops} <-
+           persist_changed_stops_with_audit(
+             projection,
+             audit_ctx
+           ),
+         {:ok, _pin_count} <-
+           StationJournal.refresh_pin_coordinates_for_stop_level(
+             updated_stop_level,
+             image_w,
+             image_h
+           ) do
+      %{
+        active_stop_level: updated_stop_level,
+        changed_stops: changed_stops,
+        rows: projection.rows,
+        updated_stop_count: length(changed_stops),
+        unchanged_count: projection.unchanged_count,
+        unplaced_count: projection.unplaced_count
+      }
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp load_stop_level_for_update_scoped(stop_level_id, %AuditContext{} = audit_ctx, station_id) do
     from(sl in StopLevel,
       where:
         sl.id == ^stop_level_id and
           sl.organization_id == ^audit_ctx.organization_id and
-          sl.gtfs_version_id == ^audit_ctx.gtfs_version_id,
+          sl.gtfs_version_id == ^audit_ctx.gtfs_version_id and sl.stop_id == ^station_id,
       lock: "FOR UPDATE"
     )
     |> Repo.one()
@@ -2769,81 +2531,6 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Applies the saved floorplan alignment to persist `stop_lat`/`stop_lon` on every
-  eligible child stop of `stop_level`.
-
-  Derives coordinates via `derive_child_stop_coords/3`, then updates all derived
-  stops atomically in a single `Repo.transaction`. Each successful update emits a
-  `[:stops, :updated]` broadcast. A single failed changeset rolls back every write
-  in the call.
-
-  Returns `{:ok, count}` with the number of updated stops, `{:ok, 0}` when no
-  eligible stops exist, or `{:error, reason}` on derivation or persistence failure.
-  """
-  @spec apply_alignment_to_child_stops(StopLevel.t(), pos_integer(), pos_integer()) ::
-          {:ok, non_neg_integer()}
-          | {:error, :alignment_missing | :invalid_image_dims | {:transform, atom()} | term()}
-  def apply_alignment_to_child_stops(%StopLevel{} = stop_level, image_w, image_h) do
-    with {:ok, derived} <- derive_child_stop_coords(stop_level, image_w, image_h) do
-      persist_derived_coords(derived, stop_level)
-    end
-  end
-
-  defp persist_derived_coords([], _stop_level), do: {:ok, 0}
-
-  defp persist_derived_coords(derived, %StopLevel{} = stop_level) when is_list(derived) do
-    transaction_result =
-      Repo.transaction(fn ->
-        # Derived child coordinates are a reviewed combination input, so the version share lock is
-        # the first statement of this transaction, before the child stop rows are read or updated.
-        Versions.lock_for_input_write!(stop_level.organization_id, stop_level.gtfs_version_id)
-
-        Enum.map(derived, fn entry ->
-          case update_derived_stop_coords(entry) do
-            {:ok, updated_stop} -> updated_stop
-            {:error, reason} -> Repo.rollback(reason)
-          end
-        end)
-      end)
-
-    case transaction_result do
-      {:ok, updated_stops} ->
-        Enum.each(updated_stops, fn stop ->
-          broadcast({:ok, stop}, [:stops, :updated])
-        end)
-
-        {:ok, length(updated_stops)}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp update_derived_stop_coords(%{stop: %Stop{} = stop, new_lat: lat, new_lon: lon}) do
-    stop
-    |> Stop.changeset(%{
-      stop_lat: Decimal.from_float(lat),
-      stop_lon: Decimal.from_float(lon)
-    })
-    |> Repo.update()
-  end
-
-  defp update_derived_stop_coords(%{stop_id: stop_id, lat: lat, lon: lon}) do
-    case Repo.get(Stop, stop_id) do
-      nil ->
-        {:error, :stop_not_found}
-
-      %Stop{} = stop ->
-        stop
-        |> Stop.changeset(%{
-          stop_lat: Decimal.from_float(lat),
-          stop_lon: Decimal.from_float(lon)
-        })
-        |> Repo.update()
-    end
-  end
-
-  @doc """
   Infers floorplan alignment for `stop_level` from anchored child stops and
   eligible cross-level elevator pathways.
 
@@ -2892,45 +2579,6 @@ defmodule GtfsPlanner.Gtfs do
       {:error, :invalid_image_dims} -> {:error, :invalid_input}
       other -> other
     end
-  end
-
-  @doc """
-  Infers and persists floorplan alignment for `stop_level`.
-
-  Calls `infer_level_alignment/3` and, on success, writes the inferred
-  `floorplan_*` fields via `StopLevel.alignment_changeset/2`. Emits a
-  `[:stop_levels, :updated]` broadcast only on successful update.
-  """
-  @spec save_inferred_level_alignment(StopLevel.t(), pos_integer(), pos_integer()) ::
-          {:ok, StopLevel.t(), map()}
-          | {:error,
-             :alignment_prerequisites_missing
-             | :insufficient_anchors
-             | :degenerate_geometry
-             | :high_residual
-             | :invalid_input
-             | :not_found
-             | Ecto.Changeset.t()}
-  def save_inferred_level_alignment(%StopLevel{} = stop_level, image_w, image_h) do
-    with {:ok, %{inferred_alignment: inferred} = result} <-
-           infer_level_alignment(stop_level, image_w, image_h),
-         {:ok, updated} <- persist_inferred_alignment(stop_level, inferred) do
-      broadcast({:ok, updated}, [:stop_levels, :updated])
-      {:ok, updated, result}
-    end
-  end
-
-  def save_inferred_level_alignment(nil, _image_w, _image_h), do: {:error, :not_found}
-
-  defp persist_inferred_alignment(%StopLevel{} = stop_level, inferred) do
-    stop_level
-    |> StopLevel.alignment_changeset(%{
-      floorplan_center_lat: inferred.center_lat,
-      floorplan_center_lon: inferred.center_lon,
-      floorplan_scale_mpp: inferred.scale_mpp,
-      floorplan_rotation_deg: inferred.rotation_deg
-    })
-    |> Repo.update()
   end
 
   defp direct_candidates_for(%StopLevel{} = stop_level) do
@@ -3138,67 +2786,6 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Saves stop-level calibration and recalculates the pathway lengths derived from the
-  previous scale atomically, recording a change log for each recalculated pathway.
-
-  Returns `{:ok, %{stop_level:, recalculated_count:, kept_count:}}`; see
-  `recalculate_pathway_lengths_for_level/7` for which lengths are kept.
-  """
-  def save_scale_and_recalculate(
-        %StopLevel{} = stop_level,
-        scale_attrs,
-        organization_id,
-        gtfs_version_id,
-        level_id,
-        parent_station_id,
-        %AuditContext{} = audit_ctx
-      ) do
-    transaction_result =
-      Repo.transaction(fn ->
-        with {:ok, updated_stop_level} <-
-               stop_level
-               |> StopLevel.scale_changeset(scale_attrs)
-               |> Repo.update(),
-             {:ok, counts} <-
-               recalculate_pathway_lengths_for_level(
-                 stop_level,
-                 updated_stop_level,
-                 organization_id,
-                 gtfs_version_id,
-                 level_id,
-                 parent_station_id,
-                 audit_ctx
-               ) do
-          Map.put(counts, :stop_level, updated_stop_level)
-        else
-          {:error, reason} ->
-            Repo.rollback(reason)
-        end
-      end)
-
-    case transaction_result do
-      {:ok, result} ->
-        broadcast({:ok, result.stop_level}, [:stop_levels, :updated])
-        {:ok, result}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  @doc """
-  Clears a stop_level's diagram calibration.
-  """
-  def clear_stop_level_scale(%StopLevel{} = stop_level) do
-    update_stop_level_scale(stop_level, %{
-      scale_point_a: nil,
-      scale_point_b: nil,
-      scale_distance_meters: nil,
-      scale_meters_per_unit: nil
-    })
-  end
-
-  @doc """
   Calculates a pathway length in meters from two stops and a calibrated stop_level.
   Returns nil when calibration or coordinates are unavailable.
   """
@@ -3220,22 +2807,6 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   def calculate_pathway_length(_, _, _), do: nil
-
-  @doc """
-  Deletes a level.
-
-  ## Examples
-
-      iex> delete_level(level)
-      {:ok, %Level{}}
-
-      iex> delete_level(level)
-      {:error, %Ecto.Changeset{}}
-  """
-  def delete_level(%Level{} = level) do
-    Repo.delete(level)
-    |> broadcast([:levels, :deleted])
-  end
 
   @doc """
   Returns an `%Ecto.Changeset{}` for tracking level changes.
@@ -3420,34 +2991,17 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Gets a single stop.
+  Gets a stop by UUID only within the selected organization and GTFS version.
 
-  Returns nil if the Stop does not exist.
-
-  ## Examples
-
-      iex> get_stop(id)
-      %Stop{}
-
-      iex> get_stop(Ecto.UUID.generate())
-      nil
+  Returns nil when the stop is missing or outside that scope.
   """
-  def get_stop(id), do: Repo.get(Stop, id)
-
-  @doc """
-  Gets a single stop.
-
-  Raises `Ecto.NoResultsError` if the Stop does not exist.
-
-  ## Examples
-
-      iex> get_stop!(id)
-      %Stop{}
-
-      iex> get_stop!(Ecto.UUID.generate())
-      ** (Ecto.NoResultsError)
-  """
-  def get_stop!(id), do: Repo.get!(Stop, id)
+  def get_stop_by_id(organization_id, gtfs_version_id, id) do
+    Repo.get_by(Stop,
+      id: id,
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
+    )
+  end
 
   @doc """
   Gets a stop by its stop_id within an organization and GTFS version.
@@ -3540,32 +3094,33 @@ defmodule GtfsPlanner.Gtfs do
 
   @doc """
   Creates or replaces the active editing status for a station.
+
+  The editor is the audit context's actor, never a caller-supplied user. Their current
+  editor membership is read inside the transaction, before the station advisory lock, so
+  access revoked after the page mounted returns `{:error, :forbidden}` with no row change
+  and no broadcast.
   """
-  @spec set_station_editing_status(Ecto.UUID.t(), Ecto.UUID.t(), Stop.t(), Accounts.User.t()) ::
-          {:ok, StationEditingStatus.t()} | {:error, Ecto.Changeset.t()}
-  def set_station_editing_status(
-        organization_id,
-        gtfs_version_id,
-        %Stop{} = station,
-        %Accounts.User{} = user
-      ) do
+  @spec set_station_editing_status(AuditContext.t(), Stop.t()) ::
+          {:ok, StationEditingStatus.t()} | {:error, :forbidden | Ecto.Changeset.t()}
+  def set_station_editing_status(%AuditContext{} = audit, %Stop{} = station) do
     started_at = DateTime.utc_now()
 
     attrs = %{
-      organization_id: organization_id,
-      gtfs_version_id: gtfs_version_id,
+      organization_id: audit.organization_id,
+      gtfs_version_id: audit.gtfs_version_id,
       station_id: station.id,
-      user_id: user.id,
+      user_id: audit.actor_id,
       started_at: started_at
     }
 
     Repo.transaction(fn ->
-      lock_station_editing_status!(organization_id, gtfs_version_id, station.id)
+      Authorization.lock_editor!(audit)
+      lock_station_editing_status!(audit.organization_id, audit.gtfs_version_id, station.id)
 
       %StationEditingStatus{}
       |> StationEditingStatus.changeset(attrs)
       |> Repo.insert(
-        on_conflict: [set: [user_id: user.id, started_at: started_at]],
+        on_conflict: [set: [user_id: audit.actor_id, started_at: started_at]],
         conflict_target: [:organization_id, :gtfs_version_id, :station_id],
         returning: true
       )
@@ -3586,29 +3141,36 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Clears the active station editing status for an organization, GTFS version, and station.
+  Clears the active station editing status for the audit context's organization, GTFS
+  version, and the given station.
+
+  Any current editor of the organization may clear a teammate's status. The editor
+  membership is read inside the transaction, before the station advisory lock, so
+  revoked access returns `{:error, :forbidden}` with no row change and no broadcast.
 
   Returns `:ok` on success. A failed transaction or a lost database connection
   returns `{:error, reason}` instead of crashing, so callers can preserve the
   prior status and offer an in-flow retry.
   """
-  @spec clear_station_editing_status(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
-          :ok | {:error, term()}
-  def clear_station_editing_status(organization_id, gtfs_version_id, station_id) do
+  @spec clear_station_editing_status(AuditContext.t(), Ecto.UUID.t()) ::
+          :ok | {:error, :forbidden | term()}
+  def clear_station_editing_status(%AuditContext{} = audit, station_id) do
     Repo.transaction(fn ->
-      lock_station_editing_status!(organization_id, gtfs_version_id, station_id)
+      Authorization.lock_editor!(audit)
+      lock_station_editing_status!(audit.organization_id, audit.gtfs_version_id, station_id)
 
       from(s in StationEditingStatus,
         where:
-          s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+          s.organization_id == ^audit.organization_id and
+            s.gtfs_version_id == ^audit.gtfs_version_id and
             s.station_id == ^station_id
       )
       |> Repo.delete_all()
 
       :ok =
         broadcast_station_editing_status(
-          organization_id,
-          gtfs_version_id,
+          audit.organization_id,
+          audit.gtfs_version_id,
           station_id,
           nil
         )
@@ -3925,94 +3487,12 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Creates a stop.
-
-  ## Examples
-
-      iex> create_stop(%{organization_id: org_id, gtfs_version_id: version_id, stop_id: "stop_123", stop_name: "Central Station"})
-      {:ok, %Stop{}}
-
-      iex> create_stop(%{stop_id: nil})
-      {:error, %Ecto.Changeset{}}
-  """
-  def create_stop(attrs \\ %{}) do
-    %Stop{}
-    |> Stop.changeset(attrs)
-    |> insert_with_input_write_lock()
-    |> broadcast([:stops, :created])
-  end
-
-  @doc """
   Creates a stop for import workflows using permissive parent/level validation.
   """
   def import_create_stop(attrs \\ %{}) do
     %Stop{}
     |> Stop.import_changeset(attrs)
     |> insert_with_input_write_lock()
-    |> broadcast([:stops, :created])
-  end
-
-  @doc """
-  Updates a stop.
-
-  ## Examples
-
-      iex> update_stop(stop, %{stop_name: "Updated Station Name"})
-      {:ok, %Stop{}}
-
-      iex> update_stop(stop, %{stop_id: nil})
-      {:error, %Ecto.Changeset{}}
-  """
-  def update_stop(%Stop{} = stop, attrs) do
-    stop
-    |> Stop.changeset(attrs)
-    |> update_with_input_write_lock()
-    |> broadcast([:stops, :updated])
-  end
-
-  @doc """
-  Updates a stop, cascading stop_id changes to all referencing records when the
-  stop_id is modified. Delegates to `update_stop/2` when the stop_id is unchanged.
-  """
-  def update_stop_with_cascade(%Stop{} = stop, attrs) do
-    new_stop_id = attrs[:stop_id] || attrs["stop_id"]
-
-    if new_stop_id == stop.stop_id or is_nil(new_stop_id) do
-      update_stop(stop, attrs)
-    else
-      mapping = %{stop.stop_id => new_stop_id}
-      now = DateTime.utc_now()
-
-      multi =
-        Ecto.Multi.new()
-        |> lock_input_write_multi(stop.organization_id, stop.gtfs_version_id)
-        |> Ecto.Multi.run(:update_stop, fn _repo, _changes ->
-          stop
-          |> Stop.changeset(attrs)
-          |> Repo.update()
-        end)
-        |> Ecto.Multi.run(:cascade_references, fn repo, _changes ->
-          {:ok,
-           update_stop_id_references(
-             repo,
-             mapping,
-             stop.organization_id,
-             stop.gtfs_version_id,
-             now
-           )}
-        end)
-
-      case Repo.transaction(multi) do
-        {:ok, %{update_stop: updated_stop}} ->
-          broadcast({:ok, updated_stop}, [:stops, :updated])
-
-        {:error, :update_stop, changeset, _changes} ->
-          {:error, changeset}
-
-        {:error, _step, reason, _changes} ->
-          {:error, reason}
-      end
-    end
   end
 
   @doc """
@@ -4022,190 +3502,6 @@ defmodule GtfsPlanner.Gtfs do
     stop
     |> Stop.import_changeset(attrs)
     |> update_with_input_write_lock()
-    |> broadcast([:stops, :updated])
-  end
-
-  @doc """
-  Deletes a stop.
-
-  ## Examples
-
-      iex> delete_stop(stop)
-      {:ok, %Stop{}}
-
-      iex> delete_stop(stop)
-      {:error, %Ecto.Changeset{}}
-  """
-  def delete_stop(%Stop{} = stop) do
-    delete_with_input_write_lock(stop)
-    |> broadcast([:stops, :deleted])
-  end
-
-  @doc """
-  Deletes a child stop and its connected pathways in a single transaction.
-
-  Scopes the lookup to the given organization, version, and parent station
-  to prevent cross-tenant mutations.
-  """
-  @spec delete_child_stop(integer(), integer(), String.t(), integer()) ::
-          {:ok, Stop.t()} | {:error, :not_found | term()}
-  def delete_child_stop(organization_id, gtfs_version_id, station_stop_id, stop_id) do
-    descendants = descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id)
-
-    stop_query =
-      from(s in Stop,
-        where:
-          s.id == ^stop_id and
-            s.organization_id == ^organization_id and
-            s.gtfs_version_id == ^gtfs_version_id and
-            s.stop_id in subquery(descendants)
-      )
-
-    case Repo.one(stop_query) do
-      nil ->
-        {:error, :not_found}
-
-      stop ->
-        with :ok <-
-               check_pathways_closure_free(organization_id, gtfs_version_id, stop.stop_id) do
-          delete_child_stop_transaction(organization_id, gtfs_version_id, stop)
-        end
-    end
-  end
-
-  # The delete and the pathway cleanup commit together under the published
-  # version's write lock; the composite-reference refusal becomes
-  # `:pathway_in_use` and any other constraint failure is re-raised.
-  defp delete_child_stop_transaction(organization_id, gtfs_version_id, stop) do
-    Ecto.Multi.new()
-    |> lock_input_write_multi(organization_id, gtfs_version_id)
-    |> delete_pathways_for_stop_multi(organization_id, gtfs_version_id, stop.stop_id)
-    |> Ecto.Multi.delete(:stop, stop)
-    |> Repo.transaction()
-    |> case do
-      {:ok, %{stop: deleted_stop}} ->
-        broadcast({:ok, deleted_stop}, [:stops, :deleted])
-
-      {:error, _step, reason, _changes} ->
-        {:error, reason}
-    end
-  rescue
-    e in [Ecto.ConstraintError, Postgrex.Error] ->
-      pathway_in_use_or_reraise(e, __STACKTRACE__)
-  end
-
-  @doc """
-  Removes a child stop from the station diagram by clearing its
-  `diagram_coordinate` and `level_id`, and deletes connected pathways
-  so no dangling references remain.
-
-  Records an "updated" change log for the stop and a "deleted" one for each
-  deleted pathway in the same transaction, so a failed log rolls the removal back.
-
-  Scopes the update to the given organization, version, and parent station
-  to prevent cross-tenant mutations.
-  """
-  @spec remove_child_stop_from_diagram(
-          integer(),
-          integer(),
-          String.t(),
-          integer(),
-          AuditContext.t()
-        ) :: {:ok, Stop.t()} | {:error, :not_found | term()}
-  def remove_child_stop_from_diagram(
-        organization_id,
-        gtfs_version_id,
-        station_stop_id,
-        stop_id,
-        %AuditContext{} = audit_ctx
-      ) do
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
-    descendants = descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id)
-
-    stop_query =
-      from(s in Stop,
-        where:
-          s.id == ^stop_id and
-            s.organization_id == ^organization_id and
-            s.gtfs_version_id == ^gtfs_version_id and
-            s.stop_id in subquery(descendants)
-      )
-
-    case Repo.one(stop_query) do
-      nil ->
-        {:error, :not_found}
-
-      stop ->
-        with :ok <-
-               check_pathways_closure_free(organization_id, gtfs_version_id, stop.stop_id) do
-          remove_child_stop_transaction(organization_id, gtfs_version_id, stop, now, audit_ctx)
-        end
-    end
-  end
-
-  # The diagram clearing and the pathway cleanup commit together, under the
-  # same composite-reference guard as the delete.
-  defp remove_child_stop_transaction(organization_id, gtfs_version_id, stop, now, audit_ctx) do
-    update_query = from(s in Stop, where: s.id == ^stop.id)
-
-    Ecto.Multi.new()
-    |> delete_pathways_for_stop_multi(organization_id, gtfs_version_id, stop.stop_id)
-    |> Ecto.Multi.update_all(:stop, update_query,
-      set: [diagram_coordinate: nil, level_id: nil, updated_at: now]
-    )
-    |> Ecto.Multi.run(:audit, fn _repo, %{pathways: {_count, deleted_pathways}} ->
-      record_diagram_removal(audit_ctx, stop, deleted_pathways)
-    end)
-    |> Repo.transaction()
-    |> case do
-      {:ok, _} ->
-        Repo.get!(Stop, stop.id)
-        |> then(&{:ok, &1})
-        |> broadcast([:stops, :updated])
-
-      {:error, _step, reason, _changes} ->
-        {:error, reason}
-    end
-  rescue
-    e in [Ecto.ConstraintError, Postgrex.Error] ->
-      pathway_in_use_or_reraise(e, __STACKTRACE__)
-  end
-
-  # A composite pathway reference refused the mutation while a closure still
-  # names the pathway; every other constraint failure keeps its own error.
-  defp pathway_in_use_or_reraise(exception, stacktrace) do
-    if closure_reference_violation?(exception) do
-      {:error, :pathway_in_use}
-    else
-      reraise(exception, stacktrace)
-    end
-  end
-
-  defp record_diagram_removal(audit_ctx, %Stop{} = stop, deleted_pathways) do
-    with {:ok, _} <- record_diagram_clear(audit_ctx, stop) do
-      record_pathway_deletions(audit_ctx, deleted_pathways)
-    end
-  end
-
-  # Skipped when the stop had neither a level nor a coordinate to clear, so History
-  # never shows an update with no changed fields.
-  defp record_diagram_clear(_audit_ctx, %Stop{level_id: nil, diagram_coordinate: nil}),
-    do: {:ok, :unchanged}
-
-  defp record_diagram_clear(audit_ctx, %Stop{} = stop) do
-    record_change_in_transaction(audit_ctx, :stop, stop, "updated", %{
-      diagram_coordinate: nil,
-      level_id: nil
-    })
-  end
-
-  defp record_pathway_deletions(audit_ctx, pathways) do
-    Enum.reduce_while(pathways, {:ok, :recorded}, fn pathway, acc ->
-      case record_change_in_transaction(audit_ctx, :pathway, pathway, "deleted") do
-        {:ok, _log} -> {:cont, acc}
-        {:error, _changeset} = error -> {:halt, error}
-      end
-    end)
   end
 
   @doc """
@@ -4439,78 +3735,6 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Removes a level association from a station while preserving the shared level record.
-
-  Stops of the station on that level lose their level and diagram coordinate, within the given
-  organization and version only. That covers direct children and the boarding areas under its
-  platforms, so no stop keeps a level the station no longer has. Returns `{:error, :not_found}`
-  when `level_id` is not a level of that organization and version.
-  """
-  def remove_level_from_station(
-        organization_id,
-        gtfs_version_id,
-        station_id,
-        station_stop_id,
-        level_id
-      ) do
-    Repo.transaction(fn ->
-      level =
-        Repo.get_by(Level,
-          id: level_id,
-          organization_id: organization_id,
-          gtfs_version_id: gtfs_version_id
-        ) || Repo.rollback(:not_found)
-
-      descendants = descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id)
-
-      from(s in Stop,
-        where:
-          s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
-            s.stop_id in subquery(descendants) and s.level_id == ^level.level_id
-      )
-      |> Repo.update_all(set: [level_id: nil, diagram_coordinate: nil])
-
-      with %StopLevel{} = stop_level <-
-             get_stop_level(organization_id, gtfs_version_id, station_id, level_id),
-           {:ok, _deleted_stop_level} <- Repo.delete(stop_level) do
-        :removed
-      else
-        nil -> :removed
-        {:error, reason} -> Repo.rollback(reason)
-      end
-    end)
-    |> case do
-      {:ok, :removed} -> {:ok, :removed}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  @doc """
-  Creates a stop_level association.
-  """
-  def create_stop_level(attrs \\ %{}) do
-    %StopLevel{}
-    |> StopLevel.changeset(attrs)
-    |> Repo.insert()
-    |> broadcast([:stop_levels, :created])
-  end
-
-  @doc """
-  Updates a stop's diagram coordinate.
-
-  ## Examples
-
-      iex> update_stop_diagram_coordinate(stop, %{x: 50.5, y: 25.0})
-      {:ok, %Stop{}}
-  """
-  def update_stop_diagram_coordinate(%Stop{} = stop, %{x: _, y: _} = coordinate) do
-    stop
-    |> Stop.changeset(%{diagram_coordinate: coordinate})
-    |> Repo.update()
-    |> broadcast([:stops, :updated])
-  end
-
-  @doc """
   Returns child stops for a parent station filtered by level.
 
   ## Examples
@@ -4603,7 +3827,7 @@ defmodule GtfsPlanner.Gtfs do
   Behaves like `list_pathways_for_level/4` but only includes pathways where
   the given `stop_id` is one of the endpoints. Both endpoints must still belong
   to the parent station descendant set and at least one endpoint must be on the
-  requested level. Endpoint stops and cross-level flags are populated the same
+  requested level. The endpoint stops and cross-level flags are populated the same
   way as `list_pathways_for_level/4`.
 
   ## Examples
@@ -4705,26 +3929,6 @@ defmodule GtfsPlanner.Gtfs do
     |> Repo.all()
   end
 
-  defp descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id) do
-    direct_child_ids =
-      from(s in Stop,
-        where:
-          s.organization_id == ^organization_id and
-            s.gtfs_version_id == ^gtfs_version_id and
-            s.parent_station == ^station_stop_id,
-        select: s.stop_id
-      )
-
-    from(s in Stop,
-      where:
-        s.organization_id == ^organization_id and
-          s.gtfs_version_id == ^gtfs_version_id and
-          (s.parent_station == ^station_stop_id or
-             (s.location_type == 4 and s.parent_station in subquery(direct_child_ids))),
-      select: s.stop_id
-    )
-  end
-
   @doc """
   Returns pathways where the given stop_id is either the from_stop or to_stop.
 
@@ -4763,41 +3967,6 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Creates a pathway.
-
-  ## Examples
-
-      iex> create_pathway(%{pathway_id: "P1", pathway_mode: 1, ...})
-      {:ok, %Pathway{}}
-  """
-  def create_pathway(attrs \\ %{}) do
-    %Pathway{}
-    |> Pathway.changeset(attrs)
-    |> Repo.insert()
-    |> broadcast([:pathways, :created])
-  end
-
-  @doc """
-  Gets a single pathway.
-
-  Raises `Ecto.NoResultsError` if the Pathway does not exist.
-
-  ## Examples
-
-      iex> get_pathway!(id)
-      %Pathway{}
-
-      iex> get_pathway!(Ecto.UUID.generate())
-      ** (Ecto.NoResultsError)
-  """
-  def get_pathway!(id), do: Repo.get!(Pathway, id)
-
-  @doc """
-  Gets a single pathway, returning `nil` if it does not exist.
-  """
-  def get_pathway(id), do: Repo.get(Pathway, id)
-
-  @doc """
   Gets a single pathway by its GTFS pathway_id within an org+version scope.
 
   Returns `nil` if no matching pathway exists.
@@ -4809,70 +3978,6 @@ defmodule GtfsPlanner.Gtfs do
           p.pathway_id == ^pathway_id
     )
     |> Repo.one()
-  end
-
-  @doc """
-  Gets a single pathway with manually populated from_stop and to_stop.
-
-  Raises `Ecto.NoResultsError` if the Pathway does not exist.
-
-  ## Examples
-
-      iex> get_pathway_with_stops!(id)
-      %Pathway{from_stop: %Stop{}, to_stop: %Stop{}}
-
-      iex> get_pathway_with_stops!(Ecto.UUID.generate())
-      ** (Ecto.NoResultsError)
-  """
-  def get_pathway_with_stops!(id) do
-    pathway = Repo.get!(Pathway, id)
-
-    from_stop =
-      get_stop_by_stop_id(pathway.organization_id, pathway.gtfs_version_id, pathway.from_stop_id)
-
-    to_stop =
-      get_stop_by_stop_id(pathway.organization_id, pathway.gtfs_version_id, pathway.to_stop_id)
-
-    %{pathway | from_stop: from_stop, to_stop: to_stop}
-  end
-
-  @doc """
-  Updates a pathway.
-
-  ## Examples
-
-      iex> update_pathway(pathway, %{pathway_mode: 2})
-      {:ok, %Pathway{}}
-
-      iex> update_pathway(pathway, %{pathway_mode: nil})
-      {:error, %Ecto.Changeset{}}
-  """
-  def update_pathway(%Pathway{} = pathway, attrs) do
-    pathway
-    |> Pathway.changeset(attrs)
-    |> Repo.update()
-    |> broadcast([:pathways, :updated])
-  end
-
-  @doc """
-  Deletes a pathway.
-
-  Returns `{:error, :pathway_in_use}` when a scheduled closure references the
-  pathway instead of raising the step-1 `ON DELETE RESTRICT` violation.
-
-  ## Examples
-
-      iex> delete_pathway(pathway)
-      {:ok, %Pathway{}}
-
-      iex> delete_pathway(pathway)
-      {:error, :pathway_in_use}
-  """
-  @spec delete_pathway(Pathway.t()) ::
-          {:ok, Pathway.t()} | {:error, :pathway_in_use | Ecto.Changeset.t()}
-  def delete_pathway(%Pathway{} = pathway) do
-    delete_pathway_record(pathway)
-    |> broadcast([:pathways, :deleted])
   end
 
   # Shared step-6 deletion guard (R1-F4): scoped closure precheck plus a
@@ -4945,23 +4050,6 @@ defmodule GtfsPlanner.Gtfs do
           a.agency_id == ^agency_id
     )
     |> Repo.one()
-  end
-
-  @doc """
-  Creates an agency.
-
-  ## Examples
-
-      iex> create_agency(%{organization_id: org_id, gtfs_version_id: version_id, agency_name: "Transit Agency"})
-      {:ok, %Agency{}}
-
-      iex> create_agency(%{agency_name: nil})
-      {:error, %Ecto.Changeset{}}
-  """
-  def create_agency(attrs \\ %{}) do
-    %Agency{}
-    |> Agency.changeset(attrs)
-    |> insert_with_input_write_lock()
   end
 
   # Display clock functions
@@ -5596,15 +4684,6 @@ defmodule GtfsPlanner.Gtfs do
     |> Repo.aggregate(:count)
   end
 
-  @doc """
-  Creates a trip.
-  """
-  def create_trip(attrs \\ %{}) do
-    %Trip{}
-    |> Trip.changeset(attrs)
-    |> insert_with_input_write_lock()
-  end
-
   # StopTime functions
 
   @doc """
@@ -5615,15 +4694,6 @@ defmodule GtfsPlanner.Gtfs do
       where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id
     )
     |> Repo.aggregate(:count)
-  end
-
-  @doc """
-  Creates a stop time.
-  """
-  def create_stop_time(attrs \\ %{}) do
-    %StopTime{}
-    |> StopTime.changeset(attrs)
-    |> insert_with_input_write_lock()
   end
 
   # Calendar functions
@@ -5967,54 +5037,6 @@ defmodule GtfsPlanner.Gtfs do
 
   defp paginate(query, _page, _per_page), do: paginate(query, 1, 25)
 
-  defp delete_pathways_for_stop_multi(multi, organization_id, gtfs_version_id, stop_id) do
-    pathway_query =
-      organization_id
-      |> pathways_for_stop_query(gtfs_version_id, stop_id)
-      |> select([p], p)
-
-    Ecto.Multi.delete_all(multi, :pathways, pathway_query)
-  end
-
-  # Step-6 precheck (R1-F4) shared by delete_child_stop/4 and
-  # remove_child_stop_from_diagram/4. It runs before the Multi because a
-  # failing Multi.run step rolls back the ambient outer transaction. A
-  # closure inserted after this check still surfaces as :pathway_in_use
-  # through the named-FK rescue at the outer boundary.
-  defp check_pathways_closure_free(organization_id, gtfs_version_id, stop_id) do
-    pathway_ids =
-      Repo.all(
-        from(p in Pathway,
-          where:
-            p.organization_id == ^organization_id and
-              p.gtfs_version_id == ^gtfs_version_id and
-              (p.from_stop_id == ^stop_id or p.to_stop_id == ^stop_id),
-          select: p.pathway_id
-        )
-      )
-
-    closure_exists? =
-      pathway_ids != [] and
-        Repo.exists?(
-          from(e in PathwayEvolution,
-            where:
-              e.organization_id == ^organization_id and
-                e.gtfs_version_id == ^gtfs_version_id and e.pathway_id in ^pathway_ids
-          )
-        )
-
-    if closure_exists?, do: {:error, :pathway_in_use}, else: :ok
-  end
-
-  defp pathways_for_stop_query(organization_id, gtfs_version_id, stop_id) do
-    from(p in Pathway,
-      where:
-        p.organization_id == ^organization_id and
-          p.gtfs_version_id == ^gtfs_version_id and
-          (p.from_stop_id == ^stop_id or p.to_stop_id == ^stop_id)
-    )
-  end
-
   defp pathway_closure_exists?(organization_id, gtfs_version_id, pathway_id) do
     from(e in PathwayEvolution,
       where:
@@ -6034,28 +5056,6 @@ defmodule GtfsPlanner.Gtfs do
         false
     end)
   end
-
-  # Matches only the step-1 closure FK after the owning transaction has
-  # rolled back. Any other constraint or driver error is reraised. The code
-  # allowlist covers both historic 23503 and the newer 23001
-  # restrict_violation that ON DELETE RESTRICT now reports.
-  defp closure_reference_violation?(%Ecto.ConstraintError{
-         type: :foreign_key,
-         constraint: constraint
-       }),
-       do: to_string(constraint) == "pathway_evolutions_pathway_fkey"
-
-  defp closure_reference_violation?(%Postgrex.Error{postgres: postgres}),
-    do:
-      Map.get(postgres, :constraint) == "pathway_evolutions_pathway_fkey" and
-        to_string(Map.get(postgres, :code)) in [
-          "restrict_violation",
-          "foreign_key_violation",
-          "23001",
-          "23503"
-        ]
-
-  defp closure_reference_violation?(_other), do: false
 
   # ============================================================================
   # Blocks
@@ -6117,8 +5117,7 @@ defmodule GtfsPlanner.Gtfs do
   reversed, so undoing is this same call and is refused by the same stale check.
   """
   @spec apply_run_moves(
-          Ecto.UUID.t(),
-          Ecto.UUID.t(),
+          AuditContext.t(),
           String.t(),
           [%{trip_id: Ecto.UUID.t(), from: String.t() | nil, to: String.t() | nil | :new}]
         ) ::
@@ -6129,12 +5128,13 @@ defmodule GtfsPlanner.Gtfs do
              undo: [GtfsPlanner.Gtfs.Runs.Plan.move()]
            }}
           | {:error,
-             :not_found
+             :forbidden
+             | :not_found
              | :stale_moves
              | {:invalid_trips, [Ecto.UUID.t()]}
              | {:invalid_run_id, term()}}
-  def apply_run_moves(organization_id, gtfs_version_id, day_type_key, moves) do
-    Runs.apply_moves(organization_id, gtfs_version_id, day_type_key, moves)
+  def apply_run_moves(%AuditContext{} = audit, day_type_key, moves) do
+    Runs.apply_moves(audit, day_type_key, moves)
   end
 
   @doc """
@@ -6159,14 +5159,11 @@ defmodule GtfsPlanner.Gtfs do
   that is not there answers `{:error, :unknown_run}` and a foreign or
   unpublished version `{:error, :not_found}`.
   """
-  @spec rename_run(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t(), String.t()) ::
+  @spec rename_run(AuditContext.t(), String.t(), String.t(), String.t()) ::
           {:ok, %{undo: [GtfsPlanner.Gtfs.Runs.Plan.move()]}}
-          | {:error,
-             :not_found
-             | :unknown_run
-             | Ecto.Changeset.t()}
-  def rename_run(organization_id, gtfs_version_id, day_type_key, old_id, new_id) do
-    Runs.rename_run(organization_id, gtfs_version_id, day_type_key, old_id, new_id)
+          | {:error, :forbidden | :not_found | :unknown_run | Ecto.Changeset.t()}
+  def rename_run(%AuditContext{} = audit, day_type_key, old_id, new_id) do
+    Runs.rename_run(audit, day_type_key, old_id, new_id)
   end
 
   @doc """
@@ -6178,11 +5175,11 @@ defmodule GtfsPlanner.Gtfs do
   organization's rows are never touched, and a day type with nothing to clean
   answers `{:ok, 0}`.
   """
-  @spec remove_run_orphans(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+  @spec remove_run_orphans(AuditContext.t(), String.t()) ::
           {:ok, non_neg_integer()}
-          | {:error, :not_found | {:unknown_day_type, list()}}
-  def remove_run_orphans(organization_id, gtfs_version_id, day_type_key) do
-    Runs.remove_orphans(organization_id, gtfs_version_id, day_type_key)
+          | {:error, :forbidden | :not_found | {:unknown_day_type, list()}}
+  def remove_run_orphans(%AuditContext{} = audit, day_type_key) do
+    Runs.remove_orphans(audit, day_type_key)
   end
 
   @doc """
@@ -6217,17 +5214,18 @@ defmodule GtfsPlanner.Gtfs do
   block attribute set cannot be applied to a day it was not computed for.
 
   The returned `undo` is the same list of moves reversed, so undoing is
-  `apply_run_moves/4` on it and is refused by the same per-trip rule.
+  `apply_run_moves/3` on it and is refused by the same per-trip rule.
   """
-  @spec apply_run_plan(Ecto.UUID.t(), Ecto.UUID.t(), GtfsPlanner.Gtfs.Runs.Plan.t()) ::
+  @spec apply_run_plan(AuditContext.t(), GtfsPlanner.Gtfs.Runs.Plan.t()) ::
           {:ok, %{changed_trips: non_neg_integer(), undo: [GtfsPlanner.Gtfs.Runs.Plan.move()]}}
           | {:error,
-             :not_found
+             :forbidden
+             | :not_found
              | :stale_plan
              | {:invalid_trips, [Ecto.UUID.t()]}
              | :write_failed}
-  def apply_run_plan(organization_id, gtfs_version_id, plan) do
-    Runs.apply_run_plan(organization_id, gtfs_version_id, plan)
+  def apply_run_plan(%AuditContext{} = audit, plan) do
+    Runs.apply_run_plan(audit, plan)
   end
 
   @doc """
@@ -6360,6 +5358,7 @@ defmodule GtfsPlanner.Gtfs do
           {:ok, GtfsPlanner.Gtfs.InSeatTransfers.result()}
           | {:error,
              :invalid_choice
+             | :forbidden
              | :not_found
              | :stale
              | {:refused, term()}
@@ -6395,6 +5394,7 @@ defmodule GtfsPlanner.Gtfs do
           | {:error,
              :invalid_input
              | :invalid_choice
+             | :forbidden
              | :too_many
              | :busy
              | {:audit_failed, term()}
@@ -6427,7 +5427,8 @@ defmodule GtfsPlanner.Gtfs do
           AuditContext.t()
         ) ::
           {:ok, pos_integer()}
-          | {:error, :invalid_input | :not_found | :stale | :busy | {:audit_failed, term()}}
+          | {:error,
+             :invalid_input | :forbidden | :not_found | :stale | :busy | {:audit_failed, term()}}
   def remove_in_seat_records(pairs, %AuditContext{} = audit) do
     InSeatTransfers.remove_records(pairs, audit)
   end
@@ -6480,10 +5481,10 @@ defmodule GtfsPlanner.Gtfs do
   Returns `{:error, :not_found}` when the version is unpublished or belongs to
   another organization, and `{:error, changeset}` when a value is rejected.
   """
-  @spec update_blocking_settings(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
-          {:ok, BlockingSetting.t()} | {:error, Ecto.Changeset.t() | :not_found}
-  def update_blocking_settings(organization_id, gtfs_version_id, attrs) do
-    Blocking.update_settings(organization_id, gtfs_version_id, attrs)
+  @spec update_blocking_settings(AuditContext.t(), map()) ::
+          {:ok, BlockingSetting.t()} | {:error, Ecto.Changeset.t() | :forbidden | :not_found}
+  def update_blocking_settings(%AuditContext{} = audit, attrs) do
+    Blocking.update_settings(audit, attrs)
   end
 
   @doc """
@@ -6521,10 +5522,10 @@ defmodule GtfsPlanner.Gtfs do
   Returns `{:error, :not_found}` when the version is unpublished or belongs to
   another organization, and `{:error, changeset}` when a value is rejected.
   """
-  @spec update_crew_settings(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
-          {:ok, Runs.crew()} | {:error, Ecto.Changeset.t() | :not_found}
-  def update_crew_settings(organization_id, gtfs_version_id, attrs) do
-    Runs.update_crew_settings(organization_id, gtfs_version_id, attrs)
+  @spec update_crew_settings(AuditContext.t(), map()) ::
+          {:ok, Runs.crew()} | {:error, Ecto.Changeset.t() | :forbidden | :not_found}
+  def update_crew_settings(%AuditContext{} = audit, attrs) do
+    Runs.update_crew_settings(audit, attrs)
   end
 
   @doc """
@@ -6551,10 +5552,10 @@ defmodule GtfsPlanner.Gtfs do
   stores nothing. The save takes `Blocking.lock_blocking!/1`, and a staging or
   foreign version is `{:error, :not_found}`.
   """
-  @spec update_route_operating_settings(Ecto.UUID.t(), Ecto.UUID.t(), [map()]) ::
-          :ok | {:error, :not_found | {:invalid, [map()]}}
-  def update_route_operating_settings(organization_id, gtfs_version_id, entries) do
-    Blocking.update_route_operating_settings(organization_id, gtfs_version_id, entries)
+  @spec update_route_operating_settings(AuditContext.t(), [map()]) ::
+          :ok | {:error, :forbidden | :not_found | {:invalid, [map()]}}
+  def update_route_operating_settings(%AuditContext{} = audit, entries) do
+    Blocking.update_route_operating_settings(audit, entries)
   end
 
   @doc """
@@ -6588,15 +5589,14 @@ defmodule GtfsPlanner.Gtfs do
   foreign version is `{:error, :not_found}`.
   """
   @spec put_deadhead_time(
-          Ecto.UUID.t(),
-          Ecto.UUID.t(),
+          AuditContext.t(),
           {String.t(), String.t()},
           non_neg_integer()
         ) ::
           {:ok, DeadheadTime.t()}
-          | {:error, :not_found | :invalid_ref | Ecto.Changeset.t()}
-  def put_deadhead_time(organization_id, gtfs_version_id, {from_ref, to_ref}, minutes) do
-    Blocking.put_deadhead_time(organization_id, gtfs_version_id, {from_ref, to_ref}, minutes)
+          | {:error, :forbidden | :not_found | :invalid_ref | Ecto.Changeset.t()}
+  def put_deadhead_time(%AuditContext{} = audit, {from_ref, to_ref}, minutes) do
+    Blocking.put_deadhead_time(audit, {from_ref, to_ref}, minutes)
   end
 
   @doc """
@@ -6607,10 +5607,10 @@ defmodule GtfsPlanner.Gtfs do
   `{:error, :not_found}`, as is a staging or foreign version. The delete takes
   `Blocking.lock_blocking!/1`.
   """
-  @spec clear_deadhead_time(Ecto.UUID.t(), Ecto.UUID.t(), {String.t(), String.t()}) ::
-          :ok | {:error, :not_found}
-  def clear_deadhead_time(organization_id, gtfs_version_id, {from_ref, to_ref}) do
-    Blocking.clear_deadhead_time(organization_id, gtfs_version_id, {from_ref, to_ref})
+  @spec clear_deadhead_time(AuditContext.t(), {String.t(), String.t()}) ::
+          :ok | {:error, :forbidden | :not_found}
+  def clear_deadhead_time(%AuditContext{} = audit, {from_ref, to_ref}) do
+    Blocking.clear_deadhead_time(audit, {from_ref, to_ref})
   end
 
   @doc """
@@ -6646,18 +5646,18 @@ defmodule GtfsPlanner.Gtfs do
   `{:error, :not_found}`.
   """
   @spec update_relief_settings(
-          Ecto.UUID.t(),
-          Ecto.UUID.t(),
+          AuditContext.t(),
           String.t() | nil,
           map()
         ) ::
           {:ok, :ok}
           | {:error,
-             :not_found
+             :forbidden
+             | :not_found
              | {:unknown_day_type, [GtfsPlanner.Gtfs.Blocking.DayTypes.day_type()]}
              | Ecto.Changeset.t()}
-  def update_relief_settings(organization_id, gtfs_version_id, day_type_key, attrs) do
-    Blocking.update_relief_settings(organization_id, gtfs_version_id, day_type_key, attrs)
+  def update_relief_settings(%AuditContext{} = audit, day_type_key, attrs) do
+    Blocking.update_relief_settings(audit, day_type_key, attrs)
   end
 
   @doc """
@@ -6820,705 +5820,17 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   # ============================================================================
-  # Station Naming
-  # ============================================================================
-
-  @doc """
-  Builds a preview of the station naming convention without writing.
-
-  When `selected_ids` is provided, the preview rows, collision checks, and updated
-  reference counts are limited to that subset while preserving the naming derived
-  from the full station descendant set.
-
-  Returns
-  `{:ok, %{rows: [...], renamed_stops_count: n, updated_pathways_count: n, updated_references_count: n}}`
-  or `{:error, reason}`.
-  """
-  def preview_station_naming(organization_id, gtfs_version_id, station_stop_id),
-    do:
-      preview_station_naming(organization_id, gtfs_version_id, station_stop_id, :structured, nil)
-
-  def preview_station_naming(organization_id, gtfs_version_id, station_stop_id, style),
-    do: preview_station_naming(organization_id, gtfs_version_id, station_stop_id, style, nil)
-
-  def preview_station_naming(
-        organization_id,
-        gtfs_version_id,
-        station_stop_id,
-        style,
-        selected_ids
-      ) do
-    descendant_ids = descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id)
-
-    child_stops =
-      from(s in Stop,
-        where:
-          s.organization_id == ^organization_id and
-            s.gtfs_version_id == ^gtfs_version_id and
-            s.stop_id in subquery(descendant_ids) and
-            s.location_type in [0, 2, 3, 4],
-        order_by: [asc: s.stop_id]
-      )
-      |> Repo.all()
-
-    case child_stops do
-      [] ->
-        {:error, :no_stops}
-
-      _ ->
-        child_stop_ids = Enum.map(child_stops, & &1.stop_id)
-
-        pathways =
-          from(p in Pathway,
-            where:
-              p.organization_id == ^organization_id and
-                p.gtfs_version_id == ^gtfs_version_id and
-                (p.from_stop_id in ^child_stop_ids or p.to_stop_id in ^child_stop_ids)
-          )
-          |> Repo.all()
-
-        naming_map =
-          case style do
-            :kebab -> StationNaming.build_kebab_naming_map(child_stops)
-            _structured -> StationNaming.build_naming_map(child_stops, pathways, station_stop_id)
-          end
-
-        rows =
-          if selected_ids do
-            Enum.filter(naming_map, fn %{old_id: old_id} ->
-              MapSet.member?(selected_ids, old_id)
-            end)
-          else
-            naming_map
-          end
-
-        old_id_set = MapSet.new(rows, & &1.old_id)
-
-        # Query only candidate new IDs (excluding IDs that are being renamed in this operation).
-        candidate_new_ids =
-          rows
-          |> Enum.map(& &1.new_id)
-          |> MapSet.new()
-          |> MapSet.difference(old_id_set)
-          |> MapSet.to_list()
-
-        existing_ids =
-          case candidate_new_ids do
-            [] ->
-              MapSet.new()
-
-            _ ->
-              from(s in Stop,
-                where:
-                  s.organization_id == ^organization_id and
-                    s.gtfs_version_id == ^gtfs_version_id and
-                    s.stop_id in ^candidate_new_ids,
-                select: s.stop_id
-              )
-              |> Repo.all()
-              |> MapSet.new()
-          end
-
-        case rows do
-          [] ->
-            {:error, :no_stops}
-
-          _ ->
-            case StationNaming.detect_collisions(rows, existing_ids) do
-              [] ->
-                reference_counts =
-                  count_stop_id_references(organization_id, gtfs_version_id, old_id_set)
-
-                {:ok,
-                 %{
-                   rows: rows,
-                   renamed_stops_count: length(rows),
-                   updated_pathways_count: reference_counts.pathways,
-                   updated_references_count: reference_counts.total
-                 }}
-
-              collisions ->
-                {:error, {:naming_collision, collisions}}
-            end
-        end
-    end
-  end
-
-  @doc """
-  Applies the station naming convention transactionally.
-
-  Performs a two-phase rename to avoid transient ID collisions:
-  1) child stop IDs old -> temporary IDs
-  2) references old -> temporary
-  3) child stop IDs temporary -> final IDs
-  4) references temporary -> final IDs
-
-  When `selected_ids` is provided via `apply_station_naming/5`, only that subset
-  of previewed child stops is renamed. Passing an empty `MapSet` is a no-op and
-  returns zero updated counts.
-
-  Returns `{:ok, %{renamed_stops: n, updated_pathways: n, updated_references: n}}`
-  or `{:error, reason}`.
-  """
-  def apply_station_naming(organization_id, gtfs_version_id, station_stop_id),
-    do:
-      do_apply_station_naming(organization_id, gtfs_version_id, station_stop_id, :structured, nil)
-
-  def apply_station_naming(organization_id, gtfs_version_id, station_stop_id, style),
-    do: do_apply_station_naming(organization_id, gtfs_version_id, station_stop_id, style, nil)
-
-  def apply_station_naming(
-        organization_id,
-        gtfs_version_id,
-        station_stop_id,
-        style,
-        selected_ids
-      ),
-      do:
-        do_apply_station_naming(
-          organization_id,
-          gtfs_version_id,
-          station_stop_id,
-          style,
-          selected_ids
-        )
-
-  defp do_apply_station_naming(
-         organization_id,
-         gtfs_version_id,
-         station_stop_id,
-         style,
-         selected_ids
-       ) do
-    case preview_station_naming(
-           organization_id,
-           gtfs_version_id,
-           station_stop_id,
-           style,
-           selected_ids
-         ) do
-      {:ok, preview} ->
-        old_to_new = Map.new(preview.rows, fn %{old_id: old, new_id: new} -> {old, new} end)
-        old_to_temp = build_temp_stop_id_map(preview.rows)
-
-        temp_to_new =
-          Map.new(old_to_temp, fn {old_id, temp_id} ->
-            {temp_id, Map.fetch!(old_to_new, old_id)}
-          end)
-
-        now = DateTime.utc_now()
-
-        multi =
-          Ecto.Multi.new()
-          |> lock_input_write_multi(organization_id, gtfs_version_id)
-          |> Ecto.Multi.run(:rename_stops_to_temp, fn repo, _changes ->
-            {:ok,
-             update_stop_field_values(
-               repo,
-               :stop_id,
-               old_to_temp,
-               organization_id,
-               gtfs_version_id,
-               now
-             )}
-          end)
-          |> Ecto.Multi.run(:update_refs_to_temp, fn repo, _changes ->
-            {:ok,
-             update_stop_id_references(
-               repo,
-               old_to_temp,
-               organization_id,
-               gtfs_version_id,
-               now
-             )}
-          end)
-          |> Ecto.Multi.run(:rename_stops_to_final, fn repo, _changes ->
-            {:ok,
-             update_stop_field_values(
-               repo,
-               :stop_id,
-               temp_to_new,
-               organization_id,
-               gtfs_version_id,
-               now
-             )}
-          end)
-          |> Ecto.Multi.run(:update_refs_to_final, fn repo, _changes ->
-            {:ok,
-             update_stop_id_references(
-               repo,
-               temp_to_new,
-               organization_id,
-               gtfs_version_id,
-               now
-             )}
-          end)
-
-        case Repo.transaction(multi) do
-          {:ok, %{rename_stops_to_final: renamed, update_refs_to_final: refs}} ->
-            {:ok,
-             %{
-               renamed_stops: renamed,
-               updated_pathways: refs.pathways,
-               updated_references: refs.total
-             }}
-
-          {:error, _step, reason, _changes} ->
-            {:error, reason}
-        end
-
-      {:error, :no_stops} when is_struct(selected_ids, MapSet) ->
-        {:ok, %{renamed_stops: 0, updated_pathways: 0, updated_references: 0}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp build_temp_stop_id_map(rows) do
-    Map.new(rows, fn %{old_id: old_id} ->
-      {old_id, "__tmp_station_naming_#{Ecto.UUID.generate()}_#{Stop.slugify(old_id)}"}
-    end)
-  end
-
-  defp count_stop_id_references(organization_id, gtfs_version_id, stop_ids) do
-    stop_id_list = MapSet.to_list(stop_ids)
-
-    if stop_id_list == [] do
-      empty_stop_id_reference_counts()
-    else
-      pathways_from =
-        from(p in Pathway,
-          where:
-            p.organization_id == ^organization_id and p.gtfs_version_id == ^gtfs_version_id and
-              p.from_stop_id in ^stop_id_list
-        )
-        |> Repo.aggregate(:count)
-
-      pathways_to =
-        from(p in Pathway,
-          where:
-            p.organization_id == ^organization_id and p.gtfs_version_id == ^gtfs_version_id and
-              p.to_stop_id in ^stop_id_list
-        )
-        |> Repo.aggregate(:count)
-
-      stop_times =
-        from(st in StopTime,
-          where:
-            st.organization_id == ^organization_id and st.gtfs_version_id == ^gtfs_version_id and
-              st.stop_id in ^stop_id_list
-        )
-        |> Repo.aggregate(:count)
-
-      transfers_from =
-        from(t in Transfer,
-          where:
-            t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
-              t.from_stop_id in ^stop_id_list
-        )
-        |> Repo.aggregate(:count)
-
-      transfers_to =
-        from(t in Transfer,
-          where:
-            t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
-              t.to_stop_id in ^stop_id_list
-        )
-        |> Repo.aggregate(:count)
-
-      stop_areas =
-        from(sa in StopArea,
-          where:
-            sa.organization_id == ^organization_id and
-              sa.gtfs_version_id == ^gtfs_version_id and
-              sa.stop_id in ^stop_id_list
-        )
-        |> Repo.aggregate(:count)
-
-      fare_leg_join_rules_from =
-        from(fl in FareLegJoinRule,
-          where:
-            fl.organization_id == ^organization_id and
-              fl.gtfs_version_id == ^gtfs_version_id and
-              fl.from_stop_id in ^stop_id_list
-        )
-        |> Repo.aggregate(:count)
-
-      fare_leg_join_rules_to =
-        from(fl in FareLegJoinRule,
-          where:
-            fl.organization_id == ^organization_id and
-              fl.gtfs_version_id == ^gtfs_version_id and
-              fl.to_stop_id in ^stop_id_list
-        )
-        |> Repo.aggregate(:count)
-
-      parent_stations =
-        from(s in Stop,
-          where:
-            s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
-              s.parent_station in ^stop_id_list
-        )
-        |> Repo.aggregate(:count)
-
-      translations =
-        from(t in Translation,
-          where:
-            t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
-              t.table_name == "stops" and t.record_id in ^stop_id_list
-        )
-        |> Repo.aggregate(:count)
-
-      walkability_tests =
-        from(wt in WalkabilityTest,
-          where:
-            wt.organization_id == ^organization_id and
-              wt.gtfs_version_id == ^gtfs_version_id and
-              wt.stop_id in ^stop_id_list
-        )
-        |> Repo.aggregate(:count)
-
-      %{
-        pathways: pathways_from + pathways_to,
-        stop_times: stop_times,
-        transfers: transfers_from + transfers_to,
-        stop_areas: stop_areas,
-        fare_leg_join_rules: fare_leg_join_rules_from + fare_leg_join_rules_to,
-        parent_stations: parent_stations,
-        translations: translations,
-        walkability_tests: walkability_tests
-      }
-      |> with_total_stop_id_reference_counts()
-    end
-  end
-
-  defp update_level_id_references(repo, mapping, organization_id, gtfs_version_id, now) do
-    stops =
-      update_stop_field_values(repo, :level_id, mapping, organization_id, gtfs_version_id, now)
-
-    translations =
-      mapping
-      |> Enum.reduce(0, fn {old_id, new_id}, count ->
-        {updated_count, _} =
-          from(t in Translation,
-            where:
-              t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
-                t.table_name == "levels" and t.record_id == ^old_id
-          )
-          |> repo.update_all(set: [record_id: new_id, updated_at: now])
-
-        count + updated_count
-      end)
-
-    %{stops: stops, translations: translations}
-  end
-
-  defp update_stop_id_references(repo, mapping, organization_id, gtfs_version_id, now) do
-    pathways_from =
-      update_schema_field_values(
-        repo,
-        Pathway,
-        :from_stop_id,
-        mapping,
-        organization_id,
-        gtfs_version_id,
-        now
-      )
-
-    pathways_to =
-      update_schema_field_values(
-        repo,
-        Pathway,
-        :to_stop_id,
-        mapping,
-        organization_id,
-        gtfs_version_id,
-        now
-      )
-
-    stop_times =
-      update_schema_field_values(
-        repo,
-        StopTime,
-        :stop_id,
-        mapping,
-        organization_id,
-        gtfs_version_id,
-        now
-      )
-
-    transfers_from =
-      update_schema_field_values(
-        repo,
-        Transfer,
-        :from_stop_id,
-        mapping,
-        organization_id,
-        gtfs_version_id,
-        now
-      )
-
-    transfers_to =
-      update_schema_field_values(
-        repo,
-        Transfer,
-        :to_stop_id,
-        mapping,
-        organization_id,
-        gtfs_version_id,
-        now
-      )
-
-    stop_areas =
-      update_schema_field_values(
-        repo,
-        StopArea,
-        :stop_id,
-        mapping,
-        organization_id,
-        gtfs_version_id,
-        now
-      )
-
-    fare_leg_join_rules_from =
-      update_schema_field_values(
-        repo,
-        FareLegJoinRule,
-        :from_stop_id,
-        mapping,
-        organization_id,
-        gtfs_version_id,
-        now
-      )
-
-    fare_leg_join_rules_to =
-      update_schema_field_values(
-        repo,
-        FareLegJoinRule,
-        :to_stop_id,
-        mapping,
-        organization_id,
-        gtfs_version_id,
-        now
-      )
-
-    parent_stations =
-      update_stop_field_values(
-        repo,
-        :parent_station,
-        mapping,
-        organization_id,
-        gtfs_version_id,
-        now
-      )
-
-    translations =
-      mapping
-      |> Enum.reduce(0, fn {old_id, new_id}, count ->
-        {updated_count, _} =
-          from(t in Translation,
-            where:
-              t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
-                t.table_name == "stops" and t.record_id == ^old_id
-          )
-          |> repo.update_all(set: [record_id: new_id, updated_at: now])
-
-        count + updated_count
-      end)
-
-    walkability_tests =
-      update_schema_field_values(
-        repo,
-        WalkabilityTest,
-        :stop_id,
-        mapping,
-        organization_id,
-        gtfs_version_id,
-        now
-      )
-
-    %{
-      pathways: pathways_from + pathways_to,
-      stop_times: stop_times,
-      transfers: transfers_from + transfers_to,
-      stop_areas: stop_areas,
-      fare_leg_join_rules: fare_leg_join_rules_from + fare_leg_join_rules_to,
-      parent_stations: parent_stations,
-      translations: translations,
-      walkability_tests: walkability_tests
-    }
-    |> with_total_stop_id_reference_counts()
-  end
-
-  defp update_stop_field_values(repo, field, mapping, organization_id, gtfs_version_id, now) do
-    mapping
-    |> Enum.reduce(0, fn {old_id, new_id}, count ->
-      {updated_count, _} =
-        from(s in Stop,
-          where:
-            s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
-              field(s, ^field) == ^old_id
-        )
-        |> repo.update_all(set: [{field, new_id}, {:updated_at, now}])
-
-      count + updated_count
-    end)
-  end
-
-  defp update_schema_field_values(
-         repo,
-         schema,
-         field,
-         mapping,
-         organization_id,
-         gtfs_version_id,
-         now
-       ) do
-    mapping
-    |> Enum.reduce(0, fn {old_id, new_id}, count ->
-      {updated_count, _} =
-        from(row in schema,
-          where:
-            row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id and
-              field(row, ^field) == ^old_id
-        )
-        |> repo.update_all(set: [{field, new_id}, {:updated_at, now}])
-
-      count + updated_count
-    end)
-  end
-
-  defp with_total_stop_id_reference_counts(counts) do
-    Map.put(counts, :total, Enum.sum(Map.values(counts)))
-  end
-
-  defp empty_stop_id_reference_counts do
-    %{
-      pathways: 0,
-      stop_times: 0,
-      transfers: 0,
-      stop_areas: 0,
-      fare_leg_join_rules: 0,
-      parent_stations: 0,
-      translations: 0,
-      walkability_tests: 0,
-      total: 0
-    }
-  end
-
-  defp broadcast({:ok, result}, event_topic) do
-    broadcast_result =
-      case event_topic do
-        [:levels, _] ->
-          Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "levels", {event_topic, result})
-
-        [:stops, _] ->
-          Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "stops", {event_topic, result})
-
-        [:pathways, _] ->
-          Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "pathways", {event_topic, result})
-
-        [:stop_levels, _] ->
-          Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "stop_levels", {event_topic, result})
-      end
-
-    case broadcast_result do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        Logger.error("Failed to broadcast #{inspect(event_topic)} event: #{inspect(reason)}")
-    end
-
-    {:ok, result}
-  end
-
-  defp broadcast({:error, reason}, _event_topic) do
-    {:error, reason}
-  end
-
-  # ============================================================================
   # Change Log / Audit
   # ============================================================================
 
-  @doc """
-  Records a change log entry for a mutation.
-
-  `entity_or_nil` is the entity before the mutation (nil for creates).
-  `action` is "created", "updated", or "deleted".
-  `attrs` is the attribute map being applied (used to compute changed_fields for "updated").
-
-  Returns `:ok` — failures are logged to Logger and the mutation proceeds normally.
-  """
-  @spec record_change(AuditContext.t(), atom(), struct() | nil, String.t(), map()) :: :ok
-  def record_change(%AuditContext{} = ctx, entity_type, entity_or_nil, action, attrs \\ %{}) do
-    snapshot = build_snapshot(entity_type, entity_or_nil)
-    changed_fields_attrs = changed_fields_attrs(action, entity_type, attrs)
-    changed_fields = build_changed_fields(entity_type, action, snapshot, changed_fields_attrs)
-
-    entity_external_id = entity_external_id_for(entity_type, entity_or_nil, attrs)
-    entity_id = entity_id_for(entity_or_nil)
-
-    %ChangeLog{}
-    |> ChangeLog.changeset(%{
-      entity_type: Atom.to_string(entity_type),
-      entity_id: entity_id,
-      entity_external_id: entity_external_id,
-      station_stop_id: ctx.station_stop_id,
-      actor_id: ctx.actor_id,
-      actor_email: ctx.actor_email,
-      snapshot: snapshot,
-      changed_fields: changed_fields,
-      action: action,
-      organization_id: ctx.organization_id,
-      gtfs_version_id: ctx.gtfs_version_id
-    })
-    |> Repo.insert()
-    |> then(fn
-      {:ok, _log} ->
-        :ok
-
-      {:error, changeset} ->
-        Logger.error("Failed to insert change_log: #{inspect(changeset.errors)}")
-        :ok
-    end)
-  end
+  @doc false
+  defdelegate route_audit_snapshot(route), to: Audit
 
   @doc false
-  @spec route_audit_snapshot(Route.t()) :: map()
-  def route_audit_snapshot(%Route{} = route), do: snapshot_route(route)
+  defdelegate record_change_in_transaction(ctx, entity_type, entity_or_nil, action), to: Audit
 
-  @doc false
-  @spec record_change_in_transaction(AuditContext.t(), atom(), struct() | nil, String.t(), map()) ::
-          {:ok, ChangeLog.t()} | {:error, Ecto.Changeset.t()}
-  def record_change_in_transaction(
-        %AuditContext{} = ctx,
-        entity_type,
-        entity_or_nil,
-        action,
-        attrs \\ %{}
-      ) do
-    snapshot = build_snapshot(entity_type, entity_or_nil)
-    changed_fields_attrs = changed_fields_attrs(action, entity_type, attrs)
-    changed_fields = build_changed_fields(entity_type, action, snapshot, changed_fields_attrs)
-
-    %ChangeLog{}
-    |> ChangeLog.changeset(%{
-      entity_type: Atom.to_string(entity_type),
-      entity_id: entity_id_for(entity_or_nil),
-      entity_external_id: entity_external_id_for(entity_type, entity_or_nil, attrs),
-      station_stop_id: ctx.station_stop_id,
-      actor_id: ctx.actor_id,
-      actor_email: ctx.actor_email,
-      snapshot: snapshot,
-      changed_fields: changed_fields,
-      action: action,
-      organization_id: ctx.organization_id,
-      gtfs_version_id: ctx.gtfs_version_id
-    })
-    |> Repo.insert()
-  end
+  defdelegate record_change_in_transaction(ctx, entity_type, entity_or_nil, action, attrs),
+    to: Audit
 
   @doc false
   @spec lock_import_entity(atom(), Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
@@ -7637,238 +5949,29 @@ defmodule GtfsPlanner.Gtfs do
   defp import_entity_schema(:stop), do: {Stop, :stop_id}
   defp import_entity_schema(:pathway), do: {Pathway, :pathway_id}
 
-  defp changed_fields_attrs("updated", entity_type, attrs),
-    do: audited_attrs_for(entity_type, attrs)
+  @doc "Returns change logs for an entity, most recent first."
+  defdelegate list_change_logs_for_entity(
+                organization_id,
+                gtfs_version_id,
+                entity_type,
+                entity_id
+              ),
+              to: Audit
 
-  defp changed_fields_attrs(_action, _entity_type, attrs), do: attrs
+  @doc "Gets a change log entry or raises when it does not exist."
+  defdelegate get_change_log!(id), to: Audit
 
-  @doc """
-  Returns change log entries for a specific entity, most recent first.
-  """
-  def list_change_logs_for_entity(organization_id, gtfs_version_id, entity_type, entity_id) do
-    from(cl in ChangeLog,
-      where:
-        cl.organization_id == ^organization_id and
-          cl.gtfs_version_id == ^gtfs_version_id and
-          cl.entity_type == ^entity_type and
-          cl.entity_id == ^entity_id,
-      order_by: [desc: cl.inserted_at]
-    )
-    |> Repo.all()
-  end
+  @doc "Gets a change log entry, returning `nil` if it does not exist."
+  defdelegate get_change_log(id), to: Audit
 
-  @doc """
-  Gets a single change log entry.
+  @doc "Returns identity field names for an entity type."
+  defdelegate identity_fields_for(entity_type), to: Audit
 
-  Raises `Ecto.NoResultsError` if the entry does not exist.
-  """
-  def get_change_log!(id), do: Repo.get!(ChangeLog, id)
+  @doc "Returns reversible field names for an entity type."
+  defdelegate reversible_fields_for(entity_type), to: Audit
 
-  @doc """
-  Gets a single change log entry, returning `nil` if it does not exist.
-  """
-  def get_change_log(id), do: Repo.get(ChangeLog, id)
-
-  @doc """
-  Returns the list of identity field names (as strings) for an entity type.
-
-  Identity fields are preserved across rollback and excluded from rollback diffs.
-  """
-  def identity_fields_for("stop"), do: ~w(stop_id)
-  def identity_fields_for("pathway"), do: ~w(pathway_id from_stop_id to_stop_id)
-  def identity_fields_for("level"), do: ~w(level_id)
-
-  @doc """
-  Returns the list of reversible field names (as strings) for an entity type.
-  """
-  @spec reversible_fields_for(String.t() | atom()) :: [String.t()]
-  def reversible_fields_for(:stop), do: reversible_fields_for("stop")
-
-  def reversible_fields_for("stop"),
-    do: ~w(
-        stop_name
-        stop_desc
-        stop_lat
-        stop_lon
-        location_type
-        wheelchair_boarding
-        platform_code
-        diagram_coordinate
-        parent_station
-        level_id
-      )
-
-  def reversible_fields_for(:pathway), do: reversible_fields_for("pathway")
-
-  def reversible_fields_for("pathway"),
-    do: ~w(
-        pathway_mode
-        is_bidirectional
-        traversal_time
-        length
-        stair_count
-        max_slope
-        min_width
-        signposted_as
-        reversed_signposted_as
-        field_notes
-        field_completed_at
-      )
-
-  def reversible_fields_for(:level), do: reversible_fields_for("level")
-  def reversible_fields_for("level"), do: ~w(level_name level_index)
-
-  def reversible_fields_for(type)
-      when type in [:route_pattern, :timed_pattern, :route_pattern_build],
-      do: []
-
-  def reversible_fields_for(type)
-      when type in ["route_pattern", "timed_pattern", "route_pattern_build"],
-      do: []
-
-  # Route audit entries are history records: generic rollback never applies to
-  # them, so no route field is reversible.
-  def reversible_fields_for(type) when type in [:route, "route"], do: []
-
-  def reversible_fields_for(:calendar), do: reversible_fields_for("calendar")
-  def reversible_fields_for("calendar"), do: []
-
-  def reversible_fields_for(:pathway_evolution), do: reversible_fields_for("pathway_evolution")
-  def reversible_fields_for("pathway_evolution"), do: []
-
-  @doc """
-  Builds a normalized snapshot map for a stop, pathway, or level entity.
-
-  Used by rollback preview to compare a current entity against a stored snapshot
-  with equivalent value normalization (e.g. Decimal → string).
-  """
-  def entity_snapshot(entity_type, entity), do: build_snapshot(entity_type, entity)
-
-  @doc """
-  Rolls back a stop, pathway, or level to the state captured in a change log entry.
-
-  Only works for "updated" entries. Produces a new "rolled_back" change log entry
-  attributed to `audit_ctx`. Identity fields (stop_id, pathway_id, level_id,
-  from_stop_id, to_stop_id) are preserved.
-
-  Returns `{:ok, entity}` or `{:error, reason}`.
-  """
-  @spec rollback_entity(ChangeLog.t(), AuditContext.t()) ::
-          {:ok, Stop.t() | Pathway.t() | Level.t()} | {:error, atom()}
-  def rollback_entity(%ChangeLog{} = log, %AuditContext{} = audit_ctx)
-      when audit_ctx.organization_id != log.organization_id or
-             audit_ctx.gtfs_version_id != log.gtfs_version_id do
-    {:error, :unauthorized}
-  end
-
-  def rollback_entity(%ChangeLog{entity_type: type}, %AuditContext{})
-      when type in [
-             "route",
-             "route_pattern",
-             "timed_pattern",
-             "route_pattern_build",
-             "calendar",
-             "trip",
-             "transfer",
-             "pathway_evolution"
-           ],
-      do: {:error, :audit_only_entity}
-
-  def rollback_entity(%ChangeLog{} = log, %AuditContext{} = audit_ctx) do
-    with {:ok, target_snapshot} <- rollback_target_snapshot(log),
-         {:ok, entity} <- rollback_entity_for_log(log),
-         :ok <- ensure_rollback_changes_entity(log.entity_type, entity, target_snapshot) do
-      update_attrs = snapshot_to_update_attrs(log.entity_type, target_snapshot)
-      rollback_entity_transaction(update_attrs, log, audit_ctx, entity)
-    end
-  end
-
-  @doc """
-  Calculates the snapshot an entity should be restored to for a rollback.
-  """
-  @spec rollback_target_snapshot(ChangeLog.t()) :: {:ok, map()} | {:error, atom()}
-  def rollback_target_snapshot(%ChangeLog{entity_type: type})
-      when type in [
-             "route",
-             "route_pattern",
-             "timed_pattern",
-             "route_pattern_build",
-             "calendar",
-             "trip",
-             "transfer",
-             "pathway_evolution"
-           ],
-      do: {:error, :audit_only_entity}
-
-  def rollback_target_snapshot(%ChangeLog{action: action})
-      when action in ["created", "deleted"] do
-    {:error, :cannot_rollback_create_or_delete}
-  end
-
-  def rollback_target_snapshot(%ChangeLog{action: action, snapshot: nil})
-      when action in ["updated", "rolled_back"] do
-    {:error, :missing_rollback_snapshot}
-  end
-
-  def rollback_target_snapshot(%ChangeLog{
-        action: action,
-        entity_type: entity_type,
-        snapshot: snapshot,
-        changed_fields: changed_fields
-      })
-      when action in ["updated", "rolled_back"] do
-    target_snapshot =
-      snapshot
-      |> fill_snapshot_from_changed_fields(changed_fields)
-      |> then(&sanitize_rollback_snapshot(entity_type, &1))
-
-    {:ok, target_snapshot}
-  end
-
-  @doc """
-  Returns changed field names that can be previewed and applied by rollback.
-  """
-  @spec rollback_previewable_fields(ChangeLog.t()) :: [String.t()]
-  def rollback_previewable_fields(%ChangeLog{} = log) do
-    changed_field_names =
-      log.changed_fields
-      |> Kernel.||(%{})
-      |> Map.keys()
-      |> Enum.map(&to_string/1)
-      |> MapSet.new()
-
-    reversible_field_names =
-      log.entity_type
-      |> reversible_fields_for()
-      |> MapSet.new()
-
-    changed_field_names
-    |> MapSet.intersection(reversible_field_names)
-    |> MapSet.to_list()
-    |> Enum.sort()
-  end
-
-  defp update_entity_without_broadcast(%Stop{} = stop, attrs) do
-    stop
-    |> Stop.changeset(attrs)
-    |> Repo.update()
-  end
-
-  defp update_entity_without_broadcast(%Pathway{} = pathway, attrs) do
-    pathway
-    |> Pathway.changeset(attrs)
-    |> Repo.update()
-  end
-
-  defp update_entity_without_broadcast(%Level{} = level, attrs) do
-    level
-    |> Level.changeset(attrs)
-    |> Repo.update()
-  end
-
-  defp broadcast_topic_for(%Stop{}), do: [:stops, :updated]
-  defp broadcast_topic_for(%Pathway{}), do: [:pathways, :updated]
-  defp broadcast_topic_for(%Level{}), do: [:levels, :updated]
+  @doc "Builds a normalized entity snapshot."
+  defdelegate entity_snapshot(entity_type, entity), to: Audit
 
   # -- Direct input writer coordination --
 
@@ -7918,798 +6021,10 @@ defmodule GtfsPlanner.Gtfs do
     end
   end
 
-  defp delete_with_input_write_lock(row) do
-    Repo.transaction(fn ->
-      Versions.lock_for_input_write!(row.organization_id, row.gtfs_version_id)
-
-      case Repo.delete(row) do
-        {:ok, deleted} -> deleted
-        {:error, changeset} -> Repo.rollback(changeset)
-      end
-    end)
-  end
-
-  # The stop cascade and the child-deletion transaction lock the version as their first step,
-  # before the `FOR UPDATE` on the referenced rows and before any stop_id rewrite.
-  defp lock_input_write_multi(multi, organization_id, gtfs_version_id) do
-    Ecto.Multi.run(multi, :lock_version, fn _repo, _changes ->
-      {:ok, Versions.lock_for_input_write!(organization_id, gtfs_version_id)}
-    end)
-  end
-
   defp lock_changeset_version!(changeset) do
     Versions.lock_for_input_write!(
       Ecto.Changeset.get_field(changeset, :organization_id),
       Ecto.Changeset.get_field(changeset, :gtfs_version_id)
     )
-  end
-
-  # -- Snapshot helpers --
-
-  defp build_snapshot(_entity_type, nil), do: nil
-
-  defp build_snapshot(:stop, %Stop{} = stop), do: snapshot_stop(stop)
-  defp build_snapshot(:pathway, %Pathway{} = pw), do: snapshot_pathway(pw)
-  defp build_snapshot(:level, %Level{} = level), do: snapshot_level(level)
-
-  defp build_snapshot(:route_pattern, %RoutePattern{} = pattern),
-    do: snapshot_route_pattern(pattern)
-
-  defp build_snapshot("route_pattern", %RoutePattern{} = pattern),
-    do: snapshot_route_pattern(pattern)
-
-  # A route's audit identity is its UUID plus its GTFS `route_id`; the snapshot
-  # captures the persisted editor-owned fields so history and replay see the
-  # route state at record time.
-  defp build_snapshot(type, %Route{} = route) when type in [:route, "route"],
-    do: snapshot_route(route)
-
-  defp build_snapshot(:timed_pattern, %GtfsPlanner.Gtfs.TimedPattern{} = timing),
-    do: snapshot_timed_pattern(timing)
-
-  defp build_snapshot("timed_pattern", %GtfsPlanner.Gtfs.TimedPattern{} = timing),
-    do: snapshot_timed_pattern(timing)
-
-  defp build_snapshot("stop", %Stop{} = stop), do: snapshot_stop(stop)
-  defp build_snapshot("pathway", %Pathway{} = pw), do: snapshot_pathway(pw)
-  defp build_snapshot("level", %Level{} = level), do: snapshot_level(level)
-
-  # A calendar's audit identity is its metadata anchor. The complete aggregate
-  # before/after snapshots are passed explicitly by Calendars, so the stored
-  # anchor snapshot never has to be expanded into native weekly/date rows here.
-  defp build_snapshot(:calendar, %CalendarAttribute{} = anchor),
-    do: Calendars.audit_snapshot(anchor)
-
-  defp build_snapshot("calendar", %CalendarAttribute{} = anchor),
-    do: Calendars.audit_snapshot(anchor)
-
-  # A closure's audit identity is the closure UUID; the structured create record
-  # carries before=nil and after=the normalized closure snapshot.
-  defp build_snapshot(:pathway_evolution, %PathwayEvolution{} = evolution),
-    do: snapshot_pathway_evolution(evolution)
-
-  defp build_snapshot("pathway_evolution", %PathwayEvolution{} = evolution),
-    do: snapshot_pathway_evolution(evolution)
-
-  # A trip's audit identity is the trip UUID plus its GTFS `trip_id`; the complete
-  # aggregate before/after snapshots are passed explicitly by Schedules, so the
-  # entity itself never yields a snapshot.
-  defp build_snapshot(type, %Trip{}) when type in [:trip, "trip"], do: nil
-
-  # A transfer's audit identity is the row UUID plus its GTFS external ID; the
-  # complete before/after snapshots are passed explicitly by Transfers, so the
-  # entity itself never yields a snapshot.
-  defp build_snapshot(type, %Transfer{}) when type in [:transfer, "transfer"], do: nil
-  # Alignment segments snapshot their scope, stop-pair identity, override
-  # linkage, optimistic-lock revision and interior points. Pattern shapes
-  # snapshot the owning pattern's shape identity; the replaced-shape detail
-  # travels in the explicit before/after maps (INV-5).
-  defp build_snapshot(type, %AlignmentSegment{} = segment)
-       when type in [:alignment_segment, "alignment_segment"] do
-    %{
-      id: segment.id,
-      scope: %{
-        organization_id: segment.organization_id,
-        gtfs_version_id: segment.gtfs_version_id
-      },
-      from_stop_id: segment.from_stop_id,
-      to_stop_id: segment.to_stop_id,
-      from_occurrence_id: segment.from_occurrence_id,
-      lock_version: segment.lock_version,
-      points: normalize_value(segment.points)
-    }
-  end
-
-  defp build_snapshot(type, %RoutePattern{} = pattern)
-       when type in [:pattern_shape, "pattern_shape"] do
-    %{
-      route_pattern_id: pattern.route_pattern_id,
-      shape_id: pattern.shape_id,
-      alignment_digest: pattern.alignment_digest
-    }
-  end
-
-  defp build_snapshot(_, _), do: nil
-
-  defp snapshot_stop(stop) do
-    %{
-      stop_name: stop.stop_name,
-      stop_desc: stop.stop_desc,
-      stop_lat: jsonify(stop.stop_lat),
-      stop_lon: jsonify(stop.stop_lon),
-      location_type: stop.location_type,
-      wheelchair_boarding: stop.wheelchair_boarding,
-      platform_code: stop.platform_code,
-      diagram_coordinate: stop.diagram_coordinate,
-      parent_station: stop.parent_station,
-      level_id: stop.level_id
-    }
-  end
-
-  defp snapshot_pathway(pw) do
-    %{
-      from_stop_id: pw.from_stop_id,
-      to_stop_id: pw.to_stop_id,
-      pathway_mode: pw.pathway_mode,
-      is_bidirectional: pw.is_bidirectional,
-      traversal_time: pw.traversal_time,
-      length: jsonify(pw.length),
-      stair_count: pw.stair_count,
-      max_slope: jsonify(pw.max_slope),
-      min_width: jsonify(pw.min_width),
-      signposted_as: pw.signposted_as,
-      reversed_signposted_as: pw.reversed_signposted_as,
-      field_notes: pw.field_notes,
-      field_completed_at: jsonify(pw.field_completed_at)
-    }
-  end
-
-  defp snapshot_level(level) do
-    %{level_name: level.level_name, level_index: level.level_index}
-  end
-
-  defp snapshot_route(route) do
-    %{
-      route_short_name: route.route_short_name,
-      route_long_name: route.route_long_name,
-      route_type: route.route_type,
-      agency_id: route.agency_id,
-      route_desc: route.route_desc,
-      route_url: route.route_url,
-      route_color: route.route_color,
-      route_text_color: route.route_text_color,
-      route_sort_order: route.route_sort_order,
-      continuous_pickup: route.continuous_pickup,
-      continuous_drop_off: route.continuous_drop_off,
-      network_id: route.network_id,
-      active: route.active
-    }
-  end
-
-  defp snapshot_pathway_evolution(evolution) do
-    %{
-      pathway_id: evolution.pathway_id,
-      service_id: evolution.service_id,
-      start_time: evolution.start_time,
-      end_time: evolution.end_time,
-      note: evolution.note
-    }
-  end
-
-  defp snapshot_route_pattern(pattern),
-    do: RoutePatterns.audit_snapshot(pattern)
-
-  defp snapshot_timed_pattern(timing),
-    do: RoutePatterns.audit_timing_snapshot(timing)
-
-  # -- Entity identity helpers --
-
-  defp entity_id_for(nil), do: nil
-  defp entity_id_for(%{id: id}), do: id
-
-  defp entity_external_id_for(_entity_type, nil, attrs) do
-    cond do
-      attrs[:stop_id] -> attrs[:stop_id]
-      attrs["stop_id"] -> attrs["stop_id"]
-      attrs[:pathway_id] -> attrs[:pathway_id]
-      attrs["pathway_id"] -> attrs["pathway_id"]
-      attrs[:level_id] -> attrs[:level_id]
-      attrs["level_id"] -> attrs["level_id"]
-      true -> nil
-    end
-  end
-
-  defp entity_external_id_for(:stop, %Stop{} = stop, _attrs), do: stop.stop_id
-  defp entity_external_id_for(:pathway, %Pathway{} = pw, _attrs), do: pw.pathway_id
-  defp entity_external_id_for(:level, %Level{} = level, _attrs), do: level.level_id
-
-  defp entity_external_id_for(:route_pattern, %RoutePattern{} = pattern, _attrs),
-    do: pattern.route_pattern_id
-
-  defp entity_external_id_for(type, %Route{} = route, _attrs) when type in [:route, "route"],
-    do: route.route_id
-
-  defp entity_external_id_for(:timed_pattern, %GtfsPlanner.Gtfs.TimedPattern{} = timing, attrs) do
-    pattern_natural_id =
-      Map.get(attrs, :pattern_route_pattern_id) || Map.get(attrs, "pattern_route_pattern_id") ||
-        "unknown"
-
-    "#{timing.id}:#{pattern_natural_id}"
-  end
-
-  defp entity_external_id_for(:calendar, %CalendarAttribute{} = anchor, _attrs),
-    do: anchor.service_id
-
-  defp entity_external_id_for("calendar", %CalendarAttribute{} = anchor, _attrs),
-    do: anchor.service_id
-
-  defp entity_external_id_for(type, %PathwayEvolution{} = evolution, _attrs)
-       when type in [:pathway_evolution, "pathway_evolution"],
-       do: evolution.pathway_id
-
-  defp entity_external_id_for(type, %Trip{} = trip, _attrs) when type in [:trip, "trip"],
-    do: trip.trip_id
-
-  defp entity_external_id_for(type, %Transfer{} = transfer, _attrs)
-       when type in [:transfer, "transfer"],
-       do: Transfer.audit_external_id(transfer)
-
-  # A shared segment is addressed by its stop pair; an override also names the
-  # visit it belongs to (INV-6). A pattern shape is addressed by the pattern's
-  # natural GTFS ID.
-  defp entity_external_id_for(type, %AlignmentSegment{} = segment, _attrs)
-       when type in [:alignment_segment, "alignment_segment"] do
-    pair = "#{segment.from_stop_id}>#{segment.to_stop_id}"
-
-    if is_nil(segment.from_occurrence_id) do
-      pair
-    else
-      "#{pair}@#{segment.from_occurrence_id}"
-    end
-  end
-
-  defp entity_external_id_for(type, %RoutePattern{} = pattern, _attrs)
-       when type in [:pattern_shape, "pattern_shape"],
-       do: pattern.route_pattern_id
-
-  defp entity_external_id_for(:route_pattern_build, %Route{} = route, _attrs), do: route.route_id
-
-  defp entity_external_id_for(:route_pattern_build, nil, attrs),
-    do: Map.get(attrs, :route_id) || Map.get(attrs, "route_id")
-
-  defp entity_module_for("stop"), do: Stop
-  defp entity_module_for("pathway"), do: Pathway
-  defp entity_module_for("level"), do: Level
-
-  defp audited_attrs_for(type, attrs) when type in [:route_pattern, "route_pattern"] do
-    Map.filter(attrs, fn {key, _value} ->
-      to_string(key) in ~w(
-        route_pattern_name route_pattern_time_desc direction_id
-        route_pattern_typicality headsign canonical_route_pattern route_pattern_sort_order
-        occurrences timings before after affected_trips operation_id
-      )
-    end)
-  end
-
-  defp audited_attrs_for(type, attrs) when type in [:timed_pattern, "timed_pattern"] do
-    Map.filter(attrs, fn {key, _value} ->
-      to_string(key) in ~w(name headsign rows before after affected_trips operation_id)
-    end)
-  end
-
-  defp audited_attrs_for(:route_pattern_build, attrs), do: attrs
-  defp audited_attrs_for("route_pattern_build", attrs), do: attrs
-
-  # Calendar diffs are already explicit aggregate before/after snapshots.
-  defp audited_attrs_for(type, attrs) when type in [:calendar, "calendar"], do: attrs
-
-  # Route diffs are explicit before/after snapshots plus command provenance; no
-  # route column is diffed field-by-field.
-  defp audited_attrs_for(type, attrs) when type in [:route, "route"], do: attrs
-
-  # A trip update carries the explicit before/after snapshots, its operation scope and - for a
-  # reviewed calendar combination - the one optional combination envelope; no trip column is diffed
-  # field-by-field. The per-trip `affected_trip_ids` list is deliberately unused by a combination,
-  # whose complete member list lives once in the envelope (AC-26).
-  defp audited_attrs_for(type, attrs) when type in [:trip, "trip"] do
-    Map.filter(attrs, fn {key, _value} ->
-      to_string(key) in ~w(before after operation_id affected_trip_ids combination undoes)
-    end)
-  end
-
-  # A transfer write carries the explicit before/after snapshots and its operation
-  # scope; no transfer column is diffed field-by-field.
-  defp audited_attrs_for(type, attrs) when type in [:transfer, "transfer"] do
-    Map.filter(attrs, fn {key, _value} ->
-      to_string(key) in ~w(before after operation_id affected_transfer_ids)
-    end)
-  end
-
-  # Alignment entries carry explicit before/after aggregates like trips and
-  # calendars; no segment or shape column is diffed field-by-field.
-  defp audited_attrs_for(type, attrs)
-       when type in [:alignment_segment, "alignment_segment", :pattern_shape, "pattern_shape"] do
-    Map.filter(attrs, fn {key, _value} ->
-      to_string(key) in ~w(before after)
-    end)
-  end
-
-  # A closure update carries the explicit before/after snapshots; no closure
-  # column is diffed field-by-field.
-  defp audited_attrs_for(type, attrs) when type in [:pathway_evolution, "pathway_evolution"] do
-    Map.filter(attrs, fn {key, _value} -> to_string(key) in ~w(before after) end)
-  end
-
-  defp audited_attrs_for(entity_type, attrs), do: reversible_attrs_for(entity_type, attrs)
-
-  # -- Diff and rollback helpers --
-
-  # Calendars diff two explicit aggregate snapshots instead of comparing the
-  # anchor's own fields, so this clause must precede the generic update branch.
-  defp build_changed_fields(entity_type, action, _snapshot, attrs)
-       when entity_type in [:calendar, "calendar"] and
-              action in ["created", "updated", "deleted"] do
-    %{
-      "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
-      "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
-    }
-    |> put_calendar_operation(attrs)
-  end
-
-  # Routes, like calendars and trips, diff two explicit before/after snapshots.
-  # The log carries the shared operation id, creation-attempt provenance and
-  # affected identity/count metadata so create replay and reviewed deletion can
-  # be reconstructed from the retained entry. A created route log whose caller
-  # omits the explicit after value stores the entity snapshot (R3: the create
-  # log keeps before/after alongside the attempt metadata).
-  defp build_changed_fields(entity_type, action, snapshot, attrs)
-       when entity_type in [:route, "route"] and action in ["created", "updated", "deleted"] do
-    %{
-      "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
-      "after" => normalize_value(route_after_snapshot(action, attrs, snapshot))
-    }
-    |> put_route_operation(attrs)
-  end
-
-  # Trips, like calendars, diff two explicit aggregate snapshots. The log carries
-  # no trip-column diff, and a bulk operation records its shared operation UUID
-  # and affected trip UUIDs alongside the snapshot.
-  defp build_changed_fields(entity_type, action, _snapshot, attrs)
-       when entity_type in [:trip, "trip"] and action in ["created", "updated", "deleted"] do
-    %{
-      "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
-      "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
-    }
-    |> put_trip_operation(attrs)
-  end
-
-  # A pasted timing's "created" log belongs to the same paste batch as the
-  # trip logs, so it carries the caller's shared operation_id (AC-22) next to
-  # its timing snapshot; without this clause the structured-create clause
-  # below would drop the operation id.
-  defp build_changed_fields(entity_type, action, snapshot, attrs)
-       when entity_type in [:timed_pattern, "timed_pattern"] and action == "created" do
-    after_snapshot = Map.get(attrs, :after, Map.get(attrs, "after", snapshot))
-
-    %{"before" => nil, "after" => normalize_value(after_snapshot)}
-    |> put_shared_operation(attrs)
-  end
-
-  # Transfers, like trips, diff two explicit snapshots supplied by the caller. The log
-  # carries no transfer-column diff, and a bulk delete records its shared operation
-  # UUID and affected transfer UUIDs alongside the snapshot.
-  defp build_changed_fields(entity_type, action, _snapshot, attrs)
-       when entity_type in [:transfer, "transfer"] and
-              action in ["created", "updated", "deleted"] do
-    %{
-      "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
-      "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
-    }
-    |> put_transfer_operation(attrs)
-  end
-
-  # Alignment entries, like trips, store the explicit before/after aggregates
-  # (including INV-5 replaced-shape detail) rather than a column diff.
-  defp build_changed_fields(entity_type, action, _snapshot, attrs)
-       when entity_type in [
-              :alignment_segment,
-              "alignment_segment",
-              :pattern_shape,
-              "pattern_shape"
-            ] and action in ["created", "updated", "deleted"] do
-    %{
-      "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
-      "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
-    }
-  end
-
-  # Closures, like calendars and trips, diff two explicit normalized snapshots:
-  # the update log carries before/after while the entity snapshot stays the
-  # after state.
-  defp build_changed_fields(entity_type, "updated", _snapshot, attrs)
-       when entity_type in [:pathway_evolution, "pathway_evolution"] do
-    %{
-      "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
-      "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
-    }
-  end
-
-  # A pattern or timing update diffs the audited fields against the live
-  # snapshot and carries the shared operation id at the top level, exactly like
-  # the trip rows a headsign save writes alongside it. Logs without an
-  # operation id keep the previous shape unchanged.
-  defp build_changed_fields(entity_type, "updated", snapshot, attrs)
-       when entity_type in [:route_pattern, "route_pattern", :timed_pattern, "timed_pattern"] and
-              not is_nil(snapshot) do
-    snapshot
-    |> field_diffs(attrs)
-    |> put_shared_operation(attrs)
-  end
-
-  defp build_changed_fields(_entity_type, action, snapshot, attrs)
-       when action == "updated" and not is_nil(snapshot) do
-    field_diffs(snapshot, attrs)
-  end
-
-  defp build_changed_fields(entity_type, "created", snapshot, attrs)
-       when entity_type in @structured_audit_entity_types and not is_nil(snapshot) do
-    after_snapshot = Map.get(attrs, :after, Map.get(attrs, "after", snapshot))
-    %{"before" => nil, "after" => normalize_value(after_snapshot)}
-  end
-
-  defp build_changed_fields(entity_type, "deleted", snapshot, attrs)
-       when entity_type in @structured_audit_entity_types and not is_nil(snapshot),
-       do:
-         %{"before" => normalize_value(snapshot), "after" => nil}
-         |> put_shared_operation(attrs)
-
-  defp build_changed_fields(entity_type, "updated", _snapshot, attrs)
-       when entity_type in [:route_pattern_build, "route_pattern_build"] do
-    %{
-      "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
-      "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after"))),
-      "patterns_created" =>
-        normalize_value(Map.get(attrs, :patterns_created, Map.get(attrs, "patterns_created"))),
-      "timings_created" =>
-        normalize_value(Map.get(attrs, :timings_created, Map.get(attrs, "timings_created")))
-    }
-    |> put_grouped_trips(attrs)
-  end
-
-  defp build_changed_fields(_entity_type, _action, _snapshot, _attrs), do: nil
-
-  defp field_diffs(snapshot, attrs) do
-    snapshot_str_keys = stringify_map_keys(snapshot)
-
-    attrs
-    |> stringify_map_keys()
-    |> Enum.reduce(%{}, fn {field, new_value}, acc ->
-      current_value = Map.get(snapshot_str_keys, field)
-
-      if same_value?(current_value, new_value) do
-        acc
-      else
-        Map.put(acc, field, %{
-          "from" => normalize_value(current_value),
-          "to" => normalize_value(new_value)
-        })
-      end
-    end)
-  end
-
-  # A grouped apply lists each trip it moved and the direction that trip had
-  # before, so the route's build history records what the review changed. A
-  # build with no grouped trips keeps its previous shape.
-  defp put_grouped_trips(changed, attrs) do
-    case Map.get(attrs, :grouped_trips, Map.get(attrs, "grouped_trips")) do
-      nil -> changed
-      trips -> Map.put(changed, "grouped_trips", normalize_value(trips))
-    end
-  end
-
-  # A reviewed bulk deletion shares one operation id across its route, trip and
-  # pattern logs, so structured deleted entries carry it when provided. Logs
-  # without an operation id keep their previous shape unchanged.
-  defp put_shared_operation(changed, attrs) do
-    case Map.get(attrs, :operation_id, Map.get(attrs, "operation_id")) do
-      nil -> changed
-      value -> Map.put(changed, "operation_id", normalize_value(value))
-    end
-  end
-
-  defp route_after_snapshot("created", attrs, snapshot),
-    do: Map.get(attrs, :after, Map.get(attrs, "after", snapshot))
-
-  defp route_after_snapshot(_action, attrs, _snapshot),
-    do: Map.get(attrs, :after, Map.get(attrs, "after"))
-
-  # A bulk calendar operation records its shared operation UUID and scope alongside the
-  # per-calendar before/after snapshots, so one log per changed calendar can be
-  # reconstructed into the whole command.
-  defp put_calendar_operation(changed, attrs) do
-    keys = [:operation_id, :affected_service_ids, :selected_dates, :combination]
-
-    Enum.reduce(keys, changed, fn key, acc ->
-      case Map.get(attrs, key, Map.get(attrs, Atom.to_string(key))) do
-        nil -> acc
-        value -> Map.put(acc, Atom.to_string(key), normalize_value(value))
-      end
-    end)
-  end
-
-  # A bulk trip operation records its shared operation UUID and the affected trip
-  # UUIDs alongside the per-trip before/after snapshot, so one log per affected
-  # trip can be reconstructed into the whole command.
-  defp put_trip_operation(changed, attrs) do
-    keys = [:operation_id, :affected_trip_ids, :combination, :undoes]
-
-    Enum.reduce(keys, changed, fn key, acc ->
-      case Map.get(attrs, key, Map.get(attrs, Atom.to_string(key))) do
-        nil -> acc
-        value -> Map.put(acc, Atom.to_string(key), normalize_value(value))
-      end
-    end)
-  end
-
-  # A bulk transfer delete records its shared operation UUID and every affected
-  # transfer UUID alongside each row's before/after snapshot.
-  defp put_transfer_operation(changed, attrs) do
-    Enum.reduce([:operation_id, :affected_transfer_ids], changed, fn key, acc ->
-      case Map.get(attrs, key, Map.get(attrs, Atom.to_string(key))) do
-        nil -> acc
-        value -> Map.put(acc, Atom.to_string(key), normalize_value(value))
-      end
-    end)
-  end
-
-  # A route command records its shared operation id, creation-attempt provenance
-  # and affected identity/count metadata alongside the before/after snapshots, so
-  # one log per route can be reconstructed into the whole command.
-  defp put_route_operation(changed, attrs) do
-    Enum.reduce(
-      [
-        :operation_id,
-        :creation_attempt_id,
-        :request_digest,
-        :affected_identities,
-        :affected_counts
-      ],
-      changed,
-      fn key, acc ->
-        case Map.get(attrs, key, Map.get(attrs, Atom.to_string(key))) do
-          nil -> acc
-          value -> Map.put(acc, Atom.to_string(key), normalize_value(value))
-        end
-      end
-    )
-  end
-
-  @spec reversible_attrs_for(String.t() | atom(), map()) :: map()
-  defp reversible_attrs_for(entity_type, attrs) when is_map(attrs) do
-    change_log_fields = change_log_fields_for(entity_type)
-
-    Map.filter(attrs, fn {key, _value} ->
-      to_string(key) in change_log_fields
-    end)
-  end
-
-  defp change_log_fields_for(:pathway), do: change_log_fields_for("pathway")
-
-  defp change_log_fields_for("pathway"),
-    do: reversible_fields_for("pathway") ++ ~w(from_stop_id to_stop_id)
-
-  defp change_log_fields_for(entity_type), do: reversible_fields_for(entity_type)
-
-  defp fill_snapshot_from_changed_fields(snapshot, changed_fields) when is_map(changed_fields) do
-    Enum.reduce(changed_fields, snapshot, fn
-      {field, %{"from" => from}}, acc ->
-        put_missing_snapshot_field(acc, field, from)
-
-      _entry, acc ->
-        acc
-    end)
-  end
-
-  defp fill_snapshot_from_changed_fields(snapshot, _changed_fields), do: snapshot
-
-  @spec sanitize_rollback_snapshot(String.t(), map()) :: map()
-  defp sanitize_rollback_snapshot(entity_type, snapshot) when is_map(snapshot) do
-    reversible_fields = reversible_fields_for(entity_type)
-
-    Map.filter(snapshot, fn {key, _value} ->
-      to_string(key) in reversible_fields
-    end)
-  end
-
-  defp rollback_entity_for_log(log) do
-    case Repo.get(entity_module_for(log.entity_type), log.entity_id) do
-      nil -> {:error, :entity_not_found}
-      entity -> {:ok, entity}
-    end
-  end
-
-  defp ensure_rollback_changes_entity(entity_type, entity, target_snapshot) do
-    if rollback_would_change_entity?(entity_type, entity, target_snapshot) do
-      :ok
-    else
-      {:error, :already_matches_current}
-    end
-  end
-
-  defp rollback_entity_transaction(update_attrs, log, audit_ctx, entity) do
-    log
-    |> rollback_multi(audit_ctx, entity, update_attrs)
-    |> Repo.transaction()
-    |> handle_rollback_transaction_result(log)
-  end
-
-  defp rollback_multi(log, audit_ctx, entity, update_attrs) do
-    Ecto.Multi.new()
-    |> lock_input_write_multi(log.organization_id, log.gtfs_version_id)
-    |> Ecto.Multi.run(:update_entity, fn _repo, _changes ->
-      update_entity_without_broadcast(entity, update_attrs)
-    end)
-    |> Ecto.Multi.run(:rollback_log, fn _repo, _changes ->
-      insert_rollback_log(log, audit_ctx, entity, update_attrs)
-    end)
-  end
-
-  defp handle_rollback_transaction_result({:ok, %{update_entity: updated_entity}}, _log) do
-    broadcast({:ok, updated_entity}, broadcast_topic_for(updated_entity))
-    {:ok, updated_entity}
-  end
-
-  defp handle_rollback_transaction_result(
-         {:error, :update_entity, %Ecto.Changeset{} = changeset, _changes},
-         log
-       ) do
-    Logger.error(
-      "Rollback update failed change_log_id=#{log.id} entity_type=#{log.entity_type} entity_id=#{log.entity_id} errors=#{inspect(changeset.errors)}"
-    )
-
-    {:error, changeset}
-  end
-
-  defp handle_rollback_transaction_result({:error, :update_entity, reason, _changes}, _log) do
-    {:error, reason}
-  end
-
-  defp handle_rollback_transaction_result({:error, :rollback_log, reason, _changes}, _log) do
-    Logger.error("Failed to insert rollback change_log: #{inspect(reason)}")
-    {:error, :rollback_log_failed}
-  end
-
-  defp rollback_would_change_entity?(entity_type, entity, target_snapshot) do
-    current_snapshot =
-      entity_type
-      |> entity_snapshot(entity)
-      |> stringify_map_keys()
-
-    identity_fields = identity_fields_for(entity_type)
-
-    target_snapshot
-    |> stringify_map_keys()
-    |> Map.drop(identity_fields)
-    |> Enum.any?(fn {field, target_value} ->
-      current_value = Map.get(current_snapshot, field)
-      not same_value?(current_value, target_value)
-    end)
-  end
-
-  defp put_missing_snapshot_field(snapshot, field, value) do
-    if snapshot_field_present?(snapshot, field) do
-      snapshot
-    else
-      Map.put(snapshot, field, value)
-    end
-  end
-
-  defp snapshot_field_present?(snapshot, field) do
-    Map.has_key?(snapshot, field) or snapshot_has_existing_atom_key?(snapshot, field)
-  end
-
-  defp snapshot_has_existing_atom_key?(snapshot, field) when is_binary(field) do
-    case safe_string_to_existing_atom(field) do
-      {:ok, atom_key} -> Map.has_key?(snapshot, atom_key)
-      :error -> false
-    end
-  end
-
-  defp snapshot_has_existing_atom_key?(_snapshot, _field), do: false
-
-  defp same_value?(a, b), do: normalize_value(a) == normalize_value(b)
-
-  defp normalize_value(nil), do: nil
-  defp normalize_value(%Decimal{} = d), do: Decimal.to_string(d)
-
-  defp normalize_value(%DateTime{} = dt) do
-    dt |> DateTime.truncate(:second) |> DateTime.to_iso8601()
-  end
-
-  defp normalize_value(%NaiveDateTime{} = ndt) do
-    ndt |> NaiveDateTime.truncate(:second) |> NaiveDateTime.to_iso8601()
-  end
-
-  defp normalize_value(value) when is_binary(value), do: value
-  defp normalize_value(value) when is_number(value), do: value
-  defp normalize_value(value) when is_boolean(value), do: value
-  defp normalize_value(%_{} = struct), do: inspect(struct)
-  defp normalize_value(value) when is_map(value), do: value
-  defp normalize_value(value) when is_list(value), do: value
-
-  defp stringify_map_keys(map) when is_map(map) do
-    Map.new(map, fn {k, v} -> {to_string(k), v} end)
-  end
-
-  defp jsonify(nil), do: nil
-  defp jsonify(value), do: normalize_value(value)
-
-  defp snapshot_to_update_attrs(_entity_type, nil), do: %{}
-
-  defp snapshot_to_update_attrs(entity_type, snapshot) when is_map(snapshot) do
-    snapshot
-    |> then(&sanitize_rollback_snapshot(entity_type, &1))
-    |> Enum.reduce(%{}, fn {key, value}, acc ->
-      key_str = to_string(key)
-
-      case safe_string_to_existing_atom(key_str) do
-        {:ok, atom_key} -> Map.put(acc, atom_key, value)
-        :error -> acc
-      end
-    end)
-  end
-
-  defp safe_string_to_existing_atom(str) do
-    try do
-      {:ok, String.to_existing_atom(str)}
-    rescue
-      ArgumentError -> :error
-    end
-  end
-
-  defp insert_rollback_log(
-         %ChangeLog{} = log,
-         %AuditContext{} = ctx,
-         current_entity,
-         update_attrs
-       ) do
-    pre_rollback_snapshot = build_snapshot(log.entity_type, current_entity)
-
-    %ChangeLog{}
-    |> ChangeLog.changeset(%{
-      entity_type: log.entity_type,
-      entity_id: log.entity_id,
-      entity_external_id: log.entity_external_id,
-      station_stop_id: log.station_stop_id,
-      actor_id: ctx.actor_id,
-      actor_email: ctx.actor_email,
-      snapshot: pre_rollback_snapshot,
-      changed_fields: rollback_changed_fields(pre_rollback_snapshot, update_attrs),
-      action: "rolled_back",
-      rolled_back_to_log_id: log.id,
-      organization_id: log.organization_id,
-      gtfs_version_id: log.gtfs_version_id
-    })
-    |> Repo.insert()
-  end
-
-  defp rollback_changed_fields(pre_rollback_snapshot, update_attrs) do
-    current = stringify_map_keys(pre_rollback_snapshot)
-    target = stringify_map_keys(update_attrs)
-
-    target
-    |> Enum.reduce(%{}, fn {field, target_value}, acc ->
-      current_value = Map.get(current, field)
-
-      if same_value?(current_value, target_value) do
-        acc
-      else
-        Map.put(acc, field, %{"from" => current_value, "to" => target_value})
-      end
-    end)
-    |> case do
-      empty when map_size(empty) == 0 -> nil
-      changed -> changed
-    end
   end
 end

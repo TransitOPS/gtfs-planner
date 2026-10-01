@@ -2,7 +2,7 @@ defmodule GtfsPlanner.Gtfs.Import do
   @moduledoc """
   Context module for importing GTFS data files.
 
-  Handles parsing and importing GTFS data from uploaded CSV files including:
+  Handles parsing and importing GTFS data from staged CSV files including:
   - `routes.txt` - Transit routes
   - `calendar.txt` - Service periods
   - `calendar_dates.txt` - Service exceptions
@@ -19,17 +19,19 @@ defmodule GtfsPlanner.Gtfs.Import do
   foreign key constraints.
 
   Uses batch processing to avoid Erlang atom table exhaustion and memory
-  issues with large files.
+  issues with large files. Files are never held in memory as a whole: callers pass
+  descriptors of files on disk (see `GtfsPlanner.Gtfs.Import.SourceStorage`) and
+  each file is streamed from its path.
 
   ## Usage
 
       files = [
-        %{filename: "routes.txt", content: binary_content},
-        %{filename: "stops.txt", content: binary_content},
-        %{filename: "pathways.txt", content: binary_content}
+        %{filename: "routes.txt", path: "/path/to/routes.source"},
+        %{filename: "stops.txt", path: "/path/to/stops.source"},
+        %{filename: "pathways.txt", path: "/path/to/pathways.source"}
       ]
 
-      case Import.import_files(org_id, version_id, files) do
+      case Import.import_files(org_id, version_id, files, nil, expand_dir: expand_dir) do
         {:ok, %Import.Result{} = result} ->
           # Import successful, topic can be used to subscribe to progress
         {:error, %Import.Failure{} = failure} ->
@@ -46,6 +48,7 @@ defmodule GtfsPlanner.Gtfs.Import do
   alias GtfsPlanner.Gtfs.Import.ParseError
   alias GtfsPlanner.Gtfs.Import.Result
   alias GtfsPlanner.Gtfs.Import.RowParser
+  alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Gtfs.PathwayEvolutions
@@ -152,9 +155,18 @@ defmodule GtfsPlanner.Gtfs.Import do
 
     - `organization_id` - UUID of the organization
     - `gtfs_version_id` - UUID of the GTFS version to associate records with
-    - `files` - List of `%{filename: string, content: binary}` maps
+    - `files` - List of `%{filename: string, path: Path.t()}` descriptors. `filename` is the
+      uploaded name and decides the file's category; `path` is the file to read, which must
+      stay in place until the import returns because each file is streamed in two passes.
     - `topic` - (optional) PubSub topic for progress updates. If not provided, one will be generated.
-    - `opts` - (optional) `:import_run_id`, the claimed run that owns this import, recorded as the derivation provenance
+    - `opts`
+      - `:expand_dir` (required) - a directory dedicated to this import, where `.zip`
+        descriptors are expanded one subdirectory per archive. Its extracted files are
+        read in place and are not removed here; the caller owns the directory.
+      - `:fence` - `{run_id, lease_token}` of the claimed run that owns this
+        import. Every write transaction (phase 1, each phase 2 batch, each derivation write and
+        the extension transaction) first verifies, under a run-row share lock, that the run is
+        `running` under that token with an unexpired lease (INV-4). Without it nothing is verified.
 
   ## Returns
 
@@ -167,102 +179,134 @@ defmodule GtfsPlanner.Gtfs.Import do
     - `{:error, %Import.Failure{}}` on failure, carrying the phase, outcome,
       durable committed counts, count certainty, sanitized file/row, and a fixed
       reason code
+    - `{:error, :lease_lost}` when a fenced write found the run handed over; that
+      transaction wrote nothing and no later write is attempted
 
   ## Examples
 
-      iex> files = [%{filename: "routes.txt", content: "route_id,route_type\\nR1,3"}]
-      iex> import_files(org_id, version_id, files)
+      iex> files = [%{filename: "routes.txt", path: "/tmp/run/source/routes.source"}]
+      iex> import_files(org_id, version_id, files, nil, expand_dir: "/tmp/run/expanded")
       {:ok, %Import.Result{counts: %{routes: 1, stops: 0, ...}, unrecognized_files: [], topic: "import:123456", archive_warnings: [], extensions: :not_present}}
   """
   def import_files(organization_id, gtfs_version_id, files, topic \\ nil, opts \\ []) do
     # Generate a stable progress topic before work begins so the supervised
     # runner can durably attribute an unexpected worker exit to the active phase.
     topic = topic || "import:#{:erlang.unique_integer()}"
+    fence = fence_callback(organization_id, Keyword.get(opts, :fence))
     broadcast_phase(topic, :phase_1)
 
-    # Expand any uploaded .zip archives into individual file entries
-    {files, archive_warnings} = expand_archives(files)
+    # Expand any staged .zip archives into the import's private directory; members
+    # stay on disk and are streamed from there.
+    {files, archive_warnings} = expand_staged_archives(files, Keyword.fetch!(opts, :expand_dir))
 
     # Categorize files by filename (case-insensitive)
     {categorized, unrecognized_files, extensions} = categorize_files(files)
 
-    # Phase 1: Import core files in a single transaction for atomicity.
+    with {:ok, counts} <-
+           import_phase_1(categorized, organization_id, gtfs_version_id, topic, fence),
+         {:ok, counts} <-
+           import_phase_2(categorized, counts, organization_id, gtfs_version_id, topic, fence),
+         counts = fill_standard_counts(counts),
+         {:ok, counts} <-
+           maybe_derive_patterns(counts, organization_id, gtfs_version_id, topic, fence),
+         _ = broadcast_phase(topic, :extensions),
+         {:ok, extensions_status, counts} <-
+           import_extensions_phase(organization_id, gtfs_version_id, extensions, counts, fence) do
+      {:ok,
+       %Result{
+         counts: counts,
+         unrecognized_files: unrecognized_files,
+         topic: topic,
+         archive_warnings: archive_warnings,
+         extensions: extensions_status
+       }}
+    end
+  end
+
+  # `fence: {run_id, lease_token}` names the claimed run that owns this import. A
+  # fenced write transaction calls the callback as its first statement; it locks the
+  # run `FOR SHARE` and rolls the transaction back with `:lease_lost` unless the run is
+  # still `running` under the token with an unexpired lease, so a superseded worker
+  # commits nothing (INV-4). Without a fence, as for direct callers, nothing is checked.
+  defp fence_callback(_organization_id, nil), do: nil
+
+  defp fence_callback(organization_id, {run_id, lease_token}) do
+    fn -> ImportRuns.assert_owner!(organization_id, run_id, lease_token, ~w(running)) end
+  end
+
+  # Phase 1 imports the core files in a single transaction for atomicity, so its
+  # counts only become durable after that transaction commits: a Phase 1 failure
+  # means every standard count is zero. One fence check at its start covers the
+  # non-transactional `insert_batched` calls inside it.
+  defp import_phase_1(categorized, organization_id, gtfs_version_id, topic, fence) do
     result =
       Repo.transaction(fn ->
-        Enum.reduce_while(@phase_1_specs, %{}, fn {key, _filename, schema, parser_fun, _phase},
-                                                  counts ->
-          case process_file_category(
+        if fence, do: fence.()
+        import_phase_1_files(categorized, organization_id, gtfs_version_id, topic)
+      end)
+
+    case result do
+      {:ok, counts} -> {:ok, counts}
+      {:error, reason} -> failure(reason, :phase_1, %{})
+    end
+  end
+
+  # Runs inside the phase 1 transaction: the first rejected file rolls it back.
+  defp import_phase_1_files(categorized, organization_id, gtfs_version_id, topic) do
+    Enum.reduce_while(@phase_1_specs, %{}, fn {key, _filename, schema, parser_fun, _phase},
+                                              counts ->
+      case process_file_category(
+             categorized[key] || [],
+             organization_id,
+             gtfs_version_id,
+             topic,
+             key,
+             schema,
+             parser_fun
+           ) do
+        {:ok, count} -> {:cont, Map.put(counts, key, count)}
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp import_phase_2(categorized, counts, organization_id, gtfs_version_id, topic, fence) do
+    broadcast_phase(topic, :phase_2)
+
+    result =
+      Enum.reduce_while(@phase_2_specs, {:ok, counts}, fn
+        {key, _filename, schema, parser_fun, _phase}, {:ok, acc_counts} ->
+          case process_phase_2_category(
                  categorized[key] || [],
                  organization_id,
                  gtfs_version_id,
                  topic,
-                 key,
                  schema,
-                 parser_fun
+                 parser_fun,
+                 fence
                ) do
-            {:ok, count} -> {:cont, Map.put(counts, key, count)}
-            {:error, reason} -> Repo.rollback(reason)
+            {:ok, count} ->
+              {:cont, {:ok, Map.put(acc_counts, key, count)}}
+
+            {:error, reason, committed} ->
+              # Report all earlier committed counts plus this file's durable
+              # committed-batch count.
+              {:halt, {:error, reason, Map.put(acc_counts, key, committed)}}
           end
-        end)
       end)
 
-    # Check if Phase 1 succeeded. Phase 1 runs in a single outer transaction, so
-    # its counts only become durable after that transaction commits: a Phase 1
-    # failure means every standard count is zero.
     case result do
-      {:ok, counts} ->
-        broadcast_phase(topic, :phase_2)
-
-        phase_2_result =
-          Enum.reduce_while(@phase_2_specs, {:ok, counts}, fn
-            {key, _filename, schema, parser_fun, _phase}, {:ok, acc_counts} ->
-              case process_phase_2_category(
-                     categorized[key] || [],
-                     organization_id,
-                     gtfs_version_id,
-                     topic,
-                     schema,
-                     parser_fun
-                   ) do
-                {:ok, count} ->
-                  {:cont, {:ok, Map.put(acc_counts, key, count)}}
-
-                {:error, reason, committed} ->
-                  # Report all earlier committed counts plus this file's durable
-                  # committed-batch count.
-                  {:halt, {:error, reason, Map.put(acc_counts, key, committed)}}
-              end
-          end)
-
-        case phase_2_result do
-          {:ok, counts} ->
-            counts = fill_standard_counts(counts)
-            counts = maybe_derive_patterns(counts, organization_id, gtfs_version_id, topic, opts)
-            broadcast_phase(topic, :extensions)
-
-            case import_extensions_phase(organization_id, gtfs_version_id, extensions, counts) do
-              {:ok, extensions_status, counts} ->
-                {:ok,
-                 %Result{
-                   counts: counts,
-                   unrecognized_files: unrecognized_files,
-                   topic: topic,
-                   archive_warnings: archive_warnings,
-                   extensions: extensions_status
-                 }}
-
-              {:error, reason, committed} ->
-                {:error, build_failure(reason, :extensions, committed)}
-            end
-
-          {:error, reason, committed} ->
-            {:error, build_failure(reason, :phase_2, committed)}
-        end
-
-      {:error, reason} ->
-        {:error, build_failure(reason, :phase_1, %{})}
+      {:ok, counts} -> {:ok, counts}
+      {:error, reason, committed} -> failure(reason, :phase_2, committed)
     end
   end
+
+  # The error result for a failed phase. A lost fence is not a reportable failure: the
+  # run was handed over, so nothing can close it and the caller only needs to stop.
+  defp failure(:lease_lost, _phase, _committed_counts), do: {:error, :lease_lost}
+
+  defp failure(reason, phase, committed_counts),
+    do: {:error, build_failure(reason, phase, committed_counts)}
 
   # Builds a truthful, sanitized failure. Missing standard counts are filled with
   # zero so the durable count map is always complete and bounded. The outcome is
@@ -299,34 +343,39 @@ defmodule GtfsPlanner.Gtfs.Import do
   # Derivation runs after Phase 2 and before extension completion, inside the
   # importer's existing exact-target ownership. An expected route-local failure is
   # non-fatal: the route keeps its bounded error and pending trips for retry. A
-  # database failure raises rather than being reported as a clean result.
+  # database failure raises rather than being reported as a clean result. A lost
+  # fence stops derivation with `{:error, :lease_lost}`.
   #
   # A feed without imported trips cannot have anything to derive, so the phase is
   # skipped entirely instead of issuing avoidable database work before
   # publication.
-  defp maybe_derive_patterns(counts, organization_id, gtfs_version_id, topic, opts) do
+  defp maybe_derive_patterns(counts, organization_id, gtfs_version_id, topic, fence) do
     if Map.get(counts, :trips, 0) > 0 do
       broadcast_phase(topic, :derivation)
-      Map.merge(counts, run_derivation(organization_id, gtfs_version_id, opts))
+
+      with {:ok, summary} <- run_derivation(organization_id, gtfs_version_id, fence) do
+        {:ok, Map.merge(counts, summary)}
+      end
     else
-      counts
+      {:ok, counts}
     end
   end
 
-  defp run_derivation(organization_id, gtfs_version_id, opts) do
-    import_run_id = Keyword.get(opts, :import_run_id)
+  defp run_derivation(organization_id, gtfs_version_id, fence) do
+    case Derivation.derive_version(organization_id, gtfs_version_id, {:import, fence}) do
+      {:ok, summary} ->
+        if summary.routes_failed > 0 do
+          Logger.warning(
+            "Route pattern derivation failed for #{summary.routes_failed} route(s) in version " <>
+              "#{gtfs_version_id}; retry metadata is persisted on those routes"
+          )
+        end
 
-    {:ok, summary} =
-      Derivation.derive_version(organization_id, gtfs_version_id, {:import, import_run_id})
+        {:ok, Map.take(summary, @derivation_count_keys)}
 
-    if summary.routes_failed > 0 do
-      Logger.warning(
-        "Route pattern derivation failed for #{summary.routes_failed} route(s) in version " <>
-          "#{gtfs_version_id}; retry metadata is persisted on those routes"
-      )
+      {:error, :lease_lost} = lost ->
+        lost
     end
-
-    Map.take(summary, @derivation_count_keys)
   end
 
   # Processes phase 2 files with batch-level transactions.
@@ -339,7 +388,8 @@ defmodule GtfsPlanner.Gtfs.Import do
          gtfs_version_id,
          topic,
          schema,
-         row_to_attrs_fn
+         row_to_attrs_fn,
+         fence
        ) do
     insert = fn file, parsed ->
       BatchProcessor.insert_batched_with_transactions(
@@ -347,7 +397,9 @@ defmodule GtfsPlanner.Gtfs.Import do
         schema,
         parsed.events,
         row_to_attrs_fn,
-        batch_options(file, parsed, organization_id, gtfs_version_id, topic)
+        file
+        |> batch_options(parsed, organization_id, gtfs_version_id, topic)
+        |> Keyword.put(:fence, fence)
       )
     end
 
@@ -364,7 +416,7 @@ defmodule GtfsPlanner.Gtfs.Import do
   end
 
   defp process_phase_2_file(file, insert) do
-    case CsvParser.stream(file.filename, file.content) do
+    case CsvParser.stream_file(file.filename, file.path) do
       {:ok, parsed} ->
         case insert.(file, parsed) do
           {:ok, inserted} -> {:ok, inserted}
@@ -447,9 +499,10 @@ defmodule GtfsPlanner.Gtfs.Import do
     process_category_files(files, insert)
   end
 
-  # Each file is parsed once; the parsed stream is immutable and re-enumerable, so
-  # the validation pass and the insertion pass observe the identical events. A
-  # file-level parse failure (header, quoting, encoding) passes through unchanged.
+  # Each file is opened once to validate it; the event stream re-reads the staged
+  # file on every enumeration, so the validation pass and the insertion pass observe
+  # the identical events. A file-level parse failure (header, quoting, encoding)
+  # passes through unchanged.
   defp parse_evolution_files(files) do
     files
     |> Enum.reduce_while({:ok, []}, &accumulate_parsed_file/2)
@@ -460,7 +513,7 @@ defmodule GtfsPlanner.Gtfs.Import do
   end
 
   defp accumulate_parsed_file(file, {:ok, acc}) do
-    case CsvParser.stream(file.filename, file.content) do
+    case CsvParser.stream_file(file.filename, file.path) do
       {:ok, parsed} -> {:cont, {:ok, [{file, parsed} | acc]}}
       {:error, reason} -> {:halt, {:error, reason}}
     end
@@ -600,7 +653,7 @@ defmodule GtfsPlanner.Gtfs.Import do
   end
 
   defp process_category_file(file, count, insert) do
-    with {:ok, parsed} <- CsvParser.stream(file.filename, file.content),
+    with {:ok, parsed} <- CsvParser.stream_file(file.filename, file.path),
          {:ok, inserted} <- insert.(file, parsed) do
       {:cont, count + inserted}
     else
@@ -624,7 +677,8 @@ defmodule GtfsPlanner.Gtfs.Import do
 
   # Categorizes files by filename into file type buckets.
   # Returns {categorized, unrecognized, extensions} where extensions is a map
-  # with optional :json and :images keys for _pathways_extensions data.
+  # with optional :json (manifest path) and :images (`%{zip_path => path}`) keys
+  # for _pathways_extensions data.
   defp categorize_files(files) do
     initial_categorized = Map.new(@file_count_keys, fn key -> {key, []} end)
     initial_acc = {initial_categorized, [], %{}}
@@ -644,12 +698,12 @@ defmodule GtfsPlanner.Gtfs.Import do
             {Map.update!(acc, key, &[normalized_file | &1]), unrecognized_acc, ext_acc}
 
           basename == "_pathways_extensions.json" ->
-            {acc, unrecognized_acc, Map.put(ext_acc, :json, file.content)}
+            {acc, unrecognized_acc, Map.put(ext_acc, :json, file.path)}
 
           is_binary(extract_extensions_image_zip_path(normalized_filename)) ->
             image_zip_path = extract_extensions_image_zip_path(normalized_filename)
             images = Map.get(ext_acc, :images, %{})
-            images = Map.put(images, image_zip_path, file.content)
+            images = Map.put(images, image_zip_path, file.path)
             {acc, unrecognized_acc, Map.put(ext_acc, :images, images)}
 
           true ->
@@ -729,139 +783,282 @@ defmodule GtfsPlanner.Gtfs.Import do
   end
 
   @doc """
-  Expands uploaded `.zip` archives into individual file entries.
+  Expands in-memory `.zip` uploads into `%{filename, content}` entries.
+
+  An adapter over `expand_staged_archives/2` for callers that still hold file
+  contents (change review). Each archive is written to a private temporary
+  directory, expanded there, read back and removed. Non-zip entries pass through
+  unchanged. Full imports do not use it: they expand staged files in the run's
+  directory through `expand_staged_archives/2`.
 
   Returns `{expanded_files, archive_warnings}` where `archive_warnings` is a list
   of `%{filename: String.t(), reason: atom(), detail: String.t()}` maps describing
-  archives that could not be expanded.
-
-  Non-zip entries pass through unchanged.
-
-  Safety behavior:
-  - ignores hidden/system zip entries
-  - rejects nested archives inside archives
-  - enforces entry-count and total-uncompressed-size limits
-  - emits a structured warning when expansion fails (instead of passing the raw archive through)
+  archives or members that were rejected.
   """
   def expand_archives(files) do
+    root = Path.join(System.tmp_dir!(), "gtfs-import-expand-#{Ecto.UUID.generate()}")
+
+    try do
+      staged =
+        files
+        |> Enum.with_index()
+        |> Enum.map(fn {file, index} -> stage_archive(file, root, index) end)
+
+      {expanded, warnings} = expand_staged_archives(staged, Path.join(root, "expanded"))
+      {Enum.map(expanded, &read_member/1), warnings}
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  defp stage_archive(file, root, index) do
+    if zip_file?(file) do
+      path = Path.join([root, "archives", "#{index}.zip"])
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, file.content)
+      %{filename: file.filename, path: path}
+    else
+      file
+    end
+  end
+
+  defp read_member(%{path: path, filename: filename}),
+    do: %{filename: filename, content: File.read!(path)}
+
+  defp read_member(file), do: file
+
+  @doc """
+  Expands the `.zip` descriptors in `files` under `dir`, one subdirectory per archive.
+
+  `files` is a list of `%{filename, path}` descriptors. Each zip goes through
+  `expand_archive/3` into `dir/<index>`, so same-named members of different archives
+  cannot overwrite each other. Other descriptors pass through unchanged.
+
+  Returns `{files, archive_warnings}` with the pass-through descriptors and the
+  extracted members in upload order. No file contents are read.
+  """
+  def expand_staged_archives(files, dir) when is_list(files) and is_binary(dir) do
+    limits = zip_limits()
+
     {files_acc, warnings_acc} =
-      Enum.reduce(files, {[], []}, &expand_archive_file/2)
+      files
+      |> Enum.with_index()
+      |> Enum.reduce({[], []}, fn {file, index}, {files_acc, warnings_acc} ->
+        if zip_file?(file) do
+          {members, warnings} =
+            expand_archive(file, Path.join(dir, Integer.to_string(index)), limits)
+
+          {Enum.reverse(members, files_acc), Enum.reverse(warnings, warnings_acc)}
+        else
+          {[file | files_acc], warnings_acc}
+        end
+      end)
 
     {Enum.reverse(files_acc), Enum.reverse(warnings_acc)}
   end
 
-  defp expand_archive_file(file, acc) do
-    if String.ends_with?(String.downcase(file.filename), ".zip") do
-      expand_zip_archive(file, acc, zip_limits())
-    else
-      {files_acc, warnings_acc} = acc
-      {[file | files_acc], warnings_acc}
+  defp zip_file?(file), do: String.ends_with?(String.downcase(file.filename), ".zip")
+
+  @doc """
+  Preflights and extracts one staged `.zip` into `dir`.
+
+  `file` is `%{filename, path}`: the upload's name, used in warnings, and the
+  archive's path. `preflight_archive/2` runs first, so an archive that is unreadable,
+  over a limit or repeats a member name is rejected before `dir` is touched, and only
+  the accepted members are extracted. The extracted files' sizes are then checked
+  against the same limits; if extraction fails or a size is over, `dir` is removed.
+  `dir` must be dedicated to this archive.
+
+  Returns `{members, warnings}`. `members` is a list of `%{filename, path}`:
+  `filename` is the member's normalized archive-relative name and `path` the absolute
+  extracted file. It is empty when the whole archive is rejected. `warnings` has the
+  same shape as in `expand_archives/1`.
+
+  Extraction streams each member to disk, and a member whose header understates its
+  size is only caught by the size check afterwards, not bounded while it is written.
+  """
+  def expand_archive(file, dir, limits) do
+    case preflight_archive(file, limits) do
+      {:ok, [], warnings} ->
+        {[], warnings}
+
+      {:ok, accepted, warnings} ->
+        extract_members(file, Path.expand(dir), accepted, limits, warnings)
+
+      {:error, warnings} ->
+        {[], warnings}
     end
   end
 
-  defp expand_zip_archive(file, acc, limits) do
-    file
-    |> check_zip_archive_metadata_against_limits(limits)
-    |> handle_zip_preflight(file, acc, limits)
+  defp extract_members(file, dir, accepted, limits, warnings) do
+    File.mkdir_p!(dir)
+
+    case unzip_members(file, dir, accepted, limits) do
+      {:ok, members} ->
+        {members, warnings}
+
+      error ->
+        File.rm_rf(dir)
+        {[], warnings ++ [extraction_warning(file, limits, error)]}
+    end
   end
 
-  defp handle_zip_preflight({:ok, preflight_warnings}, file, acc, limits) do
-    file.content
-    |> :zip.unzip([:memory])
-    |> handle_zip_expansion(file, acc, limits, preflight_warnings)
+  defp unzip_members(file, dir, accepted, limits) do
+    options = [{:cwd, String.to_charlist(dir)}, {:file_list, accepted}]
+
+    # `:zip` extracts by the name in each member's local header and skips one that
+    # climbs above `dir`, even when the directory entry looked safe. A short result
+    # means a member was not extracted.
+    with {:ok, written} when length(written) == length(accepted) <-
+           :zip.unzip(String.to_charlist(file.path), options),
+         members = Enum.map(written, &extracted_member(&1, dir)),
+         :ok <- ensure_members_within_root(members, dir),
+         {:ok, _count, _total} <-
+           members
+           |> Enum.map(&File.stat!(&1.path).size)
+           |> check_zip_entry_sizes_against_limits(limits) do
+      {:ok, members}
+    else
+      {:ok, _written} -> {:error, :member_mismatch}
+      error -> error
+    end
   end
 
-  defp handle_zip_preflight(
-         {:error, reason, entries_count, total_bytes, entry_bytes, preflight_warnings},
-         file,
-         acc,
-         limits
-       ) do
-    add_archive_too_large_warning(
-      file,
-      acc,
-      limits,
-      preflight_warnings,
-      {reason, entries_count, total_bytes, entry_bytes},
-      ""
-    )
+  defp extracted_member(written, dir) do
+    path = List.to_string(written)
+    %{filename: path |> Path.relative_to(dir) |> normalize_uploaded_filename(), path: path}
   end
 
-  defp handle_zip_preflight({:error, reason, preflight_warnings}, file, acc, _limits) do
-    add_unreadable_archive_warning(file, acc, preflight_warnings, reason, "preflight")
-  end
-
-  defp handle_zip_expansion(
-         {:ok, entries},
-         file,
-         acc,
-         limits,
-         preflight_warnings
-       ) do
-    entry_sizes = Enum.map(entries, fn {_name, content} -> byte_size(content) end)
-
-    entry_sizes
-    |> check_zip_entry_sizes_against_limits(limits)
-    |> handle_expanded_entry_sizes(file, entries, acc, limits, preflight_warnings)
-  end
-
-  defp handle_zip_expansion(
-         {:error, reason},
-         file,
-         acc,
-         _limits,
-         preflight_warnings
-       ) do
-    add_unreadable_archive_warning(file, acc, preflight_warnings, reason, "expand")
-  end
-
-  defp handle_expanded_entry_sizes(
-         {:ok, _entries_count, _total_bytes},
-         _file,
-         entries,
-         {files_acc, warnings_acc},
-         _limits,
-         preflight_warnings
-       ) do
-    files_acc = Enum.reduce(normalize_zip_entries(entries), files_acc, &[&1 | &2])
-    {files_acc, Enum.reverse(preflight_warnings) ++ warnings_acc}
-  end
-
-  defp handle_expanded_entry_sizes(
-         {:error, reason, entries_count, total_bytes, entry_bytes},
-         file,
-         _entries,
-         acc,
-         limits,
-         preflight_warnings
-       ) do
-    add_archive_too_large_warning(
-      file,
-      acc,
-      limits,
-      preflight_warnings,
-      {reason, entries_count, total_bytes, entry_bytes},
-      " after expansion"
-    )
-  end
-
-  defp normalize_zip_entries(entries) do
-    Enum.flat_map(entries, fn {name, content} ->
-      filename = normalize_uploaded_filename(to_string(name))
-
-      if ignore_zip_entry?(filename) or String.ends_with?(String.downcase(filename), ".zip") do
-        []
-      else
-        [%{filename: filename, content: content}]
+  defp ensure_members_within_root(members, dir) do
+    Enum.find_value(members, :ok, fn member ->
+      case Extensions.PathSafety.ensure_within_root(dir, member.path) do
+        :ok -> nil
+        error -> error
       end
     end)
   end
 
-  defp add_archive_too_large_warning(
+  defp extraction_warning(file, limits, {:error, reason, count, total, entry}),
+    do: archive_too_large_warning(file, limits, {reason, count, total, entry}, " after expansion")
+
+  defp extraction_warning(file, _limits, {:error, reason}),
+    do: unreadable_archive_warning(file, reason, "expand")
+
+  @doc """
+  Reads a staged `.zip`'s directory and decides which members to extract, without
+  extracting anything.
+
+  Every entry counts toward the entry-count and declared-size limits, including
+  ignored and rejected ones. Members whose name is absolute, has a `..` segment (after
+  turning `\\` into `/`) or contains a NUL byte are dropped with an `:unsafe_member_path`
+  warning, and nested `.zip` members with a `:nested_archive` warning. Directories and
+  hidden or system entries are dropped silently.
+
+  Returns `{:ok, accepted, warnings}`, where `accepted` holds the member names to
+  extract as the archive spells them, or `{:error, warnings}` when the archive is
+  unreadable, over a limit or repeats a member name. The last warning then names the
+  reason.
+  """
+  def preflight_archive(file, limits) do
+    case :zip.list_dir(String.to_charlist(file.path)) do
+      {:ok, entries} ->
+        members =
+          for {:zip_file, name, info, _comment, _offset, _comp_size} <- entries,
+              do: {name, to_string(name), zip_entry_uncompressed_size(info)}
+
+        classify_members(file, members, limits)
+
+      {:error, reason} ->
+        {:error, [unreadable_archive_warning(file, reason, "preflight")]}
+    end
+  end
+
+  defp classify_members(file, members, limits) do
+    {accepted, warnings} =
+      Enum.reduce(members, {[], []}, fn {name, string, _size}, {accepted, warnings} ->
+        case member_disposition(string) do
+          :accept ->
+            {[name | accepted], warnings}
+
+          :ignore ->
+            {accepted, warnings}
+
+          {:reject, reason, filename} ->
+            {accepted, [member_warning(file, reason, filename) | warnings]}
+        end
+      end)
+
+    sizes = Enum.map(members, fn {_name, _string, size} -> size end)
+    warnings = Enum.reverse(warnings)
+
+    case check_zip_entry_sizes_against_limits(sizes, limits) do
+      {:ok, _count, _total} ->
+        accept_unique_members(file, Enum.reverse(accepted), warnings)
+
+      {:error, reason, count, total, entry} ->
+        {:error,
+         warnings ++ [archive_too_large_warning(file, limits, {reason, count, total, entry}, "")]}
+    end
+  end
+
+  defp member_disposition(name) do
+    filename = normalize_uploaded_filename(name)
+
+    cond do
+      unsafe_member_path?(name) -> {:reject, :unsafe_member_path, name}
+      ignore_zip_entry?(filename) -> :ignore
+      String.ends_with?(String.downcase(filename), ".zip") -> {:reject, :nested_archive, filename}
+      true -> :accept
+    end
+  end
+
+  defp unsafe_member_path?(name) do
+    normalized = String.replace(name, "\\", "/")
+
+    String.starts_with?(normalized, "/") or
+      String.match?(normalized, ~r/^[A-Za-z]:/) or
+      String.contains?(name, <<0>>) or
+      ".." in String.split(normalized, "/")
+  end
+
+  # Two members that resolve to one destination would leave a single file standing
+  # for both, so the descriptors would no longer describe each member's bytes.
+  defp accept_unique_members(file, accepted, warnings) do
+    destinations =
+      Enum.map(accepted, fn name ->
+        name |> to_string() |> normalize_uploaded_filename() |> Path.expand("/")
+      end)
+
+    if length(Enum.uniq(destinations)) == length(destinations) do
+      {:ok, accepted, warnings}
+    else
+      {:error, warnings ++ [unreadable_archive_warning(file, :duplicate_members, "preflight")]}
+    end
+  end
+
+  defp member_warning(file, :unsafe_member_path, filename) do
+    Logger.warning("Rejecting unsafe zip member #{inspect(filename)} in archive #{file.filename}")
+
+    %{
+      filename: file.filename,
+      reason: :unsafe_member_path,
+      detail: "unsafe member path rejected: #{inspect(filename)}"
+    }
+  end
+
+  defp member_warning(file, :nested_archive, filename) do
+    Logger.warning("Rejecting nested zip entry #{filename} in archive #{file.filename}")
+
+    %{
+      filename: file.filename,
+      reason: :nested_archive,
+      detail: "nested archive rejected: #{filename}"
+    }
+  end
+
+  defp archive_too_large_warning(
          file,
-         {files_acc, warnings_acc},
          limits,
-         preflight_warnings,
          {reason, entries_count, total_bytes, entry_bytes},
          phase
        ) do
@@ -873,32 +1070,22 @@ defmodule GtfsPlanner.Gtfs.Import do
         "max_entry_bytes=#{limits.max_entry_bytes}), skipping expansion"
     )
 
-    warning = %{
+    %{
       filename: file.filename,
       reason: :archive_too_large,
       detail:
         "exceeds safety limits (#{reason}: #{entries_count} entries, #{total_bytes} bytes uncompressed)"
     }
-
-    {files_acc, [warning | Enum.reverse(preflight_warnings)] ++ warnings_acc}
   end
 
-  defp add_unreadable_archive_warning(
-         file,
-         {files_acc, warnings_acc},
-         preflight_warnings,
-         reason,
-         phase
-       ) do
+  defp unreadable_archive_warning(file, reason, phase) do
     Logger.warning("Failed to #{phase} zip archive #{file.filename}: #{inspect(reason)}")
 
-    warning = %{
+    %{
       filename: file.filename,
       reason: :unzip_failed,
       detail: "archive could not be read (#{inspect(reason)})"
     }
-
-    {files_acc, [warning | Enum.reverse(preflight_warnings)] ++ warnings_acc}
   end
 
   @doc false
@@ -926,79 +1113,6 @@ defmodule GtfsPlanner.Gtfs.Import do
           {:cont, {:ok, next_count, next_total}}
       end
     end)
-  end
-
-  defp check_zip_archive_metadata_against_limits(file, limits) do
-    with_temp_file(file.content, ".zip", fn path ->
-      case :zip.list_dir(String.to_charlist(path)) do
-        {:ok, entries} ->
-          {entry_sizes, nested_warnings} =
-            Enum.reduce(entries, {[], []}, fn
-              {:zip_file, name, file_info, _comment, _offset, _comp_size},
-              {entry_sizes, nested_warnings} ->
-                filename = normalize_uploaded_filename(to_string(name))
-
-                nested_warnings =
-                  if not ignore_zip_entry?(filename) and
-                       String.ends_with?(String.downcase(filename), ".zip") do
-                    Logger.warning(
-                      "Rejecting nested zip entry #{filename} in archive #{file.filename}"
-                    )
-
-                    warning = %{
-                      filename: file.filename,
-                      reason: :nested_archive,
-                      detail: "nested archive rejected: #{filename}"
-                    }
-
-                    [warning | nested_warnings]
-                  else
-                    nested_warnings
-                  end
-
-                {[zip_entry_uncompressed_size(file_info) | entry_sizes], nested_warnings}
-
-              _, acc ->
-                acc
-            end)
-
-          nested_warnings = Enum.reverse(nested_warnings)
-
-          case check_zip_entry_sizes_against_limits(Enum.reverse(entry_sizes), limits) do
-            {:ok, _, _} ->
-              {:ok, nested_warnings}
-
-            {:error, reason, entries_count, total_bytes, entry_bytes} ->
-              {:error, reason, entries_count, total_bytes, entry_bytes, nested_warnings}
-          end
-
-        {:error, reason} ->
-          {:error, reason, []}
-      end
-    end)
-    |> case do
-      {:error, reason} -> {:error, reason, []}
-      result -> result
-    end
-  end
-
-  defp with_temp_file(binary, extension, fun) when is_binary(binary) and is_binary(extension) do
-    filename =
-      "gtfs-import-#{System.unique_integer([:positive, :monotonic])}#{extension}"
-
-    path = Path.join(System.tmp_dir!(), filename)
-
-    case File.write(path, binary) do
-      :ok ->
-        try do
-          fun.(path)
-        after
-          File.rm(path)
-        end
-
-      {:error, reason} ->
-        {:error, reason}
-    end
   end
 
   defp zip_entry_uncompressed_size({:file_info, size, _, _, _, _, _, _, _, _, _, _, _, _})
@@ -1058,32 +1172,37 @@ defmodule GtfsPlanner.Gtfs.Import do
   # returned unchanged. On extension failure the standard counts stay durable and
   # any committed extension counts are threaded back so the overall failure can
   # report exact durable truth (AC-3).
-  defp import_extensions_phase(_organization_id, _gtfs_version_id, extensions, counts)
+  defp import_extensions_phase(_organization_id, _gtfs_version_id, extensions, counts, _fence)
        when not is_map_key(extensions, :json) do
     {:ok, :not_present, counts}
   end
 
-  defp import_extensions_phase(organization_id, gtfs_version_id, extensions, counts) do
+  defp import_extensions_phase(organization_id, gtfs_version_id, extensions, counts, fence) do
     image_files = Map.get(extensions, :images, %{})
 
-    case Extensions.Import.import_extensions(
-           organization_id,
-           gtfs_version_id,
-           extensions.json,
-           image_files
-         ) do
-      {:ok, ext_counts} ->
-        {:ok, :complete, Map.merge(counts, ext_counts)}
-
-      # Decode/reference/DB-transaction failure: no extension writes are durable,
-      # but the standard counts already committed remain.
+    # The manifest is read here, in the worker, and the images are read one at a time
+    # when each is restored, so no staged file travels in a message or process state.
+    with {:ok, manifest_json} <- File.read(extensions.json),
+         {:ok, ext_counts} <-
+           Extensions.Import.import_extensions(
+             organization_id,
+             gtfs_version_id,
+             manifest_json,
+             image_files,
+             fence: fence
+           ) do
+      {:ok, :complete, Map.merge(counts, ext_counts)}
+    else
+      # Unreadable manifest, or decode/reference/DB-transaction failure: no
+      # extension writes are durable, but the standard counts already committed
+      # remain.
       {:error, reason} ->
-        {:error, reason, counts}
+        failure(reason, :extensions, counts)
 
       # Image restoration failed after the extension DB transaction committed:
       # merge the durable extension counts into the standard counts.
       {:error, reason, ext_committed} ->
-        {:error, reason, Map.merge(counts, ext_committed)}
+        failure(reason, :extensions, Map.merge(counts, ext_committed))
     end
   end
 

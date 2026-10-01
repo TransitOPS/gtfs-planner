@@ -122,8 +122,7 @@ defmodule GtfsPlanner.Gtfs.Runs.LoadRunsTest do
     test "relief_ready? is false with no marked relief point", %{world: world} do
       {:ok, :ok} =
         Blocking.update_relief_settings(
-          world.organization.id,
-          world.version.id,
+          world.audit,
           world.day_type_key,
           %{max_piece_minutes: 330, marked: []}
         )
@@ -137,8 +136,7 @@ defmodule GtfsPlanner.Gtfs.Runs.LoadRunsTest do
     test "relief_ready? is false with a marked point but no piece limit", %{world: world} do
       {:ok, :ok} =
         Blocking.update_relief_settings(
-          world.organization.id,
-          world.version.id,
+          world.audit,
           world.day_type_key,
           %{max_piece_minutes: nil, marked: [world.relief_stop_id]}
         )
@@ -329,7 +327,7 @@ defmodule GtfsPlanner.Gtfs.Runs.LoadRunsTest do
                Gtfs.load_runs(world.organization.id, world.version.id, world.day_type_key)
 
       {:ok, _settings} =
-        Runs.update_crew_settings(world.organization.id, world.version.id, %{
+        Runs.update_crew_settings(world.audit, %{
           max_spread_minutes: 600
         })
 

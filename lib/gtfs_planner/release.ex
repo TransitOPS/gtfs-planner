@@ -3,6 +3,9 @@ defmodule GtfsPlanner.Release do
   Used for executing DB release tasks when run in production without Mix
   installed.
   """
+
+  alias GtfsPlanner.Integrity.OwnershipAudit
+
   @app :gtfs_planner
 
   def migrate do
@@ -17,6 +20,24 @@ defmodule GtfsPlanner.Release do
     end
 
     :ok
+  end
+
+  def audit_ownership do
+    load_app()
+
+    reports =
+      for repo <- repos() do
+        {:ok, report, _} =
+          Ecto.Migrator.with_repo(repo, fn repo ->
+            OwnershipAudit.run(repo: repo)
+          end)
+
+        Enum.each(OwnershipAudit.report_lines(report), &IO.puts/1)
+        report
+      end
+
+    total = Enum.sum(Enum.map(reports, & &1.total))
+    if total == 0, do: :ok, else: {:error, total}
   end
 
   defp backfill_legacy_diagrams!(repo) do

@@ -8,6 +8,7 @@ defmodule GtfsPlanner.Versions do
   """
 
   import Ecto.Query, warn: false
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion
 
@@ -284,11 +285,34 @@ defmodule GtfsPlanner.Versions do
     not is_nil(get_published_gtfs_version_for_org(organization_id, version_id))
   end
 
-  @doc false
-  def update_gtfs_version(%GtfsVersion{} = version, attrs) do
-    version
-    |> GtfsVersion.changeset(attrs)
-    |> Repo.update()
+  @doc """
+  Renames one version of the actor's organization.
+
+  `scope` is `%{actor_id: _, organization_id: _}` taken from the server session, never
+  from client input. One transaction takes the actor's current editor membership, then
+  locks the version row scoped to that organization and writes only the name, so an editor
+  revoked after the page mounted cannot rename, and a version id from another organization
+  is never touched.
+
+  Returns `{:ok, version}`, `{:error, changeset}` for a refused name, `{:error, :forbidden}`
+  for a missing, deactivated or non-editor membership, or `{:error, :not_found}` when the
+  version is not in the actor's organization.
+  """
+  @spec update_gtfs_version(map(), Ecto.UUID.t(), map()) ::
+          {:ok, GtfsVersion.t()} | {:error, Ecto.Changeset.t() | :forbidden | :not_found}
+  def update_gtfs_version(scope, version_id, attrs) do
+    Repo.transaction(fn ->
+      Authorization.lock_editor!(scope)
+
+      scope.organization_id
+      |> lock_for_exclusive_write!(version_id)
+      |> GtfsVersion.name_changeset(attrs)
+      |> Repo.update()
+      |> case do
+        {:ok, version} -> version
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
   end
 
   @doc false
@@ -322,6 +346,30 @@ defmodule GtfsPlanner.Versions do
     |> scoped_version_for_share(version_id)
     |> case do
       %GtfsVersion{} = version -> version
+      nil -> Repo.rollback(:not_found)
+    end
+  end
+
+  @doc """
+  Locks one organization-scoped version `FOR UPDATE` for a natural-ID mutation.
+
+  Call inside a transaction, at entry before reading entity rows. The caller
+  chooses this lock instead of a share lock; it must never upgrade a held lock.
+  An absent or foreign version rolls the transaction back with `:not_found`.
+  """
+  @spec lock_for_exclusive_write!(Ecto.UUID.t(), Ecto.UUID.t()) :: GtfsVersion.t()
+  def lock_for_exclusive_write!(organization_id, version_id) do
+    version =
+      if uuid?(organization_id) and uuid?(version_id) do
+        from(v in GtfsVersion,
+          where: v.id == ^version_id and v.organization_id == ^organization_id,
+          lock: "FOR UPDATE"
+        )
+        |> Repo.one()
+      end
+
+    case version do
+      %GtfsVersion{} = scoped_version -> scoped_version
       nil -> Repo.rollback(:not_found)
     end
   end

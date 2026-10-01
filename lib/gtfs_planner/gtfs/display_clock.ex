@@ -12,7 +12,6 @@ defmodule GtfsPlanner.Gtfs.DisplayClock do
 
   import Ecto.Query, warn: false
 
-  alias Ecto.Adapters.SQL
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Repo
 
@@ -60,8 +59,7 @@ defmodule GtfsPlanner.Gtfs.DisplayClock do
   @spec valid_zone?(String.t()) :: boolean()
   def valid_zone?(name) do
     %Postgrex.Result{rows: [[valid?]]} =
-      SQL.query!(
-        Repo,
+      Repo.query!(
         "SELECT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = $1)",
         [name]
       )
@@ -79,8 +77,7 @@ defmodule GtfsPlanner.Gtfs.DisplayClock do
   @spec zone_names() :: [String.t()]
   def zone_names do
     %Postgrex.Result{rows: rows} =
-      SQL.query!(
-        Repo,
+      Repo.query!(
         """
         SELECT name
         FROM pg_timezone_names
@@ -110,8 +107,7 @@ defmodule GtfsPlanner.Gtfs.DisplayClock do
 
   def localize_many(timestamps, %{timezone: timezone}) when is_list(timestamps) do
     %Postgrex.Result{rows: rows} =
-      SQL.query!(
-        Repo,
+      Repo.query!(
         """
         SELECT source.at AT TIME ZONE $2
         FROM unnest($1::timestamptz[]) WITH ORDINALITY AS source(at, ordinality)
@@ -133,8 +129,7 @@ defmodule GtfsPlanner.Gtfs.DisplayClock do
   @spec local_date(DateTime.t(), zone_resolution()) :: Date.t()
   def local_date(%DateTime{} = utc, %{timezone: timezone}) do
     %Postgrex.Result{rows: [[local_date]]} =
-      SQL.query!(
-        Repo,
+      Repo.query!(
         "SELECT ($1::timestamptz AT TIME ZONE $2)::date",
         [DateTime.truncate(utc, :microsecond), timezone]
       )

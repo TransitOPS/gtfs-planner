@@ -26,6 +26,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyEditLiveTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Agency
+  alias GtfsPlanner.GtfsFixtures
   alias GtfsPlanner.Repo
 
   @open_drawer "#agency-drawer-overlay[data-open='true']"
@@ -64,7 +65,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyEditLiveTest do
   # ordinary stored row: the drawer's own read is what has to cope with it.
   defp create_agency(organization, version, attrs \\ %{}) do
     {:ok, agency} =
-      Gtfs.create_agency(
+      GtfsFixtures.insert_agency(
         Map.merge(
           %{
             organization_id: organization.id,

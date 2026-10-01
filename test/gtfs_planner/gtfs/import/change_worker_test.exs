@@ -8,7 +8,11 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerTest do
   import GtfsPlanner.VersionsFixtures
   import GtfsPlanner.GtfsFixtures
 
-  @actor %{id: Ecto.UUID.generate(), email: "reviewer@example.com"}
+  # Creating a run reauthorizes its actor, so the actor is a real active editor.
+  defp editor_actor(organization) do
+    editor = editor_fixture(organization)
+    %{id: editor.id, email: editor.email}
+  end
 
   setup do
     root = Path.join(System.tmp_dir!(), "change-worker-#{System.unique_integer([:positive])}")
@@ -29,6 +33,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerTest do
   test "persists applicable and preview decisions through the real storage, diff, and Repo path",
        %{root: root} do
     organization = organization_fixture()
+    actor = editor_actor(organization)
     version = gtfs_version_fixture(organization.id)
     run_id = Ecto.UUID.generate()
 
@@ -50,7 +55,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerTest do
              ChangeRuns.create_pending_compute(
                organization.id,
                version.id,
-               @actor,
+               actor,
                manifest,
                run_id
              )
@@ -71,6 +76,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerTest do
 
   test "missing staged input becomes a bounded failed outcome without decisions" do
     organization = organization_fixture()
+    actor = editor_actor(organization)
     version = gtfs_version_fixture(organization.id)
     run_id = Ecto.UUID.generate()
 
@@ -82,7 +88,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerTest do
              ChangeRuns.create_pending_compute(
                organization.id,
                version.id,
-               @actor,
+               actor,
                manifest,
                run_id
              )
@@ -99,6 +105,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerTest do
 
   test "parse-tainted input produces no applicable removals" do
     organization = organization_fixture()
+    actor = editor_actor(organization)
     version = gtfs_version_fixture(organization.id)
     level_fixture(organization.id, version.id, %{level_id: "L1"})
     run_id = Ecto.UUID.generate()
@@ -115,7 +122,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerTest do
              ChangeRuns.create_pending_compute(
                organization.id,
                version.id,
-               @actor,
+               actor,
                manifest,
                run_id
              )

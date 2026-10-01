@@ -526,6 +526,24 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
       assert {:error, {:redirect, %{to: "/"}}} = live(conn, ~p"/first")
     end
 
+    test "a page loaded before another setup finished sends the submit to login and creates nothing",
+         %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/first")
+      user_fixture()
+      org_count = Repo.aggregate(Organization, :count, :id)
+
+      result =
+        view
+        |> element("#first_admin_form")
+        |> render_submit(%{"admin" => valid_admin_params()})
+
+      assert {:error, {:redirect, %{to: "/users/log_in"}}} = result
+
+      {:ok, conn} = follow_redirect(result, conn)
+      assert html_response(conn, 200) =~ "Setup is already complete."
+      assert Repo.aggregate(Organization, :count, :id) == org_count
+    end
+
     test "redirects a valid first submit to login with the administrator-created message",
          %{conn: conn} do
       admin_params = valid_admin_params()

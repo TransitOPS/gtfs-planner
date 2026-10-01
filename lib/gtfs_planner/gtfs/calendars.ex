@@ -27,7 +27,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   Calendar history is audit-only. Writes, anchor creation, child deletion and the
   complete aggregate before/after audit snapshot commit in one transaction through
-  `Gtfs.record_change_in_transaction/5`, and station rollback refuses the
+  `Audit.record_change_in_transaction/5`, and station rollback refuses the
   `calendar` entity. Save, kind conversion, break, exception and multi-calendar date
   commands are planned from the retained source snapshot and applied under one
   version lock and transaction; a bulk date change shares one operation UUID and
@@ -36,10 +36,9 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   import Ecto.Query, warn: false
 
-  alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.UserOrgMembership
-  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.Agency
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Blocking.Queries
@@ -63,7 +62,6 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   alias GtfsPlanner.Versions.GtfsVersion
 
   @published_status "published"
-  @editor_role "pathways_studio_editor"
   @added 1
   @removed 2
   @kinds [:weekly, :dates_only]
@@ -422,7 +420,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   def create_calendar(attrs, %AuditContext{} = audit_context) when is_map(attrs) do
     with {:ok, service_id} <- create_service_id(attrs) do
       transact(fn ->
-        authorize_editor!(audit_context)
+        Authorization.lock_editor!(audit_context)
         lock_published_version!(audit_context)
         create_locked!(service_id, attrs, audit_context)
       end)
@@ -446,7 +444,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   def duplicate_calendar(service_id, attrs, %AuditContext{} = audit_context)
       when is_binary(service_id) and is_map(attrs) do
     transact(fn ->
-      authorize_editor!(audit_context)
+      Authorization.lock_editor!(audit_context)
       lock_published_version!(audit_context)
       duplicate_locked!(service_id, attrs, audit_context)
     end)
@@ -533,7 +531,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   defp dispatch_calendar_change(normalized, review_fingerprint, audit_context) do
     transact(fn ->
-      authorize_editor!(audit_context)
+      Authorization.lock_editor!(audit_context)
       lock_published_version!(audit_context)
       apply!(normalized, review_fingerprint, audit_context)
     end)
@@ -563,7 +561,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       when is_binary(destination_id) and is_list(source_ids) do
     assert_read_committed!()
     lock_published_version!(audit_context)
-    lock_editor_membership!(audit_context)
+    Authorization.lock_editor!(audit_context)
 
     selected_ids = [destination_id | source_ids]
     {closure, transfers} = combination_closure!(audit_context, selected_ids)
@@ -623,33 +621,8 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     end
   end
 
-  # AC-13: the actor's *current* membership is resolved again after the version-lock wait and
-  # held `FOR SHARE` through commit, so a revocation committed while a combination waited is
-  # refused and a later one waits for it. `authorize_editor!/1` is not reused because it reads
-  # the membership without the lock this read has to hold.
-  defp lock_editor_membership!(%AuditContext{} = audit_context) do
-    case editor_membership_for_share(audit_context) do
-      %UserOrgMembership{deactivated_at: nil, roles: roles} ->
-        if editor_role?(roles), do: :ok, else: Repo.rollback(:forbidden)
-
-      _other ->
-        Repo.rollback(:forbidden)
-    end
-  end
-
-  defp editor_membership_for_share(%AuditContext{
-         actor_id: actor_id,
-         organization_id: organization_id
-       }) do
-    if uuid?(actor_id) and uuid?(organization_id) do
-      from(m in UserOrgMembership,
-        where: m.user_id == ^actor_id and m.organization_id == ^organization_id,
-        lock: "FOR SHARE"
-      )
-      |> Repo.one()
-    end
-  end
-
+  # AC-13: recheck membership after the version-lock wait, then hold its share lock
+  # through commit. Membership mutations never lock a version, so this order is safe.
   # AC-14/AC-17: the closure starts at every selected trip and grows through the rows that decide
   # the reviewed consequences - every trip on a touched non-nil block anywhere in the version,
   # every type-4/5 record naming one of those trips, each record's counterpart trip and every
@@ -2355,7 +2328,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       }
       |> put_envelope(operation, index)
 
-    case Gtfs.record_change_in_transaction(
+    case Audit.record_change_in_transaction(
            audit_context,
            :trip,
            %{trip | service_id: destination_id, block_id: block_id},
@@ -2428,7 +2401,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   end
 
   defp review_in_transaction!(normalized, source_fingerprints, audit_context) do
-    authorize_editor!(audit_context)
+    Authorization.lock_editor!(audit_context)
     lock_shared_published_version!(audit_context)
     review!(normalized, source_fingerprints, audit_context)
   end
@@ -3616,40 +3589,6 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   # -- Authorization and locking --------------------------------------------
 
-  defp authorize_editor!(%AuditContext{} = audit_context) do
-    case authorize_editor(audit_context) do
-      :ok -> :ok
-      {:error, reason} -> Repo.rollback(reason)
-    end
-  end
-
-  @doc """
-  Rechecks the actor's current active organization membership and editor role.
-
-  Every audited mutation calls this before writing, so a membership deactivated
-  or revoked after mount is refused on the next save. Returns `{:error,
-  :forbidden}` for a missing, foreign, deactivated or role-less membership.
-  """
-  @spec authorize_editor(AuditContext.t()) :: :ok | {:error, :forbidden}
-  def authorize_editor(%AuditContext{
-        actor_id: actor_id,
-        organization_id: organization_id
-      }) do
-    with true <- uuid?(actor_id),
-         true <- uuid?(organization_id),
-         %UserOrgMembership{} = membership <-
-           Accounts.get_user_org_membership(actor_id, organization_id),
-         true <- is_nil(membership.deactivated_at),
-         true <- editor_role?(membership.roles) do
-      :ok
-    else
-      _other -> {:error, :forbidden}
-    end
-  end
-
-  defp editor_role?(roles) when is_list(roles), do: @editor_role in roles
-  defp editor_role?(_roles), do: false
-
   @doc """
   Locks the published version row `FOR SHARE` and checks that `service_id` is a calendar identity.
 
@@ -3917,7 +3856,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   defp audit!(%AuditContext{} = audit_context, anchor, action, attrs) do
     context = %{audit_context | station_stop_id: nil}
 
-    case Gtfs.record_change_in_transaction(context, :calendar, anchor, action, attrs) do
+    case Audit.record_change_in_transaction(context, :calendar, anchor, action, attrs) do
       {:ok, log} -> log
       {:error, changeset} -> Repo.rollback(changeset)
     end

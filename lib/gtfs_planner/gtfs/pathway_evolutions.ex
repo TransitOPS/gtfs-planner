@@ -61,7 +61,9 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
   import Ecto.Query, warn: false
   import Ecto.Changeset, only: [add_error: 3, get_field: 2]
 
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarDate
@@ -449,7 +451,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
           {:ok, mutation_result()} | {:error, Ecto.Changeset.t() | :forbidden | :not_found}
   def create_pathway_evolution(attrs, %AuditContext{} = audit_context) when is_map(attrs) do
     transact(fn ->
-      authorize_editor!(audit_context)
+      Authorization.lock_editor!(audit_context)
       Calendars.lock_published_version!(audit_context)
       create_locked!(attrs, audit_context)
     end)
@@ -499,7 +501,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
   def update_pathway_evolution(id, attrs, expected_fingerprint, %AuditContext{} = audit_context)
       when is_map(attrs) do
     transact(fn ->
-      authorize_editor!(audit_context)
+      Authorization.lock_editor!(audit_context)
       Calendars.lock_published_version!(audit_context)
       evolution = lock_evolution!(id, expected_fingerprint, audit_context)
       update_locked!(evolution, attrs, audit_context)
@@ -524,20 +526,13 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
           | {:error, :forbidden | :not_found | :stale_review}
   def delete_pathway_evolution(id, expected_fingerprint, %AuditContext{} = audit_context) do
     transact(fn ->
-      authorize_editor!(audit_context)
+      Authorization.lock_editor!(audit_context)
       Calendars.lock_published_version!(audit_context)
       evolution = lock_evolution!(id, expected_fingerprint, audit_context)
       deleted = evolution |> Repo.delete() |> write_or_rollback!()
       audit!(audit_context, deleted, "deleted")
       %{deleted: deleted}
     end)
-  end
-
-  defp authorize_editor!(%AuditContext{} = audit_context) do
-    case Calendars.authorize_editor(audit_context) do
-      :ok -> :ok
-      {:error, reason} -> Repo.rollback(reason)
-    end
   end
 
   defp update_locked!(%PathwayEvolution{} = evolution, attrs, %AuditContext{} = audit_context) do
@@ -563,12 +558,12 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
   end
 
   defp apply_update!(%PathwayEvolution{} = evolution, changeset, %AuditContext{} = audit_context) do
-    before = Gtfs.entity_snapshot(:pathway_evolution, evolution)
+    before = Audit.entity_snapshot(:pathway_evolution, evolution)
     updated = changeset |> Repo.update() |> write_or_rollback!()
 
     audit!(audit_context, updated, "updated", %{
       before: before,
-      after: Gtfs.entity_snapshot(:pathway_evolution, updated)
+      after: Audit.entity_snapshot(:pathway_evolution, updated)
     })
 
     mutation_result(updated)
@@ -680,7 +675,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
          action,
          attrs \\ %{}
        ) do
-    case Gtfs.record_change_in_transaction(
+    case Audit.record_change_in_transaction(
            audit_context,
            :pathway_evolution,
            evolution,

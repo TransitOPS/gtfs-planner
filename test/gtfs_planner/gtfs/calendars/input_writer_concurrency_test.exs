@@ -1,11 +1,10 @@
 defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
-  # AC-15/AC-16: `Gtfs.create_trip/1`, `Gtfs.create_stop_time/1` and `Gtfs.create_agency/1`
-  # must take the scoped version share lock before their insert, so a calendar change that
-  # owns the same version row `FOR UPDATE` cannot commit a reviewed input between a review
-  # load and its apply. A staging scope keeps writing because `Versions.lock_for_input_write!/2`
-  # is a scoped row lock, not an authorization check. The same boundary covers the named
-  # schedule, pattern, stop/parent, bulk geometry/naming/rollback, published pathway-import and
-  # blocking-settings writers, whose contention cases live in the later describes below.
+  # AC-15/AC-16: every writer of a calendar-combination input takes the scoped version share
+  # lock before its write, so a calendar change that owns the same version row `FOR UPDATE`
+  # cannot commit a reviewed input between a review load and its apply. The lock is a scoped
+  # row lock, not an authorization check. The boundary covers the named schedule, pattern,
+  # stop/parent, bulk geometry/naming/rollback, published pathway-import and blocking-settings
+  # writers, whose contention cases live in the describes below.
   #
   # `async: false` plus `Sandbox.unboxed_run/2` gives every participant its own committing
   # PostgreSQL connection. Contention is proven by polling `pg_blocking_pids/1` for the
@@ -28,6 +27,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Agency
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Blocking.DayTypes
@@ -37,12 +37,14 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.ChangeLog
+  alias GtfsPlanner.Gtfs.FeedSettings
   alias GtfsPlanner.Gtfs.Import.{ChangeDecision, ChangeRun, ChangeRuns}
   alias GtfsPlanner.Gtfs.Level
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
+  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Gtfs.StopTime
@@ -101,45 +103,14 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
     end
   end
 
-  describe "direct input writers" do
-    test "an exclusive version holder blocks create_trip and create_stop_time until it releases",
-         %{supervisor: supervisor} do
-      scope = seed_scope("blocked")
-      on_exit(fn -> cleanup([scope.organization.id]) end)
-
-      {holder, holder_backend} = hold_exclusive_version(scope, supervisor)
-
-      {trip_writer, trip_backend} =
-        start_writer(supervisor, fn -> Gtfs.create_trip(trip_attrs(scope, "BLOCKED_TRIP")) end)
-
-      {stop_time_writer, stop_time_backend} =
-        start_writer(supervisor, fn -> Gtfs.create_stop_time(stop_time_attrs(scope, 1)) end)
-
-      send(trip_writer.pid, :go)
-      send(stop_time_writer.pid, :go)
-
-      assert_blocked_by(trip_backend, holder_backend)
-      assert_blocked_by(stop_time_backend, holder_backend)
-
-      # Nothing was written while the version was exclusively owned, even though the
-      # writers had already issued their inserts.
-      assert trip_ids(scope) == []
-      assert stop_time_ids(scope) == []
-
-      send(holder.pid, :release)
-      assert Task.await(holder, @collect_timeout) == {:error, :released}
-
-      assert {:ok, %Trip{trip_id: "BLOCKED_TRIP"}} = Task.await(trip_writer, @collect_timeout)
-      assert {:ok, %StopTime{}} = Task.await(stop_time_writer, @collect_timeout)
-
-      assert trip_ids(scope) == ["BLOCKED_TRIP"]
-      assert length(stop_time_ids(scope)) == 1
-    end
-
+  describe "agency writer" do
     test "an agency that would change the display zone waits behind the exclusive version lock",
          %{supervisor: supervisor} do
       scope = seed_scope("agency")
       on_exit(fn -> cleanup([scope.organization.id]) end)
+
+      audit = bulk_audit(scope, nil)
+      on_exit(fn -> cleanup([], [audit.actor_id]) end)
 
       # No agency yet: the review's display clock falls back to UTC.
       assert %{timezone: "UTC", fallback?: true, fallback_reason: :missing} =
@@ -151,7 +122,11 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
 
       {writer, backend} =
         start_writer(supervisor, fn ->
-          Gtfs.create_agency(agency_attrs(scope, "America/New_York"))
+          FeedSettings.create_agency(audit, %{
+            "agency_name" => "Metro Transit",
+            "agency_url" => "https://metro.example",
+            "agency_timezone" => "America/New_York"
+          })
         end)
 
       send(writer.pid, :go)
@@ -170,97 +145,6 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
       assert %{timezone: "America/New_York", fallback?: false} =
                unboxed(fn ->
                  Gtfs.resolve_display_zone(scope.organization.id, scope.version.id)
-               end)
-    end
-
-    test "an independent organization writes while another version is locked and a foreign scope is refused",
-         %{supervisor: supervisor} do
-      first = seed_scope("independent-first")
-      second = seed_scope("independent-second")
-      on_exit(fn -> cleanup([first.organization.id, second.organization.id]) end)
-
-      {holder, holder_backend} = hold_exclusive_version(first, supervisor)
-
-      {blocked_writer, blocked_backend} =
-        start_writer(supervisor, fn -> Gtfs.create_trip(trip_attrs(first, "WAITING_TRIP")) end)
-
-      send(blocked_writer.pid, :go)
-      assert_blocked_by(blocked_backend, holder_backend)
-
-      # The independent scope is not serialized by the first organization's exclusive lock.
-      assert {:ok, %Trip{trip_id: "INDEPENDENT_TRIP"}} =
-               unboxed(fn -> Gtfs.create_trip(trip_attrs(second, "INDEPENDENT_TRIP")) end)
-
-      send(holder.pid, :release)
-      assert Task.await(holder, @collect_timeout) == {:error, :released}
-      assert {:ok, %Trip{trip_id: "WAITING_TRIP"}} = Task.await(blocked_writer, @collect_timeout)
-
-      # A scope pairing one organization with another organization's version is refused.
-      assert {:error, :not_found} =
-               unboxed(fn ->
-                 Gtfs.create_trip(
-                   trip_attrs(first, "FOREIGN_TRIP", %{
-                     organization_id: second.organization.id
-                   })
-                 )
-               end)
-
-      assert {:error, :not_found} =
-               unboxed(fn ->
-                 Gtfs.create_stop_time(
-                   stop_time_attrs(first, 9, %{organization_id: second.organization.id})
-                 )
-               end)
-
-      refute unboxed(fn ->
-               Repo.exists?(
-                 from(t in Trip,
-                   where:
-                     t.organization_id == ^second.organization.id and
-                       t.gtfs_version_id == ^first.version.id
-                 )
-               )
-             end)
-    end
-
-    test "a staging import scope keeps its permitted writes", %{supervisor: supervisor} do
-      scope = seed_scope("staging")
-      on_exit(fn -> cleanup([scope.organization.id]) end)
-
-      # The organization's published version is exclusively owned, as a calendar change
-      # would own it; the staging version is a different row and stays writable.
-      {holder, _holder_backend} = hold_exclusive_version(scope, supervisor)
-
-      assert {:ok, %Trip{trip_id: "STAGING_TRIP"}} =
-               unboxed(fn ->
-                 Gtfs.create_trip(
-                   trip_attrs(scope, "STAGING_TRIP", %{gtfs_version_id: scope.staging_version.id})
-                 )
-               end)
-
-      assert {:ok, %StopTime{}} =
-               unboxed(fn ->
-                 Gtfs.create_stop_time(
-                   stop_time_attrs(scope, 2, %{gtfs_version_id: scope.staging_version.id})
-                 )
-               end)
-
-      assert {:ok, %Agency{}} =
-               unboxed(fn ->
-                 Gtfs.create_agency(
-                   agency_attrs(scope, "Europe/Berlin", %{
-                     gtfs_version_id: scope.staging_version.id
-                   })
-                 )
-               end)
-
-      send(holder.pid, :release)
-      assert Task.await(holder, @collect_timeout) == {:error, :released}
-
-      # Publication rules are unchanged by the writer path: the scope is still unpublished.
-      assert %GtfsVersion{publication_status: "staging", published_at: nil} =
-               unboxed(fn ->
-                 Repo.get!(GtfsVersion, scope.staging_version.id)
                end)
     end
   end
@@ -338,49 +222,6 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
     end
   end
 
-  describe "writer return shapes" do
-    test "invalid input keeps the changeset error without requiring a scope or a connection" do
-      assert {:error, %Ecto.Changeset{valid?: false}} = Gtfs.create_trip(%{})
-      assert {:error, %Ecto.Changeset{valid?: false}} = Gtfs.create_stop_time(%{})
-      assert {:error, %Ecto.Changeset{valid?: false}} = Gtfs.create_agency(%{})
-    end
-
-    test "a refused duplicate insert releases the version lock for the next writer" do
-      scope = seed_scope("duplicate")
-      on_exit(fn -> cleanup([scope.organization.id]) end)
-
-      assert {:ok, %Trip{}} = unboxed(fn -> Gtfs.create_trip(trip_attrs(scope, "DUP")) end)
-
-      assert {:error, %Ecto.Changeset{errors: errors}} =
-               unboxed(fn -> Gtfs.create_trip(trip_attrs(scope, "DUP")) end)
-
-      # Ecto reports the three-column unique constraint on its first field.
-      assert {"has already been taken", opts} = errors[:organization_id]
-
-      assert opts[:constraint_name] == "trips_organization_id_gtfs_version_id_trip_id_index"
-
-      assert {:ok, %Trip{trip_id: "AFTER"}} =
-               unboxed(fn -> Gtfs.create_trip(trip_attrs(scope, "AFTER")) end)
-
-      # The refused insert rolled its transaction back, so the version row is free again.
-      assert {:ok, :acquired} =
-               unboxed(fn ->
-                 Repo.transaction(fn ->
-                   Repo.query!("SET LOCAL lock_timeout = '5s'")
-
-                   Repo.one(
-                     from(v in GtfsVersion,
-                       where: v.id == ^scope.version.id,
-                       lock: "FOR UPDATE"
-                     )
-                   )
-
-                   :acquired
-                 end)
-               end)
-    end
-  end
-
   describe "stop writers" do
     test "a parent coordinate update and a previously absent parent insert wait behind the lock",
          %{supervisor: supervisor} do
@@ -401,12 +242,12 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
 
       {update_writer, update_backend} =
         start_writer(supervisor, fn ->
-          Gtfs.update_stop(parent, %{stop_lat: "41.5", stop_lon: "-73.5"})
+          Gtfs.import_update_stop(parent, %{stop_lat: "41.5", stop_lon: "-73.5"})
         end)
 
       {insert_writer, insert_backend} =
         start_writer(supervisor, fn ->
-          Gtfs.create_stop(
+          Gtfs.import_create_stop(
             stop_attrs(scope, "PARENT_ADDED", %{
               location_type: 1,
               stop_lat: "42.0",
@@ -446,7 +287,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
 
       {writer, backend} =
         start_writer(supervisor, fn ->
-          Gtfs.create_stop(
+          Gtfs.import_create_stop(
             stop_attrs(scope, "PHANTOM_CHILD", %{
               parent_station: "ABSENT_PARENT",
               level_id: "L_ABSENT"
@@ -479,25 +320,38 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
       scope = seed_scope("stop-delete")
       on_exit(fn -> cleanup([scope.organization.id]) end)
 
-      stop =
+      {station, stop} =
         unboxed(fn ->
-          stop_fixture(scope.organization.id, scope.version.id, %{stop_id: "STOP_TO_DELETE"})
+          station = stop_fixture(scope.organization.id, scope.version.id, %{location_type: 1})
+
+          stop =
+            child_stop_fixture(scope.organization.id, scope.version.id, station.stop_id, %{
+              stop_id: "STOP_TO_DELETE"
+            })
+
+          {station, stop}
         end)
+
+      audit = bulk_audit(scope, station.stop_id)
+      on_exit(fn -> cleanup([], [audit.actor_id]) end)
 
       {holder, holder_backend} = hold_exclusive_version(scope, supervisor)
 
       {writer, backend} =
-        start_writer(supervisor, fn -> Gtfs.delete_stop(stop) end)
+        start_writer(supervisor, fn ->
+          Stations.delete_child_stop(audit, stop.id, stop.lock_version)
+        end)
 
       send(writer.pid, :go)
       assert_blocked_by(backend, holder_backend)
-      assert stop_ids(scope) == ["STOP_TO_DELETE"]
+      # The database collation orders mixed-case IDs differently from Elixir, so sort both sides.
+      assert Enum.sort(stop_ids(scope)) == Enum.sort([station.stop_id, "STOP_TO_DELETE"])
 
       send(holder.pid, :release)
       assert Task.await(holder, @collect_timeout) == {:error, :released}
 
       assert {:ok, %Stop{stop_id: "STOP_TO_DELETE"}} = Task.await(writer, @collect_timeout)
-      assert stop_ids(scope) == []
+      assert stop_ids(scope) == [station.stop_id]
 
       # The delete committed and released its share lock, so an exclusive version owner can now
       # take the row.
@@ -509,7 +363,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
       scope = seed_scope("stop-cascade")
       on_exit(fn -> cleanup([scope.organization.id]) end)
 
-      {station, stop_time, transfer} =
+      {station, child, stop_time, transfer} =
         unboxed(fn ->
           station =
             stop_fixture(scope.organization.id, scope.version.id, %{
@@ -517,10 +371,20 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
               location_type: 1
             })
 
+          level_fixture(scope.organization.id, scope.version.id, %{level_id: "L1"})
+
+          child =
+            stop_fixture(scope.organization.id, scope.version.id, %{
+              stop_id: "CASCADE_CHILD",
+              parent_station: "CASCADE_STATION",
+              level_id: "L1"
+            })
+
           stop_fixture(scope.organization.id, scope.version.id, %{
-            stop_id: "CASCADE_CHILD",
-            parent_station: "CASCADE_STATION",
-            level_id: "L1"
+            stop_id: "CASCADE_BOARDING",
+            parent_station: child.stop_id,
+            level_id: child.level_id,
+            location_type: 4
           })
 
           stop_time =
@@ -528,23 +392,31 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
               scope.organization.id,
               scope.version.id,
               "trip_cascade",
-              "CASCADE_STATION"
+              "CASCADE_CHILD"
             )
 
           transfer =
             transfer_fixture(scope.organization.id, scope.version.id, %{
-              from_stop_id: "CASCADE_STATION",
-              to_stop_id: "CASCADE_CHILD"
+              from_stop_id: "CASCADE_CHILD",
+              to_stop_id: "CASCADE_STATION"
             })
 
-          {station, stop_time, transfer}
+          {station, child, stop_time, transfer}
         end)
+
+      audit = bulk_audit(scope, station.stop_id)
+      on_exit(fn -> cleanup([], [audit.actor_id]) end)
 
       {holder, holder_backend} = hold_exclusive_version(scope, supervisor)
 
       {writer, backend} =
         start_writer(supervisor, fn ->
-          Gtfs.update_stop_with_cascade(station, %{stop_id: "CASCADE_STATION_RENAMED"})
+          Stations.update_child_stop(
+            audit,
+            child.id,
+            %{stop_id: "CASCADE_CHILD_RENAMED"},
+            child.lock_version
+          )
         end)
 
       send(writer.pid, :go)
@@ -552,29 +424,29 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
 
       # No stop row, stop time, transfer or parent reference is rewritten while the version is
       # exclusively owned.
-      assert stop_ids(scope) == ["CASCADE_CHILD", "CASCADE_STATION"]
-      assert child_parent_stations(scope) == ["CASCADE_STATION"]
-      assert stop_time_stop_ids(scope) == ["CASCADE_STATION"]
-      assert transfer_stop_ids(scope) == [{"CASCADE_STATION", "CASCADE_CHILD"}]
+      assert stop_ids(scope) == ["CASCADE_BOARDING", "CASCADE_CHILD", "CASCADE_STATION"]
+      assert child_parent_stations(scope) == ["CASCADE_CHILD", "CASCADE_STATION"]
+      assert stop_time_stop_ids(scope) == ["CASCADE_CHILD"]
+      assert transfer_stop_ids(scope) == [{"CASCADE_CHILD", "CASCADE_STATION"}]
 
       send(holder.pid, :release)
       assert Task.await(holder, @collect_timeout) == {:error, :released}
 
-      assert {:ok, %Stop{stop_id: "CASCADE_STATION_RENAMED"}} =
+      assert {:ok, %Stop{stop_id: "CASCADE_CHILD_RENAMED"}} =
                Task.await(writer, @collect_timeout)
 
       # The linked rows keep pointing at the renamed stop through stop_id itself, so their
       # identities and their existing stop-time rows survive the cascade.
-      assert stop_ids(scope) == ["CASCADE_CHILD", "CASCADE_STATION_RENAMED"]
-      assert child_parent_stations(scope) == ["CASCADE_STATION_RENAMED"]
-      assert stop_time_stop_ids(scope) == ["CASCADE_STATION_RENAMED"]
-      assert transfer_stop_ids(scope) == [{"CASCADE_STATION_RENAMED", "CASCADE_CHILD"}]
+      assert stop_ids(scope) == ["CASCADE_BOARDING", "CASCADE_CHILD_RENAMED", "CASCADE_STATION"]
+      assert child_parent_stations(scope) == ["CASCADE_CHILD_RENAMED", "CASCADE_STATION"]
+      assert stop_time_stop_ids(scope) == ["CASCADE_CHILD_RENAMED"]
+      assert transfer_stop_ids(scope) == [{"CASCADE_CHILD_RENAMED", "CASCADE_STATION"}]
 
       assert unboxed(fn -> Repo.get!(StopTime, stop_time.id).stop_id end) ==
-               "CASCADE_STATION_RENAMED"
+               "CASCADE_CHILD_RENAMED"
 
       assert unboxed(fn -> Repo.get!(Transfer, transfer.id).from_stop_id end) ==
-               "CASCADE_STATION_RENAMED"
+               "CASCADE_CHILD_RENAMED"
     end
   end
 
@@ -589,11 +461,12 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
 
       assert {:ok, aligned_derived} =
                unboxed(fn ->
-                 Gtfs.update_stop_level_alignment(derived.stop_level, alignment_attrs())
+                 put_stop_level_alignment(derived.stop_level, alignment_attrs())
                end)
 
       audit = bulk_audit(scope, reviewed.station.stop_id)
-      on_exit(fn -> cleanup([], [audit.actor_id]) end)
+      derived_audit = bulk_audit(scope, derived.station.stop_id)
+      on_exit(fn -> cleanup([], [audit.actor_id, derived_audit.actor_id]) end)
 
       {holder, holder_backend} = hold_exclusive_version(scope, supervisor)
 
@@ -610,7 +483,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
 
       {derived_writer, derived_backend} =
         start_writer(supervisor, fn ->
-          Gtfs.apply_alignment_to_child_stops(aligned_derived, 1000, 800)
+          Stations.apply_alignment_to_child_stops(derived_audit, aligned_derived, {1000, 800})
         end)
 
       send(reviewed_writer.pid, :go)
@@ -672,15 +545,14 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
         })
       end)
 
+      audit = bulk_audit(scope, station.stop_id)
+      on_exit(fn -> cleanup([], [audit.actor_id]) end)
+
       # The exact renamed ID comes from the real preview rather than from a naming convention
       # repeated in the test.
       assert {:ok, preview} =
                unboxed(fn ->
-                 Gtfs.preview_station_naming(
-                   scope.organization.id,
-                   scope.version.id,
-                   station.stop_id
-                 )
+                 Stations.preview_station_naming(audit)
                end)
 
       assert [%{old_id: "NAMING_PLATFORM", new_id: renamed_id}] = preview.rows
@@ -689,11 +561,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
 
       {writer, backend} =
         start_writer(supervisor, fn ->
-          Gtfs.apply_station_naming(
-            scope.organization.id,
-            scope.version.id,
-            station.stop_id
-          )
+          Stations.apply_station_naming(audit, :structured, nil, preview.fingerprint)
         end)
 
       send(writer.pid, :go)
@@ -722,14 +590,24 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
       stop =
         unboxed(fn ->
           stop_fixture(scope.organization.id, scope.version.id, %{
-            stop_id: "ROLLBACK_STOP",
-            stop_name: "Original"
+            stop_id: "ROLLBACK_STATION",
+            location_type: 1
           })
+
+          child_stop_fixture(
+            scope.organization.id,
+            scope.version.id,
+            "ROLLBACK_STATION",
+            %{stop_id: "ROLLBACK_STOP", stop_name: "Original"}
+          )
         end)
 
       unboxed(fn ->
-        Gtfs.record_change(audit, :stop, stop, "updated", %{stop_name: "Changed"})
-        Gtfs.update_stop(stop, %{stop_name: "Changed"})
+        Audit.record_change_in_transaction(audit, :stop, stop, "updated", %{
+          stop_name: "Changed"
+        })
+
+        Gtfs.import_update_stop(stop, %{stop_name: "Changed"})
       end)
 
       log = unboxed(fn -> Repo.one!(stop_change_log_query(scope, stop.id, "updated")) end)
@@ -737,7 +615,9 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
       {holder, holder_backend} = hold_exclusive_version(scope, supervisor)
 
       {writer, backend} =
-        start_writer(supervisor, fn -> Gtfs.rollback_entity(log, audit) end)
+        start_writer(supervisor, fn ->
+          Stations.rollback_entity(audit, log.id, persisted_entity_revision(log))
+        end)
 
       send(writer.pid, :go)
       assert_blocked_by(backend, holder_backend)
@@ -904,16 +784,28 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
 
       {update_writer, update_backend} =
         start_writer(supervisor, fn ->
-          Gtfs.update_blocking_settings(scope.organization.id, scope.version.id, %{
-            min_layover_minutes: 9
-          })
+          Gtfs.update_blocking_settings(
+            GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+              scope.organization.id,
+              scope.version.id
+            ),
+            %{
+              min_layover_minutes: 9
+            }
+          )
         end)
 
       {insert_writer, insert_backend} =
         start_writer(supervisor, fn ->
-          Blocking.update_settings(scope.organization.id, first_row_version.id, %{
-            min_layover_minutes: 7
-          })
+          Blocking.update_settings(
+            GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+              scope.organization.id,
+              first_row_version.id
+            ),
+            %{
+              min_layover_minutes: 7
+            }
+          )
         end)
 
       send(update_writer.pid, :go)
@@ -1130,48 +1022,6 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
     end)
   end
 
-  defp trip_attrs(scope, trip_id, overrides \\ %{}) do
-    Map.merge(
-      %{
-        organization_id: scope.organization.id,
-        gtfs_version_id: scope.version.id,
-        route_id: "route_input_writer",
-        trip_id: trip_id,
-        service_id: "service_input_writer"
-      },
-      Map.new(overrides)
-    )
-  end
-
-  defp stop_time_attrs(scope, stop_sequence, overrides \\ %{}) do
-    Map.merge(
-      %{
-        organization_id: scope.organization.id,
-        gtfs_version_id: scope.version.id,
-        trip_id: "trip_input_writer",
-        stop_id: "stop_input_writer",
-        stop_sequence: stop_sequence,
-        arrival_time: "08:00:00",
-        departure_time: "08:00:00"
-      },
-      Map.new(overrides)
-    )
-  end
-
-  defp agency_attrs(scope, timezone, overrides \\ %{}) do
-    Map.merge(
-      %{
-        organization_id: scope.organization.id,
-        gtfs_version_id: scope.version.id,
-        agency_id: "agency_input_writer",
-        agency_name: "Input Writer Transit",
-        agency_url: "https://example.test",
-        agency_timezone: timezone
-      },
-      Map.new(overrides)
-    )
-  end
-
   defp trip_ids(scope) do
     unboxed(fn ->
       from(t in Trip,
@@ -1180,19 +1030,6 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
             t.gtfs_version_id == ^scope.version.id,
         order_by: t.trip_id,
         select: t.trip_id
-      )
-      |> Repo.all()
-    end)
-  end
-
-  defp stop_time_ids(scope) do
-    unboxed(fn ->
-      from(s in StopTime,
-        where:
-          s.organization_id == ^scope.organization.id and
-            s.gtfs_version_id == ^scope.version.id,
-        order_by: s.stop_sequence,
-        select: s.id
       )
       |> Repo.all()
     end)
@@ -1295,6 +1132,15 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
 
   defp cleanup(organization_ids, user_ids \\ []) do
     unboxed(fn ->
+      actor_ids =
+        user_ids ++
+          Repo.all(
+            from(m in UserOrgMembership,
+              where: m.organization_id in ^organization_ids,
+              select: m.user_id
+            )
+          )
+
       Repo.delete_all(from(t in Transfer, where: t.organization_id in ^organization_ids))
       Repo.delete_all(from(p in Pathway, where: p.organization_id in ^organization_ids))
       Repo.delete_all(from(s in Stop, where: s.organization_id in ^organization_ids))
@@ -1303,9 +1149,15 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
       Repo.delete_all(from(sl in StopLevel, where: sl.organization_id in ^organization_ids))
       Repo.delete_all(from(l in Level, where: l.organization_id in ^organization_ids))
       Repo.delete_all(from(a in Agency, where: a.organization_id in ^organization_ids))
-      Repo.delete_all(from(m in UserOrgMembership, where: m.user_id in ^user_ids))
+
+      Repo.delete_all(
+        from(m in UserOrgMembership,
+          where: m.organization_id in ^organization_ids or m.user_id in ^actor_ids
+        )
+      )
+
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
-      Repo.delete_all(from(u in User, where: u.id in ^user_ids))
+      Repo.delete_all(from(u in User, where: u.id in ^actor_ids))
       Repo.delete_all(from(o in Organization, where: o.id in ^organization_ids))
 
       refute Repo.exists?(from(s in Stop, where: s.organization_id in ^organization_ids))
@@ -1314,7 +1166,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
       refute Repo.exists?(from(l in Level, where: l.organization_id in ^organization_ids))
       refute Repo.exists?(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
       refute Repo.exists?(from(o in Organization, where: o.id in ^organization_ids))
-      refute Repo.exists?(from(u in User, where: u.id in ^user_ids))
+      refute Repo.exists?(from(u in User, where: u.id in ^actor_ids))
       :ok
     end)
   end
@@ -1339,7 +1191,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
       service = "svc_#{unique}"
       calendar_fixture(organization.id, version.id, %{service_id: service})
 
-      actor = user_fixture()
+      actor = unique_editor(organization)
 
       audit = %AuditContext{
         organization_id: organization.id,
@@ -1491,7 +1343,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
         })
 
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: scope.organization.id,
           gtfs_version_id: scope.version.id,
           stop_id: station.id,
@@ -1531,11 +1383,16 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
     }
   end
 
+  # Committed identities never reuse a number from an earlier run of the suite, so rows another
+  # test left behind cannot collide with this one. Call inside `unboxed/1`.
+  defp unique_editor(organization) do
+    user = user_fixture(%{email: "input-writer-#{Ecto.UUID.generate()}@example.test"})
+    organization_membership_fixture(user, organization)
+    user
+  end
+
   defp bulk_audit(scope, station_stop_id) do
-    actor =
-      unboxed(fn ->
-        user_fixture(%{email: "bulk-stop-#{System.system_time(:microsecond)}@example.com"})
-      end)
+    actor = unboxed(fn -> unique_editor(scope.organization) end)
 
     %AuditContext{
       organization_id: scope.organization.id,
@@ -1579,7 +1436,10 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
   # -- Blocking settings writer fixtures and observations --------------------
 
   defp save_layover(organization_id, gtfs_version_id, minutes) do
-    Blocking.update_settings(organization_id, gtfs_version_id, %{min_layover_minutes: minutes})
+    Blocking.update_settings(
+      GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization_id, gtfs_version_id),
+      %{min_layover_minutes: minutes}
+    )
   end
 
   defp stored_layover(organization_id, gtfs_version_id) do
@@ -1655,13 +1515,12 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
     if action, do: where(query, [l], l.action == ^action), else: query
   end
 
-  # One approved stop decision on one fenced apply attempt, as the real worker would hold it.
+  # Approved stop decisions on one fenced apply attempt, as the real worker would hold it. The run
+  # belongs to a real editor because applying reauthorizes the run's actor.
   defp seed_import_run(scope, decisions) do
     unboxed(fn ->
-      actor = %{
-        id: Ecto.UUID.generate(),
-        email: "bulk-stop-#{System.unique_integer([:positive])}@example.test"
-      }
+      editor = unique_editor(scope.organization)
+      actor = %{id: editor.id, email: editor.email}
 
       {:ok, run} =
         ChangeRuns.create_pending_compute(scope.organization.id, scope.version.id, actor, [])
@@ -1688,7 +1547,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
           )
       end)
 
-      {:ok, pending_apply} = ChangeRuns.request_apply(scope.organization.id, review.id)
+      {:ok, pending_apply} = ChangeRuns.request_apply(scope.organization.id, review.id, actor)
 
       {:ok, claimed, generation, token} =
         ChangeRuns.claim(scope.organization.id, pending_apply.id, :apply)
@@ -1743,6 +1602,15 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
     unboxed(fn ->
       organization_id = scope.organization.id
 
+      actor_ids =
+        [scope.actor.id] ++
+          Repo.all(
+            from(m in UserOrgMembership,
+              where: m.organization_id == ^organization_id,
+              select: m.user_id
+            )
+          )
+
       Repo.delete_all(from(l in ChangeLog, where: l.organization_id == ^organization_id))
       Repo.delete_all(from(st in StopTime, where: st.organization_id == ^organization_id))
       Repo.delete_all(from(t in Trip, where: t.organization_id == ^organization_id))
@@ -1771,12 +1639,12 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
 
       Repo.delete_all(
         from(m in UserOrgMembership,
-          where: m.organization_id == ^organization_id or m.user_id == ^scope.actor.id
+          where: m.organization_id == ^organization_id or m.user_id in ^actor_ids
         )
       )
 
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
-      Repo.delete_all(from(u in User, where: u.id == ^scope.actor.id))
+      Repo.delete_all(from(u in User, where: u.id in ^actor_ids))
       Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
 
       refute Repo.exists?(from(o in Organization, where: o.id == ^organization_id))

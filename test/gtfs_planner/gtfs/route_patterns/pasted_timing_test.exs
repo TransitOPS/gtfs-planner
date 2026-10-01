@@ -6,6 +6,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.PastedTimingTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
@@ -23,7 +24,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.PastedTimingTest do
 
     version = gtfs_version_fixture(organization.id)
     route = route_fixture(organization.id, version.id)
-    actor = user_fixture()
+    actor = editor_fixture(organization)
 
     %{
       organization: organization,
@@ -174,6 +175,74 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.PastedTimingTest do
            )
   end
 
+  test "the helper refuses a call outside the authorized transaction before any write", context do
+    pattern = create_pattern(context, ["A", "B"])
+    before_timings = Repo.aggregate(TimedPattern, :count)
+    before_logs = Repo.aggregate(ChangeLog, :count)
+
+    assert_raise ArgumentError, ~r/authorized transaction/, fn ->
+      RoutePatterns.create_pasted_timing!(pattern, "Untrusted", [], nil, context.audit)
+    end
+
+    assert Repo.aggregate(TimedPattern, :count) == before_timings
+    assert Repo.aggregate(ChangeLog, :count) == before_logs
+  end
+
+  test "a foreign audit scope rolls back without timing rows or history", context do
+    pattern = create_pattern(context, ["A", "B"])
+    foreign_audit = %{context.audit | gtfs_version_id: Ecto.UUID.generate()}
+    before_timings = Repo.aggregate(TimedPattern, :count)
+    before_logs = Repo.aggregate(ChangeLog, :count)
+
+    assert {:error, :not_found} =
+             Repo.transaction(fn ->
+               locked = lock_pattern(context, pattern)
+               RoutePatterns.create_pasted_timing!(locked, "Foreign", [], nil, foreign_audit)
+             end)
+
+    assert Repo.aggregate(TimedPattern, :count) == before_timings
+    assert Repo.aggregate(ChangeLog, :count) == before_logs
+  end
+
+  test "the helper keeps occurrence scope and supplied operation id", context do
+    pattern = create_pattern(context, ["A", "B", "C"])
+    other = create_pattern(context, ["X", "Y"])
+    operation_id = Ecto.UUID.generate()
+
+    assert {:ok, timing} =
+             Repo.transaction(fn ->
+               locked = lock_pattern(context, pattern)
+
+               RoutePatterns.create_pasted_timing!(
+                 locked,
+                 "Scoped",
+                 rows(),
+                 nil,
+                 context.audit,
+                 operation_id
+               )
+             end)
+
+    occurrence_ids =
+      Repo.all(from o in RoutePatternStop, where: o.route_pattern_id == ^pattern.id, select: o.id)
+
+    timing_occurrence_ids =
+      Repo.all(
+        from row in TimedPatternStop,
+          where: row.timed_pattern_id == ^timing.id,
+          select: row.route_pattern_stop_id
+      )
+
+    other_occurrence_ids =
+      Repo.all(from o in RoutePatternStop, where: o.route_pattern_id == ^other.id, select: o.id)
+
+    assert Enum.sort(timing_occurrence_ids) == Enum.sort(occurrence_ids)
+    refute Enum.any?(timing_occurrence_ids, &(&1 in other_occurrence_ids))
+
+    [log] = Repo.all(from log in ChangeLog, where: log.entity_id == ^timing.id)
+    assert log.changed_fields["operation_id"] == operation_id
+  end
+
   defp create_pattern(context, names) do
     stops =
       for name <- names,
@@ -190,6 +259,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.PastedTimingTest do
   end
 
   defp lock_pattern(context, pattern) do
+    Authorization.lock_editor!(context.audit)
     route = RoutePatterns.lock_published_route!(context.audit, context.route.route_id)
     RoutePatterns.lock_pattern!(route, pattern.id)
   end

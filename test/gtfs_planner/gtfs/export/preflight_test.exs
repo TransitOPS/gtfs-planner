@@ -396,7 +396,7 @@ defmodule GtfsPlanner.Gtfs.Export.PreflightTest do
     trip_fixture(organization_id, version_id, route.route_id, service_id: "GHOST_SERVICE")
   end
 
-  # `Gtfs.create_stop/1` rejects a station inside a station; the import path
+  # `Stop.changeset/2` rejects a station inside a station; the import path
   # stores it, which is how this state reaches a version.
   defp import_stop(organization_id, version_id, attrs) do
     {:ok, stop} =

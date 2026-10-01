@@ -277,25 +277,21 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
     """
   end
 
-  @doc "An editing change that did not save, with the one control that repeats it."
-  attr :kind, :atom, required: true, values: [:set, :clear]
+  @doc """
+  An editing change that did not save. A failed save offers the control that repeats it;
+  refused access does not, because a retry cannot succeed.
+  """
+  attr :kind, :atom, required: true, values: [:set, :clear, :forbidden]
   attr :status, :any, default: nil
 
   def editing_failure(assigns) do
+    {title, body} = editing_failure_copy(assigns.kind)
+    assigns = assign(assigns, title: title, body: body)
+
     ~H"""
-    <.message
-      id="editing-error"
-      kind="error"
-      title={
-        if @kind == :set,
-          do: "We couldn't start editing",
-          else: "We couldn't clear the editing status"
-      }
-    >
-      {if @kind == :set,
-        do: "Teammates won't see that you're editing. Try again.",
-        else: "Teammates still see it. Try again."}
-      <:action>
+    <.message id="editing-error" kind="error" title={@title}>
+      {@body}
+      <:action :if={@kind != :forbidden}>
         <.button
           id="editing-error-retry"
           variant="secondary"
@@ -308,6 +304,17 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
     </.message>
     """
   end
+
+  defp editing_failure_copy(:set),
+    do: {"We couldn't start editing", "Teammates won't see that you're editing. Try again."}
+
+  defp editing_failure_copy(:clear),
+    do: {"We couldn't clear the editing status", "Teammates still see it. Try again."}
+
+  defp editing_failure_copy(:forbidden),
+    do:
+      {"You no longer have edit access",
+       "Ask an organization administrator to restore it, then reload this page."}
 
   defp editing_owner?(nil, _current_user), do: false
   defp editing_owner?(status, current_user), do: status.user_id == current_user.id

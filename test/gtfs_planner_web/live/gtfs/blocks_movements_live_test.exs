@@ -279,9 +279,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksMovementsLiveTest do
     test "a wait at a marked stop ends with the mark once a limit is set", context do
       # The 60-minute limit is what makes an operator change part of the plan at
       # all, and S1 is marked, so the wait at it is a window.
-      Blocking.update_settings(context.organization.id, context.version.id, %{
-        max_piece_minutes: 60
-      })
+      Blocking.update_settings(
+        GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+          context.organization.id,
+          context.version.id
+        ),
+        %{
+          max_piece_minutes: 60
+        }
+      )
 
       relief_point_fixture(context.organization.id, context.version.id, %{stop_id: "S1"})
 
@@ -367,9 +373,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksMovementsLiveTest do
     end
 
     test "adds the operator-change key when a limit is set", context do
-      Blocking.update_settings(context.organization.id, context.version.id, %{
-        max_piece_minutes: 330
-      })
+      Blocking.update_settings(
+        GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+          context.organization.id,
+          context.version.id
+        ),
+        %{
+          max_piece_minutes: 330
+        }
+      )
 
       trip!(context, "a", "101", "08:00:00", "09:00:00", "S1", "S2")
 

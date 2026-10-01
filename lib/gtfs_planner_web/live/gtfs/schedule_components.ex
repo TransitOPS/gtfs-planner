@@ -1577,6 +1577,8 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
     "Enter a time such as 6:05, 605, 6:05p or 25:10."
   end
 
+  def error_message(:forbidden), do: error_message(:unauthorized)
+
   def error_message(:unauthorized) do
     "You don't have permission to change this route's trips."
   end

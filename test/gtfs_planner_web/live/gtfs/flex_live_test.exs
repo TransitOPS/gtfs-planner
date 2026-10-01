@@ -95,7 +95,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
       # The same version without the services: first use is an empty list, not a
       # failure and not the populated table.
       for service <- Flex.list_services(organization.id, version.id) do
-        :ok = Flex.delete_service(organization.id, version.id, service.id)
+        :ok = Flex.delete_service(flex_audit_fixture(organization.id, version.id), service.id)
       end
 
       conn = log_in_user(conn, user, organization: organization)
@@ -133,7 +133,11 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
       feed: feed
     } do
       {:ok, _inactive} =
-        Flex.set_active(organization.id, version.id, feed.services.detour.id, false)
+        Flex.set_active(
+          flex_audit_fixture(organization.id, version.id),
+          feed.services.detour.id,
+          false
+        )
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -202,7 +206,11 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
       feed: feed
     } do
       {:ok, _inactive} =
-        Flex.set_active(organization.id, version.id, feed.services.area.id, false)
+        Flex.set_active(
+          flex_audit_fixture(organization.id, version.id),
+          feed.services.area.id,
+          false
+        )
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -255,7 +263,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
       sibling_version = gtfs_version_fixture(organization.id)
 
       {:ok, _sibling_service} =
-        Flex.create_service(organization.id, sibling_version.id, %{
+        Flex.create_service(flex_audit_fixture(organization.id, sibling_version.id), %{
           name: "Sibling Version Service",
           kind: :area
         })
@@ -264,7 +272,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
       other_version = gtfs_version_fixture(other_organization.id)
 
       {:ok, _other_service} =
-        Flex.create_service(other_organization.id, other_version.id, %{
+        Flex.create_service(flex_audit_fixture(other_organization.id, other_version.id), %{
           name: "Other Organization Service",
           kind: :area
         })
@@ -298,7 +306,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
       assert has_element?(view, "#flex-exports", "Exports also write a flex file")
       refute has_element?(view, "#flex-exports", "Exports leave flex out")
 
-      {:ok, _defaults} = ExportDefaults.update(organization.id, %{include_flex: false})
+      {:ok, _defaults} =
+        ExportDefaults.update(organization.id, editor_fixture(organization), %{
+          include_flex: false
+        })
 
       {:ok, off_view, _html} = live(conn, flex_path(version))
 
@@ -307,19 +318,20 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
       refute has_element?(off_view, "#flex-exports", "Exports also write a flex file")
 
       # A version with no fixed route publishes the flex file as its only feed (R15).
-      {:ok, _defaults} = ExportDefaults.update(organization.id, %{include_flex: true})
+      {:ok, _defaults} =
+        ExportDefaults.update(organization.id, editor_fixture(organization), %{include_flex: true})
+
       empty_version = gtfs_version_fixture(organization.id)
 
       {:ok, service} =
-        Flex.create_service(organization.id, empty_version.id, %{
+        Flex.create_service(flex_audit_fixture(organization.id, empty_version.id), %{
           name: "Coastal Dial-a-Ride",
           kind: :area
         })
 
       {:ok, _service} =
         Flex.save_service(
-          organization.id,
-          empty_version.id,
+          flex_audit_fixture(organization.id, empty_version.id),
           service,
           %{phone: "(541) 555-0199"},
           []
@@ -338,7 +350,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
     } do
       version = gtfs_version_fixture(organization.id)
 
-      {:ok, _defaults} = ExportDefaults.update(organization.id, %{include_flex: false})
+      {:ok, _defaults} =
+        ExportDefaults.update(organization.id, editor_fixture(organization), %{
+          include_flex: false
+        })
 
       conn = log_in_user(conn, user, organization: organization)
 

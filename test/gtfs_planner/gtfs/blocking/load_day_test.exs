@@ -403,7 +403,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.LoadDayTest do
       calendar_service_fixture(organization.id, version.id, %{service_id: "WK", name: "Weekday"})
 
       assert {:ok, _setting} =
-               Blocking.update_settings(organization.id, version.id, %{min_layover_minutes: 10})
+               Blocking.update_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 %{min_layover_minutes: 10}
+               )
 
       tight_a =
         blocked_trip(scope, %{

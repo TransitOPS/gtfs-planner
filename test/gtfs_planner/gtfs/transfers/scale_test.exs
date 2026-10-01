@@ -172,6 +172,7 @@ defmodule GtfsPlanner.Gtfs.Transfers.ScaleTest do
 
   defp audit_context(organization_id, version_id) do
     actor = user_fixture()
+    organization_membership_fixture(actor, %{id: organization_id})
 
     %AuditContext{
       organization_id: organization_id,

@@ -5,16 +5,23 @@ defmodule GtfsPlanner.Gtfs.Export.Runner do
 
   alias GtfsPlanner.Gtfs.Export.{Run, Worker}
   alias GtfsPlanner.Gtfs.ExportRuns
+  alias GtfsPlanner.RunnerAdmission
 
   @default_heartbeat_ms 60_000
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
+  @doc """
+  Starts the build runner for `run_id`.
+
+  Returns `{:error, :busy}` when the supervisor is at its `:runner_limits` cap.
+  The run is then still pending; `ensure_started/2` closes it.
+  """
   @spec start_build(Ecto.UUID.t(), Ecto.UUID.t(), module(), keyword()) ::
-          DynamicSupervisor.on_start_child()
+          DynamicSupervisor.on_start_child() | {:error, :busy}
   def start_build(organization_id, run_id, worker_module \\ Worker, opts \\ []) do
-    DynamicSupervisor.start_child(
+    RunnerAdmission.start_child(
       GtfsPlanner.Gtfs.Export.RunnerSupervisor,
       {__MODULE__,
        Keyword.merge(opts,
@@ -33,18 +40,30 @@ defmodule GtfsPlanner.Gtfs.Export.Runner do
 
   Shared by the web LiveView and the companion API so neither owns its own
   start-if-pending branch.
+
+  At the supervisor's cap it closes the run that never started as `failed` with
+  `busy` and returns `{:error, :busy}`. A run that another start already claimed
+  is not unstarted, so that case returns `:ok`.
   """
   @spec ensure_started(Ecto.UUID.t(), run()) :: :ok | {:error, term()}
-  def ensure_started(organization_id, %Run{state: :pending, id: run_id}) do
+  def ensure_started(organization_id, %Run{state: :pending, id: run_id} = run) do
     case start_build(organization_id, run_id) do
       {:ok, _pid} -> :ok
       {:error, {:already_started, _pid}} -> :ok
       {:error, :claim_failed} -> :ok
+      {:error, :busy} -> close_unstarted(organization_id, run)
       {:error, reason} -> {:error, reason}
     end
   end
 
   def ensure_started(_organization_id, %Run{}), do: :ok
+
+  defp close_unstarted(organization_id, %Run{id: run_id, lease_generation: generation}) do
+    case ExportRuns.fail_unstarted(organization_id, run_id, generation) do
+      {:error, :invalid_transition} -> :ok
+      _closed_or_missing -> {:error, :busy}
+    end
+  end
 
   @impl true
   def init(opts) do

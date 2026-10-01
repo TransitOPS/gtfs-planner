@@ -2,12 +2,14 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
   use GtfsPlanner.DataCase
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.{AuditContext, Stations}
   alias GtfsPlanner.Gtfs.FareLegJoinRule
   alias GtfsPlanner.Gtfs.StopArea
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Translation
   alias GtfsPlanner.Validations.WalkabilityTest
 
+  import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
   import GtfsPlanner.GtfsFixtures
@@ -51,7 +53,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
         })
 
       assert {:ok, preview} =
-               Gtfs.preview_station_naming(org.id, version.id, station.stop_id)
+               preview_naming(org.id, version.id, station.stop_id)
 
       assert preview.renamed_stops_count == 2
       assert preview.updated_pathways_count == 2
@@ -74,7 +76,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
         })
 
       assert {:error, :no_stops} =
-               Gtfs.preview_station_naming(org.id, version.id, station.stop_id)
+               preview_naming(org.id, version.id, station.stop_id)
     end
 
     test "returns :naming_collision when new ID conflicts with existing stop", %{
@@ -106,7 +108,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
         })
 
       assert {:error, {:naming_collision, collisions}} =
-               Gtfs.preview_station_naming(org.id, version.id, station.stop_id)
+               preview_naming(org.id, version.id, station.stop_id)
 
       assert "st_platform_general_lvl_01" in collisions
     end
@@ -146,7 +148,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
         })
 
       assert {:ok, preview} =
-               Gtfs.preview_station_naming(org.id, version.id, station.stop_id)
+               preview_naming(org.id, version.id, station.stop_id)
 
       old_ids = Enum.map(preview.rows, & &1.old_id)
       assert "PLAT_B" in old_ids
@@ -186,7 +188,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
         })
 
       assert {:ok, preview} =
-               Gtfs.preview_station_naming(org.id, version.id, station.stop_id, :kebab)
+               preview_naming(org.id, version.id, station.stop_id, :kebab)
 
       assert preview.renamed_stops_count == 2
       assert length(preview.rows) == 2
@@ -208,7 +210,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
         })
 
       assert {:error, :no_stops} =
-               Gtfs.preview_station_naming(org.id, version.id, station.stop_id, :kebab)
+               preview_naming(org.id, version.id, station.stop_id, :kebab)
     end
 
     test "falls back to stop_id when stop_name is blank or punctuation-only", %{
@@ -241,7 +243,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
         })
 
       assert {:ok, preview} =
-               Gtfs.preview_station_naming(org.id, version.id, station.stop_id, :kebab)
+               preview_naming(org.id, version.id, station.stop_id, :kebab)
 
       mapping = Map.new(preview.rows, fn %{old_id: old, new_id: new} -> {old, new} end)
       assert mapping["BLANK_STOP"] == "blank-stop-01"
@@ -276,7 +278,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
         })
 
       assert {:error, {:naming_collision, collisions}} =
-               Gtfs.preview_station_naming(org.id, version.id, station.stop_id, :kebab)
+               preview_naming(org.id, version.id, station.stop_id, :kebab)
 
       assert "main-hall-01" in collisions
     end
@@ -316,7 +318,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
         pathway_fixture(org.id, version.id, "SUBSET_KEEP", station.stop_id, %{pathway_mode: 1})
 
       assert {:ok, preview} =
-               Gtfs.preview_station_naming(
+               preview_naming(
                  org.id,
                  version.id,
                  station.stop_id,
@@ -366,7 +368,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
         })
 
       assert {:ok, %{renamed_stops: 2, updated_pathways: 2}} =
-               Gtfs.apply_station_naming(org.id, version.id, station.stop_id, :kebab)
+               apply_naming(org.id, version.id, station.stop_id, :kebab)
 
       # Verify new kebab-cased stop IDs exist
       assert Gtfs.get_stop_by_stop_id(org.id, version.id, "platform-1-01")
@@ -377,7 +379,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
       refute Gtfs.get_stop_by_stop_id(org.id, version.id, "PLAT_X")
 
       # Verify pathway references updated
-      updated_pathway = Gtfs.get_pathway!(pathway.id)
+      updated_pathway = Repo.get!(GtfsPlanner.Gtfs.Pathway, pathway.id)
       assert updated_pathway.from_stop_id == "ticket-hall-01"
       assert updated_pathway.to_stop_id == "platform-1-01"
     end
@@ -412,7 +414,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
         })
 
       assert {:ok, %{renamed_stops: 2}} =
-               Gtfs.apply_station_naming(org.id, version.id, station.stop_id, :kebab)
+               apply_naming(org.id, version.id, station.stop_id, :kebab)
 
       assert Gtfs.get_stop_by_stop_id(org.id, version.id, "blank-apply-01")
       assert Gtfs.get_stop_by_stop_id(org.id, version.id, "punc-apply-01")
@@ -457,7 +459,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
         })
 
       assert {:ok, %{renamed_stops: 2, updated_pathways: 2}} =
-               Gtfs.apply_station_naming(org.id, version.id, station.stop_id)
+               apply_naming(org.id, version.id, station.stop_id)
 
       # Verify stop IDs were updated
       assert Gtfs.get_stop_by_stop_id(org.id, version.id, "main_node_stairs_l0_01")
@@ -468,7 +470,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
       refute Gtfs.get_stop_by_stop_id(org.id, version.id, "PLAT_X")
 
       # Verify pathway references updated
-      updated_pathway = Gtfs.get_pathway!(pathway.id)
+      updated_pathway = Repo.get!(GtfsPlanner.Gtfs.Pathway, pathway.id)
       assert updated_pathway.from_stop_id == "main_node_stairs_l0_01"
       assert updated_pathway.to_stop_id == "main_platform_stairs_l0_01"
     end
@@ -485,7 +487,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
         })
 
       assert {:error, :no_stops} =
-               Gtfs.apply_station_naming(org.id, version.id, station.stop_id)
+               apply_naming(org.id, version.id, station.stop_id)
     end
 
     test "updates all known stop_id reference tables for renamed children", %{
@@ -571,7 +573,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
         })
 
       assert {:ok, %{renamed_stops: 2, updated_references: updated_references}} =
-               Gtfs.apply_station_naming(org.id, version.id, station.stop_id)
+               apply_naming(org.id, version.id, station.stop_id)
 
       assert updated_references > 0
 
@@ -647,7 +649,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
       selected = MapSet.new(["SEL_PLAT"])
 
       assert {:ok, %{renamed_stops: 1}} =
-               Gtfs.apply_station_naming(
+               apply_naming(
                  org.id,
                  version.id,
                  station.stop_id,
@@ -683,7 +685,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
         })
 
       assert {:ok, %{renamed_stops: 0}} =
-               Gtfs.apply_station_naming(
+               apply_naming(
                  org.id,
                  version.id,
                  station.stop_id,
@@ -724,10 +726,10 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
         })
 
       assert {:error, {:naming_collision, _collisions}} =
-               Gtfs.preview_station_naming(org.id, version.id, station.stop_id, :kebab)
+               preview_naming(org.id, version.id, station.stop_id, :kebab)
 
       assert {:ok, %{renamed_stops: 0}} =
-               Gtfs.apply_station_naming(
+               apply_naming(
                  org.id,
                  version.id,
                  station.stop_id,
@@ -769,7 +771,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
         })
 
       assert {:ok, %{renamed_stops: 1}} =
-               Gtfs.apply_station_naming(
+               apply_naming(
                  org.id,
                  version.id,
                  station.stop_id,
@@ -812,7 +814,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
         })
 
       assert {:error, {:naming_collision, collisions}} =
-               Gtfs.apply_station_naming(
+               apply_naming(
                  org.id,
                  version.id,
                  station.stop_id,
@@ -824,5 +826,33 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
       assert Gtfs.get_stop_by_stop_id(org.id, version.id, "PARTIAL_SELECTED")
       assert Gtfs.get_stop_by_stop_id(org.id, version.id, "target-01")
     end
+  end
+
+  defp preview_naming(org_id, version_id, station_id, style \\ :structured, selected_ids \\ nil) do
+    Stations.preview_station_naming(
+      naming_audit(org_id, version_id, station_id),
+      style,
+      selected_ids
+    )
+  end
+
+  defp apply_naming(org_id, version_id, station_id, style \\ :structured, selected_ids \\ nil) do
+    audit = naming_audit(org_id, version_id, station_id)
+
+    with {:ok, preview} <- Stations.preview_station_naming(audit, style, selected_ids) do
+      Stations.apply_station_naming(audit, style, selected_ids, preview.fingerprint)
+    end
+  end
+
+  defp naming_audit(org_id, version_id, station_id) do
+    actor = editor_fixture(%{id: org_id})
+
+    %AuditContext{
+      organization_id: org_id,
+      gtfs_version_id: version_id,
+      station_stop_id: station_id,
+      actor_id: actor.id,
+      actor_email: actor.email
+    }
   end
 end

@@ -200,6 +200,28 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLinkOfferTest do
       refute has_element?(view, "#link-offer")
     end
 
+    test "is refused for an editor revoked after the offer opened and links nothing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      scope = build_scenario(organization, version, "LNK8")
+      path = create_pattern(conn, version, "LNK8", scope.stops)
+      {:ok, view, _html} = live(conn, path)
+      before = linkage(organization)
+
+      render_click(view, "link_open")
+
+      membership = Accounts.get_user_org_membership(user.id, organization.id)
+      {:ok, _membership} = Accounts.update_user_org_membership(membership, %{roles: []})
+
+      render_click(view, "link_confirm")
+
+      assert text(view, "#link-review-error") =~ "You no longer have editor access"
+      assert linkage(organization) == before
+    end
+
     test "leaves the short order's trips as they are", %{
       conn: conn,
       organization: organization,

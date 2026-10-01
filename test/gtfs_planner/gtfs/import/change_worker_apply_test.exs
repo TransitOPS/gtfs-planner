@@ -20,8 +20,6 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
-  @actor %{id: Ecto.UUID.generate(), email: "reviewer@example.com"}
-
   test "applies approved decisions in dependency order and checkpoints the original version" do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
@@ -505,7 +503,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
 
     retry_result =
       try do
-        ChangeRuns.retry(organization.id, run.id)
+        ChangeRuns.retry(organization.id, run.id, run_actor(run))
       after
         Application.put_env(:gtfs_planner, :gtfs_task_artifacts_path, artifact_root)
       end
@@ -627,7 +625,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
 
     retry_result =
       try do
-        ChangeRuns.retry(organization.id, run.id)
+        ChangeRuns.retry(organization.id, run.id, run_actor(run))
       after
         Application.put_env(:gtfs_planner, :gtfs_task_artifacts_path, artifact_root)
       end
@@ -677,7 +675,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
                audit_context(run)
              )
 
-    assert {:ok, cancelling} = ChangeRuns.request_cancel(organization.id, run.id)
+    assert {:ok, cancelling} = ChangeRuns.request_cancel(organization.id, run.id, run_actor(run))
 
     assert :ok =
              ChangeWorker.apply(
@@ -827,8 +825,12 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
     end
   end
 
+  # Applying reauthorizes the run's actor, so the run belongs to a real active editor.
   defp review_run!(organization_id, version_id, decisions) do
-    {:ok, run} = ChangeRuns.create_pending_compute(organization_id, version_id, @actor, [])
+    editor = user_fixture(%{email: "apply-editor-#{Ecto.UUID.generate()}@example.test"})
+    organization_membership_fixture(editor, %{id: organization_id})
+    actor = %{id: editor.id, email: editor.email}
+    {:ok, run} = ChangeRuns.create_pending_compute(organization_id, version_id, actor, [])
     {:ok, _computing, generation, token} = ChangeRuns.claim(organization_id, run.id, :compute)
 
     {:ok, review} =
@@ -850,9 +852,12 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
       end
     end)
 
-    {:ok, pending_apply} = ChangeRuns.request_apply(organization_id, review.id)
+    {:ok, pending_apply} = ChangeRuns.request_apply(organization_id, review.id, actor)
     pending_apply
   end
+
+  # The run's own actor, an active editor created by `review_run!/3`.
+  defp run_actor(run), do: %{id: run.actor_id, email: run.actor_email}
 
   # Approves and applies the removal decisions the way the runner does.
   defp apply_removals!(organization, version, decisions) do

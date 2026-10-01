@@ -127,6 +127,7 @@ defmodule GtfsPlannerWeb.Layouts do
                   current_version={@current_gtfs_version}
                   versions={@available_versions}
                   organization_id={@current_organization.id}
+                  actor_id={@current_user.id}
                 />
               <% end %>
               <Navigation.user_menu

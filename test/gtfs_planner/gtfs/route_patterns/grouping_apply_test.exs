@@ -21,11 +21,14 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.GroupingApplyTest do
   use ExUnit.Case, async: false
 
   import Ecto.Query
+  import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.Accounts.User
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.CalendarAttribute
@@ -267,6 +270,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.GroupingApplyTest do
       other = organization_fixture(%{alias: "other-#{Ecto.UUID.generate()}"})
       other_version = gtfs_version_fixture(other.id)
 
+      # The actor is an editor of both organizations, so the refusal below is the
+      # route scope and not the membership check.
+      organization_membership_fixture(scope.actor, other)
+
       audit = %{scope.audit | organization_id: other.id, gtfs_version_id: other_version.id}
 
       on_exit(fn -> cleanup_organization(other.id) end)
@@ -441,6 +448,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.GroupingApplyTest do
     org_id = organization.id
     version_id = version.id
 
+    # Callbacks run last-in first-out: the organization goes before its actor.
+    actor = user_fixture()
+    organization_membership_fixture(actor, organization)
+    on_exit(fn -> cleanup_actor(actor.id) end)
     on_exit(fn -> cleanup_organization(org_id) end)
 
     route_fixture(org_id, version_id, %{route_id: "1"})
@@ -470,11 +481,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.GroupingApplyTest do
       version_id: version_id,
       pattern: pattern,
       stop_ids: stop_ids,
+      actor: actor,
       audit: %AuditContext{
         organization_id: org_id,
         gtfs_version_id: version_id,
-        actor_id: Ecto.UUID.generate(),
-        actor_email: "editor@example.com"
+        actor_id: actor.id,
+        actor_email: actor.email
       }
     }
   end
@@ -632,8 +644,16 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.GroupingApplyTest do
       Repo.delete_all(from(s in Stop, where: s.organization_id == ^organization_id))
       Repo.delete_all(from(r in Route, where: r.organization_id == ^organization_id))
       Repo.delete_all(from(a in CalendarAttribute, where: a.organization_id == ^organization_id))
+      Repo.delete_all(from(m in UserOrgMembership, where: m.organization_id == ^organization_id))
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
       Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
+    end)
+  end
+
+  defp cleanup_actor(user_id) do
+    Sandbox.unboxed_run(Repo, fn ->
+      Repo.delete_all(from(m in UserOrgMembership, where: m.user_id == ^user_id))
+      Repo.delete_all(from(u in User, where: u.id == ^user_id))
     end)
   end
 end

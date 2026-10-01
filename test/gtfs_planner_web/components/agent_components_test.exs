@@ -193,6 +193,30 @@ defmodule GtfsPlannerWeb.AgentComponentsTest do
       assert first_attr(LazyHTML.query(panel_doc, "#agent-composer-input"), "disabled") != nil
     end
 
+    test "announces the daily allowance and locks the composer" do
+      panel_doc = panel(%{status: :allowance_exhausted, entries_empty?: false}) |> doc()
+      status_region = LazyHTML.query(panel_doc, "#agent-status")
+
+      assert first_attr(status_region, "role") == "status"
+      assert first_attr(status_region, "aria-live") == "polite"
+      assert text(status_region) == "Daily assistant limit reached. It resets at 00:00 UTC."
+      assert first_attr(LazyHTML.query(panel_doc, "#agent-send"), "disabled") != nil
+      assert first_attr(LazyHTML.query(panel_doc, "#agent-composer-input"), "disabled") != nil
+
+      assert text(LazyHTML.query(panel_doc, "#agent-composer-hint")) ==
+               "Try a new conversation after 00:00 UTC."
+
+      entry_doc =
+        entry_html(%{
+          status: :allowance_exhausted,
+          text: "Daily assistant limit reached. It resets at 00:00 UTC."
+        })
+        |> doc()
+
+      assert text(LazyHTML.query(entry_doc, "#agent-entry-1")) =~
+               "Daily assistant limit reached. It resets at 00:00 UTC."
+    end
+
     test "shows the working status while a turn runs" do
       assert panel(%{status: :working}) |> doc() |> LazyHTML.query("#agent-status") |> text() ==
                "Working…"

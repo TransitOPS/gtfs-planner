@@ -601,7 +601,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ContextTest do
       main = garage_fixture(organization.id, %{"name" => "Main"})
 
       assert {:ok, _settings} =
-               update_settings(organization.id, version.id, %{
+               update_settings(editor_audit_fixture(organization.id, version.id), %{
                  "default_garage_id" => main.id
                })
 
@@ -641,7 +641,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ContextTest do
       garage = garage_fixture(organization.id, %{"name" => "Main"})
 
       assert {:ok, _settings} =
-               update_settings(organization.id, version.id, %{
+               update_settings(editor_audit_fixture(organization.id, version.id), %{
                  "min_layover_minutes" => "7",
                  "interlining" => "same_stop",
                  "deadhead_speed_kmh" => "25",

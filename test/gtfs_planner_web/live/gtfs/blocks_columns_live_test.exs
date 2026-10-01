@@ -336,8 +336,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksColumnsLiveTest do
       })
 
       Blocking.update_settings(
-        context.organization.id,
-        context.version.id,
+        GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+          context.organization.id,
+          context.version.id
+        ),
         %{max_piece_minutes: 60}
       )
 

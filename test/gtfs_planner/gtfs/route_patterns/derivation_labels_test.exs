@@ -31,6 +31,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationLabelsTest do
   alias GtfsPlanner.Gtfs.Trip
 
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlanner.TaskSupervisor
 
   alias Ecto.Adapters.SQL.Sandbox
@@ -53,7 +54,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationLabelsTest do
         alias: "derivation-labels-#{System.system_time(:nanosecond)}"
       })
 
-    actor = user_fixture()
+    actor = editor_fixture(organization)
 
     %{organization: organization, actor: actor}
   end
@@ -179,7 +180,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationLabelsTest do
         context.organization.id,
         run.id,
         run.lease_token,
-        feed(extra_trips)
+        files: StagedImport.stage(feed(extra_trips))
       )
 
     Sandbox.allow(Repo, self(), runner_pid)

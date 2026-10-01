@@ -19,6 +19,7 @@ defmodule GtfsPlanner.Gtfs.Import.ParseError do
           | :unterminated_quote
           | :malformed_quote
           | :forbidden_control_character
+          | :record_too_long
           | :missing_natural_key_header
           | :blank_natural_key
           | :duplicate_natural_key

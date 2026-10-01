@@ -4,9 +4,19 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
 
   Given a run/version/token produced by `ImportRuns.claim_cleanup/3` (or the
   organization id, run id, and lease token held by the supervisor-owned `Runner`),
-  this module deletes the owned target's diagram namespace and every manifest
-  schema in bounded UUID batches, verifies emptiness, then deletes the failed
-  `gtfs_versions` row and closes the run through `ImportRuns`.
+  this module detaches trip pattern links, deletes every manifest schema in
+  bounded UUID batches, deletes the owned target's diagram namespace, verifies
+  emptiness, then deletes the failed `gtfs_versions` row and closes the run
+  through `ImportRuns`.
+
+  Every database write is fenced (INV-4): the run read and each write
+  transaction start with `ImportRuns.assert_owner!/4`, which share-locks the run
+  and requires it to be `cleaning` under this lease token with an unexpired
+  lease. A cleanup that was superseded (reconciled, closed or re-claimed) stops
+  with `{:error, :lease_lost}`, writes nothing further and does not try to close
+  the run. The namespace deletion comes after the last fenced batch so a
+  superseded owner that fails its first fence never deletes files; the
+  filesystem step is ordered after the fence but is not itself fenced.
 
   Deletes are idempotent: already-absent rows and a missing namespace are
   successes, so a mid-cleanup failure followed by a later cleanup converges over
@@ -36,6 +46,7 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
   alias GtfsPlanner.Versions.GtfsVersion
 
   @default_batch_size 5_000
+  @cleaning_states ~w(cleaning)
 
   @doc """
   Runs claimed cleanup for a run already claimed by the `Runner`.
@@ -43,7 +54,9 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
   `organization_id`, `run_id`, and `lease_token` are the values the supervised
   runner holds after `ImportRuns.claim_cleanup/3`. This function does NOT
   re-claim; it performs the batched cleanup flow and closes the run via
-  `ImportRuns.finish_cleanup/3` (or `ImportRuns.fail_cleanup/4` on error).
+  `ImportRuns.finish_cleanup/3` (or `ImportRuns.fail_cleanup/4` on error). When
+  the lease is no longer held it returns `{:error, :lease_lost}` without closing
+  the run.
   """
   @spec run(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
           {:ok, GtfsVersion.t() | nil} | {:error, atom()}
@@ -67,24 +80,31 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
 
   # --- shared cleanup flow --------------------------------------------------
 
+  # `fence` is `{organization_id, run_id, lease_token}`. A superseded owner leaves
+  # the flow through `throw(:lease_lost)` from `fenced_transaction/2`, so nothing
+  # after the failed fence runs and the run is not closed by the stale token.
   defp cleanup_claimed(organization_id, run_id, lease_token) do
+    fence = {organization_id, run_id, lease_token}
+
     try do
-      version_id = version_id_for(organization_id, run_id, lease_token)
+      version_id = fenced_version_id(fence)
 
-      # 1. Remove the diagram namespace first (idempotent on absence).
-      maybe_inject_failure(:filesystem, :before_namespace)
-      :ok = delete_namespace(organization_id, version_id)
-
-      # 2. Detach trip pattern links before deleting the pattern tables: the
+      # 1. Detach trip pattern links before deleting the pattern tables: the
       #    `trips.timed_pattern_id` foreign key is RESTRICT while `trips` is
       #    deleted later in the manifest. Resetting the classification to pending
       #    is the only combination the trips check constraint accepts.
-      detach_trip_pattern_links(organization_id, version_id)
+      detach_trip_pattern_links(fence, version_id)
 
-      # 3. Delete every manifest schema in bounded batches.
+      # 2. Delete every manifest schema in bounded, fenced batches.
       for schema <- Import.cleanup_schemas() do
-        delete_schema_batched(organization_id, schema, version_id)
+        delete_schema_batched(fence, schema, version_id)
       end
+
+      # 3. Remove the diagram namespace after the last fenced batch (idempotent
+      #    on absence). Filesystem deletion cannot be rolled back or fenced, so it
+      #    follows every fenced database write.
+      maybe_inject_failure(:filesystem, :before_namespace)
+      :ok = delete_namespace(organization_id, version_id)
 
       # 4. Verify every owned resource is absent.
       verify_empty(organization_id, version_id)
@@ -99,26 +119,49 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
         reason = failure_reason(e)
         fail(organization_id, run_id, lease_token, reason)
         {:error, reason}
+    catch
+      :throw, :lease_lost -> {:error, :lease_lost}
     end
   end
 
-  defp detach_trip_pattern_links(_organization_id, nil), do: :ok
+  # Runs `fun` with the locked run in a transaction whose first statement is the
+  # owner fence (INV-4), and leaves the cleanup flow when the fence fails.
+  defp fenced_transaction({organization_id, run_id, lease_token}, fun) do
+    transaction =
+      Repo.transaction(fn ->
+        run = ImportRuns.assert_owner!(organization_id, run_id, lease_token, @cleaning_states)
+        fun.(run)
+      end)
 
-  defp detach_trip_pattern_links(organization_id, version_id) do
-    from(t in Trip,
-      where:
-        t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
-          not is_nil(t.timed_pattern_id)
-    )
-    |> Repo.update_all(
-      set: [
-        timed_pattern_id: nil,
-        pattern_derivation_state: "pending",
-        pattern_derivation_reason: nil
-      ]
-    )
+    case transaction do
+      {:ok, result} -> result
+      {:error, :lease_lost} -> throw(:lease_lost)
+    end
+  end
 
-    :ok
+  # Resolves the target version id without re-claiming, under the fence. A
+  # superseded owner or a wrong token leaves the flow before any delete.
+  defp fenced_version_id(fence), do: fenced_transaction(fence, & &1.gtfs_version_id)
+
+  defp detach_trip_pattern_links(_fence, nil), do: :ok
+
+  defp detach_trip_pattern_links({organization_id, _run_id, _lease_token} = fence, version_id) do
+    fenced_transaction(fence, fn _run ->
+      from(t in Trip,
+        where:
+          t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+            not is_nil(t.timed_pattern_id)
+      )
+      |> Repo.update_all(
+        set: [
+          timed_pattern_id: nil,
+          pattern_derivation_state: "pending",
+          pattern_derivation_reason: nil
+        ]
+      )
+
+      :ok
+    end)
   end
 
   defp delete_namespace(organization_id, version_id) do
@@ -134,22 +177,18 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
     end
   end
 
-  defp delete_schema_batched(organization_id, schema, version_id) do
+  defp delete_schema_batched(fence, schema, version_id) do
     case version_id do
       nil ->
         :ok
 
       version_id ->
-        delete_schema_batched_for_version(
-          organization_id,
-          schema,
-          version_id
-        )
+        delete_schema_batched_for_version(fence, schema, version_id)
     end
   end
 
   defp delete_schema_batched_for_version(
-         organization_id,
+         {organization_id, _run_id, _lease_token} = fence,
          schema,
          version_id
        ) do
@@ -165,21 +204,19 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
       |> limit(^batch_size)
       |> select([r], r.id)
 
-    case delete_batch(query, schema) do
-      {:ok, 0} ->
+    case delete_batch(fence, query, schema) do
+      0 ->
         :ok
 
-      {:ok, _count} ->
-        # Commit this batch separately, then continue with the next slice.
-        delete_schema_batched(organization_id, schema, version_id)
-
-      {:error, _reason} ->
-        raise RuntimeError, "database_error"
+      _count ->
+        # This batch is committed; the next slice takes its own fence.
+        maybe_pause_after_batch(schema)
+        delete_schema_batched(fence, schema, version_id)
     end
   end
 
-  defp delete_batch(query, schema) do
-    Repo.transaction(fn ->
+  defp delete_batch(fence, query, schema) do
+    fenced_transaction(fence, fn _run ->
       ids = Repo.all(query)
 
       if ids == [] do
@@ -250,6 +287,8 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
     :ok
   end
 
+  # `finish_cleanup/3` is the closing fence: it locks the run `FOR UPDATE` and checks
+  # state, token and lease before it deletes the version.
   defp finish(organization_id, run_id, lease_token) do
     case ImportRuns.finish_cleanup(organization_id, run_id, lease_token) do
       {:ok, _run} -> :ok
@@ -262,31 +301,29 @@ defmodule GtfsPlanner.Gtfs.Import.Recovery do
     :ok
   end
 
-  # Resolves the locked target version id without re-claiming. The run is in
-  # `cleaning` with the matching lease token; read it (no row lock needed for
-  # the scoped org+id read) to obtain the gtfs_version_id used by every scoped
-  # delete. A wrong token returns nil and forces a verification failure.
-  defp version_id_for(organization_id, run_id, lease_token) do
-    from(r in Run,
-      where:
-        r.id == ^run_id and r.organization_id == ^organization_id and
-          r.lease_token == ^lease_token,
-      select: r.gtfs_version_id
-    )
-    |> Repo.one()
-  end
-
   # --- failure injection (tests only) ---------------------------------------
 
   # Reads the optional `:import_cleanup_inject_failure` env. When the injection
   # matches the requested phase, raises so cleanup branches to `fail_cleanup`
-  # and retains the version. Absent in production (default nil).
+  # and retains the version. The value `{:pause_after_batch, fun}` instead makes
+  # `maybe_pause_after_batch/1` call `fun.(schema)` between two committed
+  # batches, so a test can block the worker there. Absent in production (default
+  # nil), where both functions do nothing.
   defp maybe_inject_failure(phase, schema) do
     case Application.get_env(:gtfs_planner, :import_cleanup_inject_failure) do
       {^phase, ^schema} -> raise RuntimeError, Atom.to_string(phase) <> "_error"
       {^phase, :any} -> raise RuntimeError, Atom.to_string(phase) <> "_error"
       _ -> :ok
     end
+  end
+
+  defp maybe_pause_after_batch(schema) do
+    case Application.get_env(:gtfs_planner, :import_cleanup_inject_failure) do
+      {:pause_after_batch, fun} when is_function(fun, 1) -> fun.(schema)
+      _ -> :ok
+    end
+
+    :ok
   end
 
   defp failure_reason(%RuntimeError{message: "filesystem_error"}), do: :filesystem_error

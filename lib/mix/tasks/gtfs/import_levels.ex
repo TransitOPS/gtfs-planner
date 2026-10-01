@@ -220,7 +220,7 @@ defmodule Mix.Tasks.Gtfs.ImportLevels do
         gtfs_version_id: gtfs_version_id
       }
 
-      GtfsPlanner.Gtfs.create_level(attrs)
+      GtfsPlanner.Gtfs.apply_import_entity(:add, :level, nil, attrs)
     else
       {:error, reason} ->
         {:error, %Ecto.Changeset{errors: [level_index: {reason, []}]}}

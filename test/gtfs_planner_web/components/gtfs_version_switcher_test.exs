@@ -20,7 +20,8 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
        socket
        |> Phoenix.Component.assign(:current_version, current)
        |> Phoenix.Component.assign(:versions, versions)
-       |> Phoenix.Component.assign(:organization_id, session["organization_id"])}
+       |> Phoenix.Component.assign(:organization_id, session["organization_id"])
+       |> Phoenix.Component.assign(:actor_id, session["actor_id"])}
     end
 
     def render(assigns) do
@@ -31,6 +32,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
         current_version={@current_version}
         versions={@versions}
         organization_id={@organization_id}
+        actor_id={@actor_id}
       />
       """
     end
@@ -62,12 +64,17 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
     org = organization_fixture()
     {:ok, current} = Versions.create_gtfs_version(org.id, %{name: "Current Version"})
     {:ok, other} = Versions.create_gtfs_version(org.id, %{name: "Other Version"})
-    %{org: org, current: current, other: other}
+    %{org: org, current: current, other: other, editor: editor_fixture(org)}
   end
 
-  defp mount_host(conn, current, org) do
+  # Only a save needs a signed-in actor; the other cases render the switcher alone.
+  defp mount_host(conn, current, org, actor \\ nil) do
     live_isolated(conn, HostLive,
-      session: %{"current_version_id" => current.id, "organization_id" => org.id}
+      session: %{
+        "current_version_id" => current.id,
+        "organization_id" => org.id,
+        "actor_id" => actor && actor.id
+      }
     )
   end
 
@@ -207,9 +214,10 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
     test "valid new name persists and exits edit mode", %{
       conn: conn,
       current: current,
-      org: org
+      org: org,
+      editor: editor
     } do
-      {:ok, view, _html} = mount_host(conn, current, org)
+      {:ok, view, _html} = mount_host(conn, current, org, editor)
 
       view
       |> element("#gtfs-version-rename")
@@ -230,9 +238,10 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       conn: conn,
       current: current,
       org: org,
-      other: other
+      other: other,
+      editor: editor
     } do
-      {:ok, view, _html} = mount_host(conn, current, org)
+      {:ok, view, _html} = mount_host(conn, current, org, editor)
 
       view
       |> element("#gtfs-version-rename")
@@ -253,9 +262,10 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
     test "trims surrounding whitespace before persisting", %{
       conn: conn,
       current: current,
-      org: org
+      org: org,
+      editor: editor
     } do
-      {:ok, view, _html} = mount_host(conn, current, org)
+      {:ok, view, _html} = mount_host(conn, current, org, editor)
 
       view
       |> element("#gtfs-version-rename")
@@ -272,9 +282,10 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
     test "submitting the unchanged current name succeeds without a duplicate error", %{
       conn: conn,
       current: current,
-      org: org
+      org: org,
+      editor: editor
     } do
-      {:ok, view, _html} = mount_host(conn, current, org)
+      {:ok, view, _html} = mount_host(conn, current, org, editor)
 
       view
       |> element("#gtfs-version-rename")
@@ -288,6 +299,76 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
       refute html =~ "A version with this name already exists"
       refute has_element?(view, "#gtfs-version-rename-form")
       assert Versions.get_published_gtfs_version_for_org!(org.id, current.id).name == current.name
+    end
+
+    test "revoked editor sees the permission refusal, keeps the typed name and the stored name is unchanged",
+         %{conn: conn, current: current, org: org, editor: editor} do
+      {:ok, view, _html} = mount_host(conn, current, org, editor)
+
+      view
+      |> element("#gtfs-version-rename")
+      |> render_click()
+
+      editor.id
+      |> Accounts.get_user_org_membership(org.id)
+      |> deactivate_membership_fixture()
+
+      html =
+        view
+        |> form("#gtfs-version-rename-form", gtfs_version: %{name: "Renamed Version"})
+        |> render_submit()
+
+      assert has_element?(view, "#gtfs-version-rename-refusal[role=alert]")
+      assert html =~ "You no longer have permission to rename versions."
+      assert has_element?(view, "#gtfs-version-rename-input[value=\"Renamed Version\"]")
+
+      assert Versions.get_published_gtfs_version_for_org!(org.id, current.id).name ==
+               "Current Version"
+    end
+
+    test "a version outside the host's organization is refused and left unchanged", %{
+      conn: conn,
+      org: org,
+      editor: editor
+    } do
+      {:ok, foreign} =
+        Versions.create_gtfs_version(organization_fixture().id, %{name: "Foreign Version"})
+
+      {:ok, view, _html} = mount_host(conn, foreign, org, editor)
+
+      view
+      |> element("#gtfs-version-rename")
+      |> render_click()
+
+      view
+      |> form("#gtfs-version-rename-form", gtfs_version: %{name: "Renamed Version"})
+      |> render_submit()
+
+      assert has_element?(view, "#gtfs-version-rename-refusal", "no longer available")
+      assert GtfsPlanner.Repo.get!(GtfsVersion, foreign.id).name == "Foreign Version"
+    end
+
+    test "a signed-in user without an editor role cannot rename", %{
+      conn: conn,
+      current: current,
+      org: org
+    } do
+      admin = user_fixture()
+      organization_membership_fixture(admin, org, ["pathways_studio_admin"])
+      {:ok, view, _html} = mount_host(conn, current, org, admin)
+
+      view
+      |> element("#gtfs-version-rename")
+      |> render_click()
+
+      view
+      |> form("#gtfs-version-rename-form", gtfs_version: %{name: "Renamed Version"})
+      |> render_submit()
+
+      assert has_element?(view, "#gtfs-version-rename-refusal")
+
+      assert Versions.get_published_gtfs_version_for_org!(org.id, current.id).name ==
+               "Current Version"
     end
   end
 
@@ -454,14 +535,21 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
         |> Plug.Conn.put_session(:organization_id, organization.id)
 
       # AssignOrganization picks the latest (most-recently-created) as current.
-      %{conn: conn, organization: organization, current: newer, non_current: older}
+      %{
+        conn: conn,
+        organization: organization,
+        current: newer,
+        non_current: older,
+        editor: editor_fixture(organization)
+      }
     end
 
     test "refreshes available_versions and updates current_gtfs_version when the current version is renamed",
-         %{conn: conn, current: current} do
+         %{conn: conn, current: current, editor: editor} do
       {:ok, view, _html} = live(conn, ~p"/admin/users")
 
-      {:ok, renamed} = Versions.update_gtfs_version(current, %{name: "Newer Renamed"})
+      scope = %{actor_id: editor.id, organization_id: current.organization_id}
+      {:ok, renamed} = Versions.update_gtfs_version(scope, current.id, %{name: "Newer Renamed"})
       send(view.pid, {:gtfs_version_renamed, renamed})
       _ = render(view)
 
@@ -473,14 +561,18 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcherTest do
     end
 
     test "refreshes available_versions but leaves current_gtfs_version unchanged when a non-current version is renamed",
-         %{conn: conn, current: current, non_current: non_current} do
+         %{conn: conn, current: current, non_current: non_current, editor: editor} do
       {:ok, view, _html} = live(conn, ~p"/admin/users")
 
       assigns_before = :sys.get_state(view.pid).socket.assigns
       assert assigns_before.current_gtfs_version.id == current.id
       assert assigns_before.current_gtfs_version.name == current.name
 
-      {:ok, renamed_other} = Versions.update_gtfs_version(non_current, %{name: "Older Renamed"})
+      scope = %{actor_id: editor.id, organization_id: current.organization_id}
+
+      {:ok, renamed_other} =
+        Versions.update_gtfs_version(scope, non_current.id, %{name: "Older Renamed"})
+
       send(view.pid, {:gtfs_version_renamed, renamed_other})
       _ = render(view)
 

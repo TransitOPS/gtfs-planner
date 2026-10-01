@@ -26,10 +26,11 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
   import Ecto.Query
 
-  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.Alignments.Draft
   alias GtfsPlanner.Gtfs.Alignments.Materializer
   alias GtfsPlanner.Gtfs.AlignmentSegment
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Route
@@ -1025,7 +1026,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   defp audit_decimal(other), do: other
 
   defp audit!(audit_context, type, entity, action, attrs) do
-    case Gtfs.record_change_in_transaction(audit_context, type, entity, action, attrs) do
+    case Audit.record_change_in_transaction(audit_context, type, entity, action, attrs) do
       {:ok, log} -> log
       {:error, changeset} -> Repo.rollback(changeset)
     end
@@ -2325,6 +2326,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
           {:ok, review()}
           | {:error,
              :not_found
+             | :forbidden
              | :stale_stops
              | :invalid_input
              | {:conflict, [section()]}
@@ -2948,6 +2950,8 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   defp apply_retryable?(_), do: false
 
   defp apply_transaction(pattern_id, draft_params, choices, fingerprint, audit_context) do
+    Authorization.lock_editor!(audit_context)
+
     case compute_review(pattern_id, draft_params, audit_context) do
       {:error, reason} ->
         Repo.rollback(reason)

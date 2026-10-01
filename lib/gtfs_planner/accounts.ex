@@ -4,6 +4,7 @@ defmodule GtfsPlanner.Accounts do
   """
 
   import Ecto.Query, warn: false
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Repo
 
   alias GtfsPlanner.Accounts.{
@@ -17,6 +18,8 @@ defmodule GtfsPlanner.Accounts do
 
   alias GtfsPlanner.Accounts.UserNotifier
   alias GtfsPlanner.Organizations.Organization
+
+  @first_admin_setup_lock "accounts:first_admin_setup"
 
   ## Database getters
 
@@ -313,9 +316,8 @@ defmodule GtfsPlanner.Accounts do
   Deletes all session and API session tokens for a user and returns the
   deleted `%UserToken{}` records.
 
-  This is used when deactivating a user to force them to log out. Pass the
-  returned tokens to `GtfsPlannerWeb.UserAuth.disconnect_sessions/1` to close
-  the user's open LiveViews.
+  Membership commands use the deleted web-session digests to disconnect the
+  user's open LiveViews after the transaction commits.
 
   ## Examples
 
@@ -554,6 +556,7 @@ defmodule GtfsPlanner.Accounts do
   @type invite_member_result ::
           {:ok, User.t()}
           | {:ok, :added, User.t()}
+          | {:error, :forbidden}
           | {:error, Ecto.Changeset.t()}
           | {:partial, :delivery_failed, User.t(), term()}
           | {:partial, :notification_failed, User.t(), term()}
@@ -562,15 +565,16 @@ defmodule GtfsPlanner.Accounts do
   Invites a member to an organization as one atomic database command.
 
   Validates the submission through `GtfsPlanner.Accounts.InviteForm`, then
-  creates or reuses the user, inserts the organization membership, and inserts
-  the invite token inside a single `Ecto.Multi`. Any failed database operation
-  rolls back every database change from the command and returns an
-  insert-action `InviteForm` changeset.
+  locks and authorizes the actor before creating or reusing the user, inserting
+  the organization membership, and inserting the invite token inside a single
+  `Ecto.Multi`. An unauthorized actor returns `{:error, :forbidden}` without
+  creating invite records. Any other failed database operation rolls back the
+  command and returns an insert-action `InviteForm` changeset.
 
   The invitation email is delivered only after the transaction commits. A
   delivery failure leaves the committed user, membership, and usable invite
   token in place and returns `{:partial, :delivery_failed, user, reason}`; the
-  safe recovery is `resend_user_invite/2`.
+  safe recovery is `resend_user_invite/4`.
 
   An address that already belongs to an account with a password gets the
   membership only: no invite token is issued, because a set-password link would
@@ -582,13 +586,13 @@ defmodule GtfsPlanner.Accounts do
 
   ## Examples
 
-      iex> invite_member("member@example.com", org_id, ["pathways_studio_editor"], &url(~p"/users/accept_invite/#{&1}"), login_url: url(~p"/users/log_in"))
+      iex> invite_member("member@example.com", org_id, ["pathways_studio_editor"], &url(~p"/users/accept_invite/#{&1}"), actor: admin, login_url: url(~p"/users/log_in"))
       {:ok, %User{}}
 
-      iex> invite_member("existing@example.com", org_id, ["pathways_studio_editor"], &url(~p"/users/accept_invite/#{&1}"), login_url: url(~p"/users/log_in"))
+      iex> invite_member("existing@example.com", org_id, ["pathways_studio_editor"], &url(~p"/users/accept_invite/#{&1}"), actor: admin, login_url: url(~p"/users/log_in"))
       {:ok, :added, %User{}}
 
-      iex> invite_member("nope", org_id, [], &url(~p"/users/accept_invite/#{&1}"))
+      iex> invite_member("nope", org_id, [], &url(~p"/users/accept_invite/#{&1}"), actor: admin)
       {:error, %Ecto.Changeset{}}
 
   """
@@ -597,15 +601,17 @@ defmodule GtfsPlanner.Accounts do
           Ecto.UUID.t(),
           [String.t()],
           (String.t() -> String.t()),
+          actor: User.t(),
           login_url: String.t()
         ) :: invite_member_result()
   def invite_member(email, organization_id, roles, invite_url_fun, opts \\ [])
       when is_function(invite_url_fun, 1) do
+    actor = Keyword.fetch!(opts, :actor)
     changeset = InviteForm.changeset(%{"email" => email, "roles" => roles})
 
     if changeset.valid? do
       changeset
-      |> invite_member_multi(organization_id)
+      |> invite_member_multi(organization_id, actor)
       |> Repo.transaction()
       |> resolve_invite_member(changeset, invite_url_fun, organization_id, opts)
     else
@@ -613,11 +619,14 @@ defmodule GtfsPlanner.Accounts do
     end
   end
 
-  defp invite_member_multi(changeset, organization_id) do
+  defp invite_member_multi(changeset, organization_id, actor) do
     email = Ecto.Changeset.get_field(changeset, :email)
     roles = Ecto.Changeset.get_field(changeset, :roles)
 
     Ecto.Multi.new()
+    |> Ecto.Multi.run(:authorize, fn _repo, _changes ->
+      Authorization.lock_member_admin(actor, organization_id)
+    end)
     |> Ecto.Multi.run(:user, fn repo, _changes -> fetch_or_insert_invitee(repo, email) end)
     |> Ecto.Multi.insert(:membership, fn %{user: user} ->
       UserOrgMembership.changeset(%UserOrgMembership{}, %{
@@ -669,6 +678,15 @@ defmodule GtfsPlanner.Accounts do
   end
 
   defp resolve_invite_member(
+         {:error, :authorize, :forbidden, _changes},
+         _changeset,
+         _invite_url_fun,
+         _organization_id,
+         _opts
+       ),
+       do: {:error, :forbidden}
+
+  defp resolve_invite_member(
          {:error, operation, reason, _changes},
          changeset,
          _invite_url_fun,
@@ -697,68 +715,60 @@ defmodule GtfsPlanner.Accounts do
     end
   end
 
-  @doc """
-  Invites a user to an organization.
+  @doc ~S"""
+  Resends an invitation to a member who has not set a password yet.
 
-  Creates a user record if one doesn't exist, then generates an invite token.
+  Runs as a member-admin command. One transaction locks the organization,
+  checks that `actor` is currently a system administrator or a usable
+  administrator of it, confirms `user_id` is a member of that organization and
+  still has no password, and inserts a fresh invite token. The email is sent
+  after the transaction commits.
+
+  Returns `{:error, :forbidden}` without writing when the actor's permission was
+  revoked, `{:error, :not_found}` for an unknown organization or a user who is
+  not a member of it, and `{:error, :already_accepted}` when the user has a
+  password. A delivery failure returns the notifier's `{:error, reason}` and
+  leaves the token in place; resending again is the recovery.
 
   ## Examples
 
-      iex> invite_user("new@example.com", org_id)
-      {:ok, %User{}}
+      iex> resend_user_invite(admin, org_id, user_id, &url(~p"/users/accept_invite/#{&1}"))
+      {:ok, %{to: ..., body: ...}}
 
-      iex> invite_user("", org_id)
-      {:error, %Ecto.Changeset{}}
+      iex> resend_user_invite(revoked_admin, org_id, user_id, &url(~p"/users/accept_invite/#{&1}"))
+      {:error, :forbidden}
 
   """
-  def invite_user(email, _organization_id) when is_binary(email) do
-    email = String.downcase(email)
+  def resend_user_invite(actor, organization_id, user_id, invite_url_fun)
+      when is_function(invite_url_fun, 1) do
+    Ecto.Multi.new()
+    |> Ecto.Multi.run(:authorize, fn _repo, _changes ->
+      Authorization.lock_member_admin(actor, organization_id)
+    end)
+    |> Ecto.Multi.run(:invitee, fn repo, _changes ->
+      fetch_pending_member(repo, organization_id, user_id)
+    end)
+    |> Ecto.Multi.run(:token, fn repo, %{invitee: user} -> insert_invite_token(repo, user) end)
+    |> Repo.transaction()
+    |> case do
+      {:ok, %{invitee: user, token: token}} ->
+        UserNotifier.deliver_user_invite(user, invite_url_fun.(token))
 
-    case get_user_by_email(email) do
-      nil ->
-        %User{}
-        |> User.invite_changeset(%{email: email})
-        |> Repo.insert()
-
-      user ->
-        {:ok, user}
+      {:error, _operation, reason, _changes} ->
+        {:error, reason}
     end
   end
 
-  @doc ~S"""
-  Delivers the user invitation email to the given user.
-
-  ## Examples
-
-      iex> deliver_user_invite(user, &url(~p"/users/accept_invite/#{&1}"))
-      {:ok, %{to: ..., body: ...}}
-
-  """
-  def deliver_user_invite(%User{} = user, invite_url_fun) when is_function(invite_url_fun, 1) do
-    {encoded_token, user_token} = UserToken.build_email_token(user, "invite")
-    Repo.insert!(user_token)
-    UserNotifier.deliver_user_invite(user, invite_url_fun.(encoded_token))
-  end
-
-  @doc ~S"""
-  Resends an invitation to a user who hasn't set a password yet.
-
-  Returns {:error, :already_accepted} if user has already set a password.
-
-  ## Examples
-
-      iex> resend_user_invite(user, &url(~p"/users/accept_invite/#{&1}"))
-      {:ok, %{to: ..., body: ...}}
-
-      iex> resend_user_invite(accepted_user, &url(~p"/users/accept_invite/#{&1}"))
-      {:error, :already_accepted}
-
-  """
-  def resend_user_invite(%User{} = user, invite_url_fun) when is_function(invite_url_fun, 1) do
-    if user.hashed_password do
-      {:error, :already_accepted}
+  # The user row is locked so an acceptance that commits first is seen here, and
+  # one that commits afterwards deletes the token inserted below.
+  defp fetch_pending_member(repo, organization_id, user_id) do
+    with {:ok, user_id} <- Ecto.UUID.cast(user_id),
+         %UserOrgMembership{} <-
+           repo.get_by(UserOrgMembership, user_id: user_id, organization_id: organization_id),
+         %User{} = user <- repo.one(from u in User, where: u.id == ^user_id, lock: "FOR UPDATE") do
+      if user.hashed_password, do: {:error, :already_accepted}, else: {:ok, user}
     else
-      deliver_user_invite(user, invite_url_fun)
+      _ -> {:error, :not_found}
     end
   end
 
@@ -786,16 +796,21 @@ defmodule GtfsPlanner.Accounts do
   @doc """
   Accepts an invitation by setting the user's password.
 
-  If an organization_id is provided, creates a membership with default viewer role.
   Deletes all of the user's tokens, so no earlier session or token outlives the
-  password it was issued under.
+  password it was issued under. Only the password fields of `attrs` are read.
+
+  The invited organization membership already exists: `invite_member/5` inserts
+  it, with the roles the administrator chose, in the same transaction as the
+  invite token. Accepting creates no membership, and an `organization_id` in
+  `attrs` is ignored, so a holder of an invite token cannot name another
+  organization.
 
   Returns `{:error, :already_has_password}` without changing anything when the
   user already has a password; an invitation must never replace one.
 
   ## Examples
 
-      iex> accept_invite_set_password(user, %{password: "new valid password", password_confirmation: "new valid password", organization_id: org_id})
+      iex> accept_invite_set_password(user, %{password: "new valid password", password_confirmation: "new valid password"})
       {:ok, %User{}}
 
       iex> accept_invite_set_password(user, %{password: "invalid", password_confirmation: "doesn't match"})
@@ -810,40 +825,16 @@ defmodule GtfsPlanner.Accounts do
       do: {:error, :already_has_password}
 
   def accept_invite_set_password(user, attrs) do
-    multi =
-      Ecto.Multi.new()
-      |> Ecto.Multi.update(
-        :user,
-        user |> User.password_changeset(attrs) |> User.confirm_changeset()
-      )
-      |> Ecto.Multi.delete_all(:tokens, UserToken.user_and_contexts_query(user, :all))
-
-    # Add membership creation if organization_id is provided
-    multi =
-      case Map.get(attrs, :organization_id) || Map.get(attrs, "organization_id") do
-        nil ->
-          multi
-
-        org_id ->
-          membership_attrs = %{
-            user_id: user.id,
-            organization_id: org_id,
-            roles: ["pathways_studio_editor"]
-          }
-
-          Ecto.Multi.insert(
-            multi,
-            :membership,
-            UserOrgMembership.changeset(%UserOrgMembership{}, membership_attrs)
-          )
-      end
-
-    multi
+    Ecto.Multi.new()
+    |> Ecto.Multi.update(
+      :user,
+      user |> User.password_changeset(attrs) |> User.confirm_changeset()
+    )
+    |> Ecto.Multi.delete_all(:tokens, UserToken.user_and_contexts_query(user, :all))
     |> Repo.transaction()
     |> case do
       {:ok, %{user: user}} -> {:ok, user}
       {:error, :user, changeset, _} -> {:error, changeset}
-      {:error, :membership, changeset, _} -> {:error, changeset}
     end
   end
 
@@ -871,6 +862,10 @@ defmodule GtfsPlanner.Accounts do
   with administrator role, and confirms the user account. All operations occur
   atomically within a single transaction.
 
+  The transaction first takes an advisory lock, then checks that no user exists.
+  Concurrent setups queue on the lock, and the one that waits sees the winner's
+  committed user and returns `{:error, :already_set_up}` without writing.
+
   ## Examples
 
       iex> register_first_admin(%{email: "admin@example.com", password: "password123", password_confirmation: "password123", organization_name: "My Org", organization_alias: "my-org"})
@@ -880,7 +875,8 @@ defmodule GtfsPlanner.Accounts do
       {:error, %Ecto.Changeset{}}
 
   """
-  @spec register_first_admin(map()) :: {:ok, User.t()} | {:error, Ecto.Changeset.t()}
+  @spec register_first_admin(map()) ::
+          {:ok, User.t()} | {:error, :already_set_up} | {:error, Ecto.Changeset.t()}
   def register_first_admin(attrs) do
     changeset = FirstAdminForm.changeset(attrs)
 
@@ -888,6 +884,7 @@ defmodule GtfsPlanner.Accounts do
       registration = FirstAdminForm.registration_attrs(changeset)
 
       Ecto.Multi.new()
+      |> Ecto.Multi.run(:setup_open, fn _repo, _changes -> ensure_setup_open() end)
       |> Ecto.Multi.insert(:user, User.registration_changeset(%User{}, registration.user))
       |> Ecto.Multi.insert(
         :org,
@@ -911,6 +908,9 @@ defmodule GtfsPlanner.Accounts do
         {:ok, %{confirm_user: user}} ->
           {:ok, user}
 
+        {:error, :setup_open, :already_set_up, _changes} ->
+          {:error, :already_set_up}
+
         {:error, op, reason, _} ->
           {:error,
            FirstAdminForm.from_transaction_error(changeset, op, reason)
@@ -919,6 +919,14 @@ defmodule GtfsPlanner.Accounts do
     else
       {:error, %{changeset | action: :insert}}
     end
+  end
+
+  # Setups queue on one advisory lock. The count is read after the lock is held,
+  # so a setup that committed while this one waited is counted.
+  defp ensure_setup_open do
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [@first_admin_setup_lock])
+
+    if count_users() == 0, do: {:ok, :open}, else: {:error, :already_set_up}
   end
 
   ## User Organization Memberships

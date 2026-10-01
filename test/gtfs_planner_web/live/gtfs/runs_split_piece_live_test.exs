@@ -416,7 +416,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSplitPieceLiveTest do
       [stale | _] = Enum.drop(trips, 1)
 
       {:ok, _} =
-        Gtfs.apply_run_moves(w.organization.id, w.version.id, w.day_type_key, [
+        Gtfs.apply_run_moves(w.audit, w.day_type_key, [
           %{trip_id: stale, from: "2001", to: nil}
         ])
 
