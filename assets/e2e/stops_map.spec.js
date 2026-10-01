@@ -1148,6 +1148,53 @@ test("the creating state @add", async ({ page }, testInfo) => {
   await capture(page, testInfo, "add-saving-desktop");
 });
 
+// ── created ───────────────────────────────────────────────────────────────
+
+// The panel after a stop exists is the one place that knows which patterns pass
+// the point: the new stop is not on any pattern yet, and nothing about the map
+// says where it would go. The journey places a stop on a line the map drew,
+// creates it, and reads the list back — the pattern, the two stops it would fall
+// between, and the link that carries the stop into the pattern editor.
+test("the created panel's next steps @created", async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+  await openMap(page, versionId);
+  await waitForMapReady(page);
+
+  await zoom(page, 3);
+  await waitForMapReady(page);
+
+  await page.locator("#stops-map-add-stop").click();
+  await clickOnLine(page);
+
+  await expect(page.locator("#stops-map-add-name")).toHaveValue("Depot Road", {
+    timeout: 30_000,
+  });
+
+  await page.locator("#stops-map-add-create").click();
+  await expect(page.locator("#stops-map-created-panel")).toBeAttached();
+  await expect(page.locator("#stops-map-created-patterns")).toBeAttached();
+
+  // At least one pattern passes this point, and each one says where on the
+  // pattern the stop would go: a list without the neighbours is a list an editor
+  // has to open the pattern to act on.
+  const rows = page.locator("#stops-map-created-patterns li");
+  await expect(rows.first()).toBeAttached();
+  await expect(rows.first()).toContainText("Between ");
+
+  // The link carries the stop the create command wrote, so the pattern editor
+  // opens with this stop in hand rather than asking which one.
+  const href = await rows.first().locator("a").getAttribute("href");
+  expect(href).toMatch(/\?task=stops&add_stop=\d+$/);
+
+  await captureBoth(page, testInfo, "patterns", "created-");
+  await captureReference(page, testInfo, "created", "created", "created-ref-");
+});
+
 // A click on the canvas in the middle of the map, the way a person places a
 // stop: the middle is a point the assertions and the capture can both name.
 async function clickCentre(page) {

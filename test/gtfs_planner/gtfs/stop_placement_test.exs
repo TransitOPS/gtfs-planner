@@ -30,6 +30,26 @@ defmodule GtfsPlanner.Gtfs.StopPlacementTest do
     [{elem(origin, 0), elem(origin, 1) - 0.001}, {elem(origin, 0), elem(origin, 1) + 0.001}]
   end
 
+  # Four collinear stops on one line, a hundred metres apart running north. The
+  # gap between them is a fifth of the line, so "halfway between the second and
+  # the third" is fifty metres past a whole number and not a rounding artefact.
+  defp collinear_row do
+    for step <- 0..3 do
+      {elem(@origin, 0), elem(@origin, 1) + step * 100.0 / 111_320.0}
+    end
+  end
+
+  # Halfway between the stop at `index` and the next one along the row.
+  defp midway(row, index) do
+    {lon, here} = Enum.at(row, index)
+    {_next_lon, next} = Enum.at(row, index + 1)
+
+    {lon, (here + next) / 2}
+  end
+
+  defp north_of({lon, lat}, metres), do: {lon, lat + metres / 111_320.0}
+  defp south_of({lon, lat}, metres), do: {lon, lat - metres / 111_320.0}
+
   describe "classify/2" do
     test "4.9 m apart is the same stop placed twice" do
       assert StopPlacement.classify(@origin, east_of(@origin, 4.9)) == :duplicate
@@ -136,6 +156,89 @@ defmodule GtfsPlanner.Gtfs.StopPlacementTest do
 
     test "a line with one point has no direction to reflect in" do
       assert StopPlacement.across_street(@origin, [@origin]) == @origin
+    end
+  end
+
+  describe "insertion_index/2" do
+    test "a point halfway between the second and third of four collinear stops belongs at 2" do
+      row = collinear_row()
+
+      assert StopPlacement.insertion_index(midway(row, 1), row) == 2
+    end
+
+    test "a point before the first stop belongs at 0" do
+      row = collinear_row()
+
+      assert StopPlacement.insertion_index(south_of(hd(row), 50.0), row) == 0
+    end
+
+    test "a point past the end of the line belongs after its last stop" do
+      row = collinear_row()
+
+      # The projection clamps at the line's end, so the point measures at the
+      # end rather than beyond it. The answer is still the last place a stop can
+      # take, and "between the last stop and the end" is what the panel says.
+      assert StopPlacement.insertion_index(north_of(List.last(row), 50.0), row) == 3
+    end
+
+    test "a point on a stop's own place is not before that stop" do
+      row = collinear_row()
+
+      assert StopPlacement.insertion_index(Enum.at(row, 2), row) == 2
+    end
+
+    test "a row with no stops puts everything at 0" do
+      assert StopPlacement.insertion_index(@origin, []) == 0
+    end
+  end
+
+  describe "order_stops/2" do
+    test "a pattern's stops come back in the order a vehicle meets them, whatever order they arrive in" do
+      row = collinear_row()
+      [first, second, third] = Enum.take(row, 3)
+
+      stops = [
+        %{stop_id: "B", point: third},
+        %{stop_id: "A", point: first},
+        %{stop_id: "C", point: second}
+      ]
+
+      assert StopPlacement.order_stops(stops, row) |> Enum.map(& &1.stop_id) == ["A", "C", "B"]
+    end
+
+    test "two stops on the same point of the line keep the id's order, so the answer is stable" do
+      row = collinear_row()
+
+      stops = [
+        %{stop_id: "B", point: Enum.at(row, 1)},
+        %{stop_id: "A", point: Enum.at(row, 1)}
+      ]
+
+      assert StopPlacement.order_stops(stops, row) |> Enum.map(& &1.stop_id) == ["A", "B"]
+    end
+  end
+
+  describe "passing_patterns/2" do
+    test "a point east of a northbound shape passes it, and the same point east of a southbound one does not" do
+      north = %{pattern_id: "nb", source: :shape, points: northbound(@origin)}
+      south = %{pattern_id: "sb", source: :shape, points: Enum.reverse(northbound(@origin))}
+      connector = %{pattern_id: "c", source: :connector, points: northbound(@origin)}
+
+      model = %{lines: [north, south, connector]}
+
+      assert StopPlacement.passing_patterns(east_of(@origin, 8.0), model)
+             |> Enum.map(& &1.pattern_id) ==
+               ["nb"]
+
+      # The same kerb, read the other way up: a bus running south stops on the
+      # west side, so the east point is the far pavement for it.
+      assert StopPlacement.passing_patterns(east_of(@origin, -8.0), model)
+             |> Enum.map(& &1.pattern_id) ==
+               ["sb"]
+    end
+
+    test "a model with no lines passes nothing" do
+      assert StopPlacement.passing_patterns(@origin, %{lines: []}) == []
     end
   end
 

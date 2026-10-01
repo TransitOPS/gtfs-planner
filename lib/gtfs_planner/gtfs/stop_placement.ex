@@ -584,6 +584,75 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
     }
   end
 
+  @doc """
+  The patterns whose shape a point stands on the kerb of, in the order the model
+  lists them.
+
+  A pattern with no shape of its own is a connector, which describes no kerb at
+  all, so it is never a pattern a stop can be added to from this position: the
+  geometry that says which pavement vehicles stop on is not there.
+  """
+  @spec passing_patterns(point(), map()) :: [checked_line()]
+  def passing_patterns(point, model) do
+    shapes = Enum.filter(model.lines || [], &(&1.source == :shape))
+
+    passing_lines(point, shapes)
+  end
+
+  @doc """
+  Where a point belongs in a pattern's stop order: the number of stops that lie
+  before it along the pattern's line.
+
+  The list is the pattern's own stops, in any order — the model reads them as a
+  set per stop rather than as a sequence, and a sequence is exactly what this
+  computes. A point before the first stop is `0` and a point past the last is the
+  length, so a caller can index the list at the answer and read the two stops
+  either side of it as the ones a new stop would fall between.
+
+  A stop at exactly the same place as the point does not count as before it: the
+  two are the same place, and "between" a stop and itself is not an answer.
+  """
+  @spec insertion_index(point(), [point()]) :: non_neg_integer()
+  def insertion_index(point, ordered_points) do
+    here = along_m(point, ordered_points)
+
+    Enum.count(ordered_points, &(along_m(&1, ordered_points) < here))
+  end
+
+  @doc """
+  A pattern's stops in the order a vehicle meets them along its line.
+
+  Ties — two stops projecting to the same point on the line, which a pattern that
+  visits the same corner twice really does have — are broken by the stop's own
+  id, so the same feed always produces the same order.
+  """
+  @spec order_stops([checked_stop()], line()) :: [checked_stop()]
+  def order_stops(stops, line) do
+    Enum.sort_by(stops, fn stop -> {along_m(stop.point, line), to_string(stop.stop_id)} end)
+  end
+
+  # How far along a polyline a point sits, in metres from the line's first
+  # point. The projection is clamped to each segment's ends, exactly as
+  # `offset_m/2` clamps it, so a point past the end of a line measures to that
+  # end and not to a projection of an extension nobody drives. The distance is
+  # carried along the line as the legs are walked, so every point is measured
+  # from the same end.
+  defp along_m(point, line), do: along_m(point, line, 0.0)
+
+  defp along_m(_point, [], travelled), do: travelled
+  defp along_m(_point, [_only], travelled), do: travelled
+
+  defp along_m(point, [first, second | rest], travelled) do
+    {x, y} = local(point, first)
+    {x2, y2} = local(second, first)
+    {foot_x, foot_y} = closest_point(x, y, x2, y2)
+
+    # The next segment starts where this one ended, so `second` becomes the
+    # next frame's origin: dropping it would walk a leg of the line twice over
+    # for a point that clamps at a vertex.
+    along_m(point, [second | rest], travelled + :math.sqrt(foot_x * foot_x + foot_y * foot_y))
+  end
+
   # The shapes close enough to serve this point, on the kerb a vehicle on them
   # actually stops at. `:west` is the far pavement for a shape's own direction
   # of travel, and a point in the middle of the road is not on a kerb at all —

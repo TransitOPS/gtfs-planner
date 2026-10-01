@@ -1193,15 +1193,74 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   defp location_type(_stop), do: 0
 
   defp created_row(stop, assigns) do
+    point = stop_point_of(stop)
+
     %{
       kind: if(stop.location_type == 1, do: "station", else: "stop"),
       stop_id: stop.stop_id,
       name: stop.stop_name,
       desc: stop.stop_desc,
       wheelchair: wheelchair_label(stop.wheelchair_boarding),
-      zone: zone_name(assigns.model, stop_point_of(stop))
+      zone: zone_name(assigns.model, point),
+      href: ~p"/gtfs/#{assigns.current_gtfs_version.id}/stops/#{stop.stop_id}",
+      patterns:
+        passing_pattern_rows(point, assigns.model, assigns.current_gtfs_version.id, stop.stop_id)
     }
   end
+
+  # The patterns a stop at this point could be added to, each with the two stops
+  # it would fall between.
+  #
+  # The model is not reloaded yet, so the created stop is not among any
+  # pattern's stops. That is what makes the neighbours the ones the new stop
+  # sits between: the list is the pattern as it stands without it.
+  defp passing_pattern_rows(nil, _model, _version_id, _stop_id), do: []
+
+  defp passing_pattern_rows(point, model, version_id, stop_id) do
+    point
+    |> StopPlacement.passing_patterns(model)
+    |> Enum.map(&pattern_row(&1, point, model, version_id, stop_id))
+    # A pattern the model has no route for is not a pattern an editor can be
+    # sent to, so it is not offered.
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp pattern_row(line, point, model, version_id, stop_id) do
+    case Map.get(model.routes || %{}, line.route_id) do
+      nil ->
+        nil
+
+      route ->
+        %{
+          dom_id: "pattern-#{dom_stop_id(%{stop_id: line.route_pattern_id})}",
+          route: route,
+          headsign: line.headsign,
+          between: between_phrase(line, point, model),
+          href:
+            ~p"/gtfs/#{version_id}/routes/#{line.route_id}/patterns/#{line.route_pattern_id}?task=stops&add_stop=#{stop_id}"
+        }
+    end
+  end
+
+  # "Between A and B" is a statement about a sequence, so the pattern's stops
+  # are put in the order a vehicle meets them before the two either side of the
+  # new point are read. A pattern with nothing before or nothing after says "the
+  # start" and "the end": a stop at the first or last place on a pattern is a
+  # real answer, and naming an absent neighbour is not.
+  defp between_phrase(line, point, model) do
+    ordered =
+      model.stops
+      |> Enum.filter(&(&1.point && line.pattern_id in &1.pattern_ids))
+      |> StopPlacement.order_stops(line.points)
+
+    index = StopPlacement.insertion_index(point, Enum.map(ordered, & &1.point))
+
+    "Between #{neighbour_name(Enum.at(ordered, index - 1), "the start")} and " <>
+      neighbour_name(Enum.at(ordered, index), "the end")
+  end
+
+  defp neighbour_name(nil, edge), do: edge
+  defp neighbour_name(stop, _edge), do: stop.name || stop.stop_id
 
   # The stop row's own coordinates as the map's `{lon, lat}` pair. The model is
   # not reloaded yet at this point, so the created stop is not in it, and this is

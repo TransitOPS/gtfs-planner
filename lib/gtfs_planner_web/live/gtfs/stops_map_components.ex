@@ -1387,8 +1387,19 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
   end
 
   @doc """
-  The panel after a stop is created: what was made, and the way to make the next
-  one. The pattern list step 29 adds hangs under the same heading.
+  The panel after a stop is created: what was made, the patterns it could be
+  added to, and the way to make the next stop.
+
+  The pattern list is the panel's reason for existing. A stop that is not on a
+  pattern is not in any trip yet, and the stop editor is the only place that
+  knows which patterns pass the point — so the one action that makes the new stop
+  real is a link from here into each of them, carrying the stop and the index
+  the pattern editor will insert it at.
+
+  Each link is a real navigation, and the fallback is a sentence rather than an
+  empty list: a version whose routes are not drawn yet has nothing to offer, and
+  "no pattern passes here" is a better answer than a heading with nothing under
+  it.
   """
   attr :id, :string, required: true
   attr :stop, :map, required: true
@@ -1421,7 +1432,49 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
             </.message>
           </div>
 
+          <h3 class="mb-0 mt-6 text-[15px] font-bold text-strong">Next: add it to a pattern</h3>
+
+          <div id="stops-map-created-patterns" class="mt-1">
+            <ul :if={@stop.patterns != []} class="m-0 list-none divide-y divide-subtle p-0 text-sm">
+              <li
+                :for={pattern <- @stop.patterns}
+                id={"stops-map-created-#{pattern.dom_id}"}
+                class="flex items-center gap-3 py-2.5"
+              >
+                <.route_badge route={pattern.route} />
+                <span class="min-w-0 flex-1">
+                  <span :if={pattern.headsign} class="block truncate">
+                    toward {pattern.headsign}
+                  </span>
+                  <span class="block text-[13px] text-muted">{pattern.between}</span>
+                </span>
+                <.link
+                  navigate={pattern.href}
+                  class="shrink-0 inline-flex min-h-11 items-center rounded-control border border-subtle px-3 text-sm font-semibold text-action no-underline hover:bg-canvas"
+                >
+                  Add to pattern
+                </.link>
+              </li>
+            </ul>
+
+            <p :if={@stop.patterns == []} class="m-0 text-sm">
+              No pattern passes here yet. Add the stop from a pattern’s stop list when the route is
+              ready.
+            </p>
+          </div>
+
+          <p :if={@stop.patterns != []} class="m-0 mt-2 text-[13px] text-muted">
+            Opens the pattern editor with the stop in place. Trips get a time for it when you next
+            edit or estimate their times.
+          </p>
+
           <div class="mt-6 flex flex-wrap items-center gap-3">
+            <.link
+              navigate={@stop.href}
+              class="mr-auto inline-flex min-h-11 items-center rounded-control border border-control bg-white px-4 text-sm font-semibold text-strong no-underline hover:bg-canvas"
+            >
+              Open stop
+            </.link>
             <button
               id="stops-map-created-another"
               type="button"
