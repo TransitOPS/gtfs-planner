@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
   use GtfsPlanner.DataCase, async: true
 
+  import GtfsPlanner.FlexFixtures, only: [flex_audit_fixture: 2]
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -14,8 +15,6 @@ defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
-
-  @actor %{id: "0f3b7f3a-1d8e-4e0a-9c62-6b1a2c3d4e5f", email: "editor@example.com"}
 
   # The fixture areas: a 0.01° square at 44.6°N, and a second square east of it.
   @square %{
@@ -36,7 +35,7 @@ defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
   @saturday %{area_key: nil, service_id: "saturday", start: "09:00", end: "15:00"}
   @booking_rule %{service_id: nil, when: :earlier_day, days: 1, by: "16:00"}
 
-  describe "copy_from_version/4" do
+  describe "copy_from_version/2" do
     test "copies every service and its areas, geometry included, into an empty version" do
       organization = organization_fixture()
       source = gtfs_version_fixture(organization.id)
@@ -95,12 +94,13 @@ defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
 
       # Inactive services copy too: the copy carries the authoring, not a
       # selection.
-      {:ok, _inactive} = Flex.set_active(organization.id, source.id, detour.id, false)
+      {:ok, _inactive} =
+        Flex.set_active(flex_audit_fixture(organization.id, source.id), detour.id, false)
 
       before = flex_counts(organization.id, source.id)
 
       assert {:ok, 2} =
-               Flex.copy_from_version(organization.id, target.id, source.id, @actor)
+               Flex.copy_from_version(flex_audit_fixture(organization.id, target.id), source.id)
 
       originals = services_by_key(organization.id, source.id)
       copied = services_by_key(organization.id, target.id)
@@ -177,10 +177,12 @@ defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
 
       {:ok, _source_service} = create_area_service(organization, source)
       {:ok, occupied} = create_area_service(organization, target, "Toledo Dial-a-Ride")
-      {:ok, _inactive} = Flex.set_active(organization.id, target.id, occupied.id, false)
+
+      {:ok, _inactive} =
+        Flex.set_active(flex_audit_fixture(organization.id, target.id), occupied.id, false)
 
       assert {:error, :target_not_empty} =
-               Flex.copy_from_version(organization.id, target.id, source.id, @actor)
+               Flex.copy_from_version(flex_audit_fixture(organization.id, target.id), source.id)
 
       # Even an inactive service occupies the target, and the refused copy
       # leaves the target's rows exactly as they were.
@@ -199,7 +201,7 @@ defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
       {:ok, _source_service} = create_area_service(organization, source)
 
       assert {:error, :target_not_empty} =
-               Flex.copy_from_version(organization.id, source.id, source.id, @actor)
+               Flex.copy_from_version(flex_audit_fixture(organization.id, source.id), source.id)
 
       assert flex_counts(organization.id, source.id).services == 1
     end
@@ -217,13 +219,22 @@ defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
         create_area_service(other_organization, other_version, "Other Dial-a-Ride")
 
       assert {:error, :not_found} =
-               Flex.copy_from_version(organization.id, target.id, other_version.id, @actor)
+               Flex.copy_from_version(
+                 flex_audit_fixture(organization.id, target.id),
+                 other_version.id
+               )
 
       assert {:error, :not_found} =
-               Flex.copy_from_version(organization.id, target.id, Ecto.UUID.generate(), @actor)
+               Flex.copy_from_version(
+                 flex_audit_fixture(organization.id, target.id),
+                 Ecto.UUID.generate()
+               )
 
       assert {:error, :not_found} =
-               Flex.copy_from_version(organization.id, target.id, "not-a-uuid", @actor)
+               Flex.copy_from_version(
+                 flex_audit_fixture(organization.id, target.id),
+                 "not-a-uuid"
+               )
 
       assert Flex.list_services(organization.id, target.id) == []
       assert flex_counts(other_organization.id, other_version.id).services == 1
@@ -234,7 +245,7 @@ defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
       target = gtfs_version_fixture(organization.id)
       {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staging"})
 
-      # `Flex.create_service/3` refuses a staging version, so the row is
+      # `Flex.create_service/2` refuses a staging version, so the row is
       # inserted directly: the source's publication, not its emptiness, is what
       # the copy must refuse here.
       %FlexService{organization_id: organization.id, gtfs_version_id: staging.id}
@@ -242,7 +253,7 @@ defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
       |> Repo.insert!()
 
       assert {:error, :not_found} =
-               Flex.copy_from_version(organization.id, target.id, staging.id, @actor)
+               Flex.copy_from_version(flex_audit_fixture(organization.id, target.id), staging.id)
 
       assert Flex.list_services(organization.id, target.id) == []
     end
@@ -256,13 +267,19 @@ defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
       other_target = gtfs_version_fixture(other_organization.id)
 
       assert {:error, :not_found} =
-               Flex.copy_from_version(organization.id, other_target.id, source.id, @actor)
+               Flex.copy_from_version(
+                 flex_audit_fixture(organization.id, other_target.id),
+                 source.id
+               )
 
       {:ok, staging_target} =
         Versions.create_staging_gtfs_version(organization.id, %{name: "Staging"})
 
       assert {:error, :not_found} =
-               Flex.copy_from_version(organization.id, staging_target.id, source.id, @actor)
+               Flex.copy_from_version(
+                 flex_audit_fixture(organization.id, staging_target.id),
+                 source.id
+               )
 
       assert flex_counts(other_organization.id, other_target.id).services == 0
       assert flex_counts(organization.id, staging_target.id).services == 0
@@ -273,7 +290,9 @@ defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
       source = gtfs_version_fixture(organization.id)
       target = gtfs_version_fixture(organization.id)
 
-      assert {:ok, 0} = Flex.copy_from_version(organization.id, target.id, source.id, @actor)
+      assert {:ok, 0} =
+               Flex.copy_from_version(flex_audit_fixture(organization.id, target.id), source.id)
+
       assert Flex.list_services(organization.id, target.id) == []
     end
 
@@ -285,13 +304,14 @@ defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
       route_fixture(organization.id, source.id, %{route_id: "R20"})
 
       {:ok, _detour} =
-        Flex.create_service(organization.id, source.id, %{
+        Flex.create_service(flex_audit_fixture(organization.id, source.id), %{
           name: "Route 20 detours",
           kind: :detour,
           route_id: "R20"
         })
 
-      assert {:ok, 1} = Flex.copy_from_version(organization.id, target.id, source.id, @actor)
+      assert {:ok, 1} =
+               Flex.copy_from_version(flex_audit_fixture(organization.id, target.id), source.id)
 
       # The target has no R20, so the copied reference is the missing route that
       # `Flex.Checks.run/3` reports once step 10 exists; this case pins the
@@ -306,21 +326,24 @@ defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
   # --- helpers ----------------------------------------------------------------
 
   defp create_area_service(organization, version, name \\ "Newport Dial-a-Ride") do
-    Flex.create_service(organization.id, version.id, %{name: name, kind: :area})
+    Flex.create_service(flex_audit_fixture(organization.id, version.id), %{
+      name: name,
+      kind: :area
+    })
   end
 
   defp create_and_save(organization, version, attrs) do
     attrs = Map.new(attrs)
     {areas, service_attrs} = Map.pop(attrs, :areas, [])
     create_attrs = Map.take(service_attrs, [:name, :kind, :route_id])
+    audit = flex_audit_fixture(organization.id, version.id)
 
-    {:ok, service} = Flex.create_service(organization.id, version.id, create_attrs)
+    {:ok, service} = Flex.create_service(audit, create_attrs)
     {:ok, loaded} = Flex.get_service(organization.id, version.id, service.id)
 
     {:ok, saved} =
       Flex.save_service(
-        organization.id,
-        version.id,
+        audit,
         loaded,
         Map.drop(service_attrs, [:name, :kind, :route_id]),
         areas

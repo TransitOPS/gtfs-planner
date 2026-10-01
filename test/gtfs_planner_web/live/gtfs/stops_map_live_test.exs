@@ -331,7 +331,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLiveTest do
       # pasted an unvalidated colour into a `style` attribute could close it and
       # restyle the row.
       assert {:error, changeset} =
-               Gtfs.create_route(%{
+               GtfsPlanner.GtfsFixtures.insert_route(%{
                  organization_id: ctx.organization.id,
                  gtfs_version_id: ctx.version.id,
                  route_id: "BAD",

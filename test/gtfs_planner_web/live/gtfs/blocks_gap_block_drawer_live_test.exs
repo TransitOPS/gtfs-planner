@@ -150,17 +150,18 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
 
       assert_patch(view, gap_url(base, a.id, b.id))
 
-      assert has_element?(view, "#gap-drawer", "12 min between trips")
-      assert has_element?(view, "#gap-drawer", "Block 101 · a → b · Weekday")
+      assert has_element?(view, "#gap-drawer", "Route 1 continues")
+      assert has_element?(view, "#gap-available", "12 min · Same stop")
+      assert has_element?(view, "#gap-drawer", "Block 101 · trip a → b · Main St · Weekday")
       assert has_element?(view, "#gap-drawer", "Arrives")
       assert has_element?(view, "#gap-drawer", "07:00")
-      assert has_element?(view, "#gap-drawer", "Next trip departs")
+      assert has_element?(view, "#gap-drawer", "Departs")
       assert has_element?(view, "#gap-drawer", "07:12")
       assert has_element?(view, "#gap-drawer", "Main St")
       assert has_element?(view, "#gap-text", "12 min layover at Main St")
       assert has_element?(view, "#gap-text[data-short='false']")
       assert has_element?(view, "#gap-rider-note", @rider_note)
-      assert has_element?(view, "#gap-transfers", "Stay-on-board records · 0")
+      assert has_element?(view, "#gap-riders", "What trip planners show riders")
 
       # Each trip's own drawer is one click away with the block context kept.
       assert attribute_values(view, "#gap-drawer [data-role='gap-inspect']", "phx-value-trip") ==
@@ -284,7 +285,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
       # short layover and the callout stays an info one.
       {:ok, view, _html} = live(conn, gap_url(base, a.id, b.id))
 
-      assert has_element?(view, "#gap-drawer", "6 min between trips")
+      assert has_element?(view, "#gap-drawer", "Route 1 continues")
+      assert has_element?(view, "#gap-available", "6 min · 120 m walk between stops")
       assert has_element?(view, "#gap-text", "Nearby stop · 120 m · 6 min available")
       assert has_element?(view, "#gap-text[data-short='false']")
       assert has_element?(view, "#gap-rider-note", @rider_note)
@@ -463,7 +465,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
       assert_patch(view, gap_url(base, a.id, b.id, [{"block", "101"}]))
 
       assert has_element?(view, "#gap-drawer", "10 min overlap")
-      assert has_element?(view, "#gap-drawer", "Block 101 · a → b · Weekday")
+      assert has_element?(view, "#gap-drawer", "Block 101 · trip a → b · Riverside · Weekday")
       assert has_element?(view, "#gap-back-to-block", "Back to block 101")
     end
 
@@ -509,21 +511,162 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
 
       {:ok, view, _html} = live(conn, gap_url(base, a.id, b.id))
 
-      assert has_element?(view, "#gap-transfers", "Stay-on-board records · 1")
-
       assert has_element?(
                view,
-               "#gap-transfers [data-role='gap-transfer'][data-transfer-type='4']",
+               "#gap-record-note[data-quiet='true']",
                "Riders stay on board"
              )
 
       assert has_element?(
                view,
-               "#gap-transfers [data-role='gap-transfer-state']",
+               "#gap-record-note",
                "Matches the block on every shared day."
              )
 
-      refute has_element?(view, "#gap-transfers", "Trip a → c")
+      # The record for the pair this gap does not join earns no note here.
+      refute has_element?(view, "#gap-record-note", "Trip a → c")
+    end
+  end
+
+  describe "connection settings in the block drawer" do
+    setup :editor_scope
+
+    test "a decided connection names its setting beside the gap note",
+         %{version: version} = context do
+      calendar(context, "WK", "Weekday")
+      main = stop(context, %{stop_id: "MAIN", stop_name: "Main St"})
+
+      a =
+        trip(context, %{
+          trip_id: "a",
+          block_id: "101",
+          first_stop: main.stop_id,
+          last_stop: main.stop_id,
+          first: "06:00:00",
+          last: "07:00:00"
+        })
+
+      b =
+        trip(context, %{
+          trip_id: "b",
+          block_id: "101",
+          first_stop: main.stop_id,
+          last_stop: main.stop_id,
+          first: "07:12:00",
+          last: "08:00:00"
+        })
+
+      in_seat_transfer_fixture(context.organization.id, context.version.id, a, b)
+
+      conn = editor_conn(context)
+      {:ok, view, _html} = live(conn, blocks_path(version.id) <> "?block=101")
+
+      # The note rides the row that is about the connection, and it names the
+      # setting in words with its own icon rather than in colour alone.
+      assert has_element?(
+               view,
+               "#block-drawer tr[data-kind='wait'] [data-role='block-gap-setting'][data-setting='stay']",
+               "Riders stay on board"
+             )
+
+      assert has_element?(
+               view,
+               "#block-drawer [data-role='block-gap-setting'] .hero-link-mini"
+             )
+
+      # The note sits beside the gap's own text, and the row still opens the gap.
+      assert has_element?(
+               view,
+               "#block-drawer tr[data-kind='wait'] [data-role='block-gap'][phx-value-to='#{b.id}']",
+               "12 min"
+             )
+    end
+
+    test "a stale record names the connection as needing review",
+         %{version: version} = context do
+      calendar(context, "WK", "Weekday")
+      main = stop(context, %{stop_id: "MAIN", stop_name: "Main St"})
+      other = stop(context, %{stop_id: "OTHER", stop_name: "Other St"})
+
+      a =
+        trip(context, %{
+          trip_id: "a",
+          block_id: "101",
+          first_stop: main.stop_id,
+          last_stop: main.stop_id,
+          first: "06:00:00",
+          last: "07:00:00"
+        })
+
+      b =
+        trip(context, %{
+          trip_id: "b",
+          block_id: "101",
+          first_stop: main.stop_id,
+          last_stop: main.stop_id,
+          first: "07:12:00",
+          last: "08:00:00"
+        })
+
+      # The record names the pair but the wrong handoff stops, so the day load
+      # finds it no longer matches the block and the connection needs review.
+      transfer_fixture(context.organization.id, context.version.id, %{
+        from_trip_id: a.trip_id,
+        to_trip_id: b.trip_id,
+        from_stop_id: other.stop_id,
+        to_stop_id: other.stop_id,
+        transfer_type: 4
+      })
+
+      conn = editor_conn(context)
+      {:ok, view, _html} = live(conn, blocks_path(version.id) <> "?block=101")
+
+      assert has_element?(
+               view,
+               "#block-drawer tr[data-kind='wait'] [data-role='block-gap-setting'][data-setting='review']",
+               "Needs review"
+             )
+
+      assert has_element?(
+               view,
+               "#block-drawer [data-role='block-gap-setting'] .hero-exclamation-triangle-mini"
+             )
+    end
+
+    test "a pair nobody has decided says so in muted words", %{version: version} = context do
+      calendar(context, "WK", "Weekday")
+      main = stop(context, %{stop_id: "MAIN", stop_name: "Main St"})
+
+      trip(context, %{
+        trip_id: "a",
+        block_id: "101",
+        first_stop: main.stop_id,
+        last_stop: main.stop_id,
+        first: "06:00:00",
+        last: "07:00:00"
+      })
+
+      trip(context, %{
+        trip_id: "b",
+        block_id: "101",
+        first_stop: main.stop_id,
+        last_stop: main.stop_id,
+        first: "07:12:00",
+        last: "08:00:00"
+      })
+
+      conn = editor_conn(context)
+      {:ok, view, _html} = live(conn, blocks_path(version.id) <> "?block=101")
+
+      # Undecided is stated rather than left blank, so a planner can tell an
+      # unrecorded connection from a missing one.
+      assert has_element?(
+               view,
+               "#block-drawer tr[data-kind='wait'] [data-role='block-gap-setting'][data-setting='none']",
+               "Not stated"
+             )
+
+      refute has_element?(view, "#block-drawer [data-role='block-gap-setting'] .hero-link-mini")
     end
   end
 

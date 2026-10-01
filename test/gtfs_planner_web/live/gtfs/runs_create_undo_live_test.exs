@@ -116,7 +116,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsCreateUndoLiveTest do
   # test — but it tests the fixture, not the page.
   defp colleague_moves(w, trip_id, from, to) do
     {:ok, _result} =
-      Gtfs.apply_run_moves(w.organization.id, w.version.id, w.day_type_key, [
+      Gtfs.apply_run_moves(w.audit, w.day_type_key, [
         %{trip_id: trip_id, from: from, to: to}
       ])
 

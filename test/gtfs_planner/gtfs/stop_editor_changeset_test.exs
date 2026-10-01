@@ -24,6 +24,23 @@ defmodule GtfsPlanner.Gtfs.StopEditorChangesetTest do
     %{organization_id: organization.id, gtfs_version_id: version.id}
   end
 
+  # Ownership is never cast from submitted attributes: since #736 the server is the
+  # only source, so the editor changesets are built on a struct that already carries
+  # it and the submitted map leaves those keys out.
+  defp owned_stop(context) do
+    %Stop{
+      stop_id: "1532",
+      organization_id: context.organization_id,
+      gtfs_version_id: context.gtfs_version_id
+    }
+  end
+
+  defp editor_attrs(context, extra) do
+    context
+    |> attrs(extra)
+    |> Map.drop([:organization_id, :gtfs_version_id])
+  end
+
   defp attrs(context, extra) do
     Map.merge(
       %{
@@ -41,20 +58,23 @@ defmodule GtfsPlanner.Gtfs.StopEditorChangesetTest do
 
   describe "editor_changeset/2 required fields" do
     test "a located stop with no name reports the name", context do
-      changeset = Stop.editor_changeset(%Stop{}, attrs(context, %{stop_name: nil}))
+      changeset =
+        Stop.editor_changeset(owned_stop(context), editor_attrs(context, %{stop_name: nil}))
 
       assert %{stop_name: ["can't be blank"]} = errors_on(changeset)
       refute changeset.valid?
     end
 
     test "a located stop with no latitude reports the latitude", context do
-      changeset = Stop.editor_changeset(%Stop{}, attrs(context, %{stop_lat: nil}))
+      changeset =
+        Stop.editor_changeset(owned_stop(context), editor_attrs(context, %{stop_lat: nil}))
 
       assert %{stop_lat: ["can't be blank"]} = errors_on(changeset)
     end
 
     test "a located stop with no longitude reports the longitude", context do
-      changeset = Stop.editor_changeset(%Stop{}, attrs(context, %{stop_lon: nil}))
+      changeset =
+        Stop.editor_changeset(owned_stop(context), editor_attrs(context, %{stop_lon: nil}))
 
       assert %{stop_lon: ["can't be blank"]} = errors_on(changeset)
     end
@@ -63,8 +83,8 @@ defmodule GtfsPlanner.Gtfs.StopEditorChangesetTest do
       for type <- [1, 2] do
         changeset =
           Stop.editor_changeset(
-            %Stop{},
-            attrs(context, %{location_type: type, stop_name: nil, stop_lat: nil})
+            owned_stop(context),
+            editor_attrs(context, %{location_type: type, stop_name: nil, stop_lat: nil})
           )
 
         assert %{stop_name: [_], stop_lat: [_]} = errors_on(changeset)
@@ -74,8 +94,8 @@ defmodule GtfsPlanner.Gtfs.StopEditorChangesetTest do
     test "a node without a name or coordinates is valid", context do
       changeset =
         Stop.editor_changeset(
-          %Stop{},
-          attrs(context, %{location_type: 3, stop_name: nil, stop_lat: nil, stop_lon: nil})
+          owned_stop(context),
+          editor_attrs(context, %{location_type: 3, stop_name: nil, stop_lat: nil, stop_lon: nil})
         )
 
       assert changeset.valid?, "expected a type 3 node to need no name or coordinates"
@@ -84,15 +104,16 @@ defmodule GtfsPlanner.Gtfs.StopEditorChangesetTest do
     test "a boarding area without a name or coordinates is valid", context do
       changeset =
         Stop.editor_changeset(
-          %Stop{},
-          attrs(context, %{location_type: 4, stop_name: nil, stop_lat: nil, stop_lon: nil})
+          owned_stop(context),
+          editor_attrs(context, %{location_type: 4, stop_name: nil, stop_lat: nil, stop_lon: nil})
         )
 
       assert changeset.valid?
     end
 
     test "an out-of-range latitude is still refused", context do
-      changeset = Stop.editor_changeset(%Stop{}, attrs(context, %{stop_lat: 91}))
+      changeset =
+        Stop.editor_changeset(owned_stop(context), editor_attrs(context, %{stop_lat: 91}))
 
       assert %{stop_lat: [_]} = errors_on(changeset)
     end
@@ -101,21 +122,30 @@ defmodule GtfsPlanner.Gtfs.StopEditorChangesetTest do
   describe "editor_changeset/2 stop_url" do
     test "rejects a javascript: url", context do
       changeset =
-        Stop.editor_changeset(%Stop{}, attrs(context, %{stop_url: "javascript:alert(1)"}))
+        Stop.editor_changeset(
+          owned_stop(context),
+          editor_attrs(context, %{stop_url: "javascript:alert(1)"})
+        )
 
       assert %{stop_url: [@url_message]} = errors_on(changeset)
     end
 
     test "rejects a data: url", context do
       changeset =
-        Stop.editor_changeset(%Stop{}, attrs(context, %{stop_url: "data:text/html,x"}))
+        Stop.editor_changeset(
+          owned_stop(context),
+          editor_attrs(context, %{stop_url: "data:text/html,x"})
+        )
 
       assert %{stop_url: [@url_message]} = errors_on(changeset)
     end
 
     test "rejects a bare host with no scheme", context do
       changeset =
-        Stop.editor_changeset(%Stop{}, attrs(context, %{stop_url: "northcoast.example"}))
+        Stop.editor_changeset(
+          owned_stop(context),
+          editor_attrs(context, %{stop_url: "northcoast.example"})
+        )
 
       assert %{stop_url: [@url_message]} = errors_on(changeset)
     end
@@ -123,8 +153,8 @@ defmodule GtfsPlanner.Gtfs.StopEditorChangesetTest do
     test "accepts an https url", context do
       changeset =
         Stop.editor_changeset(
-          %Stop{},
-          attrs(context, %{stop_url: "https://northcoast.example/stops/1532"})
+          owned_stop(context),
+          editor_attrs(context, %{stop_url: "https://northcoast.example/stops/1532"})
         )
 
       assert changeset.valid?
@@ -133,7 +163,10 @@ defmodule GtfsPlanner.Gtfs.StopEditorChangesetTest do
 
     test "accepts an http url", context do
       changeset =
-        Stop.editor_changeset(%Stop{}, attrs(context, %{stop_url: "http://northcoast.example"}))
+        Stop.editor_changeset(
+          owned_stop(context),
+          editor_attrs(context, %{stop_url: "http://northcoast.example"})
+        )
 
       assert changeset.valid?
     end
@@ -143,8 +176,8 @@ defmodule GtfsPlanner.Gtfs.StopEditorChangesetTest do
     test "casts the sign number, spoken name and web page", context do
       changeset =
         Stop.editor_changeset(
-          %Stop{},
-          attrs(context, %{
+          owned_stop(context),
+          editor_attrs(context, %{
             stop_code: " 1532 ",
             tts_stop_name: "Main Street and Third Avenue",
             stop_url: " https://northcoast.example/stops/1532 "
@@ -160,7 +193,8 @@ defmodule GtfsPlanner.Gtfs.StopEditorChangesetTest do
     end
 
     test "does not cast the fare zone", context do
-      changeset = Stop.editor_changeset(%Stop{}, attrs(context, %{zone_id: "A"}))
+      changeset =
+        Stop.editor_changeset(owned_stop(context), editor_attrs(context, %{zone_id: "A"}))
 
       assert get_change(changeset, :zone_id) == nil
     end
@@ -191,8 +225,8 @@ defmodule GtfsPlanner.Gtfs.StopEditorChangesetTest do
     test "child_stop_changeset/2 still requires a level for the diagram's form", context do
       changeset =
         Stop.child_stop_changeset(
-          %Stop{},
-          attrs(context, %{location_type: 3, parent_station: "ST-NTC", level_id: nil})
+          owned_stop(context),
+          editor_attrs(context, %{location_type: 3, parent_station: "ST-NTC", level_id: nil})
         )
 
       assert %{level_id: ["can't be blank"]} = errors_on(changeset)
@@ -202,8 +236,8 @@ defmodule GtfsPlanner.Gtfs.StopEditorChangesetTest do
     test "child_stop_changeset/2 accepts a child stop that names a level", context do
       changeset =
         Stop.child_stop_changeset(
-          %Stop{},
-          attrs(context, %{location_type: 3, parent_station: "ST-NTC", level_id: "L0"})
+          owned_stop(context),
+          editor_attrs(context, %{location_type: 3, parent_station: "ST-NTC", level_id: "L0"})
         )
 
       assert changeset.valid?

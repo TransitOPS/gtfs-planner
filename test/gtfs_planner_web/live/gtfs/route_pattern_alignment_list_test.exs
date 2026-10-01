@@ -73,12 +73,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentListTest do
   end
 
   defp audit(organization, version) do
+    actor = editor_fixture(organization)
+
     %AuditContext{
       organization_id: organization.id,
       gtfs_version_id: version.id,
       station_stop_id: nil,
-      actor_id: Ecto.UUID.generate(),
-      actor_email: "align-lst@example.com"
+      actor_id: actor.id,
+      actor_email: actor.email
     }
   end
 

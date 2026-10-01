@@ -19,11 +19,13 @@ defmodule GtfsPlanner.Gtfs.Alignments.PatternDeleteTest do
   alias GtfsPlanner.Repo
 
   defp audit(organization, version) do
+    actor = editor_fixture(organization)
+
     %AuditContext{
       organization_id: organization.id,
       gtfs_version_id: version.id,
-      actor_id: Ecto.UUID.generate(),
-      actor_email: "pattern-delete@example.com"
+      actor_id: actor.id,
+      actor_email: actor.email
     }
   end
 

@@ -81,7 +81,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsHelperHandoffTest do
       refute render(view) =~ "calendar-date-change-review-panel"
     end
 
-    test "Review prepared change opens the drawer review with both calendars", context do
+    test "the action label names the date change it opens, not an extension", context do
+      {view, _pid} = prepared_view(context)
+
+      assert has_element?(view, "#agent-review-prepared-2", "Review date change")
+      refute has_element?(view, "#agent-review-prepared-2", "Review extension")
+    end
+
+    test "the review action opens the drawer review with both calendars", context do
       {view, _pid} = prepared_view(context)
 
       assert view |> element("#agent-review-prepared-2") |> render_click() =~
@@ -339,7 +346,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsHelperHandoffTest do
       user_id: context.user.id,
       user_email: context.user.email,
       pack_id: "calendars",
-      version_name: context.version.name
+      version_name: context.version.name,
+      # The Calendars page binds the whole version as the conversation's page.
+      resource_context: Scope.context({:version, context.version.id})
     }
   end
 

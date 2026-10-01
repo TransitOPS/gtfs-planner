@@ -254,15 +254,20 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
       # One active neighbour whose drawn area sits inside the Newport boundary,
       # so the overlap read has a deterministic service to name.
       {:ok, neighbour} =
-        Flex.create_service(ctx.organization.id, ctx.version.id, %{
+        Flex.create_service(flex_audit_fixture(ctx.organization.id, ctx.version.id), %{
           name: "Neighbor Flex",
           kind: :area
         })
 
       {:ok, neighbour} =
-        Flex.save_service(ctx.organization.id, ctx.version.id, neighbour, %{}, [
-          %{key: "a1", name: "Central Newport", source: :drawn, geojson: central_newport()}
-        ])
+        Flex.save_service(
+          flex_audit_fixture(ctx.organization.id, ctx.version.id),
+          neighbour,
+          %{},
+          [
+            %{key: "a1", name: "Central Newport", source: :drawn, geojson: central_newport()}
+          ]
+        )
 
       service = service_named(ctx.organization.id, ctx.version.id, "Newport Dial-a-Ride")
       {:ok, view, _html} = live(ctx.conn, service_path(ctx.version, service))
@@ -336,7 +341,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
       version = gtfs_version_fixture(ctx.organization.id)
 
       {:ok, service} =
-        Flex.create_service(ctx.organization.id, version.id, %{name: "No Stops", kind: :area})
+        Flex.create_service(
+          flex_audit_fixture(ctx.organization.id, version.id),
+          %{name: "No Stops", kind: :area}
+        )
 
       {:ok, view, _html} = live(ctx.conn, service_path(version, service))
 

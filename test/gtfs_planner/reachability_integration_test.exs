@@ -7,9 +7,12 @@ defmodule GtfsPlanner.ReachabilityIntegrationTest do
 
   alias GtfsPlanner.Reachability
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.RunnerSlots
   alias GtfsPlanner.Validations.ValidationRun
 
   setup do
+    RunnerSlots.await_idle()
+
     org = organization_fixture()
     version = gtfs_version_fixture(org.id)
     _ground = level_fixture(org.id, version.id, %{level_id: "L1", level_index: 0.0})
@@ -109,7 +112,7 @@ defmodule GtfsPlanner.ReachabilityIntegrationTest do
       version: version,
       station: station
     } do
-      task_pids_before = MapSet.new(Task.Supervisor.children(GtfsPlanner.TaskSupervisor))
+      task_pids_before = MapSet.new(runner_pids())
 
       # The real runner runs behind a test-controlled gate so the spawned task
       # cannot complete before the test observes the persisted running row; the
@@ -247,7 +250,7 @@ defmodule GtfsPlanner.ReachabilityIntegrationTest do
           level_id: "L1"
         })
 
-      task_pids_before = MapSet.new(Task.Supervisor.children(GtfsPlanner.TaskSupervisor))
+      task_pids_before = MapSet.new(runner_pids())
       assert {:ok, run} = Reachability.start_run(org.id, version.id, station.stop_id)
       run = wait_for_completion(run.id, task_pids_before)
 
@@ -266,15 +269,19 @@ defmodule GtfsPlanner.ReachabilityIntegrationTest do
     end
   end
 
+  defp runner_pids do
+    for {_id, pid, _type, _modules} <-
+          DynamicSupervisor.which_children(GtfsPlanner.Reachability.RunnerSupervisor),
+        is_pid(pid),
+        do: pid
+  end
+
   # The run's task can exit at any point before this helper looks for it, so
   # both "no new task" and "task already dead when monitored" (`:noproc`) mean
   # it finished. Either way the persisted row decides: a task that died
   # without writing a terminal status must fail here, not return a running row.
   defp wait_for_completion(run_id, task_pids_before) do
-    task_pid =
-      GtfsPlanner.TaskSupervisor
-      |> Task.Supervisor.children()
-      |> Enum.find(&(&1 not in task_pids_before))
+    task_pid = Enum.find(runner_pids(), &(&1 not in task_pids_before))
 
     if task_pid do
       ref = Process.monitor(task_pid)

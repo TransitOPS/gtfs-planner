@@ -171,27 +171,28 @@ defmodule GtfsPlanner.Gtfs.Flex.GeometryStatsTest do
         "distance_m" => 800
       })
 
-      # A row that claims this organization and version but points at a service
-      # in another scope is not listed: the service join carries the scope.
+      # An area service of another organization over the same square is not listed.
       foreign_organization = organization_fixture()
       foreign_version = gtfs_version_fixture(foreign_organization.id)
       foreign_service = insert_area_service(foreign_organization, foreign_version, "Foreign", %{})
+      put_area(foreign_service, "a1", 1, @square)
 
-      cross_scope =
+      # A row that claims this organization and version but points at a service
+      # in another scope cannot exist: the ownership constraint refuses it.
+      assert_raise Ecto.ConstraintError, ~r/flex_areas_flex_services_owner_fkey/, fn ->
         %FlexArea{
           flex_service_id: foreign_service.id,
           organization_id: organization.id,
           gtfs_version_id: version.id
         }
         |> FlexArea.changeset(%{
-          "key" => "a1",
-          "position" => 1,
+          "key" => "a2",
+          "position" => 2,
           "name" => "Cross-scope area",
           "source" => "drawn"
         })
         |> Repo.insert!()
-
-      :ok = Geometry.put_geom(cross_scope.id, @square)
+      end
 
       results = Geometry.overlaps(organization.id, version.id, @square, edited.id)
 

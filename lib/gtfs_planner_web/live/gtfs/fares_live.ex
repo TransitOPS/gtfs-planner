@@ -50,7 +50,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   `@assignment` is the review a selection is committed through and `@undo` the
   report of the save that happened. Opening a review is a read: `preview_assignment/4`
   reports from current database values what each selected stop would change to, and
-  the dialog states it before anything is written. `apply_assignment/3` writes the
+  the dialog states it before anything is written. `apply_assignment/2` writes the
   reviewed changes, and the review it was written from is what is passed along, so
   a stop that changed since the review can only produce a stale result, never a
   silent overwrite. Nothing about a failed or stale save closes the dialog: the
@@ -65,7 +65,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   is selected, and it always sends the zone's exact stored ID as the edit key, so
   the domain can keep an imported `" A"` byte-for-byte through a name-only edit.
   The form is `FareZones.change_zone/2`'s changeset, so it validates what the
-  write will do; the write is `create_zone/3` or `update_zone/4`, and a duplicate
+  write will do; the write is `create_zone/2` or `update_zone/3`, and a duplicate
   ID, a zone another editor removed and a pair that is no longer a published
   version of the organization each leave the drawer open with its input and a
   visible reason (AC-12, AC-13, AC-14, AC-15, AC-26). A successful save clears
@@ -77,7 +77,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   The delete dialog is the zone drawer's destructive exit. `Delete zone…` in an
   edit drawer closes it and opens the confirm, which captures the zone's
-  counts as the fence `delete_zone/5` compares against and states what the
+  counts as the fence `delete_zone/4` compares against and states what the
   deletion changes before anything is written: the zone's counts, the member
   stop types it also moves, the replacement select with its label, and either
   the warning or the empty zone's own sentence (AC-27). A zone fare rules use
@@ -114,8 +114,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   from a row's `Edit rule`, which sends the row's own DOM ID so the reviewed group
   comes from the list this page read rather than from anything the browser said
   (INV-4). A new rule starts with no fare chosen. The form is `FareZones.change_rule_group/2`'s changeset,
-  the write is `save_rule_group/4` with the reviewed group, and removal is
-  `delete_rule_group/3` behind a danger confirm. A key another rule holds, a zone
+  the write is `save_rule_group/3` with the reviewed group, and removal is
+  `delete_rule_group/2` behind a danger confirm. A key another rule holds, a zone
   with no stops, a rule another editor changed and a pair that is no longer a
   published version each leave the drawer open with its input and a visible
   reason (AC-18, AC-19, AC-20, AC-26, AC-31); a stale result offers Reload rule,
@@ -165,6 +165,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1, message: 1]
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareZone
   alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Versions
@@ -497,7 +498,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   # `Delete zone…` in an edit drawer. The drawer closes because the confirm
   # replaces it, and the zone's counts are captured now: they are the fence
-  # `delete_zone/5` compares against, so the write can only see a zone whose
+  # `delete_zone/4` compares against, so the write can only see a zone whose
   # membership is what the operator was shown (AC-16).
   @impl true
   def handle_event("open_delete_zone", params, socket) when is_map(params) do
@@ -1223,23 +1224,43 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   defp save_zone(%{assigns: %{zone_drawer_open: false}} = socket, _params), do: socket
 
   defp save_zone(socket, params) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    audit = audit_context(socket)
 
     case socket.assigns.zone_drawer_zone_id do
-      nil ->
-        case FareZones.create_zone(organization_id, gtfs_version_id, params) do
-          {:ok, zone} -> zone_saved(socket, zone, @zone_created_message, nil)
-          {:error, %Ecto.Changeset{} = changeset} -> zone_form_error(socket, changeset)
-          {:error, :not_found} -> assign(socket, :zone_error, @save_failed_message)
-        end
+      nil -> save_new_zone(socket, audit, params)
+      current_zone_id -> save_zone_edit(socket, audit, current_zone_id, params)
+    end
+  end
 
-      current_zone_id ->
-        case FareZones.update_zone(organization_id, gtfs_version_id, current_zone_id, params) do
-          {:ok, zone} -> zone_saved(socket, zone, @zone_updated_message, current_zone_id)
-          {:error, %Ecto.Changeset{} = changeset} -> zone_form_error(socket, changeset)
-          {:error, :not_found} -> zone_edit_not_found(socket, current_zone_id)
-        end
+  defp save_new_zone(socket, audit, params) do
+    case FareZones.create_zone(audit, params) do
+      {:ok, zone} ->
+        zone_saved(socket, zone, @zone_created_message, nil)
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        zone_form_error(socket, changeset)
+
+      {:error, :not_found} ->
+        assign(socket, :zone_error, @save_failed_message)
+
+      {:error, :forbidden} ->
+        socket |> validate_zone(params) |> assign(:zone_error, @save_failed_message)
+    end
+  end
+
+  defp save_zone_edit(socket, audit, current_zone_id, params) do
+    case FareZones.update_zone(audit, current_zone_id, params) do
+      {:ok, zone} ->
+        zone_saved(socket, zone, @zone_updated_message, current_zone_id)
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        zone_form_error(socket, changeset)
+
+      {:error, :not_found} ->
+        zone_edit_not_found(socket, current_zone_id)
+
+      {:error, :forbidden} ->
+        socket |> validate_zone(params) |> assign(:zone_error, @save_failed_message)
     end
   end
 
@@ -1397,8 +1418,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     delete = socket.assigns.zone_delete
 
     case FareZones.delete_zone(
-           socket.assigns.current_organization.id,
-           socket.assigns.current_gtfs_version.id,
+           audit_context(socket),
            delete.zone.zone_id,
            delete.replacement,
            delete.expected
@@ -1433,6 +1453,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
         socket
         |> load_workspace()
         |> close_delete(@delete_missing_message)
+
+      {:error, :forbidden} ->
+        assign(socket, :zone_delete, %{delete | error: @save_failed_message})
     end
   end
 
@@ -1546,12 +1569,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   defp save_rule(%{assigns: %{rule_drawer_open: false}} = socket, _params), do: socket
 
   defp save_rule(socket, params) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-
     case FareZones.save_rule_group(
-           organization_id,
-           gtfs_version_id,
+           audit_context(socket),
            socket.assigns.reviewed_rule,
            params
          ) do
@@ -1570,6 +1589,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
       {:error, :not_found} ->
         assign(socket, :rule_error, @save_failed_message)
+
+      {:error, :forbidden} ->
+        socket |> validate_rule(params) |> assign(:rule_error, @save_failed_message)
     end
   end
 
@@ -1655,8 +1677,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   defp remove_rule(socket) do
     case FareZones.delete_rule_group(
-           socket.assigns.current_organization.id,
-           socket.assigns.current_gtfs_version.id,
+           audit_context(socket),
            socket.assigns.remove_rule.rule
          ) do
       {:ok, _count} ->
@@ -1668,6 +1689,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
         socket |> load_workspace() |> reopen_remove()
 
       {:error, :not_found} ->
+        assign(socket, :remove_rule, %{socket.assigns.remove_rule | error: @save_failed_message})
+
+      {:error, :forbidden} ->
         assign(socket, :remove_rule, %{socket.assigns.remove_rule | error: @save_failed_message})
     end
   end
@@ -1755,8 +1779,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     assignment = socket.assigns.assignment
 
     case FareZones.apply_assignment(
-           socket.assigns.current_organization.id,
-           socket.assigns.current_gtfs_version.id,
+           audit_context(socket),
            assignment.preview.changes
          ) do
       {:ok, %{applied: applied}} ->
@@ -1795,6 +1818,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
       {:error, :not_found} ->
         assign(socket, :assignment, %{assignment | error: @save_failed_message})
+
+      {:error, :forbidden} ->
+        assign(socket, :assignment, %{assignment | error: @save_failed_message})
     end
   end
 
@@ -1806,8 +1832,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   # bytes, including a zone that left the inventory in the meantime.
   defp undo_assignment(socket) do
     case FareZones.undo_assignment(
-           socket.assigns.current_organization.id,
-           socket.assigns.current_gtfs_version.id,
+           audit_context(socket),
            socket.assigns.undo.applied
          ) do
       {:ok, %{applied: applied}} ->
@@ -1829,9 +1854,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   # is no longer a published version of the organization. Either way nothing was
   # written, the callout states which happened, and the change is not offered again.
   defp undo_failure_copy(:not_found), do: @save_failed_message
+  defp undo_failure_copy(:forbidden), do: @save_failed_message
   defp undo_failure_copy(_stale_or_invalid), do: @undo_stale_message
 
   defp reload_after_undo(socket, :not_found), do: socket
+  defp reload_after_undo(socket, :forbidden), do: socket
   defp reload_after_undo(socket, _reason), do: load_workspace(socket)
 
   defp assigned_copy(:assign, applied, zone_name) do
@@ -2056,6 +2083,15 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   defp checks_tone(%{stopless_referenced: [_ | _]}), do: :error
   defp checks_tone(%{unassigned_count: unassigned}) when unassigned > 0, do: :warning
   defp checks_tone(_checks), do: :ok
+
+  defp audit_context(socket) do
+    %AuditContext{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      actor_id: socket.assigns.current_user.id,
+      actor_email: socket.assigns.current_user.email
+    }
+  end
 
   defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
   defp import_path(version_id), do: "/gtfs/#{version_id}/import"

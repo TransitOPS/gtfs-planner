@@ -83,12 +83,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentSaveTest do
   end
 
   defp audit(organization, version) do
+    actor = editor_fixture(organization)
+
     %AuditContext{
       organization_id: organization.id,
       gtfs_version_id: version.id,
       station_stop_id: nil,
-      actor_id: Ecto.UUID.generate(),
-      actor_email: "align-save@example.com"
+      actor_id: actor.id,
+      actor_email: actor.email
     }
   end
 
@@ -262,7 +264,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentSaveTest do
 
       assert segments_count(organization, version) == 1
       assert_push_event(view, "alignment:load", %{model: _model})
-      assert has_element?(view, "#status", "Alignment saved. 0 trips updated.")
+      assert has_element?(view, "#status", "Map line saved. 0 trips updated.")
       refute save_open?(view)
     end
 
@@ -287,7 +289,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentSaveTest do
       draft = [set_entry(section_at(Repo.reload!(solo), 1), [[-74.005500, 40.713100]])]
       render_hook(view, "alignment_save_requested", save_params(draft))
 
-      assert has_element?(view, "#status", "Alignment saved. 0 trips updated.")
+      assert has_element?(view, "#status", "Map line saved. 0 trips updated.")
       assert_push_event(view, "alignment:load", %{model: _model})
       assert_push_event(view, "route_pattern_dirty", %{dirty: false})
       assert has_element?(view, "#alignment-section-status-1", "✓ Saved")
@@ -339,7 +341,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentSaveTest do
       after_rows = shape_rows(organization, version, Repo.reload!(second).shape_id)
       assert after_rows != before_rows
       assert_push_event(view, "alignment:load", %{model: _model})
-      assert has_element?(view, "#status", "Alignment saved. 2 trips updated.")
+      assert has_element?(view, "#status", "Map line saved. 2 trips updated.")
       refute save_open?(view)
     end
 
@@ -373,7 +375,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentSaveTest do
              ) != nil
 
       assert_push_event(view, "alignment:load", %{model: _model})
-      assert has_element?(view, "#status", "Alignment saved. 1 trip updated.")
+      assert has_element?(view, "#status", "Map line saved. 1 trip updated.")
     end
 
     test "a replacement names the shape and trip count and waits for confirmation", %{
@@ -408,7 +410,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentSaveTest do
 
       assert shape_rows(organization, version, "IMP-X") != before_rows
       assert_push_event(view, "alignment:load", %{model: _model})
-      assert has_element?(view, "#status", "Alignment saved. 2 trips updated.")
+      assert has_element?(view, "#status", "Map line saved. 2 trips updated.")
     end
 
     test "a trip with a mismatched stop-time count opens the blocked dialog", %{
@@ -530,7 +532,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentSaveTest do
       assert has_element?(
                view,
                "#alignment-save-notice",
-               "Stops changed since you opened this alignment"
+               "Stops changed since you opened this map line"
              )
 
       assert has_element?(view, "#alignment-save-reload", "Reload")
@@ -581,7 +583,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentSaveTest do
       refute save_open?(view)
     end
 
-    test "a revoked editor is halted and writes nothing", %{
+    test "a revoked editor cannot directly save an alignment draft", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -601,6 +603,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentSaveTest do
       render_hook(view, "alignment_save_requested", save_params(draft))
 
       assert has_element?(view, "#pattern-editor-revoked")
+      assert has_element?(view, "#alignment-save-notice", "Your draft is still here")
       assert segments_count(organization, version) == 0
     end
   end

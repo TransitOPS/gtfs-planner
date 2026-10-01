@@ -123,6 +123,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
      |> assign(:warning_candidates, [])
      |> assign(:geometry_status, nil)
      |> assign(:route_map_data, nil)
+     |> assign(:map_line_choice, nil)
      |> assign(:show_context, false)
      |> assign(:route_context, nil)
      |> assign(:route_context_status, nil)
@@ -230,6 +231,15 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
     else
       {:noreply, socket}
     end
+  end
+
+  # The chooser on a shared imported line is a disclosure the operator opens and
+  # closes again; the same line closes when it is opened twice, and only one is
+  # ever open. No write: the choices are the patterns the projection named.
+  @impl true
+  def handle_event("toggle_map_line_choice", %{"shape" => shape_id}, socket) do
+    choice = if socket.assigns.map_line_choice == shape_id, do: nil, else: shape_id
+    {:noreply, assign(socket, :map_line_choice, choice)}
   end
 
   # Every form change re-validates the draft and reports which fields a save
@@ -2347,6 +2357,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                         usage={@usage}
                         transfer_count={@transfer_count}
                         gtfs_version_id={@current_gtfs_version.id}
+                        map_line_choice={@map_line_choice}
                         show_context={@show_context}
                         route_context={@route_context}
                         route_context_status={@route_context_status}
@@ -2383,6 +2394,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   attr :usage, :any, required: true
   attr :transfer_count, :any, required: true
   attr :gtfs_version_id, :string, required: true
+  attr :map_line_choice, :any, required: true
   attr :show_context, :boolean, required: true
   attr :route_context, :any, required: true
   attr :route_context_status, :any, required: true
@@ -2629,8 +2641,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
               <h3 class="text-[13px] font-[650] text-default">Imported shapes</h3>
             </div>
             <ul id="route-map-variant-list" class="pb-1">
-              <li :for={variant <- map.imported_shape_variants}>
+              <li :for={variant <- map.imported_shape_variants} class="relative">
                 <% vmetrics = route_map_variant_metrics(variant) %>
+                <% choices = route_map_line_choices(map, variant) %>
                 <button
                   type="button"
                   data-map-highlight={variant.shape_id}
@@ -2661,6 +2674,75 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                     </span>
                   </span>
                 </button>
+                <%!-- One next step per imported line: group the trips it holds
+                       that no pattern covers, edit the one pattern's map line, or
+                       choose whose map line to edit when several share it. --%>
+                <div class="pb-1.5 pl-10 pr-4">
+                  <%= case route_map_line_action(variant, choices) do %>
+                    <% {:group, count} -> %>
+                      <.link
+                        id={"route-map-line-#{variant.shape_id}-group"}
+                        navigate={
+                          ~p"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}/patterns?review=group"
+                        }
+                        class="inline-flex min-h-11 items-center font-[650] text-action underline underline-offset-2 hover:no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+                      >
+                        Group {count} {if count == 1, do: "trip", else: "trips"}
+                      </.link>
+                    <% {:edit, choice} -> %>
+                      <.link
+                        id={"route-map-line-#{variant.shape_id}-edit"}
+                        navigate={
+                          ~p"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}/patterns/#{choice.route_pattern_id}?task=alignment"
+                        }
+                        class="inline-flex min-h-11 items-center font-[650] text-action underline underline-offset-2 hover:no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+                      >
+                        Edit map line
+                      </.link>
+                    <% {:choose, _patterns} -> %>
+                      <button
+                        type="button"
+                        id={"route-map-line-#{variant.shape_id}-choose"}
+                        phx-click="toggle_map_line_choice"
+                        phx-value-shape={variant.shape_id}
+                        aria-expanded={to_string(@map_line_choice == variant.shape_id)}
+                        aria-controls={"route-map-line-#{variant.shape_id}-choices"}
+                        class="inline-flex min-h-11 items-center gap-1 font-[650] text-action underline underline-offset-2 hover:no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+                      >
+                        Edit map line… <.icon name="hero-chevron-down" class="size-4" />
+                      </button>
+                      <div
+                        :if={@map_line_choice == variant.shape_id}
+                        id={"route-map-line-#{variant.shape_id}-choices"}
+                        class="mt-1 rounded-card border border-subtle bg-white p-1.5 shadow-float"
+                      >
+                        <p class="px-2.5 pb-1 pt-1 text-[13px] font-[650] text-strong">
+                          Line {variant.shape_id} is used by {length(choices)} patterns
+                        </p>
+                        <ul>
+                          <li :for={choice <- choices}>
+                            <.link
+                              id={"route-map-line-#{variant.shape_id}-edit-option-#{choice.route_pattern_id}"}
+                              navigate={
+                                ~p"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}/patterns/#{choice.route_pattern_id}?task=alignment"
+                              }
+                              class="flex min-h-11 flex-col justify-center rounded-control px-2.5 py-1.5 no-underline hover:bg-canvas focus-visible:bg-canvas"
+                            >
+                              <span class="block text-sm font-[650] text-strong">
+                                {choice.label}
+                              </span>
+                              <span class="block text-[13px] text-muted">
+                                {choice.route_pattern_id} · {RoutePattern.direction_label(
+                                  choice.direction_id
+                                )}
+                              </span>
+                            </.link>
+                          </li>
+                        </ul>
+                      </div>
+                    <% nil -> %>
+                  <% end %>
+                </div>
               </li>
             </ul>
           <% else %>
@@ -2835,7 +2917,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   defp route_map_alt_text(map, route) do
     case map.patterns do
       [] ->
-        "Route #{route.route_id} has no patterns to map yet."
+        route_map_imported_lines_alt_text(map, route)
 
       patterns ->
         first = List.first(patterns)
@@ -2848,6 +2930,19 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
           if(count == 1, do: "pattern", else: "patterns") <>
           " from #{from} to #{to}. The pattern list below the map has the same information."
     end
+  end
+
+  # A route with no patterns still draws every imported line, so its text
+  # equivalent names those lines instead of claiming there is nothing to map.
+  defp route_map_imported_lines_alt_text(%{imported_shape_variants: []}, route),
+    do: "Route #{route.route_id} has no map lines yet."
+
+  defp route_map_imported_lines_alt_text(%{imported_shape_variants: lines}, route) do
+    count = length(lines)
+
+    "Map of #{route_display_name(route)} (#{route.route_id}): #{count} imported " <>
+      if(count == 1, do: "line", else: "lines") <>
+      " from trips that are not in a pattern yet."
   end
 
   defp route_map_swatch_stroke(draft_route) do
@@ -2892,6 +2987,33 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
       hidden: length(hidden),
       reasons: reasons
     }
+  end
+
+  # One next step per imported line. Trips outside every pattern come first:
+  # an operator can only edit a map line for a pattern that exists, and the
+  # grouping review is where those trips can reach one.
+  defp route_map_line_action(variant, choices) do
+    cond do
+      variant.outside_trip_count > 0 -> {:group, variant.outside_trip_count}
+      length(choices) == 1 -> {:edit, hd(choices)}
+      length(choices) > 1 -> {:choose, choices}
+      true -> nil
+    end
+  end
+
+  # The patterns whose trips carry this shape, in the projection's own order, so
+  # the chooser names them the way the Patterns list does.
+  defp route_map_line_choices(map, variant) do
+    variant.route_pattern_ids
+    |> Enum.map(&Enum.find(map.patterns, fn pattern -> pattern.route_pattern_id == &1 end))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(fn pattern ->
+      %{
+        route_pattern_id: pattern.route_pattern_id,
+        label: pattern.route_pattern_name || pattern.route_pattern_id,
+        direction_id: pattern.direction_id
+      }
+    end)
   end
 
   defp route_map_variant_metrics(variant) do

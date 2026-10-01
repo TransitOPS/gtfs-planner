@@ -149,6 +149,7 @@ defmodule GtfsPlanner.Gtfs.Routes.MapTest do
                  variant: 1,
                  label: "Variant 1",
                  route_pattern_ids: ["p1"],
+                 outside_trip_count: 0,
                  coordinates: [[2.0, 1.0], [2.25, 1.25]]
                },
                %{
@@ -158,6 +159,7 @@ defmodule GtfsPlanner.Gtfs.Routes.MapTest do
                  variant: 2,
                  label: "Variant 2",
                  route_pattern_ids: ["p1"],
+                 outside_trip_count: 0,
                  coordinates: [[4.0, 3.0], [4.5, 3.5]]
                }
              ]

@@ -10,22 +10,26 @@ import Config
 # The flex area editor uploads GeoJSON, and `.geojson` is not a suffix MIME
 # knows; registering the RFC 7946 media type is what `allow_upload`'s
 # `accept: ~w(.geojson .json)` needs on both sides (the file input's `accept`
-# attribute and the server's entry validation).
+# attribute and the server's entry validation). The Map line tab's path file
+# upload adds KML, KMZ and GPX, which MIME does not know either: without these
+# the accept list the upload is configured with cannot be built at all.
 config :mime, :types, %{
-  "application/geo+json" => ["geojson"]
+  "application/geo+json" => ["geojson"],
+  "application/vnd.google-earth.kml+xml" => ["kml"],
+  "application/vnd.google-earth.kmz" => ["kmz"],
+  "application/gpx+xml" => ["gpx"]
 }
 
 config :gtfs_planner,
   ecto_repos: [GtfsPlanner.Repo],
   generators: [timestamp_type: :utc_datetime],
   validator_module: GtfsPlanner.Gtfs.Validator,
+  # Deadline (in milliseconds) for one MobilityData validator CLI run; on expiry
+  # the started process is killed and the run fails with `:timeout`.
+  validator_timeout_ms: 900_000,
   geocoding_service: GtfsPlanner.Geocoding.Geoapify,
   street_routing_service: GtfsPlanner.StreetRouting.Geoapify,
   boundaries_service: GtfsPlanner.Boundaries.Tigerweb,
-  # Narrow external-boundary adapter used to read consumed upload files during a
-  # full-feed import. Production reads with Elixir's `File`; tests can swap this
-  # for a deterministic read-error stub. The adapter must expose `read/1`.
-  import_file_reader: File,
   # Duration (in seconds) a preparation/execution/cleanup lease remains valid
   # before `reconcile_expired/1` may close it as interrupted/cleanup_failed.
   import_lease_seconds: 300,
@@ -38,6 +42,12 @@ config :gtfs_planner,
   # Heartbeat interval (in milliseconds) at which the import runner renews its
   # execution/cleanup lease.
   import_runner_heartbeat_ms: 60_000,
+  # Time (in milliseconds) an import runner waits, after claiming its run, for the
+  # staged upload to be installed before it fails the run as `source_not_installed`.
+  import_source_install_timeout_ms: 60_000,
+  # Duration (in seconds) a validation run's execution lease remains valid before
+  # `Validations.reconcile_expired/1` may fail the run as `lease_expired`.
+  validation_lease_seconds: 300,
   # Module the export worker runs before it builds a ZIP. Its `run/3` returns
   # `:ok` or `{:error, issues}`; each issue is stored as a run warning.
   otp_preflight_module: GtfsPlanner.Gtfs.Export.Preflight
@@ -53,6 +63,21 @@ config :gtfs_planner,
 # either run `ALTER ROLE <app role> SET timezone = 'UTC'` once on the database
 # or use `after_connect: {Postgrex, :query!, ["SET TIME ZONE 'UTC'", []]}`.
 config :gtfs_planner, GtfsPlanner.Repo, parameters: [timezone: "UTC"]
+
+# Deadline (in milliseconds) for the repeatable-read transaction one export
+# reads from. When it passes, the database releases the connection and the run
+# fails with `snapshot_timeout`.
+config :gtfs_planner, export_snapshot_timeout_ms: 600_000
+
+# Most jobs each runner supervisor may run at once. Starting a job at the limit
+# returns `{:error, :busy}` and the caller closes the run that never started.
+# Tests use the same values, so admission behaves as it does in production.
+config :gtfs_planner, :runner_limits,
+  import: 1,
+  change: 1,
+  export: 1,
+  validation: 1,
+  reachability: 1
 
 # Configure the endpoint
 config :gtfs_planner, GtfsPlannerWeb.Endpoint,
@@ -70,6 +95,10 @@ config :gtfs_planner, GtfsPlannerWeb.Endpoint,
 # code configuration; the selected model and the API key are runtime
 # configuration (`config/runtime.exs`), and the model has no default.
 config :gtfs_planner, GtfsPlanner.Agents.Model, base_url: "https://openrouter.ai/api/v1"
+
+config :gtfs_planner, GtfsPlanner.Agents.UsageBudget,
+  organization_daily_attempts: 500,
+  actor_daily_attempts: 200
 
 # Configure the mailer
 #

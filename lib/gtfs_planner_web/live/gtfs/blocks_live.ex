@@ -43,24 +43,32 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   are the planning-input drawers the gap drawer links to. They are page
   drawers rather than a stack entry, so the link that opens one clears the stack:
   one open panel over the page, and a link that reopens the same drawer.
+
+  `view=connections` is the Blocks work queue read as connections: the day's
+  groups of consecutive trip pairs, what each connection's type 4/5 records
+  decided (R13) and where it needs review. Its `group`, `setting`, `cq` and
+  `gpage` parameters are that view's own state and are emitted only when they
+  are non-default, so `/blocks` stays a quiet URL. Every one of them is derived
+  on each render from the same server-only `:connections_all` the timeline's
+  setting chips and the connection drawer read, so no surface can describe one
+  connection differently from another.
   """
 
   use GtfsPlannerWeb, :live_view
 
-  alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Blocking.Checks
+  alias GtfsPlanner.Gtfs.Blocking.Connections
+  alias GtfsPlanner.Gtfs.Blocking.RiderOutcomes
   alias GtfsPlanner.Gtfs.Blocking.Summary
   alias GtfsPlanner.Versions
-  alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
 
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
-  on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+  on_mount({GtfsPlannerWeb.EnsureRole, :require_gtfs_access})
 
   @drawers %{
     "service_dates" => :service_dates,
@@ -209,6 +217,62 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # is applied when it arrives.
   @apply_suggestion_key :suggest_apply
 
+  # Saving one connection's setting is a bounded write under the blocking lock,
+  # so it runs under `start_async` like the page's other bounded work: the drawer
+  # shows "Saving…" with its controls disabled, a second click while the write
+  # runs is refused, and the outcome is applied when it arrives.
+  @save_connection_key :save_connection
+
+  # The Set-all save is the same bounded write applied to a reviewed group, so
+  # it runs under `start_async` for the same reason (R4, INV-4): the review
+  # drawer shows "Saving…", a second click is refused by the pending state, and
+  # the outcome is applied when it arrives.
+  @save_bulk_key :save_bulk
+
+  # The bulk outcomes in the group's own words. A failure keeps the review open
+  # with the included rows and boxes exactly as the editor left them, because the
+  # review is the input to the write and the reader is expected to try again
+  # rather than rebuild it.
+  @bulk_failed_title "Couldn't save."
+  @bulk_failed_message "Nothing changed. Try again."
+
+  # Why one pair of a bulk write was not written. A pair another editor changed
+  # after the review is named as such rather than as a rule failure, because the
+  # rule never refused it (R10, CR-3).
+  @bulk_skip_stale "Changed by another editor after the review."
+  @bulk_skip_not_found "A trip isn't in this version."
+  @bulk_skip_not_restored "Couldn't be restored. Nothing changed for it."
+
+  # The save outcomes in the drawer's own words. A stale write keeps the editor's
+  # choice and names what the pair now carries; a refusal keeps the drawer and
+  # disables the two explicit options, because the rule that refused is the one
+  # the drawer's pre-check reads (CR-2); `:busy` and an audit failure say that
+  # nothing changed and the choice is kept (AC-15).
+  @connection_stale_title "This connection changed while you were deciding."
+  @connection_stale_message "Nothing was saved. Your choice is kept; save again to replace it."
+  @connection_busy_title "Couldn't save the setting."
+  @connection_busy_message "Nothing changed and your choice is kept. Try again."
+  @connection_failed_title "Couldn't save the setting."
+  @connection_failed_message "Nothing changed and your choice is kept. Try again."
+
+  # The persistent result of a save or an undo (R10, AC-9, AC-15). It stays on
+  # screen until it is dismissed or replaced, because a write that closes the
+  # drawer has to leave one sentence behind about what it did.
+  @connection_undo_refused "Couldn't undo: the connection changed after your save. Open it to review."
+
+  # The trip drawer's one record removal (R7, AC-21). The removal names the pair
+  # it deleted; a record another editor has since changed is `:stale` with
+  # nothing deleted, and every other refusal says the same thing.
+  @remove_record_changed "This record changed. Nothing was removed."
+  @remove_record_failed "Couldn't remove the record. Nothing changed. Try again."
+
+  # The Checks drawer's two removals (R7, R8, AC-21). Both delete the rows the
+  # drawer listed and nothing else, so the answer names how many records went;
+  # a row another editor has since changed refuses the whole command with
+  # nothing deleted, and every other refusal says the same thing.
+  @remove_batch_changed "Records changed. Nothing was removed."
+  @remove_batch_failed "Couldn't remove the records. Nothing changed. Try again."
+
   # The three answers in the page's own words. A stale plan is named
   # by what the reader must do about it rather than by an input the page cannot
   # see: `apply_block_plan/3` reports `:stale_plan` without saying which setting,
@@ -250,6 +314,44 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   @empty_counts %{blocks: 0, trips: 0, unassigned: 0, problems: 0, notices: 0}
   @empty_peak %{count: 0, at_secs: nil, excluded_unassigned: 0, excluded_frequency: 0}
   @empty_figures %{vehicles: 0, minimum: 0, riders: 0}
+
+  # A day with no blocks still carries the derivation's shape, so the timeline's
+  # per-gap lookup has the same keys it has on a loaded day.
+  @empty_connections %{connections: [], groups: []}
+
+  # The Checks drawer's day-type section before a day is loaded: nothing needs
+  # review and nothing can be removed.
+  @empty_in_seat_review %{entries: [], stale: []}
+
+  # The Connections view pages its groups 50 at a time, so a busy agency's page
+  # is readable without paging, and one chip is built per active filter.
+  @connections_page_size 50
+
+  # The four values the view's Show filter carries, in the order its control
+  # reads them. `review` keeps every connection needing review whatever its
+  # setting, which is why it is one of the four and not a fifth setting. The
+  # whitelist is the same list keyed by value, so the control, the URL and the
+  # chips cannot name a filter the handler would not accept.
+  @connection_setting_options [
+    {"Not stated", "none"},
+    {"Riders stay on board", "stay"},
+    {"Riders must re-board", "reboard"},
+    {"Needs review", "review"}
+  ]
+
+  @connection_settings Map.new(@connection_setting_options, fn {label, value} ->
+                         {value, label}
+                       end)
+
+  # The same three settings named the way the Set-all review's "now" column
+  # names what a connection carries today, keyed by the atom
+  # `Blocking.Connections` derives them as. A conflicting pair needs review, so it
+  # reads through that rather than through a setting it does not have.
+  @bulk_setting_labels %{
+    none: "Not stated",
+    stay: "Riders stay on board",
+    reboard: "Riders must re-board"
+  }
 
   # The Plan summary's chart counts the same 15-minute bins as the day load's own
   # `bins`, so the width is one constant rather than two that could drift.
@@ -299,6 +401,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> assign(:replace, @no_replace)
      |> assign(:applied, nil)
      |> assign(:block_attributes, nil)
+     |> assign(:connection_result, nil)
+     |> assign(:connection_error, nil)
+     |> assign(:connection_pending, false)
      |> assign_empty_derived()}
   end
 
@@ -376,7 +481,173 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     patch(socket, %{view: :list})
   end
 
+  def handle_event("set_view", %{"view" => "connections"}, socket) do
+    patch(socket, %{view: :connections})
+  end
+
   def handle_event("set_view", _params, socket), do: {:noreply, socket}
+
+  # The Connections view's own filters. They narrow the derived groups rather
+  # than the page's trips, so each one is read from the URL and applied by
+  # `Blocking.Connections` alone. The route filter is the page's existing `route`
+  # parameter, which is also what the block list narrows by.
+  #
+  # A filter change drops the selected group and returns to page 1: the group the
+  # reader had open is one the new filters may not carry, and a page number left
+  # behind would page an empty list.
+  def handle_event("filter_connections", params, socket) do
+    patch(socket, %{
+      setting: connection_setting(params["setting"]),
+      cq: blank_to_nil(params["cq"]),
+      route: blank_to_nil(params["route"]),
+      group: nil,
+      gpage: 1
+    })
+  end
+
+  # One chip's remove control. It drops only the filter the chip names and
+  # returns to the first page, which is the same shape a change to that control
+  # has: the open group may be one the remaining filters do not carry. A kind the
+  # view does not own removes nothing.
+  def handle_event("remove_connection_filter", %{"filter" => kind}, socket) do
+    case cleared_filter(kind) do
+      nil -> {:noreply, socket}
+      overrides -> patch(socket, overrides)
+    end
+  end
+
+  def handle_event("remove_connection_filter", _params, socket), do: {:noreply, socket}
+
+  def handle_event("clear_connection_filters", _params, socket) do
+    patch(socket, %{setting: nil, cq: nil, route: nil, group: nil, gpage: 1})
+  end
+
+  def handle_event("paginate_groups", %{"page" => page}, socket) do
+    patch(socket, %{gpage: page_number(page)})
+  end
+
+  def handle_event("paginate_groups", _params, socket), do: {:noreply, socket}
+
+  # Selecting a group resets the Set-all choice: the choice belongs to the group
+  # it was made in, and a reader who opens another group must choose again
+  # rather than arrive at a review of the wrong pair.
+  def handle_event("open_group", %{"group" => group}, socket) do
+    socket
+    |> assign(:bulk_choice, nil)
+    |> assign(:bulk_review, nil)
+    |> patch(%{group: blank_to_nil(group)})
+  end
+
+  def handle_event("open_group", _params, socket), do: {:noreply, socket}
+
+  def handle_event("close_group", _params, socket) do
+    socket
+    |> assign(:bulk_choice, nil)
+    |> assign(:bulk_review, nil)
+    |> patch(%{group: nil})
+  end
+
+  # The Set-all setting the reader chose in the group panel. It is a choice, not a
+  # filter, so it stays out of the URL: a reload or a shared link opens the group
+  # with no choice, which is the state the fieldset explains. The value is one of
+  # the three settings the fieldset offers and nothing else, so a crafted event
+  # cannot leave a review for a setting nobody picked.
+  def handle_event("bulk_choice", %{"bulk" => choice}, socket) do
+    case Map.fetch(@connection_settings, choice) do
+      {:ok, _label} when choice in ["none", "stay", "reboard"] ->
+        {:noreply, socket |> assign(:bulk_choice, choice) |> assign(:bulk_review, nil)}
+
+      _unknown ->
+        {:noreply, socket}
+    end
+  end
+
+  # The Set-all review (AC-20). It is a read: one `check_in_seat_connections/3`
+  # call for every pair of the selected group, so the review and the save
+  # re-evaluate the same rule over the same pairs and cannot disagree (CR-2), and
+  # the organization and version come from the socket rather than from the event
+  # (CR-8).
+  #
+  # The review needs both halves the group panel holds: the group the URL
+  # selected and the setting the reader chose for it. Without either there is
+  # nothing to review, which is the state the disabled review button explains.
+  # Choosing a different setting closes the review, so a review never describes a
+  # setting the panel no longer shows.
+  def handle_event("open_bulk_review", _params, socket) do
+    case bulk_review(socket.assigns) do
+      nil -> {:noreply, socket}
+      review -> {:noreply, assign(socket, :bulk_review, review)}
+    end
+  end
+
+  # One row's include box. The id is the connection's own id, and only a row of
+  # the review now open is toggled, so a crafted event naming a connection of
+  # another group changes nothing (CR-8). A row the save would not act on —
+  # already set, or refused by the rule — has no box, so it cannot be toggled.
+  def handle_event("toggle_bulk_row", %{"id" => id}, %{assigns: %{bulk_review: review}} = socket) do
+    {:noreply, assign(socket, :bulk_review, toggle_bulk_row(review, id))}
+  end
+
+  def handle_event("toggle_bulk_row", _params, socket), do: {:noreply, socket}
+
+  def handle_event("close_bulk_review", _params, socket) do
+    {:noreply, assign(socket, :bulk_review, nil)}
+  end
+
+  def handle_event("bulk_choice", _params, socket), do: {:noreply, socket}
+
+  # The Set-all write: one call to `Gtfs.set_in_seat_connections/3`, the facade
+  # for `InSeatTransfers.set_connections/3`, under the version's own audit
+  # context (R5, CR-8). The organization, version and actor come from the
+  # socket, never from the event, and the write reads the actor's current editor
+  # membership inside its own transaction.
+  #
+  # The pairs and their `expected` rows are the review's own rows, never the
+  # event's, so a crafted `save_bulk` can only write what the review the reader
+  # actually saw left included (R4, INV-4).
+  def handle_event("save_bulk", _params, %{assigns: %{bulk_review: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("save_bulk", _params, socket) do
+    case bulk_save_request(socket) do
+      {:ok, request} ->
+        {:noreply,
+         socket
+         |> assign(:bulk_error, nil)
+         |> assign(:bulk_pending, true)
+         |> start_async(@save_bulk_key, fn ->
+           {request, Gtfs.set_in_seat_connections(request.entries, request.choice, request.audit)}
+         end)}
+
+      :error ->
+        {:noreply, socket}
+    end
+  end
+
+  # R9's second guarded write, in bulk. Every saved pair's `expected` is the row
+  # the save left rather than the one before it, so a change between the save
+  # and the Undo is skipped with its own reason instead of overwriting another
+  # editor's newer setting.
+  #
+  # The pairs are grouped by the previous choice they are restored to, so the
+  # write is one `set_in_seat_connections/3` call per setting — at most three,
+  # in sequence — rather than one call per pair. The organization, version and
+  # actor still come from the socket's audit context, never from the event.
+  def handle_event(
+        "undo_bulk",
+        _params,
+        %{assigns: %{bulk_result: %{undo?: true} = result}} = socket
+      ) do
+    bulk_restored(socket, result)
+  end
+
+  def handle_event("undo_bulk", _params, socket), do: {:noreply, socket}
+
+  # The result is the reader's own and it is not a route, so dismissing it
+  # leaves the group, its rows and the day exactly as they are (R10).
+  def handle_event("dismiss_bulk_result", _params, socket) do
+    {:noreply, assign(socket, :bulk_result, nil)}
+  end
 
   def handle_event("set_scale", %{"scale" => "day"}, socket) do
     patch(socket, %{scale: :day})
@@ -674,13 +945,19 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   def handle_event("open_drawer", %{"key" => key} = params, socket)
       when key in ["driving_times", "operator_changes", "suggest"] do
-    patch(socket, %{
-      trip: nil,
-      gap: nil,
-      block: nil,
-      drawer: key,
-      pair: blank_to_nil(params["pair"])
-    })
+    case guard_connection_draft(socket, "open_drawer", params) do
+      {:noreply, socket} ->
+        {:noreply, socket}
+
+      :continue ->
+        patch(socket, %{
+          trip: nil,
+          gap: nil,
+          block: nil,
+          drawer: key,
+          pair: blank_to_nil(params["pair"])
+        })
+    end
   end
 
   # The Suggest blocks drawer's “Block rules” link is a navigation, not a panel
@@ -718,8 +995,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
       key ->
         case Map.fetch(@drawers, key) do
-          {:ok, drawer} -> {:noreply, assign(socket, :open_drawer, drawer)}
-          :error -> {:noreply, socket}
+          {:ok, drawer} ->
+            socket = assign(socket, :open_drawer, drawer)
+
+            # The Checks drawer reads the version's unmatched in-seat records
+            # (R8), so they are read when it opens rather than on every render.
+            {:noreply,
+             if drawer == :checks do
+               load_unmatched_in_seat(socket)
+             else
+               socket
+             end}
+
+          :error ->
+            {:noreply, socket}
         end
     end
   end
@@ -857,23 +1146,237 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # parameters as well as the panel-only drawer's own state; the other drawers
   # keep the URL they had. The panel drawers render over the page, so one of them
   # opens alongside whichever URL drawer the page had.
-  def handle_event("close_drawer", _params, socket) do
-    socket = assign(socket, :open_drawer, nil)
-
-    socket =
-      if match?(%{scope: :selection}, socket.assigns.assign),
-        do: assign(socket, :assign, nil),
-        else: socket
-
-    state = socket.assigns.state
-
-    if state.trip || state.gap || state.block || state.drawer || state.pair do
-      patch(socket, %{trip: nil, gap: nil, block: nil, drawer: nil, pair: nil},
-        clear_command: true
-      )
-    else
-      {:noreply, socket}
+  #
+  # A connection choice the editor has not saved is the one thing this event
+  # cannot throw away silently, so a dirty draft opens the discard confirmation
+  # instead and the close happens when the editor confirms it.
+  def handle_event("close_drawer", params, socket) do
+    case guard_connection_draft(socket, "close_drawer", params) do
+      {:noreply, socket} -> {:noreply, socket}
+      :continue -> do_close_drawer(socket)
     end
+  end
+
+  # “Keep editing” leaves the draft exactly as it is and the drawer open.
+  def handle_event("keep_connection_editing", _params, socket),
+    do: {:noreply, assign(socket, :connection_discard, nil)}
+
+  # “Discard change” puts the draft back to what is saved and then does what
+  # the editor asked for before the confirmation stood in its way. The action is
+  # replayed through the same `handle_event/3` the editor's own click reached, so
+  # there is one implementation of each action and the confirmation adds no
+  # second path. Restoring the saved choice rather than clearing the draft is
+  # what keeps the guard from standing in the way of the replay: a cleared draft
+  # would still differ from the saved one, and the replayed close would ask again.
+  def handle_event("discard_connection", _params, socket) do
+    case socket.assigns.connection_discard do
+      %{event: event, params: params} ->
+        socket =
+          assign(socket,
+            connection_discard: nil,
+            connection_draft: socket.assigns.connection_saved
+          )
+
+        apply(__MODULE__, :handle_event, [event, params, socket])
+
+      nil ->
+        {:noreply, socket}
+    end
+  end
+
+  # Choosing a setting is a draft, not a write: the event only records the choice
+  # and rebuilds the form, so the rider table and the warnings in the stay card
+  # re-render for the chosen option while the saved record is untouched. A
+  # payload naming anything other than one of the three choices changes nothing.
+  def handle_event("change_connection", %{"connection" => %{"choice" => value}}, socket) do
+    case connection_choice(value) do
+      nil -> {:noreply, socket}
+      choice -> {:noreply, put_connection_draft(socket, choice)}
+    end
+  end
+
+  def handle_event("change_connection", _params, socket), do: {:noreply, socket}
+
+  # The one write the drawer owns: `Gtfs.set_in_seat_connection/5`, the facade for
+  # `InSeatTransfers.set_connection/5`, under the version's own audit context (R5,
+  # CR-8). The organization, version and actor come from the socket, never from the
+  # event, and the write reads the actor's current editor membership inside its own
+  # transaction.
+  #
+  # The write runs under `start_async`: it takes the blocking lock, the pair's rows
+  # and a retry loop, so the drawer shows that it is working rather than freezing,
+  # and a second click while it runs is refused by the pending state rather than
+  # writing twice (FH-14).
+  def handle_event("save_connection", _params, %{assigns: %{day_type: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("save_connection", _params, socket) do
+    case connection_save_request(socket) do
+      {:ok, request} ->
+        {:noreply,
+         socket
+         |> assign(:connection_error, nil)
+         |> assign(:connection_pending, true)
+         |> start_async(@save_connection_key, fn ->
+           {request,
+            Gtfs.set_in_seat_connection(
+              request.from,
+              request.to,
+              request.choice,
+              request.expected,
+              request.audit
+            )}
+         end)}
+
+      :error ->
+        {:noreply, socket}
+    end
+  end
+
+  # The second guarded write of R9. Its `expected` is the just-saved state rather
+  # than the one before it, so another editor's change between the save and the
+  # Undo is `:stale` with nothing written, and the sentence says so.
+  def handle_event(
+        "undo_connection",
+        _params,
+        %{assigns: %{connection_result: %{undo?: true} = result}} = socket
+      ) do
+    case Gtfs.set_in_seat_connection(
+           result.from,
+           result.to,
+           result.previous,
+           result.expected,
+           result.audit
+         ) do
+      {:ok, _saved} ->
+        {:noreply,
+         socket
+         |> assign(:connection_pending, false)
+         |> assign(:connection_result, %{
+           result
+           | text: restored_text(result.previous),
+             undo?: false,
+             open?: false
+         })
+         |> load_day()
+         |> resolve_drawers()
+         |> assign_page_rows_if_loaded()}
+
+      {:error, :stale} ->
+        {:noreply,
+         socket
+         |> assign(:connection_pending, false)
+         |> assign(:connection_result, %{
+           result
+           | text: @connection_undo_refused,
+             undo?: false,
+             open?: true
+         })}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, @permission_message)}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> assign(:connection_pending, false)
+         |> assign(:connection_result, %{result | undo?: false, open?: false})}
+    end
+  end
+
+  def handle_event("undo_connection", _params, socket), do: {:noreply, socket}
+
+  # The result is the reader's own; it is not a route, so dismissing it leaves the
+  # day, the drawer and the timeline exactly as they are (R10).
+  def handle_event("dismiss_connection_result", _params, socket) do
+    {:noreply, assign(socket, :connection_result, nil)}
+  end
+
+  # The trip drawer's record removal, in three events: ask, cancel, confirm.
+  #
+  # Asking names the record the editor clicked, and only a record the loaded day
+  # lists for the open trip as stale can be named at all, so a crafted event
+  # cannot turn a matching record into a removal. Nothing is read or written
+  # until the confirmation.
+  def handle_event("request_remove_record", %{"id" => id}, socket) do
+    case removable_entry(socket, id) do
+      nil -> {:noreply, socket}
+      entry -> {:noreply, assign(socket, remove_record: entry, remove_pending: false)}
+    end
+  end
+
+  def handle_event("request_remove_record", _params, socket), do: {:noreply, socket}
+
+  # Cancelling keeps the record and the drawer's own state exactly as they were.
+  def handle_event("cancel_remove_record", _params, socket) do
+    {:noreply, assign(socket, remove_record: nil, remove_pending: false)}
+  end
+
+  # The write itself: `Gtfs.remove_in_seat_records/2`, the facade for
+  # `InSeatTransfers.remove_records/2`, with the one row the drawer listed and the
+  # `updated_at` it showed, so another editor's change between the listing and
+  # the confirmation is `:stale` with nothing deleted (R7, INV-4). The
+  # organization, version and actor come from the audit context and the write
+  # reads the actor's current editor membership inside its own transaction, so a
+  # forged event from a viewer is refused rather than deleting anything.
+  #
+  # The write is one locked row, its audit and the day reload, so it runs in the
+  # event itself the way the Undo does; both refusals reload the day as well, so
+  # the drawer never keeps listing a record the store has moved on from.
+  def handle_event("confirm_remove_record", _params, %{assigns: %{remove_record: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("confirm_remove_record", _params, socket), do: remove_stale_record(socket)
+
+  # The Checks drawer's two removals, in the same ask/cancel/confirm shape as the
+  # trip drawer's one.
+  #
+  # Neither event carries the rows to delete. Asking re-derives them from what
+  # the drawer is showing right now — the day type's stale rows, or the version's
+  # unmatched listing — so a crafted event can never name a record the reader
+  # was not looking at, and a confirmation always carries the `updated_at` the
+  # list showed, which is what `remove_records/2` compares under its row locks
+  # (R7, INV-4).
+  def handle_event("request_remove_stale", _params, socket) do
+    case stale_removal(socket) do
+      nil -> {:noreply, socket}
+      removal -> {:noreply, assign(socket, remove_stale: removal, remove_pending: false)}
+    end
+  end
+
+  def handle_event("request_remove_unmatched", _params, socket) do
+    case unmatched_removal(socket) do
+      nil -> {:noreply, socket}
+      removal -> {:noreply, assign(socket, remove_unmatched: removal, remove_pending: false)}
+    end
+  end
+
+  # Cancelling keeps every record and the drawer's own counts exactly as they
+  # were.
+  def handle_event("cancel_remove_in_seat", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:remove_stale, nil)
+     |> assign(:remove_unmatched, nil)
+     |> assign(:remove_pending, false)}
+  end
+
+  def handle_event("confirm_remove_stale", _params, %{assigns: %{remove_stale: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("confirm_remove_stale", _params, socket) do
+    remove_in_seat_batch(socket, socket.assigns.remove_stale, :remove_stale)
+  end
+
+  def handle_event(
+        "confirm_remove_unmatched",
+        _params,
+        %{assigns: %{remove_unmatched: nil}} = socket
+      ),
+      do: {:noreply, socket}
+
+  def handle_event("confirm_remove_unmatched", _params, socket) do
+    remove_in_seat_batch(socket, socket.assigns.remove_unmatched, :remove_unmatched)
   end
 
   # The two writes in the Block rules drawer. The drawer only
@@ -890,32 +1393,28 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     do: {:noreply, socket}
 
   def handle_event("save_block_rules", params, socket) do
-    if editor_access?(socket) do
-      case Gtfs.update_blocking_settings(
-             socket.assigns.current_organization.id,
-             socket.assigns.current_gtfs_version.id,
-             block_rules_attrs(socket, params)
-           ) do
-        {:ok, _setting} ->
-          save_route_settings(socket, params)
+    case Gtfs.update_blocking_settings(
+           audit_context(socket),
+           block_rules_attrs(socket, params)
+         ) do
+      {:ok, _setting} ->
+        save_route_settings(socket, params)
 
-        # The context's changeset carries the field error: the drawer shows it
-        # under the input and every value the reader typed stays put. Focus lands
-        # on the first invalid control, with the summary as the fallback.
-        {:error, %Ecto.Changeset{}} ->
-          {:noreply,
-           push_event(put_block_rules(socket, params, nil), "focus_form_error", %{
-             form_id: "block-rules-form",
-             fallback_id: "block-rules-errors"
-           })}
+      # The context's changeset carries the field error: the drawer shows it
+      # under the input and every value the reader typed stays put. Focus lands
+      # on the first invalid control, with the summary as the fallback.
+      {:error, %Ecto.Changeset{}} ->
+        {:noreply,
+         push_event(put_block_rules(socket, params, nil), "focus_form_error", %{
+           form_id: "block-rules-form",
+           fallback_id: "block-rules-errors"
+         })}
 
-        {:error, _reason} ->
-          {:noreply, put_block_rules(socket, params, @block_rules_save_failed)}
-      end
-    else
-      # The refusal is the drawer's own sentence: the drawer is a top-layer
-      # `<dialog>` and the page flash renders behind it.
-      {:noreply, put_block_rules(socket, params, @permission_message)}
+      {:error, :forbidden} ->
+        {:noreply, put_block_rules(socket, params, @permission_message)}
+
+      {:error, _reason} ->
+        {:noreply, put_block_rules(socket, params, @block_rules_save_failed)}
     end
   end
 
@@ -943,12 +1442,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   def handle_event("reset_driving_time", %{"pair" => pair}, socket) do
     state = socket.assigns.driving_times
 
-    with true <- editor_access?(socket),
-         {from_ref, to_ref} <- listed_pair(state, pair),
+    with {from_ref, to_ref} <- listed_pair(state, pair),
          :ok <-
            Gtfs.clear_deadhead_time(
-             socket.assigns.current_organization.id,
-             socket.assigns.current_gtfs_version.id,
+             audit_context(socket),
              {from_ref, to_ref}
            ) do
       {:noreply,
@@ -956,11 +1453,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
        |> redraw_driving_times(state)
        |> put_flash(:info, "Driving time reset to its estimate.")}
     else
-      false ->
-        {:noreply, put_driving_error(socket, state, @permission_message)}
-
       nil ->
         {:noreply, put_driving_error(socket, state, @driving_times_unknown_pair)}
+
+      {:error, :forbidden} ->
+        {:noreply, put_driving_error(socket, state, @permission_message)}
 
       {:error, :not_found} ->
         {:noreply, put_driving_error(socket, state, @driving_times_nothing_to_reset)}
@@ -981,10 +1478,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     {entries, errors} = driving_time_entries(state, submitted)
 
     cond do
-      not editor_access?(socket) ->
-        {:noreply,
-         put_driving_error(socket, put_driving_draft(state, submitted), @permission_message)}
-
       errors != %{} ->
         # A bad entry stores nothing at all: the drawer keeps every value the
         # reader typed, each refused row prints its own message, and focus lands
@@ -1019,13 +1512,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     limit = params["limit"] |> to_string() |> String.trim()
     marked = listed_marks(state, params["marked"])
 
-    if editor_access?(socket) do
-      save_operator_changes(socket, state, limit, marked)
-    else
-      # The refusal is the drawer's own sentence: the drawer is a top-layer
-      # `<dialog>` and the page flash renders behind it.
-      {:noreply, put_operator_error(socket, state, limit, marked, @permission_message)}
-    end
+    save_operator_changes(socket, state, limit, marked)
   end
 
   # A trip opened from another drawer keeps that drawer's `block` in the URL, so
@@ -1033,30 +1520,52 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # marker carries no `block` and drops any the URL held. Every drawer clears the
   # other two, so one URL never holds a stack of two open drawers.
   def handle_event("open_trip", %{"trip" => trip_id} = params, socket) do
-    patch(
-      socket,
-      %{trip: blank_to_nil(trip_id), gap: nil, block: blank_to_nil(params["block"])},
-      close_drawer: true
-    )
+    case guard_connection_draft(socket, "open_trip", params) do
+      {:noreply, socket} ->
+        {:noreply, socket}
+
+      :continue ->
+        patch(
+          socket,
+          %{trip: blank_to_nil(trip_id), gap: nil, block: blank_to_nil(params["block"])},
+          close_drawer: true
+        )
+    end
   end
 
   # The pair is the two trip UUIDs the gap bar or the block drawer's gap note
   # sent; the URL carries them as one `gap=` parameter so the drawer is a deep
   # link too.
   def handle_event("open_gap", params, socket) do
-    patch(
-      socket,
-      %{
-        gap: gap_param(params["from"], params["to"]),
-        trip: nil,
-        block: blank_to_nil(params["block"])
-      },
-      close_drawer: true
-    )
+    case guard_connection_draft(socket, "open_gap", params) do
+      {:noreply, socket} ->
+        {:noreply, socket}
+
+      :continue ->
+        patch(
+          socket,
+          %{
+            gap: gap_param(params["from"], params["to"]),
+            trip: nil,
+            block: blank_to_nil(params["block"])
+          },
+          close_drawer: true
+        )
+    end
   end
 
   def handle_event("open_block", %{"block" => block_id}, socket) do
-    patch(socket, %{block: blank_to_nil(block_id), trip: nil, gap: nil}, close_drawer: true)
+    case guard_connection_draft(socket, "open_block", %{"block" => block_id}) do
+      {:noreply, socket} ->
+        {:noreply, socket}
+
+      :continue ->
+        patch(
+          socket,
+          %{block: blank_to_nil(block_id), trip: nil, gap: nil},
+          close_drawer: true
+        )
+    end
   end
 
   def handle_event("open_block", _params, socket), do: {:noreply, socket}
@@ -1090,6 +1599,60 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       {:noreply, socket}
     end
   end
+
+  # The request the write needs, taken from the state the drawer is showing rather
+  # than from the event: the pair and its `expected` rows are the ones the editor
+  # saw (R4), so a crafted `save_connection` naming a foreign trip names nothing
+  # this write can use. A pair with no chosen setting, or one whose choice the
+  # pre-check has already refused, is not a request at all (AC-5, CR-2).
+  defp connection_save_request(socket) do
+    %{assigns: assigns} = socket
+
+    with gap when not is_nil(gap) <- assigns.gap_view,
+         choice when not is_nil(choice) <- assigns.connection_draft,
+         false <- connection_blocked?(assigns.connection_check, choice) do
+      {:ok,
+       %{
+         from: gap.from.trip_id,
+         to: gap.to.trip_id,
+         choice: choice,
+         expected: expected_rows(gap.records),
+         # A pair with no record has nothing to restore a setting from, so its
+         # Undo writes `:not_stated`, which is what removes the row the save made.
+         previous: assigns.connection_saved || :not_stated,
+         restorable?: connection_restorable?(gap.records),
+         gap: gap_param(gap.from.id, gap.to.id),
+         audit: audit_context(socket)
+       }}
+    else
+      _other -> :error
+    end
+  end
+
+  # R4/INV-4: the rows the editor saw, as the guard's `%{id, transfer_type,
+  # updated_at}` list, in id order.
+  defp expected_rows(records) do
+    records
+    |> Enum.map(
+      &%{id: &1.row.id, transfer_type: &1.row.transfer_type, updated_at: &1.row.updated_at}
+    )
+    |> Enum.sort_by(& &1.id)
+  end
+
+  # R9: Undo is offered only when the previous state was no record, or one record
+  # whose state was `:matches`. A pair of two disagreeing records, or one that
+  # needs review, has no single previous setting to restore, so the save offers
+  # no Undo (AC-9).
+  defp connection_restorable?([]), do: true
+  defp connection_restorable?([%{state: :matches}]), do: true
+  defp connection_restorable?(_records), do: false
+
+  # R1 through the drawer's own pre-check: the two explicit options are refused
+  # together, and "Not stated" is never refused because it removes the record
+  # rather than writing one.
+  defp connection_blocked?({:refused, _state}, :not_stated), do: false
+  defp connection_blocked?({:refused, _state}, _choice), do: true
+  defp connection_blocked?(_check, _choice), do: false
 
   defp patch(socket, overrides, opts \\ []) do
     socket =
@@ -1126,7 +1689,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       version_id: to_string(version.id),
       day: blank_to_nil(params["day"]),
       panel: if(params["panel"] == "pool", do: :pool, else: :blocks),
-      view: if(params["view"] == "list", do: :list, else: :timeline),
+      view: view(params["view"]),
       route: blank_to_nil(params["route"]),
       status: if(params["status"] == "problems", do: :problems, else: :all),
       sort: sort(params["sort"]),
@@ -1134,6 +1697,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       scale: if(params["scale"] == "zoom", do: :zoom, else: :day),
       page: page_number(params["page"]),
       pool_page: page_number(params["pool_page"]),
+      # The Connections view's own state. The page is a group page rather than a
+      # block page, the group is a token rather than a row id, and the search is
+      # `cq` rather than the timeline's own find, so the two views can each be
+      # linked with the page in the state it was left in.
+      setting: connection_setting(params["setting"]),
+      cq: blank_to_nil(params["cq"]),
+      group: blank_to_nil(params["group"]),
+      gpage: page_number(params["gpage"]),
       trip: blank_to_nil(params["trip"]),
       gap: blank_to_nil(params["gap"]),
       block: blank_to_nil(params["block"]),
@@ -1145,6 +1716,28 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp sort(value) when is_map_key(@sort_keys, value), do: Map.fetch!(@sort_keys, value)
 
   defp sort(_value), do: :block
+
+  # The three views of the blocks work queue: the timeline's bars, the List
+  # view's tables, and the Connections view's grouped list.
+  defp view("list"), do: :list
+  defp view("connections"), do: :connections
+  defp view(_value), do: :timeline
+
+  # The Show filter's four values, and `nil` for "All connections" and for
+  # anything a crafted URL carries, so an unknown value widens the list rather
+  # than emptying it.
+  defp connection_setting(value) when is_map_key(@connection_settings, value), do: value
+
+  defp connection_setting(_value), do: nil
+
+  # The one filter a chip's kind names, plus the group and the page a narrower
+  # list would leave behind. A kind the view does not own clears nothing: a
+  # crafted `remove_connection_filter` must not be able to drop a filter the
+  # chips never offered.
+  defp cleared_filter("setting"), do: %{setting: nil, group: nil, gpage: 1}
+  defp cleared_filter("route"), do: %{route: nil, group: nil, gpage: 1}
+  defp cleared_filter("q"), do: %{cq: nil, group: nil, gpage: 1}
+  defp cleared_filter(_kind), do: nil
 
   defp toggled_dir(%{sort: sort, dir: :asc}, sort), do: :desc
   defp toggled_dir(_state, _sort), do: :asc
@@ -1186,6 +1779,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       {"day", state.day},
       {"panel", optional(state.panel == :pool, "pool")},
       {"view", optional(state.view == :list, "list")},
+      {"view", optional(state.view == :connections, "connections")},
       {"route", state.route},
       {"status", optional(state.status == :problems, "problems")},
       {"sort", optional(state.sort != :block, Atom.to_string(state.sort))},
@@ -1193,6 +1787,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       {"scale", optional(state.scale == :zoom, "zoom")},
       {"page", page_param(state.page)},
       {"pool_page", page_param(state.pool_page)},
+      {"setting", state.setting},
+      {"cq", state.cq},
+      {"group", state.group},
+      {"gpage", page_param(state.gpage)},
       {"trip", state.trip},
       {"gap", state.gap},
       {"block", state.block},
@@ -1389,6 +1987,307 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # the same render, so both pages would render.
   defp assign_page_rows_if_loaded(%{assigns: %{day: nil}} = socket), do: socket
   defp assign_page_rows_if_loaded(socket), do: assign_page_rows(socket)
+
+  # The Connections view's own derived state, recomputed for the URL on every
+  # render rather than stored. It reads the same server-only `:connections_all`
+  # the timeline's setting chips and the connection drawer read, so the list, the
+  # group panel and the drawer can never describe one connection differently, and
+  # `Blocking.Connections` alone decides what a filter keeps and in what order
+  # (CR-1, CR-4).
+  #
+  # `groups` is the page of filtered groups, `page`/`pages` the pager's own
+  # numbers, `page_size` the size it paged at, `group_count` how many groups the
+  # filters kept before paging, `count` how many connections survived the filters
+  # and `total` how many the day holds, `places` the places those groups are
+  # decided at, and `group` the selected group found by token. A token the
+  # filtered list does not carry — a stale link, a group the filter dropped, a
+  # crafted value — selects nothing, so the list renders rather than an empty
+  # group panel.
+  defp connections_view(%{day: nil}), do: nil
+
+  defp connections_view(assigns) do
+    %{state: state, connections_all: %{connections: connections, groups: groups}} = assigns
+    filter = connections_filter(state)
+    filtered = Connections.filter(groups, filter)
+    paged = Connections.page(filtered, state.gpage, @connections_page_size)
+
+    %{
+      filter: filter,
+      groups: paged.groups,
+      page: paged.page,
+      pages: paged.pages,
+      page_size: @connections_page_size,
+      group_count: length(filtered),
+      count: Enum.sum(Enum.map(filtered, &length(&1.connections))),
+      total: length(connections),
+      places: Connections.places(filtered),
+      place_tokens: place_tokens(filtered),
+      group: Enum.find(filtered, &(&1.token == state.group)),
+      chips: connections_chips(state)
+    }
+  end
+
+  # Each place's groups' tokens, over the filtered set rather than the page of
+  # them, so a marker for a place whose row is on another page still names the
+  # group to open. The list's own sections come from the page, so this map never
+  # decides what the list shows; it only names what a click asks for.
+  defp place_tokens(filtered) do
+    filtered
+    |> Enum.group_by(& &1.place.id)
+    |> Map.new(fn {place_id, groups} ->
+      {place_id, groups |> Enum.map(& &1.token) |> Enum.sort()}
+    end)
+  end
+
+  # The filters the view applies, in the shape `Blocking.Connections.filter/2`
+  # reads. An absent filter is `nil` rather than a blank string, which is what
+  # keeps the URL quiet and the filter wide. The Show control and the URL both
+  # carry the setting as one of `@connection_settings`' four strings, so it is
+  # named here as the atom `filter/2` matches on — a filter that never narrows
+  # because it compared a string with an atom is the one thing the control must
+  # not be able to do.
+  defp connections_filter(state) do
+    %{setting: connection_setting_atom(state.setting), route: state.route, q: state.cq}
+  end
+
+  defp connection_setting_atom(nil), do: nil
+  defp connection_setting_atom("none"), do: :none
+  defp connection_setting_atom("stay"), do: :stay
+  defp connection_setting_atom("reboard"), do: :reboard
+  defp connection_setting_atom("review"), do: :review
+  defp connection_setting_atom(_value), do: nil
+
+  # The Set-all choice as the atom `Blocking.Connections` names a connection's
+  # setting by. Only the three settings the fieldset offers are named: "Needs
+  # review" is a way of reading the list, not a setting a review could apply.
+  defp bulk_setting_atom("none"), do: :none
+  defp bulk_setting_atom("stay"), do: :stay
+  defp bulk_setting_atom("reboard"), do: :reboard
+
+  defp toggle_bulk_row(review, id) do
+    rows =
+      Enum.map(review.rows, fn row ->
+        if row.id == id and row.result in [:add, :replace, :remove] do
+          %{row | include?: not row.include?}
+        else
+          row
+        end
+      end)
+
+    %{review | rows: rows}
+  end
+
+  # The review of one group's own connections under one chosen setting. Without a
+  # setting, or without the group the URL selected, there is nothing to review.
+  #
+  # The group is resolved through `connections_view/1` rather than read from an
+  # assign, because that view is derived on render: the selected group is a
+  # function of the URL state and the day's own derivation, and reading it here is
+  # what keeps a review of the group the panel is showing (CR-4).
+  defp bulk_review(%{bulk_choice: nil}), do: nil
+  defp bulk_review(%{day: nil}), do: nil
+
+  defp bulk_review(assigns) do
+    case connections_view(assigns) do
+      %{group: nil} ->
+        nil
+
+      %{group: group} ->
+        choice = assigns.bulk_choice
+        pairs = Enum.map(group.connections, &{&1.from.trip_id, &1.to.trip_id})
+
+        rows =
+          Enum.map(group.connections, &bulk_review_row(&1, choice, bulk_checks(assigns, pairs)))
+
+        %{group_token: group.token, choice: choice, group: group, rows: rows}
+    end
+  end
+
+  # A version the rule cannot read is no answer rather than a refusal, so its
+  # pairs stay actionable: the connection drawer leaves its options enabled in
+  # the same state instead of guessing that the rule would refuse them.
+  defp bulk_checks(assigns, pairs) do
+    %{current_organization: organization, current_gtfs_version: version} = assigns
+
+    case Gtfs.check_in_seat_connections(organization.id, version.id, pairs) do
+      {:ok, checks} -> checks
+      {:error, _reason} -> %{}
+    end
+  end
+
+  defp bulk_review_row(connection, choice, checks) do
+    check = Map.get(checks, {connection.from.trip_id, connection.to.trip_id}, :ok)
+
+    %{
+      id: connection.id,
+      connection: connection,
+      result: nil,
+      include?: false,
+      refusal: nil,
+      from: bulk_row_from(connection)
+    }
+    |> bulk_row_result(connection, choice, check)
+  end
+
+  # A refusal only skips a pair the choice would write: removing a record writes
+  # nothing, so the rule cannot refuse it (R7). Everything else reads the
+  # connection's own derivation — its setting, whether it needs review and the
+  # records it already carries — so the review can never describe a connection
+  # differently from the row it was opened from (CR-4).
+  defp bulk_row_result(row, connection, "none", _check) do
+    %{row | result: if(bulk_already_set?(connection, :none), do: :same, else: :remove)}
+  end
+
+  defp bulk_row_result(row, _connection, _choice, {:refused, state}) do
+    %{row | result: :skip, refusal: RiderOutcomes.refusal_text(state)}
+  end
+
+  defp bulk_row_result(row, connection, choice, :ok) do
+    setting = bulk_setting_atom(choice)
+
+    result =
+      cond do
+        bulk_already_set?(connection, setting) -> :same
+        connection.records != [] -> :replace
+        true -> :add
+      end
+
+    %{row | result: result, include?: result != :same}
+  end
+
+  # A connection is already set when its setting is the chosen one and nothing
+  # about it needs review: a stale record or a pair of two records is a write the
+  # reader still has to make, so it counts as a replace.
+  defp bulk_already_set?(connection, setting) do
+    connection.setting == setting and not connection.review?
+  end
+
+  # What `save_bulk` writes, taken from the review on screen rather than from
+  # the event: each included pair with the `expected` rows its own review row
+  # listed, so the write is guarded by what the reader actually saw (INV-4). A
+  # review with no choice, or with nothing left included, is not a request.
+  defp bulk_save_request(%{assigns: %{bulk_review: review}} = socket) do
+    choice = bulk_write_choice(review.choice)
+    entries = bulk_entries(review.rows)
+
+    if is_nil(choice) or entries == [] do
+      :error
+    else
+      {:ok,
+       %{
+         group_token: review.group_token,
+         setting: review.choice,
+         choice: choice,
+         entries: entries,
+         # R9: each included pair's previous writable state, captured from the
+         # review's own records before the write, so the Undo restores the
+         # setting the reader actually replaced rather than one read afterwards.
+         previous: bulk_previous(review.rows, entries),
+         # The pairs the review itself could not offer: a rule refusal blocked
+         # them before they were ever written. The result names them with the
+         # review's own refusal sentence, so the answer accounts for every row
+         # the reader saw rather than only the ones that reached the write.
+         blocked: bulk_blocked(review.rows, bulk_connections(socket.assigns.connections_all)),
+         audit: audit_context(socket)
+       }}
+    end
+  end
+
+  defp bulk_save_request(_socket), do: :error
+
+  # The review's own blocked rows, as the result's own skip lines. A row the
+  # rule refused keeps the review's `refusal_text/1` sentence, so the drawer the
+  # reader just left and the result they now read cannot word the same refusal
+  # differently (CR-3).
+  defp bulk_blocked(rows, connections) do
+    for row <- rows, row.result == :skip do
+      %{
+        block: connection_label(Map.get(connections, bulk_pair(row.connection))),
+        reason: row.refusal || @bulk_skip_not_restored
+      }
+    end
+  end
+
+  # The write's own setting atom. Only the three the fieldset offers are named,
+  # and a name outside them is no request at all.
+  defp bulk_write_choice("none"), do: :not_stated
+  defp bulk_write_choice("stay"), do: :stay_on_board
+  defp bulk_write_choice("reboard"), do: :must_reboard
+  defp bulk_write_choice(_other), do: nil
+
+  # One entry per included row, in the review's own order. A row the write would
+  # not act on has no box, so it can never reach here.
+  defp bulk_entries(rows) do
+    for row <- rows, row.include?, row.result in [:add, :replace, :remove] do
+      %{
+        pair: {row.connection.from.trip_id, row.connection.to.trip_id},
+        expected: expected_rows(row.connection.records)
+      }
+    end
+  end
+
+  # R9's Undo input, per included pair: the setting to restore and whether that
+  # previous state was one a single guarded write could put back. The `expected`
+  # rows are not known yet — they are the rows the save is about to write, so
+  # they are read back from the reloaded day once the write has answered.
+  #
+  # A pair whose previous state was no record, or one record whose state R1
+  # matched, is restorable; two disagreeing records or one needing review are
+  # not, and the result says how many such pairs there are rather than offering
+  # an Undo that could restore the wrong thing (AC-9).
+  defp bulk_previous(rows, entries) do
+    records = Map.new(rows, &{bulk_pair(&1.connection), &1.connection.records})
+
+    for entry <- entries, bulk_restorable?(Map.get(records, entry.pair, [])) do
+      %{pair: entry.pair, previous: bulk_previous_choice(records[entry.pair])}
+    end
+  end
+
+  # A pair's previous setting, from its own records: no record restores
+  # `:not_stated`, one type 4 restores `:stay_on_board` and one type 5 restores
+  # `:must_reboard` (R3, R9).
+  defp bulk_previous_choice([]), do: :not_stated
+  defp bulk_previous_choice([%{row: %{transfer_type: 4}}]), do: :stay_on_board
+  defp bulk_previous_choice([%{row: %{transfer_type: 5}}]), do: :must_reboard
+  defp bulk_previous_choice(_records), do: :not_stated
+
+  # The same rule R9 gives a single save's Undo: only no record, or one record
+  # whose state matches, has a single previous setting to restore.
+  defp bulk_restorable?([]), do: true
+  defp bulk_restorable?([%{state: :matches}]), do: true
+  defp bulk_restorable?(_records), do: false
+
+  defp bulk_pair(connection), do: {connection.from.trip_id, connection.to.trip_id}
+
+  # The "now" side of each row's "now → result": a pair that needs review says so
+  # rather than naming a setting its records disagree about, and a pair with no
+  # record says the fact.
+  defp bulk_row_from(%{review?: true}), do: "Needs review"
+
+  defp bulk_row_from(%{setting: setting}),
+    do: Map.get(@bulk_setting_labels, setting, "Not stated")
+
+  # One chip per active filter, in the order the Show, Route and Find controls
+  # read. Each carries the value that would clear it, so the panel's remove
+  # control has one source for both.
+  #
+  # The chips read the URL state rather than the filter map `connections_filter/1`
+  # built, because a chip names what the reader chose — "Needs review" is the
+  # control's own label for the `"review"` the URL carries, not the atom
+  # `Blocking.Connections` matches on.
+  defp connections_chips(state) do
+    [
+      connection_chip(:setting, state.setting, Map.get(@connection_settings, state.setting)),
+      connection_chip(:route, state.route, "Route #{state.route}"),
+      connection_chip(:q, state.cq, state.cq)
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp connection_chip(_kind, nil, _label), do: nil
+
+  defp connection_chip(kind, value, label),
+    do: %{kind: kind, value: value, label: label}
 
   # --- the cross-page selection --------------------------------------
 
@@ -1601,13 +2500,32 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       {true, day} when not is_nil(day) ->
         state = socket.assigns.state
         block = find_block(day, state.block)
-        gap = resolve_gap(day, state.gap, not is_nil(socket.assigns.max_piece_minutes))
+
+        gap =
+          resolve_gap(
+            day,
+            socket.assigns.connections_all,
+            state.gap,
+            not is_nil(socket.assigns.max_piece_minutes)
+          )
+
         {socket, trip} = resolve_trip_view(socket, day, state.trip)
+
+        gap_view = if(is_nil(trip), do: gap)
 
         socket
         |> assign(:trip_view, trip)
-        |> assign(:gap_view, if(is_nil(trip), do: gap))
+        # A removal question belongs to the trip that raised it, so any re-resolve
+        # — a closed drawer, another trip, a reloaded day — drops it rather than
+        # reopening the same question over a different trip's records. The Checks
+        # drawer's two batch questions are dropped the same way: a question over
+        # a listing the day reload has replaced would delete the new rows.
+        |> assign(:remove_record, nil)
+        |> assign(:remove_stale, nil)
+        |> assign(:remove_unmatched, nil)
+        |> assign(:gap_view, gap_view)
         |> assign(:block_view, if(is_nil(trip) and is_nil(gap), do: block))
+        |> resolve_connection(day, gap_view)
         |> assign(:back_block, if(block, do: block.summary.block_id))
         |> assign(:open_drawer, Map.get(@drawers, state.drawer) || socket.assigns.open_drawer)
         |> assign(:block_action, block_action_state(socket.assigns.block_action, block))
@@ -1618,6 +2536,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         |> resolve_driving_times(day, Map.get(@drawers, state.drawer))
         |> resolve_operator_changes(day, Map.get(@drawers, state.drawer))
         |> resolve_suggest(Map.get(@drawers, state.drawer))
+        |> resolve_unmatched(Map.get(@drawers, state.drawer))
 
       _other ->
         assign(socket,
@@ -1628,6 +2547,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
           block_action: nil,
           block_attributes: nil
         )
+        |> resolve_connection(nil, nil)
     end
   end
 
@@ -1671,22 +2591,22 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # relief windows of that same gap, so neither is recomputed or re-derived here.
   # Operator changes are read as "checked" only while a relief limit is set, which
   # is the same rule the timeline's own relief mark follows.
-  defp resolve_gap(_day, nil, _relief_checked?), do: nil
+  defp resolve_gap(_day, _connections, nil, _relief_checked?), do: nil
 
-  defp resolve_gap(day, gap, relief_checked?) do
+  defp resolve_gap(day, connections, gap, relief_checked?) do
     case String.split(gap, "|") do
-      [from_id, to_id] -> find_gap(day, from_id, to_id, relief_checked?)
+      [from_id, to_id] -> find_gap(day, connections, from_id, to_id, relief_checked?)
       _other -> nil
     end
   end
 
-  defp find_gap(day, from_id, to_id, relief_checked?) do
+  defp find_gap(day, connections, from_id, to_id, relief_checked?) do
     Enum.find_value(day.blocks, fn block ->
-      gap_entry(day, block, from_id, to_id, relief_checked?)
+      gap_entry(day, block, connections, from_id, to_id, relief_checked?)
     end)
   end
 
-  defp gap_entry(day, block, from_id, to_id, relief_checked?) do
+  defp gap_entry(day, block, connections, from_id, to_id, relief_checked?) do
     with from when not is_nil(from) <- Enum.find(block.trips, &(&1.id == from_id)),
          to when not is_nil(to) <- Enum.find(block.trips, &(&1.id == to_id)),
          gap when not is_nil(gap) <-
@@ -1705,8 +2625,170 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         records: pair_records(day.in_seat, from, to),
         short?: short_layover?(block, from_id, to_id)
       }
+      |> Map.merge(connection_facts(connections, from, to))
     else
       _other -> nil
+    end
+  end
+
+  # The rider-facing facts `Blocking.Connections` already derived for this pair:
+  # the in-seat setting its records decided, whether they need review, and the
+  # place and turnback its group was grouped by. Reading the same map the timeline
+  # gaps and the later Connections view read keeps the drawer, the chart and the
+  # view from disagreeing about one connection. A pair the grouping does not
+  # carry — a loaded day cannot produce one — falls back to the arrival stop.
+  defp connection_facts(connections, from, to) do
+    id = "#{from.id}|#{to.id}"
+    connection = Enum.find(connections.connections, &(&1.id == id))
+    group = Enum.find(connections.groups, &(connection && &1.key == connection.group_key))
+
+    %{
+      setting: if(connection, do: connection.setting, else: :none),
+      review?: if(connection, do: connection.review?, else: false),
+      place: if(group, do: group.place.name, else: ""),
+      turnback?: if(group, do: group.turnback?, else: false)
+    }
+  end
+
+  # The connection drawer's own state, resolved whenever the drawer resolves: the
+  # three-way form, the draft the editor has chosen (or not), the save rule's own
+  # answer for the pair and the scope line over the day types both trips run in.
+  #
+  # The pre-check is `Gtfs.check_in_seat_connections/3` — R1 through
+  # `Blocking.check_connections/3`, the same rule the save re-evaluates under the
+  # block writers' locks (CR-2) — so the two disabled options and a refused save
+  # can never disagree. It is a read: it writes nothing, and a version it cannot
+  # read leaves the options enabled rather than guessing a refusal.
+  #
+  # The scope line is derived from the loaded day rather than read again: a day
+  # type carries its service IDs and its date count, so the dates both trips run
+  # on are the day types naming both services, counted once each. A drawer with
+  # no day behind it, a version the rule cannot read, or a pair that shares no day
+  # type each keep their own state instead of a number that would be a guess.
+  defp resolve_connection(socket, _day, nil) do
+    assign(socket,
+      connection_check: nil,
+      connection_saved: nil,
+      connection_draft: nil,
+      connection_form: connection_form(nil),
+      connection_scope: nil,
+      connection_error: nil,
+      connection_pending: false
+    )
+  end
+
+  defp resolve_connection(socket, day, gap) do
+    pair = {gap.from.trip_id, gap.to.trip_id}
+    saved = connection_saved_choice(gap.setting)
+
+    socket
+    |> assign(:connection_check, check_in_seat_connection(socket, pair))
+    |> assign(:connection_saved, saved)
+    |> assign(:connection_draft, saved)
+    |> assign(:connection_form, connection_form(saved))
+    |> assign(:connection_scope, connection_scope(day, gap.from, gap.to))
+  end
+
+  # R1's own answer for this pair. A version the rule cannot read is `nil`, which
+  # the drawer reads as "no answer", not as a refusal.
+  defp check_in_seat_connection(socket, pair) do
+    %{current_organization: organization, current_gtfs_version: version} = socket.assigns
+
+    case Gtfs.check_in_seat_connections(organization.id, version.id, [pair]) do
+      {:ok, checks} -> Map.get(checks, pair)
+      {:error, _reason} -> nil
+    end
+  end
+
+  # The dates a choice would apply on: the day types that name both trips'
+  # services, each counted once, whatever the order the day's own list has them
+  # in. Two trips whose services never meet have no shared day type, and the
+  # drawer says so rather than printing a scope of zero.
+  defp connection_scope(%{day_types: day_types}, from, to) do
+    day_types =
+      Enum.filter(day_types, fn day_type ->
+        from.service_id in day_type.service_ids and to.service_id in day_type.service_ids
+      end)
+
+    %{
+      day_types: day_types,
+      date_count: Enum.sum(Enum.map(day_types, & &1.date_count))
+    }
+  end
+
+  defp connection_scope(_day, _from, _to), do: nil
+
+  # The saved setting the drawer opens on: a pair with no record is "not stated"
+  # because that is what it is, and a pair of two disagreeing records has no
+  # single saved choice, so nothing is preselected and the editor resolves it.
+  defp connection_saved_choice(:none), do: :not_stated
+  defp connection_saved_choice(:stay), do: :stay_on_board
+  defp connection_saved_choice(:reboard), do: :must_reboard
+  defp connection_saved_choice(_conflict), do: nil
+
+  # The form the three radio cards bind to. It is a plain `to_form/2` over the
+  # draft, so the change event carries only the choice and the form is rebuilt
+  # from the draft the handler accepted.
+  defp connection_form(choice) do
+    to_form(%{"choice" => choice_value(choice)}, as: :connection)
+  end
+
+  # The three values the form carries, and the only ones the handler accepts: the
+  # `InSeatTransfers` choice atoms, as the strings a form parameter arrives in.
+  @connection_choices %{
+    "not_stated" => :not_stated,
+    "stay_on_board" => :stay_on_board,
+    "must_reboard" => :must_reboard
+  }
+
+  defp connection_choice(value) when is_binary(value), do: Map.get(@connection_choices, value)
+  defp connection_choice(_value), do: nil
+
+  defp choice_value(nil), do: ""
+  defp choice_value(choice), do: Atom.to_string(choice)
+
+  defp put_connection_draft(socket, choice) do
+    assign(socket, connection_draft: choice, connection_form: connection_form(choice))
+  end
+
+  # A draft that differs from the saved choice is not thrown away by closing the
+  # drawer or opening another one: the discard confirmation stands in front of
+  # the action, and `discard_connection` replays it once the editor confirms.
+  # Anything else runs the event the caller asked for.
+  defp guard_connection_draft(socket, event, params) do
+    if connection_dirty?(socket.assigns) do
+      {:noreply, assign(socket, :connection_discard, %{event: event, params: params})}
+    else
+      :continue
+    end
+  end
+
+  # A draft is worth a confirmation when it says something the saved record does
+  # not. A pair of two disagreeing records has no saved choice and opens with no
+  # draft, and "nothing chosen yet" is not work to lose; the moment the editor
+  # picks one, that pair has an unsaved choice like any other.
+  defp connection_dirty?(assigns) do
+    assigns.connection_draft != assigns.connection_saved and
+      not (is_nil(assigns.connection_draft) and is_nil(assigns.connection_saved))
+  end
+
+  # The close itself, once no unsaved connection choice stands in its way.
+  defp do_close_drawer(socket) do
+    socket = assign(socket, :open_drawer, nil)
+
+    socket =
+      if match?(%{scope: :selection}, socket.assigns.assign),
+        do: assign(socket, :assign, nil),
+        else: socket
+
+    state = socket.assigns.state
+
+    if state.trip || state.gap || state.block || state.drawer || state.pair do
+      patch(socket, %{trip: nil, gap: nil, block: nil, drawer: nil, pair: nil},
+        clear_command: true
+      )
+    else
+      {:noreply, socket}
     end
   end
 
@@ -1844,21 +2926,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     do: {:noreply, socket}
 
   defp run_command(socket, command, confirmation) do
-    if editor_access?(socket) do
-      case Gtfs.apply_block_change(
-             socket.assigns.day_type.key,
-             command,
-             audit_context(socket),
-             confirmation
-           ) do
-        {:ok, result} -> applied(socket, command, result)
-        {:needs_confirmation, review} -> {:noreply, show_review(socket, review, false)}
-        {:error, {:stale_review, review}} -> {:noreply, show_review(socket, review, true)}
-        {:error, {:ineligible, ids}} -> {:noreply, refuse_ineligible(socket, ids)}
-        {:error, reason} -> {:noreply, refuse(socket, reason)}
-      end
-    else
-      {:noreply, put_flash(socket, :error, @permission_message)}
+    case Gtfs.apply_block_change(
+           socket.assigns.day_type.key,
+           command,
+           audit_context(socket),
+           confirmation
+         ) do
+      {:ok, result} -> applied(socket, command, result)
+      {:needs_confirmation, review} -> {:noreply, show_review(socket, review, false)}
+      {:error, {:stale_review, review}} -> {:noreply, show_review(socket, review, true)}
+      {:error, {:ineligible, ids}} -> {:noreply, refuse_ineligible(socket, ids)}
+      {:error, reason} -> {:noreply, refuse(socket, reason)}
     end
   end
 
@@ -1974,6 +3052,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   defp command_error(:busy, _state), do: "Another change is being saved. Try again in a moment."
+  defp command_error(:forbidden, _state), do: @permission_message
 
   defp command_error(:not_found, _state),
     do: "That trip isn't in this version anymore. Reload blocks."
@@ -2095,21 +3174,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # name another block. The context then takes the version lock, rebuilds
   # the context under it and decides the confirmation.
   defp run_attributes(socket, block_id, garage_id, vehicle_type_id, confirmation) do
-    if editor_access?(socket) do
-      case Gtfs.set_block_attributes(
-             socket.assigns.day_type.key,
-             block_id,
-             %{"garage_id" => garage_id, "vehicle_type_id" => vehicle_type_id},
-             audit_context(socket),
-             confirmation
-           ) do
-        {:ok, _result} -> {:noreply, attributes_applied(socket, block_id)}
-        {:needs_confirmation, review} -> {:noreply, show_review(socket, review, false)}
-        {:error, {:stale_review, review}} -> {:noreply, show_review(socket, review, true)}
-        {:error, reason} -> {:noreply, refuse_attributes(socket, reason)}
-      end
-    else
-      {:noreply, put_flash(socket, :error, @permission_message)}
+    case Gtfs.set_block_attributes(
+           socket.assigns.day_type.key,
+           block_id,
+           %{"garage_id" => garage_id, "vehicle_type_id" => vehicle_type_id},
+           audit_context(socket),
+           confirmation
+         ) do
+      {:ok, _result} -> {:noreply, attributes_applied(socket, block_id)}
+      {:needs_confirmation, review} -> {:noreply, show_review(socket, review, false)}
+      {:error, {:stale_review, review}} -> {:noreply, show_review(socket, review, true)}
+      {:error, reason} -> {:noreply, refuse_attributes(socket, reason)}
     end
   end
 
@@ -2502,8 +3577,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # says the settings are already stored rather than claiming a failed save.
   defp save_route_settings(socket, params) do
     case Gtfs.update_route_operating_settings(
-           socket.assigns.current_organization.id,
-           socket.assigns.current_gtfs_version.id,
+           audit_context(socket),
            route_setting_entries(socket, params)
          ) do
       :ok ->
@@ -2525,6 +3599,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
            fallback_id: "block-rules-errors"
          })
          |> put_flash(:error, @block_rules_partial)}
+
+      {:error, :forbidden} ->
+        {:noreply, put_block_rules(socket, params, @permission_message)}
 
       {:error, _reason} ->
         {:noreply, put_block_rules(socket, params, @block_rules_save_failed)}
@@ -2579,8 +3656,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     result =
       Enum.reduce_while(entries, {:ok, 0}, fn {_key, pair, minutes}, {:ok, count} ->
         case Gtfs.put_deadhead_time(
-               socket.assigns.current_organization.id,
-               socket.assigns.current_gtfs_version.id,
+               audit_context(socket),
                pair,
                minutes
              ) do
@@ -2604,6 +3680,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
       {:error, %Ecto.Changeset{}} ->
         {:noreply, put_driving_error(socket, state, @driving_times_save_failed)}
+
+      {:error, :forbidden} ->
+        {:noreply, put_driving_error(socket, state, @permission_message)}
 
       {:error, _reason} ->
         {:noreply, put_driving_error(socket, state, @driving_times_save_failed)}
@@ -2973,23 +4052,19 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # discarded the suggestion or switched day type is dropped rather than shown as
   # this plan's outcome.
   defp start_apply(socket) do
-    if editor_access?(socket) do
-      request = apply_request(socket)
+    request = apply_request(socket)
 
-      socket =
-        socket
-        |> assign(:apply, %{
-          status: :pending,
-          title: @apply_pending_title,
-          message: @apply_pending_message,
-          reason: nil
-        })
-        |> assign(:applied, nil)
+    socket =
+      socket
+      |> assign(:apply, %{
+        status: :pending,
+        title: @apply_pending_title,
+        message: @apply_pending_message,
+        reason: nil
+      })
+      |> assign(:applied, nil)
 
-      start_async(socket, @apply_suggestion_key, fn -> {request, run_apply(request)} end)
-    else
-      put_flash(socket, :error, @permission_message)
-    end
+    start_async(socket, @apply_suggestion_key, fn -> {request, run_apply(request)} end)
   end
 
   defp apply_request(socket) do
@@ -3069,6 +4144,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     {:noreply,
      push_event(
        put_apply(socket, :busy, @apply_busy_title, @apply_busy_message),
+       "focus_scoped_target",
+       %{id: "suggestion-apply-message"}
+     )}
+  end
+
+  defp apply_apply_result(socket, _plan, {:error, :forbidden}) do
+    {:noreply,
+     push_event(
+       put_apply(socket, :failed, @apply_failed_title, @permission_message),
        "focus_scoped_target",
        %{id: "suggestion-apply-message"}
      )}
@@ -3242,8 +4326,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   defp write_operator_changes(socket, state, minutes, marked, limit) do
     case Gtfs.update_relief_settings(
-           socket.assigns.current_organization.id,
-           socket.assigns.current_gtfs_version.id,
+           audit_context(socket),
            socket.assigns.day_type && socket.assigns.day_type.key,
            %{max_piece_minutes: minutes, marked: marked}
          ) do
@@ -3260,6 +4343,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
       {:error, %Ecto.Changeset{}} ->
         {:noreply, put_operator_limit_error(socket, state, limit, marked, @operator_limit_error)}
+
+      {:error, :forbidden} ->
+        {:noreply, put_operator_error(socket, state, limit, marked, @permission_message)}
 
       {:error, _reason} ->
         {:noreply,
@@ -3381,26 +4467,239 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp operator_marked?(%{marked: nil}, candidate), do: candidate.marked?
   defp operator_marked?(state, candidate), do: candidate.stop_id in state.marked
 
-  # --- editor authority ------------------------------------------------------
+  # --- in-seat record removal ------------------------------------------------
 
-  # The role is re-read from the membership on every mutating event, so a role
-  # revoked while the page is open refuses the next write. This is the stricter
-  # form of the `has_role?(@user_roles, :pathways_studio_editor)` check: the
-  # assign is only a snapshot from mount.
-  defp editor_access?(socket) do
-    EnsureRole.has_role?(live_roles(socket), :pathways_studio_editor)
-  end
+  defp remove_stale_record(socket) do
+    row = socket.assigns.remove_record.row
 
-  defp live_roles(socket) do
-    with %{id: user_id} <- socket.assigns[:current_user],
-         %{id: organization_id} <- socket.assigns[:current_organization],
-         %UserOrgMembership{} = membership <-
-           Accounts.get_user_org_membership(user_id, organization_id) do
-      membership.roles || []
-    else
-      _ -> []
+    case Gtfs.remove_in_seat_records([{row.id, row.updated_at}], audit_context(socket)) do
+      {:ok, _removed} ->
+        {:noreply,
+         socket
+         |> assign(:remove_record, nil)
+         |> load_day()
+         |> resolve_drawers()
+         |> assign_page_rows_if_loaded()
+         |> put_flash(:info, removed_record_text(row))}
+
+      {:error, :stale} ->
+        {:noreply,
+         socket
+         |> assign(:remove_record, nil)
+         |> load_day()
+         |> resolve_drawers()
+         |> assign_page_rows_if_loaded()
+         |> put_flash(:error, @remove_record_changed)}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> assign(:remove_record, nil)
+         |> put_flash(:error, @permission_message)}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> assign(:remove_record, nil)
+         |> put_flash(:error, @remove_record_failed)}
     end
   end
+
+  # The record the open trip's drawer listed under `id`, when the day loaded it
+  # as stale. That listing is the only source, so a confirmation can never name a
+  # record the reader was not looking at.
+  defp removable_entry(socket, id) do
+    with {:trip, trip, _day_types} <- socket.assigns.trip_view,
+         [entry | _rest] <-
+           socket.assigns.in_seat
+           |> Map.get(trip.id, [])
+           |> Enum.filter(&(to_string(&1.row.id) == id and stale_record?(&1.state))) do
+      entry
+    else
+      _other -> nil
+    end
+  end
+
+  # The one state a removal is offered for: no block in the version reaches the
+  # record, so it cannot be valid GTFS for this feed (R7).
+  defp stale_record?({:stale, _reason}), do: true
+  defp stale_record?(_state), do: false
+
+  defp removed_record_text(row),
+    do: "Removed the record for trip #{row.from_trip_id} → #{row.to_trip_id}."
+
+  # The Checks drawer's day-type section (AC-21): the day's records that need
+  # review, derived from the connections the rest of the page reads and from the
+  # day's own record listing, so no surface re-derives a state (CR-2, CR-4).
+  #
+  # Three shapes come out of it, in the order the reader scans them: a
+  # conflicting pair, which needs a choice rather than a deletion; a stale record
+  # on a connection, which opens that connection; and a stale record no gap of
+  # this day hosts, which opens one of its own trips instead. `stale` is the
+  # removal set - the distinct stale records, whatever they are listed under -
+  # and a conflict contributes to it only through a record of its own that is
+  # itself stale.
+  defp in_seat_review(%{connections: connections}, day) do
+    {entries, stale} =
+      Enum.reduce(connections, {[], []}, fn connection, {entries, stale} ->
+        conflict = if connection.setting == :conflict, do: [connection], else: []
+
+        rows = Enum.filter(connection.records, &stale_record?(&1.state))
+
+        listed =
+          Enum.map(rows, fn entry ->
+            %{
+              kind: :stale,
+              row: entry.row,
+              state: entry.state,
+              connection: connection
+            }
+          end)
+
+        conflict_entries =
+          Enum.map(conflict, fn connection ->
+            %{kind: :conflict, connection: connection, records: connection.records}
+          end)
+
+        {[conflict_entries ++ listed | entries], [Enum.map(rows, & &1.row) | stale]}
+      end)
+
+    entries = entries |> Enum.reverse() |> List.flatten()
+    unhosted = unhosted_entries(connections, day)
+
+    stale =
+      [stale |> Enum.reverse() |> List.flatten() | Enum.map(unhosted, & &1.row)]
+      |> List.flatten()
+      |> Enum.uniq_by(& &1.id)
+
+    %{entries: entries ++ unhosted, stale: stale}
+  end
+
+  # The day's stale records that no connection carries. A record whose pair is
+  # not a gap of this day - a trip with no block, a trip that left the version,
+  # two trips that never share a date - is stale with no connection to open, so
+  # its row offers the trip drawer instead of a connection that does not exist.
+  defp unhosted_entries(connections, day) do
+    hosted =
+      connections
+      |> Enum.flat_map(& &1.records)
+      |> MapSet.new(& &1.row.id)
+
+    day.in_seat
+    |> Map.values()
+    |> List.flatten()
+    |> Enum.uniq_by(& &1.row.id)
+    |> Enum.reject(&MapSet.member?(hosted, &1.row.id))
+    |> Enum.filter(&stale_record?(&1.state))
+    |> Enum.map(fn entry ->
+      %{kind: :stale, row: entry.row, state: entry.state, connection: nil}
+    end)
+  end
+
+  # The removal question's copy is the component's; here are the two questions
+  # the Checks drawer asks and the batch write behind both.
+  #
+  # Like the trip drawer's one removal, a batch is a bounded set of locked rows,
+  # its audit and a reload, so it runs in the event itself. Both the success and
+  # the `:stale` refusal reload the day and the version's unmatched listing, so
+  # no surface keeps listing a record the store has moved on from.
+  defp remove_in_seat_batch(%{assigns: %{day: nil}} = socket, _removal, _key),
+    do: {:noreply, socket}
+
+  defp remove_in_seat_batch(socket, %{rows: rows}, key) do
+    case Gtfs.remove_in_seat_records(rows, audit_context(socket)) do
+      {:ok, removed} ->
+        {:noreply,
+         socket
+         |> assign(key, nil)
+         |> assign(:remove_pending, false)
+         |> load_day()
+         |> resolve_drawers()
+         |> load_unmatched_in_seat()
+         |> assign_page_rows_if_loaded()
+         |> put_flash(:info, "Removed #{removed} in-seat #{plural(removed, "record")}.")}
+
+      {:error, :stale} ->
+        {:noreply,
+         socket
+         |> assign(key, nil)
+         |> assign(:remove_pending, false)
+         |> load_day()
+         |> resolve_drawers()
+         |> load_unmatched_in_seat()
+         |> assign_page_rows_if_loaded()
+         |> put_flash(:error, @remove_batch_changed)}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> assign(key, nil)
+         |> assign(:remove_pending, false)
+         |> put_flash(:error, @permission_message)}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> assign(key, nil)
+         |> assign(:remove_pending, false)
+         |> put_flash(:error, @remove_batch_failed)}
+    end
+  end
+
+  # The day type's removal question: exactly the rows the drawer listed as
+  # stale. A conflicting pair is not among them — it needs a choice, not a
+  # deletion — so a conflict never contributes to the count the confirm names.
+  defp stale_removal(socket) do
+    rows =
+      socket.assigns.in_seat_review.stale
+      |> Enum.map(&{&1.id, &1.updated_at})
+      |> Enum.uniq()
+
+    removal(rows)
+  end
+
+  # The version's removal question: exactly the rows the unmatched listing
+  # returned, in its own order.
+  defp unmatched_removal(socket) do
+    removal(Enum.map(socket.assigns.unmatched_in_seat, &{&1.id, &1.updated_at}))
+  end
+
+  defp removal([]), do: nil
+  defp removal(rows), do: %{rows: rows, count: length(rows)}
+
+  # The version-level read the Checks drawer's second section lists (R8). It is
+  # read when that drawer opens and after every removal, never on a render, and
+  # a failure leaves the section empty rather than raising.
+  defp load_unmatched_in_seat(socket) do
+    case Gtfs.unmatched_in_seat_records(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id
+         ) do
+      {:ok, records} ->
+        assign(socket,
+          unmatched_in_seat: records,
+          unmatched_in_seat_key: {:unmatched, socket.assigns.current_gtfs_version.id}
+        )
+
+      {:error, _reason} ->
+        assign(socket,
+          unmatched_in_seat: [],
+          unmatched_in_seat_key: {:unmatched, socket.assigns.current_gtfs_version.id}
+        )
+    end
+  end
+
+  # `resolve_drawers/1` runs on every patch, so the version-level read is guarded
+  # by its own key exactly as the day-type drawers' reads are: a page that never
+  # opens the Checks drawer never reads the version's unmatched records.
+  defp resolve_unmatched(%{assigns: %{unmatched_in_seat_key: key}} = socket, :checks)
+       when not is_nil(key),
+       do: socket
+
+  defp resolve_unmatched(%{assigns: %{day: day}} = socket, :checks) when not is_nil(day),
+    do: load_unmatched_in_seat(socket)
+
+  defp resolve_unmatched(socket, _drawer), do: socket
 
   defp audit_context(socket) do
     %AuditContext{
@@ -3456,6 +4755,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp assign_derived(socket, day) do
     selection = retain_in_day(socket.assigns.selection, day)
     block_selection = retain_blocks_in_day(socket.assigns.block_selection, day)
+    connections = Connections.build(day)
 
     socket
     |> assign(:selection, selection)
@@ -3491,10 +4791,23 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       routes: day.routes,
       findings: day.findings,
       in_seat: day.in_seat,
+      # The Checks drawer's day-type section: the day's records that need
+      # review, derived from the same connections the timeline and the drawers
+      # read rather than from a second pass over the store (CR-4).
+      in_seat_review: in_seat_review(connections, day),
       mixed_timezones?: day.mixed_timezones?,
       trip_labels: trip_labels(day),
       findings_by_trip: findings_by_trip(day.findings),
       destination_blocks: Enum.map(day.blocks, &destination_option/1),
+      # The day's connections and their groups, derived once per load from the
+      # loaded day rather than stored (CR-4). `:connections_all` is server-only:
+      # the Connections view and the later drawers read it, and only the small
+      # per-connection setting entry reaches the timeline.
+      connections_all: connections,
+      connection_settings: connection_settings(connections),
+      # The Show filter's four values in control order, so the Connections
+      # toolbar names the same filters the URL whitelist and the chips do.
+      connection_setting_options: @connection_setting_options,
       min_layover_minutes: day.settings.min_layover_minutes,
       # The whole settings row, so the Block rules drawer renders every
       # field from the day load rather than a second read.
@@ -3509,6 +4822,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       # explain a value, never to resolve one.
       route_settings: day.context.route_settings
     )
+  end
+
+  # One entry per connection for the render path: the setting and the review flag
+  # `Blocking.Connections` already derived, keyed by the connection id. The
+  # timeline reads this map and nothing else, so a gap's chip cannot disagree with
+  # the derivation the drawer and the later Connections view read.
+  defp connection_settings(%{connections: connections}) do
+    Map.new(connections, &{&1.id, %{setting: &1.setting, review?: &1.review?}})
   end
 
   # The garage picker lists the organization's garages by name, the vehicle type
@@ -3585,8 +4906,47 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       routes: %{},
       findings: [],
       in_seat: %{},
+      connections_all: @empty_connections,
+      connection_settings: %{},
+      connection_setting_options: @connection_setting_options,
       trip_view: nil,
       gap_view: nil,
+      connection_check: nil,
+      connection_saved: nil,
+      connection_draft: nil,
+      connection_form: connection_form(nil),
+      connection_scope: nil,
+      connection_discard: nil,
+      # The stale record the trip drawer is asking about, or nil when no removal
+      # is being confirmed. The record itself is the loaded day's own listing
+      # entry, so the confirmation names the row and the timestamp the editor saw.
+      remove_record: nil,
+      remove_pending: false,
+      # The Checks drawer's two batch removals and the version-level listing
+      # behind its second section. Both questions name the rows the drawer
+      # listed, so a confirmation carries the `updated_at` each list showed.
+      remove_stale: nil,
+      remove_unmatched: nil,
+      in_seat_review: @empty_in_seat_review,
+      unmatched_in_seat: [],
+      unmatched_in_seat_key: nil,
+      # The Set-all setting chosen in the group panel, and no group open with it:
+      # the choice is per group and starts empty, which is why the fieldset's
+      # review button is disabled on a panel the reader has just opened.
+      bulk_choice: nil,
+      # The Set-all review itself, or nil. It is the page's own state rather than
+      # a URL parameter, so a reload or a shared link opens the group with the
+      # choice to make again rather than a review of a setting nobody picked.
+      bulk_review: nil,
+      # The pending state of the Set-all write, and the sentence a failed one
+      # leaves in the still-open review.
+      bulk_pending: false,
+      bulk_error: nil,
+      # The persistent result of a Set-all save or a bulk Undo (R10, AC-20). It
+      # is page state in its own assign rather than part of the review, so it
+      # survives the review closing, the group being reopened and the filters
+      # changing; only `dismiss_bulk_result` clears it.
+      bulk_result: nil,
       block_view: nil,
       back_block: nil,
       block_action: nil,
@@ -3770,6 +5130,412 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     {:noreply, put_apply(socket, :failed, @apply_failed_title, @apply_failed_message)}
   end
 
+  # The save's own result, in the same group as the page's other asynchronous work
+  # so it too can drop a result that arrives after the reader has moved on.
+  def handle_async(@save_connection_key, {:ok, {request, result}}, socket) do
+    if current_connection_request?(socket, request) do
+      connection_saved(socket, request, result)
+    else
+      {:noreply, assign(socket, :connection_pending, false)}
+    end
+  end
+
+  # A task that exited rather than returning wrote nothing the page can report;
+  # the failure sentence is the one an audit failure and a busy write share.
+  def handle_async(@save_connection_key, {:exit, _reason}, socket) do
+    {:noreply,
+     assign(socket,
+       connection_pending: false,
+       connection_error: %{title: @connection_failed_title, message: @connection_failed_message}
+     )}
+  end
+
+  # The Set-all write's own result, in the same group as the page's other
+  # asynchronous work so it too can drop a result that arrives after the reader
+  # has moved on.
+  def handle_async(@save_bulk_key, {:ok, {request, result}}, socket) do
+    if current_bulk_request?(socket, request) do
+      bulk_saved(socket, request, result)
+    else
+      {:noreply, assign(socket, :bulk_pending, false)}
+    end
+  end
+
+  # A task that exited rather than returning wrote nothing the page can report;
+  # the failure sentence is the one a busy write and an audit failure share, and
+  # the review stays open so the reader can try again.
+  def handle_async(@save_bulk_key, {:exit, _reason}, socket) do
+    {:noreply, put_bulk_error(socket)}
+  end
+
+  # The write's result is current while the review it was built from is still the
+  # review on screen. A reader who closed it, chose another setting or opened
+  # another group while the write was in flight gets no result about a review
+  # that is no longer there, and the pending state is simply dropped.
+  defp current_bulk_request?(%{assigns: %{bulk_review: nil}}, _request), do: false
+
+  defp current_bulk_request?(%{assigns: %{bulk_review: review}}, request) do
+    # The review names its setting the way the fieldset does and the write names
+    # it as an atom, so the comparison is against the request's own setting
+    # value rather than its write choice.
+    review.group_token == request.group_token and review.choice == request.setting
+  end
+
+  # R10/AC-20: a successful bulk write closes the review, reloads the day and
+  # leaves a persistent result at the top of the group panel naming the count it
+  # wrote, every pair it skipped with that pair's own reason, and the Undo R9
+  # allows. The reload is what the group's rows and the review's own counts then
+  # read, so the panel describes the write that happened rather than the one
+  # that was reviewed.
+  defp bulk_saved(socket, request, {:ok, result}) do
+    socket =
+      socket
+      |> assign(:bulk_pending, false)
+      |> assign(:bulk_error, nil)
+      |> assign(:bulk_review, nil)
+      |> load_day()
+      |> resolve_drawers()
+      |> assign_page_rows_if_loaded()
+
+    {:noreply,
+     socket
+     |> assign(:bulk_result, bulk_result(request, result, socket.assigns.connections_all))
+     |> focus_within("bulk-result")}
+  end
+
+  # A refusal of the whole batch — `:busy` from the bounded retry, an audit
+  # failure, a rejected batch — keeps the review open with the rows and boxes the
+  # editor left and says that nothing changed, so a retry is one click rather
+  # than a rebuilt review.
+  defp bulk_saved(socket, _request, {:error, :forbidden}) do
+    {:noreply,
+     socket
+     |> assign(:bulk_pending, false)
+     |> put_flash(:error, @permission_message)}
+  end
+
+  defp bulk_saved(socket, _request, {:error, _reason}) do
+    {:noreply, put_bulk_error(socket)}
+  end
+
+  defp put_bulk_error(socket) do
+    assign(socket,
+      bulk_pending: false,
+      bulk_error: %{title: @bulk_failed_title, message: @bulk_failed_message}
+    )
+  end
+
+  # The persistent result. Every number here is the write's own: `saved` and
+  # `skipped` are what `set_in_seat_connections/3` answered, and `previous` is
+  # what the review listed before the write, so the Undo restores a setting the
+  # reader actually replaced (R9).
+  #
+  # A skipped pair's line names the block, its arrival and its two trips from
+  # the day's own derivation, because the write answers with a pair and a reason
+  # and the reader needs to know which row it belongs to (CR-4).
+  defp bulk_result(request, %{saved: saved, skipped: skipped}, connections_all) do
+    connections = bulk_connections(connections_all)
+
+    %{
+      group_token: request.group_token,
+      # The review's own value, so the result names the setting the way the
+      # panel and the review named it rather than through the write's atom.
+      setting: request.setting,
+      choice: request.choice,
+      saved: saved,
+      # The write's own skips first, then the review's blocked rows: the pairs
+      # the reader saw and could not change come last, so the count reads as
+      # everything the save did not write.
+      skipped: Enum.map(skipped, &bulk_skip_line(&1, connections)) ++ request.blocked,
+      previous: request.previous,
+      unrestorable: bulk_unrestorable(request, saved),
+      audit: request.audit,
+      undo?: true
+    }
+  end
+
+  # One skipped pair as the result names it: the block, its arrival and its two
+  # trips, then the reason the write gave. A refusal's sentence is
+  # `RiderOutcomes.refusal_text/1`'s own, so the list and the drawer cannot
+  # word the same failure differently (CR-3).
+  defp bulk_skip_line(%{pair: pair, reason: reason}, connections) do
+    connection = Map.get(connections, pair)
+
+    %{block: connection_label(connection), reason: bulk_skip_reason(reason)}
+  end
+
+  defp bulk_skip_reason(:stale), do: @bulk_skip_stale
+  defp bulk_skip_reason(:not_found), do: @bulk_skip_not_found
+  defp bulk_skip_reason(:not_restored), do: @bulk_skip_not_restored
+
+  defp bulk_skip_reason({:refused, state}) do
+    RiderOutcomes.refusal_text(state) ||
+      "These trips are no longer one vehicle on every date they share."
+  end
+
+  defp bulk_skip_reason(_other),
+    do: "This connection could not be saved. Nothing was written for it."
+
+  # "Block {b}, {clock} ({a} → {b})", the row the review showed. A pair the day
+  # no longer derives has no row to name, so it says so rather than printing an
+  # empty label.
+  defp connection_label(nil), do: "Connection"
+
+  defp connection_label(connection) do
+    "Block #{connection.block_id}, #{BlocksComponents.clock(connection.from.last_arrival)} " <>
+      "(#{connection.from.trip_id} → #{connection.to.trip_id})"
+  end
+
+  # R9's exclusions: a saved pair whose previous state was two disagreeing
+  # records or one needing review has no single setting to restore, so the Undo
+  # leaves it and the result says how many pairs that is (AC-9).
+  defp bulk_unrestorable(request, saved) do
+    restorable = MapSet.new(Enum.map(request.previous, & &1.pair))
+
+    saved
+    |> Enum.reject(&MapSet.member?(restorable, &1))
+    |> length()
+  end
+
+  # The day's own connections, keyed by the pair the write names, so a skipped
+  # pair is described by the row the reader saw rather than by a second
+  # derivation of its trips (CR-4).
+  defp bulk_connections(%{connections: connections}) when is_list(connections) do
+    Map.new(connections, &{bulk_pair(&1), &1})
+  end
+
+  defp bulk_connections(_connections_all), do: %{}
+
+  # R9's bulk Undo: one `set_in_seat_connections/3` call per previous setting, in
+  # sequence, so the batch is at most three bounded writes rather than one per
+  # pair. Each call is guarded by the rows the save left, read from the day the
+  # save reloaded, so a pair changed since is skipped rather than overwritten
+  # (INV-4).
+  #
+  # A pair the day no longer derives has no current state to guard against, so
+  # the Undo leaves it alone rather than writing over whatever now stands there.
+  defp bulk_undo_writes(%{previous: previous, audit: audit}, connections) do
+    previous
+    |> Enum.map(&Map.put(&1, :expected, bulk_saved_expected(&1.pair, connections)))
+    |> Enum.reject(&(is_nil(&1.expected) or &1.expected == :missing))
+    |> Enum.group_by(& &1.previous)
+    |> Enum.reduce_while({0, []}, fn {choice, group}, {restored, skipped} ->
+      call = Enum.map(group, &%{pair: &1.pair, expected: &1.expected})
+
+      case Gtfs.set_in_seat_connections(call, choice, audit) do
+        {:ok, %{saved: saved, skipped: skipped_pairs}} ->
+          {:cont, {restored + length(saved), skipped ++ skipped_pairs}}
+
+        # The editor's membership was revoked, so this call and every later one
+        # write nothing. The caller answers with the permission message.
+        {:error, :forbidden} ->
+          {:halt, :forbidden}
+
+        # The whole call failed, so none of its pairs was restored. That is not
+        # another editor's change and the result must not claim it is: the pair
+        # is named as one the Undo could not put back.
+        {:error, _reason} ->
+          {:cont,
+           {restored, skipped ++ Enum.map(group, &%{pair: &1.pair, reason: :not_restored})}}
+      end
+    end)
+  end
+
+  # The rows a pair holds now, which for a pair the save wrote is the row the
+  # save left.
+  defp bulk_saved_expected(pair, connections) do
+    case Map.get(connections, pair) do
+      nil -> :missing
+      connection -> expected_rows(connection.records)
+    end
+  end
+
+  # AC-9/R10: the Undo reports how many connections it restored and how many it
+  # could not, each with its own reason, and offers no Undo of its own. The day
+  # reloads so the group's rows read the restored settings rather than the ones
+  # the Undo replaced.
+  defp bulk_restored(socket, result) do
+    connections = bulk_connections(socket.assigns.connections_all)
+
+    case bulk_undo_writes(result, connections) do
+      # An earlier call of the same Undo may already have committed, so the day
+      # reloads to show what stands now; the result keeps its Undo.
+      :forbidden ->
+        {:noreply,
+         socket
+         |> load_day()
+         |> resolve_drawers()
+         |> assign_page_rows_if_loaded()
+         |> put_flash(:error, @permission_message)}
+
+      {restored, skipped} ->
+        undo_skipped = Enum.map(skipped, &bulk_skip_line(&1, connections))
+
+        {:noreply,
+         socket
+         |> assign(
+           :bulk_result,
+           Map.merge(result, %{restored: restored, undo_skipped: undo_skipped, undo?: false})
+         )
+         |> load_day()
+         |> resolve_drawers()
+         |> assign_page_rows_if_loaded()
+         |> focus_within("bulk-result")}
+    end
+  end
+
+  # The save's result is current while the drawer is still showing the pair the
+  # write was built from. A reader who closed the drawer, or moved to another gap,
+  # while the write was in flight gets no result about a drawer that is no longer
+  # on the page.
+  defp current_connection_request?(%{assigns: %{gap_view: nil}}, _request), do: false
+
+  defp current_connection_request?(%{assigns: %{gap_view: gap}}, request) do
+    gap_param(gap.from.id, gap.to.id) == request.gap
+  end
+
+  defp connection_saved(socket, request, {:ok, result}) do
+    result =
+      %{
+        kind: :saved,
+        text: saved_text(request.choice, result.choice, request.from, request.to),
+        from: request.from,
+        to: request.to,
+        previous: request.previous,
+        gap: request.gap,
+        expected: saved_expected(request.choice, result),
+        audit: request.audit,
+        undo?: request.restorable?,
+        open?: false
+      }
+
+    # AC-15: a success closes the drawer, reloads the day and leaves a persistent
+    # result above the workspace. The reload clears both stream keys, so the
+    # timeline's gap marker is the saved pair's rather than the one the editor
+    # was looking at (FH-14, PM-12).
+    {:noreply,
+     socket
+     |> assign(:connection_pending, false)
+     |> assign(:connection_error, nil)
+     |> assign(:connection_result, result)
+     |> assign(:connection_discard, nil)
+     |> load_day()
+     |> resolve_drawers()
+     |> assign_page_rows_if_loaded()
+     |> close_connection_drawer()
+     |> focus_within("connection-result")}
+  end
+
+  # `:stale` keeps the drawer and the editor's choice and says what the pair now
+  # carries (AC-15). The pair the editor was looking at is unchanged by anyone
+  # else's write, so the drawer stays exactly where it was with the choice still
+  # checked, and saving again replaces it.
+  defp connection_saved(socket, request, {:error, :stale}) do
+    socket = socket |> assign(:connection_pending, false) |> load_day() |> resolve_drawers()
+
+    {:noreply,
+     socket
+     |> put_connection_draft(request.choice)
+     |> assign(:connection_error, %{
+       title: @connection_stale_title,
+       message: @connection_stale_message
+     })
+     |> focus_within("connection-save-message")}
+  end
+
+  # A refusal keeps the drawer and the choice, shows R1's own reason and disables
+  # the two explicit options (AC-15). The state is the write's own, and the
+  # drawer's pre-check reads it back on the next resolve, so the two cannot
+  # disagree (CR-2).
+  defp connection_saved(socket, _request, {:error, {:refused, state}}) do
+    {:noreply,
+     socket
+     |> assign(:connection_pending, false)
+     |> assign(:connection_check, {:refused, state})
+     |> assign(:connection_error, %{
+       title: "Can't save: these trips are no longer one vehicle on every date.",
+       message: connection_refusal_sentence(state)
+     })
+     |> focus_within("connection-save-message")}
+  end
+
+  defp connection_saved(socket, _request, {:error, :forbidden}) do
+    {:noreply,
+     socket
+     |> assign(:connection_pending, false)
+     |> put_flash(:error, @permission_message)}
+  end
+
+  defp connection_saved(socket, _request, {:error, _reason}) do
+    {:noreply,
+     socket
+     |> assign(:connection_pending, false)
+     |> assign(:connection_error, %{
+       title: @connection_busy_title,
+       message: @connection_busy_message
+     })
+     |> focus_within("connection-save-message")}
+  end
+
+  # The refusal's own words, or the generic sentence when the state carries none.
+  defp connection_refusal_sentence(state) do
+    case RiderOutcomes.refusal_text(state) do
+      nil ->
+        "Nothing was saved and your choice is kept. Only Not stated is available until the blocks change."
+
+      text ->
+        "#{text} Nothing was saved, and only Not stated is available until the blocks change."
+    end
+  end
+
+  # R9: the Undo write is guarded by the state the save left, so its `expected` is
+  # the pair's own row as the save wrote it, or no row at all for "Not stated".
+  defp saved_expected(:not_stated, _result), do: []
+
+  defp saved_expected(_choice, %{transfer: nil}), do: []
+
+  defp saved_expected(_choice, %{transfer: transfer}) do
+    [
+      %{
+        id: transfer.id,
+        transfer_type: transfer.transfer_type,
+        updated_at: transfer.updated_at
+      }
+    ]
+  end
+
+  # "Saved: {setting} from trip {a} to {b}." — the setting in the page's own
+  # words, lowercased as the sentence reads (AC-15).
+  defp saved_text(choice, saved_choice, from, to) do
+    "Saved: #{connection_setting_label(saved_choice || choice)} from trip #{from} to #{to}."
+  end
+
+  # "Restored: not stated." — the state the Undo put back, in the same words.
+  defp restored_text(choice), do: "Restored: #{connection_setting_label(choice)}."
+
+  defp connection_setting_label(:not_stated), do: "not stated"
+  defp connection_setting_label(:stay_on_board), do: "riders stay on board"
+  defp connection_setting_label(:must_reboard), do: "riders must re-board"
+  defp connection_setting_label(_other), do: "not stated"
+
+  # The close itself, without the discard guard, because the draft has just been
+  # saved rather than lost: the success path drops the `gap=` parameter so the
+  # drawer closes and the URL stops naming a pair the editor is no longer in.
+  defp close_connection_drawer(socket) do
+    case do_close_drawer(socket) do
+      {:noreply, socket} -> socket
+    end
+  end
+
+  # Focus lands where the answer is: the drawer's own message while the drawer is
+  # still open, so a keyboard reader is told why the save did not happen instead of
+  # being left on a control that did nothing; the persistent result once the save
+  # closed the drawer. The scoped `FormErrorFocus` hook only moves focus to an
+  # element inside the region that owns it.
+  defp focus_within(socket, id) do
+    push_event(socket, "focus_scoped_target", %{id: id})
+  end
+
   # Dropping the preview is one step whatever the reader does next, so the day is
   # re-derived from the loaded day rather than from the previewed one, and the
   # timeline key is cleared so the container is replaced.
@@ -3861,6 +5627,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
     {merge_options, merge_total} = merge_destinations(assigns)
     bulk = bulk_summary(assigns)
+    connections = connections_view(assigns)
 
     block_rules_form = block_rules_form(assigns)
     driving_rows = driving_times_rows(assigns)
@@ -3883,6 +5650,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       |> assign(:merge_total, merge_total)
       |> assign(:bulk, bulk)
       |> assign(:selection_dates, selection_dates(assigns))
+      |> assign(:connections, connections)
       |> assign(:primary, primary_owner(assigns, bulk))
       |> assign(:subtitle, @subtitle)
 
@@ -4036,6 +5804,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                 pending={@apply.status == :pending}
               />
 
+              <BlocksComponents.connection_result
+                :if={not is_nil(@connection_result)}
+                result={@connection_result}
+                version_id={@state.version_id}
+                day={@state.day}
+              />
+
               <BlocksComponents.workspace
                 state={@state}
                 counts={@counts}
@@ -4050,6 +5825,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                 axis={@axis}
                 max_piece_minutes={@max_piece_minutes}
                 routes={@routes}
+                connection_settings={@connection_settings}
+                connection_setting_options={@connection_setting_options}
+                connections={@connections}
+                bulk_choice={@bulk_choice}
+                bulk_result={@bulk_result}
                 selected_ids={@selection}
                 selected_block_ids={@block_selection}
                 page_block_ids={@timeline_block_ids}
@@ -4069,6 +5849,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                 day_type={@day_type}
                 findings={@findings}
                 trip_labels={@trip_labels}
+                in_seat_review={@in_seat_review}
+                unmatched={@unmatched_in_seat}
+                remove_stale={@remove_stale}
+                remove_unmatched={@remove_unmatched}
+                remove_pending={@remove_pending}
               />
               <BlocksComponents.plan_summary_drawer
                 open={@open_drawer == :plan_summary}
@@ -4152,6 +5937,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                     assign_form={@assign_form}
                     destination_options={@destination_options}
                     destination_total={@destination_total}
+                    remove_record={@remove_record}
+                    remove_pending={@remove_pending}
                   />
                 <% {:elsewhere, trip_id, day_types} -> %>
                   <BlocksComponents.trip_elsewhere
@@ -4181,10 +5968,45 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   day_label={gap.day_label}
                   block_id={gap.block_id}
                   records={gap.records}
+                  routes={@routes}
+                  setting={gap.setting}
+                  place={gap.place}
+                  turnback?={gap.turnback?}
                   short?={gap.short?}
                   back_block={@back_block}
+                  version_id={@state.version_id}
+                  connection_form={@connection_form}
+                  connection_draft={@connection_draft}
+                  connection_saved={@connection_saved}
+                  connection_check={@connection_check}
+                  connection_scope={@connection_scope}
+                  connection_error={@connection_error}
+                  connection_pending={@connection_pending}
+                  discard={@connection_discard}
                 />
               <% end %>
+
+              <%!-- The Set-all review is the page's second non-modal inspector: it
+              sits over the Connections workspace beside the group panel it
+              describes, so the reader can still see the rows they are including
+              and the choice they made.
+
+              The wrapper is what puts it above the map. Leaflet's own controls and
+              attribution are `z-index: 1000` and the map pane establishes no
+              stacking context, so they compete with the drawer's own `z-40`
+              wrapper directly and paint over a non-modal panel's right edge. The
+              wrapper is a fixed, transparent, pointer-transparent layer at
+              `z-[1100]`, so the review is the top surface while it is open and
+              the map beside it keeps working. --%>
+              <div class="pointer-events-none fixed inset-0 z-[1100]">
+                <BlocksComponents.set_all_review
+                  :if={@bulk_review}
+                  review={@bulk_review}
+                  routes={@routes}
+                  pending={@bulk_pending}
+                  error={@bulk_error}
+                />
+              </div>
 
               <%= if block = @block_view do %>
                 <BlocksComponents.block_drawer
@@ -4204,6 +6026,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   route_settings={@route_settings}
                   day_types={@day_types}
                   selected_day_type={@day_type}
+                  connection_settings={@connection_settings}
                 />
               <% end %>
 

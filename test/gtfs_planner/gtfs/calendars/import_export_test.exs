@@ -15,6 +15,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.ImportExportTest do
   use ExUnit.Case
 
   import Ecto.Query
+  import GtfsPlanner.AccountsFixtures, only: [editor_fixture: 1]
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -23,6 +24,8 @@ defmodule GtfsPlanner.Gtfs.Calendars.ImportExportTest do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Repo
 
+  alias GtfsPlanner.Gtfs.Import.Failure
+
   alias GtfsPlanner.Gtfs.{
     Agency,
     Calendar,
@@ -30,7 +33,6 @@ defmodule GtfsPlanner.Gtfs.Calendars.ImportExportTest do
     CalendarDate,
     ChangeLog,
     Export,
-    Import,
     Route,
     RoutePattern,
     RoutePatternStop,
@@ -41,6 +43,8 @@ defmodule GtfsPlanner.Gtfs.Calendars.ImportExportTest do
     Trip
   }
 
+  alias GtfsPlanner.Accounts.User
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs.Export.FileSpec
   alias GtfsPlanner.Gtfs.Export.Snapshot
   alias GtfsPlanner.Gtfs.Import.CsvParser
@@ -48,6 +52,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.ImportExportTest do
   alias GtfsPlanner.Gtfs.Import.RowParser
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Organizations.Organization
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlanner.Versions.GtfsVersion
 
   describe "RowParser calendar attribute validations" do
@@ -238,7 +243,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.ImportExportTest do
 
       # 1. Import files into version_a
       assert {:ok, result} =
-               unboxed(fn -> Import.import_files(org.id, version_a.id, files_to_import) end)
+               unboxed(fn -> StagedImport.import_files(org.id, version_a.id, files_to_import) end)
 
       assert result.counts[:calendar_attributes] == 5
       assert result.counts[:calendars] == 3
@@ -284,7 +289,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.ImportExportTest do
         end)
 
       assert {:ok, reimport_result} =
-               unboxed(fn -> Import.import_files(org.id, version_b.id, reimport_files) end)
+               unboxed(fn -> StagedImport.import_files(org.id, version_b.id, reimport_files) end)
 
       assert reimport_result.counts[:calendar_attributes] == 5
 
@@ -396,11 +401,15 @@ defmodule GtfsPlanner.Gtfs.Calendars.ImportExportTest do
         calendar_attribute_fixture(org.id, v1.id, service_id: "SVC_KEEP")
       end)
 
-      actor = %{id: Ecto.UUID.generate(), email: "operator@example.com"}
-      cleanup_actor = %{id: Ecto.UUID.generate(), email: "cleaner@example.com"}
-
       {claimed_run, token} =
         unboxed(fn ->
+          # Creating a target and claiming a cleanup reauthorize their actor, so both are
+          # active editors of the organization. `cleanup/1` removes them with it.
+          operator = editor_fixture(org)
+          cleaner = editor_fixture(org)
+          actor = %{id: operator.id, email: operator.email}
+          cleanup_actor = %{id: cleaner.id, email: cleaner.email}
+
           {:ok, %{run: run, version: v2}} =
             ImportRuns.create_pending_target(org.id, actor, %{name: "Failed Version"})
 
@@ -409,7 +418,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.ImportExportTest do
           {:ok, _, _, import_token} = ImportRuns.claim_import(org.id, run.id, run.lease_token)
 
           failure =
-            Import.Failure.from_error(:unknown,
+            Failure.from_error(:unknown,
               phase: :phase_1,
               outcome: :failed,
               committed_counts: %{calendar_attributes: 1}
@@ -706,6 +715,14 @@ defmodule GtfsPlanner.Gtfs.Calendars.ImportExportTest do
 
   defp cleanup(organization_ids) do
     unboxed(fn ->
+      editor_ids =
+        Repo.all(
+          from(m in UserOrgMembership,
+            where: m.organization_id in ^organization_ids,
+            select: m.user_id
+          )
+        )
+
       timing_ids =
         Repo.all(
           from(t in TimedPattern, where: t.organization_id in ^organization_ids, select: t.id)
@@ -730,6 +747,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.ImportExportTest do
       Repo.delete_all(from(a in Agency, where: a.organization_id in ^organization_ids))
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
       Repo.delete_all(from(o in Organization, where: o.id in ^organization_ids))
+      Repo.delete_all(from(u in User, where: u.id in ^editor_ids))
     end)
   end
 end

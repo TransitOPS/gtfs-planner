@@ -9,6 +9,22 @@ defmodule GtfsPlanner.Validations.ValidationRun do
   @run_types ["mobility_data", "mobility_data_flex", "pathways_tests", "station_reachability"]
   @statuses ["pending", "started", "running", "completed", "failed"]
 
+  @changeset_fields [
+    :run_type,
+    :status,
+    :engine,
+    :result_schema_version,
+    :errors_count,
+    :warnings_count,
+    :infos_count,
+    :duration_ms,
+    :result_json,
+    :error_details,
+    :started_at,
+    :completed_at
+  ]
+  @lease_fields [:lease_token, :lease_expires_at]
+
   @type run_type :: String.t()
   @type status :: String.t()
 
@@ -28,6 +44,8 @@ defmodule GtfsPlanner.Validations.ValidationRun do
           error_details: String.t() | nil,
           started_at: DateTime.t(),
           completed_at: DateTime.t() | nil,
+          lease_token: Ecto.UUID.t() | nil,
+          lease_expires_at: DateTime.t() | nil,
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }
@@ -45,6 +63,8 @@ defmodule GtfsPlanner.Validations.ValidationRun do
     field :error_details, :string
     field :started_at, :utc_datetime_usec
     field :completed_at, :utc_datetime_usec
+    field :lease_token, :binary_id
+    field :lease_expires_at, :utc_datetime_usec
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization
     belongs_to :gtfs_version, GtfsPlanner.Versions.GtfsVersion
@@ -58,23 +78,26 @@ defmodule GtfsPlanner.Validations.ValidationRun do
   @doc """
   Changeset for validation runs.
   Note: organization_id and gtfs_version_id must be set programmatically, not cast.
+  The lease fields are system-owned and are never cast here; use `system_changeset/2`.
   """
   def changeset(validation_run, attrs) do
+    build_changeset(validation_run, attrs, @changeset_fields)
+  end
+
+  @doc """
+  Changeset for server-side lifecycle transitions.
+
+  Casts every field `changeset/2` casts plus `lease_token` and `lease_expires_at`.
+  Pass only server-derived values; never pass request params.
+  """
+  @spec system_changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
+  def system_changeset(validation_run, attrs) do
+    build_changeset(validation_run, attrs, @changeset_fields ++ @lease_fields)
+  end
+
+  defp build_changeset(validation_run, attrs, fields) do
     validation_run
-    |> cast(attrs, [
-      :run_type,
-      :status,
-      :engine,
-      :result_schema_version,
-      :errors_count,
-      :warnings_count,
-      :infos_count,
-      :duration_ms,
-      :result_json,
-      :error_details,
-      :started_at,
-      :completed_at
-    ])
+    |> cast(attrs, fields)
     |> trim_string_fields()
     |> validate_required([:run_type, :status, :started_at])
     |> validate_inclusion(:run_type, @run_types)

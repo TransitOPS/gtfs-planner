@@ -730,6 +730,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   loaded timing and pattern; `headsign_usage`, `headsign_box` and
   `headsign_warnings` are the prepared headsign surfaces, nil when they do not
   apply. Copy, hierarchy and states follow the headsign propagation prototype.
+
+  A stop with no scheduled time is absence, not midnight: its cells are empty
+  and carry the legend's dash as their placeholder, its stop line says so, and
+  the legend under the grid names the dash. A blank is never an estimate here,
+  so a blank row never shows the Estimated badge.
   """
   attr :timings, :any, required: true
   attr :selected_timing, :any, required: true
@@ -756,6 +761,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   attr :filling?, :boolean, default: false
   attr :timing_blank_note, :string, default: nil
   attr :blank_count, :integer, default: 0
+  attr :version_id, :any, required: true
   attr :fill, :map, default: nil
   attr :fill_preview, :map, default: nil
   attr :fill_distances, :list, default: []
@@ -1082,6 +1088,22 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
               </tbody>
             </table>
 
+            <p
+              :if={@blank_count > 0}
+              id="timing-blank-legend"
+              class="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-subtle px-4 py-3 text-[13px] text-muted"
+            >
+              <span><span class="font-extrabold text-warning-fg">—</span> no scheduled time</span>
+              <span>Timepoints, the first stop and the last stop always need a time.</span>
+              <.link
+                id="timing-blank-export-defaults"
+                href={~p"/gtfs/#{@version_id}/settings/export-defaults"}
+                class="font-[650] text-strong underline decoration-2 underline-offset-4 hover:decoration-inherit"
+              >
+                Export defaults
+              </.link>
+            </p>
+
             <div class="border-t border-subtle p-4 text-[13px] text-muted">
               <p class="font-[650] text-default">About timepoints and boarding</p>
               <p id="timing-help-timepoint" class="mt-1">
@@ -1155,6 +1177,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
         :error?,
         assigns.row.arrival_error == true or assigns.row.departure_error == true
       )
+      |> assign(
+        :no_time?,
+        blank_row?(assigns.row) and not Map.get(assigns.row, :timepoint, false)
+      )
 
     ~H"""
     <tr
@@ -1169,6 +1195,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             <span class="mt-0.5 flex flex-wrap items-center gap-1 text-[13px] font-normal text-muted">
               <span>Stop {@row.stop_id}</span>
               <.badge :if={@estimated?} tone="info">Estimated</.badge>
+              <span :if={@no_time?} id={"timing-no-time-#{@row.position}"} class="whitespace-nowrap">
+                · no scheduled time
+              </span>
               <span
                 :for={chip <- @chips}
                 class="rounded-badge bg-canvas px-1.5 py-0.5 text-xs font-semibold text-muted"
@@ -1212,6 +1241,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             inputmode="numeric"
             autocomplete="off"
             value={@row.arrival}
+            placeholder="—"
             data-estimated={if(Map.get(@row, :estimated), do: "true")}
             aria-invalid={@row.arrival_error && "true"}
             aria-describedby={@row.arrival_error && "timing-error-#{@row.position}"}
@@ -1244,6 +1274,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             inputmode="numeric"
             autocomplete="off"
             value={@row.departure}
+            placeholder="—"
             data-estimated={if(Map.get(@row, :estimated), do: "true")}
             aria-invalid={@row.departure_error && "true"}
             aria-describedby={@row.departure_error && "timing-error-#{@row.position}"}
@@ -1255,7 +1286,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
         <span class="pe-cell-label">Sample trip</span>
         <span
           id={"timing-preview-#{@row.position}"}
-          class="block text-sm tabular-nums text-strong"
+          class={[
+            "block text-sm tabular-nums text-strong",
+            @no_time? && "font-extrabold text-warning-fg"
+          ]}
         >
           {sample_trip(@row)}
         </span>
@@ -1962,7 +1996,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
 
         <p :if={not @review.resequenced?} class="mt-3 text-[13px] text-muted">
           Retained stop times keep their absolute clocks; added stop times are what this review
-          applies. The path on the map isn’t redrawn, so check Alignment afterward.
+          applies. The path on the map isn’t redrawn, so check Map line afterward.
         </p>
         <p
           :if={@requires_acknowledgement? and not @ready? and is_nil(@review.error)}
@@ -2196,6 +2230,221 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   end
 
   @doc """
+  Renders the offer to link left-out trips to a hand-made pattern.
+
+  Shown once a pattern was just created, on the pattern editor and on the
+  Patterns list, when the left-out trips serve the pattern's stops in the same
+  order. The link offer writes nothing on its own; `link_confirm` is the only
+  event that does.
+  """
+  attr :offer, :map, required: true, doc: "one `link_offer/1` entry"
+  attr :done, :map, default: nil, doc: "the summary of trips already linked by a confirm"
+  attr :pending, :boolean, default: false
+
+  def link_offer(assigns) do
+    ~H"""
+    <%= if @offer != nil do %>
+      <.message
+        id="link-offer"
+        kind="info"
+        title={"Created #{@offer.pattern_name}"}
+      >
+        <p>
+          <strong class="font-[650] text-strong">
+            {trip_noun(@offer.trip_count, "trip", "trips")}
+          </strong>
+          that aren’t in a pattern serve these same {stop_noun(@offer.stop_count)} in the same
+          order. {service_sentence(@offer)} Link them so they use this pattern.
+        </p>
+        <:action>
+          <.button
+            id="link-open"
+            type="button"
+            variant="primary"
+            class="min-h-11"
+            phx-click="link_open"
+            disabled={@pending}
+          >
+            Link {trip_noun(@offer.trip_count, "trip", "trips")}
+          </.button>
+          <.button
+            id="link-dismiss"
+            type="button"
+            variant="quiet"
+            class="min-h-11"
+            phx-click="link_dismiss"
+            disabled={@pending}
+          >
+            Not now
+          </.button>
+        </:action>
+      </.message>
+    <% else %>
+      <.link_done done={@done} />
+    <% end %>
+    """
+  end
+
+  @doc """
+  Renders what a confirmed link did, so the operator sees the result next to the
+  offer it replaced.
+  """
+  attr :done, :map, required: true
+
+  def link_done(assigns) do
+    ~H"""
+    <.message
+      id="link-done"
+      kind="success"
+      title={"Linked #{trip_noun(@done.trips_linked, "trip", "trips")} to #{@done.pattern_name}"}
+    >
+      {link_done_body(@done)}
+    </.message>
+    """
+  end
+
+  defp link_done_body(%{timings_created: 0}) do
+    "They’re Direction 0 now and kept their own times. The pattern has no map line yet, so they still show their imported line."
+  end
+
+  defp link_done_body(%{timings_created: timings}) do
+    "They’re Direction 0 now and kept their own times as #{timings} new #{plural(timings, "timing", "timings")}. The pattern has no map line yet, so they still show their imported line."
+  end
+
+  # The prototype names the services the trips run on; the preview's rule 6
+  # already named each group's timings, so the offer names the services.
+  defp service_sentence(%{services: [{service_id, _count}]}) when is_binary(service_id) do
+    "They’re #{service_id} trips with no direction."
+  end
+
+  defp service_sentence(%{services: []}), do: "They have no direction."
+
+  defp service_sentence(%{services: services}) do
+    "They’re #{Enum.map_join(services, " and ", fn {service_id, _count} -> service_id end)} trips with no direction."
+  end
+
+  # The offer names one pattern, so its plural forms are per-occurrence
+  # ("1 trip") rather than a bare count.
+  # The offer names its own counts ("18 trips"), so this reads as a count and
+  # its noun rather than as a noun alone.
+  defp trip_noun(1, one, _many), do: "1 #{one}"
+  defp trip_noun(count, _one, many), do: "#{count} #{many}"
+
+  # The offer names its own stops ("13 stops") for the same reason.
+  defp stop_noun(1), do: "1 stop"
+  defp stop_noun(count), do: "#{count} stops"
+
+  defp plural(1, one, _many), do: one
+  defp plural(_count, _one, many), do: many
+
+  @doc """
+  Renders the review that precedes a link, listing the trips it covers with the
+  direction it writes and the timings their times become.
+
+  Focus lands on Cancel: linking writes to the route's exported trips, so the
+  safe answer is the one the dialog opens on.
+  """
+  attr :offer, :map, default: nil
+  attr :pending, :boolean, default: false
+  attr :error, :string, default: nil
+
+  def link_review_dialog(assigns) do
+    ~H"""
+    <.confirm_dialog
+      :if={@offer != nil}
+      id="link-review"
+      open={@offer != nil}
+      title={"Link #{trip_noun(@offer.trip_count, "trip", "trips")} to #{@offer.pattern_name}?"}
+      size="xl"
+      chrome="planner"
+      confirm_variant="primary"
+      confirm_label={"Link #{trip_noun(@offer.trip_count, "trip", "trips")}"}
+      pending_label="Linking…"
+      cancel_label="Keep trips separate"
+      on_confirm="link_confirm"
+      on_cancel="link_cancel"
+      described_by="link-review-body"
+      pending={@pending}
+    >
+      <div class="grid gap-4">
+        <p class="text-default">
+          They serve the pattern’s {stop_noun(@offer.stop_count)} in the same order, with no
+          direction. Linking puts them in this pattern.
+        </p>
+
+        <div class="grid grid-cols-3 gap-3">
+          <.link_review_cell label="Trips linked" value={@offer.trip_count} />
+          <.link_review_cell label="New timings" value={length(@offer.timing_names)} />
+          <.link_review_cell label="New problems" value={0} />
+        </div>
+
+        <div class="max-h-[220px] overflow-auto rounded-card border border-subtle">
+          <table id="link-review-trips" class="w-full border-collapse text-left text-[13px]">
+            <thead class="sticky top-0 bg-canvas">
+              <tr>
+                <th scope="col" class="px-3 py-2 font-[650]">Leaves</th>
+                <th scope="col" class="px-3 py-2 font-[650]">Trips</th>
+                <th scope="col" class="px-3 py-2 font-[650]">Direction</th>
+                <th scope="col" class="px-3 py-2 font-[650]">Running times</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr :for={service <- @offer.services} class="border-t border-subtle">
+                <td class="px-3 py-2 font-mono text-[12px] text-muted">{hd(@offer.stop_names)}</td>
+                <td class="px-3 py-2 tabular-nums">{elem(service, 1)}</td>
+                <td class="px-3 py-2">
+                  <span class="text-muted">None</span>
+                  <.icon name="hero-arrow-right" class="inline size-3.5 align-[-2px]" />
+                  {@offer.direction_id}
+                </td>
+                <td class="px-3 py-2">{Enum.join(@offer.timing_names, ", ")}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 class="text-sm font-bold text-strong">What changes</h3>
+        <ul class="grid gap-2 text-default">
+          <li class="flex gap-2">
+            <.icon name="hero-arrow-right" class="mt-0.5 size-4 shrink-0 text-muted" />
+            <span>
+              <strong class="font-[650] text-strong">
+                Direction {@offer.direction_id} is written to the trips
+              </strong>, the pattern’s direction. It’s exported, and apps list them under it.
+            </span>
+          </li>
+          <li class="flex gap-2">
+            <.icon name="hero-arrow-right" class="mt-0.5 size-4 shrink-0 text-muted" />
+            <span>
+              <strong class="font-[650] text-strong">They keep their own times.</strong>
+              Their times are what the agency published, so they become new timings named after
+              their service. Times at 3 timepoints; stops with no scheduled time export estimated.
+            </span>
+          </li>
+        </ul>
+        <p>Stops, headsigns and service days don’t change.</p>
+
+        <p :if={@error} id="link-review-error" class="text-error-fg">{@error}</p>
+      </div>
+    </.confirm_dialog>
+    """
+  end
+
+  attr :label, :string, required: true
+  attr :value, :any, required: true
+
+  defp link_review_cell(assigns) do
+    ~H"""
+    <div class="rounded-card bg-canvas px-4 py-3">
+      <p class="text-[13px] text-muted">{@label}</p>
+      <p class="font-display text-[26px] font-semibold leading-tight tabular-nums text-strong">
+        {@value}
+      </p>
+    </div>
+    """
+  end
+
+  @doc """
   Renders the editor's connectivity state while the browser is offline.
 
   The wrapper is what the editor hook shows and hides on connection changes; the
@@ -2310,6 +2559,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   defp time_input_class(invalid?, edited?, estimated?) do
     [
       "h-11 w-[104px] rounded-control border px-3 text-sm tabular-nums",
+      "placeholder:font-extrabold placeholder:text-warning-fg",
       cond do
         invalid? -> "border-2 border-error-fg bg-white text-strong"
         estimated? -> "border-cyan-700 bg-soft text-cyan-800"
@@ -2733,6 +2983,16 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   defp sample_trip(%{preview_arrival: same, preview_departure: same}), do: same
   defp sample_trip(row), do: "#{row.preview_arrival} → #{row.preview_departure}"
 
+  # A stop with no scheduled time is absence, not midnight. The timing rules
+  # already refuse a half pair, so a blank row is only ever a stop between the
+  # ends, and a timepoint is never one of them.
+  defp blank_row?(row),
+    do: blank_time?(Map.get(row, :arrival)) and blank_time?(Map.get(row, :departure))
+
+  defp blank_time?(nil), do: true
+  defp blank_time?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank_time?(_value), do: false
+
   defp label_class, do: "text-[13px] font-[650] text-default"
 
   defp field_input_class,
@@ -2798,7 +3058,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
 
   defp task_label(:stops), do: "Stops"
   defp task_label(:timings), do: "Running times"
-  defp task_label(:alignment), do: "Alignment"
+  defp task_label(:alignment), do: "Map line"
   defp task_label(:details), do: "Details"
 
   @doc """

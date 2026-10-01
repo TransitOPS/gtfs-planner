@@ -43,9 +43,11 @@ alias GtfsPlanner.Accounts
 alias GtfsPlanner.Accounts.User
 alias GtfsPlanner.Accounts.UserToken
 alias GtfsPlanner.AdvancedBlockingFixtures
+alias GtfsPlanner.Agents.BrowserServiceAnswers
 alias GtfsPlanner.Gtfs
 alias GtfsPlanner.Gtfs.Agency
 alias GtfsPlanner.Gtfs.AlignmentSegment
+alias GtfsPlanner.Gtfs.AuditContext
 alias GtfsPlanner.Gtfs.Calendar
 alias GtfsPlanner.Gtfs.CalendarAttribute
 alias GtfsPlanner.Gtfs.ChangeLog
@@ -65,6 +67,7 @@ alias GtfsPlanner.Gtfs.PathwayEvolution
 alias GtfsPlanner.Gtfs.ReliefPoint
 alias GtfsPlanner.Gtfs.Route
 alias GtfsPlanner.Gtfs.RoutePattern
+alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
 alias GtfsPlanner.Gtfs.RoutePatternStop
 alias GtfsPlanner.Gtfs.Shape
 alias GtfsPlanner.Gtfs.Stop
@@ -72,6 +75,7 @@ alias GtfsPlanner.Gtfs.StopTime
 alias GtfsPlanner.Gtfs.Transfer
 alias GtfsPlanner.Gtfs.Translation
 alias GtfsPlanner.Gtfs.Trip
+alias GtfsPlanner.GtfsFixtures
 alias GtfsPlanner.Organizations
 alias GtfsPlanner.Reachability.Runner
 alias GtfsPlanner.Repo
@@ -123,6 +127,16 @@ case Accounts.register_first_admin(%{
     IO.puts("Browser seed: created editor #{editor.email} (id=#{editor.id})")
     export_actor = %{id: editor.id, email: editor.email}
 
+    seed_audit = fn version ->
+      %AuditContext{
+        organization_id: org.id,
+        gtfs_version_id: version.id,
+        actor_id: editor.id,
+        actor_email: editor.email,
+        station_stop_id: nil
+      }
+    end
+
     {:ok, partial_version} =
       Versions.create_gtfs_version(org.id, %{name: "Browser Partial Retry Version"})
 
@@ -168,7 +182,8 @@ case Accounts.register_first_admin(%{
         :approved
       )
 
-    {:ok, pending_partial_apply} = ChangeRuns.request_apply(org.id, partial_review.id)
+    {:ok, pending_partial_apply} =
+      ChangeRuns.request_apply(org.id, partial_review.id, export_actor)
 
     {:ok, _applying_partial, partial_apply_generation, partial_apply_token} =
       ChangeRuns.claim(org.id, pending_partial_apply.id, :apply)
@@ -231,7 +246,7 @@ case Accounts.register_first_admin(%{
 
     # ── Station diagram seed data ──
     {:ok, station} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "BROWSER_STATION",
         stop_name: "Browser Test Station",
         location_type: 1,
@@ -244,7 +259,7 @@ case Accounts.register_first_admin(%{
     IO.puts("Browser seed: station #{station.stop_id}")
 
     {:ok, level} =
-      Gtfs.create_level(%{
+      GtfsPlanner.GtfsFixtures.insert_level(%{
         level_id: "BROWSER_L1",
         level_name: "Browser Level 1",
         level_index: 0.0,
@@ -253,7 +268,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, stop_level} =
-      Gtfs.create_stop_level(%{
+      GtfsPlanner.GtfsFixtures.insert_stop_level(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         stop_id: station.id,
@@ -289,7 +304,7 @@ case Accounts.register_first_admin(%{
 
     # Create child stops with diagram coordinates
     {:ok, browser_child_a} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "BROWSER_STOP_A",
         stop_name: "Platform A North",
         location_type: 0,
@@ -301,7 +316,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, browser_child_b} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "BROWSER_STOP_B",
         stop_name: "Platform B South",
         location_type: 0,
@@ -315,7 +330,7 @@ case Accounts.register_first_admin(%{
     IO.puts("Browser seed: child stops placed on diagram")
 
     {:ok, browser_child_c} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "BROWSER_STOP_C",
         stop_name: "Entrance C",
         location_type: 2,
@@ -370,7 +385,7 @@ case Accounts.register_first_admin(%{
     # localized zone statement rather than the UTC fallback. Both branches are
     # covered exhaustively in ExUnit; the browser proves the primary one.
     {:ok, _agency} =
-      Gtfs.create_agency(%{
+      GtfsPlanner.GtfsFixtures.insert_agency(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         agency_id: "BROWSER_AGENCY",
@@ -385,7 +400,7 @@ case Accounts.register_first_admin(%{
     # real connectivity route with a step table. Without it every pair is
     # unreachable and print evidence never exercises the step-table path.
     {:ok, browser_pathway} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         pathway_id: "BROWSER_PW_ELEVATOR",
@@ -636,7 +651,7 @@ case Accounts.register_first_admin(%{
     # A second level with its own stop_level and diagram image so markers can
     # be tested across levels. Cross-level pathways must NOT produce markers.
     {:ok, level2} =
-      Gtfs.create_level(%{
+      GtfsPlanner.GtfsFixtures.insert_level(%{
         level_id: "BROWSER_L2",
         level_name: "Browser Level 2",
         level_index: 1.0,
@@ -645,7 +660,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, stop_level2} =
-      Gtfs.create_stop_level(%{
+      GtfsPlanner.GtfsFixtures.insert_stop_level(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         stop_id: station.id,
@@ -663,7 +678,7 @@ case Accounts.register_first_admin(%{
       )
 
     {:ok, _browser_child_d} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "BROWSER_STOP_D",
         stop_name: "Mezzanine Landing D",
         location_type: 0,
@@ -675,7 +690,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, browser_crowded_stop} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "BROWSER_CROWDED_STOP",
         stop_name: "Northbound Interchange Platform With Extended Name For Crowding Verification",
         location_type: 0,
@@ -688,7 +703,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, browser_same_level_pw} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         pathway_id: "BROWSER_PW_SAME_LEVEL",
@@ -701,7 +716,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, _browser_cross_level_pw} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         pathway_id: "BROWSER_PW_CROSS_LEVEL",
@@ -856,7 +871,7 @@ case Accounts.register_first_admin(%{
     # empty-state test. browser_child_c already exists but has station entries
     # targeting it as a whole, so create a dedicated fresh node.
     {:ok, _browser_zero_entry_stop} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "BROWSER_EMPTY_JOURNAL_STOP",
         stop_name: "Empty Journal Node",
         location_type: 0,
@@ -876,7 +891,7 @@ case Accounts.register_first_admin(%{
     # wrap rather than truncate at 320 px. No diagram coordinate: it stays off
     # the canvas so the existing diagram keyboard fixtures are unchanged.
     {:ok, _browser_long_node} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "BROWSER_GENERIC_NODE_WITH_A_DELIBERATELY_LONG_IDENTIFIER_0001",
         stop_name:
           "Northbound Interchange Concourse Generic Circulation Node Under Reconstruction",
@@ -891,7 +906,7 @@ case Accounts.register_first_admin(%{
 
     # ── Long-name fixtures for responsive data-view browser tests ──
     {:ok, _long_org} =
-      Organizations.create_organization(%{
+      Organizations.create_organization_unchecked(%{
         name: "Metropolitan Regional Transit Authority of the Greater Metropolitan Area",
         alias: "metro-regional-transit-authority-greater-metropolitan-area"
       })
@@ -900,7 +915,7 @@ case Accounts.register_first_admin(%{
 
     Enum.each(1..3, fn idx ->
       {:ok, _long_route} =
-        Gtfs.create_route(%{
+        GtfsPlanner.GtfsFixtures.insert_route(%{
           organization_id: org.id,
           gtfs_version_id: diagram_version.id,
           route_id: "LONG_ROUTE_#{idx}",
@@ -939,7 +954,7 @@ case Accounts.register_first_admin(%{
           )
 
         {:ok, stop} =
-          Gtfs.create_stop(%{
+          GtfsPlanner.GtfsFixtures.insert_stop(%{
             stop_id: "BROWSER_PATTERN_STOP_#{index}",
             stop_name: "Pattern Stop #{index}",
             location_type: 0,
@@ -960,7 +975,7 @@ case Accounts.register_first_admin(%{
       ]
       |> Enum.map(fn {route_id, short_name, long_name} ->
         {:ok, route} =
-          Gtfs.create_route(%{
+          GtfsPlanner.GtfsFixtures.insert_route(%{
             organization_id: org.id,
             gtfs_version_id: diagram_version.id,
             route_id: route_id,
@@ -1029,7 +1044,7 @@ case Accounts.register_first_admin(%{
 
     Enum.each(["BROWSER_PT1", "BROWSER_PT2"], fn trip_id ->
       {:ok, trip} =
-        Gtfs.create_trip(%{
+        GtfsPlanner.GtfsFixtures.insert_trip(%{
           organization_id: org.id,
           gtfs_version_id: diagram_version.id,
           route_id: ready_route.route_id,
@@ -1065,6 +1080,487 @@ case Accounts.register_first_admin(%{
       })
     end)
 
+    # ── Spec 27 scenario route (step 18) ──
+    #
+    # BROWSER_SHAPES carries every state the Patterns tab, the blank-timing
+    # editor and the grouping review need at once: a drawn pattern with linked
+    # trips, a timing whose middle rows are blank, 27 trips left outside
+    # patterns across three reasons and one supplied label pair. The left-out
+    # trips stay pending and Derivation classifies them, so the reasons stored
+    # on them are the production rules' own verdicts rather than seeded labels,
+    # and the label child is linked through the same run.
+    {:ok, shapes_route} =
+      GtfsPlanner.GtfsFixtures.insert_route(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: "BROWSER_SHAPES",
+        route_short_name: "SH",
+        route_long_name: "US 101 Coast Newport – Lincoln City",
+        route_type: 3
+      })
+
+    # The corridor runs north along one meridian of US 101 between Newport and
+    # Lincoln City, so a saved segment's midpoint is its own latitude step and
+    # no projection error competes with the drawn line.
+    shapes_coordinates = [
+      {"44.6360", "-124.0490"},
+      {"44.6610", "-124.0490"},
+      {"44.6860", "-124.0490"},
+      {"44.7110", "-124.0490"},
+      {"44.7360", "-124.0490"},
+      {"44.7610", "-124.0490"},
+      {"44.7860", "-124.0490"},
+      {"44.8110", "-124.0490"},
+      {"44.8360", "-124.0490"},
+      {"44.8610", "-124.0490"},
+      {"44.8860", "-124.0490"},
+      {"44.9110", "-124.0490"},
+      {"44.9360", "-124.0490"}
+    ]
+
+    shapes_stop_ids =
+      Enum.map(1..13, fn index ->
+        {lat, lon} = Enum.at(shapes_coordinates, index - 1)
+
+        {:ok, stop} =
+          GtfsPlanner.GtfsFixtures.insert_stop(%{
+            stop_id: "BROWSER_SHAPES_STOP_#{index}",
+            stop_name: "US 101 Stop #{index}",
+            location_type: 0,
+            stop_lat: Decimal.new(lat),
+            stop_lon: Decimal.new(lon),
+            organization_id: org.id,
+            gtfs_version_id: diagram_version.id
+          })
+
+        stop.stop_id
+      end)
+
+    # A station with no platform: the one trip served only from here cannot
+    # become a pattern stop, which is the `unusable_stops` case.
+    {:ok, _shapes_station} =
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
+        stop_id: "BROWSER_SHAPES_STATION",
+        stop_name: "US 101 Transit Center",
+        location_type: 1,
+        stop_lat: Decimal.new("44.6485"),
+        stop_lon: Decimal.new("-124.0490"),
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    shapes_pattern =
+      GtfsPlanner.GtfsFixtures.route_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: shapes_route.route_id,
+        route_pattern_id: "BROWSER-SHAPES-A",
+        route_pattern_name: "Newport – Lincoln City",
+        route_pattern_time_desc: "All day",
+        route_pattern_typicality: 1,
+        direction_id: 0,
+        derivation_key: "d0-#{shapes_route.route_id}",
+        route_pattern_sort_order: 1
+      })
+
+    shapes_occurrences =
+      shapes_stop_ids
+      |> Enum.with_index(1)
+      |> Enum.map(fn {stop_id, position} ->
+        GtfsPlanner.GtfsFixtures.route_pattern_stop_fixture(shapes_pattern, stop_id, position)
+      end)
+
+    # One shared segment per drawn leg, so the route opens on a saved map line.
+    # Scope fields are set on the struct and never cast: the changeset takes
+    # only `:points`.
+    shapes_stop_ids
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.with_index()
+    |> Enum.each(fn {[from_stop_id, to_stop_id], index} ->
+      %AlignmentSegment{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        from_stop_id: from_stop_id,
+        to_stop_id: to_stop_id
+      }
+      |> AlignmentSegment.changeset(%{
+        points: [[-124.0490, 44.6485 + index * 0.0250]]
+      })
+      |> Repo.insert!()
+    end)
+
+    shapes_timing =
+      GtfsPlanner.GtfsFixtures.timed_pattern_fixture(shapes_pattern, %{name: "Weekday daytime"})
+
+    # Stops 2-4 are passed through without a scheduled time, so the timing has
+    # blank offset pairs exactly where the timing editor draws them blank.
+    Enum.each(shapes_occurrences, fn occurrence ->
+      offsets =
+        if occurrence.position in 2..4 do
+          %{arrival_offset: nil, departure_offset: nil}
+        else
+          minutes = (occurrence.position - 1) * 5
+
+          %{arrival_offset: minutes, departure_offset: minutes}
+        end
+
+      GtfsPlanner.GtfsFixtures.timed_pattern_stop_fixture(shapes_timing, occurrence, offsets)
+    end)
+
+    shapes_timing_rows =
+      from(tps in GtfsPlanner.Gtfs.TimedPatternStop,
+        join: o in assoc(tps, :route_pattern_stop),
+        where: tps.timed_pattern_id == ^shapes_timing.id,
+        order_by: [asc: o.position],
+        select: {o.stop_id, o.position, tps.arrival_offset, tps.departure_offset, tps.timepoint}
+      )
+      |> Repo.all()
+
+    Enum.each(1..38, fn index ->
+      trip =
+        GtfsPlanner.GtfsFixtures.trip_fixture(
+          org.id,
+          diagram_version.id,
+          shapes_route.route_id,
+          %{
+            trip_id:
+              "BROWSER_SHAPES_LINKED_" <> String.pad_leading(Integer.to_string(index), 2, "0"),
+            service_id: "BROWSER_SHAPES_SERVICE",
+            trip_headsign: "Lincoln City",
+            direction_id: 0
+          }
+        )
+
+      # Linked trips of the drawn pattern. `route_pattern_id` and
+      # `timed_pattern_id` are application-owned and not cast by the changeset.
+      GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(trip, %{
+        route_pattern_id: "BROWSER-SHAPES-A",
+        timed_pattern_id: shapes_timing.id,
+        pattern_derivation_state: "linked"
+      })
+
+      # A linked trip carries the times its pattern's timing gives it. Without
+      # them the link is only a label: saving a map line for BROWSER-SHAPES-A is
+      # refused because every trip on it has 0 stop times, so the journey could
+      # never reach the saved state. The timing's blank rows stay blank, which
+      # is what positions 2..4 are for.
+      shapes_seed_at = diagram_version.inserted_at
+      base = 6 * 3600 + (index - 1) * 600
+
+      time = fn
+        nil -> nil
+        offset -> GtfsPlanner.Gtfs.GtfsTime.format(base + offset)
+      end
+
+      {_inserted, nil} =
+        Repo.insert_all(
+          StopTime,
+          Enum.map(shapes_timing_rows, fn {stop_id, position, arrival, departure, timepoint} ->
+            %{
+              id: Ecto.UUID.generate(),
+              organization_id: org.id,
+              gtfs_version_id: diagram_version.id,
+              trip_id: trip.trip_id,
+              stop_id: stop_id,
+              stop_sequence: position,
+              arrival_time: time.(arrival),
+              departure_time: time.(departure),
+              timepoint: timepoint,
+              inserted_at: shapes_seed_at,
+              updated_at: shapes_seed_at
+            }
+          end)
+        )
+    end)
+
+    # The imported northbound shape the 18 direction-less trips share, drawn
+    # slightly east of the stop line so the map shows two geometries.
+    Enum.with_index(shapes_coordinates, 1)
+    |> Enum.each(fn {{lat, lon}, sequence} ->
+      Repo.insert!(%Shape{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        shape_id: "BROWSER_SHAPE_N",
+        shape_pt_lat: Decimal.new(lat),
+        shape_pt_lon: Decimal.add(Decimal.new(lon), Decimal.new("0.0020")),
+        shape_pt_sequence: sequence
+      })
+    end)
+
+    # ── Imported-only pattern (step 32) ──
+    #
+    # BROWSER_IMPORTED carries one pattern that is still on an imported shape:
+    # no saved segments, and its linked trips reference BROWSER_IMPORTED_SHAPE.
+    # The shape runs the corridor's own meridian and bows east through the
+    # middle, so the imported-line card shows the far stops the fit reports
+    # rather than a clean line.
+    {:ok, imported_route} =
+      GtfsPlanner.GtfsFixtures.insert_route(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: "BROWSER_IMPORTED",
+        route_short_name: "IMP",
+        route_long_name: "US 101 Imported corridor",
+        route_type: 3
+      })
+
+    imported_coordinates = Enum.take(shapes_coordinates, 5)
+
+    imported_stop_ids =
+      Enum.map(1..5, fn index ->
+        {lat, lon} = Enum.at(imported_coordinates, index - 1)
+
+        {:ok, stop} =
+          GtfsPlanner.GtfsFixtures.insert_stop(%{
+            stop_id: "BROWSER_IMPORTED_STOP_#{index}",
+            stop_name: "Import Stop #{index}",
+            location_type: 0,
+            stop_lat: Decimal.new(lat),
+            stop_lon: Decimal.new(lon),
+            organization_id: org.id,
+            gtfs_version_id: diagram_version.id
+          })
+
+        stop.stop_id
+      end)
+
+    imported_pattern =
+      GtfsPlanner.GtfsFixtures.route_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: imported_route.route_id,
+        route_pattern_id: "BROWSER-IMPORTED-A",
+        route_pattern_name: "Imported northbound",
+        route_pattern_time_desc: "All day",
+        route_pattern_typicality: 0,
+        direction_id: 0,
+        derivation_key: "d0-#{imported_route.route_id}"
+      })
+
+    imported_stop_ids
+    |> Enum.with_index(1)
+    |> Enum.each(fn {stop_id, position} ->
+      GtfsPlanner.GtfsFixtures.route_pattern_stop_fixture(
+        imported_pattern,
+        stop_id,
+        position
+      )
+    end)
+
+    imported_timing =
+      GtfsPlanner.GtfsFixtures.timed_pattern_fixture(imported_pattern, %{name: "Weekday daytime"})
+
+    Enum.each(1..3, fn index ->
+      trip =
+        GtfsPlanner.GtfsFixtures.trip_fixture(
+          org.id,
+          diagram_version.id,
+          imported_route.route_id,
+          %{
+            trip_id:
+              "BROWSER_IMPORTED_LINKED_" <> String.pad_leading(Integer.to_string(index), 2, "0"),
+            service_id: "BROWSER_SHAPES_SERVICE",
+            trip_headsign: "Lincoln City",
+            direction_id: 0,
+            shape_id: "BROWSER_IMPORTED_SHAPE"
+          }
+        )
+
+      GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(trip, %{
+        route_pattern_id: "BROWSER-IMPORTED-A",
+        timed_pattern_id: imported_timing.id,
+        pattern_derivation_state: "linked"
+      })
+    end)
+
+    # The line bows east across the corridor rather than along it: the middle
+    # point sits about 200 m off the meridian its stops stand on, so the fit
+    # review names the stop it runs wide of, and the two beside it stay inside
+    # the 330 ft the review reads in.
+    Enum.with_index(imported_coordinates, 1)
+    |> Enum.each(fn {{lat, lon}, sequence} ->
+      offset =
+        cond do
+          sequence == 1 or sequence == 5 -> "0"
+          sequence == 3 -> "0.0025"
+          true -> "0.0009"
+        end
+
+      Repo.insert!(%Shape{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        shape_id: "BROWSER_IMPORTED_SHAPE",
+        shape_pt_lat: Decimal.new(lat),
+        shape_pt_lon: Decimal.add(Decimal.new(lon), Decimal.new(offset)),
+        shape_pt_sequence: sequence
+      })
+    end)
+
+    # ── Supplied label pair ──
+    #
+    # The owner carries the stop order and the child carries the owner's id, as
+    # INV-3 requires; the trips below reference the child, so derivation links
+    # them to it without creating a second child of its own.
+    label_stop_ids = Enum.take(shapes_stop_ids, 4)
+
+    label_owner =
+      GtfsPlanner.GtfsFixtures.route_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: shapes_route.route_id,
+        route_pattern_id: "BROWSER-LABEL-A",
+        route_pattern_name: "Coast Limited",
+        route_pattern_time_desc: "All day",
+        direction_id: 0,
+        route_pattern_sort_order: 2
+      })
+
+    label_stop_ids
+    |> Enum.with_index(1)
+    |> Enum.each(fn {stop_id, position} ->
+      GtfsPlanner.GtfsFixtures.route_pattern_stop_fixture(label_owner, stop_id, position)
+    end)
+
+    label_child =
+      %RoutePattern{}
+      |> RoutePattern.changeset(%{
+        route_id: shapes_route.route_id,
+        route_pattern_id: "BROWSER-LABEL-X",
+        route_pattern_name: "Coast Limited Short",
+        route_pattern_time_desc: "All day",
+        direction_id: 0,
+        route_pattern_sort_order: 2,
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+      |> Ecto.Changeset.change(label_pattern_id: label_owner.id)
+      |> Repo.insert!()
+
+    IO.puts("Browser seed: BROWSER_SHAPES route with #{length(shapes_stop_ids)} stops")
+
+    # ── Left-out trips and the label pair's trips ──
+    #
+    # Every trip below is left pending, so Derivation reads its own stop-time
+    # vector and classifies it. The 24 direction-less trips become the two
+    # groups the review offers (18 over the full stop order, 6 over its first
+    # seven), the two trips served before they depart become
+    # `invalid_chronology` and the station-only trip becomes `unusable_stops`.
+    hhmm = fn minutes ->
+      "#{String.pad_leading(Integer.to_string(div(minutes, 60)), 2, "0")}:" <>
+        "#{String.pad_leading(Integer.to_string(rem(minutes, 60)), 2, "0")}:00"
+    end
+
+    seed_pending_trip = fn trip_id, attrs, stop_ids, times ->
+      trip =
+        GtfsPlanner.GtfsFixtures.trip_fixture(
+          org.id,
+          diagram_version.id,
+          shapes_route.route_id,
+          attrs
+        )
+
+      stop_ids
+      |> Enum.zip(times)
+      |> Enum.with_index(1)
+      |> Enum.each(fn {{stop_id, time}, sequence} ->
+        GtfsPlanner.GtfsFixtures.stop_time_fixture(
+          org.id,
+          diagram_version.id,
+          trip.trip_id,
+          stop_id,
+          %{arrival_time: time, departure_time: time, stop_sequence: sequence}
+        )
+      end)
+
+      trip
+    end
+
+    Enum.each(1..18, fn index ->
+      seed_pending_trip.(
+        "BROWSER_SHAPES_NORTH_" <> String.pad_leading(Integer.to_string(index), 2, "0"),
+        %{
+          trip_headsign: "Lincoln City",
+          shape_id: "BROWSER_SHAPE_N"
+        },
+        shapes_stop_ids,
+        Enum.map(0..12, fn step -> hhmm.(420 + index + step * 5) end)
+      )
+    end)
+
+    Enum.each(1..6, fn index ->
+      seed_pending_trip.(
+        "BROWSER_SHAPES_SHORT_" <> String.pad_leading(Integer.to_string(index), 2, "0"),
+        %{trip_headsign: "Depoe Bay"},
+        Enum.take(shapes_stop_ids, 7),
+        Enum.map(0..6, fn step -> hhmm.(540 + index + step * 5) end)
+      )
+    end)
+
+    # Served before it departs: the second stop is timed before the first, so
+    # derivation refuses the vector for its chronology. They name the drawn
+    # pattern, so the refusal is the only thing left unlinked about them and the
+    # route keeps no second pattern for an order no trip can time.
+    Enum.each(1..2, fn index ->
+      out_of_order =
+        seed_pending_trip.(
+          "BROWSER_SHAPES_OUT_OF_ORDER_" <> String.pad_leading(Integer.to_string(index), 2, "0"),
+          %{trip_headsign: "Lincoln City", direction_id: 0},
+          shapes_stop_ids,
+          [hhmm.(425 + index), hhmm.(420 + index)] ++
+            Enum.map(2..12, fn step -> hhmm.(420 + index + step * 5) end)
+        )
+
+      GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(out_of_order, %{
+        route_pattern_id: "BROWSER-SHAPES-A"
+      })
+    end)
+
+    seed_pending_trip.(
+      "BROWSER_SHAPES_STATION_TRIP",
+      %{trip_headsign: "Transit Center", direction_id: 0},
+      ["BROWSER_SHAPES_STATION"],
+      [hhmm.(600)]
+    )
+
+    Enum.each(1..2, fn index ->
+      label_trip =
+        seed_pending_trip.(
+          "BROWSER_SHAPES_LABEL_" <> String.pad_leading(Integer.to_string(index), 2, "0"),
+          %{trip_headsign: "Coast Limited", direction_id: 0},
+          label_stop_ids,
+          Enum.map(0..3, fn step -> hhmm.(660 + index + step * 4) end)
+        )
+
+      # The trips name the supplied child, so derivation links them to it and
+      # never plans a derived pattern for the label's own stop order.
+      GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(label_trip, %{
+        route_pattern_id: label_child.route_pattern_id
+      })
+    end)
+
+    {:ok, shapes_derivation} =
+      Derivation.derive_route(org.id, diagram_version.id, shapes_route.route_id, {:import, nil})
+
+    # The seed fails loudly rather than serving a browser scenario that drifted
+    # from the numbers the later visual steps capture.
+    [
+      %{reason: "missing_direction", trip_count: 24},
+      %{reason: "invalid_chronology", trip_count: 2},
+      %{reason: "unusable_stops", trip_count: 1}
+    ] = Gtfs.left_out_trips(org.id, diagram_version.id, shapes_route.route_id)
+
+    [stored_owner, stored_child] =
+      Repo.all(
+        from(p in RoutePattern,
+          where:
+            p.organization_id == ^org.id and p.gtfs_version_id == ^diagram_version.id and
+              p.route_id == ^shapes_route.route_id and
+              p.route_pattern_id in ["BROWSER-LABEL-A", "BROWSER-LABEL-X"]
+        )
+      )
+      |> Enum.sort_by(& &1.route_pattern_id)
+
+    true = stored_child.label_pattern_id == stored_owner.id
+    true = is_nil(stored_owner.label_pattern_id)
+
+    IO.puts(
+      "Browser seed: BROWSER_SHAPES #{inspect(shapes_derivation)}, 27 trips left out, label child #{label_child.route_pattern_id}"
+    )
+
     # ── Other-route context fixtures (spec 16, step 31) ──
     #
     # Fifty-five small routes over the pattern-stop corner of the map, so the
@@ -1078,7 +1574,7 @@ case Accounts.register_first_admin(%{
       route_id = "BROWSER_CTX_" <> String.pad_leading(Integer.to_string(index), 2, "0")
 
       {:ok, _context_route} =
-        Gtfs.create_route(%{
+        GtfsPlanner.GtfsFixtures.insert_route(%{
           organization_id: org.id,
           gtfs_version_id: diagram_version.id,
           route_id: route_id,
@@ -1107,7 +1603,7 @@ case Accounts.register_first_admin(%{
 
     Enum.each(["BROWSER_PU1", "BROWSER_PU2"], fn trip_id ->
       {:ok, trip} =
-        Gtfs.create_trip(%{
+        GtfsPlanner.GtfsFixtures.insert_trip(%{
           organization_id: org.id,
           gtfs_version_id: diagram_version.id,
           route_id: unlinked_route.route_id,
@@ -1121,7 +1617,7 @@ case Accounts.register_first_admin(%{
 
       Enum.each([{first, 1}, {second, 2}], fn {stop, sequence} ->
         {:ok, _stop_time} =
-          Gtfs.create_stop_time(%{
+          GtfsPlanner.GtfsFixtures.insert_stop_time(%{
             organization_id: org.id,
             gtfs_version_id: diagram_version.id,
             trip_id: trip.trip_id,
@@ -1169,7 +1665,7 @@ case Accounts.register_first_admin(%{
 
     Enum.each(comparison_stops, fn {stop_id, stop_name, lat, lon} ->
       {:ok, _comparison_stop} =
-        Gtfs.create_stop(%{
+        GtfsPlanner.GtfsFixtures.insert_stop(%{
           stop_id: stop_id,
           stop_name: stop_name,
           location_type: 0,
@@ -1187,7 +1683,7 @@ case Accounts.register_first_admin(%{
       ]
       |> Enum.map(fn {route_id, short_name, long_name} ->
         {:ok, route} =
-          Gtfs.create_route(%{
+          GtfsPlanner.GtfsFixtures.insert_route(%{
             organization_id: org.id,
             gtfs_version_id: diagram_version.id,
             route_id: route_id,
@@ -1398,7 +1894,7 @@ case Accounts.register_first_admin(%{
       ]
       |> Enum.map(fn {route_id, short_name, long_name} ->
         {:ok, route} =
-          Gtfs.create_route(%{
+          GtfsPlanner.GtfsFixtures.insert_route(%{
             organization_id: org.id,
             gtfs_version_id: diagram_version.id,
             route_id: route_id,
@@ -1415,7 +1911,7 @@ case Accounts.register_first_admin(%{
 
     Enum.each(["BROWSER_D16A", "BROWSER_D16B"], fn trip_id ->
       {:ok, trip} =
-        Gtfs.create_trip(%{
+        GtfsPlanner.GtfsFixtures.insert_trip(%{
           organization_id: org.id,
           gtfs_version_id: diagram_version.id,
           route_id: lifecycle_delete_route.route_id,
@@ -1429,7 +1925,7 @@ case Accounts.register_first_admin(%{
 
       Enum.each([{first, 1}, {second, 2}], fn {stop, sequence} ->
         {:ok, _stop_time} =
-          Gtfs.create_stop_time(%{
+          GtfsPlanner.GtfsFixtures.insert_stop_time(%{
             organization_id: org.id,
             gtfs_version_id: diagram_version.id,
             trip_id: trip.trip_id,
@@ -1451,7 +1947,7 @@ case Accounts.register_first_admin(%{
     # advisory's positive path needs such a route; BROWSER_PATTERNS_READY, whose
     # stops all carry coordinates, is its "no warning" control.
     {:ok, _unlocated_route} =
-      Gtfs.create_route(%{
+      GtfsPlanner.GtfsFixtures.insert_route(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: "BROWSER_ROUTE16_UNLOCATED",
@@ -1470,7 +1966,7 @@ case Accounts.register_first_admin(%{
 
     Enum.each(1..2, fn position ->
       {:ok, stop} =
-        Gtfs.create_stop(%{
+        GtfsPlanner.GtfsFixtures.insert_stop(%{
           stop_id: "BROWSER_ROUTE16_NOCOORD_#{position}",
           stop_name: "Unlocated Stop #{position}",
           location_type: 0,
@@ -1503,7 +1999,7 @@ case Accounts.register_first_admin(%{
       ],
       fn {route_id, short_name, long_name, active} ->
         {:ok, _route} =
-          Gtfs.create_route(%{
+          GtfsPlanner.GtfsFixtures.insert_route(%{
             organization_id: org.id,
             gtfs_version_id: diagram_version.id,
             route_id: route_id,
@@ -1542,7 +2038,7 @@ case Accounts.register_first_admin(%{
         })
 
         {:ok, trip} =
-          Gtfs.create_trip(%{
+          GtfsPlanner.GtfsFixtures.insert_trip(%{
             organization_id: org.id,
             gtfs_version_id: diagram_version.id,
             route_id: route_id,
@@ -1560,7 +2056,7 @@ case Accounts.register_first_admin(%{
 
         Enum.each([{first_stop, 1}, {second_stop, 2}], fn {stop, sequence} ->
           {:ok, _stop_time} =
-            Gtfs.create_stop_time(%{
+            GtfsPlanner.GtfsFixtures.insert_stop_time(%{
               organization_id: org.id,
               gtfs_version_id: diagram_version.id,
               trip_id: trip.trip_id,
@@ -1606,7 +2102,7 @@ case Accounts.register_first_admin(%{
       |> Enum.with_index(1)
       |> Enum.each(fn {{stop_id, arrival, departure}, sequence} ->
         {:ok, _stop_time} =
-          Gtfs.create_stop_time(%{
+          GtfsPlanner.GtfsFixtures.insert_stop_time(%{
             organization_id: org.id,
             gtfs_version_id: diagram_version.id,
             trip_id: trip_id,
@@ -1640,7 +2136,7 @@ case Accounts.register_first_admin(%{
       ]
       |> Enum.map(fn {route_id, short_name, long_name} ->
         {:ok, route} =
-          Gtfs.create_route(%{
+          GtfsPlanner.GtfsFixtures.insert_route(%{
             organization_id: org.id,
             gtfs_version_id: diagram_version.id,
             route_id: route_id,
@@ -1706,7 +2202,7 @@ case Accounts.register_first_admin(%{
     timing_fixture.(used_pattern, "Weekend", used_occurrences)
 
     {:ok, used_trip} =
-      Gtfs.create_trip(%{
+      GtfsPlanner.GtfsFixtures.insert_trip(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: used_route.route_id,
@@ -1749,7 +2245,7 @@ case Accounts.register_first_admin(%{
     _custom_timing = timing_fixture.(custom_pattern, "All day", custom_occurrences)
 
     {:ok, custom_trip} =
-      Gtfs.create_trip(%{
+      GtfsPlanner.GtfsFixtures.insert_trip(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: custom_route.route_id,
@@ -1788,7 +2284,7 @@ case Accounts.register_first_admin(%{
     timing_fixture.(used_b_pattern, "Weekend", used_b_occurrences)
 
     {:ok, used_b_trip} =
-      Gtfs.create_trip(%{
+      GtfsPlanner.GtfsFixtures.insert_trip(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: used_b_route.route_id,
@@ -1820,7 +2316,7 @@ case Accounts.register_first_admin(%{
     stale_timing = timing_fixture.(stale_pattern, "Weekday", stale_occurrences)
 
     {:ok, stale_trip} =
-      Gtfs.create_trip(%{
+      GtfsPlanner.GtfsFixtures.insert_trip(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: stale_route.route_id,
@@ -1856,7 +2352,7 @@ case Accounts.register_first_admin(%{
       ])
 
     {:ok, export_trip} =
-      Gtfs.create_trip(%{
+      GtfsPlanner.GtfsFixtures.insert_trip(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: export_route.route_id,
@@ -1894,7 +2390,7 @@ case Accounts.register_first_admin(%{
       ])
 
     {:ok, export_b_trip} =
-      Gtfs.create_trip(%{
+      GtfsPlanner.GtfsFixtures.insert_trip(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: export_b_route.route_id,
@@ -1953,7 +2449,7 @@ case Accounts.register_first_admin(%{
       ])
 
     {:ok, terminal_trip} =
-      Gtfs.create_trip(%{
+      GtfsPlanner.GtfsFixtures.insert_trip(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: terminal_route.route_id,
@@ -1986,7 +2482,7 @@ case Accounts.register_first_admin(%{
     # BROWSER_HEADSIGNS_20 trip. Journeys mutate different patterns, so no
     # test inherits another's writes.
     {:ok, headsign_route} =
-      Gtfs.create_route(%{
+      GtfsPlanner.GtfsFixtures.insert_route(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: "BROWSER_HEADSIGNS",
@@ -1996,7 +2492,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, headsign_route_20} =
-      Gtfs.create_route(%{
+      GtfsPlanner.GtfsFixtures.insert_route(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: "BROWSER_HEADSIGNS_20",
@@ -2065,7 +2561,7 @@ case Accounts.register_first_admin(%{
       |> Enum.with_index(1)
       |> Enum.each(fn {offset, sequence} ->
         {:ok, _stop_time} =
-          Gtfs.create_stop_time(%{
+          GtfsPlanner.GtfsFixtures.insert_stop_time(%{
             organization_id: org.id,
             gtfs_version_id: diagram_version.id,
             trip_id: trip_id,
@@ -2079,7 +2575,7 @@ case Accounts.register_first_admin(%{
 
     hs_trip = fn trip_id, route, pattern, timing, start_minute, headsign, block_id ->
       {:ok, trip} =
-        Gtfs.create_trip(%{
+        GtfsPlanner.GtfsFixtures.insert_trip(%{
           organization_id: org.id,
           gtfs_version_id: diagram_version.id,
           route_id: route.route_id,
@@ -2204,7 +2700,7 @@ case Accounts.register_first_admin(%{
         roles: ["pathways_studio_editor"]
       })
 
-    {:ok, _} = Organizations.deactivate_user_in_organization(auth_deactivated.id, org.id)
+    {:ok, _} = Organizations.deactivate_user_in_organization(user, auth_deactivated.id, org.id)
     IO.puts("Browser seed: auth deactivated user #{auth_deactivated.email}")
 
     # Login recovery: confirmed user with no organization membership.
@@ -2317,7 +2813,7 @@ case Accounts.register_first_admin(%{
     # organization from the session (the system-`administrator` org-skip does not
     # apply) and `/admin/users` is scoped to it.
     {:ok, admin_org} =
-      Organizations.create_organization(%{
+      Organizations.create_organization_unchecked(%{
         name: "Admin Contracts Org",
         alias: "admin-contracts"
       })
@@ -2384,13 +2880,18 @@ case Accounts.register_first_admin(%{
       add_accepted_member.("contracts-deactivated@gtfs-planner.test", ["pathways_studio_editor"])
 
     {:ok, _deactivated_membership} =
-      Organizations.deactivate_user_in_organization(deactivated_member.id, admin_org.id)
+      Organizations.deactivate_user_in_organization(
+        org_admin,
+        deactivated_member.id,
+        admin_org.id
+      )
 
-    # Invitation pending: `invite_user/2` uses `User.invite_changeset/2`, which
-    # sets no password, so the row renders "Invitation pending" and offers
-    # "Resend invite".
+    # Invitation pending: `User.invite_changeset/2` sets no password, so the row
+    # renders "Invitation pending" and offers "Resend invite".
     {:ok, pending_member} =
-      Accounts.invite_user("contracts-pending@gtfs-planner.test", admin_org.id)
+      %User{}
+      |> User.invite_changeset(%{email: "contracts-pending@gtfs-planner.test"})
+      |> Repo.insert()
 
     {:ok, _pending_membership} =
       Accounts.create_user_org_membership(%{
@@ -2410,7 +2911,7 @@ case Accounts.register_first_admin(%{
     # logo and the hidden task links are absent. Versions are per organization,
     # so this version cannot become Browser Test Org's latest.
     {:ok, pathways_org} =
-      Organizations.create_organization(%{
+      Organizations.create_organization_unchecked(%{
         name: "Browser Pathways Org",
         alias: "browser-pathways",
         product: :pathways
@@ -2449,7 +2950,7 @@ case Accounts.register_first_admin(%{
     # and leaves staging-only so the published-only latest query returns nil.
 
     {:ok, no_version_org} =
-      Organizations.create_organization(%{
+      Organizations.create_organization_unchecked(%{
         name: "Account No Version Org",
         alias: "account-no-version"
       })
@@ -2481,7 +2982,7 @@ case Accounts.register_first_admin(%{
     )
 
     {:ok, no_task_org} =
-      Organizations.create_organization(%{
+      Organizations.create_organization_unchecked(%{
         name: "Account No Task Org",
         alias: "account-no-task"
       })
@@ -2550,7 +3051,7 @@ case Accounts.register_first_admin(%{
     # catalog contracts: long-value overflow, tri-state accessibility, pathway
     # metrics, and empty/partial catalog states.
     {:ok, _long_stop} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "VERY_LONG_STOP_ID_FOR_OVERFLOW_TESTING_12345",
         stop_name:
           "This Is A Very Long Station Name For Testing Overflow Behavior At Narrow Viewports",
@@ -2561,7 +3062,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, _missing_stop} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "CATALOG_MISSING_VALUES",
         stop_name: "Missing Values Stop",
         location_type: 0,
@@ -2571,7 +3072,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, _accessible_stop} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "CATALOG_ACCESSIBLE",
         stop_name: "Direct Accessible Stop",
         location_type: 0,
@@ -2581,7 +3082,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, _not_accessible_stop} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "CATALOG_NOT_ACCESSIBLE",
         stop_name: "Direct Not Accessible Stop",
         location_type: 0,
@@ -2591,7 +3092,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, inherited_station} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "CATALOG_INHERITED_STATION",
         stop_name: "Inherited Accessibility Station",
         location_type: 1,
@@ -2612,7 +3113,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, _no_data_stop} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "CATALOG_NO_DATA",
         stop_name: "No Data Stop",
         location_type: 0,
@@ -2624,7 +3125,7 @@ case Accounts.register_first_admin(%{
     IO.puts("Browser seed: tri-state accessibility stops for catalog contracts")
 
     {:ok, _pathway_station} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "CATALOG_PATHWAY_STATION",
         stop_name: "Pathway Metrics Station",
         location_type: 1,
@@ -2656,7 +3157,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, _full_pathway} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         pathway_id: "CATALOG_PW_FULL",
         pathway_mode: 2,
         is_bidirectional: false,
@@ -2670,7 +3171,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, _partial_pathway} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         pathway_id: "CATALOG_PW_PARTIAL",
         pathway_mode: 1,
         is_bidirectional: true,
@@ -2692,7 +3193,7 @@ case Accounts.register_first_admin(%{
       Versions.create_gtfs_version(org.id, %{name: "Catalog Routes Only Version"})
 
     {:ok, _routes_only_route} =
-      Gtfs.create_route(%{
+      GtfsPlanner.GtfsFixtures.insert_route(%{
         organization_id: org.id,
         gtfs_version_id: routes_only_version.id,
         route_id: "CATALOG_ROUTES_ONLY_1",
@@ -2760,9 +3261,9 @@ case Accounts.register_first_admin(%{
     # stops AC-35 measures in the browser, in five zones, inserted in five
     # batches of 2,000.
     #
-    # Zone metadata goes through `FareZones.create_zone/3` (CR-1 keeps that
+    # Zone metadata goes through `FareZones.create_zone/2` (CR-1 keeps that
     # module `fare_zones`' only writer) and the route through
-    # `Gtfs.create_route/1`. Stop, fare and rule rows are fixture data inserted
+    # `GtfsPlanner.GtfsFixtures.insert_route/1`. Stop, fare and rule rows are fixture data inserted
     # directly: no changeset casts `stops.zone_id`, and `FareRule.changeset/2`
     # would trim the exact rule values. Every row carries one fixed seed
     # timestamp and a literal ID or coordinate, so a reset and re-run
@@ -2789,11 +3290,19 @@ case Accounts.register_first_admin(%{
           {"D", "Airport", "ochre"}
         ] do
       {:ok, _declared_zone} =
-        FareZones.create_zone(org.id, fare_zones_version.id, %{
-          zone_id: zone_id,
-          name: name,
-          color: color
-        })
+        FareZones.create_zone(
+          %AuditContext{
+            organization_id: org.id,
+            gtfs_version_id: fare_zones_version.id,
+            actor_id: editor.id,
+            actor_email: editor.email
+          },
+          %{
+            zone_id: zone_id,
+            name: name,
+            color: color
+          }
+        )
     end
 
     fare_stop = fn stop_id, stop_name, lat, lon, zone_id, attrs ->
@@ -2894,7 +3403,7 @@ case Accounts.register_first_admin(%{
       )
 
     {:ok, _fare_route} =
-      Gtfs.create_route(%{
+      GtfsPlanner.GtfsFixtures.insert_route(%{
         organization_id: org.id,
         gtfs_version_id: fare_zones_version.id,
         route_id: "BROWSER_FARE_ROUTE",
@@ -3100,8 +3609,8 @@ case Accounts.register_first_admin(%{
     #     Heights–Toledo Junction stretch, ¾ mile (1200 m), wording set, one
     #     same-day booking rule, on the weekday and Saturday calendars.
     #
-    # The two services are written through the production `Flex.create_service/3`
-    # and `Flex.save_service/5`, so the seed stores exactly what the service page
+    # The two services are written through the production `Flex.create_service/2`
+    # and `Flex.save_service/4`, so the seed stores exactly what the service page
     # would, geometry normalisation included. The area polygon is the Census
     # place boundary for Newport from the prototype's
     # `.specs/22-gtfs-flex/evidence/prototype-src/basemap/census/place-Newport.geojson`,
@@ -3116,6 +3625,13 @@ case Accounts.register_first_admin(%{
     # diagram version stays the organization's default version.
     {:ok, flex_version} =
       Versions.create_gtfs_version(org.id, %{name: "Browser Flex Version"})
+
+    flex_audit = %AuditContext{
+      organization_id: org.id,
+      gtfs_version_id: flex_version.id,
+      actor_id: editor.id,
+      actor_email: editor.email
+    }
 
     flex_seed_at = ~U[2026-09-01 00:00:00.000000Z]
     flex_today = Gtfs.DisplayClock.today(org.id, flex_version.id).date
@@ -3815,12 +4331,11 @@ case Accounts.register_first_admin(%{
     }
 
     {:ok, flex_area_service} =
-      Flex.create_service(org.id, flex_version.id, %{name: "Newport Dial-a-Ride", kind: :area})
+      Flex.create_service(flex_audit, %{name: "Newport Dial-a-Ride", kind: :area})
 
     {:ok, _flex_area_saved} =
       Flex.save_service(
-        org.id,
-        flex_version.id,
+        flex_audit,
         flex_area_service,
         %{
           phone: "(541) 555-0142",
@@ -3837,7 +4352,7 @@ case Accounts.register_first_admin(%{
       )
 
     {:ok, flex_detour_service} =
-      Flex.create_service(org.id, flex_version.id, %{
+      Flex.create_service(flex_audit, %{
         name: "Valley Line detours",
         kind: :detour,
         route_id: "20"
@@ -3845,8 +4360,7 @@ case Accounts.register_first_admin(%{
 
     {:ok, _flex_detour_saved} =
       Flex.save_service(
-        org.id,
-        flex_version.id,
+        flex_audit,
         flex_detour_service,
         %{
           phone: "(541) 555-0142",
@@ -3981,7 +4495,7 @@ case Accounts.register_first_admin(%{
     calendar_now = DateTime.utc_now()
 
     {:ok, _calendar_route} =
-      Gtfs.create_route(%{
+      GtfsPlanner.GtfsFixtures.insert_route(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: "CAL_ROUTE",
@@ -4105,7 +4619,7 @@ case Accounts.register_first_admin(%{
     for {service_id, count} <- [{"CAL_DAILY", 3}, {"CAL_SCHOOL", 2}, {"CAL_LEGACY", 1}],
         index <- 1..count do
       {:ok, _trip} =
-        Gtfs.create_trip(%{
+        GtfsPlanner.GtfsFixtures.insert_trip(%{
           organization_id: org.id,
           gtfs_version_id: diagram_version.id,
           route_id: "CAL_ROUTE",
@@ -4133,7 +4647,7 @@ case Accounts.register_first_admin(%{
     details_today = Gtfs.DisplayClock.today(org.id, details_version.id).date
 
     {:ok, _details_route} =
-      Gtfs.create_route(%{
+      GtfsPlanner.GtfsFixtures.insert_route(%{
         organization_id: org.id,
         gtfs_version_id: details_version.id,
         route_id: "BROWSER_DETAILS",
@@ -4253,7 +4767,7 @@ case Accounts.register_first_admin(%{
 
     for index <- 1..2 do
       {:ok, _trip} =
-        Gtfs.create_trip(%{
+        GtfsPlanner.GtfsFixtures.insert_trip(%{
           organization_id: org.id,
           gtfs_version_id: details_version.id,
           route_id: "BROWSER_DETAILS",
@@ -4294,7 +4808,7 @@ case Accounts.register_first_admin(%{
     end
 
     {:ok, _combine_route} =
-      Gtfs.create_route(%{
+      GtfsPlanner.GtfsFixtures.insert_route(%{
         organization_id: org.id,
         gtfs_version_id: combine_version.id,
         route_id: "COMBINE_ROUTE",
@@ -4306,7 +4820,7 @@ case Accounts.register_first_admin(%{
     combine_stops =
       for index <- 1..2 do
         {:ok, stop} =
-          Gtfs.create_stop(%{
+          GtfsPlanner.GtfsFixtures.insert_stop(%{
             stop_id: "COMBINE_S#{index}",
             stop_name: "Combine Stop #{index}",
             location_type: 0,
@@ -4542,7 +5056,7 @@ case Accounts.register_first_admin(%{
     schedule_stops =
       Enum.map(1..6, fn index ->
         {:ok, stop} =
-          Gtfs.create_stop(%{
+          GtfsPlanner.GtfsFixtures.insert_stop(%{
             stop_id: "BSS_#{index}",
             stop_name: "Schedule Stop #{index}",
             location_type: 0,
@@ -4561,7 +5075,7 @@ case Accounts.register_first_admin(%{
       ]
       |> Enum.map(fn {route_id, short_name, long_name} ->
         {:ok, route} =
-          Gtfs.create_route(%{
+          GtfsPlanner.GtfsFixtures.insert_route(%{
             organization_id: org.id,
             gtfs_version_id: diagram_version.id,
             route_id: route_id,
@@ -4762,7 +5276,7 @@ case Accounts.register_first_admin(%{
     # for adoption, and an after-midnight departure for the +1 marker. These
     # routes are mutated by the journeys, so they are seeded on their own route.
     {:ok, mutate_route} =
-      Gtfs.create_route(%{
+      GtfsPlanner.GtfsFixtures.insert_route(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: "BROWSER_SCHEDULES_MUTATE",
@@ -4937,7 +5451,7 @@ case Accounts.register_first_admin(%{
           {"BPS_RIV", "Riverside Terminal"}
         ] do
       {:ok, _stop} =
-        Gtfs.create_stop(%{
+        GtfsPlanner.GtfsFixtures.insert_stop(%{
           stop_id: stop_id,
           stop_name: stop_name,
           location_type: 0,
@@ -4947,7 +5461,7 @@ case Accounts.register_first_admin(%{
     end
 
     {:ok, paste_route} =
-      Gtfs.create_route(%{
+      GtfsPlanner.GtfsFixtures.insert_route(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: "BROWSER_PASTE",
@@ -5161,7 +5675,7 @@ case Accounts.register_first_admin(%{
     ]
 
     {:ok, grid_route} =
-      Gtfs.create_route(%{
+      GtfsPlanner.GtfsFixtures.insert_route(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: "BROWSER_SCHEDULES_GRID",
@@ -5294,7 +5808,7 @@ case Accounts.register_first_admin(%{
     )
 
     {:ok, freq_route} =
-      Gtfs.create_route(%{
+      GtfsPlanner.GtfsFixtures.insert_route(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: "BROWSER_SCHEDULES_FREQ",
@@ -5336,7 +5850,7 @@ case Accounts.register_first_admin(%{
     )
 
     {:ok, bulk_route} =
-      Gtfs.create_route(%{
+      GtfsPlanner.GtfsFixtures.insert_route(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: "BROWSER_SCHEDULES_BULK",
@@ -5515,7 +6029,7 @@ case Accounts.register_first_admin(%{
       [{"BB_R1", "BR1", "Blocks Riverside"}, {"BB_R2", "BR2", "Blocks Central"}]
       |> Map.new(fn {route_id, short_name, long_name} ->
         {:ok, route} =
-          Gtfs.create_route(%{
+          GtfsPlanner.GtfsFixtures.insert_route(%{
             organization_id: org.id,
             gtfs_version_id: blocks_version.id,
             route_id: route_id,
@@ -6102,7 +6616,7 @@ case Accounts.register_first_admin(%{
       ]
       |> Map.new(fn {route_id, short_name, long_name, color} ->
         {:ok, route} =
-          Gtfs.create_route(%{
+          GtfsPlanner.GtfsFixtures.insert_route(%{
             organization_id: org.id,
             gtfs_version_id: advanced_version.id,
             route_id: route_id,
@@ -6387,7 +6901,7 @@ case Accounts.register_first_admin(%{
     # Block rules: the default layover and driving-time settings, Main as the
     # default garage and the researched 330-minute operator-change limit.
     {:ok, _advanced_settings} =
-      GtfsPlanner.Gtfs.Blocking.update_settings(org.id, advanced_version.id, %{
+      GtfsPlanner.Gtfs.Blocking.update_settings(seed_audit.(advanced_version), %{
         min_layover_minutes: 5,
         max_block_minutes: nil,
         pull_out_buffer_minutes: 0,
@@ -6561,7 +7075,7 @@ case Accounts.register_first_admin(%{
       ]
       |> Map.new(fn {route_id, short_name, long_name, color} ->
         {:ok, route} =
-          Gtfs.create_route(%{
+          GtfsPlanner.GtfsFixtures.insert_route(%{
             organization_id: org.id,
             gtfs_version_id: runs_version.id,
             route_id: route_id,
@@ -6710,7 +7224,7 @@ case Accounts.register_first_admin(%{
     end
 
     {:ok, _runs_settings} =
-      GtfsPlanner.Gtfs.Blocking.update_settings(org.id, runs_version.id, %{
+      GtfsPlanner.Gtfs.Blocking.update_settings(seed_audit.(runs_version), %{
         min_layover_minutes: 5,
         max_block_minutes: nil,
         pull_out_buffer_minutes: 0,
@@ -6734,7 +7248,7 @@ case Accounts.register_first_admin(%{
     # accident. A 15-minute pull-out and a 5-minute relief are what put 103's
     # single piece at 398 minutes rather than at its trip times.
     {:ok, _runs_crew} =
-      GtfsPlanner.Gtfs.update_crew_settings(org.id, runs_version.id, %{
+      GtfsPlanner.Gtfs.update_crew_settings(seed_audit.(runs_version), %{
         report_pull_out_minutes: 15,
         report_relief_minutes: 5,
         sign_off_minutes: 5,
@@ -6814,7 +7328,7 @@ case Accounts.register_first_admin(%{
       Versions.create_gtfs_version(org.id, %{name: "Browser Schedules No Calendars"})
 
     {:ok, _schedule_route} =
-      Gtfs.create_route(%{
+      GtfsPlanner.GtfsFixtures.insert_route(%{
         organization_id: org.id,
         gtfs_version_id: schedules_version.id,
         route_id: "BROWSER_SCHEDULES_NOCAL",
@@ -6854,11 +7368,13 @@ case Accounts.register_first_admin(%{
     #
     # The three calendars are the helper's read and prepare material: two
     # Monday-Friday school calendars the journey stops, and a Sunday calendar
-    # for the substitution case. Dates are relative to this version's
-    # agency-local today (the UTC fallback, because the version has no agency),
-    # so "next Monday" stays a real service date on any run date. Rows are
-    # inserted directly because this fixture supplies scenario data, not an
-    # audited edit.
+    # for the substitution case. `SCHOOL_ROUTE` and its two trips give the
+    # school calendars recorded service, so an approved end-date extension has
+    # the routes and trips it actually affects to name. Dates are relative to
+    # this version's agency-local today (the UTC fallback, because the version
+    # has no agency), so "next Monday" stays a real service date on any run
+    # date. Rows are inserted directly because this fixture supplies scenario
+    # data, not an audited edit.
     {:ok, helper_version} =
       Versions.create_gtfs_version(org.id, %{name: "Browser Helper Version"})
 
@@ -6937,6 +7453,328 @@ case Accounts.register_first_admin(%{
 
     IO.puts("Browser seed: helper version #{helper_version.name} (id=#{helper_version.id})")
 
+    # ── Service answers (step 7) ──
+    #
+    # The A02/A19 feed the ordinary route and calendar helper journeys read: a
+    # holiday Thursday whose weekday baseline is removed and replaced by an
+    # exception-only calendar, a loop that visits Central Station twice, a
+    # frequency trip boarding 15 minutes after its first stop, a trip with no
+    # readable time, and H12 keeping Sunday service through `SCHOOL` after
+    # `REGULAR` ends. Dates come from `BrowserServiceAnswers`, the same module
+    # the OpenRouter stand-in asks about, so both sides name the same dates.
+    # The version is backdated like the helper version above, so the Browser E2E
+    # Version stays the organization's current one.
+    {:ok, answers_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Service Answers Version"})
+
+    answers_version =
+      Repo.update!(
+        Ecto.Changeset.change(answers_version,
+          published_at: ~U[2020-01-03 00:00:00.000000Z]
+        )
+      )
+
+    {:ok, _answers_agency} =
+      GtfsPlanner.GtfsFixtures.insert_agency(%{
+        organization_id: org.id,
+        gtfs_version_id: answers_version.id,
+        agency_id: "BROWSER_ANSWERS_AGENCY",
+        agency_name: "Browser Answers Transit",
+        agency_url: "https://example.test",
+        agency_timezone: "America/New_York"
+      })
+
+    for {stop_id, stop_name} <- [{"CENTRAL", "Central Station"}, {"HARBOR", "Harbor Yards"}] do
+      {:ok, _stop} =
+        GtfsPlanner.GtfsFixtures.insert_stop(%{
+          stop_id: stop_id,
+          stop_name: stop_name,
+          location_type: 0,
+          organization_id: org.id,
+          gtfs_version_id: answers_version.id
+        })
+    end
+
+    answers_routes =
+      for {route_id, short_name, long_name} <- [
+            {"H8", "8", "Harbor shuttle"},
+            {"H12", "12", "School connector"}
+          ] do
+        {:ok, route} =
+          GtfsPlanner.GtfsFixtures.insert_route(%{
+            organization_id: org.id,
+            gtfs_version_id: answers_version.id,
+            route_id: route_id,
+            route_short_name: short_name,
+            route_long_name: long_name,
+            route_type: 3
+          })
+
+        route
+      end
+      |> Map.new(&{&1.route_id, &1})
+
+    # `WEEKDAY` is the recurring baseline the holiday removes, `REGULAR` is the
+    # calendar the A19 coverage question reviews and `SCHOOL` is H12's alternate
+    # Sunday service. `HOLIDAY` has no weekly row at all: only the exception
+    # below adds its one date.
+    answers_now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    [
+      %{service_id: "WEEKDAY", days: [1, 2, 3, 4, 5]},
+      %{service_id: "REGULAR", days: [1, 2, 3, 4, 5, 6, 7]},
+      %{service_id: "SCHOOL", days: [7]}
+    ]
+    |> Enum.map(fn %{service_id: service_id, days: days} ->
+      weekly =
+        [:monday, :tuesday, :wednesday, :thursday, :friday, :saturday, :sunday]
+        |> Enum.with_index(1)
+        |> Map.new(fn {day, index} -> {day, if(index in days, do: 1, else: 0)} end)
+
+      Map.merge(weekly, %{
+        id: Ecto.UUID.generate(),
+        organization_id: org.id,
+        gtfs_version_id: answers_version.id,
+        service_id: service_id,
+        start_date: BrowserServiceAnswers.range_start(),
+        end_date: BrowserServiceAnswers.range_end(),
+        inserted_at: answers_now,
+        updated_at: answers_now
+      })
+    end)
+    |> then(&Repo.insert_all(Calendar, &1))
+
+    [
+      {"WEEKDAY", BrowserServiceAnswers.thanksgiving(), 2},
+      {"HOLIDAY", BrowserServiceAnswers.thanksgiving(), 1}
+    ]
+    |> Enum.map(fn {service_id, date, exception_type} ->
+      %{
+        id: Ecto.UUID.generate(),
+        organization_id: org.id,
+        gtfs_version_id: answers_version.id,
+        service_id: service_id,
+        date: date,
+        exception_type: exception_type,
+        inserted_at: answers_now,
+        updated_at: answers_now
+      }
+    end)
+    |> then(&Repo.insert_all(GtfsPlanner.Gtfs.CalendarDate, &1))
+
+    [
+      {"WEEKDAY", "Weekday service"},
+      {"REGULAR", "Standard service"},
+      {"SCHOOL", "School Sundays"}
+    ]
+    |> Enum.map(fn {service_id, description} ->
+      %{
+        id: Ecto.UUID.generate(),
+        organization_id: org.id,
+        gtfs_version_id: answers_version.id,
+        service_id: service_id,
+        service_description: description,
+        service_schedule_typicality: 0,
+        inserted_at: answers_now,
+        updated_at: answers_now
+      }
+    end)
+    |> then(&Repo.insert_all(CalendarAttribute, &1))
+
+    answers_h8 = Map.fetch!(answers_routes, "H8")
+    answers_h12 = Map.fetch!(answers_routes, "H12")
+
+    # H8 leaves Harbor Yards first and boards Central Station 15 minutes later,
+    # so Central Station is occurrence 2 on every H8 trip and the holiday
+    # question asks for that occurrence after 18:00. The loop gives Central
+    # Station a second sequence, which is what makes an unqualified question
+    # ambiguous rather than guessed.
+    answers_pattern =
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, answers_version.id, %{
+        route_id: answers_h8.route_id,
+        direction_id: 0,
+        route_pattern_id: "BROWSER-ANSWERS-P1",
+        route_pattern_name: "Harbor Yards – Central",
+        route_pattern_typicality: 1,
+        timing_name: "Holiday",
+        timing_headsign: "Central Station",
+        stops: [
+          {"HARBOR", 0, 0, 1},
+          {"CENTRAL", 900, 900, 1}
+        ]
+      })
+
+    # The ordinary holiday trips are linked to the pattern, so the page's own
+    # schedule rows and the domain read come from the same materialized stop
+    # times. Central Station is 15 minutes after Harbor Yards on this pattern.
+    for {trip_id, start_time} <- [
+          {"SA-1800", "17:45:00"},
+          {"SA-1820", "18:05:00"},
+          {"SA-1910", "18:55:00"},
+          {"SA-LATE", "24:15:00"}
+        ] do
+      GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+        org.id,
+        answers_version.id,
+        answers_h8.route_id,
+        answers_pattern,
+        %{
+          service_id: "HOLIDAY",
+          trip_id: trip_id,
+          start_time: start_time,
+          trip_headsign: "Central Station"
+        }
+      )
+    end
+
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      answers_version.id,
+      answers_h8.route_id,
+      answers_pattern,
+      %{
+        service_id: "HOLIDAY",
+        trip_id: "SA-LOOP",
+        state: "custom",
+        timed_pattern_id: nil,
+        trip_headsign: "Central Station",
+        stop_times: [
+          {"HARBOR", "18:00:00", "18:00:00"},
+          {"CENTRAL", "18:00:00", "18:00:00"},
+          {"HARBOR", "21:00:00", "21:00:00"},
+          {"CENTRAL", "23:50:00", "23:50:00"}
+        ]
+      }
+    )
+
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      answers_version.id,
+      answers_h8.route_id,
+      answers_pattern,
+      %{
+        service_id: "HOLIDAY",
+        trip_id: "SA-FREQ",
+        state: "custom",
+        timed_pattern_id: nil,
+        trip_headsign: "Central Station",
+        stop_times: [
+          {"HARBOR", "20:00:00", "20:00:00"},
+          {"CENTRAL", "20:15:00", "20:15:00"}
+        ],
+        frequencies: [
+          %{start_time: "20:00:00", end_time: "22:00:00", headway_secs: 1200, exact_times: 0},
+          %{start_time: "21:00:00", end_time: "22:00:00", headway_secs: 600, exact_times: 1}
+        ]
+      }
+    )
+
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      answers_version.id,
+      answers_h8.route_id,
+      answers_pattern,
+      %{
+        service_id: "HOLIDAY",
+        trip_id: "SA-UNKNOWN",
+        state: "custom",
+        timed_pattern_id: nil,
+        trip_headsign: "Central Station",
+        stop_times: [
+          {"HARBOR", "19:45:00", "19:45:00"},
+          {"CENTRAL", nil, nil}
+        ]
+      }
+    )
+
+    answers_school_pattern =
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, answers_version.id, %{
+        route_id: answers_h12.route_id,
+        direction_id: 0,
+        route_pattern_id: "BROWSER-ANSWERS-P2",
+        route_pattern_name: "School – Central",
+        route_pattern_typicality: 1,
+        timing_name: "Sunday",
+        timing_headsign: "Central Station",
+        stops: [
+          {"CENTRAL", 0, 0, 1},
+          {"HARBOR", 600, 600, 1}
+        ]
+      })
+
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      answers_version.id,
+      answers_h12.route_id,
+      answers_school_pattern,
+      %{
+        service_id: "SCHOOL",
+        trip_id: "SA12-SUN-FREQ",
+        trip_headsign: "Central Station",
+        frequencies: [%{start_time: "12:00:00", end_time: "14:00:00", headway_secs: 1800}]
+      }
+    )
+
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      answers_version.id,
+      answers_h12.route_id,
+      answers_school_pattern,
+      %{
+        service_id: "SCHOOL",
+        trip_id: "SA12-SUN-UNKNOWN",
+        state: "custom",
+        timed_pattern_id: nil,
+        trip_headsign: "Central Station",
+        stop_times: [
+          {"CENTRAL", nil, nil},
+          {"HARBOR", nil, nil}
+        ]
+      }
+    )
+
+    IO.puts(
+      "Browser seed: service answers version #{answers_version.name} " <>
+        "(id=#{answers_version.id}, holiday #{BrowserServiceAnswers.thanksgiving()})"
+    )
+
+    {1, nil} =
+      Repo.insert_all(Route, [
+        %{
+          id: Ecto.UUID.generate(),
+          organization_id: org.id,
+          gtfs_version_id: helper_version.id,
+          route_id: "SCHOOL_ROUTE",
+          route_short_name: "S",
+          route_long_name: "School connector",
+          route_type: 3,
+          route_color: "0D737D",
+          route_text_color: "FFFFFF",
+          active: true,
+          inserted_at: calendar_now,
+          updated_at: calendar_now
+        }
+      ])
+
+    {2, nil} =
+      Repo.insert_all(
+        Trip,
+        Enum.map(~w(SCH1 SCH2), fn trip_id ->
+          %{
+            id: Ecto.UUID.generate(),
+            organization_id: org.id,
+            gtfs_version_id: helper_version.id,
+            route_id: "SCHOOL_ROUTE",
+            service_id: "SCHOOL_WD",
+            trip_id: trip_id,
+            trip_headsign: "School",
+            direction_id: 0,
+            inserted_at: calendar_now,
+            updated_at: calendar_now
+          }
+        end)
+      )
+
     # The station BXF_CEN with its two platforms and an entrance, plus the three
     # top-level stops the trips call at. Children go through the import changeset,
     # the permissive path the import workflow uses for the same shape. An entrance
@@ -6959,7 +7797,7 @@ case Accounts.register_first_admin(%{
         |> Stop.import_changeset(attrs)
         |> Repo.insert!()
       else
-        {:ok, stop} = Gtfs.create_stop(attrs)
+        {:ok, stop} = GtfsPlanner.GtfsFixtures.insert_stop(attrs)
         stop
       end
     end
@@ -7018,7 +7856,7 @@ case Accounts.register_first_admin(%{
     ]
     |> Enum.each(fn {route_id, short_name, long_name} ->
       {:ok, _route} =
-        Gtfs.create_route(%{
+        GtfsPlanner.GtfsFixtures.insert_route(%{
           organization_id: org.id,
           gtfs_version_id: transfers_version.id,
           route_id: route_id,
@@ -7040,7 +7878,7 @@ case Accounts.register_first_admin(%{
     ]
     |> Enum.each(fn {trip_id, route_id, headsign, stop_times} ->
       {:ok, _trip} =
-        Gtfs.create_trip(%{
+        GtfsPlanner.GtfsFixtures.insert_trip(%{
           organization_id: org.id,
           gtfs_version_id: transfers_version.id,
           route_id: route_id,
@@ -7053,7 +7891,7 @@ case Accounts.register_first_admin(%{
       |> Enum.with_index(1)
       |> Enum.each(fn {{stop_id, time}, stop_sequence} ->
         {:ok, _stop_time} =
-          Gtfs.create_stop_time(%{
+          GtfsPlanner.GtfsFixtures.insert_stop_time(%{
             organization_id: org.id,
             gtfs_version_id: transfers_version.id,
             trip_id: trip_id,
@@ -7310,7 +8148,7 @@ case Accounts.register_first_admin(%{
         end
 
       {:ok, _resource_route} =
-        Gtfs.create_route(%{
+        GtfsPlanner.GtfsFixtures.insert_route(%{
           organization_id: org.id,
           gtfs_version_id: resource_version.id,
           route_id: resource_route_id,
@@ -7344,7 +8182,7 @@ case Accounts.register_first_admin(%{
     # them reuse the version's existing CAL_DAILY native calendar; no calendar
     # identity is added, so the calendars page keeps exactly the six it had.
     {:ok, evo_station} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "BROWSER_EVO_STATION",
         stop_name: "Evolutions Test Station",
         location_type: 1,
@@ -7355,7 +8193,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, evo_level} =
-      Gtfs.create_level(%{
+      GtfsPlanner.GtfsFixtures.insert_level(%{
         level_id: "BROWSER_EVO_L1",
         level_name: "Evolutions Concourse",
         level_index: 0.0,
@@ -7366,7 +8204,7 @@ case Accounts.register_first_admin(%{
     # `create_stop_level/1` joins the station's own ids, not its external
     # identifiers, which is the form the other seeded stations use.
     {:ok, evo_stop_level} =
-      Gtfs.create_stop_level(%{
+      GtfsPlanner.GtfsFixtures.insert_stop_level(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         stop_id: evo_station.id,
@@ -7387,7 +8225,7 @@ case Accounts.register_first_admin(%{
       )
 
     {:ok, evo_entrance} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "BROWSER_EVO_ENTRANCE",
         stop_name: "North entrance",
         location_type: 2,
@@ -7399,7 +8237,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, evo_mezzanine} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "BROWSER_EVO_MEZZANINE",
         stop_name: "Mezzanine hall",
         location_type: 0,
@@ -7411,7 +8249,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, evo_platform} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "BROWSER_EVO_PLATFORM",
         stop_name: "Platform 1",
         location_type: 0,
@@ -7423,7 +8261,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, _evo_boarding} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "BROWSER_EVO_BOARDING",
         stop_name: "Platform 1 boarding area",
         location_type: 4,
@@ -7438,7 +8276,7 @@ case Accounts.register_first_admin(%{
     # without closures, so the moment preview must list them as `No route`
     # without ever counting them as lost or blaming a closure for them.
     {:ok, _evo_east_entrance} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "BROWSER_EVO_EAST_ENTRANCE",
         stop_name: "East entrance",
         location_type: 2,
@@ -7452,7 +8290,7 @@ case Accounts.register_first_admin(%{
     # A slash and spaces in one pathway_id, so a `?pathway=` link has to be
     # encoded and decoded exactly rather than read as a path segment.
     {:ok, _evo_walkway} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         pathway_id: "BROWSER_EVO_PW_WALK",
@@ -7465,7 +8303,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, _evo_elevator} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         pathway_id: "BROWSER_EVO/PW LIFT 1",
@@ -7478,7 +8316,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, _evo_stairs} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         pathway_id: "BROWSER_EVO_PW_STAIR",
@@ -7525,7 +8363,7 @@ case Accounts.register_first_admin(%{
     # with nothing scheduled yet: the first-use empty state, which is a
     # different state from a search that matches nothing.
     {:ok, _evo_empty_station} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "BROWSER_EVO_EMPTY_STATION",
         stop_name: "Evolutions Empty Station",
         location_type: 1,
@@ -7554,7 +8392,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, _evo_empty_pathway} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         pathway_id: "BROWSER_EVO_EMPTY_PW",
@@ -7566,7 +8404,7 @@ case Accounts.register_first_admin(%{
 
     # A station with a child stop and no pathways at all: nothing can close.
     {:ok, _evo_nopathway_station} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "BROWSER_EVO_NOPATHWAY_STATION",
         stop_name: "Evolutions No Pathway Station",
         location_type: 1,
@@ -7594,7 +8432,7 @@ case Accounts.register_first_admin(%{
     # A station with one pathway there renders the view's no-native-calendars
     # state, which needs a station inside a calendar-less version.
     {:ok, _evo_nocal_station} =
-      Gtfs.create_stop(%{
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
         stop_id: "BROWSER_EVO_NOCAL_STATION",
         stop_name: "Evolutions No Calendar Station",
         location_type: 1,
@@ -7623,7 +8461,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, _evo_nocal_pathway} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         pathway_id: "BROWSER_EVO_NOCAL_PW",
         pathway_mode: 1,
         is_bidirectional: true,
@@ -7636,6 +8474,585 @@ case Accounts.register_first_admin(%{
     IO.puts(
       "Browser seed: evolutions station in #{schedules_version.name} with 1 pathway " <>
         "and no native calendars"
+    )
+
+    # ── In-seat connection browser journey (package 11, step 12) ──
+    #
+    # A published "Browser In-Seat Version" carries every connection and record
+    # case the in-seat UI steps (13-28) and the EV-29 journey need, isolated from
+    # every other scenario by its version and by its `BIS_`/`BIS-` names:
+    #
+    #   * three calendars — "Weekday service" every weekday, "School days" on
+    #     Monday, Wednesday and Friday and "No school days" on Tuesday and
+    #     Thursday — which derive two day types, {School days, Weekday service}
+    #     (the most trips, so the page's default) and {No school days, Weekday
+    #     service};
+    #   * a same-stop group of four Route 12 → Route 24 connections at BIS_FAR_A
+    #     (`BIS-FA1`…`BIS-FA4`), the first already carrying a matching type-4
+    #     record, so the group panel's "Set all" has an already-set row;
+    #   * a Route 57 turnback group of two connections at BIS_UNION, whose first
+    #     departure row carries `pickup_type` 1 (no pickup), so the choice form's
+    #     R14 warning has a real pair;
+    #   * a 370 m empty move and a 180 m nearby handoff with a 14-minute wait;
+    #   * a "School Junction" group of three Route 12 → Route 24 connections
+    #     (`BIS-SHARED-1`…`BIS-SHARED-3`) whose first block runs a `BIS_NOSCHOOL`
+    #     trip between the pair, so its type-4 record is stale with a named next
+    #     trip and "Set all" has a row to skip;
+    #   * an "Old Alignment" pair carrying a stopless type-4 row beside a type-5
+    #     row (a conflict) and a second pair whose record names a stop its to-trip
+    #     no longer starts at (old stops);
+    #   * an "Unknown Place" group of two whose arrival stop BIS_NOCOORD is stored
+    #     without coordinates, one of them a type-5 row, so the network map
+    #     reports a place it cannot draw;
+    #   * two records naming trips that have no block, which are the version's
+    #     unmatched rows.
+    #
+    # Backdated, so this version never becomes the organization's latest published
+    # default and every existing browser journey keeps opening "Browser E2E
+    # Version". The `BIS_MOVE_A`→`BIS_MOVE_B` and `BIS_NEAR_A`→`BIS_NEAR_B`
+    # coordinates are the exact 370 m and 180 m great-circle separations the
+    # connection drawer prints, so the move and the nearby handoff need no
+    # rounding to land on their cases.
+    {:ok, in_seat_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser In-Seat Version"})
+
+    in_seat_version =
+      Repo.update!(
+        Ecto.Changeset.change(in_seat_version,
+          published_at: ~U[2020-03-01 00:00:00.000000Z]
+        )
+      )
+
+    bis_week_start = ~D[2026-09-07]
+    bis_week_end = ~D[2026-10-30]
+
+    for {service_id, name, days} <- [
+          {"BIS_WEEK", "Weekday service",
+           [monday: 1, tuesday: 1, wednesday: 1, thursday: 1, friday: 1]},
+          {"BIS_SCHOOL", "School days", [monday: 1, wednesday: 1, friday: 1]},
+          {"BIS_NOSCHOOL", "No school days", [tuesday: 1, thursday: 1]}
+        ] do
+      GtfsPlanner.BlockingFixtures.calendar_service_fixture(org.id, in_seat_version.id, %{
+        service_id: service_id,
+        name: name,
+        monday: Keyword.get(days, :monday, 0),
+        tuesday: Keyword.get(days, :tuesday, 0),
+        wednesday: Keyword.get(days, :wednesday, 0),
+        thursday: Keyword.get(days, :thursday, 0),
+        friday: Keyword.get(days, :friday, 0),
+        saturday: 0,
+        sunday: 0,
+        start_date: bis_week_start,
+        end_date: bis_week_end
+      })
+    end
+
+    # Every stop but BIS_NOCOORD carries coordinates, so the two handoffs the
+    # drawer measures have exact distances and the one place the network map
+    # cannot draw is the only stop stored without them.
+    bis_stops =
+      for {stop_id, name, lat, lon} <- [
+            {"BIS_FAR_A", "Far Avenue", "40.70000000", "-74.01000000"},
+            {"BIS_FAR_END", "Far Avenue Terminus", "40.70400000", "-74.01000000"},
+            {"BIS_UNION", "Union Station", "40.71000000", "-74.00600000"},
+            {"BIS_UNION_END", "Union Plaza", "40.71400000", "-74.00600000"},
+            {"BIS_TURN_END", "Union Yards", "40.71800000", "-74.00600000"},
+            {"BIS_DEPOT", "Depot Yard", "40.79600000", "-73.94000000"},
+            {"BIS_MOVE_A", "Depot Row", "40.80000000", "-73.94000000"},
+            {"BIS_MOVE_B", "Depot Row North", "40.80332746", "-73.94000000"},
+            {"BIS_MOVE_END", "Depot Row Terminus", "40.80700000", "-73.94000000"},
+            {"BIS_NEAR_START", "Market Street", "40.80600000", "-73.93000000"},
+            {"BIS_NEAR_A", "Market Row", "40.81000000", "-73.93000000"},
+            {"BIS_NEAR_B", "Market Row West", "40.81161875", "-73.93000000"},
+            {"BIS_NEAR_END", "Market Square", "40.81400000", "-73.93000000"},
+            {"BIS_SHARED_A", "School Junction", "40.75000000", "-73.92000000"},
+            {"BIS_SHARED_END", "School Junction Terminus", "40.75400000", "-73.92000000"},
+            {"BIS_OLD_END", "Old Alignment West", "40.82600000", "-73.91000000"},
+            {"BIS_OLD_A", "Old Alignment", "40.83000000", "-73.91000000"},
+            {"BIS_OLD_B", "Old Alignment East", "40.83134750", "-73.91000000"},
+            {"BIS_OLD_FAR", "Old Alignment Terminus", "40.83800000", "-73.91000000"},
+            {"BIS_NOCOORD_END", "Unknown Place Terminus", "40.85000000", "-73.90000000"}
+          ],
+          into: %{} do
+        stop =
+          GtfsPlanner.GtfsFixtures.stop_fixture(org.id, in_seat_version.id, %{
+            stop_id: stop_id,
+            stop_name: name,
+            stop_lat: Decimal.new(lat),
+            stop_lon: Decimal.new(lon)
+          })
+
+        {stop_id, stop}
+      end
+
+    # The one place the map cannot draw, created without coordinates exactly as
+    # the unlocated-route fixtures above do.
+    {:ok, _bis_nocoord} =
+      GtfsPlanner.GtfsFixtures.insert_stop(%{
+        organization_id: org.id,
+        gtfs_version_id: in_seat_version.id,
+        stop_id: "BIS_NOCOORD",
+        stop_name: "Unknown Place",
+        location_type: 0
+      })
+
+    bis_routes =
+      for {route_id, short_name, long_name} <- [
+            {"BIS_R12", "12", "In-seat Avenue"},
+            {"BIS_R24", "24", "In-seat Crosstown"},
+            {"BIS_R31", "31", "In-seat Depot"},
+            {"BIS_R42", "42", "In-seat Market"},
+            {"BIS_R57", "57", "In-seat University"}
+          ] do
+        {:ok, _route} =
+          GtfsPlanner.GtfsFixtures.insert_route(%{
+            organization_id: org.id,
+            gtfs_version_id: in_seat_version.id,
+            route_id: route_id,
+            route_short_name: short_name,
+            route_long_name: long_name,
+            route_type: 3,
+            route_color: "1E6868"
+          })
+
+        route_id
+      end
+
+    # `HH:MM:SS` from minutes after midnight, so every seeded time reads as the
+    # clock an editor sees.
+    bis_clock = fn mins ->
+      [div(mins, 60), rem(mins, 60)]
+      |> Enum.map_join(":", &String.pad_leading(Integer.to_string(&1), 2, "0"))
+      |> Kernel.<>(":00")
+    end
+
+    bis_trip = fn attrs ->
+      attrs = attrs |> Map.new() |> Map.put_new(:service_id, "BIS_WEEK")
+
+      GtfsPlanner.BlockingFixtures.blocked_trip_fixture(
+        org.id,
+        in_seat_version.id,
+        Map.fetch!(attrs, :route_id),
+        Map.take(attrs, [
+          :trip_id,
+          :service_id,
+          :block_id,
+          :direction_id,
+          :trip_headsign,
+          :first_stop,
+          :last_stop,
+          :first_departure,
+          :last_arrival,
+          :first_pickup_type,
+          :last_drop_off_type
+        ])
+      )
+    end
+
+    # The same-stop group of four. The waits differ so the group reports a range,
+    # and only BIS-FA1 carries a record, which matches the block on both weekday
+    # day types.
+    for {gap, index} <- Enum.with_index([10, 12, 14, 16], 1) do
+      base = 8 * 60 + (index - 1) * 40
+      block_id = "BIS-FA#{index}"
+
+      far_a =
+        bis_trip.(%{
+          trip_id: "BIS_FA#{index}A",
+          route_id: "BIS_R12",
+          block_id: block_id,
+          direction_id: 0,
+          trip_headsign: "In-seat Avenue",
+          first_stop: "BIS_FAR_END",
+          last_stop: "BIS_FAR_A",
+          first_departure: bis_clock.(base),
+          last_arrival: bis_clock.(base + 30)
+        })
+
+      far_b =
+        bis_trip.(%{
+          trip_id: "BIS_FA#{index}B",
+          route_id: "BIS_R24",
+          block_id: block_id,
+          direction_id: 0,
+          trip_headsign: "In-seat Crosstown",
+          first_stop: "BIS_FAR_A",
+          last_stop: "BIS_FAR_END",
+          first_departure: bis_clock.(base + 30 + gap),
+          last_arrival: bis_clock.(base + 60 + gap)
+        })
+
+      if index == 1 do
+        GtfsPlanner.BlockingFixtures.in_seat_transfer_fixture(
+          org.id,
+          in_seat_version.id,
+          far_a,
+          far_b
+        )
+      end
+    end
+
+    # The turnback group. One vehicle, one route, two directions, and the first
+    # to-trip's first stop forbids pickup, so the choice form previews the R14
+    # warning on that connection and not on the other.
+    for {gap, index} <- Enum.with_index([8, 20], 1) do
+      base = 7 * 60 + (index - 1) * 60
+      block_id = "BIS-TURN#{index}"
+
+      bis_trip.(%{
+        trip_id: "BIS_TURN#{index}A",
+        route_id: "BIS_R57",
+        block_id: block_id,
+        direction_id: 0,
+        trip_headsign: "University",
+        first_stop: "BIS_UNION_END",
+        last_stop: "BIS_UNION",
+        first_departure: bis_clock.(base),
+        last_arrival: bis_clock.(base + 25)
+      })
+
+      bis_trip.(%{
+        trip_id: "BIS_TURN#{index}B",
+        route_id: "BIS_R57",
+        block_id: block_id,
+        direction_id: 1,
+        trip_headsign: "University",
+        first_stop: "BIS_UNION",
+        last_stop: "BIS_TURN_END",
+        first_departure: bis_clock.(base + 25 + gap),
+        last_arrival: bis_clock.(base + 50 + gap),
+        first_pickup_type: if(index == 1, do: 1, else: nil)
+      })
+    end
+
+    # The 370 m empty move: Route 31 leaves the vehicle at Depot Row and Route 42
+    # picks it up 370 m north, beyond the 200 m nearby threshold.
+    bis_trip.(%{
+      trip_id: "BIS_MOVE_T1",
+      route_id: "BIS_R31",
+      block_id: "BIS-MOVE",
+      direction_id: 0,
+      trip_headsign: "Depot",
+      first_stop: "BIS_DEPOT",
+      last_stop: "BIS_MOVE_A",
+      first_departure: bis_clock.(14 * 60),
+      last_arrival: bis_clock.(14 * 60 + 30)
+    })
+
+    bis_trip.(%{
+      trip_id: "BIS_MOVE_T2",
+      route_id: "BIS_R42",
+      block_id: "BIS-MOVE",
+      direction_id: 0,
+      trip_headsign: "Market",
+      first_stop: "BIS_MOVE_B",
+      last_stop: "BIS_MOVE_END",
+      first_departure: bis_clock.(14 * 60 + 40),
+      last_arrival: bis_clock.(15 * 60 + 10)
+    })
+
+    # The 180 m nearby handoff with a 14-minute wait, so the drawer carries the
+    # wait hint beside the nearby handoff.
+    bis_trip.(%{
+      trip_id: "BIS_NEAR_T1",
+      route_id: "BIS_R42",
+      block_id: "BIS-NEAR",
+      direction_id: 0,
+      trip_headsign: "Market",
+      first_stop: "BIS_NEAR_START",
+      last_stop: "BIS_NEAR_A",
+      first_departure: bis_clock.(13 * 60),
+      last_arrival: bis_clock.(13 * 60 + 30)
+    })
+
+    bis_trip.(%{
+      trip_id: "BIS_NEAR_T2",
+      route_id: "BIS_R31",
+      block_id: "BIS-NEAR",
+      direction_id: 0,
+      trip_headsign: "Depot",
+      first_stop: "BIS_NEAR_B",
+      last_stop: "BIS_NEAR_END",
+      first_departure: bis_clock.(13 * 60 + 44),
+      last_arrival: bis_clock.(14 * 60 + 14)
+    })
+
+    # The shared-trip pair. BIS-SHARED-1 runs BIS_NOSCHOOL's BIS_SH_X between the
+    # two weekday trips, so on {School days, Weekday service} the pair is
+    # consecutive and on {No school days, Weekday service} it is not: the record
+    # is stale and names the trip that actually runs next.
+    shared_a =
+      bis_trip.(%{
+        trip_id: "BIS_SH_A1",
+        route_id: "BIS_R12",
+        block_id: "BIS-SHARED-1",
+        direction_id: 0,
+        trip_headsign: "In-seat Avenue",
+        first_stop: "BIS_SHARED_END",
+        last_stop: "BIS_SHARED_A",
+        first_departure: bis_clock.(7 * 60),
+        last_arrival: bis_clock.(7 * 60 + 30)
+      })
+
+    bis_trip.(%{
+      trip_id: "BIS_SH_X",
+      route_id: "BIS_R57",
+      service_id: "BIS_NOSCHOOL",
+      block_id: "BIS-SHARED-1",
+      direction_id: 0,
+      trip_headsign: "School shuttle",
+      first_stop: "BIS_SHARED_A",
+      last_stop: "BIS_SHARED_END",
+      first_departure: bis_clock.(7 * 60 + 40),
+      last_arrival: bis_clock.(7 * 60 + 55)
+    })
+
+    shared_b =
+      bis_trip.(%{
+        trip_id: "BIS_SH_B1",
+        route_id: "BIS_R24",
+        block_id: "BIS-SHARED-1",
+        direction_id: 0,
+        trip_headsign: "In-seat Crosstown",
+        first_stop: "BIS_SHARED_A",
+        last_stop: "BIS_SHARED_END",
+        first_departure: bis_clock.(8 * 60 + 5),
+        last_arrival: bis_clock.(8 * 60 + 35)
+      })
+
+    GtfsPlanner.GtfsFixtures.transfer_fixture(org.id, in_seat_version.id, %{
+      from_trip_id: shared_a.trip_id,
+      to_trip_id: shared_b.trip_id,
+      from_stop_id: "BIS_SHARED_A",
+      to_stop_id: "BIS_SHARED_A",
+      transfer_type: 4
+    })
+
+    # Two quiet neighbours, so the group's "Set all" saves them and skips only
+    # the shared-trip pair.
+    for {base, index} <- Enum.with_index([9 * 60, 10 * 60 + 30], 2) do
+      block_id = "BIS-SHARED-#{index}"
+
+      bis_trip.(%{
+        trip_id: "BIS_SH_A#{index}",
+        route_id: "BIS_R12",
+        block_id: block_id,
+        direction_id: 0,
+        trip_headsign: "In-seat Avenue",
+        first_stop: "BIS_SHARED_END",
+        last_stop: "BIS_SHARED_A",
+        first_departure: bis_clock.(base),
+        last_arrival: bis_clock.(base + 30)
+      })
+
+      bis_trip.(%{
+        trip_id: "BIS_SH_B#{index}",
+        route_id: "BIS_R24",
+        block_id: block_id,
+        direction_id: 0,
+        trip_headsign: "In-seat Crosstown",
+        first_stop: "BIS_SHARED_A",
+        last_stop: "BIS_SHARED_END",
+        first_departure: bis_clock.(base + 40),
+        last_arrival: bis_clock.(base + 70)
+      })
+    end
+
+    # Old Alignment, one place with two groups: the conflict pair and the
+    # old-stops pair. Neither connection's handoff is measured between its two
+    # stops being the same, so both carry a record and both need review.
+    old_conflict_a =
+      bis_trip.(%{
+        trip_id: "BIS_OLD_T1",
+        route_id: "BIS_R31",
+        block_id: "BIS-OLD-CONFLICT",
+        direction_id: 0,
+        trip_headsign: "Depot",
+        first_stop: "BIS_OLD_END",
+        last_stop: "BIS_OLD_A",
+        first_departure: bis_clock.(6 * 60),
+        last_arrival: bis_clock.(6 * 60 + 30)
+      })
+
+    old_conflict_b =
+      bis_trip.(%{
+        trip_id: "BIS_OLD_T2",
+        route_id: "BIS_R42",
+        block_id: "BIS-OLD-CONFLICT",
+        direction_id: 0,
+        trip_headsign: "Market",
+        first_stop: "BIS_OLD_B",
+        last_stop: "BIS_OLD_FAR",
+        first_departure: bis_clock.(6 * 60 + 40),
+        last_arrival: bis_clock.(7 * 60 + 10)
+      })
+
+    GtfsPlanner.GtfsFixtures.transfer_fixture(org.id, in_seat_version.id, %{
+      from_trip_id: old_conflict_a.trip_id,
+      to_trip_id: old_conflict_b.trip_id,
+      transfer_type: 4
+    })
+
+    GtfsPlanner.GtfsFixtures.transfer_fixture(org.id, in_seat_version.id, %{
+      from_trip_id: old_conflict_a.trip_id,
+      to_trip_id: old_conflict_b.trip_id,
+      from_stop_id: "BIS_OLD_A",
+      to_stop_id: "BIS_OLD_B",
+      transfer_type: 5
+    })
+
+    old_stops_a =
+      bis_trip.(%{
+        trip_id: "BIS_OLD_T3",
+        route_id: "BIS_R42",
+        block_id: "BIS-OLD-STOPS",
+        direction_id: 0,
+        trip_headsign: "Market",
+        first_stop: "BIS_OLD_END",
+        last_stop: "BIS_OLD_A",
+        first_departure: bis_clock.(8 * 60),
+        last_arrival: bis_clock.(8 * 60 + 30)
+      })
+
+    old_stops_b =
+      bis_trip.(%{
+        trip_id: "BIS_OLD_T4",
+        route_id: "BIS_R24",
+        block_id: "BIS-OLD-STOPS",
+        direction_id: 0,
+        trip_headsign: "In-seat Crosstown",
+        first_stop: "BIS_OLD_B",
+        last_stop: "BIS_OLD_FAR",
+        first_departure: bis_clock.(8 * 60 + 40),
+        last_arrival: bis_clock.(9 * 60 + 10)
+      })
+
+    # The imported row still names Old Alignment as the to-trip's first stop,
+    # which the trip no longer starts at.
+    GtfsPlanner.GtfsFixtures.transfer_fixture(org.id, in_seat_version.id, %{
+      from_trip_id: old_stops_a.trip_id,
+      to_trip_id: old_stops_b.trip_id,
+      from_stop_id: "BIS_OLD_A",
+      to_stop_id: "BIS_OLD_A",
+      transfer_type: 4
+    })
+
+    # The place with no coordinates. Its first connection carries a type-5 row,
+    # so the Connections list has a "Riders must re-board" chip as well as stay.
+    for {base, index} <- Enum.with_index([9 * 60, 10 * 60 + 30], 1) do
+      block_id = "BIS-NOCOORD-#{index}"
+
+      nocoord_a =
+        bis_trip.(%{
+          trip_id: "BIS_NC_T#{index}A",
+          route_id: "BIS_R31",
+          block_id: block_id,
+          direction_id: 0,
+          trip_headsign: "Depot",
+          first_stop: "BIS_NOCOORD_END",
+          last_stop: "BIS_NOCOORD",
+          first_departure: bis_clock.(base),
+          last_arrival: bis_clock.(base + 30)
+        })
+
+      nocoord_b =
+        bis_trip.(%{
+          trip_id: "BIS_NC_T#{index}B",
+          route_id: "BIS_R42",
+          block_id: block_id,
+          direction_id: 0,
+          trip_headsign: "Market",
+          first_stop: "BIS_NOCOORD",
+          last_stop: "BIS_NOCOORD_END",
+          first_departure: bis_clock.(base + 40),
+          last_arrival: bis_clock.(base + 70)
+        })
+
+      if index == 1 do
+        GtfsPlanner.GtfsFixtures.transfer_fixture(org.id, in_seat_version.id, %{
+          from_trip_id: nocoord_a.trip_id,
+          to_trip_id: nocoord_b.trip_id,
+          from_stop_id: "BIS_NOCOORD",
+          to_stop_id: "BIS_NOCOORD",
+          transfer_type: 5
+        })
+      end
+    end
+
+    # The two unmatched rows: records whose trips carry no block, so no gap ever
+    # hosts them and the version-level read lists them with :no_block.
+    for {handoff_stop, other_stop, first_trip, second_trip, transfer_type} <- [
+          {"BIS_FAR_A", "BIS_FAR_END", "BIS_UNB1", "BIS_UNB2", 4},
+          {"BIS_MOVE_B", "BIS_MOVE_END", "BIS_UNB3", "BIS_UNB4", 5}
+        ] do
+      bis_trip.(%{
+        trip_id: first_trip,
+        route_id: "BIS_R12",
+        direction_id: 0,
+        trip_headsign: "In-seat Avenue",
+        first_stop: other_stop,
+        last_stop: handoff_stop,
+        first_departure: bis_clock.(6 * 60),
+        last_arrival: bis_clock.(6 * 60 + 20)
+      })
+
+      bis_trip.(%{
+        trip_id: second_trip,
+        route_id: "BIS_R24",
+        direction_id: 0,
+        trip_headsign: "In-seat Crosstown",
+        first_stop: handoff_stop,
+        last_stop: other_stop,
+        first_departure: bis_clock.(6 * 60 + 25),
+        last_arrival: bis_clock.(6 * 60 + 45)
+      })
+
+      GtfsPlanner.GtfsFixtures.transfer_fixture(org.id, in_seat_version.id, %{
+        from_trip_id: first_trip,
+        to_trip_id: second_trip,
+        from_stop_id: handoff_stop,
+        to_stop_id: handoff_stop,
+        transfer_type: transfer_type
+      })
+    end
+
+    bis_blocked_trips =
+      Repo.aggregate(
+        from(t in Trip,
+          where: t.gtfs_version_id == ^in_seat_version.id and not is_nil(t.block_id)
+        ),
+        :count
+      )
+
+    # Two trips that run only on the school calendar. They are unassigned, so they
+    # join the pool instead of a block, and they are what makes {School days,
+    # Weekday service} carry more trips than {No school days, Weekday service}:
+    # without them the two day types tie on trip count and the page's default
+    # would fall to whichever key sorted first.
+    for index <- 1..2 do
+      bis_trip.(%{
+        trip_id: "BIS_SCHOOL_POOL_#{index}",
+        route_id: "BIS_R57",
+        service_id: "BIS_SCHOOL",
+        direction_id: 0,
+        trip_headsign: "School shuttle",
+        first_stop: "BIS_SHARED_END",
+        last_stop: "BIS_SHARED_A",
+        first_departure: bis_clock.(16 * 60 + (index - 1) * 30),
+        last_arrival: bis_clock.(16 * 60 + 20 + (index - 1) * 30)
+      })
+    end
+
+    bis_in_seat_records =
+      Repo.aggregate(
+        from(t in Transfer, where: t.gtfs_version_id == ^in_seat_version.id),
+        :count
+      )
+
+    IO.puts(
+      "Browser seed: version #{in_seat_version.name} (#{in_seat_version.id}) with " <>
+        "2 day types, #{map_size(bis_stops) + 1} stops, #{length(bis_routes)} routes, " <>
+        "#{bis_blocked_trips} blocked trips and #{bis_in_seat_records} in-seat records"
     )
 
     IO.puts("Browser seed: restored Browser E2E Version as the latest default")
@@ -7667,7 +9084,7 @@ case Accounts.register_first_admin(%{
       ],
       fn {stop_id, name, lat, lon} ->
         {:ok, _stop} =
-          Gtfs.create_stop(%{
+          GtfsPlanner.GtfsFixtures.insert_stop(%{
             organization_id: org.id,
             gtfs_version_id: diagram_version.id,
             stop_id: stop_id,
@@ -7680,7 +9097,7 @@ case Accounts.register_first_admin(%{
     )
 
     {:ok, align_route} =
-      Gtfs.create_route(%{
+      GtfsPlanner.GtfsFixtures.insert_route(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: "BROWSER_ALIGN",
@@ -7809,7 +9226,7 @@ case Accounts.register_first_admin(%{
     )
 
     {:ok, align_trip} =
-      Gtfs.create_trip(%{
+      GtfsPlanner.GtfsFixtures.insert_trip(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: align_route.route_id,
@@ -7829,7 +9246,7 @@ case Accounts.register_first_admin(%{
     |> Enum.with_index(1)
     |> Enum.each(fn {stop_id, sequence} ->
       {:ok, _stop_time} =
-        Gtfs.create_stop_time(%{
+        GtfsPlanner.GtfsFixtures.insert_stop_time(%{
           organization_id: org.id,
           gtfs_version_id: diagram_version.id,
           trip_id: "BROWSER_ALIGN_T1",
@@ -7882,7 +9299,7 @@ case Accounts.register_first_admin(%{
           {"BROWSER_ALIGN_IMP_T2", "IMP-ALIGN-2"}
         ] do
       {:ok, trip} =
-        Gtfs.create_trip(%{
+        GtfsPlanner.GtfsFixtures.insert_trip(%{
           organization_id: org.id,
           gtfs_version_id: diagram_version.id,
           route_id: align_route.route_id,
@@ -7945,7 +9362,7 @@ case Accounts.register_first_admin(%{
     end
 
     {:ok, imported_single_trip} =
-      Gtfs.create_trip(%{
+      GtfsPlanner.GtfsFixtures.insert_trip(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: align_route.route_id,
@@ -7984,7 +9401,7 @@ case Accounts.register_first_admin(%{
           {"RCT", "Riverside Community Transport", "riverside.example", 0}
         ] do
       {:ok, _agency} =
-        Gtfs.create_agency(%{
+        GtfsPlanner.GtfsFixtures.insert_agency(%{
           organization_id: org.id,
           gtfs_version_id: agencies_version.id,
           agency_id: agency_id,
@@ -7995,7 +9412,7 @@ case Accounts.register_first_admin(%{
 
       for index <- 1..route_count//1 do
         {:ok, _route} =
-          Gtfs.create_route(%{
+          GtfsPlanner.GtfsFixtures.insert_route(%{
             organization_id: org.id,
             gtfs_version_id: agencies_version.id,
             agency_id: agency_id,
@@ -8015,7 +9432,7 @@ case Accounts.register_first_admin(%{
           {"LFT", "Lakefront Transit", "lakefront.example", "America/Chicago"}
         ] do
       {:ok, _agency} =
-        Gtfs.create_agency(%{
+        GtfsPlanner.GtfsFixtures.insert_agency(%{
           organization_id: org.id,
           gtfs_version_id: mixed_timezone_version.id,
           agency_id: agency_id,
@@ -8025,7 +9442,7 @@ case Accounts.register_first_admin(%{
         })
 
       {:ok, _route} =
-        Gtfs.create_route(%{
+        GtfsPlanner.GtfsFixtures.insert_route(%{
           organization_id: org.id,
           gtfs_version_id: mixed_timezone_version.id,
           agency_id: agency_id,
@@ -8059,7 +9476,7 @@ case Accounts.register_first_admin(%{
           {"GAMMA", "Browser Gamma", "gamma.example", 0}
         ] do
       {:ok, _agency} =
-        Gtfs.create_agency(%{
+        GtfsPlanner.GtfsFixtures.insert_agency(%{
           organization_id: org.id,
           gtfs_version_id: agency_delete_version.id,
           agency_id: agency_id,
@@ -8070,7 +9487,7 @@ case Accounts.register_first_admin(%{
 
       for index <- 1..route_count//1 do
         {:ok, _route} =
-          Gtfs.create_route(%{
+          GtfsPlanner.GtfsFixtures.insert_route(%{
             organization_id: org.id,
             gtfs_version_id: agency_delete_version.id,
             agency_id: agency_id,
@@ -8105,7 +9522,7 @@ case Accounts.register_first_admin(%{
 
     for index <- 1..2//1 do
       {:ok, _route} =
-        Gtfs.create_route(%{
+        GtfsPlanner.GtfsFixtures.insert_route(%{
           organization_id: org.id,
           gtfs_version_id: unassigned_routes_version.id,
           route_id: "UNASSIGNED_#{index}",
@@ -8268,7 +9685,10 @@ case Accounts.register_first_admin(%{
 
     # ── Home Planner Org: the attention and new-member states ──
     {:ok, home_planner_org} =
-      Organizations.create_organization(%{name: "Home Planner Org", alias: "home-planner-org"})
+      Organizations.create_organization_unchecked(%{
+        name: "Home Planner Org",
+        alias: "home-planner-org"
+      })
 
     home_pin_default_version.(home_planner_org)
 
@@ -8465,7 +9885,7 @@ case Accounts.register_first_admin(%{
 
     # ── Home Pathways Org: the 14-station board ──
     {:ok, home_pathways_org} =
-      Organizations.create_organization(%{
+      Organizations.create_organization_unchecked(%{
         name: "Home Pathways Org",
         alias: "home-pathways-org",
         product: :pathways
@@ -8593,7 +10013,7 @@ case Accounts.register_first_admin(%{
     home_serve.("7", "UNS-T7", home_uns_platform.stop_id)
 
     {:ok, _home_uns_floorplan} =
-      Gtfs.create_stop_level(%{
+      GtfsPlanner.GtfsFixtures.insert_stop_level(%{
         organization_id: home_pathways_org.id,
         gtfs_version_id: home_pathways_version.id,
         stop_id: home_uns.id,
@@ -8651,10 +10071,10 @@ case Accounts.register_first_admin(%{
 
     # One editing status by another user: the board row reads "editing now" and
     # the rail lists priya.n, never this viewer.
-    {:ok, _home_editing_status} =
-      Gtfs.set_station_editing_status(
-        home_pathways_org.id,
-        home_pathways_version.id,
+    _home_editing_status =
+      GtfsPlanner.GtfsFixtures.station_editing_status_fixture(
+        home_pathways_org,
+        home_pathways_version,
         home_uns,
         home_pathways_other
       )
@@ -8710,7 +10130,7 @@ case Accounts.register_first_admin(%{
     workload_now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     {:ok, workload_current} =
-      Gtfs.create_route(%{
+      GtfsPlanner.GtfsFixtures.insert_route(%{
         organization_id: org.id,
         gtfs_version_id: workload_version.id,
         route_id: "BROWSER_MW_000",
@@ -8746,7 +10166,7 @@ case Accounts.register_first_admin(%{
     ]
     |> Enum.each(fn {pattern, stop_id, position, lat, lon} ->
       {:ok, _stop} =
-        Gtfs.create_stop(%{
+        GtfsPlanner.GtfsFixtures.insert_stop(%{
           organization_id: org.id,
           gtfs_version_id: workload_version.id,
           stop_id: stop_id,
@@ -8772,7 +10192,7 @@ case Accounts.register_first_admin(%{
     end)
 
     {:ok, workload_trip} =
-      Gtfs.create_trip(%{
+      GtfsPlanner.GtfsFixtures.insert_trip(%{
         organization_id: org.id,
         gtfs_version_id: workload_version.id,
         route_id: "BROWSER_MW_000",
@@ -8999,7 +10419,7 @@ case Accounts.register_first_admin(%{
         )
 
       {:ok, _stop} =
-        Gtfs.create_stop(%{
+        GtfsPlanner.GtfsFixtures.insert_stop(%{
           stop_id: "BIS_#{index}",
           stop_name: "Interp Stop #{index}",
           location_type: 0,
@@ -9059,7 +10479,7 @@ case Accounts.register_first_admin(%{
     |> then(&Repo.insert_all(GtfsPlanner.Gtfs.CalendarAttribute, &1))
 
     {:ok, interp_fill_route} =
-      Gtfs.create_route(%{
+      GtfsPlanner.GtfsFixtures.insert_route(%{
         organization_id: org.id,
         gtfs_version_id: interp_version.id,
         route_id: "BROWSER_INTERP_FILL",
@@ -9101,7 +10521,7 @@ case Accounts.register_first_admin(%{
     )
 
     {:ok, interp_import_route} =
-      Gtfs.create_route(%{
+      GtfsPlanner.GtfsFixtures.insert_route(%{
         organization_id: org.id,
         gtfs_version_id: interp_version.id,
         route_id: "BROWSER_INTERP_IMPORT",
@@ -9308,7 +10728,7 @@ case Accounts.register_first_admin(%{
     # The station's one level, so a delete of ST-NTC is refused on a cascading
     # reference and not only on its child stops.
     {:ok, stops_map_level} =
-      Gtfs.create_level(%{
+      GtfsPlanner.GtfsFixtures.insert_level(%{
         level_id: "GROUND",
         level_name: "Ground",
         level_index: 0.0,
@@ -9326,7 +10746,7 @@ case Accounts.register_first_admin(%{
       )
 
     {:ok, _stops_map_stop_level} =
-      Gtfs.create_stop_level(%{
+      GtfsPlanner.GtfsFixtures.insert_stop_level(%{
         organization_id: stops_map_org.id,
         gtfs_version_id: stops_map_version.id,
         stop_id: stops_map_station.id,
@@ -9517,7 +10937,7 @@ case Accounts.register_first_admin(%{
           {"3", "3", "Newport City Loop", "4B1F78"}
         ] do
       {:ok, _route} =
-        Gtfs.create_route(%{
+        GtfsPlanner.GtfsFixtures.insert_route(%{
           organization_id: stops_map_org.id,
           gtfs_version_id: stops_map_version.id,
           route_id: route_id,
@@ -9710,6 +11130,12 @@ case Accounts.register_first_admin(%{
         "#{length(stops_map_model.lines)} patterns, #{stops_map_shape_point_count} shape points, " <>
         "#{stops_map_segment_count} shared segments, garage #{stops_map_garage.garage_id})"
     )
+
+    # The seed bulk-loads its rows, and a new database has no planner statistics
+    # until autovacuum's first pass. A query planned before then estimates one row
+    # per table and nests its joins, so the Stops page's routes-serving-stations
+    # lookup runs for about a minute on the first visit. Analyze once the data is in.
+    Repo.query!("ANALYZE")
 
   {:error, changeset} ->
     raise "Browser seed failed: #{inspect(changeset.errors)}"

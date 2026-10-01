@@ -15,6 +15,17 @@ defmodule GtfsPlanner.Gtfs.Import.FailureTest do
       assert failure.reason_code in Failure.reason_codes()
     end
 
+    test "maps a record over the length limit to its own code" do
+      error = %ParseError{file: "stop_times.txt", row: 9, reason: :record_too_long}
+
+      failure = Failure.from_error(error, phase: :phase_2)
+
+      assert failure.reason_code == "record_too_long"
+      assert failure.failed_file == "stop_times.txt"
+      assert failure.failed_row == 9
+      assert failure.reason_code in Failure.reason_codes()
+    end
+
     test "maps an unknown ParseError reason to a fixed fallback code" do
       error = %ParseError{file: "stops.txt", reason: :some_future_reason}
 

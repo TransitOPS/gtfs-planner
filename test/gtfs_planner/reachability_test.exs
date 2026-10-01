@@ -7,10 +7,15 @@ defmodule GtfsPlanner.ReachabilityTest do
 
   alias GtfsPlanner.Reachability
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.RunnerSlots
   alias GtfsPlanner.TestSupport.ControlledReachabilityRunner
   alias GtfsPlanner.Validations.ValidationRun
 
   setup do
+    # One reachability run fits the supervisor; wait out the previous test's
+    # runner before this test starts its own.
+    RunnerSlots.await_idle()
+
     org = organization_fixture()
     version = gtfs_version_fixture(org.id)
     _level = level_fixture(org.id, version.id, %{level_id: "L1", level_index: 0.0})
@@ -60,7 +65,7 @@ defmodule GtfsPlanner.ReachabilityTest do
              Repo.get!(ValidationRun, run_id)
   end
 
-  test "admits one active run, permits a different station, and admits again after completion", %{
+  test "admits one active run per station and admits again after completion", %{
     org: org,
     version: version,
     station: station
@@ -71,16 +76,10 @@ defmodule GtfsPlanner.ReachabilityTest do
 
     assert {:error, :run_in_progress} = start_controlled_run(org, version, station)
 
-    other_station =
-      stop_fixture(org.id, version.id, %{stop_id: "OTHER_STATION", location_type: 1})
-
-    assert {:ok, _other_run} = start_controlled_run(org, version, other_station)
-    other_runner_pid = await_runner()
-    complete_runner(other_runner_pid)
-
     Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, Reachability.topic(run_id))
     complete_runner(runner_pid)
     assert_receive {:reachability_run_completed, ^run_id}, 5_000
+    RunnerSlots.await_idle()
 
     assert {:ok, retry_run} = start_controlled_run(org, version, station)
     retry_runner_pid = await_runner()

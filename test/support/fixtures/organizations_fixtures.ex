@@ -36,7 +36,7 @@ defmodule GtfsPlanner.OrganizationsFixtures do
     {:ok, organization} =
       attrs
       |> valid_organization_attributes()
-      |> GtfsPlanner.Organizations.create_organization()
+      |> GtfsPlanner.Organizations.create_organization_unchecked()
 
     organization
   end

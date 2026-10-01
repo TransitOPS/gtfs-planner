@@ -3,6 +3,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
 
   import Ecto.Query
 
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs
 
   alias GtfsPlanner.Gtfs.{
@@ -21,7 +22,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
 
   @type sync_error :: %{
           id: term(),
-          code: :invalid_id | :invalid_target | :id_conflict | :validation_error
+          code: :invalid_id | :invalid_target | :id_conflict | :validation_error | :forbidden
         }
 
   @spec resolve_scope(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
@@ -109,7 +110,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   end
 
   @spec close_entry(Scope.t(), Ecto.UUID.t()) ::
-          {:ok, JournalEntry.t()} | {:error, :not_found | Ecto.Changeset.t()}
+          {:ok, JournalEntry.t()} | {:error, :not_found | :forbidden | Ecto.Changeset.t()}
   def close_entry(%Scope{} = scope, entry_id) do
     case cast_uuid(entry_id) do
       {:ok, id} ->
@@ -124,7 +125,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   end
 
   @spec reopen_entry(Scope.t(), Ecto.UUID.t()) ::
-          {:ok, JournalEntry.t()} | {:error, :not_found | Ecto.Changeset.t()}
+          {:ok, JournalEntry.t()} | {:error, :not_found | :forbidden | Ecto.Changeset.t()}
   def reopen_entry(%Scope{} = scope, entry_id) do
     case cast_uuid(entry_id) do
       {:ok, id} ->
@@ -198,7 +199,11 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
 
   defp create_staged_photo(scope, photo_id, entry_id, attrs, staged) do
     with :ok <- validate_captured_at(attr(attrs, :captured_at)) do
-      result = Repo.transaction(fn -> persist_photo(scope, photo_id, entry_id, attrs, staged) end)
+      result =
+        Repo.transaction(fn ->
+          Authorization.lock_editor!(scope)
+          persist_photo(scope, photo_id, entry_id, attrs, staged)
+        end)
 
       case result do
         {:ok, {:ok, photo}} ->
@@ -410,28 +415,39 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
 
   defp sync_new_entry(scope, targets, id, attrs) do
     with :ok <- validate_target(targets, attrs) do
-      changeset = JournalEntry.create_changeset(%JournalEntry{}, attrs, scope)
+      sync_validated_new_entry(scope, id, attrs)
+    end
+  end
 
-      if changeset.valid? do
-        sync_entry_transaction(fn -> persist_entry(scope, id, attrs, changeset) end)
-      else
-        {:error, :validation_error}
-      end
+  defp sync_validated_new_entry(scope, id, attrs) do
+    changeset = JournalEntry.create_changeset(%JournalEntry{}, attrs, scope)
+
+    if changeset.valid? do
+      sync_entry_transaction(scope, fn -> persist_entry(scope, id, attrs, changeset) end)
+    else
+      {:error, :validation_error}
     end
   end
 
   defp sync_existing_entry(scope, targets, id, entry, attrs) do
     if owned_by_scope?(entry, scope) do
-      sync_entry_transaction(fn -> persist_existing_entry(scope, targets, id, attrs) end)
+      sync_entry_transaction(scope, fn -> persist_existing_entry(scope, targets, id, attrs) end)
     else
       {:error, :id_conflict}
     end
   end
 
-  defp sync_entry_transaction(fun) do
-    case Repo.transaction(fun) do
+  defp sync_entry_transaction(scope, fun) do
+    result =
+      Repo.transaction(fn ->
+        Authorization.lock_editor!(scope)
+        fun.()
+      end)
+
+    case result do
       {:ok, :ok} -> :ok
       {:ok, {:error, code}} -> {:error, code}
+      {:error, :forbidden} -> {:error, :forbidden}
       {:error, _reason} -> {:error, :validation_error}
     end
   end
@@ -549,6 +565,8 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   defp apply_transition(scope, entry_id, transition) do
     result =
       Repo.transaction(fn ->
+        Authorization.lock_editor!(scope)
+
         case locked_scoped_entry(scope, entry_id) do
           nil ->
             Repo.rollback(:not_found)
@@ -591,8 +609,8 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
       {:ok, {:noop, entry}} ->
         {:ok, {entry, :noop}}
 
-      {:error, :not_found} ->
-        {:error, :not_found}
+      {:error, reason} when reason in [:not_found, :forbidden] ->
+        {:error, reason}
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:error, changeset}

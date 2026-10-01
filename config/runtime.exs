@@ -175,6 +175,24 @@ if config_env() != :test do
   config :gtfs_planner, GtfsPlanner.Agents.Model, model: openrouter_model
 
   config :gtfs_planner, :openrouter_api_key, openrouter_api_key
+
+  if config_env() == :prod do
+    agent_limits =
+      for {key, variable} <- [
+            organization_daily_attempts: "AGENT_ORG_DAILY_ATTEMPTS",
+            actor_daily_attempts: "AGENT_ACTOR_DAILY_ATTEMPTS"
+          ] do
+        value =
+          case Integer.parse(System.get_env(variable) || "") do
+            {number, ""} when number > 0 -> number
+            _ -> raise "#{variable} must be a positive integer"
+          end
+
+        {key, value}
+      end
+
+    config :gtfs_planner, GtfsPlanner.Agents.UsageBudget, agent_limits
+  end
 end
 
 if config_env() == :prod do
@@ -289,25 +307,32 @@ if config_env() == :prod do
   ses_access_key = System.get_env("AWS_ACCESS_KEY_ID")
   ses_secret_key = System.get_env("AWS_SECRET_ACCESS_KEY")
 
-  if ses_region && ses_access_key && ses_secret_key do
-    ses_config = [
-      adapter: Swoosh.Adapters.AmazonSES,
-      region: ses_region,
-      access_key: ses_access_key,
-      secret: ses_secret_key
+  missing_ses_settings =
+    [
+      if(is_nil(ses_region), do: "AWS_SES_REGION", else: nil),
+      if(is_nil(ses_region), do: "AWS_REGION", else: nil),
+      if(is_nil(ses_access_key), do: "AWS_ACCESS_KEY_ID", else: nil),
+      if(is_nil(ses_secret_key), do: "AWS_SECRET_ACCESS_KEY", else: nil)
     ]
+    |> Enum.reject(&is_nil/1)
 
-    # Add configuration set if provided
-    ses_config =
-      case System.get_env("AWS_SES_CONFIGURATION_SET") do
-        nil -> ses_config
-        config_set -> Keyword.put(ses_config, :configuration_set_name, config_set)
-      end
-
-    config :gtfs_planner, GtfsPlanner.Mailer, ses_config
-  else
-    # Fallback to Logger adapter if AWS SES is not configured
-    # This logs emails instead of sending them - suitable for staging
-    config :gtfs_planner, GtfsPlanner.Mailer, adapter: Swoosh.Adapters.Logger
+  if missing_ses_settings != [] do
+    raise "Missing SES configuration: #{Enum.join(missing_ses_settings, ", ")}"
   end
+
+  ses_config = [
+    adapter: Swoosh.Adapters.AmazonSES,
+    region: ses_region,
+    access_key: ses_access_key,
+    secret: ses_secret_key
+  ]
+
+  # Add configuration set if provided
+  ses_config =
+    case System.get_env("AWS_SES_CONFIGURATION_SET") do
+      nil -> ses_config
+      config_set -> Keyword.put(ses_config, :configuration_set_name, config_set)
+    end
+
+  config :gtfs_planner, GtfsPlanner.Mailer, ses_config
 end

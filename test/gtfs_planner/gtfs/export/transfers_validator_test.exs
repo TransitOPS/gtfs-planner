@@ -33,8 +33,17 @@ defmodule GtfsPlanner.Gtfs.Export.TransfersValidatorTest do
 
       mix test --only validator_cli test/gtfs_planner/gtfs/export/transfers_validator_test.exs
 
-  Each test runs the CLI twice inside its own 300-second ExUnit timeout, the prepared EV-6 and
-  EV-14 deadlines.
+  The third test (EV-7, AC-2, AC-6) judges the record the Blocks authoring command writes: a feed
+  with two blocked, consecutive trips is given a `:stay_on_board` connection through
+  `Gtfs.set_in_seat_connection/5`, and `transfers.txt` must carry that row with the from-trip's
+  last and the to-trip's first stop and no ERROR whose code starts with `transfer_`. The negative
+  control is the same pair with a `to_stop_id` the to-trip never visits: the row must reach the
+  export whole, the report must carry `transfer_with_invalid_trip_and_stop` as an ERROR, and the
+  same row's state through `Gtfs.load_blocking_day/3` must be `{:stale, :stops_changed}`, so the
+  validator's rule and the editor's review note are one fact read twice.
+
+  Each test runs the CLI twice inside its own 300-second ExUnit timeout, the prepared EV-6, EV-7
+  and EV-14 deadlines.
   """
 
   use GtfsPlanner.DataCase, async: false
@@ -47,6 +56,7 @@ defmodule GtfsPlanner.Gtfs.Export.TransfersValidatorTest do
   alias GtfsPlanner.Repo
 
   import GtfsPlanner.AccountsFixtures
+  import GtfsPlanner.BlockingFixtures
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -312,6 +322,162 @@ defmodule GtfsPlanner.Gtfs.Export.TransfersValidatorTest do
     })
   end
 
+  test "the validator accepts a written in-seat record and reports a drifted one" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    seed_block_feed(organization.id, version.id)
+
+    audit = audit_context(organization.id, version.id)
+
+    # A record written through the Blocks authoring command, not a fixture row: the
+    # handoff stops are the trips' own endpoints, which is what OpenTripPlanner's
+    # `TransferMapper` dereferences.
+    assert {:ok, %{choice: :stay_on_board, transfer: written}} =
+             Gtfs.set_in_seat_connection("BC-0700", "BC-0800", :stay_on_board, [], audit)
+
+    assert written.from_stop_id == "BSTOP-2"
+    assert written.to_stop_id == "BSTOP-3"
+
+    tmp_dir = tmp_dir!()
+
+    written_zip = export_zip!(tmp_dir, organization.id, version.id, "in-seat-written")
+
+    written_report =
+      GtfsValidatorCli.run!(Path.join(tmp_dir, "in-seat-written-report"), written_zip)
+
+    print_block_observation("in-seat-written", written_report)
+
+    assert {_, written_rows} = transfers_csv(written_zip)
+
+    assert "BSTOP-2,BSTOP-3,,,BC-0700,BC-0800,4," in written_rows
+
+    # No `transfer_*` ERROR of any kind: the written row is a valid in-seat record
+    # for a feed whose trips really are consecutive.
+    assert transfer_rule_error_notices(written_report) == [],
+           "the validator rejects the written record: " <>
+             inspect(Enum.map(transfer_rule_error_notices(written_report), & &1["code"]))
+
+    # The negative control is the same pair with a `to_stop_id` the to-trip never
+    # visits — the drift R2 repairs. It reaches the export whole, so the ERROR
+    # cannot come from an export that dropped the row. The stop has to be a real
+    # exported stop: `BSTOP-1` is one the feed declares and only `BC-0700`
+    # visits, so the row trips the trip-and-stop rule rather than the foreign
+    # key rule, which a stop id the feed never declares would fire instead.
+    transfer_fixture(organization.id, version.id, %{
+      transfer_type: 4,
+      from_trip_id: "BC-0700",
+      to_trip_id: "BC-0800",
+      from_stop_id: "BSTOP-2",
+      to_stop_id: "BSTOP-1"
+    })
+
+    drifted_zip = export_zip!(tmp_dir, organization.id, version.id, "in-seat-drifted")
+
+    drifted_report =
+      GtfsValidatorCli.run!(Path.join(tmp_dir, "in-seat-drifted-report"), drifted_zip)
+
+    print_block_observation("in-seat-drifted", drifted_report)
+
+    assert {_, drifted_rows} = transfers_csv(drifted_zip)
+    assert "BSTOP-2,BSTOP-1,,,BC-0700,BC-0800,4," in drifted_rows
+
+    notice =
+      Enum.find(
+        GtfsValidatorCli.notices(drifted_report),
+        &(&1["code"] == "transfer_with_invalid_trip_and_stop")
+      )
+
+    assert notice,
+           "the validator did not report transfer_with_invalid_trip_and_stop: " <>
+             inspect(Enum.map(transfer_rule_error_notices(drifted_report), & &1["code"]))
+
+    assert GtfsValidatorCli.severity(notice) == "ERROR"
+
+    IO.puts(
+      "EV-7 in-seat-drifted transfer_with_invalid_trip_and_stop: " <>
+        "severity=#{GtfsValidatorCli.severity(notice)} totalNotices=#{notice["totalNotices"]}"
+    )
+
+    # The same drifted row is the application's own `{:stale, :stops_changed}`: the
+    # validator's ERROR and the editor's review note are one fact read twice, and
+    # the save repairs it by rewriting the stops.
+    assert drifted_state(organization.id, version.id, "BC-0700", "BC-0800") ==
+             {:stale, :stops_changed}
+  end
+
+  # The state the Blocks day load reports for the pair's one record, from the
+  # production read and the one `InSeat.state/2` rule (INV-2).
+  defp drifted_state(organization_id, version_id, from_trip_id, to_trip_id) do
+    assert {:ok, day} = Gtfs.load_blocking_day(organization_id, version_id, nil)
+
+    state =
+      day.in_seat
+      |> Map.values()
+      |> List.flatten()
+      |> Enum.find(fn entry ->
+        entry.row.from_trip_id == from_trip_id and entry.row.to_trip_id == to_trip_id and
+          entry.row.to_stop_id == "BSTOP-1"
+      end)
+
+    assert state, "the day load lists no in-seat record for the drifted pair"
+
+    state.state
+  end
+
+  # A feed a Blocks connection can be authored against: agency, one weekly
+  # calendar, four stops, one route and two blocked trips whose stop times make
+  # them consecutive in block BC-1 with the from-trip ending at `BSTOP-2` and the
+  # to-trip starting at `BSTOP-3`.
+  defp seed_block_feed(organization_id, version_id) do
+    agency_fixture(organization_id, version_id,
+      agency_id: "BAG",
+      agency_name: "Block Transit",
+      agency_timezone: "America/Los_Angeles"
+    )
+
+    calendar_fixture(organization_id, version_id,
+      service_id: "BWK",
+      start_date: ~D[2026-01-01],
+      end_date: ~D[2026-12-31]
+    )
+
+    for {stop_id, index} <- Enum.with_index(["BSTOP-1", "BSTOP-2", "BSTOP-3", "BSTOP-4"], 0) do
+      stop_fixture(organization_id, version_id,
+        stop_id: stop_id,
+        stop_name: "Block Stop #{index + 1}",
+        stop_lat: "#{40.0 + index / 100.0}",
+        stop_lon: "-75.0"
+      )
+    end
+
+    route_fixture(organization_id, version_id,
+      route_id: "BRT",
+      route_short_name: "B",
+      route_long_name: "Block Route",
+      agency_id: "BAG"
+    )
+
+    blocked_trip_fixture(organization_id, version_id, "BRT", %{
+      trip_id: "BC-0700",
+      service_id: "BWK",
+      block_id: "BC-1",
+      first_stop: "BSTOP-1",
+      last_stop: "BSTOP-2",
+      first_arrival: "07:00:00",
+      last_arrival: "07:30:00"
+    })
+
+    blocked_trip_fixture(organization_id, version_id, "BRT", %{
+      trip_id: "BC-0800",
+      service_id: "BWK",
+      block_id: "BC-1",
+      first_stop: "BSTOP-3",
+      last_stop: "BSTOP-4",
+      first_arrival: "08:00:00",
+      last_arrival: "08:30:00"
+    })
+  end
+
   # A feed the editor path can write against and the validator accepts: agency, weekly calendar,
   # the station `VCEN` with its two child platforms, the two standalone stops, two routes and the
   # three trips whose stop times give every side of the three rules a real witness. `V1-0800`
@@ -455,6 +621,7 @@ defmodule GtfsPlanner.Gtfs.Export.TransfersValidatorTest do
 
   defp audit_context(organization_id, version_id) do
     actor = user_fixture()
+    organization_membership_fixture(actor, %{id: organization_id})
 
     %AuditContext{
       organization_id: organization_id,
@@ -565,6 +732,28 @@ defmodule GtfsPlanner.Gtfs.Export.TransfersValidatorTest do
         for notice <- notices do
           IO.puts(
             "EV-14 #{label} export transfers.txt rule ERROR notice: " <>
+              "code=#{notice["code"]} totalNotices=#{notice["totalNotices"]}"
+          )
+        end
+    end
+  end
+
+  # The captured output of this module is EV-6's, EV-7's and EV-14's evidence, so
+  # each test prints its own gate's observation lines; the rules this test judges
+  # are the validator's transfers rules.
+  defp print_block_observation(label, report) do
+    codes = report |> error_codes() |> MapSet.to_list() |> Enum.sort()
+
+    IO.puts("EV-7 #{label} export ERROR codes: #{inspect(codes)}")
+
+    case transfer_rule_error_notices(report) do
+      [] ->
+        IO.puts("EV-7 #{label} export transfers.txt rule ERROR notices: none")
+
+      notices ->
+        for notice <- notices do
+          IO.puts(
+            "EV-7 #{label} export transfers.txt rule ERROR notice: " <>
               "code=#{notice["code"]} totalNotices=#{notice["totalNotices"]}"
           )
         end

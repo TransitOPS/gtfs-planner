@@ -170,12 +170,21 @@ defmodule GtfsPlannerWeb.UserAuth do
   LiveView topic; API-session and email tokens are ignored.
   """
   def disconnect_sessions(expired_tokens) when is_list(expired_tokens) do
-    Enum.each(expired_tokens, fn
-      %UserToken{context: "session", token: digest} ->
-        GtfsPlannerWeb.Endpoint.broadcast(session_topic(digest), "disconnect", %{})
+    digests =
+      Enum.flat_map(expired_tokens, fn
+        %UserToken{context: "session", token: digest} -> [digest]
+        %UserToken{} -> []
+      end)
 
-      %UserToken{} ->
-        :ok
+    disconnect_session_digests(digests)
+  end
+
+  @doc """
+  Broadcasts a disconnect for each stored web-session token digest.
+  """
+  def disconnect_session_digests(digests) when is_list(digests) do
+    Enum.each(digests, fn digest ->
+      GtfsPlannerWeb.Endpoint.broadcast(session_topic(digest), "disconnect", %{})
     end)
 
     :ok

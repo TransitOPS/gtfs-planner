@@ -141,7 +141,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSetupStatesLiveTest do
     # every check, so that world looked clean, handed the primary to nobody, and
     # made the problems case pass for the wrong reason.
     {:ok, _} =
-      Gtfs.update_crew_settings(w.organization.id, w.version.id, %{max_spread_minutes: 240})
+      Gtfs.update_crew_settings(w.audit, %{max_spread_minutes: 240})
 
     for trip <- [first_101, second_102] do
       trip_run_fixture(w.organization.id, w.version.id, %{
@@ -184,7 +184,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSetupStatesLiveTest do
     end
 
     {:ok, _} =
-      Gtfs.update_blocking_settings(w.organization.id, w.version.id, %{max_piece_minutes: 720})
+      Gtfs.update_blocking_settings(w.audit, %{max_piece_minutes: 720})
 
     w
   end
@@ -193,7 +193,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSetupStatesLiveTest do
   # what a version looks like straight after its blocks are cut.
   defp without_operator_changes(w) do
     {:ok, :ok} =
-      Blocking.update_relief_settings(w.organization.id, w.version.id, nil, %{
+      Blocking.update_relief_settings(w.audit, nil, %{
         max_piece_minutes: nil,
         marked: []
       })
@@ -203,7 +203,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSetupStatesLiveTest do
 
   defp with_operator_changes(w) do
     {:ok, :ok} =
-      Blocking.update_relief_settings(w.organization.id, w.version.id, nil, %{
+      Blocking.update_relief_settings(w.audit, nil, %{
         max_piece_minutes: 330,
         marked: [w.relief_stop_id]
       })
@@ -354,7 +354,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSetupStatesLiveTest do
       # splits nothing, so treating either half as sufficient would hide the
       # callout on a version where blocks still cannot be split.
       {:ok, :ok} =
-        Blocking.update_relief_settings(w.organization.id, w.version.id, nil, %{
+        Blocking.update_relief_settings(w.audit, nil, %{
           max_piece_minutes: nil,
           marked: [w.relief_stop_id]
         })
@@ -367,7 +367,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSetupStatesLiveTest do
       w = first_use_world(ctx)
 
       {:ok, :ok} =
-        Blocking.update_relief_settings(w.organization.id, w.version.id, nil, %{
+        Blocking.update_relief_settings(w.audit, nil, %{
           max_piece_minutes: 330,
           marked: []
         })

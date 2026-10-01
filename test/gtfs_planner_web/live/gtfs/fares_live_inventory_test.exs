@@ -65,7 +65,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveInventoryTest do
 
     # Zone metadata is inserted directly, standing in for an imported feed: a
     # stored ID is byte-exact and never revalidated, so the imported "A&B 1"
-    # that the encoding case needs could not come through `create_zone/3`.
+    # that the encoding case needs could not come through `create_zone/2`.
     insert_zone(organization, version, "A", "Central", "ocean")
     insert_zone(organization, version, "A&B 1", "Bayside & Central", "teal")
     insert_zone(organization, version, "D", "Airport", "ochre")

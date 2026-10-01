@@ -8,7 +8,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveLevelParamTest do
   import GtfsPlanner.GtfsFixtures
 
   alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Gtfs
 
   setup do
     organization = organization_fixture()
@@ -44,7 +43,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveLevelParamTest do
       })
 
     {:ok, _ground_stop_level} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
         stop_id: station.id,
@@ -52,7 +51,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveLevelParamTest do
       })
 
     {:ok, _upper_stop_level} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
         stop_id: station.id,
@@ -74,7 +73,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveLevelParamTest do
       })
 
     {:ok, _other_stop_level} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
         stop_id: other_station.id,

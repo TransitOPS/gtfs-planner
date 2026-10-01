@@ -1176,9 +1176,12 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
       {:error, {:duplicate, collision}} ->
         put_editor(socket, %{editor | error: {:duplicate, collision}})
 
+      {:error, :forbidden} ->
+        put_editor(socket, %{editor | error: :forbidden})
+
       # A create has no stored row to be stale or missing, so every refusal that is
-      # not a field error or a duplicate is the server's generic failure: the draft
-      # stays and the operator can retry.
+      # not a field error, duplicate or permission refusal is the server's generic
+      # failure: the draft stays and the operator can retry.
       {:error, _reason} ->
         put_editor(socket, %{editor | error: :busy})
     end
@@ -1202,6 +1205,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
 
       {:error, {:duplicate, collision}} ->
         put_editor(socket, %{editor | error: {:duplicate, collision}})
+
+      {:error, :forbidden} ->
+        put_editor(socket, %{editor | error: :forbidden})
 
       # The row moved on while the editor was open: the draft is kept, because the
       # operator's entries are not what is wrong, and the reload path leads to the
@@ -2001,6 +2007,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   # the operator can retry.
   defp delete_error(:stale), do: :stale
   defp delete_error(:not_found), do: :not_found
+  defp delete_error(:forbidden), do: :forbidden
   defp delete_error(_reason), do: :busy
 
   defp transfers_target(version_id), do: ~p"/gtfs/#{version_id}/transfers"

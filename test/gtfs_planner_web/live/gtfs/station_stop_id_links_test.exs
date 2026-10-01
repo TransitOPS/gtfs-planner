@@ -8,7 +8,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationStopIdLinksTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Versions
 
   # GTFS stop_id is free text, so a station can carry `/` and a space.
@@ -37,7 +36,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationStopIdLinksTest do
     level = level_fixture(organization.id, version.id, %{level_id: "L1", level_index: 0.0})
 
     {:ok, _stop_level} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: version.id,
         stop_id: station.id,

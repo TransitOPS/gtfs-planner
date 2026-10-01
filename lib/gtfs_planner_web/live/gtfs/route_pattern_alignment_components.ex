@@ -18,6 +18,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
   import GtfsPlannerWeb.RouteWorkspace, only: [badge: 1]
 
   attr :alignment, :map, default: nil, doc: "the Gtfs.alignment_editor/4 read model"
+  attr :version_id, :string, default: nil, doc: "the published version the download is scoped to"
   attr :state, :map, required: true, doc: "alignment UI state (selected section first)"
   attr :notice, :atom, default: nil, doc: ":read_only, :out_of_date, :imported_shape or nil"
   attr :dialog_open, :boolean, default: false, doc: "opens the help dialog"
@@ -46,9 +47,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     default: nil,
     doc: ":stale_stops, :stale_review, :busy, :save_error or {:error, message}"
 
-  attr :import_dialog, :map,
+  attr :import_card, :map,
     default: nil,
-    doc: "%{shape_id} when the import review dialog is open"
+    doc: "%{shape_id} when the imported-line card is open"
 
   attr :applying?, :boolean,
     default: false,
@@ -66,6 +67,16 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     default: nil,
     doc: "%{kind: :no_route | :unavailable, failures: [%{position, from, to}]}"
 
+  attr :file_import, :map, default: nil, doc: "the open path-file import panel, or nil"
+
+  attr :file_fit, :map,
+    default: nil,
+    doc: "the hook's reported fit, or nil before the hook answers"
+
+  attr :map_line_upload, Phoenix.LiveView.UploadConfig,
+    required: true,
+    doc: "the path-file upload"
+
   def alignment_task(assigns) do
     assigns =
       assigns
@@ -80,15 +91,23 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
       |> assign(:generating?, not is_nil(assigns[:generation]))
       |> assign(:save_pending?, not is_nil(assigns[:pending]))
       |> assign(:generate_overlay?, generate_overlay?(assigns.alignment, assigns[:editable?]))
+      # The imported-line card and the path-file panel are two ways into the
+      # same fit review, so only one of them owns the column at a time.
+      |> assign(
+        :import_card?,
+        assigns.notice == :imported_shape and not is_nil(assigns[:import_card])
+      )
 
     # The first-alignment overlay is a nudge, not a gate: once a draft
     # exists (generated or drawn) the hook owns visible geometry, so the
-    # overlay gets out of the way. Discarding the draft brings it back.
+    # overlay gets out of the way. The imported-line card previews a shape
+    # the same way, so it counts as visible geometry too. Discarding the
+    # draft brings the overlay back.
     assigns =
       assign(
         assigns,
         :overlay_dismissed?,
-        assigns.generating? or assigns.dirty_positions != []
+        assigns.generating? or assigns.dirty_positions != [] or assigns.import_card?
       )
 
     assigns =
@@ -114,7 +133,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
           kind="warning"
           title="The background map couldn't load"
         >
-          Your alignment and stop list are still available.
+          Your map line and stop list are still available.
           <:action>
             <button type="button" phx-click="alignment_retry_tiles" class="btn btn-outline min-h-11">
               <.icon name="hero-arrow-path" class="size-4" /> Retry map
@@ -126,7 +145,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
           :if={@notice == :read_only}
           id="alignment-notice"
           kind="info"
-          title="You can view this alignment"
+          title="You can view this map line"
         >
           An editor can change the vehicle&rsquo;s path.
         </.message>
@@ -164,7 +183,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
           :if={@save_notice == :stale_stops}
           id="alignment-save-notice"
           kind="warning"
-          title="Stops changed since you opened this alignment"
+          title="Stops changed since you opened this map line"
         >
           Your previous saved path is retained until you review the new stop order.
           <:action>
@@ -307,7 +326,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
 
       <div class="grid overflow-hidden rounded-card border border-subtle bg-white lg:h-[clamp(520px,calc(100vh-380px),780px)] lg:grid-cols-[minmax(340px,430px)_minmax(0,1fr)]">
         <section
-          aria-label="Alignment map"
+          aria-label="Map line map"
           class="relative order-1 flex min-h-0 min-w-0 flex-col max-lg:h-[520px] lg:order-2"
         >
           <div
@@ -384,85 +403,126 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
         </section>
 
         <aside
-          aria-label="Alignment sections"
+          aria-label="Map line sections"
           class="order-2 flex min-h-0 min-w-0 flex-col overflow-y-auto border-subtle max-lg:border-t lg:order-1 lg:border-r"
         >
-          <div class="sticky top-0 z-10 border-b border-subtle bg-white px-4 pb-3 pt-4">
-            <div class="flex flex-wrap items-center justify-between gap-2">
-              <h2 id="alignment-title" class="text-base font-bold text-strong">
-                Path between stops
-              </h2>
-              <.badge id="alignment-status" tone={badge_tone(@header_status.tone)}>
-                {@header_status.text}
-              </.badge>
-            </div>
-            <p class="mt-1 text-[13px] text-muted">
-              <span class="tabular-nums">{@saved_count} of {length(@alignment.sections)}</span>
-              sections saved. Select a section to see its actions.
-            </p>
-            <div class="mt-3 flex flex-wrap gap-2">
-              <%!-- Step 32 all-missing generation for partially drawn patterns:
+          <%!-- Step 32: a pattern still on an imported shape reviews that line
+            in the panel itself instead of behind a dialog, so the fit the hook
+            measured sits beside the choice and its draft action. The path-file
+            panel owns the column while it is open. --%>
+          <.imported_line_card
+            :if={@import_card? and @file_import == nil}
+            card={@import_card}
+            alignment={@alignment}
+            fit={@file_fit}
+            visits={@visits_by_position}
+          />
+
+          <.file_import_panel
+            :if={not @import_card? and (@file_import != nil or @file_fit != nil)}
+            upload={@map_line_upload}
+            file={@file_import}
+            fit={@file_fit}
+            visits={@visits_by_position}
+          />
+          <div
+            :if={@file_import == nil and (@file_fit == nil or @import_card?)}
+            class="flex min-h-0 flex-1 flex-col"
+          >
+            <div class="sticky top-0 z-10 border-b border-subtle bg-white px-4 pb-3 pt-4">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <h2 id="alignment-title" class="text-base font-bold text-strong">
+                  Path between stops
+                </h2>
+                <div class="ml-auto flex flex-wrap items-center gap-2">
+                  <.badge id="alignment-status" tone={badge_tone(@header_status.tone)}>
+                    {@header_status.text}
+                  </.badge>
+                  <.import_export_menu
+                    alignment={@alignment}
+                    version_id={@version_id}
+                    editable?={@editable?}
+                    dirty?={@dirty_positions != []}
+                  />
+                </div>
+              </div>
+              <p class="mt-1 text-[13px] text-muted">
+                <span class="tabular-nums">{@saved_count} of {length(@alignment.sections)}</span>
+                sections saved. Select a section to see its actions.
+              </p>
+              <div class="mt-3 flex flex-wrap gap-2">
+                <%!-- Step 32 all-missing generation for partially drawn patterns:
                 the empty-state overlay covers the first-alignment moment only,
                 so this entry point fires the same event while sections remain. --%>
-              <button
-                :if={
-                  @editable? and @missing_count > 0 and @missing_count < length(@alignment.sections)
-                }
-                type="button"
-                id="alignment-generate-missing"
-                phx-click="alignment_generate_paths"
-                data-commit="alignment"
-                disabled={@offline? or @generating? or @save_pending?}
-                title={generate_button_title(@offline?, @generating?, @save_pending?)}
-                class="btn btn-outline min-h-11"
-              >
-                <.icon name="hero-map" class="size-4" /> Generate street paths
-              </button>
-              <button
-                id="alignment-help"
-                type="button"
-                phx-click="alignment_open_help"
-                class="btn btn-ghost min-h-11"
-              >
-                <.icon name="hero-question-mark-circle" class="size-4" /> How to edit
-              </button>
+                <button
+                  :if={
+                    @editable? and @missing_count > 0 and @missing_count < length(@alignment.sections)
+                  }
+                  type="button"
+                  id="alignment-generate-missing"
+                  phx-click="alignment_generate_paths"
+                  data-commit="alignment"
+                  disabled={@offline? or @generating? or @save_pending?}
+                  title={generate_button_title(@offline?, @generating?, @save_pending?)}
+                  class="btn btn-outline min-h-11"
+                >
+                  <.icon name="hero-map" class="size-4" /> Generate street paths
+                </button>
+                <button
+                  :if={@editable?}
+                  type="button"
+                  id="alignment-open-file-import"
+                  phx-click="alignment_open_file_import"
+                  class="btn btn-outline min-h-11"
+                >
+                  <.icon name="hero-arrow-up-tray" class="size-4" /> Import a path file
+                </button>
+                <button
+                  id="alignment-help"
+                  type="button"
+                  phx-click="alignment_open_help"
+                  class="btn btn-ghost min-h-11"
+                >
+                  <.icon name="hero-question-mark-circle" class="size-4" /> How to edit
+                </button>
+              </div>
             </div>
-          </div>
 
-          <div id="alignment-sections" class="grid gap-2 px-4 py-4">
-            <%= for section <- @alignment.sections do %>
-              <.section_row
-                section={section}
-                visits_by_position={@visits_by_position}
-                selected={@selected != nil and section.position == @selected.position}
-                dirty?={section.position in @dirty_positions}
-                flagged?={section.position in @flagged_positions}
-              />
-              <.section_detail
-                :if={@selected != nil and section.position == @selected.position}
-                section={section}
-                visits_by_position={@visits_by_position}
-                editable?={@editable?}
-                offline?={@offline?}
-                generating?={@generating?}
-                save_pending?={@save_pending?}
-                dirty?={section.position in @dirty_positions}
-                flagged?={section.position in @flagged_positions}
-              />
-            <% end %>
-          </div>
-
-          <div
-            id="alignment-footer"
-            class="sticky bottom-0 mt-auto border-t border-subtle bg-white px-4 py-3"
-          >
-            <div class="flex items-center justify-between gap-2">
-              <p class="text-[13px] font-[650] text-strong">
-                In the feed export <span class="font-normal text-muted">(GTFS shapes)</span>
-              </p>
-              <p class="text-[13px] font-semibold text-default">{@footer_status.word}</p>
+            <div id="alignment-sections" class="grid gap-2 px-4 py-4">
+              <%= for section <- @alignment.sections do %>
+                <.section_row
+                  section={section}
+                  visits_by_position={@visits_by_position}
+                  selected={@selected != nil and section.position == @selected.position}
+                  dirty?={section.position in @dirty_positions}
+                  flagged?={section.position in @flagged_positions}
+                />
+                <.section_detail
+                  :if={@selected != nil and section.position == @selected.position}
+                  section={section}
+                  visits_by_position={@visits_by_position}
+                  editable?={@editable?}
+                  offline?={@offline?}
+                  generating?={@generating?}
+                  save_pending?={@save_pending?}
+                  dirty?={section.position in @dirty_positions}
+                  flagged?={section.position in @flagged_positions}
+                />
+              <% end %>
             </div>
-            <p class="mt-0.5 text-[13px] text-muted">{@footer_status.sentence}</p>
+
+            <div
+              id="alignment-footer"
+              class="sticky bottom-0 mt-auto border-t border-subtle bg-white px-4 py-3"
+            >
+              <div class="flex items-center justify-between gap-2">
+                <p class="text-[13px] font-[650] text-strong">
+                  In the feed export <span class="font-normal text-muted">(GTFS shapes)</span>
+                </p>
+                <p class="text-[13px] font-semibold text-default">{@footer_status.word}</p>
+              </div>
+              <p class="mt-0.5 text-[13px] text-muted">{@footer_status.sentence}</p>
+            </div>
           </div>
         </aside>
       </div>
@@ -483,12 +543,207 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
         version_name={@version_name}
         organization_name={@organization_name}
       />
-      <.import_dialog dialog={@import_dialog} alignment={@alignment} />
+
       <.generate_replace_dialog dialog={@generate_dialog} />
       <.blocked_dialog pending={@pending} />
       <.conflict_dialog pending={@pending} visits_by_position={@visits_by_position} />
     </div>
     """
+  end
+
+  @doc """
+  The "Import or export" disclosure on the Map line tab (step 35).
+
+  It carries the two file downloads for this one pattern, linking straight at
+  the step 34 route (`MapLineDownloadController`) as `<a download>` elements, and
+  says what the file will contain before it is fetched. The note is derived from
+  the read model the task already has: a pattern with no saved section falls back
+  to its imported shape, a pattern with gaps downloads its line in pieces, and a
+  pattern with a saved line downloads one line. Unsaved drafts are named as not
+  included, because the download reads the saved line.
+  """
+  attr :alignment, :map, required: true, doc: "the Gtfs.alignment_editor/4 read model"
+
+  attr :version_id, :string,
+    required: true,
+    doc: "the published version the download is scoped to"
+
+  attr :editable?, :boolean,
+    default: false,
+    doc: "false labels the disclosure Download, because a viewer cannot import"
+
+  attr :dirty?, :boolean, default: false, doc: "an unsaved draft is not in the file"
+
+  def import_export_menu(assigns) do
+    ~H"""
+    <details id="map-line-files" class="relative">
+      <summary
+        id="map-line-files-toggle"
+        class="flex min-h-11 cursor-pointer list-none items-center gap-1.5 rounded-control border border-control bg-white px-3 text-sm font-[650] text-strong hover:bg-canvas [&::-webkit-details-marker]:hidden"
+      >
+        {if @editable?, do: "Import or export", else: "Download"}
+        <.icon name="hero-chevron-down" class="size-4 text-muted" />
+      </summary>
+      <div
+        role="menu"
+        aria-label="Map line files"
+        class="absolute right-0 top-full z-30 mt-2 w-[min(320px,calc(100vw-48px))] rounded-card border border-subtle bg-white p-2 shadow-float"
+      >
+        <button
+          :if={@editable?}
+          type="button"
+          id="map-line-import-file"
+          role="menuitem"
+          phx-click="alignment_open_file_import"
+          class="flex min-h-11 w-full items-start gap-2 rounded-control px-3 py-2 text-left hover:bg-canvas"
+        >
+          <.icon name="hero-arrow-up-tray" class="mt-0.5 size-4 shrink-0 text-muted" />
+          <span class="min-w-0">
+            <span class="block font-[650] text-strong">Import a path file&hellip;</span>
+            <span class="block text-[13px] text-muted">
+              GeoJSON, KML, KMZ or GPX. You check the fit before anything changes.
+            </span>
+          </span>
+        </button>
+        <div :if={@editable?} class="my-1 border-t border-subtle"></div>
+        <p class="px-3 pb-1 pt-2 text-[13px] font-[650] text-default">Download this map line</p>
+        <.download_item
+          id="map-line-download-kml"
+          href={download_path(@version_id, @alignment.route_id, @alignment.route_pattern_id, "kml")}
+          title="KML file"
+          subtitle="For Google Earth and Google My Maps"
+        />
+        <.download_item
+          id="map-line-download-geojson"
+          href={
+            download_path(@version_id, @alignment.route_id, @alignment.route_pattern_id, "geojson")
+          }
+          title="GeoJSON file"
+          subtitle="For QGIS, ArcGIS and geojson.io"
+        />
+        <p
+          id="map-line-download-note"
+          class="mx-1 mt-1 rounded-control bg-canvas px-3 py-2 text-[13px] text-default"
+        >
+          {download_note(@alignment, @dirty?)}
+        </p>
+      </div>
+    </details>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :href, :string, required: true
+  attr :title, :string, required: true
+  attr :subtitle, :string, required: true
+
+  defp download_item(assigns) do
+    ~H"""
+    <a
+      id={@id}
+      role="menuitem"
+      href={@href}
+      download
+      class="flex min-h-11 w-full items-start gap-2 rounded-control px-3 py-2 text-left hover:bg-canvas"
+    >
+      <.icon name="hero-arrow-down-tray" class="mt-0.5 size-4 shrink-0 text-muted" />
+      <span class="min-w-0">
+        <span class="block font-[650] text-strong">{@title}</span>
+        <span class="block text-[13px] text-muted">{@subtitle}</span>
+      </span>
+    </a>
+    """
+  end
+
+  # Step 34's route, named for one pattern. `?format=` is required there, so it
+  # is always written; `?pattern=` names this pattern rather than the route.
+  defp download_path(version_id, route_id, route_pattern_id, format) do
+    ~p"/gtfs/#{version_id}/routes/#{route_id}/map-lines?#{%{pattern: route_pattern_id, format: format}}"
+  end
+
+  # What the file holds, in the pattern's own stops. A pattern whose sections all
+  # resolve to gaps has no saved line to draw, so the download falls back to the
+  # imported shape the feed already uses; a pattern with some gaps keeps its
+  # saved runs and downloads them as separate pieces rather than straight lines
+  # across the gaps.
+  defp download_note(alignment, dirty?) do
+    pieces = line_pieces(alignment)
+    missing = Enum.count(alignment.sections, &(&1.kind in [:missing, :blocked]))
+
+    text =
+      cond do
+        pieces == [] and imported_note(alignment) != nil ->
+          imported_note(alignment)
+
+        missing > 0 ->
+          "#{section_count(missing)} no saved path, so the file has the line in " <>
+            "#{length(pieces)} #{piece_word(length(pieces))}: " <>
+            Enum.map_join(Enum.map(pieces, &piece_span(&1, alignment)), ", and ", &"#{&1}.")
+
+        pieces == [] ->
+          "The file has the #{length(alignment.visits)} stops only, so far."
+
+        true ->
+          "The file has the saved map line and the #{length(alignment.visits)} stops."
+      end
+
+    if dirty?, do: text <> " Unsaved changes aren\u2019t included.", else: text
+  end
+
+  # `2 sections have` / `1 section has`
+  defp section_count(count) do
+    if count == 1, do: "1 section has", else: "#{count} sections have"
+  end
+
+  # `2 pieces` / `1 piece`
+  defp piece_word(count), do: if(count == 1, do: "piece", else: "pieces")
+
+  # `Lincoln City to Depoe Bay`, the two stops a run of saved sections joins.
+  defp piece_span({first, last}, alignment) do
+    from = Enum.at(alignment.visits, first)
+    to = Enum.at(alignment.visits, last + 1)
+
+    "#{visit_name(from)} to #{visit_name(to)}"
+  end
+
+  defp visit_name(%{name: name}) when is_binary(name), do: name
+  defp visit_name(_visit), do: "the next stop"
+
+  # `The file has the imported line (shape 1045) and the 13 stops.`
+  defp imported_note(alignment) do
+    case Enum.find(alignment.imported_shapes, &(&1.points != [])) do
+      nil ->
+        nil
+
+      shape ->
+        "The file has the imported line (shape #{shape.shape_id}) and the " <>
+          "#{length(alignment.visits)} stops."
+    end
+  end
+
+  # The runs of consecutive sections that carry a saved path, as inclusive
+  # `{first, last}` section indices. Mirrors `Alignments.line_file/4`'s split, so
+  # the note never promises fewer pieces than the file draws.
+  defp line_pieces(%{sections: sections}) do
+    sections
+    |> Enum.with_index()
+    |> Enum.reduce([], fn {section, index}, runs ->
+      if section.kind in [:missing, :blocked] do
+        runs
+      else
+        extend_run(runs, index)
+      end
+    end)
+  end
+
+  # A section that follows the run's last index extends it, a repeat of the same
+  # index keeps it, and anything else opens a new one.
+  defp extend_run(runs, index) do
+    case List.last(runs) do
+      {^index, _} -> runs
+      {first, last} when last == index - 1 -> List.replace_at(runs, -1, {first, index})
+      _ -> runs ++ [{index, index}]
+    end
   end
 
   @doc """
@@ -1096,86 +1351,631 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     """
   end
 
-  attr :dialog, :map, default: nil, doc: "%{shape_id} when the import review dialog is open"
-  attr :alignment, :map, default: nil, doc: "the Gtfs.alignment_editor/4 read model"
+  # --- Import a path file ------------------------------------------------
+  #
+  # Step 29's panel, in place of the section list while a path file is being
+  # chosen: the prototype's `import-choose`, `import-pick` and `err-*` states
+  # (`.specs/27-shapes-again/references/pattern-path-prototype.html`). The
+  # file is read by the server, so a line is listed by the name, length and
+  # point count the parser found, and each file problem gets its own message
+  # (AC-22). "Check the fit" is the next step and belongs to the fit review
+  # the hook drives, so this panel stops at the chosen line.
 
-  # Step 29 import dialog: a single imported shape shows its length,
-  # visit count and point count in a card; divergent shapes render as
-  # radios with trip counts and lengths plus a warning naming every
-  # affected trip. "Keep original" only closes; "Create editable draft"
-  # pushes alignment:convert for the chosen shape (CR-9: the server
-  # never converts, the hook drafts). The prototype's "Proposed
-  # workflow" paragraph is omitted (production behavior is real).
-  def import_dialog(assigns) do
+  attr :upload, Phoenix.LiveView.UploadConfig, required: true
+  attr :file, :map, default: nil, doc: "%{step: :choose | :pick | :error, name, size} or nil"
+  attr :fit, :map, default: nil, doc: "the hook's reported fit, or nil before the hook answers"
+  attr :visits, :map, default: %{}, doc: "visits by position, for the names the review uses"
+
+  def file_import_panel(assigns) do
+    # A reported fit puts the panel on its third step: the line has been
+    # chosen and the hook has measured it, so what the panel shows is the
+    # review of that answer rather than another chooser.
+    review? = not is_nil(assigns.fit)
+    step = if review?, do: :review, else: assigns.file && assigns.file.step
+
     assigns =
       assigns
-      |> assign(:shapes, import_shapes(assigns.alignment))
-      |> assign(:open?, import_open?(assigns.dialog, assigns.alignment))
-      |> assign(:total_trips, import_total_trips(assigns.alignment))
-      |> assign(:visit_count, import_visit_count(assigns.alignment))
+      |> assign(:step, step)
+      |> assign(:review?, review?)
+      |> assign(:lines, Map.get(assigns.file || %{}, :lines) || [])
+      |> assign(:reading?, upload_reading?(assigns.upload))
+      |> assign(:ready?, upload_ready?(assigns.upload))
+      |> assign(:step_index, file_import_step_index(step))
 
     ~H"""
-    <.confirm_dialog
-      id="alignment-import-dialog"
-      open={@open?}
-      title={import_dialog_title(@shapes)}
-      confirm_label="Create editable draft"
-      pending_label="Creating…"
-      chrome="planner"
-      on_confirm="alignment_confirm_import"
-      on_cancel="alignment_close_dialog"
-      cancel_label="Keep original"
-      described_by="alignment-import-dialog-body"
-      return_focus_id="alignment-review-import"
-      size="xl"
-    >
-      <div :if={@open?}>
-        <p :if={length(@shapes) == 1}>
-          The existing whole shape is retained for exports. Conversion creates an
-          editable draft; it does not change the saved shape.
-        </p>
-        <p :if={length(@shapes) > 1}>
-          {length(@shapes)} shapes are referenced by this pattern's trips. They are
-          retained until you explicitly replace them.
-        </p>
-        <div :if={length(@shapes) == 1} class="mt-3 rounded-card border border-subtle p-3">
-          <p class="text-sm font-[650] text-strong">Shape {hd(@shapes).shape_id}</p>
-          <p class="mt-0.5 text-[13px]">
-            {import_shape_km(hd(@shapes))} · {@visit_count} {if(@visit_count == 1,
-              do: "visit",
-              else: "visits"
-            )} · {length(hd(@shapes).points || [])} imported points
-          </p>
-        </div>
-        <form
-          :if={length(@shapes) > 1}
-          id="alignment-import-form"
-          phx-change="alignment_import_choice"
+    <div id="file-import-panel" phx-hook=".FileImportFocus" class="flex min-h-0 flex-1 flex-col">
+      <div class="border-b border-subtle bg-white px-4 pb-3 pt-4">
+        <button
+          type="button"
+          id="file-import-cancel"
+          phx-click="alignment_close_file_import"
+          class="inline-flex min-h-11 items-center gap-1.5 text-sm font-[650] text-action hover:underline"
         >
-          <.scope_option
-            :for={shape <- @shapes}
-            id={"alignment-import-shape-#{shape.shape_id}"}
-            name="import_shape"
-            value={shape.shape_id}
-            checked={import_selected?(@dialog, shape, @shapes)}
+          <.icon name="hero-arrow-left" class="size-4" /> Map line
+        </button>
+        <h2
+          id="file-import-title"
+          tabindex="-1"
+          class="mt-1 text-base font-bold text-strong focus-visible:outline-none"
+        >
+          Import a path file
+        </h2>
+        <p :if={@step == :choose} class="mt-1 text-[13px] text-muted">
+          Use a line drawn in Google My Maps, Google Earth or QGIS, or a recorded run.
+          You check how it fits this pattern&rsquo;s stops first.
+        </p>
+        <ol class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[13px]" aria-label="Import steps">
+          <li
+            :for={
+              {label, index} <- Enum.with_index(["Choose a file", "Pick the line", "Check the fit"])
+            }
+            class={[
+              "flex items-center gap-1.5",
+              index == @step_index && "font-[650] text-strong",
+              index != @step_index && "text-muted"
+            ]}
+            aria-current={index == @step_index && "step"}
           >
-            <strong class="text-strong">Shape {shape.shape_id}</strong>
-            <span class="mt-0.5 block text-[13px] text-muted">
-              {shape.trip_count} {if(shape.trip_count == 1, do: "trip", else: "trips")} · {import_shape_km(
-                shape
-              )}
+            <span class={[
+              "flex size-5 items-center justify-center rounded-full text-[12px] font-bold",
+              index < @step_index && "bg-success-bg text-success-fg",
+              index == @step_index && "bg-inverse text-white",
+              index > @step_index && "bg-canvas text-muted"
+            ]}>
+              {if index < @step_index, do: "✓", else: index + 1}
             </span>
-          </.scope_option>
+            {label}
+          </li>
+        </ol>
+      </div>
+
+      <div class="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <%!-- A reported fit is the whole of the panel's body: there is
+          nothing left to choose, only what the hook found to review. --%>
+        <.fit_review :if={@review?} fit={@fit} visits={@visits} />
+        <%!-- The chooser is only useful before a file is read: the prototype's
+          `import-pick` shows the file and the choice, not another dropzone. --%>
+        <.form
+          :if={not @review? and @step != :pick}
+          for={%{}}
+          id="map-line-upload-form"
+          phx-change="alignment_file_validate"
+          phx-submit="alignment_file_consume"
+        >
+          <%!-- A file that has been read does not need a second dropzone: the
+          chooser collapses to a button so the file's lines or its message
+          are what the panel shows. --%>
+          <.upload_field
+            id="map-line-file-upload"
+            upload={@upload}
+            label="Path file"
+            help="GeoJSON, KML, KMZ or GPX, up to 10 MB. Nothing changes until you save the map line."
+            appearance={if @step == :choose, do: :dropzone, else: :button}
+            action_label={
+              if @step == :choose,
+                do: "Choose a file or drag and drop",
+                else: "Choose another file"
+            }
+            cancel_event="alignment_cancel_file"
+            state={file_upload_state(@step, @reading?)}
+          />
+          <button
+            :if={@step == :choose and @ready?}
+            type="submit"
+            id="file-import-read"
+            class="btn btn-primary mt-3 min-h-11 w-full"
+          >
+            Read this file
+          </button>
+        </.form>
+
+        <div
+          :if={@file != nil and @file.step in [:pick, :error]}
+          id="file-import-file-row"
+          class="mt-3 flex items-center gap-3 rounded-card border border-subtle bg-white py-0.5 pl-3 pr-1"
+        >
+          <.icon
+            name={if @file.step == :error, do: "hero-exclamation-triangle", else: "hero-document"}
+            class={[
+              "size-5 shrink-0",
+              if(@file.step == :error, do: "text-error-fg", else: "text-muted")
+            ]}
+          />
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-sm font-[650] text-strong" title={@file.name}>{@file.name}</p>
+            <p class="text-[13px] text-muted">
+              <span class="tabular-nums">{file_import_size(@file)}</span>
+              <span :if={@file.step == :error}>&middot; Not used</span>
+            </p>
+          </div>
+        </div>
+
+        <.message
+          :for={reason <- file_import_error(@file)}
+          id={"file-error-#{reason}"}
+          kind="error"
+          title={file_import_error_title(reason)}
+          class="mt-3"
+        >
+          {file_import_error_body(reason)}
+        </.message>
+
+        <form
+          :if={@step == :pick}
+          id="file-line-form"
+          phx-change="alignment_file_choose"
+          class="mt-4"
+        >
+          <fieldset>
+            <legend class="text-sm font-bold text-strong">
+              Which line is this pattern&rsquo;s path?
+            </legend>
+            <p class="mt-0.5 text-[13px] text-muted">
+              The file has {length(@lines)} {if length(@lines) == 1, do: "line", else: "lines"}.
+              Pick the one that follows this pattern&rsquo;s stops.
+            </p>
+            <div class="mt-2 grid gap-2">
+              <.scope_option
+                :for={{line, index} <- Enum.with_index(@lines)}
+                id={"file-line-#{index}"}
+                name="line"
+                value={to_string(index)}
+                checked={false}
+              >
+                <strong class="text-strong">{file_line_name(line, index)}</strong>
+                <span class="mt-0.5 block text-[13px] text-muted">
+                  {file_line_length(line)} &middot; {line.point_count}
+                  {if line.point_count == 1, do: "point", else: "points"}
+                </span>
+                <span :if={line.joined_from > 1} class="mt-0.5 block text-[13px] text-muted">
+                  Joined from {line.joined_from} pieces of the file
+                </span>
+              </.scope_option>
+            </div>
+          </fieldset>
         </form>
-        <p :if={length(@shapes) > 1} class="mt-3">
+      </div>
+
+      <div class="border-t border-subtle bg-white px-4 py-3">
+        <%= if @review? do %>
+          <%!-- AC-24: a line that runs the other way cannot be drafted, and
+            the reason sits beside the button that is disabled because of it. --%>
+          <p id="fit-footer-note" class="text-[13px] text-muted">
+            <span :if={@fit.direction == "reversed"} class="font-semibold text-error-fg">
+              Reverse the line to continue. It runs the other way from this pattern.
+            </span>
+            <span :if={@fit.direction != "reversed"}>
+              Nothing is saved until you save the map line.
+            </span>
+          </p>
+          <div class="mt-2 grid gap-2">
+            <button
+              type="button"
+              id="file-import-restart"
+              phx-click="alignment_open_file_import"
+              class="btn btn-outline min-h-11"
+            >
+              Choose another file
+            </button>
+            <button
+              type="button"
+              id="fit-create-draft"
+              phx-click="alignment_create_file_draft"
+              disabled={@fit.direction == "reversed"}
+              title={if @fit.direction == "reversed", do: "Reverse the line first", else: nil}
+              class="btn btn-primary min-h-11"
+            >
+              Create editable draft
+            </button>
+          </div>
+        <% else %>
+          <p class="text-[13px] text-muted">
+            Nothing is saved until you save the map line.
+          </p>
+          <button
+            :if={@step == :pick}
+            type="button"
+            id="file-import-restart"
+            phx-click="alignment_open_file_import"
+            class="btn btn-outline mt-2 min-h-11 w-full"
+          >
+            Choose another file
+          </button>
+        <% end %>
+      </div>
+    </div>
+
+    <%!-- The hook's fit arrives without a click of the editor's own, so the
+      panel's headline takes focus when it lands (a colocated hook, no inline
+      script). --%>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".FileImportFocus">
+      export default {
+        mounted() {
+          this.handleEvent("alignment:file_fit", () => {
+            this.el.querySelector("#file-import-title")?.focus()
+          })
+        }
+      }
+    </script>
+    """
+  end
+
+  defp file_upload_state(:error, _reading?), do: :idle
+  defp file_upload_state(_step, true), do: :uploading
+  defp file_upload_state(_step, _reading?), do: :idle
+
+  # The panel names the file's own problems; a missing or unknown reason still
+  # leaves the panel open with an honest message rather than a blank step.
+  defp file_import_error(%{step: :error, error: reason}), do: [reason]
+  defp file_import_error(_file), do: []
+
+  defp file_import_error_title(:unsupported), do: "Shapefiles can’t be imported yet"
+
+  defp file_import_error_title(:network_link),
+    do: "This KMZ links to a map online and has no line in it"
+
+  defp file_import_error_title(:points_only), do: "This file has points, not a line"
+  defp file_import_error_title(:areas_only), do: "This file has areas, not a line"
+
+  defp file_import_error_title(:swapped),
+    do: "This file lists latitude and longitude the wrong way round"
+
+  defp file_import_error_title(:too_large), do: "This file expands to more than the limit allows"
+  defp file_import_error_title(:empty), do: "This file has no line in it"
+  defp file_import_error_title(:unreadable), do: "This file couldn’t be read"
+  defp file_import_error_title(_reason), do: "This file could not be used"
+
+  defp file_import_error_body(:unsupported),
+    do:
+      "Export the line from QGIS or ArcGIS as GeoJSON, or from Google Earth as KML, then choose that file."
+
+  defp file_import_error_body(:network_link),
+    do:
+      "Google My Maps writes a link like this when “Keep data up to date with network link KML” is on. Export again with it off, then choose the new file."
+
+  defp file_import_error_body(:points_only),
+    do:
+      "It looks like a list of stops. A path file needs a line that follows the road. In Google My Maps, export the layer with the driving directions."
+
+  defp file_import_error_body(:areas_only),
+    do:
+      "A map line follows the road from stop to stop. If this is a service area, use it on the Flex pages instead."
+
+  defp file_import_error_body(:swapped),
+    do: "GeoJSON lists longitude first; this file seems to list latitude first."
+
+  defp file_import_error_body(:too_large),
+    do: "It may hold a whole road network. Export only the route’s line, then choose that file."
+
+  defp file_import_error_body(:empty),
+    do: "The file has no line to draw. Export the route’s line, then choose that file."
+
+  defp file_import_error_body(:unreadable),
+    do: "It’s empty or damaged. Export it again, then choose the new file."
+
+  defp file_import_error_body(_reason),
+    do: "Choose the file again. Nothing has changed on this pattern."
+
+  defp file_line_name(%{name: nil}, index), do: "Line #{index + 1}"
+  defp file_line_name(%{name: ""}, index), do: "Line #{index + 1}"
+  defp file_line_name(%{name: name}, _index), do: name
+
+  defp file_line_length(%{length_m: length_m}) when is_number(length_m),
+    do: "#{:erlang.float_to_binary(length_m / 1000, decimals: 1)} km"
+
+  defp file_line_length(_line), do: "—"
+
+  defp file_import_size(%{size: size}) when is_integer(size) and size < 1_000_000,
+    do: "#{Float.round(size / 1_000, 1)} KB"
+
+  defp file_import_size(%{size: size}) when is_integer(size),
+    do: "#{Float.round(size / 1_000_000, 1)} MB"
+
+  defp file_import_size(_file), do: ""
+
+  # The step markers follow the panel's own state: the pick is step two, the
+  # fit review step three, and a file problem stays on step one because
+  # nothing has been chosen yet.
+  defp file_import_step_index(:review), do: 2
+  defp file_import_step_index(:pick), do: 1
+  defp file_import_step_index(_step), do: 0
+
+  # An entry that has not finished arriving keeps the reading state honest
+  # instead of offering a line; a refused entry never appears here at all.
+  defp upload_reading?(%Phoenix.LiveView.UploadConfig{entries: entries}) when is_list(entries) do
+    Enum.any?(entries, &(not &1.done?))
+  end
+
+  defp upload_reading?(_upload), do: false
+
+  defp upload_ready?(%Phoenix.LiveView.UploadConfig{entries: entries}) when is_list(entries),
+    do: Enum.any?(entries, & &1.done?)
+
+  defp upload_ready?(_upload), do: false
+
+  # --- fit review (step 31) ----------------------------------------------
+  #
+  # The hook's own measurement of the file line against this pattern's stops,
+  # in the prototype's `import-review`, `import-review-reversed`,
+  # `import-short` and `import-good` states (AC-24). Nothing here is measured
+  # again: every number is the one the hook reported, and the only work this
+  # side does is naming the stops those numbers are about (rule 11, INV-5).
+  # Findings come in the reference's order — direction, then the ends, then
+  # the stops more than 100 m (330 ft) from the line.
+  attr :fit, :map, required: true, doc: "the hook's reported fit (`@file_fit`)"
+  attr :visits, :map, default: %{}, doc: "visits by position, for the names the findings use"
+
+  def fit_review(assigns) do
+    fit = assigns.fit
+
+    assigns =
+      assigns
+      |> assign(:first_stop, stop_name(assigns.visits, first_position(assigns.visits)))
+      |> assign(:last_stop, stop_name(assigns.visits, last_position(assigns.visits)))
+      |> assign(:far, Enum.map(fit.far, &far_finding(&1, assigns.visits)))
+      |> assign(:blocked?, fit.direction == "reversed")
+
+    ~H"""
+    <div id="file-fit-review" class="mt-1">
+      <div class="flex flex-wrap items-end justify-between gap-x-4 gap-y-1">
+        <p id="file-fit-headline" tabindex="-1" class="focus-visible:outline-none">
+          <strong class="font-display text-[26px] font-semibold tabular-nums text-strong">
+            {@fit.within} of {@fit.visit_count}
+          </strong>
+          <span class="text-sm text-default">stops within 330 ft</span>
+        </p>
+        <p id="file-fit-length" class="text-[13px] tabular-nums text-muted">
+          {file_line_length(@fit)}
+        </p>
+      </div>
+
+      <div class="mt-3 grid gap-2">
+        <%!-- The three directions get three different answers. "unknown" is
+          the loop case: both end visits land in the same place on the line,
+          so there is no direction to report and nothing to block. --%>
+        <.message
+          :if={@blocked?}
+          id="fit-direction-reversed"
+          kind="error"
+          title="This line runs the other way"
+        >
+          This pattern runs from {@first_stop} to {@last_stop}. This line&rsquo;s stops are in the
+          opposite order, so its sections would be measured against the wrong end.
+          <:action>
+            <button
+              type="button"
+              id="fit-reverse"
+              phx-click="alignment_reverse_file_line"
+              class="btn btn-outline min-h-11"
+            >
+              <.icon name="hero-arrows-right-left" class="size-4" /> Reverse line
+            </button>
+          </:action>
+        </.message>
+
+        <.message
+          :if={@fit.direction == "unknown"}
+          id="fit-direction-unknown"
+          kind="info"
+          title="This line runs the same way at both ends"
+        >
+          Both of this pattern&rsquo;s end stops land in the same place on it, so the fit cannot
+          say which way it runs. Check the arrows on the map before you draft it.
+        </.message>
+
+        <.message
+          :if={not @fit.reaches_start}
+          id="fit-start"
+          kind="warning"
+          title={"The line starts after " <> @first_stop}
+        >
+          It doesn&rsquo;t reach this pattern&rsquo;s first stop, so that section comes in without a
+          path.
+        </.message>
+
+        <.message
+          :if={not @fit.reaches_end}
+          id="fit-end"
+          kind="warning"
+          title={"The line ends before " <> @last_stop}
+        >
+          It stops short of this pattern&rsquo;s last stop, so that section comes in without a path.
+        </.message>
+
+        <.message
+          :if={@far == [] and @fit.reaches_start and @fit.reaches_end}
+          id="fit-ok"
+          kind="success"
+          title="Every stop is on the line"
+        >
+          All {@fit.visit_count} stops are within 330 ft of it, and it runs from {@first_stop} to {@last_stop}.
+        </.message>
+
+        <.message
+          :if={@far != []}
+          id="fit-far"
+          kind="warning"
+          title={fit_far_title(@far)}
+        >
+          These stops are more than 330 ft from the line:
+          <ul class="mt-1 grid list-disc pl-5">
+            <li :for={stop <- @far} id={stop.id}>{stop.name}, {stop.distance} from the line</li>
+          </ul>
+        </.message>
+      </div>
+    </div>
+    """
+  end
+
+  defp fit_far_title([first]), do: "#{first.name} is #{first.distance} from the line"
+  defp fit_far_title(far), do: "#{length(far)} stops are more than 330 ft from the line"
+
+  defp far_finding(far, visits) do
+    %{
+      id: "fit-far-#{far.position}",
+      name: stop_name(visits, far.position),
+      distance: fit_distance_ft(far.distance_m)
+    }
+  end
+
+  # A far stop the model carries no name for is named by its position in the
+  # pattern, which is what the section list calls it too.
+  defp stop_name(visits, position) when is_map(visits) and is_integer(position) do
+    case Map.get(visits, position) do
+      %{name: name} when is_binary(name) and name != "" -> name
+      _other -> "Stop #{position}"
+    end
+  end
+
+  defp stop_name(_visits, _position), do: "this pattern's last stop"
+
+  defp first_position(visits) when map_size(visits) == 0, do: nil
+  defp first_position(visits), do: visits |> Map.keys() |> Enum.min()
+
+  defp last_position(visits) when map_size(visits) == 0, do: nil
+  defp last_position(visits), do: visits |> Map.keys() |> Enum.max()
+
+  # The hook measures in metres (INV-1). 100 m is the one threshold the fit
+  # and the conversion share; this is where it becomes the 330 ft the review
+  # reads in.
+  @fit_feet_per_meter 3.28084
+
+  defp fit_distance_ft(distance_m) when is_number(distance_m) do
+    "#{round(distance_m * @fit_feet_per_meter / 10) * 10} ft"
+  end
+
+  defp fit_distance_ft(_distance_m), do: "more than 330 ft"
+
+  # --- imported line card (imported shapes) ------------------------------
+
+  attr :card, :map, default: nil, doc: "%{shape_id} when the imported-line card is open"
+  attr :alignment, :map, default: nil, doc: "the Gtfs.alignment_editor/4 read model"
+  attr :fit, :map, default: nil, doc: "the hook's reported fit for the shown shape, or nil"
+  attr :visits, :map, default: %{}, doc: "visits by position, for the names the review uses"
+
+  # Step 32 imported line card: the review a dialog used to hold, in the
+  # panel itself (the prototype's `imported-shape` state). The shape's own
+  # numbers come from the model, the fit from the hook's report through
+  # `fit_review/1`, and one card covers both one shape and divergent shapes
+  # by rendering the chooser when the trips disagree (INV-5, no modal).
+  def imported_line_card(assigns) do
+    shapes = import_shapes(assigns.alignment)
+
+    assigns =
+      assigns
+      |> assign(:shapes, shapes)
+      |> assign(:shape, import_shape(shapes, assigns[:card]))
+      |> assign(:total_trips, import_total_trips(assigns.alignment))
+      |> assign(:visit_count, import_visit_count(assigns.alignment))
+      |> assign(:blocked?, assigns[:fit] != nil and assigns[:fit].direction == "reversed")
+
+    ~H"""
+    <div
+      :if={@shape}
+      id="imported-line-card"
+      class="mx-4 mt-4 rounded-card border border-subtle bg-white"
+    >
+      <div class="px-4 py-3">
+        <h3 id="imported-line-card-title" class="text-sm font-bold text-strong">
+          Imported shape {@shape.shape_id}
+        </h3>
+        <p class="mt-0.5 text-[13px] text-muted">
+          <span class="tabular-nums">{import_shape_km(@shape)}</span>
+          &middot; <span class="tabular-nums">{length(@shape.points || [])}</span>
+          points &middot; used by the {@shape.trip_count} {if @shape.trip_count == 1,
+            do: "trip",
+            else: "trips"} on this pattern &middot; {@visit_count} {if @visit_count == 1,
+            do: "visit",
+            else: "visits"}
+        </p>
+      </div>
+
+      <form
+        :if={length(@shapes) > 1}
+        id="imported-shape-form"
+        phx-change="alignment_import_choice"
+        class="border-t border-subtle px-4 py-3"
+      >
+        <fieldset>
+          <legend class="text-sm font-bold text-strong">
+            Which imported shape is this pattern&rsquo;s path?
+          </legend>
+          <p class="mt-0.5 text-[13px] text-muted">
+            This pattern&rsquo;s trips reference {length(@shapes)} shapes. They are retained until you
+            explicitly replace them, and the fit below is measured on the one you choose.
+          </p>
+          <div class="mt-2 grid gap-2">
+            <.scope_option
+              :for={shape <- @shapes}
+              id={"imported-shape-#{shape.shape_id}"}
+              name="import_shape"
+              value={shape.shape_id}
+              checked={import_selected?(@card, shape, @shapes)}
+            >
+              <strong class="text-strong">Shape {shape.shape_id}</strong>
+              <span class="mt-0.5 block text-[13px] text-muted">
+                {shape.trip_count} {if shape.trip_count == 1, do: "trip", else: "trips"} &middot; {import_shape_km(
+                  shape
+                )} &middot; {length(shape.points || [])} points
+              </span>
+            </.scope_option>
+          </div>
+        </fieldset>
+        <p class="mt-3">
           <.badge tone="warning" icon="hero-exclamation-triangle">
             Saving the replacement would affect all {@total_trips} trips.
           </.badge>
         </p>
+      </form>
+
+      <div class="border-t border-subtle px-4 py-3">
+        <%!-- The fit is the hook's own measurement of the chosen shape
+          against this pattern's stops, so the card waits for it rather
+          than repeating the work on the server (INV-5). --%>
+        <.fit_review :if={@fit} fit={@fit} visits={@visits} />
+        <p :if={is_nil(@fit)} id="imported-line-checking" class="text-[13px] text-muted">
+          Checking this shape against the pattern&rsquo;s stops&hellip;
+        </p>
       </div>
-    </.confirm_dialog>
+
+      <div class="border-t border-subtle px-4 py-3">
+        <p id="imported-line-note" class="text-[13px] text-muted">
+          <span :if={@blocked?} class="font-semibold text-error-fg">
+            Reverse the line to continue. It runs the other way from this pattern.
+          </span>
+          <span :if={not @blocked?}>
+            Nothing changes until you save. Until then, trips and exports keep shape {@shape.shape_id}.
+          </span>
+        </p>
+        <div class="mt-2 flex flex-wrap gap-2">
+          <button
+            type="button"
+            id="imported-line-close"
+            phx-click="alignment_close_import"
+            class="btn btn-outline min-h-11"
+          >
+            Close
+          </button>
+          <button
+            type="button"
+            id="imported-line-draft"
+            phx-click="alignment_confirm_import"
+            disabled={@blocked?}
+            title={if @blocked?, do: "Reverse the line first", else: nil}
+            class="btn btn-primary min-h-11"
+          >
+            <.icon name="hero-pencil-square" class="size-4" /> Create editable draft
+          </button>
+        </div>
+      </div>
+    </div>
     """
   end
+
+  defp import_shape(shapes, %{shape_id: shape_id}) when is_list(shapes),
+    do: Enum.find(shapes, &(&1.shape_id == shape_id))
+
+  defp import_shape(_shapes, _card), do: nil
 
   attr :dialog, :map,
     default: nil,
@@ -1531,13 +2331,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
   end
 
   defp save_button_title(_alignment, false, _offline?, _applying?, _dirty?, _generating?),
-    do: "Only editors can save alignment."
+    do: "Only editors can save the map line."
 
   defp save_button_title(_alignment, true, true, _applying?, _dirty?, _generating?),
     do: "Reconnect before saving."
 
   defp save_button_title(_alignment, true, _offline?, true, _dirty?, _generating?),
-    do: "Saving your alignment…"
+    do: "Saving your map line…"
 
   defp save_button_title(_alignment, true, _offline?, _applying?, _dirty?, true),
     do: "Finish or cancel generation before saving."
@@ -1585,20 +2385,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     if length(import_shapes(alignment)) > 1, do: "Compare shapes", else: "Review imported path"
   end
 
-  defp import_open?(%{shape_id: shape_id}, alignment),
-    do: shape_id in Enum.map(import_shapes(alignment), & &1.shape_id)
-
-  defp import_open?(_dialog, _alignment), do: false
-
   defp import_total_trips(alignment) do
     alignment |> import_shapes() |> Enum.map(& &1.trip_count) |> Enum.sum()
   end
 
   defp import_visit_count(%{visits: visits}) when is_list(visits), do: length(visits)
   defp import_visit_count(_alignment), do: 0
-
-  defp import_dialog_title([_single]), do: "Review imported path"
-  defp import_dialog_title(_shapes), do: "Choose an imported path"
 
   defp import_shape_km(%{length_m: length_m}) when is_number(length_m) do
     "#{:erlang.float_to_binary(length_m / 1000, decimals: 1)} km"

@@ -46,7 +46,7 @@ defmodule GtfsPlannerWeb.DashboardRegionsTest do
       install_stub([:resume])
 
       {:ok, view, _html} = live(conn, ~p"/")
-      render_async(view)
+      render_async(view, 2_000)
 
       assert has_element?(view, "#region-error-resume", "Your recent changes could not load.")
 
@@ -73,7 +73,7 @@ defmodule GtfsPlannerWeb.DashboardRegionsTest do
       install_stub([:resume])
 
       {:ok, view, _html} = live(conn, ~p"/")
-      render_async(view)
+      render_async(view, 2_000)
 
       assert has_element?(view, "#region-error-resume", "Your recent changes could not load.")
 
@@ -82,7 +82,7 @@ defmodule GtfsPlannerWeb.DashboardRegionsTest do
       Application.put_env(:gtfs_planner, :home_failing_functions, [:check_and_share])
 
       view |> element("#region-error-retry-resume") |> render_click()
-      render_async(view)
+      render_async(view, 2_000)
 
       refute has_element?(view, "#region-error-resume")
       assert has_element?(view, "#resume-latest", "Market Street 3rd")
@@ -100,7 +100,7 @@ defmodule GtfsPlannerWeb.DashboardRegionsTest do
       install_stub([:check_and_share])
 
       {:ok, view, _html} = live(conn, ~p"/")
-      render_async(view)
+      render_async(view, 2_000)
 
       assert has_element?(
                view,
@@ -115,7 +115,7 @@ defmodule GtfsPlannerWeb.DashboardRegionsTest do
       Application.put_env(:gtfs_planner, :home_failing_functions, [:resume])
 
       view |> element("#region-error-retry-check") |> render_click()
-      render_async(view)
+      render_async(view, 2_000)
 
       refute has_element?(view, "#region-error-check")
       assert has_element?(view, "#check-badge", "No errors · 12 warnings")
@@ -130,7 +130,7 @@ defmodule GtfsPlannerWeb.DashboardRegionsTest do
       install_stub([:resume])
 
       {:ok, view, _html} = live(conn, ~p"/")
-      render_async(view)
+      render_async(view, 2_000)
 
       # Clearing the failure makes a reload observable: a click that re-ran the
       # resume region would replace its error block with the loaded list.
@@ -148,12 +148,12 @@ defmodule GtfsPlannerWeb.DashboardRegionsTest do
       conn = log_in_user(ctx.conn, user, organization: organization)
 
       {:ok, view, _html} = live(conn, ~p"/")
-      render_async(view)
+      render_async(view, 2_000)
 
       # `board` is a Pathways region; accepting it on the planner page would
       # start a board read whose answer has no board params to fold into.
       render_click(view, "retry", %{"region" => "board"})
-      render_async(view)
+      render_async(view, 2_000)
 
       assert has_element?(view, "#home-planner")
       assert has_element?(view, "#check-badge", "No errors · 12 warnings")

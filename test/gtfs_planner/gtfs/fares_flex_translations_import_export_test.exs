@@ -24,8 +24,8 @@ defmodule GtfsPlanner.Gtfs.FaresFlexTranslationsImportExportTest do
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Export.CsvWriter
   alias GtfsPlanner.Gtfs.Export.FileSpec
-  alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.StagedImport
 
   @new_files ~w(
     fare_products.txt fare_media.txt fare_leg_rules.txt fare_leg_join_rules.txt
@@ -195,7 +195,7 @@ defmodule GtfsPlanner.Gtfs.FaresFlexTranslationsImportExportTest do
       organization: organization,
       version: version
     } do
-      assert {:ok, result} = Import.import_files(organization.id, version.id, input_files())
+      assert {:ok, result} = StagedImport.import_files(organization.id, version.id, input_files())
       assert result.counts[:fare_products] == 2
       assert result.counts[:translations] == 3
 
@@ -213,7 +213,7 @@ defmodule GtfsPlanner.Gtfs.FaresFlexTranslationsImportExportTest do
         Enum.map(entries, fn {name, content} -> %{filename: name, content: content} end)
 
       assert {:ok, _result} =
-               Import.import_files(organization.id, second_version.id, reimport_files)
+               StagedImport.import_files(organization.id, second_version.id, reimport_files)
 
       assert stored_row_sets(organization.id, second_version.id) ==
                stored_row_sets(organization.id, version.id)
@@ -229,7 +229,7 @@ defmodule GtfsPlanner.Gtfs.FaresFlexTranslationsImportExportTest do
         %{filename: "routes.txt", content: "route_id,route_type\nR1,3\n"}
       ]
 
-      assert {:ok, _result} = Import.import_files(organization.id, version.id, files)
+      assert {:ok, _result} = StagedImport.import_files(organization.id, version.id, files)
       assert {:ok, zip} = Export.export_to_zip(organization.id, version.id, :full)
 
       exported = zip |> unzip() |> Map.keys()
@@ -246,7 +246,7 @@ defmodule GtfsPlanner.Gtfs.FaresFlexTranslationsImportExportTest do
     } do
       files = [%{filename: "areas.txt", content: @input_files["areas.txt"]}]
 
-      assert {:ok, _result} = Import.import_files(organization.id, version.id, files)
+      assert {:ok, _result} = StagedImport.import_files(organization.id, version.id, files)
       assert {:ok, zip, _warnings} = Export.build_zip(organization.id, version.id, :operations)
 
       assert unzip(zip)["areas.txt"] == @input_files["areas.txt"]
@@ -266,7 +266,7 @@ defmodule GtfsPlanner.Gtfs.FaresFlexTranslationsImportExportTest do
 
       files = [%{filename: "fare_leg_rules.txt", content: rules_in_reverse}]
 
-      assert {:ok, _result} = Import.import_files(organization.id, version.id, files)
+      assert {:ok, _result} = StagedImport.import_files(organization.id, version.id, files)
       assert {:ok, zip} = Export.export_to_zip(organization.id, version.id, :full)
 
       assert unzip(zip)["fare_leg_rules.txt"] == @input_files["fare_leg_rules.txt"]
@@ -283,7 +283,7 @@ defmodule GtfsPlanner.Gtfs.FaresFlexTranslationsImportExportTest do
         %{filename: "locations.txt", content: @input_files["locations.txt"]}
       ]
 
-      assert {:ok, _result} = Import.import_files(organization.id, version.id, files)
+      assert {:ok, _result} = StagedImport.import_files(organization.id, version.id, files)
 
       full = Gtfs.get_file_inventory(organization.id, version.id, :full)
       pathways = Gtfs.get_file_inventory(organization.id, version.id, :pathways)

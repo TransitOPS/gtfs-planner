@@ -18,6 +18,7 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
@@ -27,8 +28,25 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
   import GtfsPlanner.VersionsFixtures
   import GtfsPlanner.GtfsFixtures
 
-  @actor %{id: Ecto.UUID.generate(), email: "operator@example.com"}
-  @cleanup_actor %{id: Ecto.UUID.generate(), email: "cleaner@example.com"}
+  # Creating a target and claiming a cleanup reauthorize their actor, so the actors are real
+  # active editors of the organization. One editor per role and organization keeps ids stable.
+  defp actor(org), do: editor_actor(org, :operator)
+  defp cleanup_actor(org), do: editor_actor(org, :cleaner)
+
+  defp editor_actor(org, role) do
+    key = {__MODULE__, role, org.id}
+
+    case Process.get(key) do
+      nil ->
+        editor = editor_fixture(org)
+        actor = %{id: editor.id, email: editor.email}
+        Process.put(key, actor)
+        actor
+
+      actor ->
+        actor
+    end
+  end
 
   setup do
     previous = Application.get_env(:gtfs_planner, :uploads_path)
@@ -57,7 +75,7 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
 
   defp fail_run(org, name \\ "Failed Target") do
     {:ok, %{run: run, version: version}} =
-      ImportRuns.create_pending_target(org.id, @actor, %{name: name})
+      ImportRuns.create_pending_target(org.id, actor(org), %{name: name})
 
     {:ok, _, _, token} = ImportRuns.claim_import(org.id, run.id, run.lease_token)
     {:ok, _, _} = ImportRuns.fail_import(org.id, run.id, token, make_failure())
@@ -117,7 +135,7 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
     rows =
       Enum.map(1..n, fn i ->
         {:ok, lvl} =
-          GtfsPlanner.Gtfs.create_level(%{
+          insert_level(%{
             level_id: "L#{System.unique_integer([:positive])}",
             level_index: 0.0,
             level_name: "Level #{i}",
@@ -174,7 +192,8 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
       seed_stop_level_rows(org, version, nil, stop_fixture(org.id, version.id), 5)
       file = write_namespace_file(org, version, "station_a/plan.png")
 
-      {:ok, _, claimed_version, token} = ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+      {:ok, _, claimed_version, token} =
+        ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
 
       assert {:ok, nil} = Recovery.discard_claimed(run, claimed_version, token)
 
@@ -186,8 +205,8 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
 
       cleaned = Repo.get!(Run, run.id)
       assert cleaned.state == "cleaned"
-      assert cleaned.actor_id == @actor.id
-      assert cleaned.cleanup_actor_id == @cleanup_actor.id
+      assert cleaned.actor_id == actor(org).id
+      assert cleaned.cleanup_actor_id == cleanup_actor(org).id
       assert cleaned.version_name == "Spring 2024"
     end
 
@@ -195,7 +214,9 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
       {run, version} = fail_run(org, "Converge Twice")
 
       seed_level_rows(org, version, 3)
-      {:ok, _, claimed_version, token} = ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+
+      {:ok, _, claimed_version, token} =
+        ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
 
       # First attempt fails partway (database), leaving some rows + version.
       Application.put_env(:gtfs_planner, :import_cleanup_inject_failure, {:database, Level})
@@ -210,7 +231,7 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
 
       # Retry converges over the remaining (and already-absent) rows.
       {:ok, reclaimed, reclaimed_version, re_token} =
-        ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+        ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
 
       assert reclaimed.state == "cleaning"
       assert {:ok, nil} = Recovery.discard_claimed(reclaimed, reclaimed_version, re_token)
@@ -236,7 +257,8 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
       seed_route_rows(org, other, 40)
       other_file = write_namespace_file(org, other, "station_b/keep.png")
 
-      {:ok, _, claimed_version, token} = ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+      {:ok, _, claimed_version, token} =
+        ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
 
       assert {:ok, nil} = Recovery.discard_claimed(run, claimed_version, token)
 
@@ -257,7 +279,9 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
          %{org: org} do
       {run, version} = fail_run(org)
       seed_level_rows(org, version, 50)
-      {:ok, _, claimed_version, token} = ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+
+      {:ok, _, claimed_version, token} =
+        ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
 
       Application.put_env(:gtfs_planner, :import_cleanup_inject_failure, {:database, Level})
 
@@ -272,7 +296,7 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
       Application.delete_env(:gtfs_planner, :import_cleanup_inject_failure)
 
       {:ok, reclaimed, reclaimed_version, re_token} =
-        ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+        ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
 
       assert reclaimed.state == "cleaning"
       assert {:ok, nil} = Recovery.discard_claimed(reclaimed, reclaimed_version, re_token)
@@ -285,7 +309,9 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
          %{org: org} do
       {run, version} = fail_run(org)
       seed_level_rows(org, version, 10)
-      {:ok, _, claimed_version, token} = ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+
+      {:ok, _, claimed_version, token} =
+        ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
 
       Application.put_env(:gtfs_planner, :import_cleanup_inject_failure, {:filesystem, :any})
 
@@ -300,7 +326,7 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
       Application.delete_env(:gtfs_planner, :import_cleanup_inject_failure)
 
       {:ok, reclaimed, reclaimed_version, re_token} =
-        ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+        ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
 
       assert {:ok, nil} = Recovery.discard_claimed(reclaimed, reclaimed_version, re_token)
       assert Repo.get!(Run, run.id).state == "cleaned"
@@ -310,7 +336,9 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
     test "non-runtime cleanup exceptions are normalized and persisted", %{org: org} do
       {run, version} = fail_run(org)
       seed_level_rows(org, version, 1)
-      {:ok, _, claimed_version, token} = ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+
+      {:ok, _, claimed_version, token} =
+        ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
 
       Application.put_env(:gtfs_planner, :import_cleanup_batch_size, :invalid)
 
@@ -330,9 +358,12 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
     test "duplicate cleanup claims leave exactly one winner; name re-creatable only after cleaned (AC-11/AC-14)",
          %{org: org} do
       {run, version} = fail_run(org, "Reuse Me")
-      {:ok, _, claimed_version, token} = ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+
+      {:ok, _, claimed_version, token} =
+        ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
 
       parent = self()
+      cleaning_actor = cleanup_actor(org)
 
       first = fn ->
         Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
@@ -341,7 +372,7 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
 
       second = fn ->
         Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
-        ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+        ImportRuns.claim_cleanup(org.id, run.id, cleaning_actor)
       end
 
       t1 = Task.async(first)
@@ -371,7 +402,9 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
 
       # Discard the failed target through Recovery.discard_claimed (the same
       # contract the LiveView UI uses after claiming cleanup).
-      {:ok, _, claimed_version, token} = ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+      {:ok, _, claimed_version, token} =
+        ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
+
       assert {:ok, nil} = Recovery.discard_claimed(run, claimed_version, token)
 
       refute version_exists?(version.id)
@@ -385,7 +418,7 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
       # Re-upload the same feed under the SAME version name. The name is
       # creatable only after cleanup reached `cleaned`.
       {:ok, %{run: new_run, version: new_version}} =
-        ImportRuns.create_pending_target(org.id, @actor, %{name: "Reupload Me"})
+        ImportRuns.create_pending_target(org.id, actor(org), %{name: "Reupload Me"})
 
       refute new_version.id == version.id
 
@@ -412,7 +445,10 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
     test "a re-uploaded feed published through the runner leaves no duplicate target rows (AC-14)",
          %{org: org, root: root} do
       {run, version} = fail_run(org, "Publish After Discard")
-      {:ok, _, claimed_version, token} = ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+
+      {:ok, _, claimed_version, token} =
+        ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
+
       assert {:ok, nil} = Recovery.discard_claimed(run, claimed_version, token)
       refute version_exists?(version.id)
 
@@ -420,13 +456,17 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
       # claims the pending run itself (pending lease token), exactly like
       # ImportLive.
       {:ok, %{run: new_run, version: new_version}} =
-        ImportRuns.create_pending_target(org.id, @actor, %{name: "Publish After Discard"})
+        ImportRuns.create_pending_target(org.id, actor(org), %{name: "Publish After Discard"})
 
       files = [
         %{filename: "levels.txt", content: "level_id,level_index,level_name\nL1,0.0,Ground"}
       ]
 
-      {:ok, runner_pid} = Runner.start_import(org.id, new_run.id, new_run.lease_token, files)
+      {:ok, runner_pid} =
+        Runner.start_import(org.id, new_run.id, new_run.lease_token,
+          files: StagedImport.stage(files)
+        )
+
       Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), runner_pid)
 
       # Wait for the runner task to finish (monitor it; no sleeps).
@@ -463,7 +503,9 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
     test "performs cleanup using the held org/run/token without re-claiming", %{org: org} do
       {run, version} = fail_run(org)
       seed_route_rows(org, version, 9)
-      {:ok, _, _claimed_version, token} = ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+
+      {:ok, _, _claimed_version, token} =
+        ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
 
       assert {:ok, nil} = Recovery.run(org.id, run.id, token)
       assert count_rows(Route, org, version) == 0
@@ -475,7 +517,7 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
       {run, version} = fail_run(org)
 
       {:ok, _, _claimed_version, _token} =
-        ImportRuns.claim_cleanup(org.id, run.id, @cleanup_actor)
+        ImportRuns.claim_cleanup(org.id, run.id, cleanup_actor(org))
 
       assert {:error, _} = Recovery.run(org.id, run.id, Ecto.UUID.generate())
       assert Repo.get!(Run, run.id).state == "cleaning"

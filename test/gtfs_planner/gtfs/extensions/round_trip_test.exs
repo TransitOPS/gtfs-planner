@@ -3,6 +3,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.{Export, Import}
+  alias GtfsPlanner.Support.StagedImport
 
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -37,11 +38,11 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
       )
 
       # Set diagram coordinate on child stop
-      {:ok, _} = Gtfs.update_stop_diagram_coordinate(child, %{x: 42.5, y: 18.3})
+      {:ok, _} = put_stop_diagram_coordinate(child, %{x: 42.5, y: 18.3})
 
       # Create stop_level with diagram and calibration
       {:ok, sl} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: station.id,
           level_id: level.id,
           organization_id: org_a.id,
@@ -50,7 +51,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
         })
 
       {:ok, _} =
-        Gtfs.update_stop_level_scale(sl, %{
+        put_stop_level_scale(sl, %{
           scale_point_a: %{x: 5.0, y: 10.0},
           scale_point_b: %{x: 95.0, y: 90.0},
           scale_distance_meters: Decimal.new("25.0"),
@@ -96,7 +97,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
         end)
 
       assert {:ok, import_result} =
-               Import.import_files(org_b.id, version_b.id, import_files)
+               StagedImport.import_files(org_b.id, version_b.id, import_files)
 
       counts = import_result.counts
 
@@ -160,7 +161,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
         %{filename: "stops.txt", content: stops_content}
       ]
 
-      assert {:ok, import_result} = Import.import_files(org.id, version.id, files)
+      assert {:ok, import_result} = StagedImport.import_files(org.id, version.id, files)
 
       counts = import_result.counts
       assert counts.levels == 1

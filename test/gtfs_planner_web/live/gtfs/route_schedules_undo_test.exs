@@ -3,7 +3,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesUndoTest do
   # production composition (spec 18, step 26; CL-10, CL-12; FH-26, FH-28, FH-31).
   #
   # Every case mounts through the authenticated router with no injected assigns,
-  # so LiveView event -> editor role re-read -> `Gtfs.apply_trip_change/4` or
+  # so LiveView event -> `Gtfs.apply_trip_change/4` or
   # `Gtfs.restore_trips/3` -> `Gtfs.Schedules` transaction -> audit -> reload
   # through the read adapter is exercised end to end. Persisted clocks and rows
   # are asserted with independent `Repo` reads, never from the rendered HTML
@@ -274,8 +274,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesUndoTest do
                undo?: false
              }
 
-      # The refused role leaves the entry alone.
-      assert [%{message: "Moved 1 trip 1 min later."}] = assigns.undo_stack
+      # Undo consumes its captured payload even when the transaction refuses it.
+      assert assigns.undo_stack == []
 
       render_hook(grid(view), "nudge", %{"minutes" => 5, "trip" => trip.id})
       assert stop_time_clocks(trip) == moved

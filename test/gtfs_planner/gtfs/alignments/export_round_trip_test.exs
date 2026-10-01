@@ -14,11 +14,13 @@ defmodule GtfsPlanner.Gtfs.Alignments.ExportRoundTripTest do
   use ExUnit.Case
 
   import Ecto.Query
+  import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.ConcurrencyHelpers
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.Alignments
@@ -26,7 +28,6 @@ defmodule GtfsPlanner.Gtfs.Alignments.ExportRoundTripTest do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Export
-  alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
@@ -38,6 +39,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.ExportRoundTripTest do
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlanner.Versions.GtfsVersion
 
   @loop_points %{
@@ -117,7 +119,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.ExportRoundTripTest do
     version_b = new_version(org)
 
     assert {:ok, _result} =
-             unboxed(fn -> Import.import_files(org.id, version_b.id, import_files) end)
+             unboxed(fn -> StagedImport.import_files(org.id, version_b.id, import_files) end)
 
     comparison =
       unboxed(fn ->
@@ -246,12 +248,14 @@ defmodule GtfsPlanner.Gtfs.Alignments.ExportRoundTripTest do
       stop_time_fixture(org.id, version.id, trip_id, "E", %{stop_sequence: 2})
     end
 
+    actor = editor_fixture(org)
+
     audit = %AuditContext{
       organization_id: org.id,
       gtfs_version_id: version.id,
       station_stop_id: nil,
-      actor_id: Ecto.UUID.generate(),
-      actor_email: "align-export@example.com"
+      actor_id: actor.id,
+      actor_email: actor.email
     }
 
     loop_pattern = Repo.reload!(loop_pattern)
@@ -514,6 +518,10 @@ defmodule GtfsPlanner.Gtfs.Alignments.ExportRoundTripTest do
 
   defp cleanup(organization_ids) do
     unboxed(fn ->
+      # The alignment save needs an editor, which `editor_fixture/1` commits with the
+      # organization's membership; deleting the organization alone leaves the user.
+      ConcurrencyHelpers.delete_committed_members!(organization_ids)
+
       timing_ids =
         Repo.all(
           from(t in TimedPattern, where: t.organization_id in ^organization_ids, select: t.id)

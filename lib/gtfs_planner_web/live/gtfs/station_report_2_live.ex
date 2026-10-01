@@ -30,6 +30,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.Stop
 
   alias GtfsPlanner.Gtfs.StationReport2.{
@@ -44,7 +45,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   alias GtfsPlannerWeb.Gtfs.StationReport2Components
   alias GtfsPlannerWeb.Gtfs.StationReportDrawerComponents
 
-  on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+  on_mount({GtfsPlannerWeb.EnsureRole, :require_gtfs_access})
 
   @report_key :report_load
   @dimensions [:entrance_to_platform, :platform_to_platform, :platform_to_exit]
@@ -415,7 +416,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
           |> stop_changeset(editable_stop_params(stop_params), socket.assigns.drawer_levels)
           |> Map.put(:action, :validate)
 
-        {:noreply, assign(socket, :drawer_form, to_form(changeset, as: :stop))}
+        {:noreply,
+         socket
+         |> assign(:drawer_form, to_form(changeset, as: :stop))
+         |> assign(:drawer_save_error, nil)}
 
       _ ->
         {:noreply, socket}
@@ -447,42 +451,66 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
     attrs = editable_stop_params(stop_params)
     changeset = stop_changeset(stop, attrs, socket.assigns.drawer_levels)
 
-    # Only a valid changeset is written: `Gtfs.update_stop/2` builds its own
-    # changeset without the level check. A rejected one carries the action
-    # `Repo.update/1` would set, which the form needs to render field errors.
+    # Keep the report's no-change save behavior. The scoped command records
+    # history for an update, so only changed fields enter that command.
     result =
-      if changeset.valid?,
-        do: Gtfs.update_stop(stop, attrs),
-        else: {:error, Map.put(changeset, :action, :update)}
+      cond do
+        not changeset.valid? ->
+          {:error, Map.put(changeset, :action, :update)}
+
+        changeset.changes == %{} ->
+          {:ok, stop}
+
+        true ->
+          Stations.update_child_stop(
+            AuditContext.from_assigns(socket.assigns),
+            stop.id,
+            attrs,
+            stop.lock_version
+          )
+      end
 
     case result do
       {:ok, _updated} ->
-        record_stop_update(socket, stop, changeset.changes)
-
         {:noreply,
          socket
          |> reset_drawer()
          |> start_report_load(refresh_state(socket), :saved)}
 
-      {:error, changeset} ->
+      {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply,
          socket
          |> assign(:drawer_form, to_form(changeset, as: :stop))
          |> assign(:drawer_error, nil)
+         |> assign(:drawer_save_error, nil)
          |> push_event("focus_form_error", %{
            form_id: StationReportDrawerComponents.form_id(),
            fallback_id: StationReportDrawerComponents.error_summary_id()
          })}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:drawer_form, to_form(Map.put(changeset, :action, :update), as: :stop))
+         |> assign(:drawer_save_error, save_error(reason))
+         |> push_event("focus_form_error", %{
+           form_id: StationReportDrawerComponents.form_id(),
+           fallback_id: "report-stop-save-error"
+         })}
     end
   end
 
-  # The changeset holds only the editable fields whose cast value differs from the
-  # stored one, so a save that changes nothing writes no History entry.
-  defp record_stop_update(_socket, _stop, changes) when map_size(changes) == 0, do: :ok
+  defp save_error({:stale, _}),
+    do:
+      "This stop changed since you opened it. Close and reopen the drawer to review the latest values before saving."
 
-  defp record_stop_update(socket, stop, changes) do
-    Gtfs.record_change(AuditContext.from_assigns(socket.assigns), :stop, stop, "updated", changes)
-  end
+  defp save_error(:forbidden),
+    do: "Your editing access changed. Your draft remains here, but it was not saved."
+
+  defp save_error(:not_found),
+    do: "This stop is no longer in the selected station. Your draft was not saved."
+
+  defp save_error(_), do: "The stop could not be saved. Your draft remains here; try again."
 
   # `Stop.changeset/2` is shared with import and other writers, so it cannot
   # look levels up. The level select only offers this version's levels, but a
@@ -516,17 +544,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
     org_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
 
+    audit = AuditContext.from_assigns(socket.assigns)
+
     case Gtfs.get_stop_by_stop_id(org_id, version_id, entity_id) do
       nil ->
         assign_drawer_error(socket, entity_id)
 
       stop ->
-        socket
-        |> assign(:drawer_entity, stop)
-        |> assign(:drawer_entity_id, entity_id)
-        |> assign(:drawer_form, stop_form(stop))
-        |> assign(:drawer_levels, Gtfs.list_all_levels(org_id, version_id))
-        |> assign(:drawer_error, nil)
+        if Stations.station_member?(audit, "stop", stop.id) do
+          socket
+          |> assign(:drawer_entity, stop)
+          |> assign(:drawer_entity_id, entity_id)
+          |> assign(:drawer_form, stop_form(stop))
+          |> assign(:drawer_levels, Gtfs.list_all_levels(org_id, version_id))
+          |> assign(:drawer_error, nil)
+          |> assign(:drawer_save_error, nil)
+        else
+          assign_drawer_error(socket, entity_id)
+        end
     end
   end
 
@@ -622,6 +657,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
           drawer_entity_id={@drawer_entity_id}
           drawer_form={@drawer_form}
           drawer_error={@drawer_error}
+          drawer_save_error={@drawer_save_error}
           drawer_levels={@drawer_levels}
           drawer_return_focus_id={@drawer_return_focus_id}
         />
@@ -643,9 +679,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   defp pluralize(1, one, _many), do: "1 #{one}"
   defp pluralize(count, _one, many), do: "#{count} #{many}"
 
-  attr :state, :atom, required: true
-  attr :reason, :atom, default: nil
-  attr :error, :atom, default: nil
+  attr(:state, :atom, required: true)
+  attr(:reason, :atom, default: nil)
+  attr(:error, :atom, default: nil)
 
   defp report_status(%{state: :ready} = assigns) do
     ~H""
@@ -801,6 +837,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
     |> assign(:drawer_form, nil)
     |> assign(:drawer_levels, [])
     |> assign(:drawer_error, nil)
+    |> assign(:drawer_save_error, nil)
   end
 
   # A route change retires the opener with the report that owned it.
@@ -815,6 +852,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
     |> assign(:drawer_entity, nil)
     |> assign(:drawer_entity_id, entity_id)
     |> assign(:drawer_form, nil)
+    |> assign(:drawer_save_error, nil)
     |> assign(
       :drawer_error,
       "#{entity_id} is not in this report's GTFS version. It may have been renamed or removed " <>

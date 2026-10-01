@@ -18,7 +18,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCoverageTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.Import
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlannerWeb.Gtfs.CalendarCoverage
 
   @near_days 105
@@ -506,7 +506,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCoverageTest do
       |> Enum.map(fn {filename, content} -> %{filename: filename, content: content} end)
 
     assert {:ok, _result} =
-             Import.import_files(context.organization.id, context.version.id, files)
+             StagedImport.import_files(context.organization.id, context.version.id, files)
 
     assert {:ok, screen} = Gtfs.load_calendar_screen(context.organization.id, context.version.id)
 

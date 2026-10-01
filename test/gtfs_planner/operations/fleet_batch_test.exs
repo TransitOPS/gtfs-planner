@@ -4,6 +4,8 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
   @async_timeout 5_000
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.Accounts.User
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Operations.Garage
   alias GtfsPlanner.Operations.Vehicle
@@ -17,7 +19,7 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
   describe "create_vehicle_range/3" do
     test "creates 200 vehicles with the assignments, the actor and sorted IDs" do
       organization = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
       vehicle_type = vehicle_type_fixture(organization.id, %{"name" => "Bus"})
       garage = garage_fixture(organization.id, %{"name" => "Depot"})
 
@@ -53,18 +55,26 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
       organization = organization_fixture()
 
       assert {:ok, vehicles} =
-               Operations.create_vehicle_range(organization.id, operations_actor(), %{
-                 "first" => "0098",
-                 "last" => "0102"
-               })
+               Operations.create_vehicle_range(
+                 organization.id,
+                 operations_actor(organization.id),
+                 %{
+                   "first" => "0098",
+                   "last" => "0102"
+                 }
+               )
 
       assert Enum.map(vehicles, & &1.vehicle_id) == ["0098", "0099", "0100", "0101", "0102"]
 
       assert {:ok, wide} =
-               Operations.create_vehicle_range(organization.id, operations_actor(), %{
-                 "first" => "98",
-                 "last" => "102"
-               })
+               Operations.create_vehicle_range(
+                 organization.id,
+                 operations_actor(organization.id),
+                 %{
+                   "first" => "98",
+                   "last" => "102"
+                 }
+               )
 
       assert Enum.map(wide, & &1.vehicle_id) == ["98", "99", "100", "101", "102"]
     end
@@ -78,7 +88,11 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
             %{"first" => "0098", "last" => "0300"}
           ] do
         assert {:error, {:invalid_range, message}} =
-                 Operations.create_vehicle_range(organization.id, operations_actor(), attrs)
+                 Operations.create_vehicle_range(
+                   organization.id,
+                   operations_actor(organization.id),
+                   attrs
+                 )
 
         assert is_binary(message) and message != ""
       end
@@ -102,7 +116,11 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
             %{}
           ] do
         assert {:error, {:invalid_range, message}} =
-                 Operations.create_vehicle_range(organization.id, operations_actor(), attrs)
+                 Operations.create_vehicle_range(
+                   organization.id,
+                   operations_actor(organization.id),
+                   attrs
+                 )
 
         assert is_binary(message) and message != ""
       end
@@ -116,10 +134,14 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
       over_long = String.duplicate("9", 256)
 
       assert {:error, {:invalid_range, message}} =
-               Operations.create_vehicle_range(organization.id, operations_actor(), %{
-                 "first" => over_long,
-                 "last" => over_long
-               })
+               Operations.create_vehicle_range(
+                 organization.id,
+                 operations_actor(organization.id),
+                 %{
+                   "first" => over_long,
+                   "last" => over_long
+                 }
+               )
 
       assert is_binary(message) and message != ""
       assert vehicle_ids(organization.id) == []
@@ -127,10 +149,14 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
       boundary = String.duplicate("0", 254) <> "1"
 
       assert {:ok, [vehicle]} =
-               Operations.create_vehicle_range(organization.id, operations_actor(), %{
-                 "first" => boundary,
-                 "last" => boundary
-               })
+               Operations.create_vehicle_range(
+                 organization.id,
+                 operations_actor(organization.id),
+                 %{
+                   "first" => boundary,
+                   "last" => boundary
+                 }
+               )
 
       assert vehicle.vehicle_id == boundary
       assert String.length(vehicle.vehicle_id) == 255
@@ -147,10 +173,14 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
       vehicle_fixture(organization.id, %{"vehicle_id" => "0200"})
 
       assert {:error, {:ids_taken, taken}} =
-               Operations.create_vehicle_range(organization.id, operations_actor(), %{
-                 "first" => "0098",
-                 "last" => "0102"
-               })
+               Operations.create_vehicle_range(
+                 organization.id,
+                 operations_actor(organization.id),
+                 %{
+                   "first" => "0098",
+                   "last" => "0102"
+                 }
+               )
 
       assert taken == ["0100", "0102"]
       assert vehicle_ids(organization.id) == ["0100", "0102", "0200"]
@@ -168,10 +198,14 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
       vehicle_fixture(other.id, %{"vehicle_id" => "0100"})
 
       assert {:ok, vehicles} =
-               Operations.create_vehicle_range(organization.id, operations_actor(), %{
-                 "first" => "0098",
-                 "last" => "0102"
-               })
+               Operations.create_vehicle_range(
+                 organization.id,
+                 operations_actor(organization.id),
+                 %{
+                   "first" => "0098",
+                   "last" => "0102"
+                 }
+               )
 
       assert Enum.map(vehicles, & &1.vehicle_id) == ["0098", "0099", "0100", "0101", "0102"]
       assert vehicle_ids(other.id) == ["0100"]
@@ -192,7 +226,11 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
             %{"first" => "1", "last" => "5", "garage_id" => foreign_garage.id}
           ] do
         assert {:error, :not_found} =
-                 Operations.create_vehicle_range(organization.id, operations_actor(), attrs)
+                 Operations.create_vehicle_range(
+                   organization.id,
+                   operations_actor(organization.id),
+                   attrs
+                 )
 
         assert vehicle_ids(organization.id) == []
       end
@@ -206,14 +244,18 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
       vehicle_type_fixture(organization.id)
 
       assert {:ok, vehicles} =
-               Operations.create_vehicle_range(organization.id, operations_actor(), %{
-                 "first" => "1",
-                 "last" => "3",
-                 "vehicle_type_id" => "",
-                 "garage_id" => nil,
-                 "organization_id" => other.id,
-                 "updated_by_id" => Ecto.UUID.generate()
-               })
+               Operations.create_vehicle_range(
+                 organization.id,
+                 operations_actor(organization.id),
+                 %{
+                   "first" => "1",
+                   "last" => "3",
+                   "vehicle_type_id" => "",
+                   "garage_id" => nil,
+                   "organization_id" => other.id,
+                   "updated_by_id" => Ecto.UUID.generate()
+                 }
+               )
 
       assert Enum.all?(vehicles, &is_nil(&1.vehicle_type_id))
       assert Enum.all?(vehicles, &is_nil(&1.garage_id))
@@ -224,6 +266,7 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
     test "a concurrent writer claiming part of the range leaves one whole batch" do
       Sandbox.unboxed_run(Repo, fn ->
         organization = organization_fixture(%{alias: "range-race-#{Ecto.UUID.generate()}"})
+        actor = operations_actor(organization.id)
         owner = self()
 
         attrs = %{"first" => "1", "last" => "3"}
@@ -234,7 +277,7 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
               result =
                 Operations.create_vehicle_range(
                   organization.id,
-                  %{id: Ecto.UUID.generate()},
+                  actor,
                   attrs
                 )
 
@@ -274,7 +317,7 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
   describe "update_vehicles/4" do
     test "sets a type on every listed vehicle and keeps the garage" do
       organization = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
       previous_type = vehicle_type_fixture(organization.id)
       vehicle_type = vehicle_type_fixture(organization.id)
       garage = garage_fixture(organization.id)
@@ -303,7 +346,7 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
 
     test "a nil value clears only the named field" do
       organization = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
       vehicle_type = vehicle_type_fixture(organization.id)
       garage = garage_fixture(organization.id)
 
@@ -324,7 +367,7 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
 
     test "writes only the named field, the actor and the timestamp" do
       organization = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
       garage = garage_fixture(organization.id)
 
       vehicle =
@@ -358,7 +401,7 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
     test "a foreign, unknown or malformed vehicle changes nothing" do
       organization = organization_fixture()
       other = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
       vehicle_type = vehicle_type_fixture(organization.id)
       mine = vehicle_fixture(organization.id)
       foreign = vehicle_fixture(other.id)
@@ -384,7 +427,7 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
     test "a foreign, unknown or malformed target changes nothing" do
       organization = organization_fixture()
       other = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
       foreign_type = vehicle_type_fixture(other.id)
       foreign_garage = garage_fixture(other.id)
       type = vehicle_type_fixture(organization.id)
@@ -413,7 +456,7 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
 
     test "duplicate ids count once and empty lists return zero" do
       organization = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
       garage = garage_fixture(organization.id)
       first = vehicle_fixture(organization.id)
       second = vehicle_fixture(organization.id)
@@ -445,7 +488,7 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
 
     test "an unsupported field is refused and changes nothing" do
       organization = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
       vehicle = vehicle_fixture(organization.id, %{"vehicle_id" => "field-guard"})
 
       assert {:error, :not_found} =
@@ -474,24 +517,33 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
       foreign = vehicle_fixture(other.id)
 
       assert {:error, :not_found} =
-               Operations.update_vehicles(organization.id, operations_actor(), [foreign.id], {
-                 :vehicle_type_id,
-                 vehicle_type.id
-               })
+               Operations.update_vehicles(
+                 organization.id,
+                 operations_actor(organization.id),
+                 [foreign.id],
+                 {
+                   :vehicle_type_id,
+                   vehicle_type.id
+                 }
+               )
 
       assert Repo.get(Vehicle, foreign.id).vehicle_type_id == nil
       assert Enum.map(Operations.list_vehicles(other.id, %{}), & &1.id) == [foreign.id]
     end
   end
 
-  describe "delete_vehicles/2" do
+  describe "delete_vehicles/3" do
     test "deletes every listed vehicle and leaves the others" do
       organization = organization_fixture()
       first = vehicle_fixture(organization.id)
       second = vehicle_fixture(organization.id)
       kept = vehicle_fixture(organization.id)
 
-      assert {:ok, 2} = Operations.delete_vehicles(organization.id, [first.id, second.id])
+      assert {:ok, 2} =
+               Operations.delete_vehicles(organization.id, operations_actor(organization.id), [
+                 first.id,
+                 second.id
+               ])
 
       assert Repo.get(Vehicle, first.id) == nil
       assert Repo.get(Vehicle, second.id) == nil
@@ -511,7 +563,12 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
             [mine.id, nil],
             [foreign.id]
           ] do
-        assert {:error, :not_found} = Operations.delete_vehicles(organization.id, ids)
+        assert {:error, :not_found} =
+                 Operations.delete_vehicles(
+                   organization.id,
+                   operations_actor(organization.id),
+                   ids
+                 )
       end
 
       assert Repo.get(Vehicle, mine.id)
@@ -523,10 +580,16 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
       gone = vehicle_fixture(organization.id)
       remaining = vehicle_fixture(organization.id)
 
-      assert {:ok, 1} = Operations.delete_vehicles(organization.id, [gone.id])
+      assert {:ok, 1} =
+               Operations.delete_vehicles(organization.id, operations_actor(organization.id), [
+                 gone.id
+               ])
 
       assert {:error, :not_found} =
-               Operations.delete_vehicles(organization.id, [gone.id, remaining.id])
+               Operations.delete_vehicles(organization.id, operations_actor(organization.id), [
+                 gone.id,
+                 remaining.id
+               ])
 
       assert Repo.get(Vehicle, remaining.id)
       assert vehicle_ids(organization.id) == [remaining.vehicle_id]
@@ -537,11 +600,13 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
       vehicle = vehicle_fixture(organization.id)
       other = vehicle_fixture(organization.id)
 
-      assert {:ok, 0} = Operations.delete_vehicles(organization.id, [])
+      assert {:ok, 0} =
+               Operations.delete_vehicles(organization.id, operations_actor(organization.id), [])
+
       assert Repo.get(Vehicle, vehicle.id)
 
       assert {:ok, 1} =
-               Operations.delete_vehicles(organization.id, [
+               Operations.delete_vehicles(organization.id, operations_actor(organization.id), [
                  vehicle.id,
                  vehicle.id,
                  String.upcase(vehicle.id)
@@ -556,10 +621,16 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
       other = organization_fixture()
       foreign = vehicle_fixture(other.id)
 
-      assert {:error, :not_found} = Operations.delete_vehicles(organization.id, [foreign.id])
+      assert {:error, :not_found} =
+               Operations.delete_vehicles(organization.id, operations_actor(organization.id), [
+                 foreign.id
+               ])
+
       assert Repo.get(Vehicle, foreign.id)
 
-      assert {:ok, 1} = Operations.delete_vehicles(other.id, [foreign.id])
+      assert {:ok, 1} =
+               Operations.delete_vehicles(other.id, operations_actor(other.id), [foreign.id])
+
       assert Repo.get(Vehicle, foreign.id) == nil
     end
   end
@@ -682,6 +753,16 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
     Repo.delete_all(from(v in Vehicle, where: v.organization_id == ^organization_id))
     Repo.delete_all(from(t in VehicleType, where: t.organization_id == ^organization_id))
     Repo.delete_all(from(g in Garage, where: g.organization_id == ^organization_id))
+
+    editor_user_ids =
+      Repo.all(
+        from(m in UserOrgMembership,
+          where: m.organization_id == ^organization_id,
+          select: m.user_id
+        )
+      )
+
     Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
+    Repo.delete_all(from(u in User, where: u.id in ^editor_user_ids))
   end
 end

@@ -15,6 +15,8 @@ defmodule GtfsPlanner.Operations.TodsImportTest do
   @async_timeout 5_000
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.Accounts.User
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Operations.Garage
   alias GtfsPlanner.Operations.Tods
@@ -117,7 +119,7 @@ defmodule GtfsPlanner.Operations.TodsImportTest do
   describe "apply_tods_import/4 inserts" do
     test "creates garages from the extended fixture with their named fields and no address" do
       organization = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
       parsed = parsed!(:garages, fixture(@garage_file), @garage_file)
       preview = Operations.preview_tods_import(organization.id, parsed)
 
@@ -141,7 +143,7 @@ defmodule GtfsPlanner.Operations.TodsImportTest do
 
     test "names a new garage from its stop_id when stop_name is absent or blank" do
       organization = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
 
       parsed =
         parsed!(
@@ -162,7 +164,7 @@ defmodule GtfsPlanner.Operations.TodsImportTest do
 
     test "creates vehicles with their label and plate and no assignment" do
       organization = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
       file = "tods_example_vehicles.txt"
       parsed = parsed!(:vehicles, fixture(file), file)
       preview = Operations.preview_tods_import(organization.id, parsed)
@@ -189,7 +191,12 @@ defmodule GtfsPlanner.Operations.TodsImportTest do
       assert preview.add == [] and preview.update == [] and preview.errors == []
 
       assert {:ok, %{added: 0, updated: 0}} =
-               Operations.apply_tods_import(organization.id, operations_actor(), parsed, preview)
+               Operations.apply_tods_import(
+                 organization.id,
+                 operations_actor(organization.id),
+                 parsed,
+                 preview
+               )
 
       assert vehicles(organization.id) == []
     end
@@ -198,7 +205,7 @@ defmodule GtfsPlanner.Operations.TodsImportTest do
   describe "apply_tods_import/4 field preservation" do
     test "re-importing vehicles keeps their type and garage and updates only carried fields" do
       organization = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
       vehicle_type = vehicle_type_fixture(organization.id, %{"name" => "Bus"})
       garage = garage_fixture(organization.id)
 
@@ -229,7 +236,7 @@ defmodule GtfsPlanner.Operations.TodsImportTest do
 
     test "re-importing garages preserves their address and never writes an address" do
       organization = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
 
       garage =
         garage_fixture(organization.id, %{
@@ -257,7 +264,7 @@ defmodule GtfsPlanner.Operations.TodsImportTest do
 
     test "a blank vehicle field clears, an absent column preserves, and a blank stop_name preserves" do
       organization = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
 
       garage =
         garage_fixture(organization.id, %{
@@ -327,7 +334,7 @@ defmodule GtfsPlanner.Operations.TodsImportTest do
 
     test "a no-op update still records the acting user without changing stored fields" do
       organization = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
       garage = garage_fixture(organization.id, %{"garage_id" => "garage", "name" => "Existing"})
       file = "tods_example_stops_supplement.txt"
       parsed = parsed!(:garages, fixture(file), file)
@@ -345,7 +352,7 @@ defmodule GtfsPlanner.Operations.TodsImportTest do
 
     test "import never deletes records absent from the file" do
       organization = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
       kept_one = vehicle_fixture(organization.id, %{"vehicle_id" => "bus-2"})
       kept_two = vehicle_fixture(organization.id, %{"vehicle_id" => "bus-3"})
       parsed = parsed!(:vehicles, "vehicle_id,vehicle_label\nbus-1,New\n", @vehicle_file)
@@ -363,7 +370,7 @@ defmodule GtfsPlanner.Operations.TodsImportTest do
   describe "apply_tods_import/4 idempotence" do
     test "a second apply of the same file adds nothing" do
       organization = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
       file = "tods_example_vehicles.txt"
       parsed = parsed!(:vehicles, fixture(file), file)
 
@@ -395,7 +402,12 @@ defmodule GtfsPlanner.Operations.TodsImportTest do
       assert preview.errors == [%{row: 4, id: nil, reason: "Vehicle ID is required."}]
 
       assert {:error, {:invalid, returned}} =
-               Operations.apply_tods_import(organization.id, operations_actor(), parsed, preview)
+               Operations.apply_tods_import(
+                 organization.id,
+                 operations_actor(organization.id),
+                 parsed,
+                 preview
+               )
 
       assert returned.errors == preview.errors
       assert vehicles(organization.id) == []
@@ -413,7 +425,12 @@ defmodule GtfsPlanner.Operations.TodsImportTest do
       between = vehicle_fixture(organization.id, %{"vehicle_id" => "bus-1"})
 
       assert {:error, {:preview_changed, fresh}} =
-               Operations.apply_tods_import(organization.id, operations_actor(), parsed, preview)
+               Operations.apply_tods_import(
+                 organization.id,
+                 operations_actor(organization.id),
+                 parsed,
+                 preview
+               )
 
       assert fresh.add == ["bus-2"]
       assert fresh.update == ["bus-1"]
@@ -430,7 +447,7 @@ defmodule GtfsPlanner.Operations.TodsImportTest do
         assert {:error, {:preview_changed, _fresh}} =
                  Operations.apply_tods_import(
                    organization.id,
-                   operations_actor(),
+                   operations_actor(organization.id),
                    parsed,
                    forged
                  )
@@ -454,7 +471,7 @@ defmodule GtfsPlanner.Operations.TodsImportTest do
       assert {:ok, %{added: 2, updated: 0}} =
                Operations.apply_tods_import(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  parsed,
                  preview
                )
@@ -472,7 +489,7 @@ defmodule GtfsPlanner.Operations.TodsImportTest do
     test "a competing insert after the recompute rolls back every write and returns a fresh preview" do
       Sandbox.unboxed_run(Repo, fn ->
         organization = organization_fixture(%{alias: "tods-race-#{Ecto.UUID.generate()}"})
-        actor = %{id: Ecto.UUID.generate()}
+        actor = operations_actor(organization.id)
         owner = self()
 
         existing =
@@ -646,6 +663,16 @@ defmodule GtfsPlanner.Operations.TodsImportTest do
     Repo.delete_all(from(v in Vehicle, where: v.organization_id == ^organization_id))
     Repo.delete_all(from(t in VehicleType, where: t.organization_id == ^organization_id))
     Repo.delete_all(from(g in Garage, where: g.organization_id == ^organization_id))
+
+    editor_user_ids =
+      Repo.all(
+        from(m in UserOrgMembership,
+          where: m.organization_id == ^organization_id,
+          select: m.user_id
+        )
+      )
+
     Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
+    Repo.delete_all(from(u in User, where: u.id in ^editor_user_ids))
   end
 end

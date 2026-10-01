@@ -392,7 +392,11 @@ defmodule GtfsPlanner.Gtfs.StopEditingCreateTest do
     actor = user_fixture(%{email: "stop-create-#{stamp()}@example.com"})
 
     {:ok, _membership} =
-      Organizations.add_user_to_organization(actor.id, organization_id, [role])
+      Accounts.create_user_org_membership(%{
+        user_id: actor.id,
+        organization_id: organization_id,
+        roles: [role]
+      })
 
     actor
   end

@@ -5,6 +5,7 @@ defmodule GtfsPlanner.Gtfs.ReviewedApplyTransaction.RepoTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Accounts.User
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
@@ -69,6 +70,8 @@ defmodule GtfsPlanner.Gtfs.ReviewedApplyTransaction.RepoTest do
           email: "serializable-#{Ecto.UUID.generate()}@example.com"
         })
 
+      organization_membership_fixture(actor, organization)
+
       try do
         station =
           stop_fixture(organization.id, gtfs_version.id, %{
@@ -83,7 +86,7 @@ defmodule GtfsPlanner.Gtfs.ReviewedApplyTransaction.RepoTest do
           })
 
         {:ok, stop_level} =
-          Gtfs.create_stop_level(%{
+          insert_stop_level(%{
             organization_id: organization.id,
             gtfs_version_id: gtfs_version.id,
             stop_id: station.id,
@@ -375,6 +378,10 @@ defmodule GtfsPlanner.Gtfs.ReviewedApplyTransaction.RepoTest do
 
     Repo.delete_all(from(stop in Stop, where: stop.organization_id == ^organization_id))
     Repo.delete_all(from(level in Level, where: level.organization_id == ^organization_id))
+
+    Repo.delete_all(
+      from(membership in UserOrgMembership, where: membership.organization_id == ^organization_id)
+    )
 
     Repo.delete_all(
       from(version in GtfsVersion, where: version.organization_id == ^organization_id)

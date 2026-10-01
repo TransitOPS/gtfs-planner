@@ -169,7 +169,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveStopDependentsTest do
         level =
           level_fixture(ctx.organization.id, ctx.version.id, %{level_id: "L1"})
 
-        Gtfs.create_stop_level(%{
+        GtfsPlanner.GtfsFixtures.insert_stop_level(%{
           organization_id: ctx.organization.id,
           gtfs_version_id: ctx.version.id,
           stop_id: stop.id,

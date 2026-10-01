@@ -99,7 +99,11 @@ async function waitForLiveView(page) {
 
 // The drawer slides in over 300ms. Capturing before the panel settles
 // photographs a partially transformed panel, so the wait requires the panel's
-// right edge to sit on the viewport edge and its animation to have finished.
+// right edge to sit on its dialog's right edge and its animation to have
+// finished. The modal dialog fills the viewport less the width the root's
+// `scrollbar-gutter: stable` reserves, which is 15px when the browser draws
+// classic scrollbars and 0 when it draws overlay ones, so `innerWidth` is not
+// the edge the panel settles on.
 async function settleDrawer(page, id) {
   const panel = page.locator(`#${id}`);
   await panel.waitFor({ state: "visible" });
@@ -109,8 +113,8 @@ async function settleDrawer(page, id) {
       if (!element) return false;
 
       const rect = element.getBoundingClientRect();
-      const settled =
-        Math.abs(rect.right - window.innerWidth) <= 2 && rect.left < window.innerWidth;
+      const edge = element.closest("dialog").getBoundingClientRect().right;
+      const settled = Math.abs(rect.right - edge) <= 2 && rect.left < edge;
       const stillMoving = element
         .getAnimations()
         .some((animation) => animation.playState === "running");
@@ -314,7 +318,7 @@ test.describe("Garages, Fleet and operations export", () => {
 
     await expect(page.locator("#garage_lat")).toHaveValue(ADDRESS_LAT);
     await expect(page.locator("#garage_lon")).toHaveValue(ADDRESS_LON);
-    await expect(page.locator("#garage-address-unavailable")).toHaveCount(0);
+    await expect(page.locator("#garage-address-retry")).toHaveCount(0);
 
     await page.setViewportSize(DESKTOP);
     await page.screenshot({ path: testInfo.outputPath("garage-drawer-1440x1000.png") });
@@ -408,6 +412,12 @@ test.describe("Garages, Fleet and operations export", () => {
     await page.goto(`/gtfs/${versionId}/settings/fleet`);
     await expect(page.locator("h1")).toContainText("Fleet");
 
+    // The seed's other versions already assign vehicles to the organization, so
+    // the table starts with rows of its own and the journey counts what it adds.
+    await waitForLiveView(page);
+    await expect(page.locator("#vehicles-table")).toBeVisible();
+    const seededVehicles = await page.locator("#vehicles-table tr").count();
+
     // A type with a 10-hour limit: the drawer saves it and the matrix lists it.
     await openDrawer(page, "#add-vehicle-type", "vehicle-type-drawer");
 
@@ -446,14 +456,14 @@ test.describe("Garages, Fleet and operations export", () => {
 
     await page.locator("#vehicle-range-form").getByRole("button", { name: "Add vehicles" }).click();
     await expect(page.locator("#vehicle-notice")).toHaveText("15 vehicles added.");
-    await expect(page.locator("#vehicles-table tr")).toHaveCount(15);
+    await expect(page.locator("#vehicles-table tr")).toHaveCount(seededVehicles + 15);
 
-    const added = await vehicleRows(page);
-    const addedIds = added.map((row) => row.id);
+    const expectedIds = Array.from({ length: 15 }, (_, index) => String(rangeBase + index));
+    const addedIds = (await vehicleRows(page))
+      .map((row) => row.id)
+      .filter((id) => expectedIds.includes(id));
     expect(new Set(addedIds).size).toBe(15);
-    expect(addedIds.sort()).toEqual(
-      Array.from({ length: 15 }, (_, index) => String(rangeBase + index)).sort(),
-    );
+    expect(addedIds.sort()).toEqual(expectedIds.sort());
 
     // Filtering by the type shows exactly the new group.
     await page.selectOption("#vehicle-filters #type", { label: typeName });
@@ -706,12 +716,12 @@ test.describe("Garages, Fleet and operations export", () => {
     await page.goto(`/gtfs/${versionId}/export?type=operations`);
     await waitForLiveView(page);
 
-    // The first click can still race the view's join, so the retry is itself
-    // retried until the ready artifact appears.
-    await expect(async () => {
-      await page.locator("#retry-export").click();
-      await expect(page.locator("#export-download-link")).toBeVisible({ timeout: 20_000 });
-    }).toPass({ timeout: 150_000 });
+    // The view has joined, so one click restarts the failed run. Restarting
+    // again would not help: while the build runs the button is replaced, and a
+    // second click would wait for a button that only a failed run renders. The
+    // build gets the time it needs on a busy machine.
+    await page.locator("#retry-export").click();
+    await expect(page.locator("#export-download-link")).toBeVisible({ timeout: 150_000 });
 
     await expect(page.locator("#export-conflicts")).toHaveCount(0);
 

@@ -17,7 +17,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   A delete is refused while any vehicle, block attribute or route operating
   setting references the garage: the page reads
   `Operations.garage_in_use_counts/2` before opening the confirmation and
-  `Operations.delete_garage/2` still attempts the write, naming the same counts
+  `Operations.delete_garage/3` still attempts the write, naming the same counts
   when a reference appears in between. A garage nothing references is deleted
   with its entered driving times, whose refs are the garage UUID.
 
@@ -69,6 +69,9 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
+  @permission_error "You no longer have permission to edit garages. " <>
+                      "Ask an organization administrator to restore your access."
+
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
@@ -88,7 +91,9 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
      |> assign(:garage_drawer_return_focus_id, nil)
      |> assign(:garage_id_touched?, false)
      |> assign(:address_results, [])
-     |> assign(:address_unavailable?, false)
+     |> assign(:address_search_generation, 0)
+     |> assign(:address_search_text, "")
+     |> assign(:address_search_state, nil)
      |> assign(:garage_delete_target, nil)
      |> assign(:garage_in_use, nil)
      |> assign(:tods_import_open, false)
@@ -258,44 +263,28 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
       {:error, :not_found} ->
         # The garage disappeared between opening the drawer and saving.
         {:noreply, socket |> close_garage_drawer() |> refresh_garages()}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> assign(:garage_form, garage_form(garage_base(socket), params))
+         |> put_flash(:error, @permission_error)}
     end
   end
 
   def handle_event("save_garage", _params, socket), do: {:noreply, socket}
 
   @impl true
-  def handle_event("live_select_change", %{"text" => text, "id" => id}, socket) do
-    case Geocoding.autocomplete(text) do
-      {:ok, results} ->
-        options =
-          Enum.map(results, fn result ->
-            %{
-              label: result.formatted_address,
-              value: result.formatted_address,
-              tag: result,
-              option: result.formatted_address
-            }
-          end)
-
-        send_update(LiveSelectComponent, id: id, options: options)
-
-        {:noreply,
-         socket
-         |> assign(:address_results, results)
-         |> assign(:address_unavailable?, false)}
-
-      {:error, reason} ->
-        Logger.error("Geocoding autocomplete failed: #{inspect(reason)}")
-        send_update(LiveSelectComponent, id: id, options: [])
-
-        {:noreply,
-         socket
-         |> assign(:address_results, [])
-         |> assign(:address_unavailable?, true)}
-    end
+  def handle_event("live_select_change", %{"text" => text, "id" => "garage-address"}, socket) do
+    {:noreply, search_address(socket, text)}
   end
 
   def handle_event("live_select_change", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("retry_address_search", _params, socket) do
+    {:noreply, search_address(socket, socket.assigns.address_search_text)}
+  end
 
   # --- garage deletion -------------------------------------------------------
 
@@ -340,8 +329,77 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
     end
   end
 
+  @impl true
+  def handle_async(:address_search, {:ok, {generation, result}}, socket) do
+    if socket.assigns.garage_drawer_open and
+         generation == socket.assigns.address_search_generation do
+      {:noreply, apply_address_results(socket, result)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_async(:address_search, {:exit, reason}, socket) do
+    Logger.error("Geocoding autocomplete task exited: #{inspect(reason)}")
+
+    # An exit has no generation payload; a closed and reopened drawer is no
+    # longer searching even if LiveView still holds the earlier task reference.
+    {:noreply,
+     if(
+       socket.assigns.garage_drawer_open and
+         socket.assigns.address_search_state == :searching,
+       do: assign(socket, :address_search_state, :failed),
+       else: socket
+     )}
+  end
+
+  defp apply_address_results(socket, {:ok, results}) do
+    options =
+      Enum.map(results, fn result ->
+        %{
+          label: result.formatted_address,
+          value: result.formatted_address,
+          tag: result,
+          option: result.formatted_address
+        }
+      end)
+
+    send_update(LiveSelectComponent, id: "garage-address", options: options)
+
+    socket
+    |> assign(:address_results, results)
+    |> assign(:address_search_state, if(results == [], do: :empty, else: :results))
+  end
+
+  defp apply_address_results(socket, {:error, reason}) do
+    Logger.error("Geocoding autocomplete failed: #{inspect(reason)}")
+    send_update(LiveSelectComponent, id: "garage-address", options: [])
+
+    socket
+    |> assign(:address_results, [])
+    |> assign(:address_search_state, :failed)
+  end
+
+  defp search_address(socket, text) do
+    generation = socket.assigns.address_search_generation + 1
+    send_update(LiveSelectComponent, id: "garage-address", options: [])
+
+    socket =
+      socket
+      |> assign(:address_search_generation, generation)
+      |> assign(:address_search_text, text)
+      |> assign(:address_results, [])
+      |> assign(:address_search_state, :searching)
+
+    start_async(socket, :address_search, fn -> {generation, Geocoding.autocomplete(text)} end)
+  end
+
   defp delete_garage(socket, garage) do
-    case Operations.delete_garage(socket.assigns.current_organization.id, garage.id) do
+    case Operations.delete_garage(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_user,
+           garage.id
+         ) do
       {:ok, deleted} ->
         {:noreply,
          socket
@@ -358,6 +416,9 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
 
       {:error, :not_found} ->
         {:noreply, socket |> assign(:garage_delete_target, nil) |> refresh_garages()}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, @permission_error)}
     end
   end
 
@@ -483,7 +544,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
           counts={@garage_counts}
           form={@garage_form}
           return_focus_id={@garage_drawer_return_focus_id}
-          address_unavailable?={@address_unavailable?}
+          address_search_state={@address_search_state}
         />
 
         <.confirm_dialog
@@ -600,7 +661,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
                 phx-value-garage_id={garage.id}
                 phx-value-opener_id={"garage-name-#{garage.id}"}
                 class={[
-                  "grid min-h-11 min-w-0 content-center rounded-control text-left [overflow-wrap:anywhere]",
+                  "grid min-h-11 min-w-11 content-center rounded-control text-left [overflow-wrap:anywhere]",
                   "group",
                   focus_class()
                 ]}
@@ -648,7 +709,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   attr :counts, :map, default: nil
   attr :form, :any, required: true
   attr :return_focus_id, :string, default: nil
-  attr :address_unavailable?, :boolean, default: false
+  attr :address_search_state, :atom, default: nil
 
   defp garage_drawer(assigns) do
     assigns =
@@ -781,16 +842,37 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
                   </.live_component>
                 </div>
                 <p>Choose a result to fill in the coordinates below.</p>
-                <%!-- A message under a field is styled by the field's own muted
-                paragraph rule, so the notice sits in a wrapper of its own. --%>
                 <div
-                  :if={@address_unavailable?}
-                  class="flex items-start gap-1.5 text-[13px] font-semibold text-warning-fg"
+                  :if={@address_search_state in [:searching, :empty, :failed]}
+                  id="garage-address-search-status"
+                  role="status"
+                  aria-live="polite"
+                  class={[
+                    "text-[13px]",
+                    if(@address_search_state == :failed, do: "text-error", else: "text-muted")
+                  ]}
                 >
-                  <.icon name="hero-exclamation-triangle" class="mt-0.5 size-4 shrink-0" />
-                  <p id="garage-address-unavailable" role="status">
-                    Address search isn't available right now. Enter the coordinates instead.
-                  </p>
+                  <%= case @address_search_state do %>
+                    <% :searching -> %>
+                      Searching addresses…
+                    <% :empty -> %>
+                      No matching addresses
+                    <% :failed -> %>
+                      <span>Address search is unavailable.</span>
+                      <.button
+                        id="garage-address-retry"
+                        type="button"
+                        variant="secondary"
+                        class="ml-2 min-h-11"
+                        phx-click={
+                          JS.push("retry_address_search")
+                          |> JS.focus(to: "#garage_address_text_input")
+                        }
+                      >
+                        Retry search
+                      </.button>
+                    <% _ -> %>
+                  <% end %>
                 </div>
               </div>
 
@@ -885,7 +967,9 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
     |> assign(:garage_drawer_title, "Create garage")
     |> assign(:garage_id_touched?, false)
     |> assign(:address_results, [])
-    |> assign(:address_unavailable?, false)
+    |> assign(:address_search_generation, socket.assigns.address_search_generation + 1)
+    |> assign(:address_search_text, "")
+    |> assign(:address_search_state, nil)
     |> assign(:garage_drawer_return_focus_id, opener_id)
     |> assign(:garage_notice, nil)
     |> assign(:garage_drawer_open, true)
@@ -903,7 +987,9 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
     # Generation is always off for a saved garage.
     |> assign(:garage_id_touched?, true)
     |> assign(:address_results, [])
-    |> assign(:address_unavailable?, false)
+    |> assign(:address_search_generation, socket.assigns.address_search_generation + 1)
+    |> assign(:address_search_text, "")
+    |> assign(:address_search_state, nil)
     |> assign(:garage_drawer_return_focus_id, opener_id)
     |> assign(:garage_notice, nil)
     |> assign(:garage_drawer_open, true)
@@ -917,7 +1003,9 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
     |> assign(:garage_entity, nil)
     |> assign(:garage_id_touched?, false)
     |> assign(:address_results, [])
-    |> assign(:address_unavailable?, false)
+    |> assign(:address_search_generation, socket.assigns.address_search_generation + 1)
+    |> assign(:address_search_text, "")
+    |> assign(:address_search_state, nil)
   end
 
   # On add, the ID defaults from the name only until the user edits the ID field.
@@ -1089,6 +1177,9 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
          |> assign(:tods_import_preview, refreshed_preview)
          |> assign(:tods_import_stale?, true)
          |> push_event("focus_scoped_target", %{id: "tods-import-error"})}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, @permission_error)}
     end
   end
 

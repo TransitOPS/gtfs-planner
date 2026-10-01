@@ -11,9 +11,16 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParser do
   counts, unterminated or malformed quoting, and tabs or embedded
   carriage-return/newline characters in values. Blank physical lines may be
   ignored, but every nonblank data record must produce exactly one row event.
+
+  `stream/2` parses a binary held in memory. `stream_file/3` applies the same
+  contract to a file read in chunks, so memory use is bounded by one record
+  rather than by the file.
   """
 
   alias GtfsPlanner.Gtfs.Import.ParseError
+
+  @default_chunk_bytes 65_536
+  @max_record_bytes 1_048_576
 
   @type row_event ::
           {:ok, pos_integer(), %{required(String.t()) => String.t()}}
@@ -134,6 +141,250 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParser do
   # record was part of CRLF. A lone terminal CR reaches the field parser.
   defp trim_crlf_cr(["\r" | rest]), do: rest
   defp trim_crlf_cr(current), do: current
+
+  @doc """
+  Parses the CSV file at `path` under the same contract as `stream/2`, reading
+  it in `:chunk_bytes` chunks (default 65,536) instead of loading it.
+
+  The file is read twice. The first pass validates UTF-8 across chunk
+  boundaries, counts records and parses the header, so invalid UTF-8 anywhere in
+  the file returns `{:error, %ParseError{reason: :invalid_utf8}}` before any row
+  event exists. The second pass runs lazily while `events` is enumerated; the
+  file must stay readable and unchanged until then.
+
+  A record longer than 1,048,576 bytes, not counting its line terminator, is
+  rejected with `:record_too_long`: as a row event, or as the error return when
+  it is the header. The scanner drops that record's bytes and resumes at the next
+  record, so later rows keep their physical numbers, and an unterminated quote
+  consumes the rest of the file as one rejected record instead of buffering it.
+
+  Raises `File.Error` when `path` cannot be read.
+  """
+  @spec stream_file(String.t(), Path.t(), keyword()) ::
+          {:ok, parsed_stream()} | {:error, ParseError.t()}
+  def stream_file(file, path, opts \\ []) when is_binary(file) and is_binary(path) do
+    chunk_bytes = Keyword.get(opts, :chunk_bytes, @default_chunk_bytes)
+
+    with {:ok, summary} <- prescan(file, path, chunk_bytes) do
+      stream_summary(summary, file, path, chunk_bytes)
+    end
+  end
+
+  # Pass 1: validates UTF-8, counts nonblank records and keeps only the first
+  # (the header).
+  defp prescan(file, path, chunk_bytes) when is_integer(chunk_bytes) and chunk_bytes > 0 do
+    initial = %{utf8_tail: "", scan: new_scan(), count: 0, header: nil}
+
+    scanned =
+      path
+      |> File.stream!(chunk_bytes)
+      |> Enum.reduce_while(initial, fn chunk, acc ->
+        case validate_utf8(acc.utf8_tail, chunk) do
+          {:ok, utf8_tail} ->
+            {records, scan} = scan_chunk(chunk, acc.scan)
+            {:cont, tally(%{acc | utf8_tail: utf8_tail, scan: scan}, records)}
+
+          :error ->
+            {:halt, :invalid_utf8}
+        end
+      end)
+
+    case scanned do
+      %{utf8_tail: ""} = acc -> {:ok, tally(acc, finish_scan(acc.scan))}
+      _invalid -> parse_error(file, :invalid_utf8)
+    end
+  end
+
+  defp tally(acc, records) do
+    %{acc | count: acc.count + length(records), header: acc.header || List.first(records)}
+  end
+
+  # `String.valid?/1` only judges whole code points, so the trailing partial
+  # sequence of a chunk (at most 3 bytes) is carried into the next chunk.
+  defp validate_utf8(tail, chunk) do
+    data = tail <> chunk
+    size = byte_size(data)
+    partial = incomplete_tail_size(data, size)
+
+    if String.valid?(binary_part(data, 0, size - partial)) do
+      {:ok, binary_part(data, size - partial, partial)}
+    else
+      :error
+    end
+  end
+
+  defp incomplete_tail_size(data, size) do
+    Enum.find(1..min(3, size)//1, 0, fn n ->
+      incomplete_sequence?(binary_part(data, size - n, n))
+    end)
+  end
+
+  defp incomplete_sequence?(<<lead, rest::binary>>) when lead in 0xC0..0xF7 do
+    byte_size(rest) + 1 < utf8_length(lead)
+  end
+
+  defp incomplete_sequence?(_bytes), do: false
+
+  defp utf8_length(lead) when lead < 0xE0, do: 2
+  defp utf8_length(lead) when lead < 0xF0, do: 3
+  defp utf8_length(_lead), do: 4
+
+  defp stream_summary(%{count: 0}, file, _path, _chunk_bytes),
+    do: parse_error(file, :empty_content)
+
+  defp stream_summary(%{header: {row, :too_long}}, file, _path, _chunk_bytes),
+    do: {:error, record_too_long(file, row)}
+
+  defp stream_summary(%{count: count, header: {_row, line}}, file, path, chunk_bytes) do
+    with {:ok, headers} <- parse_header(file, line) do
+      events =
+        path
+        |> record_stream(chunk_bytes)
+        |> Stream.drop(1)
+        |> Stream.map(&record_event(file, headers, &1))
+
+      {:ok, %{headers: headers, source_row_count: count - 1, events: events}}
+    end
+  end
+
+  defp record_event(file, _headers, {row, :too_long}), do: {:error, record_too_long(file, row)}
+  defp record_event(file, headers, {row, line}), do: parse_row(file, headers, line, row)
+
+  defp record_too_long(file, row) do
+    %ParseError{
+      file: file,
+      row: row,
+      reason: :record_too_long,
+      metadata: %{max_bytes: @max_record_bytes}
+    }
+  end
+
+  # Pass 2: lazily yields `{row, line | :too_long}` for every nonblank record,
+  # header included. `File.stream!/2` closes the file when enumeration ends or
+  # halts.
+  defp record_stream(path, chunk_bytes) do
+    Stream.transform(
+      File.stream!(path, chunk_bytes),
+      &new_scan/0,
+      &scan_chunk/2,
+      fn scan -> {finish_scan(scan), scan} end,
+      fn _scan -> :ok end
+    )
+  end
+
+  # Record scanner. It applies the record-splitting rules of `split_records/6`
+  # to bytes instead of code points, which is equivalent because only ASCII bytes
+  # change state and UTF-8 continuation bytes are never ASCII. Scan state:
+  #
+  #   * `head` - bytes held until a leading BOM can be ruled in or out
+  #   * `state` - quote state after the last scanned byte
+  #   * `row` / `record_row` - physical row now, and where the record began
+  #   * `buf` / `len` - reversed segments of the current record and their size;
+  #     `buf` becomes `:too_long` once the record exceeds the limit
+  defp new_scan, do: %{head: "", state: :field_start, row: 1, record_row: 1, buf: [], len: 0}
+
+  defp scan_chunk(chunk, %{head: :done} = scan) do
+    scan_bytes(chunk, 0, 0, byte_size(chunk), scan.state, scan.row, scan, [])
+  end
+
+  defp scan_chunk(chunk, %{head: head} = scan) do
+    data = head <> chunk
+
+    if byte_size(data) < 3 do
+      {[], %{scan | head: data}}
+    else
+      scan_chunk(strip_bom(data), %{scan | head: :done})
+    end
+  end
+
+  defp finish_scan(%{head: head} = scan) when head != :done do
+    {records, scan} = scan_chunk(head, %{scan | head: :done})
+    records ++ finish_scan(scan)
+  end
+
+  # Unlike an LF-terminated record, a lone CR at end of file stays in the record.
+  defp finish_scan(scan) do
+    case finish_record(scan, :eof) do
+      nil -> []
+      record -> [record]
+    end
+  end
+
+  # Bytes from `seg` to `pos` belong to the current record and are copied out
+  # only when the record ends or the chunk does.
+  defp scan_bytes(chunk, pos, seg, size, state, row, scan, records) when pos == size do
+    scan = %{buffer(scan, chunk, seg, pos) | state: state, row: row}
+    {Enum.reverse(records), scan}
+  end
+
+  defp scan_bytes(chunk, pos, seg, size, state, row, scan, records) do
+    case :binary.at(chunk, pos) do
+      ?\n when state == :quoted ->
+        scan_bytes(chunk, pos + 1, seg, size, state, row + 1, scan, records)
+
+      ?\n ->
+        scan = buffer(scan, chunk, seg, pos)
+        records = prepend_record(finish_record(scan, :lf), records)
+        scan = %{scan | buf: [], len: 0, record_row: row + 1}
+        scan_bytes(chunk, pos + 1, pos + 1, size, :field_start, row + 1, scan, records)
+
+      byte ->
+        scan_bytes(chunk, pos + 1, seg, size, next_state(state, byte), row, scan, records)
+    end
+  end
+
+  # `:quote_pending` is a quote seen inside a quoted field: a second quote makes
+  # it a doubled quote, anything else makes it the closing quote.
+  defp next_state(:quote_pending, ?"), do: :quoted
+  defp next_state(:quote_pending, byte), do: next_state(:after_quote, byte)
+  defp next_state(:quoted, ?"), do: :quote_pending
+  defp next_state(:quoted, _byte), do: :quoted
+  defp next_state(:malformed, _byte), do: :malformed
+  defp next_state(:field_start, ?"), do: :quoted
+  defp next_state(:field_start, ?,), do: :field_start
+  defp next_state(:field_start, _byte), do: :unquoted
+  defp next_state(:unquoted, ?"), do: :malformed
+  defp next_state(:unquoted, ?,), do: :field_start
+  defp next_state(:unquoted, _byte), do: :unquoted
+  defp next_state(:after_quote, ?,), do: :field_start
+  defp next_state(:after_quote, _byte), do: :malformed
+
+  defp buffer(%{buf: :too_long} = scan, _chunk, _seg, _pos), do: scan
+  defp buffer(scan, _chunk, seg, pos) when seg == pos, do: scan
+
+  # The limit is checked one byte late so that a trailing CR, which the record
+  # end trims, never decides it; `finish_record/2` applies the exact limit.
+  defp buffer(%{buf: buf, len: len} = scan, chunk, seg, pos) do
+    len = len + pos - seg
+
+    if len > @max_record_bytes + 1 do
+      %{scan | buf: :too_long}
+    else
+      %{scan | buf: [binary_part(chunk, seg, pos - seg) | buf], len: len}
+    end
+  end
+
+  defp finish_record(%{buf: :too_long, record_row: row}, _terminator), do: {row, :too_long}
+
+  defp finish_record(%{buf: buf, record_row: row}, terminator) do
+    line = buf |> Enum.reverse() |> IO.iodata_to_binary() |> trim_terminator(terminator)
+
+    cond do
+      line == "" -> nil
+      byte_size(line) > @max_record_bytes -> {row, :too_long}
+      true -> {row, line}
+    end
+  end
+
+  # The CR of a CRLF ending is not part of the record.
+  defp trim_terminator(line, :lf) when line != "" do
+    if :binary.last(line) == ?\r, do: binary_part(line, 0, byte_size(line) - 1), else: line
+  end
+
+  defp trim_terminator(line, _terminator), do: line
+
+  defp prepend_record(nil, records), do: records
+  defp prepend_record(record, records), do: [record | records]
 
   defp parse_header(file, line) do
     case parse_csv_fields(line, file, 1) do

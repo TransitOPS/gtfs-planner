@@ -24,6 +24,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
   use GtfsPlanner.DataCase, async: false
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.Accounts.{User, UserOrgMembership}
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Blocking.Queries
@@ -91,8 +92,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
         route_short_name: "99"
       })
 
-      # A row naming a route of another organization is never read.
-      route_operating_setting_fixture(organization.id, foreign_version.id, %{route_id: "99"})
+      # The other organization's setting for its own route is never read.
+      route_operating_setting_fixture(other_organization.id, foreign_version.id, %{
+        route_id: "99"
+      })
 
       assert Gtfs.list_route_operating_settings(organization.id, version.id) == [
                %{route_id: "12", garage_id: nil, required_vehicle_type_id: nil},
@@ -108,7 +111,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
     end
   end
 
-  describe "update_route_operating_settings/3" do
+  describe "update_route_operating_settings/2" do
     test "a batch stores every entry and a second batch replaces the stored values" do
       organization = organization_fixture()
       version = gtfs_version_fixture(organization.id)
@@ -121,18 +124,21 @@ defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
       end
 
       assert :ok =
-               Gtfs.update_route_operating_settings(organization.id, version.id, [
-                 %{
-                   "route_id" => "12",
-                   "garage_id" => garage.id,
-                   "required_vehicle_type_id" => ""
-                 },
-                 %{
-                   "route_id" => "30",
-                   "garage_id" => garage.id,
-                   "required_vehicle_type_id" => diesel.id
-                 }
-               ])
+               Gtfs.update_route_operating_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 [
+                   %{
+                     "route_id" => "12",
+                     "garage_id" => garage.id,
+                     "required_vehicle_type_id" => ""
+                   },
+                   %{
+                     "route_id" => "30",
+                     "garage_id" => garage.id,
+                     "required_vehicle_type_id" => diesel.id
+                   }
+                 ]
+               )
 
       assert Gtfs.list_route_operating_settings(organization.id, version.id) == [
                %{route_id: "12", garage_id: garage.id, required_vehicle_type_id: nil},
@@ -146,10 +152,13 @@ defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
       # saved over a type and a type saved over a garage cannot leave the earlier
       # value behind.
       assert :ok =
-               Gtfs.update_route_operating_settings(organization.id, version.id, [
-                 %{route_id: "12", garage_id: "", required_vehicle_type_id: cutaway.id},
-                 %{route_id: "30", garage_id: "", required_vehicle_type_id: ""}
-               ])
+               Gtfs.update_route_operating_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 [
+                   %{route_id: "12", garage_id: "", required_vehicle_type_id: cutaway.id},
+                   %{route_id: "30", garage_id: "", required_vehicle_type_id: ""}
+                 ]
+               )
 
       assert Gtfs.list_route_operating_settings(organization.id, version.id) == [
                %{route_id: "12", garage_id: nil, required_vehicle_type_id: cutaway.id},
@@ -172,10 +181,13 @@ defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
       end
 
       assert {:error, {:invalid, [%{route_id: "30", field: :garage_id} = _error]}} =
-               Gtfs.update_route_operating_settings(organization.id, version.id, [
-                 %{"route_id" => "12", "garage_id" => garage.id},
-                 %{"route_id" => "30", "garage_id" => foreign_garage.id}
-               ])
+               Gtfs.update_route_operating_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 [
+                   %{"route_id" => "12", "garage_id" => garage.id},
+                   %{"route_id" => "30", "garage_id" => foreign_garage.id}
+                 ]
+               )
 
       # The valid entry of the same batch is not stored either.
       assert Repo.aggregate(RouteOperatingSetting, :count) == 0
@@ -197,11 +209,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
       end
 
       assert {:error, {:invalid, invalid}} =
-               Gtfs.update_route_operating_settings(organization.id, version.id, [
-                 %{"route_id" => "12", "required_vehicle_type_id" => foreign_type.id},
-                 %{"route_id" => "24", "garage_id" => "not-a-uuid"},
-                 %{"route_id" => "30", "garage_id" => Ecto.UUID.generate()}
-               ])
+               Gtfs.update_route_operating_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 [
+                   %{"route_id" => "12", "required_vehicle_type_id" => foreign_type.id},
+                   %{"route_id" => "24", "garage_id" => "not-a-uuid"},
+                   %{"route_id" => "30", "garage_id" => Ecto.UUID.generate()}
+                 ]
+               )
 
       assert [
                %{route_id: "12", field: :required_vehicle_type_id},
@@ -222,11 +237,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
       route_fixture(organization.id, other_version.id, %{route_id: "24", route_short_name: "24"})
 
       assert {:error, {:invalid, invalid}} =
-               Gtfs.update_route_operating_settings(organization.id, version.id, [
-                 %{"route_id" => "12", "garage_id" => garage.id},
-                 %{"route_id" => "24", "garage_id" => garage.id},
-                 %{"route_id" => ""}
-               ])
+               Gtfs.update_route_operating_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 [
+                   %{"route_id" => "12", "garage_id" => garage.id},
+                   %{"route_id" => "24", "garage_id" => garage.id},
+                   %{"route_id" => ""}
+                 ]
+               )
 
       assert [%{route_id: "24", field: :route_id}, %{route_id: nil, field: :route_id}] = invalid
       assert Repo.aggregate(RouteOperatingSetting, :count) == 0
@@ -243,18 +261,24 @@ defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
       end
 
       assert :ok =
-               Gtfs.update_route_operating_settings(organization.id, version.id, [
-                 %{"route_id" => "12", "garage_id" => garage.id},
-                 %{"route_id" => "30", "garage_id" => other_garage.id}
-               ])
+               Gtfs.update_route_operating_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 [
+                   %{"route_id" => "12", "garage_id" => garage.id},
+                   %{"route_id" => "30", "garage_id" => other_garage.id}
+                 ]
+               )
 
       stored = Gtfs.list_route_operating_settings(organization.id, version.id)
 
       assert {:error, {:invalid, [%{route_id: "30", field: :garage_id}]}} =
-               Gtfs.update_route_operating_settings(organization.id, version.id, [
-                 %{"route_id" => "12", "garage_id" => other_garage.id},
-                 %{"route_id" => "30", "garage_id" => Ecto.UUID.generate()}
-               ])
+               Gtfs.update_route_operating_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 [
+                   %{"route_id" => "12", "garage_id" => other_garage.id},
+                   %{"route_id" => "30", "garage_id" => Ecto.UUID.generate()}
+                 ]
+               )
 
       assert Gtfs.list_route_operating_settings(organization.id, version.id) == stored
       assert Repo.aggregate(RouteOperatingSetting, :count) == 2
@@ -265,7 +289,12 @@ defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
       version = gtfs_version_fixture(organization.id)
       route_fixture(organization.id, version.id, %{route_id: "12", route_short_name: "12"})
 
-      assert :ok = Gtfs.update_route_operating_settings(organization.id, version.id, [])
+      assert :ok =
+               Gtfs.update_route_operating_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 []
+               )
+
       assert Repo.aggregate(RouteOperatingSetting, :count) == 0
 
       {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staging"})
@@ -274,10 +303,19 @@ defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
       garage = garage_fixture(organization.id, %{"name" => "Main"})
       entries = [%{"route_id" => "12", "garage_id" => garage.id}]
 
-      assert Gtfs.update_route_operating_settings(organization.id, staging.id, entries) ==
+      assert Gtfs.update_route_operating_settings(
+               GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, staging.id),
+               entries
+             ) ==
                {:error, :not_found}
 
-      assert Gtfs.update_route_operating_settings(organization.id, foreign_version.id, entries) ==
+      assert Gtfs.update_route_operating_settings(
+               GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                 organization.id,
+                 foreign_version.id
+               ),
+               entries
+             ) ==
                {:error, :not_found}
 
       assert Repo.aggregate(RouteOperatingSetting, :count) == 0
@@ -293,15 +331,18 @@ defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
       route_fixture(organization.id, version.id, %{route_id: "12", route_short_name: "12"})
 
       assert :ok =
-               Gtfs.update_route_operating_settings(organization.id, version.id, [
-                 %{
-                   "route_id" => "12",
-                   "garage_id" => garage.id,
-                   "organization_id" => other_organization.id,
-                   "gtfs_version_id" => foreign_version.id,
-                   "id" => Ecto.UUID.generate()
-                 }
-               ])
+               Gtfs.update_route_operating_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 [
+                   %{
+                     "route_id" => "12",
+                     "garage_id" => garage.id,
+                     "organization_id" => other_organization.id,
+                     "gtfs_version_id" => foreign_version.id,
+                     "id" => Ecto.UUID.generate()
+                   }
+                 ]
+               )
 
       assert [stored] = Repo.all(RouteOperatingSetting)
       assert stored.organization_id == organization.id
@@ -319,13 +360,16 @@ defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
       route_fixture(organization.id, version.id, %{route_id: "30", route_short_name: "30"})
 
       assert :ok =
-               Gtfs.update_route_operating_settings(organization.id, version.id, [
-                 %{
-                   "route_id" => "30",
-                   "garage_id" => garage.id,
-                   "required_vehicle_type_id" => diesel.id
-                 }
-               ])
+               Gtfs.update_route_operating_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 [
+                   %{
+                     "route_id" => "30",
+                     "garage_id" => garage.id,
+                     "required_vehicle_type_id" => diesel.id
+                   }
+                 ]
+               )
 
       # `Blocking.Queries.planning_rows/3` is what `load_day/3` builds
       # `Context.route_settings` from, so a row stored here is the row the
@@ -338,7 +382,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
     end
   end
 
-  describe "update_route_operating_settings/3 under a held blocking lock" do
+  describe "update_route_operating_settings/2 under a held blocking lock" do
     test "the writer waits for lock_blocking!1 and succeeds after the release" do
       scope =
         unboxed(fn ->
@@ -366,9 +410,15 @@ defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
             {:ok, %{rows: [[backend_pid]]}} = Repo.query("select pg_backend_pid()")
             send(parent, {:writer_pid, backend_pid})
 
-            Blocking.update_route_operating_settings(scope.organization_id, scope.version_id, [
-              %{"route_id" => "12", "garage_id" => scope.garage_id}
-            ])
+            Blocking.update_route_operating_settings(
+              GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                scope.organization_id,
+                scope.version_id
+              ),
+              [
+                %{"route_id" => "12", "garage_id" => scope.garage_id}
+              ]
+            )
           end)
         end)
 
@@ -418,12 +468,25 @@ defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
   # The version foreign keys cascade, so its route and setting rows go with it.
   defp cleanup_committed_scope(scope) do
     unboxed(fn ->
+      actor_ids =
+        Repo.all(
+          from(m in UserOrgMembership,
+            where: m.organization_id == ^scope.organization_id,
+            select: m.user_id
+          )
+        )
+
+      Repo.delete_all(
+        from(m in UserOrgMembership, where: m.organization_id == ^scope.organization_id)
+      )
+
       Repo.delete_all(
         from(r in GtfsPlanner.Gtfs.Route, where: r.organization_id == ^scope.organization_id)
       )
 
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^scope.organization_id))
       Repo.delete_all(from(o in Organization, where: o.id == ^scope.organization_id))
+      Repo.delete_all(from(u in User, where: u.id in ^actor_ids))
     end)
   end
 

@@ -79,12 +79,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentShellTest do
   end
 
   defp audit(organization, version) do
+    actor = editor_fixture(organization)
+
     %AuditContext{
       organization_id: organization.id,
       gtfs_version_id: version.id,
       station_stop_id: nil,
-      actor_id: Ecto.UUID.generate(),
-      actor_email: "align-shell@example.com"
+      actor_id: actor.id,
+      actor_email: actor.email
     }
   end
 
@@ -442,12 +444,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentShellTest do
           dialog_open: false,
           editable?: false,
           offline?: false,
+          # The download menu's links are scoped to this published version.
+          version_id: version.id,
           version_name: version.name,
-          organization_name: organization.name
+          organization_name: organization.name,
+          # The path-file panel is not rendered here, but the upload it takes
+          # is a required attr of the task shell.
+          map_line_upload: %Phoenix.LiveView.UploadConfig{}
         )
 
       assert html =~ "alignment-notice"
-      assert html =~ "You can view this alignment"
+      assert html =~ "You can view this map line"
 
       # Save is rendered by the page's save bar from this state.
       save =
@@ -461,7 +468,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentShellTest do
         })
 
       refute save.enabled?
-      assert save.title == "Only editors can save alignment."
+      assert save.title == "Only editors can save the map line."
     end
   end
 end

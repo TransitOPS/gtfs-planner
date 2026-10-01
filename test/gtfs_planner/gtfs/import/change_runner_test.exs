@@ -7,7 +7,11 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunnerTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
-  @actor %{id: Ecto.UUID.generate(), email: "reviewer@example.com"}
+  # Creating a run reauthorizes its actor, so the actor is a real active editor.
+  defp editor_actor(organization) do
+    editor = editor_fixture(organization)
+    %{id: editor.id, email: editor.email}
+  end
 
   defmodule WaitingWorker do
     def compute(_run, _generation, _token, _topic) do
@@ -38,6 +42,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunnerTest do
     root: root
   } do
     organization = organization_fixture()
+    actor = editor_actor(organization)
     version = gtfs_version_fixture(organization.id)
     run_id = Ecto.UUID.generate()
 
@@ -51,7 +56,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunnerTest do
       )
 
     {:ok, run} =
-      ChangeRuns.create_pending_compute(organization.id, version.id, @actor, manifest, run_id)
+      ChangeRuns.create_pending_compute(organization.id, version.id, actor, manifest, run_id)
 
     Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ChangeRuns.topic(run))
 
@@ -65,8 +70,9 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunnerTest do
 
   test "a runner is independent of its initiator and abnormal executor loss is fenced closed" do
     organization = organization_fixture()
+    actor = editor_actor(organization)
     version = gtfs_version_fixture(organization.id)
-    {:ok, run} = ChangeRuns.create_pending_compute(organization.id, version.id, @actor, [])
+    {:ok, run} = ChangeRuns.create_pending_compute(organization.id, version.id, actor, [])
     parent = self()
 
     initiator =

@@ -139,8 +139,11 @@ const IMPORT_FINDINGS_CAPTURE_DIR =
 
 // The version whose import page the findings block opens. The upload publishes a
 // new, uniquely named version of its own, so no seeded version is mutated
-// (CR-10).
-const IMPORT_VERSION = "Browser E2E Version";
+// (CR-10). The Import page opens on Station changes when the version's latest
+// change run is unfinished, which the pathway evolutions journeys leave on
+// Browser E2E Version on purpose, so the block opens a version no change run
+// belongs to.
+const IMPORT_VERSION = "Browser Feed Details Version";
 
 // ── shared helpers ─────────────────────────────────────────────────────────
 
@@ -164,6 +167,25 @@ async function versionId(page, name) {
   const id = await option.getAttribute("data-version-id");
   if (!id) throw new Error(`${name} is missing its version ID`);
   return id;
+}
+
+// The New route drawer offers the version's most used modes as chips and every
+// other mode in a select, so Bus is a chip in a version that already has bus
+// routes and a select option in one that has none.
+async function chooseBus(page) {
+  if (await page.locator("#new-route-mode-3").count()) {
+    await page.locator("label:has(#new-route-mode-3)").click();
+    await expect(page.locator("#new-route-mode-3")).toBeChecked();
+  } else {
+    await page.selectOption("#new-route-mode-other", { label: "Bus" });
+  }
+}
+
+// New routes get a generated ID that the drawer previews; a journey that reads
+// its route back by ID asks for its own through the creation-only override.
+async function useRouteId(page, routeId) {
+  await page.click("#new-route-id-edit");
+  await page.fill("#new-route-id-manual", routeId);
 }
 
 // A click that lands before the LiveView joins is dropped, so an action waits
@@ -1427,29 +1449,32 @@ test.describe("@routes-new-route", () => {
         Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)),
       );
 
-    // The Agency field is present, plainly labelled, and already set to the
-    // agency the list is filtered to, with no blank choice left (AC-23).
-    await expect(page.locator("#route_agency_id")).toHaveValue("HBR");
-    await expect(page.locator("#route_agency_id")).toBeVisible();
+    // The Agency field is present, plainly labelled as required, and already
+    // set to the agency the list is filtered to, so the choice shown is that
+    // agency and not the "Select an agency" placeholder (AC-23).
+    await expect(page.locator("#new-route-agency")).toHaveValue("HBR");
+    await expect(page.locator("#new-route-agency")).toBeVisible();
+    await expect(page.locator("#new-route-agency option:checked")).toHaveText(
+      "Harbor Shuttle",
+    );
     await expect(page.locator("#new-route-form-panel")).not.toContainText(
       "Agency (optional)",
     );
-    await expect(page.locator('#route_agency_id option[value=""]')).toHaveCount(0);
-    await expect(page.locator("#route_agency_id-help")).toContainText(
-      "agency_id — the agency that operates this route.",
+    await expect(page.locator("#new-route-agency-help")).toContainText(
+      /Required: this version has \d+ agencies\./,
     );
 
     const routeId = `E2E-${Date.now()}`;
 
-    await page.fill("#route_route_id", routeId);
-    await page.fill("#route_route_long_name", "Filtered preselect journey");
-    await page.selectOption("#route_route_type", { label: "Bus" });
+    await useRouteId(page, routeId);
+    await page.fill("#new-route-long", "Filtered preselect journey");
+    await chooseBus(page);
 
     expect(await bodyFitsViewport(page)).toBe(true);
     await captureIn(page, testInfo, NEW_ROUTE_CAPTURE_DIR, "new-route-drawer-1280");
 
     await page.setViewportSize({ width: MOBILE.width, height: MOBILE.height });
-    await expect(page.locator("#route_agency_id")).toBeVisible();
+    await expect(page.locator("#new-route-agency")).toBeVisible();
     await expect(page.locator("#new-route-submit")).toBeVisible();
     expect(await bodyFitsViewport(page)).toBe(true);
     await captureIn(page, testInfo, NEW_ROUTE_CAPTURE_DIR, "new-route-drawer-375");
@@ -1464,13 +1489,20 @@ test.describe("@routes-new-route", () => {
       pendingStates.some((state) => state.disabled && state.text === "Creating…"),
     ).toBe(true);
 
-    await expect(overlay).toHaveAttribute("data-open", "false");
+    // A created route opens its own Details, so the next step is the stops it
+    // serves; the flash names the ID the command stored.
+    await page.waitForURL(
+      new RegExp(`/gtfs/${agenciesId}/routes/${encodeURIComponent(routeId)}\\?created=1$`),
+    );
     await expect(page.locator("#flash-info")).toContainText(
       `Route ${routeId} created.`,
     );
 
-    // The filtered catalog reloads with the new route, so the created row is the
-    // one this journey asked for.
+    // The filtered catalog lists the new route, so the created row is the one
+    // this journey asked for.
+    await page.goto(`/gtfs/${agenciesId}/routes?agency_id=HBR`);
+    await page.waitForSelector("#routes");
+    await waitForLiveView(page);
     await expect(page.locator("#routes tr")).toHaveCount(3);
     await expect(page.locator("#routes")).toContainText(routeId);
 
@@ -1585,28 +1617,40 @@ test.describe("@routes-onboarding", () => {
     const routeOverlay = page.locator("#new-route-drawer-overlay");
 
     await expect(routeOverlay).toHaveAttribute("data-open", "true");
-    await expect(page.locator("#route_agency_id")).toHaveValue(
+    // The version's only agency is shown read-only and submitted as a hidden
+    // value, so there is no select and no blank choice to leave behind.
+    await expect(page.locator("#new-route-agency")).toHaveValue(
       "browser_onboarding_transit",
     );
-    await expect(page.locator('#route_agency_id option[value=""]')).toHaveCount(0);
+    await expect(page.locator("#new-route-agency-name")).toHaveText(
+      "Browser Onboarding Transit",
+    );
+    await expect(page.locator("#new-route-agency-readonly select")).toHaveCount(0);
     await settleDrawer(page, "#new-route-drawer");
 
     expect(await bodyFitsViewport(page)).toBe(true);
     await captureIn(page, testInfo, ONBOARDING_CAPTURE_DIR, "new-route-drawer-1280");
 
     await page.setViewportSize({ width: MOBILE.width, height: MOBILE.height });
-    await expect(page.locator("#route_agency_id")).toBeVisible();
+    await expect(page.locator("#new-route-agency-name")).toBeVisible();
     expect(await bodyFitsViewport(page)).toBe(true);
     await captureIn(page, testInfo, ONBOARDING_CAPTURE_DIR, "new-route-drawer-375");
     await page.setViewportSize({ width: DESKTOP.width, height: DESKTOP.height });
 
-    await page.fill("#route_route_id", "E2E-1");
-    await page.fill("#route_route_long_name", "Onboarding journey route");
-    await page.selectOption("#route_route_type", { label: "Bus" });
+    await useRouteId(page, "E2E-1");
+    await page.fill("#new-route-long", "Onboarding journey route");
+    await chooseBus(page);
     await page.click("#new-route-submit");
 
-    await expect(routeOverlay).toHaveAttribute("data-open", "false");
+    // A created route opens its own Details; the list then shows it.
+    await page.waitForURL(
+      new RegExp(`/gtfs/${onboardingId}/routes/E2E-1\\?created=1$`),
+    );
     await expect(page.locator("#flash-info")).toContainText("Route E2E-1 created.");
+
+    await page.goto(`/gtfs/${onboardingId}/routes`);
+    await page.waitForSelector("#routes");
+    await waitForLiveView(page);
     await expect(page.locator("#routes")).toContainText("E2E-1");
 
     expect(await bodyFitsViewport(page)).toBe(true);
@@ -1661,8 +1705,8 @@ test.describe("@routes-onboarding", () => {
 
 //
 // Declared last: it imports a feed of its own into a new uniquely named version
-// on the Browser E2E Version's import page, so it reads and writes no seeded
-// version's agencies or routes (CR-10). It needs the `bin/test-browser` seed for
+// from the Browser Feed Details Version's import page, so it reads and writes no
+// seeded version's agencies or routes (CR-10). It needs the `bin/test-browser` seed for
 // the seeded login and version panel, not for the import itself.
 //
 // Captures land in this block's own evidence folder as

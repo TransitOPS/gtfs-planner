@@ -4,10 +4,12 @@ defmodule GtfsPlanner.Organizations do
   """
 
   import Ecto.Query, warn: false
+  alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.{User, UserOrgMembership, UserToken}
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Organizations.AdminReadAdapter
   alias GtfsPlanner.Organizations.Organization
-  alias GtfsPlanner.Accounts.{User, UserOrgMembership}
   alias GtfsPlanner.Versions
 
   @default_admin_read_adapter AdminReadAdapter.Repo
@@ -84,43 +86,77 @@ defmodule GtfsPlanner.Organizations do
   end
 
   @doc """
-  Creates an organization.
+  Creates an organization and its default version for a system administrator.
+
+  The transaction first locks the actor's current `administrator` membership, so
+  a platform permission revoked after the page loaded refuses the write.
 
   ## Examples
 
-      iex> create_organization(%{alias: "my-org", name: "My Org"})
+      iex> create_organization(system_admin, %{alias: "my-org", name: "My Org"})
       {:ok, %Organization{}}
 
-      iex> create_organization(%{alias: nil})
+      iex> create_organization(system_admin, %{alias: nil})
       {:error, %Ecto.Changeset{}}
+
+      iex> create_organization(editor, %{alias: "my-org", name: "My Org"})
+      {:error, :forbidden}
   """
-  def create_organization(attrs \\ %{}) do
+  @spec create_organization(User.t(), map()) ::
+          {:ok, Organization.t()} | {:error, :forbidden | Ecto.Changeset.t()}
+  def create_organization(actor, attrs) do
     Repo.transaction(fn ->
-      with {:ok, org} <- insert_organization(attrs),
-           {:ok, _version} <- Versions.create_default_version(org.id) do
-        org
-      else
-        {:error, changeset} -> Repo.rollback(changeset)
-      end
+      Authorization.lock_system_admin!(actor)
+      insert_organization_with_default_version(attrs)
     end)
     |> broadcast([:organizations, :created])
   end
 
   @doc """
-  Updates an organization.
+  Creates an organization and its default version with no actor check.
+
+  For fixtures, seeds and operator scripts that run outside a signed-in session.
+  A caller that acts for a signed-in user uses `create_organization/2`.
+  """
+  @spec create_organization_unchecked(map()) ::
+          {:ok, Organization.t()} | {:error, Ecto.Changeset.t()}
+  def create_organization_unchecked(attrs \\ %{}) do
+    Repo.transaction(fn -> insert_organization_with_default_version(attrs) end)
+    |> broadcast([:organizations, :created])
+  end
+
+  @doc """
+  Updates an organization for a system administrator or a usable administrator
+  of that organization.
+
+  The transaction locks the organization and the actor's current permission
+  before it reads the row, so a permission revoked after the page loaded
+  refuses the write and attributes apply to the current row, not to the struct
+  the page holds.
 
   ## Examples
 
-      iex> update_organization(organization, %{name: "New Name"})
+      iex> update_organization(admin, organization, %{name: "New Name"})
       {:ok, %Organization{}}
 
-      iex> update_organization(organization, %{alias: nil})
+      iex> update_organization(admin, organization, %{alias: nil})
       {:error, %Ecto.Changeset{}}
+
+      iex> update_organization(editor, organization, %{name: "New Name"})
+      {:error, :forbidden}
   """
-  def update_organization(%Organization{} = organization, attrs) do
-    organization
-    |> Organization.changeset(attrs)
-    |> Repo.update()
+  @spec update_organization(User.t(), Organization.t(), map()) ::
+          {:ok, Organization.t()} | {:error, :forbidden | :not_found | Ecto.Changeset.t()}
+  def update_organization(actor, %Organization{id: organization_id}, attrs) do
+    Repo.transaction(fn ->
+      Authorization.lock_member_admin!(actor, organization_id)
+      organization = Repo.get!(Organization, organization_id)
+
+      case organization |> Organization.changeset(attrs) |> Repo.update() do
+        {:ok, organization} -> organization
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
     |> broadcast([:organizations, :updated])
   end
 
@@ -153,50 +189,24 @@ defmodule GtfsPlanner.Organizations do
   end
 
   @doc """
-  Adds a user to an organization with specified roles.
-
-  ## Examples
-
-      iex> add_user_to_organization(user_id, organization_id, [:administrator])
-      {:ok, %UserOrgMembership{}}
-
-      iex> add_user_to_organization(user_id, organization_id, [])
-      {:ok, %UserOrgMembership{}}
-  """
-  def add_user_to_organization(user_id, organization_id, roles \\ []) do
-    %UserOrgMembership{
-      user_id: user_id,
-      organization_id: organization_id,
-      roles: roles
-    }
-    |> UserOrgMembership.changeset(%{})
-    |> Repo.insert()
-    |> broadcast([:memberships, :created])
-  end
-
-  @doc """
   Removes a user from an organization.
 
   ## Examples
 
-      iex> remove_user_from_organization(user_id, organization_id)
+      iex> remove_user_from_organization(actor, user_id, organization_id)
       {:ok, %UserOrgMembership{}}
 
-      iex> remove_user_from_organization(user_id, organization_id)
+      iex> remove_user_from_organization(actor, user_id, organization_id)
       {:error, :not_found}
   """
-  def remove_user_from_organization(user_id, organization_id) do
-    from(m in UserOrgMembership,
-      where: m.user_id == ^user_id and m.organization_id == ^organization_id
-    )
-    |> Repo.one()
-    |> case do
-      nil ->
-        {:error, :not_found}
+  def remove_user_from_organization(actor, user_id, organization_id) do
+    case membership_command(actor, organization_id, user_id, :remove) do
+      {:ok, {membership, digests}} ->
+        publish_session_revocations(digests)
+        broadcast({:ok, membership}, [:memberships, :deleted])
 
-      membership ->
-        Repo.delete(membership)
-        |> broadcast([:memberships, :deleted])
+      error ->
+        error
     end
   end
 
@@ -205,27 +215,20 @@ defmodule GtfsPlanner.Organizations do
 
   ## Examples
 
-      iex> update_user_roles(user_id, organization_id, [:administrator, :editor])
+      iex> update_user_roles(actor, user_id, organization_id, [:pathways_studio_admin])
       {:ok, %UserOrgMembership{}}
 
-      iex> update_user_roles(user_id, organization_id, [])
+      iex> update_user_roles(actor, user_id, organization_id, [])
       {:ok, %UserOrgMembership{}}
   """
-  def update_user_roles(user_id, organization_id, roles) do
-    from(m in UserOrgMembership,
-      where: m.user_id == ^user_id and m.organization_id == ^organization_id,
-      preload: [:user, :organization]
-    )
-    |> Repo.one()
-    |> case do
-      nil ->
-        {:error, :not_found}
+  def update_user_roles(actor, user_id, organization_id, roles) do
+    case membership_command(actor, organization_id, user_id, {:roles, roles}) do
+      {:ok, {membership, digests}} ->
+        publish_session_revocations(digests)
+        broadcast({:ok, membership}, [:memberships, :updated])
 
-      membership ->
-        membership
-        |> UserOrgMembership.changeset(%{roles: roles})
-        |> Repo.update()
-        |> broadcast([:memberships, :updated])
+      error ->
+        error
     end
   end
 
@@ -283,28 +286,23 @@ defmodule GtfsPlanner.Organizations do
 
   ## Examples
 
-      iex> deactivate_user_in_organization(user_id, organization_id)
+      iex> deactivate_user_in_organization(actor, user_id, organization_id)
       {:ok, %UserOrgMembership{}}
 
-      iex> deactivate_user_in_organization(user_id, organization_id)
+      iex> deactivate_user_in_organization(actor, user_id, organization_id)
       {:error, :not_found}
 
-      iex> deactivate_user_in_organization(system_administrator_id, organization_id)
+      iex> deactivate_user_in_organization(actor, system_administrator_id, organization_id)
       {:error, :system_administrator}
   """
-  def deactivate_user_in_organization(user_id, organization_id) do
-    from(m in UserOrgMembership,
-      where: m.user_id == ^user_id and m.organization_id == ^organization_id
-    )
-    |> Repo.one()
-    |> case do
-      nil ->
-        {:error, :not_found}
+  def deactivate_user_in_organization(actor, user_id, organization_id) do
+    case membership_command(actor, organization_id, user_id, :deactivate) do
+      {:ok, {membership, digests}} ->
+        publish_session_revocations(digests)
+        broadcast({:ok, membership}, [:memberships, :deactivated])
 
-      membership ->
-        with :ok <- check_deactivation_allowed(membership) do
-          deactivate_membership(membership)
-        end
+      error ->
+        error
     end
   end
 
@@ -313,26 +311,16 @@ defmodule GtfsPlanner.Organizations do
 
   ## Examples
 
-      iex> activate_user_in_organization(user_id, organization_id)
+      iex> activate_user_in_organization(actor, user_id, organization_id)
       {:ok, %UserOrgMembership{}}
 
-      iex> activate_user_in_organization(user_id, organization_id)
+      iex> activate_user_in_organization(actor, user_id, organization_id)
       {:error, :not_found}
   """
-  def activate_user_in_organization(user_id, organization_id) do
-    from(m in UserOrgMembership,
-      where: m.user_id == ^user_id and m.organization_id == ^organization_id
-    )
-    |> Repo.one()
-    |> case do
-      nil ->
-        {:error, :not_found}
-
-      membership ->
-        membership
-        |> Ecto.Changeset.change(%{deactivated_at: nil})
-        |> Repo.update()
-        |> broadcast([:memberships, :activated])
+  def activate_user_in_organization(actor, user_id, organization_id) do
+    case membership_command(actor, organization_id, user_id, :activate) do
+      {:ok, membership} -> broadcast({:ok, membership}, [:memberships, :activated])
+      error -> error
     end
   end
 
@@ -422,45 +410,154 @@ defmodule GtfsPlanner.Organizations do
 
   # Private helper functions
 
-  defp deactivate_membership(%UserOrgMembership{user_id: user_id} = membership) do
-    result =
-      membership
-      |> Ecto.Changeset.change(%{
-        deactivated_at: DateTime.utc_now() |> DateTime.truncate(:second)
-      })
-      |> Repo.update()
+  defp membership_command(actor, organization_id, user_id, action) do
+    Repo.transaction(fn ->
+      actor_level = Authorization.lock_member_admin!(actor, organization_id)
 
-    case result do
-      {:ok, _membership} = success ->
-        # Invalidate all user sessions and close the user's open LiveViews
-        user_id
-        |> GtfsPlanner.Accounts.delete_user_sessions()
-        |> GtfsPlannerWeb.UserAuth.disconnect_sessions()
+      with {:ok, user_id} <- Ecto.UUID.cast(user_id),
+           %UserOrgMembership{} = membership <-
+             Repo.one(
+               from m in UserOrgMembership,
+                 where: m.user_id == ^user_id and m.organization_id == ^organization_id,
+                 lock: "FOR UPDATE"
+             ) do
+        apply_membership_command(action, membership, actor_level)
+      else
+        _ -> Repo.rollback(:not_found)
+      end
+    end)
+  end
 
-        broadcast(success, [:memberships, :deactivated])
+  defp apply_membership_command(:deactivate, membership, _actor_level) do
+    case check_membership_change_allowed(membership, :deactivate, :system) do
+      :ok ->
+        updated =
+          membership
+          |> Ecto.Changeset.change(%{
+            deactivated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+          })
+          |> update_membership!()
 
-      error ->
-        error
+        {updated, delete_session_digests(updated.user_id)}
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  defp apply_membership_command(:activate, membership, _actor_level) do
+    membership
+    |> Ecto.Changeset.change(%{deactivated_at: nil})
+    |> update_membership!()
+  end
+
+  defp apply_membership_command({:roles, roles}, membership, actor_level) do
+    changeset = UserOrgMembership.changeset(membership, %{roles: roles})
+
+    if not is_list(roles),
+      do: Repo.rollback(Ecto.Changeset.add_error(changeset, :roles, "must be a list"))
+
+    if not changeset.valid?, do: Repo.rollback(changeset)
+    enforce_membership_change!(membership, {:roles, roles}, actor_level)
+
+    updated = update_membership!(changeset)
+
+    {updated, delete_session_digests(updated.user_id)}
+  end
+
+  defp apply_membership_command(:remove, membership, actor_level) do
+    enforce_membership_change!(membership, :remove, actor_level)
+
+    deleted =
+      case Repo.delete(membership) do
+        {:ok, deleted} -> deleted
+        {:error, reason} -> Repo.rollback(reason)
+      end
+
+    {deleted, delete_session_digests(deleted.user_id)}
+  end
+
+  defp update_membership!(changeset) do
+    case Repo.update(changeset) do
+      {:ok, membership} -> membership
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp enforce_membership_change!(membership, change, actor_level) do
+    case check_membership_change_allowed(membership, change, actor_level) do
+      :ok -> :ok
+      {:error, reason} -> Repo.rollback(reason)
     end
   end
 
   # An already-deactivated membership keeps the plain re-deactivation behavior.
-  # The last-admin check is read-then-write, so two administrators deactivating
-  # each other at the same instant can both pass it; closing that needs the
-  # organization's admin rows locked in one transaction.
-  defp check_deactivation_allowed(%UserOrgMembership{deactivated_at: %DateTime{}}), do: :ok
+  defp check_membership_change_allowed(
+         %UserOrgMembership{deactivated_at: %DateTime{}},
+         :deactivate,
+         _
+       ),
+       do: :ok
 
-  defp check_deactivation_allowed(%UserOrgMembership{roles: roles} = membership) do
+  defp check_membership_change_allowed(
+         %UserOrgMembership{roles: roles} = membership,
+         change,
+         actor_level
+       ) do
+    proposed_roles = proposed_roles(change)
+    removes_system_role? = removes_role?(roles, proposed_roles, "administrator")
+    grants_system_role? = grants_role?(roles, proposed_roles, "administrator")
+    removes_usable_admin? = removes_usable_admin?(membership, roles, proposed_roles)
+
     cond do
-      "administrator" in roles ->
+      removes_system_role? and system_removal_refused?(change, actor_level) ->
         {:error, :system_administrator}
 
-      "pathways_studio_admin" in roles and not other_active_admin?(membership) ->
+      grants_system_role? and actor_level != :system ->
+        {:error, :forbidden}
+
+      removes_usable_admin? and not other_active_admin?(membership) ->
         {:error, :last_organization_admin}
 
       true ->
         :ok
     end
+  end
+
+  defp proposed_roles({:roles, roles}), do: roles
+  defp proposed_roles(_change), do: []
+
+  defp removes_role?(roles, proposed_roles, role),
+    do: role in roles and role not in proposed_roles
+
+  defp grants_role?(roles, proposed_roles, role),
+    do: role not in roles and role in proposed_roles
+
+  defp system_removal_refused?(change, actor_level),
+    do: change == :remove or change == :deactivate or actor_level != :system
+
+  defp removes_usable_admin?(%UserOrgMembership{} = membership, roles, proposed_roles) do
+    removes_role?(roles, proposed_roles, "pathways_studio_admin") and
+      is_nil(membership.deactivated_at) and
+      not is_nil(Repo.get!(User, membership.user_id).hashed_password)
+  end
+
+  defp delete_session_digests(user_id) do
+    user_id
+    |> Accounts.delete_user_sessions()
+    |> Enum.flat_map(fn
+      # The token column already holds the SHA-256 digest used by web session topics.
+      %UserToken{context: "session", token: digest} -> [digest]
+      %UserToken{} -> []
+    end)
+  end
+
+  defp publish_session_revocations(digests) do
+    Phoenix.PubSub.broadcast(
+      GtfsPlanner.PubSub,
+      "session_revocations",
+      {:session_tokens_revoked, digests}
+    )
   end
 
   defp other_active_admin?(%UserOrgMembership{id: id, organization_id: organization_id}) do
@@ -482,6 +579,15 @@ defmodule GtfsPlanner.Organizations do
       :organizations_admin_read_adapter,
       @default_admin_read_adapter
     )
+  end
+
+  defp insert_organization_with_default_version(attrs) do
+    with {:ok, org} <- insert_organization(attrs),
+         {:ok, _version} <- Versions.create_default_version(org.id) do
+      org
+    else
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
   end
 
   defp insert_organization(attrs) do

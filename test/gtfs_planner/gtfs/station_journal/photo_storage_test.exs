@@ -57,7 +57,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal.PhotoStorageTest do
       gtfs_version_id: version.id,
       station_id: station.id,
       station_stop_id: station.stop_id,
-      actor_id: Ecto.UUID.generate()
+      actor_id: editor_fixture(organization).id
     }
 
     entry =

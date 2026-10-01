@@ -15,10 +15,12 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.CreateTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Gtfs.PathwayEvolutions
+  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
@@ -168,9 +170,10 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.CreateTest do
       assert after_snapshot["note"] == "Elevator maintenance"
 
       assert Gtfs.reversible_fields_for("pathway_evolution") == []
-      assert Gtfs.rollback_previewable_fields(log) == []
-      assert {:error, :audit_only_entity} = Gtfs.rollback_target_snapshot(log)
-      assert {:error, :audit_only_entity} = Gtfs.rollback_entity(log, context.audit)
+      assert Audit.reversible_fields_for(log.entity_type) == []
+
+      assert {:error, :audit_only_entity} =
+               Stations.rollback_target_snapshot(log)
     end
 
     test "every pathway mode is eligible", context do

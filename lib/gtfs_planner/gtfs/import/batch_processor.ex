@@ -66,6 +66,10 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
       * `:file_name` (required) - Name of file being processed (for error reporting)
       * `:topic` (required) - PubSub topic for progress broadcasts
       * `:batch_size` (optional) - Number of rows per batch (default: #{@default_batch_size})
+      * `:fence` (optional) - Zero-arity callback run as the first statement of every
+        batch transaction. It calls `Repo.rollback/1` when the caller no longer owns
+        the work, so that batch writes nothing and the call returns
+        `{:error, reason, committed_count}` with that reason (INV-4).
 
   ## Returns
 
@@ -99,6 +103,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
       topic: Keyword.fetch!(opts, :topic),
       batch_size: Keyword.get(opts, :batch_size, @default_batch_size),
       total_rows: Keyword.get(opts, :total_rows, 0),
+      fence: Keyword.get(opts, :fence),
       transactional?: transactional?
     }
   end
@@ -196,7 +201,10 @@ defmodule GtfsPlanner.Gtfs.Import.BatchProcessor do
   end
 
   defp insert_batch_result(attrs, %{transactional?: true} = config) do
-    config.repo.transaction(fn -> insert_or_rollback(attrs, config) end)
+    config.repo.transaction(fn ->
+      if config.fence, do: config.fence.()
+      insert_or_rollback(attrs, config)
+    end)
   end
 
   defp insert_batch_result(attrs, config) do

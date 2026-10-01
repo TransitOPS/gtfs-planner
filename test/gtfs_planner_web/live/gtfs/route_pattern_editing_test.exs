@@ -1382,8 +1382,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       membership = Accounts.get_user_org_membership(user.id, organization.id)
       membership |> Ecto.Changeset.change(roles: []) |> Repo.update!()
 
-      # Every connected session keeps its socket, but the mutation boundary
-      # re-checks the current membership before writing anything.
+      # Every connected session keeps its socket; the write transaction
+      # re-checks current membership before changing any row.
       render_click(stops_view, "remove_stop", %{"index" => "3"})
       render_click(stops_view, "save_stops")
 
@@ -1394,6 +1394,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
 
       change_timing(timing_view, 2, "departure", "06:00")
       render_click(timing_view, "save_timing")
+      assert has_element?(timing_view, "#timing-review-dialog-confirm")
+      render_click(timing_view, "apply_timing_review")
 
       assert Repo.get!(RoutePattern, pattern.id).route_pattern_name == before_name
       assert length(occurrence_rows(pattern)) == 3
@@ -1403,6 +1405,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       for view <- [stops_view, details_view, timing_view] do
         assert has_element?(view, "#pattern-editor-revoked", "Editing is no longer available")
       end
+
+      assert has_element?(details_view, "#pattern-details-name[value='Unauthorized rename']")
+      assert has_element?(timing_view, "#timing-departure-2[value='06:00']")
+      assert has_element?(stops_view, "#pattern-stops")
 
       # Reloading keeps the page unavailable while the role is still missing.
       render_click(stops_view, "reload_patterns")

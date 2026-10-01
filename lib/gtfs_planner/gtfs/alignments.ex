@@ -26,10 +26,11 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
   import Ecto.Query
 
-  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.Alignments.Draft
   alias GtfsPlanner.Gtfs.Alignments.Materializer
   alias GtfsPlanner.Gtfs.AlignmentSegment
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Route
@@ -1026,7 +1027,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   defp audit_decimal(other), do: other
 
   defp audit!(audit_context, type, entity, action, attrs) do
-    case Gtfs.record_change_in_transaction(audit_context, type, entity, action, attrs) do
+    case Audit.record_change_in_transaction(audit_context, type, entity, action, attrs) do
       {:ok, log} -> log
       {:error, changeset} -> Repo.rollback(changeset)
     end
@@ -1318,6 +1319,167 @@ defmodule GtfsPlanner.Gtfs.Alignments do
       _ -> {:error, :not_found}
     end
   end
+
+  @type line_stop :: %{
+          position: pos_integer(),
+          stop_id: String.t(),
+          name: String.t(),
+          lon: float() | nil,
+          lat: float() | nil
+        }
+
+  @type line_piece :: [[float()]]
+
+  @type line_pattern :: %{
+          route_pattern_id: String.t(),
+          name: String.t(),
+          direction: String.t() | nil,
+          pieces: [line_piece()],
+          stops: [line_stop()]
+        }
+
+  @type line_file :: %{
+          route_id: String.t(),
+          name: String.t(),
+          patterns: [line_pattern()]
+        }
+
+  @doc """
+  Builds the map-line file model for one pattern or a whole route (step 33).
+
+  `pattern_id` is a natural `route_pattern_id` or `"all"` for every pattern of
+  the route. The route and every pattern are scoped to the organization and
+  version through `RoutePatterns.published_route/3` and a scoped pattern query,
+  so a foreign organization or version answers `{:error, :not_found}` (INV-2).
+
+  Each pattern is resolved with `resolve/1` and its saved sections are split
+  into `pieces` at every missing or blocked section, so a gap is never drawn
+  as a straight line across it; a straight saved path (R4, `points = []`) is
+  one piece of its two visits. A pattern with no saved line falls back to its
+  first imported shape's points as one piece. Every visit is a `stop`, and all
+  points are `[lon, lat]` (INV-1).
+
+  `MapLineFiles.encode/2` turns this model into the GeoJSON or KML document.
+  """
+  @spec line_file(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t()) ::
+          {:ok, line_file()} | {:error, :not_found}
+  def line_file(organization_id, gtfs_version_id, route_id, pattern_id) do
+    with {:ok, route} <-
+           RoutePatterns.published_route(organization_id, gtfs_version_id, route_id),
+         [_ | _] = patterns <-
+           scoped_line_patterns(organization_id, gtfs_version_id, route_id, pattern_id) do
+      {:ok,
+       %{
+         route_id: route.route_id,
+         name: route_label(route),
+         patterns:
+           Enum.map(
+             patterns,
+             &line_pattern(organization_id, gtfs_version_id, &1)
+           )
+       }}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp scoped_line_patterns(organization_id, gtfs_version_id, route_id, "all") do
+    from(p in RoutePattern,
+      where:
+        p.organization_id == ^organization_id and
+          p.gtfs_version_id == ^gtfs_version_id and p.route_id == ^route_id,
+      order_by: [asc: p.route_pattern_id]
+    )
+    |> Repo.all()
+  end
+
+  defp scoped_line_patterns(organization_id, gtfs_version_id, route_id, route_pattern_id) do
+    case scoped_pattern(organization_id, gtfs_version_id, route_id, route_pattern_id) do
+      %RoutePattern{} = pattern -> [pattern]
+      nil -> []
+    end
+  end
+
+  defp line_pattern(organization_id, gtfs_version_id, %RoutePattern{} = pattern) do
+    resolved = resolve(pattern)
+
+    pieces =
+      case line_pieces(resolved) do
+        [] ->
+          organization_id
+          |> imported_shapes(gtfs_version_id, pattern, length(resolved.visits))
+          |> Enum.find(fn shape -> shape.points != [] end)
+          |> imported_piece()
+
+        pieces ->
+          pieces
+      end
+
+    %{
+      route_pattern_id: pattern.route_pattern_id,
+      name: pattern_label(pattern),
+      direction: direction_label(pattern),
+      pieces: pieces,
+      stops: Enum.map(resolved.visits, &line_stop/1)
+    }
+  end
+
+  defp line_pieces(%{visits: visits, sections: sections}) do
+    {done, current} =
+      sections
+      |> Enum.with_index()
+      |> Enum.reduce({[], nil}, fn {section, index}, {done, current} ->
+        from = Enum.at(visits, index)
+        to = Enum.at(visits, index + 1)
+
+        if section.kind in [:missing, :blocked] do
+          {push_piece(done, current), nil}
+        else
+          segment =
+            [visit_point(from) | section.points ++ [visit_point(to)]]
+            |> Enum.reject(&is_nil/1)
+
+          {done, join_piece(current, segment)}
+        end
+      end)
+
+    push_piece(done, current)
+  end
+
+  # A saved section carries its visits' points as the ends of the line, so
+  # consecutive saved sections meet at the visit between them and are one
+  # piece, not two.
+  defp join_piece(nil, segment), do: segment
+
+  defp join_piece(piece, [point | rest] = segment) do
+    if piece != [] and List.last(piece) == point, do: piece ++ rest, else: piece ++ segment
+  end
+
+  defp push_piece(done, nil), do: done
+
+  defp push_piece(done, piece) when length(piece) >= 2, do: done ++ [piece]
+  defp push_piece(done, _piece), do: done
+
+  defp imported_piece(nil), do: []
+
+  defp imported_piece(shape),
+    do: [Enum.map(shape.points, fn [lon, lat | _rest] -> [lon, lat] end)]
+
+  defp visit_point(%{lon: lon, lat: lat}) when is_number(lon) and is_number(lat), do: [lon, lat]
+  defp visit_point(_visit), do: nil
+
+  defp line_stop(%{position: position, stop_id: stop_id, name: name, lon: lon, lat: lat}) do
+    %{position: position, stop_id: stop_id, name: name, lon: lon, lat: lat}
+  end
+
+  defp direction_label(%RoutePattern{direction_id: nil}), do: nil
+  defp direction_label(%RoutePattern{direction_id: direction}), do: to_string(direction)
+
+  defp route_label(%Route{route_short_name: short}) when is_binary(short) and short != "",
+    do: short
+
+  defp route_label(%Route{route_long_name: long}) when is_binary(long) and long != "", do: long
+  defp route_label(%Route{route_id: route_id}), do: route_id
 
   @doc """
   Suggests street-routed interior points for every pair of stops around one
@@ -2646,6 +2808,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
           {:ok, review()}
           | {:error,
              :not_found
+             | :forbidden
              | :stale_stops
              | :invalid_input
              | {:conflict, [section()]}
@@ -3269,6 +3432,8 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   defp apply_retryable?(_), do: false
 
   defp apply_transaction(pattern_id, draft_params, choices, fingerprint, audit_context) do
+    Authorization.lock_editor!(audit_context)
+
     case compute_review(pattern_id, draft_params, audit_context) do
       {:error, reason} ->
         Repo.rollback(reason)

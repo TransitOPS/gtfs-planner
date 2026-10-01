@@ -36,6 +36,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents
   alias GtfsPlannerWeb.Gtfs.RoutePatternComponents
+  alias GtfsPlannerWeb.Gtfs.RoutePatternGroupingComponents
   alias GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents
   alias GtfsPlannerWeb.Gtfs.RoutePatternListComponents
   alias LiveSelect.Component, as: LiveSelectComponent
@@ -44,22 +45,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
-  # Mount-time access is not enough: these events can write pattern/timing data,
-  # so each one re-checks the actor's current organization membership at the
-  # server mutation boundary.
-  @editor_write_events ~w(
-    build_patterns save_details apply_details_review create_pattern
-    save_stops update_review_value acknowledge_review_timing refresh_review
-    retry_review apply_stop_review save_timing apply_timing_review
-    refresh_timing_review retry_timing_review confirm_timing_dialog
-    confirm_delete_timing copy_pattern confirm_delete_pattern
-    undo_headsign apply_headsign_reset
-    alignment_save_requested confirm_alignment_save alignment_conflict_keep_local
-    alignment_generate_paths alignment_confirm_generate alignment_cancel_generation
-    alignment_follow_streets confirm_bulk_generation reactivate_route
+  # These events stage a review or start external routing without reaching a
+  # write transaction. Fresh permission here keeps a revoked socket from
+  # starting new UI work; every actual write authorizes in its own transaction.
+  @editor_ui_events ~w(
+    save_stops update_review_value acknowledge_review_timing refresh_review retry_review
+    refresh_timing_review retry_timing_review alignment_generate_paths
+    alignment_confirm_generate alignment_follow_streets confirm_bulk_generation
   )
 
+  @grouping_review "group"
+
   @detail_fields ~w(name direction_id headsign time_desc typicality sort_order)
+  @forbidden_message "You no longer have editor access to this organization. Your edits are still here."
   @creation_defaults %{
     "name" => "",
     "direction_id" => "0",
@@ -89,6 +87,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:route_trip_count, 0)
      |> assign(:pending_trip_count, 0)
      |> assign(:custom_trip_count, 0)
+     |> assign(:left_out, [])
      |> assign(:derivation_error, nil)
      |> assign(:build_state, :idle)
      |> assign(:build_error, nil)
@@ -161,8 +160,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:alignment_discard_dialog, nil)
      |> assign(:alignment_delete_dialog, nil)
      |> assign(:alignment_simplify_dialog, nil)
-     |> assign(:alignment_import_dialog, nil)
+     |> assign(:alignment_import_card, nil)
      |> assign(:alignment_notice, nil)
+     |> assign(:file_fit, nil)
      |> assign(:alignment_pending, nil)
      |> assign(:alignment_save_notice, nil)
      |> assign(:alignment_forced_local, [])
@@ -171,6 +171,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:alignment_follow, nil)
      |> assign(:alignment_generate_dialog, nil)
      |> assign(:alignment_generate_notice, nil)
+     |> assign(:map_line_file, nil)
+     |> allow_upload(:map_line_file,
+       accept: ~w(.geojson .json .kml .kmz .gpx),
+       max_entries: 1,
+       max_file_size: 10_000_000,
+       auto_upload: true
+     )
      |> assign(:bulk_selected, nil)
      |> assign(:bulk_candidates, [])
      |> assign(:bulk_dialog, nil)
@@ -193,13 +200,25 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:details_stale?, false)
      |> assign(:error_message, nil)
      |> assign(:status_message, nil)
+     |> assign(:grouping, nil)
+     |> assign(:grouped_summary, nil)
+     |> assign(:link_marker, nil)
+     |> assign(:link_offer, nil)
+     |> assign(:link_done, nil)
+     |> assign(:link_dialog, false)
+     |> assign(:link_pending, false)
+     |> assign(:link_error, nil)
+     |> assign(:labels, %{})
+     |> assign(:label, nil)
+     |> assign(:label_remove, nil)
+     |> assign(:label_focus_id, nil)
      |> stream(:patterns, [])
-     |> attach_hook(:editor_write_gate, :handle_event, &editor_write_gate/3)}
+     |> attach_hook(:editor_ui_gate, :handle_event, &editor_ui_gate/3)}
   end
 
-  defp editor_write_gate(event, _params, socket) do
-    if event in @editor_write_events and not editor_access?(socket) do
-      {:halt, revoke_editor_access(socket)}
+  defp editor_ui_gate(event, _params, socket) do
+    if event in @editor_ui_events and not editor_access?(socket) do
+      {:halt, assign(socket, :editor_revoked?, true)}
     else
       {:cont, socket}
     end
@@ -216,34 +235,20 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     end
   end
 
-  # A lost role or membership renders unavailable editing and closes every open
-  # confirmation, so nothing is committed through a connection that was opened
-  # while the actor still had access.
-  defp revoke_editor_access(socket) do
-    socket
-    |> assign(:editor_revoked?, true)
-    |> assign(:applying?, false)
-    |> assign(:review, nil)
-    |> assign(:timing_dialog, nil)
-    |> assign(:timing_delete_dialog, nil)
-    |> assign(:pattern_delete_dialog, nil)
-    |> assign(:blocked_dialog, nil)
-    |> assign(:impact_dialog, nil)
-    |> assign(:status_message, nil)
-    |> assign(:headsign_undo, nil)
-    |> assign(:alignment_pending, nil)
-    |> assign(:alignment_save_notice, nil)
-    |> assign(:alignment_forced_local, [])
-    |> assign(:alignment_import_dialog, nil)
-    |> assign(:alignment_generate_dialog, nil)
-    |> assign(:alignment_generate_notice, nil)
-    |> assign(:alignment_generation, nil)
-    |> assign(:bulk_dialog, nil)
-    |> assign(:alignment_bulk, nil)
-    |> assign(:alignment_follow, nil)
-    |> cancel_async(:alignment_generation)
-    |> cancel_async(:alignment_follow)
-    |> cancel_async(:alignment_bulk)
+  # The one completed entry of the map-line upload, or `:error` when nothing
+  # has finished arriving. `max_entries: 1` means there is never more than one
+  # to choose from, so a refused entry simply reads as "not ready yet".
+  defp map_line_entry(socket) do
+    case socket.assigns[:uploads] do
+      %{map_line_file: %Phoenix.LiveView.UploadConfig{entries: entries}} ->
+        case Enum.find(entries, & &1.done?) do
+          %Phoenix.LiveView.UploadEntry{} = entry -> {:ok, entry}
+          nil -> :error
+        end
+
+      _without ->
+        :error
+    end
   end
 
   @impl true
@@ -256,6 +261,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       socket
       |> assign(:route_id, params["route_id"])
       |> assign(:pattern_id, pattern_id)
+      |> assign(:link_marker, params["link"])
       |> assign(:task, resolve_task(action, params["task"]))
 
     socket =
@@ -270,6 +276,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
           socket
       end
 
+    socket = maybe_load_grouping(socket, params)
     socket = stage_requested_stop(socket, params["add_stop"])
 
     case RoutePatternAlignmentEvents.ensure_loaded(socket) do
@@ -277,6 +284,61 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       {:error, :not_found} -> {:noreply, not_found(socket)}
     end
   end
+
+  # `?review=group` is the Patterns tab with the grouping review open. The preview
+  # is read once per patch rather than once per screen load: leaving the review and
+  # coming back must re-read it, and a stale review must be able to reload without
+  # leaving. It is not read on the dead render, so the first response is the same
+  # loading skeleton every other patch shows and the preview is read once.
+  defp maybe_load_grouping(socket, params) do
+    cond do
+      not connected?(socket) ->
+        assign(socket, :grouping, nil)
+
+      socket.assigns.live_action == :index and params["review"] == @grouping_review ->
+        load_grouping(socket)
+
+      true ->
+        assign(socket, :grouping, nil)
+    end
+  end
+
+  defp load_grouping(socket) do
+    case Gtfs.preview_left_out(socket.assigns.route_id, audit_context(socket)) do
+      {:ok, preview} ->
+        socket
+        |> assign(:grouping, grouping_state(preview, initial_grouping_params(preview), :ready))
+        |> assign(:error_message, nil)
+        |> assign(:status_message, nil)
+
+      {:error, :not_found} ->
+        socket |> assign(:grouping, nil) |> not_found()
+    end
+  end
+
+  # The review's whole state is the preview, the selections the operator has made
+  # or been shown, and which of the three failure states it is in. Keeping them in
+  # one map means a reload cannot leave half of an old review on screen.
+  defp grouping_state(preview, selections, state) do
+    %{
+      preview: preview,
+      selections: selections,
+      state: state,
+      missing_key: nil,
+      failed_reason: nil
+    }
+  end
+
+  # Opening a review preselects each group's own suggestion, which is what the
+  # preview decided for it; a paired group has none and waits for the operator.
+  defp initial_grouping_params(preview) do
+    Map.new(preview.groups, fn group ->
+      {group.key, %{"direction_id" => direction_param(group.direction_id)}}
+    end)
+  end
+
+  defp direction_param(nil), do: nil
+  defp direction_param(direction), do: Integer.to_string(direction)
 
   @impl true
   def handle_event("reload_patterns", _params, socket) do
@@ -318,8 +380,44 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
          |> assign(:build_state, :failed)
          |> assign(:build_error, build_error_message(reason))
          |> assign(:build_summary, nil)
-         |> load_screen()}
+         |> load_screen()
+         |> mark_editor_refusal(reason)}
     end
+  end
+
+  # --- grouping review -------------------------------------------------------
+
+  # Each change carries the whole form, so the review keeps one map keyed by group
+  # key, in the string-keyed shape both the form and the parameters use. A change
+  # also clears a refusal: the operator has just answered it.
+  @impl true
+  def handle_event("grouping_change", %{"grouping" => params}, socket) do
+    case socket.assigns.grouping do
+      nil ->
+        {:noreply, socket}
+
+      grouping ->
+        {:noreply, assign(socket, :grouping, %{grouping | selections: params, state: :ready})}
+    end
+  end
+
+  def handle_event("grouping_change", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("grouping_submit", _params, socket) do
+    case socket.assigns.grouping do
+      nil -> {:noreply, socket}
+      grouping -> submit_grouping(socket, grouping)
+    end
+  end
+
+  # The way out writes nothing: it only returns to the list.
+  @impl true
+  def handle_event("grouping_cancel", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:grouping, nil)
+     |> push_patch(to: grouping_lists_path(socket))}
   end
 
   # --- details ---------------------------------------------------------------
@@ -599,7 +697,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
              :info,
              "Pattern created with its first timing. Set its running times next."
            )
-           |> push_navigate(to: pattern_path(socket, pattern.route_pattern_id, "?task=timings"))}
+           |> push_navigate(
+             to:
+               pattern_path(
+                 socket,
+                 pattern.route_pattern_id,
+                 "?task=timings&link=#{pattern.id}"
+               )
+           )}
 
         {:error, reason} ->
           {:noreply, reject_creation(socket, params, reason)}
@@ -875,6 +980,21 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   @impl true
+  def handle_event("alignment_close_file_import", _params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.close_file_import(socket)}
+  end
+
+  @impl true
+  def handle_event("alignment_cancel_file", %{"ref" => ref}, socket) do
+    {:noreply,
+     socket
+     |> cancel_upload(:map_line_file, ref)
+     |> assign(:map_line_file, nil)}
+  end
+
+  def handle_event("alignment_cancel_file", _params, socket), do: {:noreply, socket}
+
+  @impl true
   def handle_event("alignment_open_discard", params, socket) do
     {:noreply, RoutePatternAlignmentEvents.open_discard(socket, params)}
   end
@@ -915,6 +1035,48 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   @impl true
+  def handle_event("alignment_open_file_import", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.open_file_import(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_file_choose", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.choose_file_line(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_fit_result", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.fit_result(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_reverse_file_line", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.reverse_file_line(socket, params)}
+  end
+
+  @impl true
+  def handle_event("alignment_create_file_draft", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.create_file_draft(socket, params)}
+  end
+
+  # The upload form's change event. It only asks for the entry's own errors
+  # to be rendered; a file is read when the editor asks for it with
+  # "Read this file", which is the submit event below.
+  @impl true
+  def handle_event("alignment_file_validate", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("alignment_file_consume", _params, socket) do
+    case map_line_entry(socket) do
+      {:ok, entry} ->
+        {:noreply, RoutePatternAlignmentEvents.consume_file(socket, entry)}
+
+      :error ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
   def handle_event("alignment_import_choice", params, socket) do
     {:noreply, RoutePatternAlignmentEvents.import_choice(socket, params)}
   end
@@ -922,6 +1084,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   @impl true
   def handle_event("alignment_confirm_import", params, socket) do
     {:noreply, RoutePatternAlignmentEvents.confirm_import(socket, params)}
+  end
+
+  def handle_event("alignment_close_import", params, socket) do
+    {:noreply, RoutePatternAlignmentEvents.close_import(socket, params)}
   end
 
   @impl true
@@ -1285,7 +1451,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   # Fill-panel problem buttons name the stop input to fix; the
   # FormErrorFocus hook owns the page region and focuses it. This only
-  # pushes a client event, so it stays outside `@editor_write_events`.
+  # pushes a client event without a database write.
   @impl true
   def handle_event("focus_form_error", %{"id" => id}, socket) when is_binary(id) do
     {:noreply,
@@ -1530,6 +1696,62 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     guard_navigation(socket, patterns_path(socket))
   end
 
+  # --- route-pattern labels ---------------------------------------------------
+  # A supplied label is read from the same summaries the list streams, so the
+  # drawer and its rows are one view of one load. `open_label` names the label's
+  # own ID, which is its owner's natural ID.
+
+  @impl true
+  def handle_event("open_label", %{"label-id" => label_id}, socket) do
+    case Map.get(socket.assigns[:labels] || %{}, label_id) do
+      nil ->
+        {:noreply, socket}
+
+      label ->
+        {:noreply,
+         socket
+         |> assign(:label, label)
+         |> assign(:label_remove, nil)
+         |> assign(:label_focus_id, nil)}
+    end
+  end
+
+  @impl true
+  def handle_event("close_label", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:label, nil)
+     |> assign(:label_remove, nil)
+     |> assign(:label_focus_id, nil)}
+  end
+
+  @impl true
+  def handle_event("request_remove_label", %{"pattern-id" => pattern_id}, socket) do
+    case label_child(socket, pattern_id) do
+      nil ->
+        {:noreply, socket}
+
+      child ->
+        {:noreply, assign(socket, :label_remove, child)}
+    end
+  end
+
+  @impl true
+  def handle_event("cancel_remove_label", _params, socket) do
+    {:noreply, assign(socket, :label_remove, nil)}
+  end
+
+  @impl true
+  def handle_event("remove_label", _params, socket) do
+    case socket.assigns.label_remove do
+      nil ->
+        {:noreply, socket}
+
+      remove ->
+        remove_label(socket, remove)
+    end
+  end
+
   @impl true
   def handle_event("discard_changes", _params, socket) do
     case socket.assigns.pending_navigation do
@@ -1596,8 +1818,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
       {:error, :forbidden} ->
         {:noreply,
-         put_flash(
-           socket,
+         socket
+         |> mark_editor_refusal(:forbidden)
+         |> put_flash(
            :error,
            "You no longer have editor access to this organization. The route's status is unchanged."
          )}
@@ -1623,6 +1846,179 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   @impl true
   def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
     handle_version_switch(socket, version_id)
+  end
+
+  # --- link offer ------------------------------------------------------------
+
+  # The offer names one pattern, the one the URL marker points at, so it
+  # survives the `push_navigate` that follows a create and it is the same offer
+  # on the editor and on the Patterns list.
+  @impl true
+  def handle_event("link_open", _params, socket) do
+    {:noreply, assign(socket, :link_dialog, true)}
+  end
+
+  @impl true
+  def handle_event("link_cancel", _params, socket) do
+    {:noreply, socket |> assign(:link_dialog, false) |> assign(:link_error, nil)}
+  end
+
+  # "Not now" writes nothing: it only drops the marker, so the offer is gone
+  # from this page and from any reload of it.
+  @impl true
+  def handle_event("link_dismiss", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:link_offer, nil)
+     |> assign(:link_done, nil)
+     |> push_patch(to: unlinked_path(socket))}
+  end
+
+  @impl true
+  def handle_event("link_confirm", _params, socket) do
+    case socket.assigns.link_offer do
+      nil ->
+        {:noreply, socket}
+
+      offer ->
+        confirm_link(socket, offer)
+    end
+  end
+
+  # A confirmed removal clears the child's pointer and nothing else. The group is
+  # re-read from the same load as the list, which is what takes the grouping away
+  # when the last child leaves it, and the row the child kept is where focus
+  # returns to.
+  defp remove_label(socket, remove) do
+    case Gtfs.remove_route_pattern_label(
+           socket.assigns.route_id,
+           remove.uuid,
+           audit_context(socket)
+         ) do
+      {:ok, _pattern} ->
+        {:noreply,
+         socket
+         |> assign(:label_remove, nil)
+         |> assign(:label, nil)
+         |> put_flash(:info, label_removed_message(remove))
+         |> load_screen()
+         |> assign(:label_focus_id, "pattern-open-#{remove.natural_id}")}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:label_remove, nil)
+         |> mark_editor_refusal(reason)
+         |> put_flash(:error, label_error(reason))}
+    end
+  end
+
+  defp label_removed_message(remove) do
+    "#{remove.name} now exports its own route pattern ID."
+  end
+
+  defp label_error(:not_labelled),
+    do: "That pattern is not under a label, so nothing was removed."
+
+  defp label_error(:not_found),
+    do: "That pattern is no longer on this route, so nothing was removed."
+
+  defp label_error(:forbidden), do: "You no longer have editor access, so nothing was removed."
+
+  defp label_error(_reason),
+    do: "Nothing was removed. Try again in a moment."
+
+  # The child a Remove label confirm is about, read from the group the drawer is
+  # showing rather than from the parameters, so the copy in the dialog and the
+  # pattern that is written are the same one.
+  defp label_child(socket, pattern_id) do
+    label = socket.assigns[:label] || %{}
+
+    with children when is_list(children) <- Map.get(label, :children, []),
+         child when is_map(child) <- Enum.find(children, &(&1.id == pattern_id)) do
+      owner = label.owner
+
+      %{
+        natural_id: child.id,
+        uuid: child.pattern.id,
+        name: RoutePatternListComponents.pattern_name(child.pattern),
+        owner_name: RoutePatternListComponents.pattern_name(owner.pattern),
+        label_id: label.id,
+        stop_count: child.stop_count,
+        trip_count: child.trip_count
+      }
+    else
+      _no_child -> nil
+    end
+  end
+
+  defp confirm_link(socket, offer) do
+    selections = [%{key: offer.key, direction_id: offer.direction_id, target: offer.pattern_id}]
+
+    review = %{selections: selections, fingerprint: offer.fingerprint}
+
+    socket = socket |> assign(:link_pending, true) |> assign(:link_error, nil)
+
+    case Gtfs.group_left_out_trips(socket.assigns.route_id, review, audit_context(socket)) do
+      {:ok, summary} ->
+        {:noreply,
+         socket
+         |> assign(:link_pending, false)
+         |> assign(:link_dialog, false)
+         |> assign(:link_offer, nil)
+         |> assign(:link_done, Map.put(summary, :pattern_name, offer.pattern_name))
+         # The linked trips are no longer left out, so the screen's own counts and
+         # the offer's group are re-read from one place here.
+         |> load_screen()
+         |> push_patch(to: unlinked_path(socket))}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> assign(:link_pending, false)
+         |> mark_editor_refusal(:forbidden)
+         |> assign(:link_error, "Nothing was linked. #{link_error(:forbidden)}")}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:link_pending, false)
+         |> assign(
+           :link_error,
+           "Those trips changed, so nothing was linked. #{link_error(reason)}"
+         )}
+    end
+  end
+
+  defp link_error(:forbidden), do: "You no longer have editor access to this organization."
+
+  defp link_error(:stale), do: "Review the offer again before linking."
+
+  defp link_error(:invalid_selection),
+    do: "This pattern no longer holds the stops those trips serve."
+
+  defp link_error(reason), do: "Reload the page and try again. (#{inspect(reason)})"
+
+  # The same page without the marker, which is where a dismiss and a confirmed
+  # link land.
+  defp unlinked_path(socket) do
+    case socket.assigns.live_action do
+      :index ->
+        patterns_path(socket)
+
+      :new ->
+        patterns_path(socket)
+
+      _other ->
+        pattern_path(socket, socket.assigns.pattern_id, "?task=#{socket.assigns.task}")
+    end
+  end
+
+  # The offer and its result are the only link state the editor shows, and only
+  # an editor may see them: both write the route's exported trips.
+  defp link_offer?(assigns) do
+    (assigns.link_offer != nil or assigns.link_done != nil) and
+      assigns.patterns_editable and not assigns.editor_revoked?
   end
 
   @impl true
@@ -1748,6 +2144,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
           />
 
           <%= cond do %>
+            <% @grouping != nil and @route != nil -> %>
+              <RoutePatternGroupingComponents.page
+                route={@route}
+                version={@current_gtfs_version}
+                preview={@grouping.preview}
+                selections={@grouping.selections}
+                state={@grouping.state}
+                missing_key={@grouping.missing_key}
+                failed_reason={@grouping.failed_reason}
+                editable?={@patterns_editable and not @editor_revoked?}
+              />
             <% @live_action == :index -> %>
               <RoutePatternListComponents.page
                 load_state={@load_state}
@@ -1759,6 +2166,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                 route_trip_count={@route_trip_count}
                 pending_trip_count={@pending_trip_count}
                 custom_trip_count={@custom_trip_count}
+                left_out={@left_out}
                 derivation_error={@derivation_error}
                 build_state={@build_state}
                 build_error={@build_error}
@@ -1776,6 +2184,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                 bulk_result={@bulk_result}
                 bulk_error={@bulk_error}
                 bulk_pending={@alignment_bulk != nil}
+                grouped_summary={@grouped_summary}
+                link_offer={@link_offer}
+                link_done={@link_done}
+                link_pending={@link_pending}
+                label={@label}
+                label_remove={@label_remove}
+              />
+              <%!-- A removed child keeps its row, so focus goes back to it. --%>
+              <span
+                :if={@label_focus_id}
+                id="label-focus"
+                phx-mounted={JS.focus(to: id_selector(@label_focus_id))}
+                class="hidden"
               />
             <% @load_state == :loading -> %>
               <.skeleton id="patterns-loading" label="Loading patterns" rows={3} aria-busy="true" />
@@ -1795,8 +2216,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                   </:action>
                 </.message>
               </div>
-            <% @editor_revoked? -> %>
-              <div id="pattern-editor-revoked" class="mt-4">
+            <% @load_state == :ready -> %>
+              <div :if={@editor_revoked?} id="pattern-editor-revoked" class="mt-4">
                 <.message kind="error" title="Editing is no longer available">
                   Your editing access to this organization was removed, so this page can no
                   longer change patterns, timings or stops. Ask an administrator to restore the
@@ -1813,7 +2234,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                   </:action>
                 </.message>
               </div>
-            <% @load_state == :ready -> %>
               <%= if @pattern || @live_action == :new do %>
                 <RoutePatternComponents.pattern_detail_header
                   creating={@live_action == :new}
@@ -1849,6 +2269,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                 />
 
                 <RoutePatternComponents.connectivity_banner offline?={@offline?} />
+
+                <div :if={link_offer?(assigns)} id="pattern-link-offer" class="pt-4">
+                  <RoutePatternComponents.link_offer
+                    offer={@link_offer}
+                    done={@link_done}
+                    pending={@link_pending}
+                  />
+                </div>
 
                 <div :if={@details_stale?} class="pt-4">
                   <.message
@@ -1973,6 +2401,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                       <%= if @alignment do %>
                         <RoutePatternAlignmentComponents.alignment_task
                           alignment={@alignment}
+                          version_id={@current_gtfs_version.id}
                           state={@alignment_state}
                           notice={@alignment_notice}
                           dialog_open={@alignment_dialog == :help}
@@ -1986,15 +2415,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                           delete_dialog={@alignment_delete_dialog}
                           discard_dialog={@alignment_discard_dialog}
                           simplify_dialog={@alignment_simplify_dialog}
-                          import_dialog={@alignment_import_dialog}
+                          import_card={@alignment_import_card}
                           generation={@alignment_generation}
                           generate_dialog={@alignment_generate_dialog}
                           generate_notice={@alignment_generate_notice}
+                          file_import={@map_line_file}
+                          file_fit={@file_fit}
+                          map_line_upload={@uploads.map_line_file}
                         />
                       <% else %>
                         <.skeleton
                           id="alignment-loading"
-                          label="Loading alignment"
+                          label="Loading map line"
                           rows={3}
                           aria-busy="true"
                         />
@@ -2017,6 +2449,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                         timing_error={@timing_error}
                         timing_blank_note={@timing_blank_note}
                         blank_count={@blank_count}
+                        version_id={@current_gtfs_version.id}
                         fill={@fill}
                         fill_preview={@fill_preview}
                         fill_distances={@fill_distances}
@@ -2077,6 +2510,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
         <RoutePatternComponents.blocked_dialog dialog={@blocked_dialog} />
 
+        <RoutePatternComponents.link_review_dialog
+          offer={if @link_dialog, do: @link_offer}
+          pending={@link_pending}
+          error={@link_error}
+        />
+
         <.confirm_dialog
           id="details-impact-dialog"
           open={@impact_dialog != nil}
@@ -2134,6 +2573,156 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     """
   end
 
+  # A card with no direction blocks the apply and names the card, so nothing is
+  # written and the operator is taken to the question rather than to a server
+  # error. The confirm would refuse it too; checking here says which card.
+  defp submit_grouping(socket, grouping) do
+    case grouping_selections(grouping) do
+      {:missing, key} ->
+        {:noreply,
+         socket
+         |> assign(:grouping, %{grouping | state: :missing, missing_key: key})
+         |> push_event("focus_scoped_target", %{
+           id: RoutePatternGroupingComponents.missing_id(key)
+         })}
+
+      {:ok, selections} ->
+        apply_grouping(socket, grouping, selections)
+    end
+  end
+
+  defp grouping_selections(grouping) do
+    grouping.preview.groups
+    |> Enum.reduce_while({:ok, []}, fn group, {:ok, selections} ->
+      case direction_of(Map.get(grouping.selections, group.key, %{})) do
+        direction when direction in ["0", "1"] ->
+          {:cont, {:ok, [grouping_selection(group, direction, grouping.selections) | selections]}}
+
+        _no_direction ->
+          {:halt, {:missing, group.key}}
+      end
+    end)
+    |> case do
+      {:ok, selections} -> {:ok, Enum.reverse(selections)}
+      missing -> missing
+    end
+  end
+
+  defp direction_of(selections), do: Map.get(selections, "direction_id")
+
+  # A target is sent only when the operator chose one, which the chooser renders
+  # only for a card with more than one candidate. Without one the apply takes the
+  # rule-5 candidate head, and creates a new pattern when there is no candidate --
+  # which is the same outcome as an explicit `:new`, so nothing is guessed here.
+  # The chooser lists the preview direction's candidates, so a choice made before
+  # the operator switched direction is dropped rather than sent with the wrong one.
+  defp grouping_selection(group, direction, selections) do
+    base = %{key: group.key, direction_id: String.to_integer(direction)}
+
+    case Map.get(Map.get(selections, group.key, %{}), "target") do
+      _chosen when base.direction_id != group.direction_id -> base
+      "new" -> Map.put(base, :target, :new)
+      target when is_binary(target) -> Map.put(base, :target, target)
+      _default -> base
+    end
+  end
+
+  defp apply_grouping(socket, grouping, selections) do
+    review = %{selections: selections, fingerprint: grouping.preview.fingerprint}
+
+    case Gtfs.group_left_out_trips(socket.assigns.route_id, review, audit_context(socket)) do
+      {:ok, summary} ->
+        {:noreply,
+         socket
+         |> assign(:grouping, nil)
+         |> assign(:grouped_summary, summary)
+         |> put_flash(:info, grouped_message(summary))
+         # The list the patch lands on is the same LiveView at the same route and
+         # pattern, so `handle_params` would call the reload a no-op and the list
+         # would keep counting the trips that have just been grouped. Reading the
+         # screen here is what makes the done message agree with the numbers.
+         |> load_screen()
+         |> push_patch(to: grouping_lists_path(socket))}
+
+      # A stale review writes nothing by construction; re-reading it keeps the
+      # operator's choices where their groups still exist.
+      {:error, :stale} ->
+        {:noreply, reload_grouping(socket, grouping.selections, :stale, nil)}
+
+      {:error, :invalid_selection} ->
+        {:noreply,
+         reload_grouping(socket, grouping.selections, :missing, missing_group_key(grouping))}
+
+      # A revoked editor writes nothing; the review keeps every choice the
+      # operator made so they survive an access restore.
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> mark_editor_refusal(:forbidden)
+         |> assign(:grouping, %{
+           grouping
+           | state: :failed,
+             missing_key: nil,
+             failed_reason: @forbidden_message
+         })}
+
+      {:error, reason} ->
+        {:noreply, reload_grouping(socket, grouping.selections, :failed, inspect(reason))}
+    end
+  end
+
+  defp missing_group_key(grouping) do
+    Enum.find_value(grouping.preview.groups, fn group ->
+      case direction_of(Map.get(grouping.selections, group.key, %{})) do
+        direction when direction in ["0", "1"] -> nil
+        _no_direction -> group.key
+      end
+    end)
+  end
+
+  # The state the refusal is shown in is layered onto a fresh read of the review,
+  # so the operator sees the groups that are there now rather than a page built
+  # from what it saw before.
+  # A route or version that has gone since the review opened leaves no review to
+  # re-read, so the not-found screen the read assigned is what the operator sees.
+  defp reload_grouping(socket, selections, state, detail) do
+    case load_grouping(socket) do
+      %{assigns: %{grouping: nil}} = reloaded ->
+        reloaded
+
+      %{assigns: %{grouping: grouping}} = reloaded ->
+        assign(reloaded, :grouping, %{
+          grouping
+          | selections: kept_selections(selections, grouping.preview),
+            state: state,
+            missing_key: missing_key_for(state, detail),
+            failed_reason: detail
+        })
+    end
+  end
+
+  # A group whose stop order no longer exists cannot keep its choice, so the
+  # reloaded review asks it again rather than carrying a selection no key answers.
+  defp kept_selections(selections, preview) do
+    Map.take(selections, Enum.map(preview.groups, & &1.key))
+  end
+
+  defp missing_key_for(:missing, key), do: key
+  defp missing_key_for(_state, _detail), do: nil
+
+  # Pattern ids are free text from the feed (`10.1`, `A:1`), so the focus target
+  # is matched by its quoted id attribute rather than as a `#id` selector.
+  defp id_selector(id),
+    do: ~s([id="#{String.replace(id, ~r/["\\]/, "\\\\\\0")}"])
+
+  defp grouping_lists_path(socket),
+    do:
+      ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/patterns"
+
+  defp grouped_message(%{trips_linked: linked}) do
+    "Grouped #{linked} #{if linked == 1, do: "trip", else: "trips"} into patterns"
+  end
+
   # --- loading ---------------------------------------------------------------
 
   defp reload_needed?(socket, pattern_id, timing_id) do
@@ -2154,10 +2743,21 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     ]
 
     case Gtfs.load_route_pattern_screen(organization_id, version_id, route_id, opts) do
-      {:ok, screen} -> socket |> apply_screen(screen) |> load_headsign_usage()
-      {:error, :not_found} -> not_found(socket)
-      {:error, :timing_not_found} -> timing_not_found(socket)
-      {:error, :unavailable} -> unavailable(socket)
+      {:ok, screen} ->
+        socket
+        |> apply_screen(screen)
+        |> load_headsign_usage()
+        |> load_left_out()
+        |> load_link_offer()
+
+      {:error, :not_found} ->
+        not_found(socket)
+
+      {:error, :timing_not_found} ->
+        timing_not_found(socket)
+
+      {:error, :unavailable} ->
+        unavailable(socket)
     end
   end
 
@@ -2230,6 +2830,104 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     end
   end
 
+  # The offer is offered once per load, from the URL marker, so the create's
+  # navigate, a reload and the list all answer the same way: the marked pattern
+  # is read, and a left-out group that serves exactly its stops in the same
+  # order, with a direction the pattern's, is offered to it.
+  defp load_link_offer(%{assigns: %{link_marker: nil}} = socket),
+    do: socket |> assign(:link_offer, nil) |> assign(:link_dialog, false)
+
+  defp load_link_offer(%{assigns: %{link_marker: _marker}} = socket) do
+    socket
+    |> assign(:link_dialog, false)
+    |> link_offer_target()
+  end
+
+  defp link_offer_target(socket) do
+    marker = socket.assigns.link_marker
+
+    with {:ok, {pattern, occurrences}} <- link_offer_target_pattern(socket, marker),
+         {:ok, preview} <- Gtfs.preview_left_out(socket.assigns.route_id, audit_context(socket)),
+         group when not is_nil(group) <-
+           Enum.find(preview.groups, &link_group?(&1, occurrences, pattern)) do
+      assign(socket, :link_offer, link_offer(pattern, group, preview.fingerprint))
+    else
+      _no_offer ->
+        assign(socket, :link_offer, nil)
+    end
+  end
+
+  # The editor already holds the marked pattern and its stops; the Patterns list
+  # does not, so the list reads them through the same scoped read the editor
+  # uses. The marker is the pattern's UUID, which is what that read names.
+  defp link_offer_target_pattern(%{assigns: %{pattern: pattern}} = socket, marker)
+       when is_map(pattern) do
+    if pattern.id == marker do
+      {:ok, {pattern, socket.assigns.occurrences}}
+    else
+      {:error, :no_offer}
+    end
+  end
+
+  defp link_offer_target_pattern(socket, marker) do
+    with {:ok, marker} <- Ecto.UUID.cast(marker),
+         {:ok, %{pattern: pattern, occurrences: occurrences}} <-
+           Gtfs.get_pattern(
+             socket.assigns.current_organization.id,
+             socket.assigns.current_gtfs_version.id,
+             socket.assigns.route_id,
+             marker
+           ) do
+      {:ok, {pattern, occurrences}}
+    else
+      _no_pattern -> {:error, :no_offer}
+    end
+  end
+
+  # The offer is the same stop order the trips already serve, in a direction the
+  # pattern already has: a group's direction of its own must be the pattern's,
+  # and a group with no direction takes it.
+  defp link_group?(group, occurrences, pattern) do
+    stop_ids = Enum.map(occurrences, & &1.stop_id)
+
+    group.stop_ids == stop_ids and
+      (is_nil(group.direction_id) or group.direction_id == pattern.direction_id)
+  end
+
+  defp link_offer(pattern, group, fingerprint) do
+    %{
+      key: group.key,
+      fingerprint: fingerprint,
+      # The apply takes the pattern's own UUID as its target, so the confirmed
+      # group's trips join this pattern rather than a candidate the preview would
+      # have offered instead.
+      pattern_id: pattern.id,
+      pattern_name: RoutePatternListComponents.pattern_name(pattern),
+      direction_id: pattern.direction_id,
+      trip_count: group.trip_count,
+      stop_count: length(group.stop_ids),
+      stop_names: group.stop_names,
+      services: group.services,
+      timing_names: group.timing_names
+    }
+  end
+
+  # The Patterns tab names why trips stayed outside patterns; the editor tabs for one
+  # pattern never show the route's whole list.
+  defp load_left_out(%{assigns: %{live_action: :index}} = socket) do
+    assign(
+      socket,
+      :left_out,
+      Gtfs.left_out_trips(
+        socket.assigns.current_organization.id,
+        socket.assigns.current_gtfs_version.id,
+        socket.assigns.route_id
+      )
+    )
+  end
+
+  defp load_left_out(socket), do: assign(socket, :left_out, [])
+
   # A timing outside the loaded pattern is refused without leaking the other
   # pattern's data, and the page falls back to the pattern's first timing.
   defp timing_not_found(socket) do
@@ -2265,11 +2963,47 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         |> stream(:patterns, RoutePatternListComponents.stream_items(rows), reset: true)
         |> assign(:bulk_candidates, bulk_candidates(rows))
         |> assign(:patterns_editable, editor_access?(socket))
+        |> assign(:labels, label_groups(rows, socket))
+        |> then(&reconcile_label/1)
         |> preselect_bulk(preselected)
       end)
       |> apply_detail(screen.detail, previous_pattern_id)
 
     assign_dirty(socket)
+  end
+
+  # The label groups the drawer reads, keyed by the owner's natural ID — the ID
+  # the group exports as. An owner with no children is not a label yet, so it
+  # gets no group and its row stays an ordinary one.
+  defp label_groups(rows, socket) do
+    children = Enum.group_by(rows, & &1.pattern.label_pattern_id)
+
+    for row <- rows,
+        row.pattern.label_pattern_id == nil,
+        labelled = Map.get(children, row.pattern.id, []),
+        labelled != [],
+        into: %{} do
+      {row.pattern.route_pattern_id,
+       %{
+         id: row.pattern.route_pattern_id,
+         count: length(labelled) + 1,
+         owner: row,
+         children: labelled,
+         owner_path: pattern_path(socket, row.pattern.route_pattern_id, "?task=details")
+       }}
+    end
+  end
+
+  # A load can take a label away under an open drawer: the last child was removed
+  # elsewhere, or the group was rebuilt. The drawer then closes rather than
+  # showing a group that is no longer there.
+  defp reconcile_label(%{assigns: %{label: nil}} = socket), do: socket
+
+  defp reconcile_label(socket) do
+    case Map.get(socket.assigns.labels, socket.assigns.label.id) do
+      nil -> assign(socket, :label, nil)
+      label -> assign(socket, :label, label)
+    end
   end
 
   # Route › Patterns shows every pattern's alignment status from one batched
@@ -2564,7 +3298,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         {:noreply,
          socket
          |> assign(:details_stale?, reason == :stale_review)
-         |> assign(:error_message, reasons_message(reason))}
+         |> assign(:error_message, reasons_message(reason))
+         |> mark_editor_refusal(reason)}
     end
   end
 
@@ -2598,7 +3333,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         {:noreply,
          socket
          |> assign(:details_stale?, reason == :stale_review)
-         |> assign(:error_message, reasons_message(reason))}
+         |> assign(:error_message, reasons_message(reason))
+         |> mark_editor_refusal(reason)}
     end
   end
 
@@ -2817,6 +3553,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
       {:error, {:stale, _changed}} ->
         assign(socket, :headsign_review, %{review | state: :stale})
+
+      {:error, :forbidden} ->
+        socket
+        |> assign(:headsign_review, %{review | state: :failed})
+        |> mark_editor_refusal(:forbidden)
 
       {:error, _reason} ->
         assign(socket, :headsign_review, %{review | state: :failed})
@@ -3243,6 +3984,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:details_form, details_form(params, errors))
     |> assign(:error_message, message)
     |> assign(:task, if(reason == :at_least_two_stops, do: :stops, else: :details))
+    |> mark_editor_refusal(reason)
     |> push_event("focus_form_error", %{form_id: "pattern-details-form", fallback_id: nil})
   end
 
@@ -3741,10 +4483,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
               name: stop_name(socket.assigns.stops, occurrence.stop_id),
               arrival:
                 values["arrival"] ||
-                  raw_review_offset(row[:arrival_offset], shift),
+                  review_input_offset(row[:arrival_offset], shift),
               departure:
                 values["departure"] ||
-                  raw_review_offset(row[:departure_offset], shift),
+                  review_input_offset(row[:departure_offset], shift),
               estimated?:
                 values == %{} and
                   Enum.any?(estimates, &(&1[:key] == occurrence.key))
@@ -3781,7 +4523,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     do: not Enum.all?(["arrival", "departure"], &is_integer(elapsed_seconds(values[&1])))
 
   defp raw_review_offset(value, shift) when is_integer(value), do: offset_input(value + shift)
-  defp raw_review_offset(_value, _shift), do: ""
+  defp raw_review_offset(_value, _shift), do: "—"
+
+  # An added stop's time is an input, so a blank one stays empty for typing
+  # rather than carrying the dash the read-only rows show.
+  defp review_input_offset(value, shift) when is_integer(value), do: offset_input(value + shift)
+  defp review_input_offset(_value, _shift), do: ""
 
   defp shift_label(shifts, timing_id) when is_list(shifts) do
     case Enum.find(shifts, &(Map.get(&1, :timing_id) == timing_id)) do
@@ -3927,6 +4674,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       review
       | error: %{message: reasons_message(reason), action: :retry}
     })
+    |> mark_editor_refusal(reason)
   end
 
   # --- timings ---------------------------------------------------------------
@@ -4305,10 +5053,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp validate_timing_values([]), do: {:error, [], "Add a timing before saving."}
 
   defp validate_timing_values(rows) do
+    last_index = length(rows) - 1
+
     rows
     |> Enum.with_index()
     |> Enum.reduce_while({:ok, []}, fn {row, index}, {:ok, acc} ->
-      case validate_timing_row(row, index, previous_departure(acc)) do
+      case validate_timing_row(row, index, last_index, previous_departure(acc)) do
         {:ok, parsed} -> {:cont, {:ok, acc ++ [parsed]}}
         {:error, message, field} -> {:halt, {:error, {message, field}}}
       end
@@ -4319,31 +5069,79 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     end
   end
 
+  # A blank row is between the ends and carries no time, so the row it follows is
+  # the last row that actually has one, which is what the next timed row is
+  # compared against.
   defp previous_departure([]), do: nil
-  defp previous_departure(acc), do: acc |> List.last() |> Map.get(:departure_offset)
 
-  defp validate_timing_row(row, index, preceding) do
+  defp previous_departure(parsed) do
+    parsed
+    |> Enum.reverse()
+    |> Enum.find_value(fn %{departure_offset: departure} -> departure end)
+  end
+
+  defp validate_timing_row(row, index, last_index, preceding) do
     with {:ok, arrival} <- parse_elapsed_field(row.arrival, {row.position, :arrival}),
          {:ok, departure} <- parse_elapsed_field(row.departure, {row.position, :departure}) do
-      cond do
-        departure < arrival ->
-          {:error, "Departure must be at or after arrival.", {row.position, :departure}}
-
-        index == 0 and departure != 0 ->
-          {:error, "The first departure must be 00:00; other times are measured from it.",
-           {row.position, :departure}}
-
-        index > 0 and arrival < preceding ->
-          {:error, "Arrival must be at or after the previous departure.",
-           {row.position, :arrival}}
-
-        true ->
-          {:ok, %{row: row, arrival_offset: arrival, departure_offset: departure}}
+      if is_nil(arrival) or is_nil(departure) do
+        validate_blank_or_half_row(row, index, last_index, arrival, departure)
+      else
+        validate_timed_row(row, index, preceding, arrival, departure)
       end
     end
   end
 
-  defp parse_elapsed_field(value, field) do
+  # One cell empty and the other filled is a half pair: the row is malformed
+  # rather than blank, so the empty cell is the one named.
+  defp validate_blank_or_half_row(row, _index, _last_index, nil, departure)
+       when is_integer(departure),
+       do: {:error, needs_times_message(row), {row.position, :arrival}}
+
+  defp validate_blank_or_half_row(row, _index, _last_index, arrival, nil)
+       when is_integer(arrival),
+       do: {:error, needs_times_message(row), {row.position, :departure}}
+
+  # Clearing both cells is legal only where the timing rule allows a blank: not
+  # on either end and not at a timepoint, which always publishes a time.
+  defp validate_blank_or_half_row(row, index, last_index, nil, nil) do
+    if index in [0, last_index] or row.timepoint do
+      {:error, needs_times_message(row), {row.position, :arrival}}
+    else
+      {:ok, %{row: row, arrival_offset: nil, departure_offset: nil}}
+    end
+  end
+
+  defp validate_timed_row(row, index, preceding, arrival, departure) do
+    cond do
+      departure < arrival ->
+        {:error, "Departure must be at or after arrival.", {row.position, :departure}}
+
+      index == 0 and departure != 0 ->
+        {:error, "The first departure must be 00:00; other times are measured from it.",
+         {row.position, :departure}}
+
+      index > 0 and not is_nil(preceding) and arrival < preceding ->
+        {:error, "Arrival must be at or after the previous departure.", {row.position, :arrival}}
+
+      true ->
+        {:ok, %{row: row, arrival_offset: arrival, departure_offset: departure}}
+    end
+  end
+
+  defp needs_times_message(row), do: "#{row.name} needs arrival and departure times"
+
+  defp parse_elapsed_field(value, field) when is_binary(value) do
+    case String.trim(value) do
+      "" -> {:ok, nil}
+      _ -> parse_timed_field(value, field)
+    end
+  end
+
+  defp parse_elapsed_field(nil, _field), do: {:ok, nil}
+
+  defp parse_elapsed_field(value, field), do: parse_timed_field(value, field)
+
+  defp parse_timed_field(value, field) do
     case parse_elapsed(value) do
       {:ok, seconds} ->
         {:ok, seconds}
@@ -4569,6 +5367,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       | error: %{message: reasons_message(reason), action: :retry},
         busy: false
     })
+    |> mark_editor_refusal(reason)
   end
 
   # The timing review's submitted attrs, from either operation form (the
@@ -4641,7 +5440,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
              |> saved(timing_dialog_saved_message(dialog), timing_dialog_scope(dialog, socket))}
 
           {:error, reason} ->
-            {:noreply, assign(socket, :timing_dialog, %{dialog | error: reasons_message(reason)})}
+            {:noreply,
+             socket
+             |> assign(:timing_dialog, %{dialog | error: reasons_message(reason)})
+             |> mark_editor_refusal(reason)}
         end
 
       {:error, reason} ->
@@ -4956,7 +5758,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     %{
       primary: %{
         id: "alignment-save",
-        label: "Save alignment",
+        label: "Save map line",
         click:
           JS.dispatch("alignment:action", to: "#alignment-map-root", detail: %{action: "save"}),
         commit: "alignment",
@@ -5353,7 +6155,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   defp reject_editor(socket, message, field_id) do
-    socket = assign(socket, :error_message, message)
+    socket =
+      socket
+      |> assign(:error_message, message)
+      |> mark_editor_refusal(if(message == @forbidden_message, do: :forbidden, else: nil))
 
     if field_id do
       {:noreply, push_event(socket, "focus_scoped_target", %{id: field_id})}
@@ -5393,6 +6198,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp impact_title(_dialog), do: "Update trips?"
 
   defp build_error_message(:not_found), do: "This route is no longer available."
+  defp build_error_message(:forbidden), do: @forbidden_message
 
   defp build_error_message(reason),
     do: "Building patterns failed (#{bounded_reason(reason)}). No trips were changed."
@@ -5401,7 +6207,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp bounded_reason(reason) when is_binary(reason), do: reason
   defp bounded_reason(_reason), do: "unexpected_error"
 
+  defp mark_editor_refusal(socket, :forbidden), do: assign(socket, :editor_revoked?, true)
+  defp mark_editor_refusal(socket, _reason), do: socket
+
   defp reasons_message(:not_found), do: "That pattern is no longer available."
+
+  defp reasons_message(:forbidden),
+    do: @forbidden_message
 
   defp reasons_message(:stale_review),
     do: "This pattern changed since the page loaded. Reload the pattern and try again."

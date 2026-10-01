@@ -194,6 +194,29 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
   end
 
   describe "creating a rule" do
+    test "a revoked editor keeps the submitted rule draft and writes nothing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      {:ok, view, _html} = mount_rules(conn, user, organization, version)
+      before = all_rule_ids(organization, version)
+
+      view |> element("#add-fare-rule") |> render_click()
+      membership = Accounts.get_user_org_membership(user.id, organization.id)
+      deactivate_membership_fixture(membership)
+
+      submit_rule(view, %{@form | "origin_id" => "A", "destination_id" => "B"})
+
+      assert drawer_open?(view)
+      assert text_exact(view, "#fare-rule-drawer-error") == @save_failed_message
+      assert selected_option(view, "#fare-rule-fare") == "CITY"
+      assert selected_option(view, "#fare-rule-origin") == "A"
+      assert selected_option(view, "#fare-rule-destination") == "B"
+      assert all_rule_ids(organization, version) == before
+    end
+
     test "offers this version's fares, zones and routes", %{
       conn: conn,
       user: user,
@@ -567,11 +590,20 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
       # Another editor renames the zone the rule starts in. The rule's rows keep
       # their IDs and move to another key, which is exactly what the fence is for.
       {:ok, _zone} =
-        FareZones.update_zone(organization.id, version.id, "A", %{
-          "zone_id" => "A2",
-          "name" => "Central",
-          "color" => "ocean"
-        })
+        FareZones.update_zone(
+          %GtfsPlanner.Gtfs.AuditContext{
+            actor_id: user.id,
+            actor_email: user.email,
+            organization_id: organization.id,
+            gtfs_version_id: version.id
+          },
+          "A",
+          %{
+            "zone_id" => "A2",
+            "name" => "Central",
+            "color" => "ocean"
+          }
+        )
 
       submit_rule(view, %{
         @form

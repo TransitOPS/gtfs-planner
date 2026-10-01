@@ -91,8 +91,10 @@
   --color-action-hover: #9f0f5c;
   --color-selection: #fef1f6;
   --color-focus: #96305f;
+  --color-navy-50: #eef0f7; /* connection chip ground */
   --color-navy-100: #d6dae8; /* avatar */
   --color-navy-300: #7a85ac; /* sort indicator, inverse surfaces */
+  --color-navy-700: #0f1a3d; /* connection chip fill — 17.0:1 with white */
   --color-navy-800: #0a1330; /* toast */
   --color-cyan-300: #7dd3cb; /* toast icon */
 
@@ -308,6 +310,147 @@ body {
 
 #blocks-page [tabindex="-1"]:focus-visible {
   outline: 0;
+}
+
+/* The connection drawer's mini-map labels. They are drawn by the Leaflet hook
+   inside a `phx-update="ignore"` canvas, so no server-rendered attribute can
+   style them — the hook only sets a class, and these rules live here with the
+   rest of the page's own styling (CR-7: the connection surface is feature-local).
+   Leaflet's own tooltip chrome is dropped so the words match the drawer's type. */
+#blocks-page .connection-map-tooltip {
+  border: 0;
+  border-radius: var(--radius-badge, 0.375rem);
+  background: color-mix(in srgb, var(--color-base-100) 94%, transparent);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.18);
+  color: var(--color-strong);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 0.125rem 0.375rem;
+}
+
+#blocks-page .connection-map-tooltip::before {
+  border-top-color: color-mix(in srgb, var(--color-base-100) 94%, transparent);
+}
+
+/* Leaflet's own attribution, inside a 176 px frame. At the default 11 px it wraps
+   to two lines on a phone and covers the arrival stop, which is one of the two
+   things the map exists to show — the credit stays visible and in one line. */
+#blocks-page #connection-pair-map .leaflet-control-attribution {
+  background: color-mix(in srgb, var(--color-base-100) 82%, transparent);
+  font-size: 9px;
+  line-height: 1.3;
+  margin: 0;
+  padding: 1px 3px;
+}
+
+/* The Connections map (AC-17). A place is a count in a cased disc with its name
+   beside it, and the marker is a 44 px button so a keyboard reader reaches the
+   same place the list row beside it offers. Leaflet's default marker chrome (the
+   grey square and its shadow) is cleared: the divIcon already draws everything. */
+#blocks-page #connections-map .leaflet-control-attribution {
+  background: color-mix(in srgb, var(--color-base-100) 82%, transparent);
+  font-size: 10px;
+  margin: 0;
+  padding: 1px 4px;
+}
+
+#blocks-page .connection-map-place {
+  background: transparent;
+  border: 0;
+}
+
+#blocks-page .connection-map-place-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 44px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  /* The disc and its name sit on live map tiles, so the button itself carries no
+     surface of its own — only its children do. */
+  padding: 0;
+}
+
+#blocks-page .connection-map-place-disc {
+  position: relative;
+  display: inline-flex;
+  height: 36px;
+  width: 36px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  border: 2px solid var(--color-navy-700);
+  background: var(--color-base-100);
+  box-shadow: var(--shadow-card);
+  color: var(--color-strong);
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+#blocks-page .connection-map-place-review {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  display: inline-flex;
+  height: 18px;
+  width: 18px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  border: 1px solid var(--color-warning-line);
+  background: var(--color-warning-bg);
+  color: var(--color-warning-fg);
+}
+
+/* The place name beside the disc. It reads over pavement and grass alike because
+   it is cased on white rather than relying on the tiles behind it. */
+#blocks-page .connection-map-place-label {
+  border-radius: var(--radius-badge, 0.375rem);
+  background: color-mix(in srgb, var(--color-base-100) 94%, transparent);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.18);
+  padding: 2px 6px;
+  color: var(--color-strong);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+#blocks-page .connection-map-place-button:hover .connection-map-place-disc,
+#blocks-page .connection-map-place-button:focus-visible .connection-map-place-disc {
+  border-color: var(--color-action);
+}
+
+#blocks-page .connection-map-place-button:focus-visible {
+  outline: 2px solid var(--color-action);
+  outline-offset: 2px;
+}
+
+/* "Show every place", the one control this map adds, in Leaflet's own corner so
+   it sits under the zoom control rather than beside it at a different offset. */
+#blocks-page #connections-map .connection-map-fit {
+  display: inline-flex;
+  height: 34px;
+  width: 34px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: var(--color-base-100);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke-width='1.8' stroke='%230f1a3d'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M3 8V5a2 2 0 0 1 2-2h3m4 0h3a2 2 0 0 1 2 2v3m0 8v3a2 2 0 0 1-2 2h-3m-4 0H5a2 2 0 0 1-2-2v-3'/%3E%3C/svg%3E");
+  cursor: pointer;
+}
+
+#blocks-page #connections-map .connection-map-fit:hover {
+  background-color: var(--color-canvas);
+}
+
+#blocks-page #connections-map .connection-map-fit:focus-visible {
+  outline: 2px solid var(--color-action);
+  outline-offset: -2px;
 }
 
 #blocks-timeline-scroll {
@@ -579,6 +722,113 @@ body {
 }
 
 #blocks-page .blocks-gap-short:hover { background: var(--color-warning-bg); }
+
+/* A connection's setting replaces the gap's minutes with a 22px chip. The chip
+   is the visible mark; the button keeps the gap's own geometry, and its `::after`
+   grows only the clickable area to the row's 44px height, so the target is 44px
+   tall without the bar moving or reaching a neighbouring control. A trip bar
+   paints at z-index 2 above the gap's 1, so an expanded target never takes a
+   trip's own clicks. */
+#blocks-page .blocks-gap::after {
+  content: "";
+  position: absolute;
+  inset: -6px 0;
+}
+
+#blocks-page .blocks-gap-chip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+}
+
+/* The three decided settings. Each pairs an icon with the gap's title text, so
+   none of them is carried by colour alone. A decided gap sits above the trip bars
+   (4, under the short layover's 5) the way `.blocks-gap-short` already does: the
+   22px chip is wider than a narrow gap's own bar, so at the bar's own z-index it
+   would be painted over by the trips on either side and read as no marking at all.
+   5 matches the short layover's, so a row's overlap bar (3) and its shifted bar
+   (4) both stay under it. Only the chip is opaque — the rest of the button is
+   transparent — so it covers the few pixels of a neighbouring bar it reaches. */
+#blocks-page .blocks-gap-stay,
+#blocks-page .blocks-gap-reboard,
+#blocks-page .blocks-gap-review {
+  z-index: 5;
+}
+
+#blocks-page .blocks-gap-stay .blocks-gap-chip {
+  background-color: var(--color-soft);
+  color: var(--color-cyan-800);
+}
+
+#blocks-page .blocks-gap-reboard .blocks-gap-chip {
+  background-color: var(--color-navy-700);
+  color: #fff;
+}
+
+#blocks-page .blocks-gap-review .blocks-gap-chip {
+  background-color: var(--color-warning-bg);
+  color: var(--color-warning-fg);
+  border-color: var(--color-warning-line);
+}
+
+/* The connection half of the timeline key, painted with the same three grounds
+   the gaps carry so the key cannot drift from the chart it explains. */
+#blocks-page .blocks-legend-connection {
+  border-width: 1px;
+  border-style: solid;
+  font-weight: 700;
+  font-size: 11px;
+  line-height: 1;
+}
+
+#blocks-page .blocks-legend-stay {
+  background-color: var(--color-soft);
+  color: var(--color-cyan-800);
+  border-color: var(--color-subtle);
+}
+
+#blocks-page .blocks-legend-reboard {
+  background-color: var(--color-navy-700);
+  color: #fff;
+  border-color: var(--color-navy-700);
+}
+
+#blocks-page .blocks-legend-review {
+  background-color: var(--color-warning-bg);
+  color: var(--color-warning-fg);
+  border-color: var(--color-warning-line);
+}
+
+/* The Connections list's setting marks. They are the same three states the gap
+   chips and the chart key name, in the same order, in the same three grounds — a
+   mark in the list and a chip on the chart mean one thing. Each mark is an icon
+   beside its count with the state's words for assistive technology, so colour is
+   never the only difference between them. */
+#blocks-page .connections-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 0.25rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+#blocks-page .connections-mark-stay {
+  color: var(--color-cyan-800);
+}
+
+#blocks-page .connections-mark-reboard {
+  color: var(--color-navy-700);
+}
+
+#blocks-page .connections-mark-review {
+  color: var(--color-warning-fg);
+}
 
 /* The minutes print only when the gap's own bar is at least 26px wide. */
 #blocks-page .blocks-gap-label {
@@ -3242,6 +3492,17 @@ dialog[role="alertdialog"][open] > div > div {
 
 #alignment-map-root.pa-hide-labels .pa-stop-name {
   display: none;
+}
+
+/* Direction arrows on the file line being checked (step 30). The triangle
+   points up and the hook rotates it to the on-screen bearing. */
+#alignment-map-root .pa-file-arrow {
+  display: block;
+  width: 16px;
+  height: 16px;
+  background: #155e75;
+  clip-path: polygon(50% 0%, 100% 100%, 50% 74%, 0% 100%);
+  filter: drop-shadow(0 0 1px rgb(255 255 255 / 0.9));
 }
 
 @media (max-width: 650px) {

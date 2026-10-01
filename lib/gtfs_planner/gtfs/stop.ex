@@ -7,6 +7,7 @@ defmodule GtfsPlanner.Gtfs.Stop do
   @foreign_key_type :binary_id
 
   schema "stops" do
+    field :lock_version, :integer, default: 1, read_after_writes: true
     field :stop_id, :string
     field :stop_name, :string
     field :stop_desc, :string
@@ -52,6 +53,7 @@ defmodule GtfsPlanner.Gtfs.Stop do
           id: Ecto.UUID.t(),
           organization_id: Ecto.UUID.t(),
           gtfs_version_id: Ecto.UUID.t(),
+          lock_version: pos_integer(),
           stop_id: String.t(),
           stop_name: String.t() | nil,
           stop_desc: String.t() | nil,
@@ -75,23 +77,25 @@ defmodule GtfsPlanner.Gtfs.Stop do
   @type accessibility_status :: :accessible | :not_accessible | :unknown
   @type accessibility_source :: :direct | :inherited | :missing
 
-  @doc "Creates a changeset for a stop."
-  def changeset(stop, attrs) do
-    stop
-    |> base_changeset(attrs)
-    |> then(fn changeset ->
-      if get_field(changeset, :parent_station) not in [nil, ""] do
-        validate_station_has_no_parent(changeset)
-      else
-        changeset
-      end
-    end)
-  end
-
-  @doc "Creates an import changeset for a stop with permissive parent/level validation."
-  def import_changeset(stop, attrs) do
-    base_changeset(stop, attrs)
-  end
+  # The editor's writable fields. `stop_code`, `tts_stop_name` and `stop_url`
+  # join the upstream station-editor set because this run's stop editor writes
+  # them; `organization_id` and `gtfs_version_id` are never cast here, so
+  # ownership always comes from the server (`create_changeset/3`).
+  @editor_fields [
+    :stop_name,
+    :stop_desc,
+    :stop_lat,
+    :stop_lon,
+    :location_type,
+    :wheelchair_boarding,
+    :platform_code,
+    :stop_code,
+    :tts_stop_name,
+    :stop_url,
+    :diagram_coordinate,
+    :parent_station,
+    :level_id
+  ]
 
   # GTFS requires a name and coordinates only where a rider can board: a stop, a
   # station or an entrance/exit (types 0-2). A node or a boarding area (3, 4) is
@@ -99,23 +103,92 @@ defmodule GtfsPlanner.Gtfs.Stop do
   @located_types [nil, 0, 1, 2]
 
   @doc """
-  Creates a changeset for the stop editor (`Stop.changeset/2` plus editor rules).
+  Validates fields that a stop editor may change.
 
-  Casts the three fields the importer alone used to write — `stop_code`,
-  `tts_stop_name` and `stop_url` — and requires a name and both coordinates for
-  the located location types. `stop_url` accepts only an absolute `http`/`https`
-  address with a host, so `javascript:` and `data:` values get a field error
-  instead of reaching the exported feed.
+  Requires a name and both coordinates for the located location types, refuses a
+  station nested inside another station, and accepts only an absolute
+  `http`/`https` `stop_url` with a host, so a `javascript:` or `data:` value gets
+  a field error instead of reaching the exported feed.
 
   `level_id` stays optional here: GTFS needs it only for elevator pathways. The
   station diagram, whose own form always shows a level for a child stop, adds the
-  requirement to the changeset it builds for that form.
+  requirement through `child_stop_changeset/2`.
   """
   def editor_changeset(stop, attrs) do
     stop
+    |> cast(attrs, @editor_fields)
+    |> validate_stop_fields()
+    |> validate_editor_rules()
+  end
+
+  @doc "Creates an editor stop with ownership supplied by the server."
+  def create_changeset(%__MODULE__{} = stop, attrs, %{
+        organization_id: org_id,
+        gtfs_version_id: version_id
+      }) do
+    %{stop | organization_id: org_id, gtfs_version_id: version_id}
+    |> cast(attrs, [:stop_id | @editor_fields])
+    |> validate_stop_fields()
+    |> validate_editor_rules()
+  end
+
+  @doc "Creates a changeset for a stop."
+  def changeset(stop, attrs) do
+    stop
     |> base_changeset(attrs)
-    |> cast(attrs, [:stop_code, :tts_stop_name, :stop_url])
-    |> trim_string_fields()
+    |> validate_parent_rule()
+  end
+
+  # GTFS: only a stop that actually names a parent can be a station inside one.
+  defp validate_parent_rule(changeset) do
+    if get_field(changeset, :parent_station) in [nil, ""] do
+      changeset
+    else
+      validate_station_has_no_parent(changeset)
+    end
+  end
+
+  @doc "Creates an import changeset for a stop with permissive parent/level validation."
+  def import_changeset(stop, attrs) do
+    base_changeset(stop, attrs)
+  end
+
+  # GTFS needs level_id only for elevator pathways, so `Stop.editor_changeset/2`
+  # leaves it optional and the map editor can move a stop between stations. The
+  # station diagram's child-stop form always shows a level picker and requires one
+  # there, so that form builds its changeset through these functions.
+  @doc """
+  Adds the station diagram's own rule: a child stop must name a level.
+
+  `Stop.editor_changeset/2` is permissive about `level_id` so the map editor can
+  move a stop between stations and so the importer keeps its permissive rules.
+  """
+  def child_stop_changeset(stop, attrs) do
+    stop
+    |> editor_changeset(attrs)
+    |> require_child_level()
+  end
+
+  @doc "Same rule as `child_stop_changeset/2`, for a stop being created."
+  def child_stop_changeset(%__MODULE__{} = stop, attrs, audit) do
+    stop
+    |> create_changeset(attrs, audit)
+    |> require_child_level()
+  end
+
+  defp require_child_level(changeset) do
+    if get_field(changeset, :parent_station) in [nil, ""] do
+      changeset
+    else
+      validate_required(changeset, [:level_id])
+    end
+  end
+
+  # The editor's own rules, shared by the update and create changesets so both
+  # surfaces refuse the same values.
+  defp validate_editor_rules(changeset) do
+    changeset
+    |> validate_parent_rule()
     |> then(fn changeset ->
       if get_field(changeset, :location_type) in @located_types do
         validate_required(changeset, [:stop_name, :stop_lat, :stop_lon])
@@ -124,27 +197,6 @@ defmodule GtfsPlanner.Gtfs.Stop do
       end
     end)
     |> validate_http_url(:stop_url)
-  end
-
-  # GTFS needs level_id only for elevator pathways, so `Stop.changeset/2` leaves it
-  # optional. The station diagram's child-stop form always shows a level picker and
-  # requires one there, so that form builds its changeset through this function.
-  @doc """
-  Adds the station diagram's own rule: a child stop must name a level.
-
-  `Stop.changeset/2` is permissive about `level_id` so the map editor can move a
-  stop between stations and so the importer keeps its permissive rules.
-  """
-  def child_stop_changeset(stop, attrs) do
-    stop
-    |> changeset(attrs)
-    |> then(fn changeset ->
-      if get_field(changeset, :parent_station) not in [nil, ""] do
-        validate_required(changeset, [:level_id])
-      else
-        changeset
-      end
-    end)
   end
 
   # GTFS: a station (location_type=1) must not have a parent_station.
@@ -177,6 +229,11 @@ defmodule GtfsPlanner.Gtfs.Stop do
       :parent_station,
       :level_id
     ])
+    |> validate_stop_fields()
+  end
+
+  defp validate_stop_fields(changeset) do
+    changeset
     |> trim_string_fields()
     |> validate_required([:stop_id, :organization_id, :gtfs_version_id])
     |> validate_inclusion(:location_type, 0..4)

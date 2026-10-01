@@ -4,6 +4,8 @@ defmodule GtfsPlanner.Operations.FleetTest do
   @async_timeout 5_000
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.Accounts.User
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Operations.Garage
   alias GtfsPlanner.Operations.Vehicle
@@ -43,7 +45,11 @@ defmodule GtfsPlanner.Operations.FleetTest do
       organization = organization_fixture()
 
       assert {:error, changeset} =
-               Operations.create_vehicle_type(organization.id, operations_actor(), %{})
+               Operations.create_vehicle_type(
+                 organization.id,
+                 operations_actor(organization.id),
+                 %{}
+               )
 
       assert %{name: [_ | _]} = errors_on(changeset)
     end
@@ -52,27 +58,43 @@ defmodule GtfsPlanner.Operations.FleetTest do
       organization = organization_fixture()
 
       assert {:ok, %VehicleType{max_out_minutes: 600}} =
-               Operations.create_vehicle_type(organization.id, operations_actor(), %{
-                 "name" => "Ten hours",
-                 "max_out_hours" => "10"
-               })
+               Operations.create_vehicle_type(
+                 organization.id,
+                 operations_actor(organization.id),
+                 %{
+                   "name" => "Ten hours",
+                   "max_out_hours" => "10"
+                 }
+               )
 
       assert {:ok, %VehicleType{max_out_minutes: 60}} =
-               Operations.create_vehicle_type(organization.id, operations_actor(), %{
-                 "name" => "One hour",
-                 "max_out_hours" => "1"
-               })
+               Operations.create_vehicle_type(
+                 organization.id,
+                 operations_actor(organization.id),
+                 %{
+                   "name" => "One hour",
+                   "max_out_hours" => "1"
+                 }
+               )
 
       assert {:ok, %VehicleType{max_out_minutes: 1440}} =
-               Operations.create_vehicle_type(organization.id, operations_actor(), %{
-                 "name" => "All day",
-                 "max_out_hours" => "24"
-               })
+               Operations.create_vehicle_type(
+                 organization.id,
+                 operations_actor(organization.id),
+                 %{
+                   "name" => "All day",
+                   "max_out_hours" => "24"
+                 }
+               )
 
       assert {:ok, %VehicleType{max_out_minutes: nil}} =
-               Operations.create_vehicle_type(organization.id, operations_actor(), %{
-                 "name" => "No limit"
-               })
+               Operations.create_vehicle_type(
+                 organization.id,
+                 operations_actor(organization.id),
+                 %{
+                   "name" => "No limit"
+                 }
+               )
     end
 
     test "an out-of-range limit is a max_out_hours error and is not rounded into range" do
@@ -80,10 +102,14 @@ defmodule GtfsPlanner.Operations.FleetTest do
 
       for hours <- ["0.999", "24.001", "25", "0"] do
         assert {:error, changeset} =
-                 Operations.create_vehicle_type(organization.id, operations_actor(), %{
-                   "name" => "Out of range #{hours}",
-                   "max_out_hours" => hours
-                 })
+                 Operations.create_vehicle_type(
+                   organization.id,
+                   operations_actor(organization.id),
+                   %{
+                     "name" => "Out of range #{hours}",
+                     "max_out_hours" => hours
+                   }
+                 )
 
         assert %{max_out_hours: [_ | _]} = errors_on(changeset)
         refute Map.has_key?(changeset.changes, :max_out_minutes)
@@ -96,21 +122,27 @@ defmodule GtfsPlanner.Operations.FleetTest do
       vehicle_type_fixture(organization.id, %{"name" => "Bus"})
 
       assert {:error, changeset} =
-               Operations.create_vehicle_type(organization.id, operations_actor(), %{
-                 "name" => "bus"
-               })
+               Operations.create_vehicle_type(
+                 organization.id,
+                 operations_actor(organization.id),
+                 %{
+                   "name" => "bus"
+                 }
+               )
 
       assert %{name: [_ | _]} = errors_on(changeset)
       assert length(Operations.list_vehicle_types(organization.id)) == 1
 
       assert {:ok, %VehicleType{}} =
-               Operations.create_vehicle_type(other.id, operations_actor(), %{"name" => "Bus"})
+               Operations.create_vehicle_type(other.id, operations_actor(other.id), %{
+                 "name" => "Bus"
+               })
     end
 
     test "records the acting user and ignores tenant and actor params" do
       organization = organization_fixture()
       other = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
 
       assert {:ok, vehicle_type} =
                Operations.create_vehicle_type(organization.id, actor, %{
@@ -128,7 +160,7 @@ defmodule GtfsPlanner.Operations.FleetTest do
   describe "update_vehicle_type/4" do
     test "records the acting user and re-stores edited hours as minutes" do
       organization = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
       vehicle_type = vehicle_type_fixture(organization.id, %{"max_out_hours" => "10"})
 
       assert {:ok, updated} =
@@ -148,7 +180,7 @@ defmodule GtfsPlanner.Operations.FleetTest do
       assert {:ok, cleared} =
                Operations.update_vehicle_type(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  vehicle_type.id,
                  %{
                    "max_out_hours" => ""
@@ -162,9 +194,14 @@ defmodule GtfsPlanner.Operations.FleetTest do
         vehicle_type_fixture(organization.id, %{"max_out_hours" => "10"})
 
       assert {:ok, preserved} =
-               Operations.update_vehicle_type(organization.id, operations_actor(), restored.id, %{
-                 "name" => "Renamed"
-               })
+               Operations.update_vehicle_type(
+                 organization.id,
+                 operations_actor(organization.id),
+                 restored.id,
+                 %{
+                   "name" => "Renamed"
+                 }
+               )
 
       assert preserved.name == "Renamed"
       assert preserved.max_out_minutes == 600
@@ -176,16 +213,21 @@ defmodule GtfsPlanner.Operations.FleetTest do
       foreign = vehicle_type_fixture(other.id, %{"name" => "Foreign"})
 
       assert {:error, :not_found} =
-               Operations.update_vehicle_type(organization.id, operations_actor(), foreign.id, %{
-                 "name" => "Hijacked"
-               })
+               Operations.update_vehicle_type(
+                 organization.id,
+                 operations_actor(organization.id),
+                 foreign.id,
+                 %{
+                   "name" => "Hijacked"
+                 }
+               )
 
       assert Repo.get(VehicleType, foreign.id).name == "Foreign"
 
       assert {:error, :not_found} =
                Operations.update_vehicle_type(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  Ecto.UUID.generate(),
                  %{"name" => "Missing"}
                )
@@ -193,7 +235,7 @@ defmodule GtfsPlanner.Operations.FleetTest do
       assert {:error, :not_found} =
                Operations.update_vehicle_type(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  "not-a-uuid",
                  %{"name" => "Missing"}
                )
@@ -220,7 +262,7 @@ defmodule GtfsPlanner.Operations.FleetTest do
       organization = organization_fixture()
 
       assert {:error, changeset} =
-               Operations.create_vehicle(organization.id, operations_actor(), %{})
+               Operations.create_vehicle(organization.id, operations_actor(organization.id), %{})
 
       assert %{vehicle_id: [_ | _]} = errors_on(changeset)
     end
@@ -230,7 +272,7 @@ defmodule GtfsPlanner.Operations.FleetTest do
       existing = vehicle_fixture(organization.id, %{"vehicle_id" => "bus-1"})
 
       assert {:error, changeset} =
-               Operations.create_vehicle(organization.id, operations_actor(), %{
+               Operations.create_vehicle(organization.id, operations_actor(organization.id), %{
                  "vehicle_id" => "bus-1"
                })
 
@@ -246,7 +288,9 @@ defmodule GtfsPlanner.Operations.FleetTest do
       vehicle_fixture(organization.id, %{"vehicle_id" => "bus-1"})
 
       assert {:ok, vehicle} =
-               Operations.create_vehicle(other.id, operations_actor(), %{"vehicle_id" => "bus-1"})
+               Operations.create_vehicle(other.id, operations_actor(other.id), %{
+                 "vehicle_id" => "bus-1"
+               })
 
       assert vehicle.organization_id == other.id
     end
@@ -254,7 +298,7 @@ defmodule GtfsPlanner.Operations.FleetTest do
     test "records the acting user and ignores tenant and actor params" do
       organization = organization_fixture()
       other = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
 
       assert {:ok, vehicle} =
                Operations.create_vehicle(organization.id, actor, %{
@@ -274,7 +318,7 @@ defmodule GtfsPlanner.Operations.FleetTest do
       organization = organization_fixture()
 
       assert {:ok, %Vehicle{vehicle_type_id: nil, garage_id: nil}} =
-               Operations.create_vehicle(organization.id, operations_actor(), %{
+               Operations.create_vehicle(organization.id, operations_actor(organization.id), %{
                  "vehicle_id" => "bus-1",
                  "vehicle_type_id" => "",
                  "garage_id" => ""
@@ -297,7 +341,11 @@ defmodule GtfsPlanner.Operations.FleetTest do
             %{"vehicle_id" => "v6", "vehicle_type_id" => missing_id}
           ] do
         assert {:error, :not_found} =
-                 Operations.create_vehicle(organization.id, operations_actor(), attrs)
+                 Operations.create_vehicle(
+                   organization.id,
+                   operations_actor(organization.id),
+                   attrs
+                 )
       end
 
       assert Operations.list_vehicles(organization.id, %{}) == []
@@ -307,7 +355,7 @@ defmodule GtfsPlanner.Operations.FleetTest do
   describe "update_vehicle/4" do
     test "updates the editable fields and records the acting user" do
       organization = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
       vehicle = vehicle_fixture(organization.id, %{"vehicle_id" => "bus-1"})
 
       assert {:ok, updated} =
@@ -332,33 +380,53 @@ defmodule GtfsPlanner.Operations.FleetTest do
       vehicle = vehicle_fixture(organization.id)
 
       assert {:ok, assigned} =
-               Operations.update_vehicle(organization.id, operations_actor(), vehicle.id, %{
-                 "garage_id" => garage.id
-               })
+               Operations.update_vehicle(
+                 organization.id,
+                 operations_actor(organization.id),
+                 vehicle.id,
+                 %{
+                   "garage_id" => garage.id
+                 }
+               )
 
       assert assigned.garage_id == garage.id
       assert assigned.vehicle_type_id == nil
 
       assert {:ok, typed} =
-               Operations.update_vehicle(organization.id, operations_actor(), vehicle.id, %{
-                 "vehicle_type_id" => vehicle_type.id
-               })
+               Operations.update_vehicle(
+                 organization.id,
+                 operations_actor(organization.id),
+                 vehicle.id,
+                 %{
+                   "vehicle_type_id" => vehicle_type.id
+                 }
+               )
 
       assert typed.vehicle_type_id == vehicle_type.id
       assert typed.garage_id == garage.id
 
       assert {:ok, moved} =
-               Operations.update_vehicle(organization.id, operations_actor(), vehicle.id, %{
-                 "garage_id" => other_garage.id
-               })
+               Operations.update_vehicle(
+                 organization.id,
+                 operations_actor(organization.id),
+                 vehicle.id,
+                 %{
+                   "garage_id" => other_garage.id
+                 }
+               )
 
       assert moved.garage_id == other_garage.id
       assert moved.vehicle_type_id == vehicle_type.id
 
       assert {:ok, cleared} =
-               Operations.update_vehicle(organization.id, operations_actor(), vehicle.id, %{
-                 "vehicle_type_id" => ""
-               })
+               Operations.update_vehicle(
+                 organization.id,
+                 operations_actor(organization.id),
+                 vehicle.id,
+                 %{
+                   "vehicle_type_id" => ""
+                 }
+               )
 
       assert cleared.vehicle_type_id == nil
       assert cleared.garage_id == other_garage.id
@@ -372,27 +440,42 @@ defmodule GtfsPlanner.Operations.FleetTest do
       vehicle = vehicle_fixture(organization.id, %{"vehicle_label" => "Original"})
 
       assert {:error, :not_found} =
-               Operations.update_vehicle(organization.id, operations_actor(), foreign.id, %{
-                 "vehicle_label" => "Hijacked"
-               })
+               Operations.update_vehicle(
+                 organization.id,
+                 operations_actor(organization.id),
+                 foreign.id,
+                 %{
+                   "vehicle_label" => "Hijacked"
+                 }
+               )
 
       assert {:error, :not_found} =
                Operations.update_vehicle(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  Ecto.UUID.generate(),
                  %{"vehicle_label" => "Missing"}
                )
 
       assert {:error, :not_found} =
-               Operations.update_vehicle(organization.id, operations_actor(), "not-a-uuid", %{
-                 "vehicle_label" => "Missing"
-               })
+               Operations.update_vehicle(
+                 organization.id,
+                 operations_actor(organization.id),
+                 "not-a-uuid",
+                 %{
+                   "vehicle_label" => "Missing"
+                 }
+               )
 
       assert {:error, :not_found} =
-               Operations.update_vehicle(organization.id, operations_actor(), vehicle.id, %{
-                 "garage_id" => foreign_garage.id
-               })
+               Operations.update_vehicle(
+                 organization.id,
+                 operations_actor(organization.id),
+                 vehicle.id,
+                 %{
+                   "garage_id" => foreign_garage.id
+                 }
+               )
 
       assert Repo.get(Vehicle, vehicle.id).vehicle_label == "Original"
       assert Repo.get(Vehicle, vehicle.id).garage_id == nil
@@ -505,14 +588,18 @@ defmodule GtfsPlanner.Operations.FleetTest do
     end
   end
 
-  describe "delete_garage/2 in-use guard" do
+  describe "delete_garage/3 in-use guard" do
     test "an in-use garage is refused with a count and every row is left intact" do
       organization = organization_fixture()
       garage = garage_fixture(organization.id)
       vehicle = vehicle_fixture(organization.id, %{"garage_id" => garage.id})
 
       assert {:error, {:in_use, %{vehicles: 1, blocks: 0, routes: 0}}} =
-               Operations.delete_garage(organization.id, garage.id)
+               Operations.delete_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 garage.id
+               )
 
       assert Repo.get(Garage, garage.id)
       assert Repo.get(Vehicle, vehicle.id)
@@ -530,7 +617,13 @@ defmodule GtfsPlanner.Operations.FleetTest do
       organization = organization_fixture()
       garage = garage_fixture(organization.id)
 
-      assert {:ok, %Garage{id: id}} = Operations.delete_garage(organization.id, garage.id)
+      assert {:ok, %Garage{id: id}} =
+               Operations.delete_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 garage.id
+               )
+
       assert id == garage.id
       assert Repo.get(Garage, garage.id) == nil
     end
@@ -540,13 +633,28 @@ defmodule GtfsPlanner.Operations.FleetTest do
       other = organization_fixture()
       foreign = garage_fixture(other.id)
 
-      assert {:error, :not_found} = Operations.delete_garage(organization.id, foreign.id)
+      assert {:error, :not_found} =
+               Operations.delete_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 foreign.id
+               )
+
       assert Repo.get(Garage, foreign.id)
 
       assert {:error, :not_found} =
-               Operations.delete_garage(organization.id, Ecto.UUID.generate())
+               Operations.delete_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 Ecto.UUID.generate()
+               )
 
-      assert {:error, :not_found} = Operations.delete_garage(organization.id, "not-a-uuid")
+      assert {:error, :not_found} =
+               Operations.delete_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 "not-a-uuid"
+               )
     end
 
     test "changing a garage ID keeps the UUID and every vehicle assignment" do
@@ -561,9 +669,14 @@ defmodule GtfsPlanner.Operations.FleetTest do
         })
 
       assert {:ok, updated} =
-               Operations.update_garage(organization.id, operations_actor(), garage.id, %{
-                 "garage_id" => "garage_depot"
-               })
+               Operations.update_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 garage.id,
+                 %{
+                   "garage_id" => "garage_depot"
+                 }
+               )
 
       assert updated.id == garage.id
       assert updated.garage_id == "garage_depot"
@@ -577,7 +690,7 @@ defmodule GtfsPlanner.Operations.FleetTest do
     end
   end
 
-  describe "delete_vehicle_type/2 in-use guard" do
+  describe "delete_vehicle_type/3 in-use guard" do
     test "an in-use type is refused with a count and every row is left intact" do
       organization = organization_fixture()
       garage = garage_fixture(organization.id)
@@ -590,7 +703,11 @@ defmodule GtfsPlanner.Operations.FleetTest do
         })
 
       assert {:error, {:in_use, %{vehicles: 1, blocks: 0, routes: 0}}} =
-               Operations.delete_vehicle_type(organization.id, vehicle_type.id)
+               Operations.delete_vehicle_type(
+                 organization.id,
+                 operations_actor(organization.id),
+                 vehicle_type.id
+               )
 
       assert Repo.get(VehicleType, vehicle_type.id)
       assert Repo.get(Vehicle, vehicle.id).vehicle_type_id == vehicle_type.id
@@ -607,7 +724,11 @@ defmodule GtfsPlanner.Operations.FleetTest do
       vehicle_type = vehicle_type_fixture(organization.id)
 
       assert {:ok, %VehicleType{id: id}} =
-               Operations.delete_vehicle_type(organization.id, vehicle_type.id)
+               Operations.delete_vehicle_type(
+                 organization.id,
+                 operations_actor(organization.id),
+                 vehicle_type.id
+               )
 
       assert id == vehicle_type.id
       assert Repo.get(VehicleType, vehicle_type.id) == nil
@@ -619,14 +740,27 @@ defmodule GtfsPlanner.Operations.FleetTest do
       foreign = vehicle_type_fixture(other.id)
 
       assert {:error, :not_found} =
-               Operations.delete_vehicle_type(organization.id, foreign.id)
+               Operations.delete_vehicle_type(
+                 organization.id,
+                 operations_actor(organization.id),
+                 foreign.id
+               )
 
       assert Repo.get(VehicleType, foreign.id)
 
       assert {:error, :not_found} =
-               Operations.delete_vehicle_type(organization.id, Ecto.UUID.generate())
+               Operations.delete_vehicle_type(
+                 organization.id,
+                 operations_actor(organization.id),
+                 Ecto.UUID.generate()
+               )
 
-      assert {:error, :not_found} = Operations.delete_vehicle_type(organization.id, "not-a-uuid")
+      assert {:error, :not_found} =
+               Operations.delete_vehicle_type(
+                 organization.id,
+                 operations_actor(organization.id),
+                 "not-a-uuid"
+               )
     end
   end
 
@@ -664,6 +798,7 @@ defmodule GtfsPlanner.Operations.FleetTest do
     test "concurrent duplicate inserts yield changeset errors rather than escaping Postgrex errors" do
       Sandbox.unboxed_run(Repo, fn ->
         organization = organization_fixture(%{alias: "race-#{Ecto.UUID.generate()}"})
+        actor = operations_actor(organization.id)
         vehicle_id = "race-#{System.unique_integer([:positive])}"
         owner = self()
 
@@ -673,7 +808,7 @@ defmodule GtfsPlanner.Operations.FleetTest do
               result =
                 Operations.create_vehicle(
                   organization.id,
-                  %{id: Ecto.UUID.generate()},
+                  actor,
                   %{"vehicle_id" => vehicle_id}
                 )
 
@@ -710,6 +845,7 @@ defmodule GtfsPlanner.Operations.FleetTest do
       Sandbox.unboxed_run(Repo, fn ->
         organization = organization_fixture(%{alias: "race-#{Ecto.UUID.generate()}"})
         garage = garage_fixture(organization.id, %{"garage_id" => "garage_race"})
+        actor = operations_actor(organization.id)
         vehicle_id = "race-#{System.unique_integer([:positive])}"
         owner = self()
 
@@ -734,7 +870,7 @@ defmodule GtfsPlanner.Operations.FleetTest do
 
                   Operations.create_vehicle(
                     organization.id,
-                    %{id: Ecto.UUID.generate()},
+                    actor,
                     %{"vehicle_id" => vehicle_id, "garage_id" => garage.id}
                   )
                 end)
@@ -748,7 +884,8 @@ defmodule GtfsPlanner.Operations.FleetTest do
             start_unboxed_task(fn ->
               send(
                 owner,
-                {:delete_result, self(), Operations.delete_garage(organization.id, garage.id)}
+                {:delete_result, self(),
+                 Operations.delete_garage(organization.id, actor, garage.id)}
               )
             end)
 
@@ -817,7 +954,17 @@ defmodule GtfsPlanner.Operations.FleetTest do
     Repo.delete_all(from(v in Vehicle, where: v.organization_id == ^organization_id))
     Repo.delete_all(from(t in VehicleType, where: t.organization_id == ^organization_id))
     Repo.delete_all(from(g in Garage, where: g.organization_id == ^organization_id))
+
+    editor_user_ids =
+      Repo.all(
+        from(m in UserOrgMembership,
+          where: m.organization_id == ^organization_id,
+          select: m.user_id
+        )
+      )
+
     Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
+    Repo.delete_all(from(u in User, where: u.id in ^editor_user_ids))
   end
 end
 

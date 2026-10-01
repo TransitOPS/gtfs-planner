@@ -38,11 +38,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanningQueriesTest do
       organization: organization,
       version: version,
       other_version: gtfs_version_fixture(organization.id),
-      # A version belongs to one organization, so a foreign organization's rows
-      # are written into its own version. The planning-input tables carry no
-      # version lock and are written into *this* version instead, which is the
-      # stronger scope check: a foreign organization's row sitting in our own
-      # version must not surface either.
+      # A version belongs to one organization, and the planning-input tables carry
+      # an ownership constraint on it, so a foreign organization's rows are written
+      # into its own version.
       foreign: foreign,
       foreign_version: gtfs_version_fixture(foreign.id)
     }
@@ -97,7 +95,13 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanningQueriesTest do
 
   describe "planning_rows/3" do
     test "returns the four kinds of this organization and version, attributes only for the given services",
-         %{organization: o, version: v, foreign: foreign, other_version: other} do
+         %{
+           organization: o,
+           version: v,
+           foreign: foreign,
+           foreign_version: fv,
+           other_version: other
+         } do
       garage = garage_fixture(o.id)
 
       own_route = route_operating_setting_fixture(o.id, v.id, %{route_id: "R1"})
@@ -123,10 +127,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanningQueriesTest do
 
       # The same four kinds, out of scope: a foreign organization and a second
       # version of this organization.
-      route_operating_setting_fixture(foreign.id, v.id, %{route_id: "R1"})
-      block_attribute_fixture(foreign.id, v.id, %{service_id: "WK", block_id: "101"})
-      deadhead_time_fixture(foreign.id, v.id, %{from_ref: {:stop, "S1"}, to_ref: {:stop, "S2"}})
-      relief_point_fixture(foreign.id, v.id, %{stop_id: "S9"})
+      route_operating_setting_fixture(foreign.id, fv.id, %{route_id: "R1"})
+      block_attribute_fixture(foreign.id, fv.id, %{service_id: "WK", block_id: "101"})
+      deadhead_time_fixture(foreign.id, fv.id, %{from_ref: {:stop, "S1"}, to_ref: {:stop, "S2"}})
+      relief_point_fixture(foreign.id, fv.id, %{stop_id: "S9"})
 
       route_operating_setting_fixture(o.id, other.id, %{route_id: "R1"})
       block_attribute_fixture(o.id, other.id, %{service_id: "WK", block_id: "101"})
@@ -237,9 +241,15 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanningQueriesTest do
     end
 
     test "a shape with no points, another version's shape and a foreign organization's shape are absent",
-         %{organization: o, version: v, foreign: foreign, other_version: other} do
+         %{
+           organization: o,
+           version: v,
+           foreign: foreign,
+           foreign_version: fv,
+           other_version: other
+         } do
       shape_point!(o, v, "SH-A", 1, "42.0000", "-71.0000")
-      shape_point!(foreign, v, "SH-FOREIGN", 1, "42.0000", "-71.0000")
+      shape_point!(foreign, fv, "SH-FOREIGN", 1, "42.0000", "-71.0000")
       shape_point!(o, other, "SH-OTHER", 1, "42.0000", "-71.0000")
 
       assert Queries.shape_points(o.id, v.id, ["SH-A", "SH-EMPTY", "SH-FOREIGN", "SH-OTHER"]) ==
@@ -428,9 +438,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanningQueriesTest do
   # --- helpers ---------------------------------------------------------------
 
   # The second argument is always a version of the organization given as the
-  # first: `Gtfs.create_trip/1` and `Gtfs.create_stop/1` take the version's
-  # org-scoped share lock, so a foreign organization's row cannot be written into
-  # our version at all.
+  # first, so a foreign organization's row is never written into our version.
   defp trip!(organization, version, trip_id, attrs \\ %{}) do
     trip_fixture(
       organization.id,

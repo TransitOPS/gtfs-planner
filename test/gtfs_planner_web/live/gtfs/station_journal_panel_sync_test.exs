@@ -69,7 +69,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
       })
 
     {:ok, pathway} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
         pathway_id: "JOURNAL_PATHWAY",
@@ -723,7 +723,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelSyncTest do
       })
 
     {:ok, stop_level} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         organization_id: organization_id,
         gtfs_version_id: gtfs_version_id,
         stop_id: station.id,

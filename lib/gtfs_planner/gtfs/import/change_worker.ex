@@ -35,7 +35,12 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorker do
       close(run, generation, token, "compute_failed")
   end
 
-  @doc "Applies approved or previously failed decisions through fenced per-row transactions."
+  @doc """
+  Applies approved or previously failed decisions through fenced per-row transactions.
+
+  Each transaction reauthorizes the run's actor. When the actor has lost editor access the
+  worker applies nothing further and closes the run with failure code `"forbidden"`.
+  """
   @spec apply(struct(), pos_integer(), Ecto.UUID.t(), AuditContext.t(), String.t()) :: :ok
   def apply(run, generation, token, %AuditContext{} = audit_context, _topic) do
     apply_with_options(run, generation, token, audit_context, [])
@@ -49,13 +54,13 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorker do
   end
 
   defp apply_with_options(run, generation, token, audit_context, opts) do
-    _outcome =
+    outcome =
       run.organization_id
       |> ChangeRuns.applyable_decisions(run.id)
       |> order_for_apply()
       |> Enum.reduce_while(:ok, &apply_one(&1, &2, run, generation, token, audit_context, opts))
 
-    _ = ChangeRuns.finish_apply(run.organization_id, run.id, generation, token)
+    _ = close_apply(outcome, run, generation, token)
     :ok
   rescue
     error ->
@@ -99,6 +104,11 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorker do
   defp continue_after_apply({:error, :lease_lost}, _run, _decision, _generation, _token),
     do: {:halt, :lease_lost}
 
+  # The run's actor lost editor access. Later decisions stay approved and unapplied, and the
+  # earlier decisions with their history are kept.
+  defp continue_after_apply({:error, :forbidden}, _run, _decision, _generation, _token),
+    do: {:halt, :forbidden}
+
   defp continue_after_apply({:error, reason}, run, decision, generation, token) do
     run.organization_id
     |> ChangeRuns.mark_apply_failure(run.id, decision.decision_id, generation, token, reason)
@@ -107,6 +117,12 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorker do
 
   defp continue_after_failure({:ok, _failed}), do: {:cont, :ok}
   defp continue_after_failure({:error, _reason}), do: {:halt, :lease_lost}
+
+  defp close_apply(:forbidden, run, generation, token),
+    do: ChangeRuns.fail_apply(run.organization_id, run.id, generation, token, "forbidden")
+
+  defp close_apply(_outcome, run, generation, token),
+    do: ChangeRuns.finish_apply(run.organization_id, run.id, generation, token)
 
   defp close(run, generation, token, code) do
     _ = ChangeRuns.fail_compute(run.organization_id, run.id, generation, token, code)

@@ -44,6 +44,7 @@ defmodule GtfsPlanner.Gtfs.Transfers.UpdateTest do
     version = gtfs_version_fixture(organization.id)
     TransfersFixtures.transfer_network_fixture(organization.id, version.id)
     actor = user_fixture()
+    organization_membership_fixture(actor, organization)
 
     %{
       organization: organization,

@@ -17,9 +17,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Alignments
+  alias GtfsPlanner.Gtfs.Alignments.Materializer
+  alias GtfsPlanner.Gtfs.MapLineFiles
   alias Phoenix.Component
 
   require Phoenix.LiveView
+  import Phoenix.LiveView, only: [consume_uploaded_entry: 3]
 
   @doc """
   Loads the alignment editor model when the Alignment task shows a pattern
@@ -124,9 +127,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     |> Component.assign(:alignment_discard_dialog, nil)
     |> Component.assign(:alignment_delete_dialog, nil)
     |> Component.assign(:alignment_simplify_dialog, nil)
-    |> Component.assign(:alignment_import_dialog, nil)
+    |> Component.assign(:alignment_import_card, nil)
     |> Component.assign(:alignment_generate_dialog, nil)
     |> Component.assign(:bulk_dialog, nil)
+    |> Component.assign(:map_line_file, nil)
     |> Component.assign(:alignment_pending, nil)
   end
 
@@ -405,72 +409,412 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   def action_notice(socket, _params), do: socket
 
   @doc """
-  Opens the import review dialog for a pattern on imported shapes (step 29).
+  Opens the imported-line card for a pattern on imported shapes (step 32).
 
-  Viewers and patterns without imported shapes leave the socket
-  unchanged. The dialog pre-selects the first shape (shapes arrive sorted
-  by ID); divergent choices update it through `import_choice/2`.
-  Conversion itself is client-only (CR-9): confirming only pushes
-  `alignment:convert` for the hook to draft, never writes.
+  Viewers and patterns without imported shapes leave the socket unchanged.
+  The card shows the first shape (shapes arrive sorted by ID) and asks the
+  hook to preview and measure it: the shape's own points go out as
+  `alignment:file_line`, exactly as a line picked from a path file does, so
+  one fit report and one review serve both (INV-5). Nothing is measured,
+  drafted or written here (CR-9).
   """
   def open_import(socket, _params) do
-    with true <- editable?(socket),
-         %{alignment: %{imported_shapes: [%{shape_id: first} | _]}} <- socket.assigns do
-      Component.assign(socket, :alignment_import_dialog, %{shape_id: first})
+    shapes = imported_shapes(socket)
+
+    if editable?(socket) and shapes != [] do
+      socket
+      |> Component.assign(:alignment_import_card, %{shape_id: hd(shapes).shape_id})
+      |> Component.assign(:file_fit, nil)
+      |> push_imported_line(hd(shapes))
     else
-      _ -> socket
+      socket
     end
   end
 
   @doc """
-  Records the divergent shape choice from the import dialog form (step 29).
+  Records the divergent shape choice from the imported-line card (step 32).
 
   Read-only like `save_choice/2`: only a shape the loaded model actually
-  references is kept, so a stale form never converts a foreign shape.
+  references is kept, so a stale form never converts or measures a foreign
+  shape. The chosen shape is measured in its own right, so the fit the card
+  shows is always the one for the shape on screen.
   """
   def import_choice(socket, params) when is_map(params) do
-    case {editable?(socket), socket.assigns[:alignment_import_dialog], socket.assigns[:alignment]} do
-      {true, %{shape_id: _}, %{imported_shapes: shapes}} when is_list(shapes) ->
-        wanted = import_choice_param(params)
+    shapes = imported_shapes(socket)
+    wanted = import_choice_param(params)
 
-        if wanted in Enum.map(shapes, & &1.shape_id) do
-          Component.assign(socket, :alignment_import_dialog, %{shape_id: wanted})
-        else
-          socket
-        end
-
-      _ ->
-        socket
+    if editable?(socket) and wanted in Enum.map(shapes, & &1.shape_id) do
+      case Enum.find(shapes, &(&1.shape_id == wanted)) do
+        nil -> socket
+        shape -> show_imported_shape(socket, shape)
+      end
+    else
+      socket
     end
   end
 
   def import_choice(socket, _params), do: socket
 
   @doc """
-  Confirms the import dialog: closes it and pushes `alignment:convert`
-  with the chosen shape so the hook drafts every section (CR-5, CR-9).
-  A closed dialog or an unknown shape only closes, never pushes.
+  Creates the editable draft from the shape the card shows (step 32).
+
+  The card closes, the card's preview goes with it, and `alignment:convert`
+  pushes the chosen shape so the hook drafts every section (CR-5, CR-9).
+  Nothing is written until that draft is saved. A closed card or an unknown
+  shape only closes, never pushes.
   """
   def confirm_import(socket, _params) do
-    case {editable?(socket), socket.assigns[:alignment_import_dialog], socket.assigns[:alignment]} do
-      {true, %{shape_id: wanted}, %{imported_shapes: shapes}} when is_list(shapes) ->
-        socket =
-          socket
-          |> Component.assign(:alignment_import_dialog, nil)
-          |> Component.assign(
-            :status_message,
-            "Editable draft created. Original shape retained until you save."
-          )
+    shapes = imported_shapes(socket)
+    shape_id = socket.assigns[:alignment_import_card] |> card_shape_id()
 
-        if wanted in Enum.map(shapes, & &1.shape_id) do
-          Phoenix.LiveView.push_event(socket, "alignment:convert", %{shape_id: wanted})
-        else
-          socket
-        end
+    socket =
+      socket
+      |> close_import_card()
+      |> Component.assign(
+        :status_message,
+        "Editable draft created. Original shape retained until you save."
+      )
 
-      _ ->
-        Component.assign(socket, :alignment_import_dialog, nil)
+    if editable?(socket) and shape_id in Enum.map(shapes, & &1.shape_id) do
+      socket
+      |> Phoenix.LiveView.push_event("alignment:clear_file_line", %{})
+      |> Phoenix.LiveView.push_event("alignment:convert", %{shape_id: shape_id})
+    else
+      socket
     end
+  end
+
+  @doc """
+  Closes the imported-line card and drops the fit and preview it described.
+
+  The preview belongs to the shape the card was reviewing, so it leaves with
+  the card; the hook's own imported-shape reference layer stays, because the
+  pattern is still on that shape.
+  """
+  def close_import(socket, _params) do
+    close_import_card(socket)
+  end
+
+  defp show_imported_shape(socket, shape) do
+    socket
+    |> Component.assign(:alignment_import_card, %{shape_id: shape.shape_id})
+    |> Component.assign(:file_fit, nil)
+    |> push_imported_line(shape)
+  end
+
+  defp close_import_card(socket) do
+    socket
+    |> Component.assign(:alignment_import_card, nil)
+    |> Component.assign(:file_fit, nil)
+    |> Phoenix.LiveView.push_event("alignment:clear_file_line", %{})
+  end
+
+  # The hook's preview and fit report are the file line's, so an imported
+  # shape is measured the same way. The push carries the [lon, lat] chain the
+  # hook measures from: the shape's own distances stay on the server, where
+  # the conversion reads them (INV-5).
+  defp push_imported_line(socket, %{shape_id: shape_id, points: points}) do
+    socket
+    |> Component.assign(
+      :status_message,
+      "Checking imported shape #{shape_id} against this pattern's stops."
+    )
+    |> Phoenix.LiveView.push_event("alignment:file_line", %{
+      points: Enum.map(points || [], fn [lon, lat | _rest] -> [lon, lat] end),
+      name: shape_id
+    })
+  end
+
+  defp imported_shapes(%{assigns: %{alignment: %{imported_shapes: shapes}}})
+       when is_list(shapes),
+       do: shapes
+
+  defp imported_shapes(_socket), do: []
+
+  defp card_shape_id(%{shape_id: shape_id}), do: shape_id
+  defp card_shape_id(_card), do: nil
+
+  # --- the map-line path file -----------------------------------------------
+  #
+  # The file is read through `MapLineFiles.parse/2`, the one door for an
+  # uploaded map file (AC-22), and the answer is only rendered or pushed: this
+  # module never writes and never converts a line into a draft (CR-9).
+
+  @doc """
+  Opens the "Import a path file" panel in place of the section list (AC-22).
+
+  An editor with a loaded model gets the choose step; a viewer or a missing
+  model leaves the socket unchanged. Opening it again is "Choose another
+  file": the previous file, its lines and any message are dropped, and
+  whatever the hook already drew stays drawn.
+  """
+  def open_file_import(socket, _params) do
+    if editable?(socket) and not is_nil(socket.assigns[:alignment]) do
+      socket
+      |> Component.assign(:map_line_file, %{step: :choose})
+      # A previous line's fit described a line that is no longer being
+      # checked, so choosing another file drops it, and the imported-line
+      # card shares that review.
+      |> Component.assign(:file_fit, nil)
+      |> Component.assign(:alignment_import_card, nil)
+    else
+      socket
+    end
+  end
+
+  @doc """
+  Leaves the path-file panel, dropping the line it was checking with it.
+
+  The fit described one file line, so it goes when the panel does: a later
+  report describes a line nobody is looking at any more. The hook's own
+  preview is left alone — closing the panel is not a reason to redraw the map
+  (step 30's `open_file_import/2` keeps the same promise).
+  """
+  def close_file_import(socket) do
+    socket
+    |> Component.assign(:map_line_file, nil)
+    |> Component.assign(:file_fit, nil)
+  end
+
+  @doc """
+  Reads one uploaded path file and shows what it offers (AC-22, AC-23).
+
+  The upload's own limits (`accept`, one entry, 10 MB) refuse a file before
+  it reaches this function, so the parser only ever sees a file the client
+  accepted. One line skips the picker and pushes `alignment:file_line` at
+  once; several lines open the picker; a file problem keeps the panel open on
+  its own message. A socket that is not editable, or a read that fails, only
+  leaves the panel where it is.
+
+  `consume_uploaded_entry/3` is the single-entry form of the LiveView's
+  `consume_uploaded_entries/3`: this upload carries one entry, so there is
+  nothing to iterate.
+  """
+  def consume_file(socket, entry) do
+    if editable?(socket) and not is_nil(socket.assigns[:alignment]) do
+      file = %{name: entry.client_name, size: entry.client_size}
+
+      case read_entry(socket, entry) do
+        {:ok, bytes} -> put_parsed_file(socket, file, MapLineFiles.parse(bytes, file.name))
+        :error -> put_parsed_file(socket, file, {:error, :unreadable})
+      end
+    else
+      socket
+    end
+  end
+
+  @doc """
+  Takes the chosen line's path to the hook (AC-22).
+
+  The pick is a form the panel renders, so the line index arrives as a
+  string: an index this file does not have leaves the panel as it is and
+  nothing is pushed. The push carries the line's own points; the fit against
+  this pattern's stops is the hook's work.
+  """
+  def choose_file_line(socket, %{"line" => wanted}) when is_binary(wanted) do
+    with {index, ""} <- Integer.parse(wanted),
+         %{step: :pick, lines: lines} <- socket.assigns[:map_line_file] || %{},
+         {:ok, line} <- Enum.fetch(lines, index) do
+      push_file_line(socket, line)
+    else
+      _other -> socket
+    end
+  end
+
+  def choose_file_line(socket, _params), do: socket
+
+  @fit_directions ~w(same reversed unknown)
+
+  @doc """
+  Takes the hook's fit of the file line for this pattern (AC-24, step 30).
+
+  The hook measures the line it was given against the model's own visits and
+  reports what it found; nothing here is measured, drafted or saved (CR-9).
+  The validated fit is stored in `@file_fit`, which is the fit review's data
+  contract and the assign step 31 renders; a forged or misshapen push leaves
+  the previous fit in place rather than describing a line the editor never
+  picked.
+  """
+  def fit_result(socket, params) when is_map(params) do
+    case build_fit_result(params) do
+      {:ok, fit} ->
+        # The panel takes focus when the report lands: the answer arrived
+        # without a click of the editor's own, so the headline is where their
+        # attention belongs.
+        socket
+        |> Component.assign(:file_fit, fit)
+        |> Phoenix.LiveView.push_event("alignment:file_fit", %{})
+
+      :error ->
+        socket
+    end
+  end
+
+  def fit_result(socket, _params), do: socket
+
+  @doc """
+  Asks the hook to report the same line the other way round (AC-24).
+
+  Reversing is geometry, so it is the hook's work exactly like the fit itself
+  (INV-5): the server asks and the hook answers with a fresh
+  `alignment_fit_result` that this panel renders. There is nothing to reverse
+  without a reported line, so a forged click pushes nothing.
+  """
+  def reverse_file_line(socket, _params) do
+    if editable?(socket) and not is_nil(socket.assigns[:file_fit]) do
+      Phoenix.LiveView.push_event(socket, "alignment:reverse_file_line", %{})
+    else
+      socket
+    end
+  end
+
+  @doc """
+  Asks the hook to draft the reviewed file line, then closes the panel (AC-25).
+
+  The draft is the hook's, from the same conversion the imported-shape path
+  uses; the panel closes so the section list and its save bar take over, and
+  nothing is written until that save (CR-9). A reversed fit is refused here
+  as well as in the panel, because drafting it would measure every section
+  against the opposite run. An `"unknown"` direction — the loop case where both
+  end visits land in the same place on the line — cannot say, and is never
+  blocked.
+  """
+  def create_file_draft(socket, _params) do
+    if editable?(socket) and draftable_fit?(socket.assigns[:file_fit]) do
+      socket
+      |> Component.assign(:file_fit, nil)
+      |> Component.assign(:map_line_file, nil)
+      |> Component.assign(
+        :status_message,
+        "Editable draft created. Original shape retained until you save."
+      )
+      |> Phoenix.LiveView.push_event("alignment:file_draft", %{})
+    else
+      socket
+    end
+  end
+
+  defp draftable_fit?(%{direction: "reversed"}), do: false
+
+  defp draftable_fit?(%{direction: direction}) when direction in @fit_directions, do: true
+
+  defp draftable_fit?(_other), do: false
+
+  defp build_fit_result(params) do
+    with {:ok, direction} <- fetch_fit_direction(params),
+         {:ok, far} <- fetch_fit_far(params),
+         {:ok, within} <- fetch_fit_count(params, "within"),
+         {:ok, visit_count} <- fetch_fit_count(params, "visit_count"),
+         true <- length(far) + within == visit_count do
+      {:ok,
+       %{
+         direction: direction,
+         reaches_start: params["reaches_start"] == true,
+         reaches_end: params["reaches_end"] == true,
+         far: far,
+         within: within,
+         visit_count: visit_count,
+         length_m: length_m(params["length_m"])
+       }}
+    else
+      _other -> :error
+    end
+  end
+
+  defp fetch_fit_direction(params) do
+    case params["direction"] do
+      direction when direction in @fit_directions -> {:ok, direction}
+      _other -> :error
+    end
+  end
+
+  defp fetch_fit_far(params) do
+    case params["far"] do
+      far when is_list(far) -> with_far(far, [])
+      _other -> :error
+    end
+  end
+
+  defp with_far([], acc), do: {:ok, Enum.reverse(acc)}
+
+  defp with_far([entry | rest], acc) when is_map(entry) do
+    with {:ok, position} <- fetch_fit_count(entry, "position"),
+         true <- entry["stop_id"] == nil or is_binary(entry["stop_id"]),
+         true <- entry["distance_m"] == nil or is_number(entry["distance_m"]) do
+      with_far(rest, [
+        %{position: position, stop_id: entry["stop_id"], distance_m: entry["distance_m"]} | acc
+      ])
+    else
+      _other -> :error
+    end
+  end
+
+  defp with_far(_other, _acc), do: :error
+
+  defp fetch_fit_count(params, key) do
+    case params[key] do
+      count when is_integer(count) and count >= 0 -> {:ok, count}
+      _other -> :error
+    end
+  end
+
+  defp length_m(value) when is_number(value), do: value
+  defp length_m(_value), do: nil
+
+  defp read_entry(socket, entry) do
+    # The callback's own `{:ok, value}` layer is the signature consuming
+    # requires, and what comes back is that value, so `File.read/1`'s tuple is
+    # the read's own answer.
+    case consume_uploaded_entry(socket, entry, fn %{path: path} -> {:ok, File.read(path)} end) do
+      {:ok, bytes} when is_binary(bytes) -> {:ok, bytes}
+      _other -> :error
+    end
+  end
+
+  # One line needs no choice, so it goes straight to the fit. Several lines
+  # are offered; pieces that did not meet end to end are separate lines here,
+  # which is what a gap beyond the parser's join tolerance means.
+  defp put_parsed_file(socket, _file, {:ok, [only_line]}) do
+    line = file_line(only_line)
+    push_file_line(socket, line)
+  end
+
+  defp put_parsed_file(socket, file, {:ok, lines}) when is_list(lines) and lines != [] do
+    Component.assign(
+      socket,
+      :map_line_file,
+      Map.merge(file, %{step: :pick, lines: Enum.map(lines, &file_line/1)})
+    )
+  end
+
+  defp put_parsed_file(socket, file, {:error, reason}) do
+    Component.assign(socket, :map_line_file, Map.merge(file, %{step: :error, error: reason}))
+  end
+
+  # `MapLineFiles.parse/2` answers `{:error, :empty}` rather than `{:ok, []}`,
+  # so a list-shaped answer with no line in it is a malformed one.
+  defp put_parsed_file(socket, file, _other) do
+    Component.assign(socket, :map_line_file, Map.merge(file, %{step: :error, error: :unreadable}))
+  end
+
+  # The pick renders length and point count beside the name, and says when a
+  # line is several file pieces that met end to end, as Google My Maps splits
+  # a long route into groups of ten stops.
+  defp file_line(line) do
+    %{
+      name: line.name,
+      points: line.points,
+      point_count: length(line.points),
+      length_m: Materializer.length_m(line.points),
+      joined_from: line.joined_from
+    }
+  end
+
+  defp push_file_line(socket, line) do
+    socket
+    |> Component.assign(:map_line_file, nil)
+    |> Component.assign(:status_message, "Checking the file line against this pattern's stops.")
+    |> Phoenix.LiveView.push_event("alignment:file_line", %{points: line.points, name: line.name})
   end
 
   defp import_choice_param(%{"import_shape" => wanted}) when is_binary(wanted), do: wanted
@@ -1587,12 +1931,32 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     pattern = socket.assigns.pattern
 
     case Gtfs.apply_alignment_save(pattern.id, draft, choices, fingerprint, audit) do
-      {:ok, result} -> handle_save_result(socket, result)
-      {:error, {:conflict, current}} -> handle_apply_conflict(socket, draft, current)
-      {:error, :stale_review} -> save_notice(assign_applying(socket, false), :stale_review)
-      {:error, {:blocked, blockers}} -> handle_apply_blocked(socket, draft, blockers)
-      {:error, :busy} -> save_notice(assign_applying(socket, false), :busy)
-      {:error, _reason} -> save_notice(assign_applying(socket, false), :save_error)
+      {:ok, result} ->
+        handle_save_result(socket, result)
+
+      {:error, {:conflict, current}} ->
+        handle_apply_conflict(socket, draft, current)
+
+      {:error, :stale_review} ->
+        save_notice(assign_applying(socket, false), :stale_review)
+
+      {:error, {:blocked, blockers}} ->
+        handle_apply_blocked(socket, draft, blockers)
+
+      {:error, :busy} ->
+        save_notice(assign_applying(socket, false), :busy)
+
+      {:error, :forbidden} ->
+        socket
+        |> assign_applying(false)
+        |> Component.assign(:editor_revoked?, true)
+        |> save_notice(
+          {:error,
+           "You no longer have editor access to this organization. Your draft is still here."}
+        )
+
+      {:error, _reason} ->
+        save_notice(assign_applying(socket, false), :save_error)
     end
   end
 
@@ -1625,7 +1989,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     |> Component.assign(:alignment_pending, nil)
     |> Component.assign(:alignment_forced_local, [])
     |> Component.assign(:alignment_save_notice, nil)
-    |> Component.assign(:status_message, "Alignment saved. #{trips} #{trip_noun(trips)} updated.")
+    |> Component.assign(:status_message, "Map line saved. #{trips} #{trip_noun(trips)} updated.")
     |> clear_draft_mirror()
     |> reload_alignment_model()
   end
@@ -1775,7 +2139,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
          |> Component.assign(:alignment_discard_dialog, nil)
          |> Component.assign(:alignment_delete_dialog, nil)
          |> Component.assign(:alignment_simplify_dialog, nil)
-         |> Component.assign(:alignment_import_dialog, nil)
+         |> Component.assign(:alignment_import_card, nil)
          |> Component.assign(:alignment_generate_dialog, nil)
          |> Component.assign(:alignment_generate_notice, nil)
          |> Component.assign(:alignment_generation, nil)

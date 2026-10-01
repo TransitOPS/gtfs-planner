@@ -96,7 +96,7 @@ station_attrs = %{
 station =
   case Gtfs.get_stop_by_stop_id(org.id, version.id, "32095") do
     nil ->
-      {:ok, s} = Gtfs.create_stop(station_attrs)
+      {:ok, s} = Gtfs.import_create_stop(station_attrs)
       s
 
     existing ->
@@ -117,7 +117,7 @@ levels =
            ) do
         nil ->
           {:ok, l} =
-            Gtfs.create_level(%{
+            Gtfs.apply_import_entity(:add, :level, nil, %{
               level_id: cfg.level_id,
               level_name: cfg.level_name,
               level_index: cfg.level_index,
@@ -173,7 +173,7 @@ stop_uuid_map =
             case Gtfs.get_stop_by_stop_id(org.id, version.id, stop_id) do
               nil ->
                 {:ok, s} =
-                  Gtfs.create_stop(%{
+                  Gtfs.import_create_stop(%{
                     stop_id: stop_id,
                     stop_name: name,
                     location_type: location_type,
@@ -239,7 +239,7 @@ pathway_count =
                      ) do
                   nil ->
                     {:ok, _} =
-                      Gtfs.create_pathway(%{
+                      Gtfs.apply_import_entity(:add, :pathway, nil, %{
                         pathway_id: pw_id,
                         pathway_mode: pathway_mode,
                         is_bidirectional: true,

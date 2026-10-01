@@ -13,7 +13,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScaleTest do
   - `list_stop_points/2` returns all 10,000 located points and the test prints
     the `Jason.encode!/1` byte size of that result.
   - `matching_stop_ids(filter: :all)` returns all 10,000 IDs.
-  - `preview_assignment/4` and `apply_assignment/3` of the whole match to one
+  - `preview_assignment/4` and `apply_assignment/2` of the whole match to one
     zone finish within the budget, and apply reports 10,000 minus that zone's
     prior count.
   - Every timed call must finish under the 15,000 ms Repo timeout, which is the
@@ -38,6 +38,8 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScaleTest do
 
   @moduletag timeout: 120_000
 
+  alias GtfsPlanner.AccountsFixtures
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.OrganizationsFixtures
@@ -53,13 +55,22 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScaleTest do
   setup do
     organization = OrganizationsFixtures.organization_fixture()
     version = VersionsFixtures.gtfs_version_fixture(organization.id)
+    actor = AccountsFixtures.editor_fixture(organization)
+
+    audit = %AuditContext{
+      organization_id: organization.id,
+      gtfs_version_id: version.id,
+      actor_id: actor.id,
+      actor_email: actor.email
+    }
 
     insert_scale_stops(organization, version)
 
-    %{organization: organization, version: version}
+    %{organization: organization, version: version, audit: audit}
   end
 
   test "times inventory, map points, matches, preview and select-all apply over 10,000 stops", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -123,14 +134,14 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScaleTest do
 
     {apply_us, apply_result} =
       timed(fn ->
-        FareZones.apply_assignment(organization_id, gtfs_version_id, review.changes)
+        FareZones.apply_assignment(audit, review.changes)
       end)
 
     assert {:ok, %{applied: applied}} = apply_result
     assert length(applied) == @stop_count - prior_count
 
     report("apply_assignment", apply_us, "#{length(applied)} applied")
-    assert_within_budget("apply_assignment/3", apply_us)
+    assert_within_budget("apply_assignment/2", apply_us)
 
     matching =
       FareZones.matching_stop_ids(organization_id, gtfs_version_id, filter: {:zone, target})

@@ -23,11 +23,16 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
   @async_timeout 5_000
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.Accounts.User
+  alias GtfsPlanner.Accounts.UserOrgMembership
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.BlockAttribute
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Blocking.DeadheadTimes
   alias GtfsPlanner.Gtfs.DeadheadTime
+  alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RouteOperatingSetting
+  alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Operations.Garage
   alias GtfsPlanner.Operations.Vehicle
@@ -49,7 +54,7 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
     %{organization: organization, version: version}
   end
 
-  describe "delete_garage/2 with a block or route reference" do
+  describe "delete_garage/3 with a block or route reference" do
     test "a garage a block and a route name is refused, named and left intact", ctx do
       %{organization: organization, version: version} = ctx
       garage = garage_fixture(organization.id)
@@ -66,7 +71,11 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
       })
 
       assert {:error, {:in_use, %{vehicles: 0, blocks: 1, routes: 1}}} =
-               Operations.delete_garage(organization.id, garage.id)
+               Operations.delete_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 garage.id
+               )
 
       assert Repo.get(Garage, garage.id)
       assert Repo.aggregate(BlockAttribute, :count, :id) == 1
@@ -86,7 +95,11 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
       end
 
       assert {:error, {:in_use, %{vehicles: 0, blocks: 1, routes: 0}}} =
-               Operations.delete_garage(organization.id, garage.id)
+               Operations.delete_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 garage.id
+               )
     end
 
     test "a garage with vehicles keeps the existing count shape", ctx do
@@ -95,14 +108,18 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
       vehicle = vehicle_fixture(organization.id, %{"garage_id" => garage.id})
 
       assert {:error, {:in_use, %{vehicles: 1, blocks: 0, routes: 0}}} =
-               Operations.delete_garage(organization.id, garage.id)
+               Operations.delete_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 garage.id
+               )
 
       assert Repo.get(Garage, garage.id)
       assert Repo.get(Vehicle, vehicle.id)
     end
   end
 
-  describe "delete_garage/2 driving times" do
+  describe "delete_garage/3 driving times" do
     test "an unreferenced garage is deleted with the rows naming it as either ref", ctx do
       %{organization: organization, version: version} = ctx
       garage = garage_fixture(organization.id)
@@ -130,7 +147,12 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
           minutes: 3
         })
 
-      assert {:ok, %Garage{}} = Operations.delete_garage(organization.id, garage.id)
+      assert {:ok, %Garage{}} =
+               Operations.delete_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 garage.id
+               )
 
       assert Repo.get(DeadheadTime, deleted_from.id) == nil
       assert Repo.get(DeadheadTime, deleted_to.id) == nil
@@ -150,7 +172,13 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
           minutes: 4
         })
 
-      assert {:ok, %Garage{}} = Operations.delete_garage(organization.id, garage.id)
+      assert {:ok, %Garage{}} =
+               Operations.delete_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 garage.id
+               )
+
       assert Repo.get(DeadheadTime, kept.id)
     end
 
@@ -172,7 +200,11 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
       })
 
       assert {:error, {:in_use, %{vehicles: 0, blocks: 1, routes: 0}}} =
-               Operations.delete_garage(organization.id, garage.id)
+               Operations.delete_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 garage.id
+               )
 
       assert Repo.get(DeadheadTime, kept.id)
       assert Repo.get(Garage, garage.id)
@@ -181,9 +213,17 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
     test "a garage used only as the default garage is deleted and the setting becomes nil", ctx do
       %{organization: organization, version: version} = ctx
       garage = garage_fixture(organization.id)
+      actor = operations_actor(organization.id)
+
+      audit = %AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        actor_id: actor.id,
+        actor_email: actor.email
+      }
 
       {:ok, _setting} =
-        Blocking.update_settings(organization.id, version.id, %{
+        Blocking.update_settings(audit, %{
           min_layover_minutes: 5,
           pull_out_buffer_minutes: 0,
           interlining: :any,
@@ -192,14 +232,19 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
           default_garage_id: garage.id
         })
 
-      assert {:ok, %Garage{}} = Operations.delete_garage(organization.id, garage.id)
+      assert {:ok, %Garage{}} =
+               Operations.delete_garage(
+                 organization.id,
+                 actor,
+                 garage.id
+               )
 
       assert Blocking.get_settings(organization.id, version.id).default_garage_id ==
                nil
     end
   end
 
-  describe "delete_vehicle_type/2 with a block or route reference" do
+  describe "delete_vehicle_type/3 with a block or route reference" do
     test "a type a route requires is refused and named", ctx do
       %{organization: organization, version: version} = ctx
       vehicle_type = vehicle_type_fixture(organization.id)
@@ -210,7 +255,11 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
       })
 
       assert {:error, {:in_use, %{vehicles: 0, blocks: 0, routes: 1}}} =
-               Operations.delete_vehicle_type(organization.id, vehicle_type.id)
+               Operations.delete_vehicle_type(
+                 organization.id,
+                 operations_actor(organization.id),
+                 vehicle_type.id
+               )
 
       assert Repo.get(VehicleType, vehicle_type.id)
       assert Repo.aggregate(RouteOperatingSetting, :count, :id) == 1
@@ -227,7 +276,11 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
       })
 
       assert {:error, {:in_use, %{vehicles: 0, blocks: 1, routes: 0}}} =
-               Operations.delete_vehicle_type(organization.id, vehicle_type.id)
+               Operations.delete_vehicle_type(
+                 organization.id,
+                 operations_actor(organization.id),
+                 vehicle_type.id
+               )
 
       assert Repo.get(VehicleType, vehicle_type.id)
     end
@@ -250,7 +303,12 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
       assert Operations.garage_in_use_counts(organization.id, garage.id) ==
                %{vehicles: 0, blocks: 0, routes: 0}
 
-      assert {:ok, %Garage{}} = Operations.delete_garage(organization.id, garage.id)
+      assert {:ok, %Garage{}} =
+               Operations.delete_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 garage.id
+               )
 
       assert Repo.get(Garage, garage.id) == nil
 
@@ -280,7 +338,11 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
                %{vehicles: 0, blocks: 0, routes: 0}
 
       assert {:ok, %VehicleType{}} =
-               Operations.delete_vehicle_type(organization.id, vehicle_type.id)
+               Operations.delete_vehicle_type(
+                 organization.id,
+                 operations_actor(organization.id),
+                 vehicle_type.id
+               )
     end
 
     test "a route setting whose route is gone is cleared and the garage deleted", ctx do
@@ -303,7 +365,12 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
       assert Operations.garage_in_use_counts(organization.id, garage.id) ==
                %{vehicles: 0, blocks: 0, routes: 0}
 
-      assert {:ok, %Garage{}} = Operations.delete_garage(organization.id, garage.id)
+      assert {:ok, %Garage{}} =
+               Operations.delete_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 garage.id
+               )
 
       assert %RouteOperatingSetting{garage_id: nil, required_vehicle_type_id: type_id} =
                Repo.get(RouteOperatingSetting, orphan.id)
@@ -324,7 +391,11 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
         })
 
       assert {:ok, %VehicleType{}} =
-               Operations.delete_vehicle_type(organization.id, vehicle_type.id)
+               Operations.delete_vehicle_type(
+                 organization.id,
+                 operations_actor(organization.id),
+                 vehicle_type.id
+               )
 
       assert %RouteOperatingSetting{required_vehicle_type_id: nil, garage_id: garage_id} =
                Repo.get(RouteOperatingSetting, orphan.id)
@@ -350,7 +421,11 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
         })
 
       assert {:error, {:in_use, %{vehicles: 0, blocks: 1, routes: 0}}} =
-               Operations.delete_garage(organization.id, garage.id)
+               Operations.delete_garage(
+                 organization.id,
+                 operations_actor(organization.id),
+                 garage.id
+               )
 
       assert Repo.get(Garage, garage.id)
       assert %BlockAttribute{garage_id: garage_id} = Repo.get(BlockAttribute, orphan.id)
@@ -374,7 +449,11 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
       })
 
       assert {:error, {:in_use, %{vehicles: 0, blocks: 0, routes: 1}}} =
-               Operations.delete_vehicle_type(organization.id, vehicle_type.id)
+               Operations.delete_vehicle_type(
+                 organization.id,
+                 operations_actor(organization.id),
+                 vehicle_type.id
+               )
 
       assert Repo.get(VehicleType, vehicle_type.id)
     end
@@ -424,7 +503,22 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
         organization = organization_fixture(%{alias: "race-#{Ecto.UUID.generate()}"})
         version = gtfs_version_fixture(organization.id)
         garage = garage_fixture(organization.id)
+        actor = operations_actor(organization.id)
         route = route_fixture(organization.id, version.id)
+
+        orphan =
+          block_attribute_fixture(organization.id, version.id, %{
+            service_id: "orphan",
+            block_id: "missing",
+            garage_id: garage.id
+          })
+
+        driving_time =
+          deadhead_time_fixture(organization.id, version.id, %{
+            from_ref: {:garage, garage.id},
+            to_ref: {:stop, "depot"},
+            minutes: 5
+          })
 
         trip_fixture(organization.id, version.id, route.route_id, %{
           service_id: "weekday",
@@ -471,7 +565,8 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
             start_unboxed_task(fn ->
               send(
                 owner,
-                {:delete_result, self(), Operations.delete_garage(organization.id, garage.id)}
+                {:delete_result, self(),
+                 Operations.delete_garage(organization.id, actor, garage.id)}
               )
             end)
 
@@ -486,7 +581,9 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
           # it lost the race with is deleted.
           assert counts.blocks == 1
           assert Repo.get(Garage, garage.id)
-          assert Repo.get_by(BlockAttribute, garage_id: garage.id)
+          assert Repo.get_by(BlockAttribute, garage_id: garage.id, block_id: "99")
+          assert Repo.get(BlockAttribute, orphan.id).garage_id == garage.id
+          assert Repo.get(DeadheadTime, driving_time.id)
         after
           delete_race_fixtures!(organization.id)
         end
@@ -525,12 +622,23 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
       from(s in RouteOperatingSetting, where: s.organization_id == ^organization_id)
     )
 
+    Repo.delete_all(from(t in Trip, where: t.organization_id == ^organization_id))
+    Repo.delete_all(from(r in Route, where: r.organization_id == ^organization_id))
     Repo.delete_all(from(v in Vehicle, where: v.organization_id == ^organization_id))
     Repo.delete_all(from(t in VehicleType, where: t.organization_id == ^organization_id))
     Repo.delete_all(from(g in Garage, where: g.organization_id == ^organization_id))
 
     Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
 
+    editor_user_ids =
+      Repo.all(
+        from(m in UserOrgMembership,
+          where: m.organization_id == ^organization_id,
+          select: m.user_id
+        )
+      )
+
     Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
+    Repo.delete_all(from(u in User, where: u.id in ^editor_user_ids))
   end
 end

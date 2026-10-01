@@ -639,6 +639,92 @@ end
 
 ## Testing
 
+### Scoped Writes and Verification
+
+Apply these procedures when changing tenant-scoped commands, transactional writes or
+LiveView editors. They describe required practices; existing code still needs inspection.
+
+#### Identity, authorization and transactions
+
+Derive actor, organization and version from trusted server context. Keep those fields and
+record identity out of editor `cast/4` masks. An intentional identity rename or historical
+restore needs its owning command, same-scope reference updates and atomic history; do not
+implement it by broadening a general changeset. Load referenced records within the selected
+organization/version and the operation's required parent scope instead of accepting an
+unscoped struct or UUID. Keep selection predicates distinct from ownership checks: companion
+station bundles and their field/swap command include a pathway when either endpoint is a
+selected-station descendant (OR), while both endpoint rows must exist in the trusted
+organization/version. Full graph editing requires both endpoints in the station scope (AND).
+Do not reuse the graph predicate to silently narrow the companion contract; test a valid
+cross-station pathway as well as unrelated, missing and foreign endpoint refusals.
+
+For a retrying interactive command, lock and authorize current membership inside every
+attempt, before entity locks and expected-revision checks, using the established lock order.
+Preserve revision/no-op/refusal outcomes and commit data plus its audit records together.
+A prior preview, mounted session, supplied revision or open transaction grants no permission.
+Classify copy, apply, undo, restore and legacy facade functions by their actual callers.
+
+Keep a trusted transaction helper's preconditions explicit and inspect every caller.
+`Repo.in_transaction?/0` cannot establish actor authority or required lock ordering.
+Route interactive calls through the owning authorization boundary rather than adding a
+late membership check inside a helper after entity locks have already been acquired.
+
+#### SQL Sandbox and concurrency fixtures
+
+The [DataCase](../test/support/data_case.ex) owner supplies an enclosing transaction.
+An expected SQL error or nested `Repo.rollback/1` can leave that transaction unable to
+continue. Isolate the refused operation before asserting later database state. Use an
+explicit savepoint only with a verified transaction scope and matching recovery;
+Sandbox's per-query savepoints can invalidate a manually created savepoint. Do not weaken
+production constraints or rescue a failed write to make a fixture continue.
+
+Tasks sharing a Sandbox connection do not prove independent database concurrency.
+For lock, revocation or isolation interleavings, use independent connections and uniquely
+scoped committed fixtures in a positively identified disposable database. Register cleanup
+for those exact rows, synchronize with messages/barriers and observe lock waits with finite
+deadlines. Ensure the connection pool accommodates all held and waiting connections.
+The [blocking concurrency tests](../test/gtfs_planner/gtfs/blocking/concurrency_test.exs)
+show this structure and explicitly limit their READ COMMITTED proof; a mocked retry does
+not demonstrate a real server deadlock or SERIALIZABLE behavior.
+
+#### LiveView forms, events and async results
+
+Initialize an edit form from the persisted record through `to_form/2`; do not seed unchanged
+fields with empty defaults. Preserve typed drafts on stale or forbidden results and reload
+the authoritative revision through the ordinary editor path. Keep identity keys in
+`phx-value-*`, hidden inputs and handler patterns consistent; distinguish the record ID
+from its expected revision and from an HTML element's DOM ID.
+
+Use ordinary form interactions to prove the visible user journey. For malicious payload
+refusal, deliver a forged event through a mounted LiveView when the legitimate select
+cannot contain the foreign value. Assert that the prerequisite control renders and that
+the handler is reached, then assert scoped refusal and unchanged data/history. A form
+helper rejecting an unavailable option before delivery does not prove handler authorization.
+
+Cover current success, current failure, superseded success and superseded exit for async
+work, including closing and reopening an editor before completion. Inspect LiveView's
+actual task-reference semantics; changing an assign alone need not invalidate an async
+reference. Keep a real current task failure visible while refusing stale feedback. Start
+test-owned processes under supervision and synchronize with messages and monitors. Hold
+and explicitly release a slow external fake for loading-state captures instead of making
+the screenshot race a fixed sleep. Account for both worker scheduling orders.
+
+#### Disposable execution and proof limits
+
+Use [database setup](db-setup.md), [test configuration](../config/test.exs) and
+[`bin/test-browser`](../bin/test-browser) for the existing test entrypoints. Confirm the
+actual database, role and server before migrations or fixture writes; a loopback URL alone
+does not establish disposability. In a custom harness, record exact owned process IDs,
+ports and temporary roots, bound readiness/interactions, and stop/remove only those owned
+resources on success, failure or timeout. Keep temporary caches within that owned root.
+
+Report standalone Elixir parsing, project formatting, compilation, ExUnit and browser
+execution separately. Bare `Code.format_file!/1` does not load the dependency/plugin
+settings in [`.formatter.exs`](../.formatter.exs). A successful startup or syntax check
+does not pass runtime assertions. Record unavailable checks and their actual capability
+failure as pending; do not bypass the restriction or replace the required `mix precommit`
+with a static check. The alias in [`mix.exs`](../mix.exs) also executes database-backed tests.
+
 ### Test Philosophy
 
 - Test behavior, not implementation

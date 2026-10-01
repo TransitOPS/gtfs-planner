@@ -79,6 +79,7 @@ validator_module =
   end
 
 config :gtfs_planner, :validator_module, validator_module
+config :gtfs_planner, :api_cors_allow_localhost, true
 
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
@@ -133,10 +134,9 @@ config :gtfs_planner, :boundaries_req_plug, {Req.Test, GtfsPlanner.Boundaries.Ti
 # tests can stub upstream routing responses.
 config :gtfs_planner, :street_routing_req_plug, {Req.Test, GtfsPlanner.StreetRouting.Geoapify}
 
-# Route Req HTTP calls in the geocoding adapter through Req.Test so tests can
-# stub upstream reverse-geocoding responses. Browser journeys click a map in a
-# real browser, where no such plug exists, and use `BrowserGeocoding` instead.
-config :gtfs_planner, :geocoding_req_plug, {Req.Test, GtfsPlanner.Geocoding.Geoapify}
+# Route Geoapify autocomplete requests through Req.Test in ordinary ExUnit runs.
+config :gtfs_planner,
+       :geocoding_req_options, plug: {Req.Test, GtfsPlanner.Geocoding.Geoapify}, retry_delay: 0
 
 # Route Req HTTP calls in the map tiles controller through Req.Test so
 # tests can stub upstream tile responses.
@@ -151,6 +151,10 @@ config :gtfs_planner,
 # Req.Test plug, so no test can reach the provider. Only the default-excluded
 # `:agent_scenarios` suite replaces these values, and it restores them.
 config :gtfs_planner, GtfsPlanner.Agents.Model, model: "test/model-a"
+
+config :gtfs_planner, GtfsPlanner.Agents.UsageBudget,
+  organization_daily_attempts: 1000,
+  actor_daily_attempts: 1000
 
 config :gtfs_planner, :openrouter_api_key, "test-openrouter-key"
 
@@ -175,6 +179,10 @@ config :gtfs_planner, GtfsPlanner.Mailer, adapter: Swoosh.Adapters.Test
 config :gtfs_planner,
        :gtfs_export_snapshot,
        GtfsPlanner.Gtfs.Export.Snapshot.Sandbox
+
+config :gtfs_planner,
+       :gtfs_service_query_snapshot,
+       GtfsPlanner.Gtfs.ServiceQueries.Snapshot.Sandbox
 
 config :gtfs_planner,
        :reviewed_apply_transaction,

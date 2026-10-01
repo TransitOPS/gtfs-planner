@@ -21,12 +21,15 @@ defmodule GtfsPlanner.Gtfs.TimedPatternStop do
     timestamps(type: :utc_datetime_usec)
   end
 
+  @offsets_check_constraint "timed_pattern_stops_offsets_both_or_neither"
+  @offsets_pair_message "must be set together with departure"
+
   @type t :: %__MODULE__{
           id: Ecto.UUID.t(),
           timed_pattern_id: Ecto.UUID.t(),
           route_pattern_stop_id: Ecto.UUID.t(),
-          arrival_offset: integer(),
-          departure_offset: integer(),
+          arrival_offset: integer() | nil,
+          departure_offset: integer() | nil,
           timepoint: integer() | nil,
           pickup_type: integer() | nil,
           drop_off_type: integer() | nil,
@@ -50,12 +53,8 @@ defmodule GtfsPlanner.Gtfs.TimedPatternStop do
     |> put_loaded_assoc(:timed_pattern, Map.get(attrs, :timed_pattern))
     |> put_loaded_assoc(:route_pattern_stop, Map.get(attrs, :route_pattern_stop))
     |> trim_string_fields()
-    |> validate_required([
-      :timed_pattern_id,
-      :route_pattern_stop_id,
-      :arrival_offset,
-      :departure_offset
-    ])
+    |> validate_required([:timed_pattern_id, :route_pattern_stop_id])
+    |> validate_offsets_pair()
     |> validate_number(:arrival_offset, greater_than_or_equal_to: -2_147_483_647)
     |> validate_number(:arrival_offset, less_than_or_equal_to: 2_147_483_647)
     |> validate_number(:departure_offset, greater_than_or_equal_to: 0)
@@ -68,7 +67,33 @@ defmodule GtfsPlanner.Gtfs.TimedPatternStop do
     )
     |> foreign_key_constraint(:timed_pattern_id)
     |> foreign_key_constraint(:route_pattern_stop_id)
+    |> check_constraint(:arrival_offset,
+      name: @offsets_check_constraint,
+      message: @offsets_pair_message
+    )
     |> validate_occurrence_parent()
+  end
+
+  # A non-timepoint stop may have no times at all, but a half-filled pair carries no
+  # meaning: the two offsets describe one arrival/departure pair. The database holds
+  # the same rule as `timed_pattern_stops_offsets_both_or_neither`; this reports it in
+  # the changeset so the editor sees one message rather than a constraint error. The
+  # error names :arrival_offset either way, matching the `check_constraint/3` field so
+  # both paths attribute the violation to the same key.
+  defp validate_offsets_pair(changeset) do
+    case {get_field(changeset, :arrival_offset), get_field(changeset, :departure_offset)} do
+      {nil, nil} ->
+        changeset
+
+      {nil, _departure} ->
+        add_error(changeset, :arrival_offset, @offsets_pair_message)
+
+      {_arrival, nil} ->
+        add_error(changeset, :arrival_offset, @offsets_pair_message)
+
+      {_arrival, _departure} ->
+        changeset
+    end
   end
 
   defp put_loaded_assoc(changeset, _association, nil), do: changeset

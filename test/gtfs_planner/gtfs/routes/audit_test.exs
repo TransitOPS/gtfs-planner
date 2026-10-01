@@ -6,9 +6,11 @@ defmodule GtfsPlanner.Gtfs.Routes.AuditTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.Stations
 
   setup do
     organization = organization_fixture()
@@ -104,7 +106,7 @@ defmodule GtfsPlanner.Gtfs.Routes.AuditTest do
       assert stored.changed_fields["creation_attempt_id"] == creation_attempt_id
       assert stored.changed_fields["request_digest"] == request_digest
 
-      assert Repo.exists?(from r in Route, where: r.id == ^route.id)
+      assert Repo.exists?(from(r in Route, where: r.id == ^route.id))
     end
 
     test "an updated route log retains structured before/after and actor", context do
@@ -234,12 +236,13 @@ defmodule GtfsPlanner.Gtfs.Routes.AuditTest do
                  }
                )
 
-      assert Gtfs.rollback_entity(updated_log, context.audit) == {:error, :audit_only_entity}
-      assert Gtfs.rollback_target_snapshot(updated_log) == {:error, :audit_only_entity}
-      assert Gtfs.rollback_entity(created_log, context.audit) == {:error, :audit_only_entity}
-      assert Gtfs.rollback_target_snapshot(created_log) == {:error, :audit_only_entity}
+      assert Stations.rollback_target_snapshot(updated_log) ==
+               {:error, :audit_only_entity}
 
-      assert Gtfs.rollback_previewable_fields(updated_log) == []
+      assert Stations.rollback_target_snapshot(created_log) ==
+               {:error, :audit_only_entity}
+
+      assert Audit.reversible_fields_for(updated_log.entity_type) == []
       refute Enum.any?(Gtfs.reversible_fields_for("route"))
       refute Enum.any?(Gtfs.reversible_fields_for(:route))
 
@@ -277,7 +280,7 @@ defmodule GtfsPlanner.Gtfs.Routes.AuditTest do
 
       remove_route_audit_rejection_trigger!()
 
-      refute Repo.exists?(from r in Route, where: r.route_id == "R-FAIL")
+      refute Repo.exists?(from(r in Route, where: r.route_id == "R-FAIL"))
 
       assert Repo.aggregate(
                from(l in ChangeLog, where: l.organization_id == ^context.organization.id),
@@ -311,7 +314,7 @@ defmodule GtfsPlanner.Gtfs.Routes.AuditTest do
                  end
                end)
 
-      refute Repo.exists?(from r in Route, where: r.route_id == "R-FAIL")
+      refute Repo.exists?(from(r in Route, where: r.route_id == "R-FAIL"))
 
       assert Repo.aggregate(
                from(l in ChangeLog, where: l.organization_id == ^context.organization.id),

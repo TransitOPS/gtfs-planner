@@ -140,7 +140,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeDecisionSerializer do
   `serialize/1` applies to `current_record`, so a record that has not changed
   since the diff hashes to the stored `current_fingerprint`.
 
-  Pass the record itself, not `Gtfs.entity_snapshot/2`: the snapshot renders
+  Pass the record itself, not `Audit.entity_snapshot/2`: the snapshot renders
   decimals with their stored scale ("44.6400"), which this normalization does not.
   """
   def record_fingerprint(entity_type, record, captured_keys) do

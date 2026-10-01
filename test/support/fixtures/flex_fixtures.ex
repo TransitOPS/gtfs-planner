@@ -24,9 +24,11 @@ defmodule GtfsPlanner.FlexFixtures do
   changes.
   """
 
+  import GtfsPlanner.AccountsFixtures, only: [editor_fixture: 1]
   import GtfsPlanner.GtfsFixtures
   import Ecto.Query, only: [from: 2]
 
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Flex
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
@@ -164,10 +166,24 @@ defmodule GtfsPlanner.FlexFixtures do
   - `:registered` — Newport Access (registered riders, included).
   """
   def flex_services_fixture(organization, version) do
+    audit = flex_audit_fixture(organization.id, version.id)
+
     %{
-      area: area_service(organization, version),
-      detour: detour_service(organization, version),
-      registered: registered_service(organization, version)
+      area: area_service(audit),
+      detour: detour_service(audit),
+      registered: registered_service(audit)
+    }
+  end
+
+  @doc "Creates a real editor membership and an audit context for flex test writes."
+  def flex_audit_fixture(organization_id, version_id) do
+    actor = editor_fixture(%{id: organization_id})
+
+    %AuditContext{
+      organization_id: organization_id,
+      gtfs_version_id: version_id,
+      actor_id: actor.id,
+      actor_email: actor.email
     }
   end
 
@@ -429,17 +445,16 @@ defmodule GtfsPlanner.FlexFixtures do
 
   # --- flex services ----------------------------------------------------------
 
-  defp area_service(organization, version) do
+  defp area_service(audit) do
     {:ok, service} =
-      Flex.create_service(organization.id, version.id, %{
+      Flex.create_service(audit, %{
         name: "Newport Dial-a-Ride",
         kind: :area
       })
 
     {:ok, service} =
       Flex.save_service(
-        organization.id,
-        version.id,
+        audit,
         service,
         %{
           phone: "(541) 555-0142",
@@ -471,9 +486,9 @@ defmodule GtfsPlanner.FlexFixtures do
     service
   end
 
-  defp detour_service(organization, version) do
+  defp detour_service(audit) do
     {:ok, service} =
-      Flex.create_service(organization.id, version.id, %{
+      Flex.create_service(audit, %{
         name: "Valley Line detours",
         kind: :detour,
         route_id: "20"
@@ -481,8 +496,7 @@ defmodule GtfsPlanner.FlexFixtures do
 
     {:ok, service} =
       Flex.save_service(
-        organization.id,
-        version.id,
+        audit,
         service,
         %{
           phone: "(541) 555-0142",
@@ -511,17 +525,16 @@ defmodule GtfsPlanner.FlexFixtures do
     service
   end
 
-  defp registered_service(organization, version) do
+  defp registered_service(audit) do
     {:ok, service} =
-      Flex.create_service(organization.id, version.id, %{
+      Flex.create_service(audit, %{
         name: "Newport Access",
         kind: :area
       })
 
     {:ok, service} =
       Flex.save_service(
-        organization.id,
-        version.id,
+        audit,
         service,
         %{
           riders: :registered,

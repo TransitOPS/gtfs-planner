@@ -24,11 +24,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
       viewer = user_fixture(%{email: "viewer@example.com"})
       editor = user_fixture(%{email: "editor@example.com"})
 
-      Accounts.create_user_org_membership(%{
-        user_id: viewer.id,
-        organization_id: organization.id,
-        roles: ["pathways_studio_editor"]
-      })
+      {:ok, viewer_membership} =
+        Accounts.create_user_org_membership(%{
+          user_id: viewer.id,
+          organization_id: organization.id,
+          roles: ["pathways_studio_editor"]
+        })
+
+      organization_membership_fixture(editor, organization)
 
       gtfs_version = gtfs_version_fixture(organization.id)
 
@@ -41,6 +44,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
 
       %{
         viewer: viewer,
+        viewer_membership: viewer_membership,
         editor: editor,
         organization: organization,
         gtfs_version: gtfs_version,
@@ -56,13 +60,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
       gtfs_version: gtfs_version,
       station: station
     } do
-      assert {:ok, status} =
-               Gtfs.set_station_editing_status(
-                 organization.id,
-                 gtfs_version.id,
-                 station,
-                 editor
-               )
+      status = station_editing_status_fixture(organization, gtfs_version, station, editor)
 
       conn = log_in_user(conn, viewer, organization: organization)
 
@@ -125,13 +123,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
       gtfs_version: gtfs_version,
       station: station
     } do
-      assert {:ok, _status} =
-               Gtfs.set_station_editing_status(
-                 organization.id,
-                 gtfs_version.id,
-                 station,
-                 viewer
-               )
+      _status = station_editing_status_fixture(organization, gtfs_version, station, viewer)
 
       conn = log_in_user(conn, viewer, organization: organization)
 
@@ -160,13 +152,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
     } do
       started_at = DateTime.add(DateTime.utc_now(), -5 * 60, :second)
 
-      station_editing_status_fixture_started_at!(
-        organization,
-        gtfs_version,
-        station,
-        viewer,
-        started_at
-      )
+      station_editing_status_fixture(organization, gtfs_version, station, viewer, started_at)
 
       conn = log_in_user(conn, viewer, organization: organization)
 
@@ -195,13 +181,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
       gtfs_version: gtfs_version,
       station: station
     } do
-      assert {:ok, _status} =
-               Gtfs.set_station_editing_status(
-                 organization.id,
-                 gtfs_version.id,
-                 station,
-                 editor
-               )
+      _status = station_editing_status_fixture(organization, gtfs_version, station, editor)
 
       conn = log_in_user(conn, viewer, organization: organization)
 
@@ -227,13 +207,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
     } do
       started_at = DateTime.add(DateTime.utc_now(), -60 * 60, :second)
 
-      station_editing_status_fixture_started_at!(
-        organization,
-        gtfs_version,
-        station,
-        editor,
-        started_at
-      )
+      station_editing_status_fixture(organization, gtfs_version, station, editor, started_at)
 
       conn = log_in_user(conn, viewer, organization: organization)
 
@@ -284,13 +258,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
 
         started_at = DateTime.add(DateTime.utc_now(), -seconds_ago, :second)
 
-        station_editing_status_fixture_started_at!(
-          organization,
-          gtfs_version,
-          station,
-          viewer,
-          started_at
-        )
+        station_editing_status_fixture(organization, gtfs_version, station, viewer, started_at)
 
         {:ok, view, _html} =
           live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}", on_error: :warn)
@@ -319,20 +287,15 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.station_editing_status == nil
 
-      assert {:ok, status} =
-               Gtfs.set_station_editing_status(
-                 organization.id,
-                 gtfs_version.id,
-                 station,
-                 editor
-               )
+      editor_audit = user_audit_fixture(editor, organization, gtfs_version, station)
+      assert {:ok, status} = Gtfs.set_station_editing_status(editor_audit, station)
 
       state = :sys.get_state(view.pid)
 
       assert state.socket.assigns.station_editing_status.id == status.id
       assert state.socket.assigns.station_editing_status.user.id == editor.id
 
-      assert :ok = Gtfs.clear_station_editing_status(organization.id, gtfs_version.id, station.id)
+      assert :ok = Gtfs.clear_station_editing_status(editor_audit, station.id)
 
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.station_editing_status == nil
@@ -373,13 +336,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
       gtfs_version: gtfs_version,
       station: station
     } do
-      assert {:ok, _status} =
-               Gtfs.set_station_editing_status(
-                 organization.id,
-                 gtfs_version.id,
-                 station,
-                 viewer
-               )
+      _status = station_editing_status_fixture(organization, gtfs_version, station, viewer)
 
       conn = log_in_user(conn, viewer, organization: organization)
 
@@ -447,20 +404,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
       gtfs_version: gtfs_version,
       station: station
     } do
-      assert {:ok, status} =
-               Gtfs.set_station_editing_status(
-                 organization.id,
-                 gtfs_version.id,
-                 station,
-                 editor
-               )
+      status = station_editing_status_fixture(organization, gtfs_version, station, editor)
 
       conn = log_in_user(conn, viewer, organization: organization)
 
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}", on_error: :warn)
 
-      assert {:ok, _station} = Gtfs.delete_stop(station)
+      assert {:ok, _station} = Repo.delete(station)
 
       render_click(view, "set_station_editing_status")
 
@@ -475,27 +426,60 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
       assert has_element?(view, "#editing-error-retry", "Try again")
       assert Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id) == nil
     end
-  end
 
-  defp station_editing_status_fixture_started_at!(
-         organization,
-         gtfs_version,
-         station,
-         user,
-         started_at
-       ) do
-    assert {:ok, status} =
-             Gtfs.set_station_editing_status(
-               organization.id,
-               gtfs_version.id,
-               station,
-               user
-             )
+    test "an editor revoked after the page loaded cannot start editing", %{
+      conn: conn,
+      viewer: viewer,
+      viewer_membership: viewer_membership,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, viewer, organization: organization)
 
-    status
-    |> Ecto.Changeset.change(started_at: started_at)
-    |> Repo.update!()
-    |> Repo.preload(:user)
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}", on_error: :warn)
+
+      deactivate_membership_fixture(viewer_membership)
+
+      render_click(view, "set_station_editing_status")
+
+      assert_push_event(view, "focus_scoped_target", %{id: "station-editing-status-button"})
+
+      assert has_element?(view, "#editing-error[role='alert']", "You no longer have edit access")
+      refute has_element?(view, "#editing-error-retry")
+      assert :sys.get_state(view.pid).socket.assigns.station_editing_status == nil
+      assert Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id) == nil
+    end
+
+    test "an editor revoked after the page loaded cannot clear a teammate's status", %{
+      conn: conn,
+      viewer: viewer,
+      viewer_membership: viewer_membership,
+      editor: editor,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      status = station_editing_status_fixture(organization, gtfs_version, station, editor)
+      conn = log_in_user(conn, viewer, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}", on_error: :warn)
+
+      deactivate_membership_fixture(viewer_membership)
+
+      render_click(view, "clear_station_editing_status")
+
+      assert_push_event(view, "focus_scoped_target", %{id: "station-editing-status-button"})
+
+      assert has_element?(view, "#editing-error[role='alert']", "You no longer have edit access")
+      refute has_element?(view, "#editing-error-retry")
+      assert :sys.get_state(view.pid).socket.assigns.station_editing_status.id == status.id
+
+      assert Gtfs.get_station_editing_status(organization.id, gtfs_version.id, station.id).id ==
+               status.id
+    end
   end
 
   describe "StopDetailLive - No level child stop assign link" do
@@ -526,7 +510,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -679,7 +663,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
         level_fixture(organization.id, gtfs_version.id, %{level_id: "L1", level_index: 0.0})
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -1353,7 +1337,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: ctx.organization.id,
           gtfs_version_id: ctx.version.id,
           stop_id: ctx.station.id,

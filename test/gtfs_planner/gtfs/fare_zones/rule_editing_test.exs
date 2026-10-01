@@ -13,12 +13,14 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
   observable, and the twin organization with a second version of the same
   organization carries identical fare, stop and rule IDs, so a missing scope
   predicate is observable. The stale cases change the version between the review
-  and the save: a rename through `FareZones.update_zone/4` and an added group
+  and the save: a rename through `FareZones.update_zone/3` and an added group
   member. The atomicity case wraps the production call in a caller transaction
   and aborts it, which the SQL Sandbox resolves to a savepoint.
   """
   use GtfsPlanner.DataCase, async: false
 
+  alias GtfsPlanner.AccountsFixtures
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareAttribute
   alias GtfsPlanner.Gtfs.FareRule
   alias GtfsPlanner.Gtfs.FareZone
@@ -36,11 +38,20 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
   setup do
     organization = OrganizationsFixtures.organization_fixture()
     version = VersionsFixtures.gtfs_version_fixture(organization.id)
+    actor = AccountsFixtures.editor_fixture(organization)
 
-    %{organization: organization, version: version}
+    audit = %AuditContext{
+      organization_id: organization.id,
+      gtfs_version_id: version.id,
+      actor_id: actor.id,
+      actor_email: actor.email
+    }
+
+    %{organization: organization, version: version, audit: audit}
   end
 
   test "creates a rule with no through zones and returns its group", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -54,7 +65,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
     ])
 
     assert {:ok, group} =
-             FareZones.save_rule_group(organization.id, version.id, nil, %{
+             FareZones.save_rule_group(audit, nil, %{
                "fare_id" => "F",
                "route_id" => "",
                "origin_id" => "A",
@@ -76,6 +87,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
   end
 
   test "edits a group's origin and leaves every neighbouring row byte-identical", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -102,7 +114,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
     assert Enum.map(reviewed.rows, & &1.id) == [edited.id]
 
     assert {:ok, group} =
-             FareZones.save_rule_group(organization.id, version.id, reviewed, %{
+             FareZones.save_rule_group(audit, reviewed, %{
                "fare_id" => "F",
                "route_id" => "",
                "origin_id" => "E",
@@ -158,6 +170,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
   end
 
   test "writes one row per contains zone sharing the other values", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -177,7 +190,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
     assert Enum.map(reviewed.rows, & &1.id) == [reviewed_row.id]
 
     assert {:ok, group} =
-             FareZones.save_rule_group(organization.id, version.id, reviewed, %{
+             FareZones.save_rule_group(audit, reviewed, %{
                "fare_id" => "F",
                "route_id" => "R1",
                "origin_id" => "A",
@@ -211,6 +224,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
   end
 
   test "refuses a new rule whose key another rule already holds", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -228,7 +242,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
     projection_before = projection(organization, version)
 
     assert {:error, %Ecto.Changeset{} = changeset} =
-             FareZones.save_rule_group(organization.id, version.id, nil, %{
+             FareZones.save_rule_group(audit, nil, %{
                "fare_id" => "F",
                "route_id" => "",
                "origin_id" => "A",
@@ -243,6 +257,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
   end
 
   test "refuses an edit that moves a rule into another rule's key", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -259,7 +274,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
     before = rule_state(organization, version)
 
     assert {:error, %Ecto.Changeset{} = changeset} =
-             FareZones.save_rule_group(organization.id, version.id, reviewed, %{
+             FareZones.save_rule_group(audit, reviewed, %{
                "fare_id" => "F",
                "route_id" => "",
                "origin_id" => "C",
@@ -273,6 +288,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
   end
 
   test "keeps the rule's unknown current fare and refuses a different unknown fare or route", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -289,7 +305,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
 
     # Changing the journey keeps the fare that has no fare_attributes row.
     assert {:ok, group} =
-             FareZones.save_rule_group(organization.id, version.id, reviewed, %{
+             FareZones.save_rule_group(audit, reviewed, %{
                "fare_id" => "X",
                "route_id" => "",
                "origin_id" => "E",
@@ -302,7 +318,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
 
     # A different fare with no row, and a route with no row, are refused.
     assert {:error, %Ecto.Changeset{} = changeset} =
-             FareZones.save_rule_group(organization.id, version.id, group, %{
+             FareZones.save_rule_group(audit, group, %{
                "fare_id" => "Y",
                "route_id" => "",
                "origin_id" => "E",
@@ -313,7 +329,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
     assert "This fare is not in this version. Choose another." in errors_on(changeset).fare_id
 
     assert {:error, %Ecto.Changeset{} = route_changeset} =
-             FareZones.save_rule_group(organization.id, version.id, group, %{
+             FareZones.save_rule_group(audit, group, %{
                "fare_id" => "X",
                "route_id" => "R9",
                "origin_id" => "E",
@@ -325,6 +341,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
   end
 
   test "refuses a new reference to a stopless zone but keeps one the rule already has", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -343,7 +360,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
     assert "R" in stopless_zone_ids(organization, version)
 
     assert {:error, %Ecto.Changeset{} = changeset} =
-             FareZones.save_rule_group(organization.id, version.id, nil, %{
+             FareZones.save_rule_group(audit, nil, %{
                "fare_id" => "F",
                "route_id" => "",
                "origin_id" => "A",
@@ -362,7 +379,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
     reviewed = group_for(organization, version, {"F", nil, "R", nil, false})
 
     assert {:ok, group} =
-             FareZones.save_rule_group(organization.id, version.id, reviewed, %{
+             FareZones.save_rule_group(audit, reviewed, %{
                "fare_id" => "F",
                "route_id" => "",
                "origin_id" => "R",
@@ -375,7 +392,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
 
     # R may not be chosen as a new reference elsewhere either.
     assert {:error, %Ecto.Changeset{} = second} =
-             FareZones.save_rule_group(organization.id, version.id, nil, %{
+             FareZones.save_rule_group(audit, nil, %{
                "fare_id" => "F",
                "route_id" => "",
                "origin_id" => "A",
@@ -387,6 +404,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
   end
 
   test "returns stale when a referenced zone was renamed after the review", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -402,7 +420,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
     reviewed = group_for(organization, version, {"F", nil, "A", "B", false})
 
     assert {:ok, _zone} =
-             FareZones.update_zone(organization.id, version.id, "A", %{
+             FareZones.update_zone(audit, "A", %{
                "zone_id" => "Z",
                "name" => "Zulu",
                "color" => "teal"
@@ -411,7 +429,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
     before = rule_state(organization, version)
 
     assert {:error, :stale} =
-             FareZones.save_rule_group(organization.id, version.id, reviewed, %{
+             FareZones.save_rule_group(audit, reviewed, %{
                "fare_id" => "F",
                "route_id" => "",
                "origin_id" => "A",
@@ -419,11 +437,12 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
                "contains" => []
              })
 
-    assert {:error, :stale} = FareZones.delete_rule_group(organization.id, version.id, reviewed)
+    assert {:error, :stale} = FareZones.delete_rule_group(audit, reviewed)
     assert rule_state(organization, version) == before
   end
 
   test "returns stale when a row joins the reviewed key after the review", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -441,7 +460,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
     before = rule_state(organization, version)
 
     assert {:error, :stale} =
-             FareZones.save_rule_group(organization.id, version.id, reviewed, %{
+             FareZones.save_rule_group(audit, reviewed, %{
                "fare_id" => "F",
                "route_id" => "",
                "origin_id" => "A",
@@ -449,11 +468,12 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
                "contains" => []
              })
 
-    assert {:error, :stale} = FareZones.delete_rule_group(organization.id, version.id, reviewed)
+    assert {:error, :stale} = FareZones.delete_rule_group(audit, reviewed)
     assert rule_state(organization, version) == before
   end
 
   test "removes exactly the reviewed rows and leaves fare_attributes alone", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -474,7 +494,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
     reviewed = group_for(organization, version, {"F", nil, "A", "B", false})
     fares_before = fare_attribute_state(organization, version)
 
-    assert {:ok, 1} = FareZones.delete_rule_group(organization.id, version.id, reviewed)
+    assert {:ok, 1} = FareZones.delete_rule_group(audit, reviewed)
 
     assert fare_rule_rows(organization, version) == [
              %{fare_id: "F", route_id: nil, origin_id: "C", destination_id: "B", contains_id: nil}
@@ -488,14 +508,16 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
            ]
 
     # A second removal of the same review finds no rows under its key.
-    assert {:error, :stale} = FareZones.delete_rule_group(organization.id, version.id, reviewed)
+    assert {:error, :stale} = FareZones.delete_rule_group(audit, reviewed)
   end
 
   test "stores a padded imported origin byte-for-byte and leaves twin scopes alone", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
     other_organization = OrganizationsFixtures.organization_fixture()
+    AccountsFixtures.organization_membership_fixture(%{id: audit.actor_id}, other_organization)
     other_version = VersionsFixtures.gtfs_version_fixture(other_organization.id)
 
     for {org, ver} <- [{organization, version}, {other_organization, other_version}] do
@@ -524,7 +546,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
     }
 
     assert {:ok, group} =
-             FareZones.save_rule_group(organization.id, version.id, nil, create_attrs)
+             FareZones.save_rule_group(audit, nil, create_attrs)
 
     assert group.key == {"F", nil, " A", "B", false}
     assert [%{origin_id: " A", destination_id: "B"}] = group.rows
@@ -543,8 +565,20 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
           {other_organization.id, second_version.id},
           {"not-a-uuid", version.id}
         ] do
-      assert {:error, :not_found} = FareZones.save_rule_group(org_id, ver_id, nil, create_attrs)
-      assert {:error, :not_found} = FareZones.delete_rule_group(org_id, ver_id, reviewed)
+      expected = if org_id == "not-a-uuid", do: :forbidden, else: :not_found
+
+      assert {:error, ^expected} =
+               FareZones.save_rule_group(
+                 %{audit | organization_id: org_id, gtfs_version_id: ver_id},
+                 nil,
+                 create_attrs
+               )
+
+      assert {:error, ^expected} =
+               FareZones.delete_rule_group(
+                 %{audit | organization_id: org_id, gtfs_version_id: ver_id},
+                 reviewed
+               )
     end
 
     staging =
@@ -553,10 +587,17 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
       |> stage()
 
     assert {:error, :not_found} =
-             FareZones.save_rule_group(organization.id, staging.id, nil, create_attrs)
+             FareZones.save_rule_group(
+               %{audit | organization_id: organization.id, gtfs_version_id: staging.id},
+               nil,
+               create_attrs
+             )
 
     assert {:error, :not_found} =
-             FareZones.delete_rule_group(organization.id, staging.id, reviewed)
+             FareZones.delete_rule_group(
+               %{audit | organization_id: organization.id, gtfs_version_id: staging.id},
+               reviewed
+             )
 
     assert rule_state(organization, version) == before
 
@@ -564,18 +605,30 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
     # its own, so the same review is refused there and the main version keeps
     # every byte.
     assert {:error, %Ecto.Changeset{} = changeset} =
-             FareZones.save_rule_group(organization.id, second_version.id, nil, create_attrs)
+             FareZones.save_rule_group(
+               %{audit | organization_id: organization.id, gtfs_version_id: second_version.id},
+               nil,
+               create_attrs
+             )
 
     assert "This fare is not in this version. Choose another." in errors_on(changeset).fare_id
     assert rule_state(organization, version) == before
 
     # A genuine write in the twin's own version stays there.
     assert {:ok, twin_group} =
-             FareZones.save_rule_group(other_organization.id, other_version.id, nil, %{
-               create_attrs
-               | "origin_id" => "E",
-                 "destination_id" => "B"
-             })
+             FareZones.save_rule_group(
+               %{
+                 audit
+                 | organization_id: other_organization.id,
+                   gtfs_version_id: other_version.id
+               },
+               nil,
+               %{
+                 create_attrs
+                 | "origin_id" => "E",
+                   "destination_id" => "B"
+               }
+             )
 
     assert twin_group.key == {"F", nil, "E", "B", false}
 
@@ -592,6 +645,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
   end
 
   test "rolls the whole save back when the caller's transaction aborts", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -617,7 +671,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
     assert {:error, :aborted} =
              Repo.transaction(fn ->
                assert {:ok, %{rows: rows}} =
-                        FareZones.save_rule_group(organization.id, version.id, reviewed, attrs)
+                        FareZones.save_rule_group(audit, reviewed, attrs)
 
                assert length(rows) == 1
 
@@ -640,7 +694,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleEditingTest do
     assert Repo.exists?(from(r in FareRule, where: r.id == ^existing.id))
 
     # The prior state stayed usable: the same save now commits.
-    assert {:ok, group} = FareZones.save_rule_group(organization.id, version.id, reviewed, attrs)
+    assert {:ok, group} = FareZones.save_rule_group(audit, reviewed, attrs)
     assert group.contains == ["A"]
   end
 

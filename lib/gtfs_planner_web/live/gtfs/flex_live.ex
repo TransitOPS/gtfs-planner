@@ -15,12 +15,12 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
   and `retry` re-runs the same load.
 
   The create drawer and the copy action are this page's two writes (AC-4, AC-6).
-  The drawer answers its own questions before it calls `Flex.create_service/3`,
+  The drawer answers its own questions before it calls `Flex.create_service/2`,
   then navigates to the new service's page; a name or kind the changeset refuses
   comes back on the field that caused it. On a version with no services the
   first-use state also offers the copy action, which reads the organization's
   other published versions that hold a service and calls
-  `Flex.copy_from_version/4` only after the confirmation names the version being
+  `Flex.copy_from_version/2` only after the confirmation names the version being
   copied from.
 
   The map card is the same read's `map` payload, drawn by the `FlexAreaMap` hook:
@@ -41,6 +41,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
   import GtfsPlannerWeb.Gtfs.FlexComponents
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Flex
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Gtfs.FlexComponents
@@ -51,6 +52,8 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
   # The create drawer's answers as its form sends them. `named` is the
   # prototype's own default answer to the one-name question.
   @blank_create %{"kind" => nil, "named" => "one", "name" => "", "route_id" => ""}
+  @permission_error "You no longer have permission to change flex services. " <>
+                      "Ask an organization administrator to restore your access."
 
   # A changeset refusal mapped back onto the control that caused it. The message
   # for `key` is the changeset's own, because it names the answer to change.
@@ -148,7 +151,12 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
   @impl true
   def handle_event("create_submit", %{"create" => params}, socket) do
     values = Map.merge(socket.assigns.create_values, params)
-    socket = assign(socket, :create_submitted, true)
+
+    socket =
+      socket
+      |> assign(:create_submitted, true)
+      |> assign(:create_values, values)
+      |> assign(:create_form, to_form(values, as: :create))
 
     case create_errors(values) do
       [] -> {:noreply, submit_create(socket, values)}
@@ -396,11 +404,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
   end
 
   defp submit_create(socket, values) do
-    organization_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
     attrs = create_attrs(values)
 
-    case Flex.create_service(organization_id, version_id, attrs) do
+    case Flex.create_service(audit_context(socket), attrs) do
       {:ok, service} ->
         push_navigate(socket, to: "/gtfs/#{version_id}/flex/#{service.id}")
 
@@ -421,10 +428,16 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
           create_errors: [],
           create_error: "This version can’t be changed right now. Reload the page and try again."
         )
+
+      {:error, :forbidden} ->
+        assign(socket,
+          create_errors: [],
+          create_error: @permission_error
+        )
     end
   end
 
-  # The drawer's answers as `Flex.create_service/3` reads them. A blank detour
+  # The drawer's answers as `Flex.create_service/2` reads them. A blank detour
   # route stays blank so the changeset reports it rather than the page inventing
   # one, and an area service never sends a route at all.
   defp create_attrs(values) do
@@ -472,11 +485,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
   # --- the copy action --------------------------------------------------------
 
   defp copy_services(socket, source) do
-    organization_id = socket.assigns.current_organization.id
-    version_id = socket.assigns.current_gtfs_version.id
-    actor = %{id: socket.assigns.current_user.id, email: socket.assigns.current_user.email}
-
-    case Flex.copy_from_version(organization_id, version_id, source.id, actor) do
+    case Flex.copy_from_version(audit_context(socket), source.id) do
       {:ok, 0} ->
         assign(socket,
           copy_target: nil,
@@ -502,11 +511,26 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
           copy_target: nil,
           copy_error: "That version can’t be copied from."
         )
+
+      {:error, :forbidden} ->
+        assign(socket,
+          copy_target: nil,
+          copy_error: @permission_error
+        )
     end
   end
 
+  defp audit_context(socket) do
+    %AuditContext{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      actor_id: socket.assigns.current_user.id,
+      actor_email: socket.assigns.current_user.email
+    }
+  end
+
   # The copy action needs a source version only when this version has no
-  # service, and `copy_from_version/4` copies into an empty version only. The
+  # service, and `copy_from_version/2` copies into an empty version only. The
   # sources are the organization's published versions that hold a service: a
   # version with none cannot be a source, and this version holds none by the
   # time this runs.

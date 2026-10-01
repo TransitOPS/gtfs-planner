@@ -330,7 +330,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRunsTest do
   defp cut_runs(world) do
     for key <- day_type_keys(world) do
       {:ok, plan} = Gtfs.suggest_runs(world.organization.id, world.version.id, key, :replace_all)
-      {:ok, _result} = Gtfs.apply_run_plan(world.organization.id, world.version.id, plan)
+      {:ok, _result} = Gtfs.apply_run_plan(world.audit, plan)
     end
 
     world
@@ -349,7 +349,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRunsTest do
         %{trip_id: trip.id, from: run_of(world, key, trip.id), to: nil}
       end
 
-    {:ok, _result} = Gtfs.apply_run_moves(world.organization.id, world.version.id, key, moves)
+    {:ok, _result} = Gtfs.apply_run_moves(world.audit, key, moves)
     world
   end
 
@@ -400,7 +400,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRunsTest do
       %{trip_id: second.id, from: victim.run_id, to: Gtfs.next_run_id(existing ++ ["1"])}
     ]
 
-    {:ok, _result} = Gtfs.apply_run_moves(world.organization.id, world.version.id, key, moves)
+    {:ok, _result} = Gtfs.apply_run_moves(world.audit, key, moves)
 
     {world, victim.run_id}
   end
@@ -437,7 +437,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRunsTest do
   # The version leaves the published set by its own field. `status` is not the
   # column: the export asks `publication_status`, so a version made "staging" in
   # the wrong field would still be published and the case would prove nothing.
-  # Through the lifecycle changeset, not through `update_gtfs_version/2`. That
+  # Through the lifecycle changeset, not through `update_gtfs_version/3`. That
   # function's changeset casts only the name, so passing `publication_status`
   # there returns `{:ok, version}` having changed nothing at all — a silent
   # success that left the version published and made this case prove nothing.

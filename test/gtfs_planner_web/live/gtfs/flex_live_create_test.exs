@@ -215,6 +215,27 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveCreateTest do
       assert_redirect(view, "/gtfs/#{ctx.version.id}/flex/#{service.id}")
     end
 
+    test "a revoked editor sees a refusal and keeps the create answers", ctx do
+      {:ok, view, _html} = live(ctx.conn, flex_path(ctx.version))
+
+      loaded(view)
+      view |> element("#create-service") |> render_click()
+
+      membership = Accounts.get_user_org_membership(ctx.user.id, ctx.organization.id)
+      deactivate_membership_fixture(membership)
+
+      view
+      |> element("#create-form")
+      |> render_submit(%{
+        "create" => %{"kind" => "area", "named" => "one", "name" => "Kept draft"}
+      })
+
+      assert has_element?(view, "#create-save-error", "You no longer have permission")
+      assert has_element?(view, "#create-drawer-overlay[data-open='true']")
+      assert attribute(doc(view), "#create_name", "value") == "Kept draft"
+      refute "Kept draft" in service_names(ctx.organization.id, ctx.version.id)
+    end
+
     test "a detour service is created on its route with no distance chosen", ctx do
       {:ok, view, _html} = live(ctx.conn, flex_path(ctx.version))
 
@@ -311,6 +332,24 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveCreateTest do
       # copy is impossible.
       refute has_element?(view, "#flex-copy")
       refute has_element?(view, "#flex-first-use")
+    end
+
+    test "a revoked editor cannot copy into an empty version", ctx do
+      {:ok, view, _html} = live(ctx.conn, flex_path(ctx.empty_version))
+
+      loaded(view)
+
+      view
+      |> element("#flex-copy-form")
+      |> render_submit(%{"copy" => %{"source_version_id" => to_string(ctx.source_version.id)}})
+
+      membership = Accounts.get_user_org_membership(ctx.user.id, ctx.organization.id)
+      deactivate_membership_fixture(membership)
+
+      view |> element("#copy-confirm-confirm") |> render_click()
+
+      assert has_element?(view, "#flex-copy-error", "You no longer have permission")
+      assert Flex.list_services(ctx.organization.id, ctx.empty_version.id) == []
     end
 
     test "offers no copy action and copies nothing when no source is chosen", ctx do

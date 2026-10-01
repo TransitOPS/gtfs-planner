@@ -39,6 +39,14 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   assembly is re-run over them, with no read and no write — so a page can show the
   suggestion on the page itself and the saved day is never mutated.
 
+  `check_connections/3` and `lock_and_check_connections!/2` answer R1 for candidate trip
+  pairs with the same `InSeat.state/2` the day load uses, so the drawer's pre-check, the
+  review and the save cannot disagree (CR-2, INV-2). The read runs in a transaction; the
+  locked variant runs inside the caller's, after the version `FOR SHARE` read and the
+  blocking lock, and locks the named trips and their blocks' trips before re-reading them
+  (INV-1). Both evaluate a stopless candidate row per pair, so the stops a write will
+  store are not part of the decision.
+
   `project_calendar_combination/2` and `project_trip_changes/2` are the pure batch
   producers a calendar combination and a per-trip change review read. The first projects
   every proposed service-ID move and destination date change at once and decides which
@@ -60,6 +68,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   import Ecto.Query, warn: false
 
+  alias GtfsPlanner.Authorization
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
 
   alias GtfsPlanner.Gtfs.Blocking.{
@@ -93,6 +103,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Operations
+  alias GtfsPlanner.Operations.Garage
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
@@ -186,6 +197,24 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   @type in_seat_entry :: %{row: Queries.in_seat_row(), state: InSeat.state()}
 
+  # R8's listed row: the stored record's own fields with the one reason that no
+  # block in the version reaches.
+  @type unmatched_in_seat_record :: %{
+          id: Ecto.UUID.t(),
+          from_trip_id: String.t(),
+          to_trip_id: String.t(),
+          transfer_type: 4 | 5,
+          from_stop_id: String.t() | nil,
+          to_stop_id: String.t() | nil,
+          updated_at: DateTime.t(),
+          reason: InSeat.reason()
+        }
+
+  # The three stale reasons R8 lists. A `{:not_next, _}` record is stale on a day
+  # type it is still reachable on, and an unconfirmed state is not a broken
+  # record, so neither reason belongs to the version's listing.
+  @unmatched_reasons [:trip_missing, :no_shared_date, :no_block]
+
   @typedoc """
   What `export_movements/2` hands the operations export: the day types in
   derivation order, each one's blocks in the shape `TodsExport.rows/1` reads
@@ -202,6 +231,9 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           # the day load's own inputs rather than recomputing them.
           contexts_by_day_type: %{optional(String.t()) => Context.t()}
         }
+
+  @typedoc "One candidate in-seat connection: the two natural trip IDs it would join."
+  @type pair :: {from_trip_id :: String.t(), to_trip_id :: String.t()}
 
   @type problem :: %{
           code: Checks.code(),
@@ -400,12 +432,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   `from` and `to` are the stored reference strings — `"stop:<stop_id>"` or
   `"garage:<uuid>"` — so a planner can hand a row straight back to
-  `put_deadhead_time/4` or `clear_deadhead_time/3`, and the labels beside them
+  `put_deadhead_time/3` or `clear_deadhead_time/2`, and the labels beside them
   are the stop name and the garage name a human reads. `uses` counts the legs of
   the day that drove this exact direction, `minutes` is `nil` when the drive is
   unknown, and `source` says which of the three answers it is.
   """
-  @type pair :: %{
+  @type deadhead_pair :: %{
           from: String.t(),
           to: String.t(),
           from_label: String.t(),
@@ -473,8 +505,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   @doc """
   Stores the eight Block rules settings for one organization's published version.
 
-  The save runs in one transaction whose first statement is the scoped version row
-  `FOR SHARE` (`Versions.lock_for_input_write!/2`), so the settings a review loaded
+  The save runs in one transaction that locks the editor membership first, then the
+  scoped version row `FOR SHARE` (`Versions.lock_for_input_write!/2`), so the settings a review loaded
   cannot change under a calendar combination that owns the version, and this save
   waits behind such an owner in turn. It then takes `lock_blocking!/1`, so a settings
   save serializes with every other block writer and cannot slip between a plan's
@@ -487,16 +519,16 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   organization and version, so a repeated save replaces every settings column of the
   same row rather than merging into it.
   """
-  @spec update_settings(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
-          {:ok, BlockingSetting.t()} | {:error, Ecto.Changeset.t() | :not_found}
-  def update_settings(organization_id, gtfs_version_id, attrs) do
-    case Repo.transaction(fn -> write_settings!(organization_id, gtfs_version_id, attrs) end) do
+  @spec update_settings(AuditContext.t(), map()) ::
+          {:ok, BlockingSetting.t()} | {:error, Ecto.Changeset.t() | :forbidden | :not_found}
+  def update_settings(%AuditContext{} = audit, attrs) do
+    case Repo.transaction(fn -> write_settings!(audit, attrs) end) do
       {:ok, result} -> result
       {:error, reason} -> {:error, reason}
     end
   end
 
-  # The version share lock is the first statement of the write transaction, before the
+  # The editor membership lock is first; the version share lock follows, before the
   # published check and the upsert, whether the save updates a stored row or inserts the
   # version's first one (INV-1). Nothing in this writer takes the version row `FOR UPDATE`,
   # so no caller upgrades the share lock, and the transaction makes the check and the write
@@ -506,7 +538,10 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # writer takes locks, so this writer joins the same serialization point as the block
   # writers. It is taken before the garage lookup, which is a read of another table, and
   # before the upsert's row lock.
-  defp write_settings!(organization_id, gtfs_version_id, attrs) do
+  defp write_settings!(%AuditContext{} = audit, attrs) do
+    Authorization.lock_editor!(audit)
+    organization_id = audit.organization_id
+    gtfs_version_id = audit.gtfs_version_id
     version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)
 
     if version.publication_status == @published_status do
@@ -600,29 +635,32 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   with nothing stored — a garage or type of another organization, and a route
   the version does not have, are both invalid.
 
-  The save runs in one transaction whose first statement is the scoped version
-  row `FOR SHARE` and whose next is `lock_blocking!/1`, so it serializes with
+  The save runs in one transaction that locks the editor membership first, then the
+  scoped version row `FOR SHARE`, then `lock_blocking!/1`, so it serializes with
   every other block writer and cannot slip between a plan's review of the route
   settings and its apply. A staging version or another
   organization's version is `{:error, :not_found}` and stores nothing.
   """
-  @spec update_route_operating_settings(Ecto.UUID.t(), Ecto.UUID.t(), [map()]) ::
-          :ok | {:error, :not_found | {:invalid, [map()]}}
-  def update_route_operating_settings(organization_id, gtfs_version_id, entries) do
+  @spec update_route_operating_settings(AuditContext.t(), [map()]) ::
+          :ok | {:error, :forbidden | :not_found | {:invalid, [map()]}}
+  def update_route_operating_settings(%AuditContext{} = audit, entries) do
     entries = Enum.map(entries, &setting_entry/1)
 
     case Repo.transaction(fn ->
-           write_route_settings!(organization_id, gtfs_version_id, entries)
+           write_route_settings!(audit, entries)
          end) do
       {:ok, result} -> result
       {:error, reason} -> {:error, reason}
     end
   end
 
-  # The version share lock is the first statement of the write transaction, exactly as
-  # `write_settings!/3` takes it, and `lock_blocking!/1` follows it and nothing else,
+  # The editor membership lock is first; the version share lock follows, exactly as
+  # `write_settings!/2` takes it, and `lock_blocking!/1` follows it and nothing else,
   # so this writer joins the same serialization point as every block writer.
-  defp write_route_settings!(organization_id, gtfs_version_id, entries) do
+  defp write_route_settings!(%AuditContext{} = audit, entries) do
+    Authorization.lock_editor!(audit)
+    organization_id = audit.organization_id
+    gtfs_version_id = audit.gtfs_version_id
     version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)
 
     if version.publication_status == @published_status do
@@ -778,13 +816,14 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   order never depends on the order the blocks came back in.
 
   `from` and `to` are the stored reference strings, so the drawer can hand a row
-  straight to `put_deadhead_time/4` or `clear_deadhead_time/3`. A `nil` key
+  straight to `put_deadhead_time/3` or `clear_deadhead_time/2`. A `nil` key
   selects the first day type; an unknown key is
   `{:error, {:unknown_day_type, day_types}}` and selects none, and a
   foreign or unpublished version is `{:error, :not_found}`.
   """
   @spec list_deadhead_pairs(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
-          {:ok, [pair()]} | {:error, :not_found | {:unknown_day_type, [DayTypes.day_type()]}}
+          {:ok, [deadhead_pair()]}
+          | {:error, :not_found | {:unknown_day_type, [DayTypes.day_type()]}}
   def list_deadhead_pairs(organization_id, gtfs_version_id, day_type_key) do
     case Repo.transaction(fn ->
            day = read_day(organization_id, gtfs_version_id, day_type_key)
@@ -809,8 +848,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   named database constraint, so an out-of-range or non-numeric value is a
   changeset error rather than a raised constraint violation.
 
-  The save runs in one transaction whose first statement is the scoped version row
-  `FOR SHARE` and whose next is `lock_blocking!/1`, so it serializes with every
+  The save runs in one transaction that locks the editor membership first, then the
+  scoped version row `FOR SHARE`, then `lock_blocking!/1`, so it serializes with every
   other planning-input writer and cannot slip between a plan's review of the
   entered driving times and its apply. It replaces the minutes of
   exactly this ordered pair: the reverse direction keeps whatever it had, and
@@ -818,15 +857,15 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   `{:error, :not_found}`.
   """
   @spec put_deadhead_time(
-          Ecto.UUID.t(),
-          Ecto.UUID.t(),
+          AuditContext.t(),
           {String.t(), String.t()},
           non_neg_integer()
         ) ::
-          {:ok, DeadheadTime.t()} | {:error, :not_found | :invalid_ref | Ecto.Changeset.t()}
-  def put_deadhead_time(organization_id, gtfs_version_id, {from_ref, to_ref}, minutes) do
+          {:ok, DeadheadTime.t()}
+          | {:error, :forbidden | :not_found | :invalid_ref | Ecto.Changeset.t()}
+  def put_deadhead_time(%AuditContext{} = audit, {from_ref, to_ref}, minutes) do
     case Repo.transaction(fn ->
-           write_deadhead_time!(organization_id, gtfs_version_id, {from_ref, to_ref}, minutes)
+           write_deadhead_time!(audit, {from_ref, to_ref}, minutes)
          end) do
       {:ok, result} -> result
       {:error, reason} -> {:error, reason}
@@ -845,13 +884,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   The delete takes the same locks as a save, the version row `FOR SHARE` and then
   `lock_blocking!/1`, so a reset cannot land between a plan's review and its apply.
   """
-  @spec clear_deadhead_time(Ecto.UUID.t(), Ecto.UUID.t(), {String.t(), String.t()}) ::
-          :ok | {:error, :not_found}
-  def clear_deadhead_time(organization_id, gtfs_version_id, {from_ref, to_ref}) do
+  @spec clear_deadhead_time(AuditContext.t(), {String.t(), String.t()}) ::
+          :ok | {:error, :forbidden | :not_found}
+  def clear_deadhead_time(%AuditContext{} = audit, {from_ref, to_ref}) do
     case Repo.transaction(fn ->
            clear_deadhead_time!(
-             organization_id,
-             gtfs_version_id,
+             audit,
              canonical_pair({from_ref, to_ref})
            )
          end) do
@@ -948,10 +986,13 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     end
   end
 
-  # The version share lock is the first statement of the write transaction and
+  # The editor membership lock is first; the version share lock follows and
   # `lock_blocking!/1` follows it and nothing else, in the order every block writer takes
   # locks, exactly as the settings and route-settings writers take them.
-  defp write_deadhead_time!(organization_id, gtfs_version_id, {from_ref, to_ref}, minutes) do
+  defp write_deadhead_time!(%AuditContext{} = audit, {from_ref, to_ref}, minutes) do
+    Authorization.lock_editor!(audit)
+    organization_id = audit.organization_id
+    gtfs_version_id = audit.gtfs_version_id
     version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)
 
     if version.publication_status == @published_status do
@@ -1010,31 +1051,58 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   defp check_stops(_organization_id, _gtfs_version_id, []), do: :ok
 
   defp check_stops(organization_id, gtfs_version_id, stop_ids) do
-    known =
-      from(s in Stop,
-        where:
-          s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
-            s.stop_id in ^stop_ids,
-        select: s.stop_id
-      )
-      |> Repo.all()
-      |> MapSet.new()
+    known = locked_stop_ids(organization_id, gtfs_version_id, stop_ids)
 
     if MapSet.equal?(known, MapSet.new(stop_ids)), do: :ok, else: {:error, :invalid_ref}
+  end
+
+  defp locked_stop_ids(organization_id, gtfs_version_id, stop_ids) do
+    from(s in Stop,
+      where:
+        s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+          s.stop_id in ^stop_ids,
+      order_by: [asc: s.id],
+      lock: "FOR SHARE",
+      select: s.stop_id
+    )
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
+  # The endpoint stops must still exist at save time. A parent station may be only
+  # a child's parent_station string; lock its row when present, but do not require it.
+  defp lock_relief_stop_refs!(organization_id, gtfs_version_id, day) do
+    stops = relief_stops(day)
+    actual_ids = Map.keys(stops)
+    candidate_ids = stops |> candidate_groups() |> Map.keys()
+    known = locked_stop_ids(organization_id, gtfs_version_id, actual_ids ++ candidate_ids)
+
+    unless MapSet.subset?(MapSet.new(actual_ids), known), do: Repo.rollback(:not_found)
   end
 
   defp check_garages(_organization_id, []), do: :ok
 
   defp check_garages(organization_id, garage_ids) do
-    if Enum.all?(garage_ids, &Operations.get_garage(organization_id, &1)),
-      do: :ok,
-      else: {:error, :invalid_ref}
+    known =
+      from(g in Garage,
+        where: g.organization_id == ^organization_id and g.id in ^garage_ids,
+        order_by: [asc: g.id],
+        lock: "FOR SHARE",
+        select: g.id
+      )
+      |> Repo.all()
+      |> MapSet.new()
+
+    if MapSet.equal?(known, MapSet.new(garage_ids)), do: :ok, else: {:error, :invalid_ref}
   end
 
   # The version share lock and the blocking lock are taken in the order every block writer
   # takes locks, and the delete is by the four-column key of the one ordered pair: the
   # reverse direction is a different row and is never touched.
-  defp clear_deadhead_time!(organization_id, gtfs_version_id, {from_ref, to_ref}) do
+  defp clear_deadhead_time!(%AuditContext{} = audit, {from_ref, to_ref}) do
+    Authorization.lock_editor!(audit)
+    organization_id = audit.organization_id
+    gtfs_version_id = audit.gtfs_version_id
     version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)
 
     if version.publication_status == @published_status do
@@ -1093,7 +1161,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   `marked?` is the version's own answer for the candidate's ID, so a candidate
   whose station is marked is marked and a child stop's own row — which is not a
-  candidate, and which `update_relief_settings/4` therefore leaves alone — does
+  candidate, and which `update_relief_settings/3` therefore leaves alone — does
   not light this row up.
 
   A `nil` key selects the first day type; an unknown key is
@@ -1123,8 +1191,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   other seven settings of the same row. `marked` is the list of candidate IDs
   the drawer shows as ticked.
 
-  The save is all-or-nothing and runs in one transaction whose first statement is
-  the scoped version row `FOR SHARE` and whose next is `lock_blocking!/1`, so it
+  The save is all-or-nothing and runs in one transaction that locks the editor
+  membership first, then the scoped version row `FOR SHARE`, then `lock_blocking!/1`, so it
   serializes with every other block writer and cannot slip between a plan's review
   of the relief inputs and its apply. The candidates are
   recomputed inside that transaction, under the lock, from the same day load the
@@ -1139,28 +1207,34 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   can pattern-match one tuple.
   """
   @spec update_relief_settings(
-          Ecto.UUID.t(),
-          Ecto.UUID.t(),
+          AuditContext.t(),
           String.t() | nil,
           map()
         ) ::
           {:ok, :ok}
-          | {:error, :not_found | {:unknown_day_type, [DayTypes.day_type()]} | Ecto.Changeset.t()}
-  def update_relief_settings(organization_id, gtfs_version_id, day_type_key, attrs) do
+          | {:error,
+             :forbidden
+             | :not_found
+             | {:unknown_day_type, [DayTypes.day_type()]}
+             | Ecto.Changeset.t()}
+  def update_relief_settings(%AuditContext{} = audit, day_type_key, attrs) do
     case Repo.transaction(fn ->
-           write_relief_settings!(organization_id, gtfs_version_id, day_type_key, attrs)
+           write_relief_settings!(audit, day_type_key, attrs)
          end) do
       {:ok, result} -> result
       {:error, reason} -> {:error, reason}
     end
   end
 
-  # The version share lock is the first statement of the write transaction and
+  # The editor membership lock is first; the version share lock follows and
   # `lock_blocking!/1` follows it and nothing else, in the order every block writer takes
   # locks, exactly as the settings and driving-time writers take them. The candidates are
   # read from the day load *after* the lock, so a mark cannot be saved against a candidate
   # list a concurrent plan has already made stale.
-  defp write_relief_settings!(organization_id, gtfs_version_id, day_type_key, attrs) do
+  defp write_relief_settings!(%AuditContext{} = audit, day_type_key, attrs) do
+    Authorization.lock_editor!(audit)
+    organization_id = audit.organization_id
+    gtfs_version_id = audit.gtfs_version_id
     version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)
 
     if version.publication_status == @published_status do
@@ -1169,6 +1243,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       # An unknown key rolls the transaction back here, before the first write, so
       # the stored limit and marks are exactly as the last accepted save left them.
       day = read_day(organization_id, gtfs_version_id, day_type_key)
+      lock_relief_stop_refs!(organization_id, gtfs_version_id, day)
 
       with {:ok, _setting} <- store_piece_limit!(organization_id, gtfs_version_id, attrs) do
         save_relief_marks!(organization_id, gtfs_version_id, day, marked_ids(attrs))
@@ -1198,7 +1273,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   # The ticked candidate IDs of a submitted form, as the set the two writes below
   # compare against. A non-list (a hand-rolled or absent parameter) is no ticks at
-  # all rather than a raise, which is the same reading `update_settings/3` gives a
+  # all rather than a raise, which is the same reading `update_settings/2` gives a
   # missing optional field.
   defp marked_ids(attrs) do
     case Map.get(attrs, :marked, Map.get(attrs, "marked")) do
@@ -1662,6 +1737,60 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   @doc """
+  Decides R1 for candidate in-seat connections without writing anything.
+
+  Each pair is evaluated as a stopless candidate type-4 row through the same
+  `InSeat.state/2` the day load and the block review use, over every derived day type
+  both of its trips run in: `:matches` is `:ok` and any other state is
+  `{:refused, state}`, refusal included, so the caller can name the day types and the
+  intervening trip a not-next state carries (R1, INV-2). The read takes no lock, so it
+  is a pre-check and never a guarantee: the save repeats it under the locks.
+
+  A foreign or unpublished version is `{:error, :not_found}`, and a pair naming a trip
+  this version does not hold is refused as `{:stale, :trip_missing}` rather than
+  silently dropped.
+  """
+  @spec check_connections(Ecto.UUID.t(), Ecto.UUID.t(), [pair()]) ::
+          {:ok, %{pair() => :ok | {:refused, InSeat.state()}}} | {:error, :not_found}
+  def check_connections(organization_id, gtfs_version_id, pairs) do
+    case Repo.transaction(fn -> read_connections!(organization_id, gtfs_version_id, pairs) end) do
+      {:ok, checks} -> {:ok, checks}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Lists the type 4/5 records of one version that "don't match any block" (R8).
+
+  A record qualifies exactly when its state over every day type is `{:stale,
+  reason}` with reason `:trip_missing`, `:no_shared_date` or `:no_block` - the
+  three reasons that no block in the version can reach. A `{:not_next, _}` record
+  is stale on a day type and is still reachable there, and an unconfirmed state is
+  not a broken record at all, so neither is listed. Each returned row carries the
+  stored record's `id` and `updated_at` with its `reason`, which is what a
+  removal confirms (R7).
+
+  The state comes from the one `InSeat.state/2` the day load, the pre-check and the
+  block review read, over the same `in_seat_context_for_rows/6` context, so the
+  version's listing can never disagree with a day's (INV-2). The read is bounded:
+  the calendars, the records, the trips the records name, and the trips of the
+  blocks those records are evaluated in - a fixed number of queries whatever the
+  number of records.
+
+  A foreign or unpublished version is `{:error, :not_found}`.
+  """
+  @spec unmatched_in_seat_records(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, [unmatched_in_seat_record()]} | {:error, :not_found}
+  def unmatched_in_seat_records(organization_id, gtfs_version_id) do
+    case Repo.transaction(fn ->
+           read_unmatched!(organization_id, gtfs_version_id)
+         end) do
+      {:ok, records} -> {:ok, records}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
   Draws the day a plan would leave behind, as a day of exactly the shape
   `load_day/3` returns.
 
@@ -1759,6 +1888,76 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     }
 
     %{source | block_rows: block_rows, context: context}
+  end
+
+  @doc """
+  Decides R1 for candidate in-seat connections under the block writers' locks.
+
+  Call this inside the caller's transaction, after its version `FOR SHARE` read. The
+  order is `load_calendars!/2` (which re-takes that read before the publication and
+  calendar reads), `lock_blocking!/1`, the named trips' `FOR UPDATE` rows with every
+  trip of their blocks on the day types both of each pair's services run in, then a
+  re-read of the locked rows and the evaluation (INV-1). Nothing is written and no
+  refusal rolls the caller back: the caller decides what a refusal means.
+
+  Every pair answers `%{from, to, check}`, where the trip rows are the locked rows and
+  `nil` for a trip this version does not hold, whose check is then
+  `{:refused, {:stale, :trip_missing}}`. The write stores the handoff stops from
+  `from.last_stop` and `to.first_stop`, which is why they travel with the check.
+
+  A foreign or unpublished version rolls the caller's transaction back with `:not_found`.
+  """
+  @spec lock_and_check_connections!(AuditContext.t(), [pair()]) ::
+          %{
+            pair() => %{
+              from: Queries.trip_row() | nil,
+              to: Queries.trip_row() | nil,
+              check: :ok | {:refused, InSeat.state()}
+            }
+          }
+  def lock_and_check_connections!(%AuditContext{} = audit, pairs) do
+    organization_id = audit.organization_id
+    version_id = audit.gtfs_version_id
+
+    calendars = load_calendars!(organization_id, version_id)
+    day_types = DayTypes.derive(calendars)
+    service_dates = DayTypes.service_dates(calendars)
+
+    lock_blocking!(version_id)
+
+    named = Queries.trip_rows(organization_id, version_id, {:trip_ids, named_trip_ids(pairs)})
+
+    locked_ids =
+      Queries.lock_trips!(
+        organization_id,
+        version_id,
+        Enum.map(named, & &1.id),
+        named |> Enum.map(& &1.block_id) |> Enum.reject(&is_nil/1) |> Enum.uniq(),
+        shared_service_ids(day_types, pairs, named)
+      )
+
+    rows = Queries.trip_rows(organization_id, version_id, {:uuids, locked_ids})
+
+    checks =
+      evaluate_connections(
+        organization_id,
+        version_id,
+        day_types,
+        service_dates,
+        rows,
+        pairs
+      )
+
+    trips_by_id = Map.new(rows, &{&1.trip_id, &1})
+
+    Map.new(pairs, fn pair = {from_trip_id, to_trip_id} ->
+      {pair,
+       %{
+         from: Map.get(trips_by_id, from_trip_id),
+         to: Map.get(trips_by_id, to_trip_id),
+         check: Map.fetch!(checks, pair)
+       }}
+    end)
   end
 
   @doc """
@@ -2004,6 +2203,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
              {:stale_review, Review.review()}
              | {:ineligible, [Ecto.UUID.t()]}
              | {:audit_failed, term()}
+             | :forbidden
              | :not_found
              | {:unknown_day_type, [DayTypes.day_type()]}
              | :invalid_command
@@ -2056,6 +2256,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           | {:error,
              {:stale_review, Review.review()}
              | {:unknown_day_type, [DayTypes.day_type()]}
+             | :forbidden
              | :not_found
              | :busy
              | Ecto.Changeset.t()}
@@ -2118,6 +2319,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
              :stale_plan
              | :invalid_plan
              | {:unknown_day_type, [DayTypes.day_type()]}
+             | :forbidden
              | :not_found
              | :busy
              | {:audit_failed, term()}}
@@ -2148,6 +2350,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # run is repeated from the locked rows in the plan's mode and only the fresh
   # fingerprint decides whether the reviewed plan is still the current one.
   defp apply_plan!(day_type_key, mode, plan, %AuditContext{} = audit) do
+    Authorization.lock_editor!(audit)
     organization_id = audit.organization_id
     version_id = audit.gtfs_version_id
 
@@ -2781,6 +2984,147 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     Map.get(service_dates, service_id, MapSet.new())
   end
 
+  # -- Version-level unmatched records ---------------------------------------
+
+  # R8's read path: the version's calendars and day types, every type 4/5 record
+  # once, the trips those records name once, and the one `in_seat_context_for_rows/6`
+  # context the day load and the pre-check build. The count of queries is fixed by
+  # those kinds rather than by the number of records, which is what makes a
+  # version-wide removal list possible on a feed with thousands of records.
+  defp read_unmatched!(organization_id, gtfs_version_id) do
+    calendars = load_calendars!(organization_id, gtfs_version_id)
+    day_types = DayTypes.derive(calendars)
+    service_dates = DayTypes.service_dates(calendars)
+    rows = Queries.all_in_seat_rows(organization_id, gtfs_version_id)
+
+    trips =
+      Queries.trip_rows(organization_id, gtfs_version_id, {:trip_ids, record_trip_ids(rows)})
+
+    context =
+      in_seat_context_for_rows(
+        organization_id,
+        gtfs_version_id,
+        day_types,
+        service_dates,
+        trips,
+        rows
+      ).context
+
+    Enum.flat_map(rows, &unmatched_record(&1, context))
+  end
+
+  defp record_trip_ids(rows) do
+    rows
+    |> Enum.flat_map(&[&1.from_trip_id, &1.to_trip_id])
+    |> Enum.uniq()
+  end
+
+  # One state per record, and only the three reasons no block reaches survive. The
+  # record's own fields travel with the reason, so a caller can confirm a removal
+  # against the `updated_at` it read here (R7, INV-4).
+  defp unmatched_record(row, context) do
+    case InSeat.state(row, context) do
+      {:stale, reason} when reason in @unmatched_reasons -> [Map.put(row, :reason, reason)]
+      _state -> []
+    end
+  end
+
+  # -- Candidate in-seat connections -----------------------------------------
+
+  # R1's read path: the calendars and day types of the scoped version, the trips the
+  # pairs name, and one stopless candidate row per pair. The candidate carries no stops
+  # because the rule's stop comparison is about a stored record's own stops; the stops a
+  # write stores come from the locked trip rows instead.
+  defp read_connections!(organization_id, gtfs_version_id, pairs) do
+    calendars = load_calendars!(organization_id, gtfs_version_id)
+    day_types = DayTypes.derive(calendars)
+    service_dates = DayTypes.service_dates(calendars)
+
+    trips =
+      Queries.trip_rows(organization_id, gtfs_version_id, {:trip_ids, named_trip_ids(pairs)})
+
+    evaluate_connections(
+      organization_id,
+      gtfs_version_id,
+      day_types,
+      service_dates,
+      trips,
+      pairs
+    )
+  end
+
+  # One `InSeat.state/2` per pair over the shared context: `:matches` is `:ok` and
+  # every other state is refused as it stands, so a refusal names the day types and the
+  # intervening trip without a second evaluation anywhere.
+  defp evaluate_connections(
+         organization_id,
+         gtfs_version_id,
+         day_types,
+         service_dates,
+         trips,
+         pairs
+       ) do
+    rows = Map.new(pairs, fn pair -> {pair, candidate_row(pair)} end)
+
+    context =
+      in_seat_context_for_rows(
+        organization_id,
+        gtfs_version_id,
+        day_types,
+        service_dates,
+        trips,
+        Map.values(rows)
+      ).context
+
+    Map.new(rows, fn {pair, row} -> {pair, connection_check(row, context)} end)
+  end
+
+  # A candidate is evaluated exactly as a stopless type 4 record would be, which is what
+  # an unsaved choice describes. It has no id and is never turned into a finding.
+  defp candidate_row({from_trip_id, to_trip_id}) do
+    %{
+      id: nil,
+      from_trip_id: from_trip_id,
+      to_trip_id: to_trip_id,
+      transfer_type: 4,
+      from_stop_id: nil,
+      to_stop_id: nil
+    }
+  end
+
+  defp connection_check(row, context) do
+    case InSeat.state(row, context) do
+      :matches -> :ok
+      state -> {:refused, state}
+    end
+  end
+
+  defp named_trip_ids(pairs) do
+    pairs
+    |> Enum.flat_map(fn {from_trip_id, to_trip_id} -> [from_trip_id, to_trip_id] end)
+    |> Enum.uniq()
+  end
+
+  # The services R1 can evaluate a pair in: those of every day type both of the pair's
+  # trips run in. Locking the named trips' block trips in exactly these services is the
+  # set whose `block_id` the evaluation reads, so nothing it depends on can move under it
+  # (INV-1). A pair whose trips are not both in hand, or never share a day type,
+  # contributes nothing here and the rule decides that pair without an order.
+  defp shared_service_ids(day_types, pairs, trips) do
+    by_trip_id = Map.new(trips, &{&1.trip_id, &1})
+
+    for {from_trip_id, to_trip_id} <- pairs,
+        %{service_id: from_service} <- [Map.get(by_trip_id, from_trip_id)],
+        %{service_id: to_service} <- [Map.get(by_trip_id, to_trip_id)],
+        day_type <- day_types,
+        from_service in day_type.service_ids,
+        to_service in day_type.service_ids,
+        service_id <- day_type.service_ids do
+      service_id
+    end
+    |> Enum.uniq()
+  end
+
   # -- Calendar combination projection --------------------------------------
 
   # One projection: the day types and service dates of its calendars, the trips it holds,
@@ -2978,7 +3322,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       trips: Map.new(trips, &{&1.trip_id, &1}),
       service_dates: service_dates,
       day_types: day_types,
-      sequences: projection_sequences(day_types, trips)
+      sequences: projection_sequences(day_types, trips),
+      trip_ids_by_uuid: Map.new(trips, &{&1.id, &1.trip_id})
     }
   end
 
@@ -3561,6 +3906,28 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     rows =
       Queries.in_seat_rows(organization_id, gtfs_version_id, Enum.map(trips, & &1.trip_id))
 
+    in_seat_context_for_rows(
+      organization_id,
+      gtfs_version_id,
+      day_types,
+      service_dates,
+      trips,
+      rows
+    )
+  end
+
+  # R1's read and locked paths evaluate candidate rows they hold rather than stored
+  # records, so they share this context builder with the day load and the block review:
+  # one `InSeat.state/2` decides a pair the pre-check shows and a save writes (CR-2,
+  # INV-2).
+  defp in_seat_context_for_rows(
+         organization_id,
+         gtfs_version_id,
+         day_types,
+         service_dates,
+         trips,
+         rows
+       ) do
     trips = named_trips(organization_id, gtfs_version_id, rows, trips)
     evaluated = both_service_day_types(day_types, rows, trips)
     block_rows = block_rows(organization_id, gtfs_version_id, evaluated, rows, trips)
@@ -3572,7 +3939,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
         trips: trips,
         service_dates: service_dates,
         day_types: evaluated,
-        sequences: sequences(evaluated, block_rows)
+        sequences: sequences(evaluated, block_rows),
+        trip_ids_by_uuid: Map.new(block_rows, &{&1.id, &1.trip_id})
       }
     }
   end
@@ -3806,6 +4174,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # blocking lock and the locked trip rows, and every refusal rolls the transaction
   # back so nothing partial commits.
   defp apply_command!(day_type_key, command, %AuditContext{} = audit, confirmation) do
+    Authorization.lock_editor!(audit)
     organization_id = audit.organization_id
     version_id = audit.gtfs_version_id
 
@@ -4199,7 +4568,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
        ) do
     snapshot = Map.fetch!(snapshots, trip.id)
 
-    case GtfsPlanner.Gtfs.record_change_in_transaction(
+    case Audit.record_change_in_transaction(
            audit,
            :trip,
            %{trip | block_id: destination},
@@ -4291,6 +4660,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # here as a rollback and reaches the caller as `{:error, reason}` rather than as
   # a success carrying an error tuple.
   defp write_attributes!(day_type_key, block_id, values, %AuditContext{} = audit, confirmation) do
+    Authorization.lock_editor!(audit)
     organization_id = audit.organization_id
     version_id = audit.gtfs_version_id
 

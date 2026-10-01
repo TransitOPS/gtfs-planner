@@ -458,14 +458,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksRulesLiveTest do
       # replaces every column of the row, so a save from this drawer has to carry
       # the stored limit through rather than clearing it.
       {:ok, _setting} =
-        Gtfs.update_blocking_settings(context.organization.id, context.version.id, %{
-          "min_layover_minutes" => "5",
-          "pull_out_buffer_minutes" => "0",
-          "interlining" => "any",
-          "deadhead_speed_kmh" => "30",
-          "deadhead_circuity" => "1.3",
-          "max_piece_minutes" => "330"
-        })
+        Gtfs.update_blocking_settings(
+          GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+            context.organization.id,
+            context.version.id
+          ),
+          %{
+            "min_layover_minutes" => "5",
+            "pull_out_buffer_minutes" => "0",
+            "interlining" => "any",
+            "deadhead_speed_kmh" => "30",
+            "deadhead_circuity" => "1.3",
+            "max_piece_minutes" => "330"
+          }
+        )
 
       assert settings(context).max_piece_minutes == 330
 

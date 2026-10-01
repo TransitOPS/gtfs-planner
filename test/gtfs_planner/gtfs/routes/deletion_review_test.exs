@@ -9,6 +9,7 @@ defmodule GtfsPlanner.Gtfs.Routes.DeletionReviewTest do
   import GtfsPlanner.VersionsFixtures
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.User
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
@@ -31,7 +32,6 @@ defmodule GtfsPlanner.Gtfs.Routes.DeletionReviewTest do
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Translation
   alias GtfsPlanner.Gtfs.Trip
-  alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion
@@ -462,9 +462,13 @@ defmodule GtfsPlanner.Gtfs.Routes.DeletionReviewTest do
         user_fixture(%{email: "route-review-#{System.unique_integer([:positive])}@example.com"})
 
       {:ok, _membership} =
-        Organizations.add_user_to_organization(actor.id, organization.id, [
-          "pathways_studio_editor"
-        ])
+        Accounts.create_user_org_membership(%{
+          user_id: actor.id,
+          organization_id: organization.id,
+          roles: [
+            "pathways_studio_editor"
+          ]
+        })
 
       audit = %AuditContext{
         organization_id: organization.id,

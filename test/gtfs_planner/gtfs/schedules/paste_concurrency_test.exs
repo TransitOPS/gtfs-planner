@@ -209,7 +209,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
         Task.Supervisor.async_nolink(supervisor, fn ->
           unboxed(fn ->
             stop = Repo.get_by!(Stop, stop_id: "PSA-2")
-            {:ok, renamed} = Gtfs.update_stop(stop, %{stop_name: "Market Street Hall"})
+            {:ok, renamed} = Gtfs.import_update_stop(stop, %{stop_name: "Market Street Hall"})
             send(parent, {:stop_committed, self()})
             renamed
           end)

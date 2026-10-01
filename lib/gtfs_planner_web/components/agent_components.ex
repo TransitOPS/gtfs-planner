@@ -39,7 +39,15 @@ defmodule GtfsPlannerWeb.AgentComponents do
 
   import GtfsPlannerWeb.CoreComponents, only: [button: 1, callout: 1, icon: 1, input: 1]
 
-  @panel_statuses [:idle, :working, :ended, :forbidden, :limit]
+  @panel_statuses [
+    :idle,
+    :working,
+    :ended,
+    :forbidden,
+    :unavailable,
+    :limit,
+    :allowance_exhausted
+  ]
 
   @doc """
   Renders the helper panel: header, transcript, status, notice and composer.
@@ -66,6 +74,15 @@ defmodule GtfsPlannerWeb.AgentComponents do
   attr :form, Phoenix.HTML.Form, required: true, doc: "the composer form"
   attr :notice, :string, default: nil, doc: "a panel-level refusal or advisory"
   attr :entries_empty?, :boolean, required: true, doc: "true before the conversation has an entry"
+
+  attr :review_label, :any,
+    default: "Review prepared change",
+    doc:
+      "the action label for a prepared change, named by the caller that offers it: a string, or a function of the prepared change for a caller that prepares more than one kind"
+
+  attr :composer_hint, :string,
+    default: "Review changes before applying.",
+    doc: "the rule the composer repeats when it can send; a read-only helper passes its own"
 
   def agent_panel(assigns) do
     ~H"""
@@ -132,7 +149,13 @@ defmodule GtfsPlannerWeb.AgentComponents do
           </div>
         </div>
 
-        <.agent_entry :for={{dom_id, entry} <- @entries} id={dom_id} entry={entry} title={@title} />
+        <.agent_entry
+          :for={{dom_id, entry} <- @entries}
+          id={dom_id}
+          entry={entry}
+          title={@title}
+          review_label={@review_label}
+        />
       </div>
 
       <p
@@ -163,7 +186,7 @@ defmodule GtfsPlannerWeb.AgentComponents do
         />
         <div class="flex flex-wrap items-center justify-between gap-3">
           <small id="agent-composer-hint" class="text-xs text-base-content/70">
-            {composer_hint(@status)}
+            {composer_hint(@status, @composer_hint)}
           </small>
           <div class="flex items-center gap-2">
             <.button
@@ -235,6 +258,11 @@ defmodule GtfsPlannerWeb.AgentComponents do
   attr :entry, :map, required: true, doc: "one conversation entry"
   attr :title, :string, required: true, doc: "the pack's panel title"
 
+  attr :review_label, :any,
+    default: "Review prepared change",
+    doc:
+      "the action label for a prepared change, named by the caller that offers it: a string, or a function of the prepared change for a caller that prepares more than one kind"
+
   def agent_entry(assigns) do
     badge = entry_badge(assigns.entry)
     prepared_badge = prepared_badge(assigns.entry)
@@ -245,6 +273,7 @@ defmodule GtfsPlannerWeb.AgentComponents do
       |> assign(:badge_tone, badge && elem(badge, 1))
       |> assign(:prepared_badge, prepared_badge)
       |> assign(:callout_kind, callout_kind(assigns.entry.status))
+      |> assign(:review_label, review_label(assigns.review_label, assigns.entry.prepared))
 
     ~H"""
     <article id={@id} class="text-sm">
@@ -274,7 +303,27 @@ defmodule GtfsPlannerWeb.AgentComponents do
             Retry request
           </.button>
         </.callout>
-        <p :if={is_nil(@callout_kind) and @entry.text != ""} class="whitespace-pre-line">
+
+        <.agent_evidence_card
+          :for={{evidence, index} <- Enum.with_index(@entry.evidence, 1)}
+          id={"agent-evidence-#{@entry.id}-#{index}"}
+          evidence={evidence}
+        />
+
+        <p
+          :if={is_nil(@callout_kind) and @entry.text != ""}
+          id={prose_id(@entry)}
+          class={[
+            "whitespace-pre-line",
+            @entry.evidence != [] && "mt-3.5 text-base-content/80"
+          ]}
+        >
+          <span
+            :if={@entry.evidence != []}
+            class="mb-0.5 block text-xs font-bold text-base-content/60"
+          >
+            Model reply
+          </span>
           {@entry.text}
         </p>
 
@@ -320,7 +369,7 @@ defmodule GtfsPlannerWeb.AgentComponents do
               size="sm"
               class="min-h-11 w-full"
             >
-              Review prepared change
+              {@review_label}
             </.button>
           </div>
         </section>
@@ -329,24 +378,150 @@ defmodule GtfsPlannerWeb.AgentComponents do
     """
   end
 
+  @doc """
+  Renders one server evidence card: the authoritative count, the server facts,
+  completeness, the source it was read from and its resolved resource links.
+
+  `evidence` is the panel's resolved value. Nothing here is built from model
+  text, and a resource the panel did not link renders as plain text beside a
+  visible reason rather than as a link that looks trustworthy (AC-4).
+  """
+  attr :id, :string, required: true, doc: "the card's DOM id"
+  attr :evidence, :map, required: true, doc: "one resolved server evidence payload"
+
+  def agent_evidence_card(assigns) do
+    assigns =
+      assigns
+      |> assign(:facts, Map.get(assigns.evidence, :facts, []))
+      |> assign(:resources, Map.get(assigns.evidence, :resources, []))
+      |> assign(:exclusions, Map.get(assigns.evidence, :exclusions, []))
+      |> assign(:complete?, assigns.evidence.completeness == :complete)
+
+    ~H"""
+    <section
+      id={@id}
+      data-evidence-kind={@evidence.kind}
+      data-evidence-completeness={Atom.to_string(@evidence.completeness)}
+      class="mt-4 overflow-hidden rounded-box border border-base-300"
+    >
+      <div class="bg-base-200 px-3.5 py-3">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span class="text-xs font-bold text-base-content/70">Server result</span>
+          <span class={["badge badge-sm", if(@complete?, do: "badge-info", else: "badge-warning")]}>
+            {if @complete?, do: "Complete", else: "Incomplete"}
+          </span>
+        </div>
+        <h3 class="mt-1.5 text-sm font-semibold">{@evidence.title}</h3>
+        <p class="mt-1 text-base font-semibold">
+          {number(@evidence.total)} {@evidence.total_label}
+        </p>
+        <p
+          :if={not @complete? and @evidence.completeness_reason}
+          class="mt-1 text-xs text-base-content/70"
+        >
+          {@evidence.completeness_reason}
+        </p>
+      </div>
+
+      <dl
+        :if={@facts != []}
+        class="grid grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-1.5 px-3.5 py-3 text-xs"
+      >
+        <%= for fact <- @facts do %>
+          <dt class="text-base-content/70">{fact.label}</dt>
+          <dd class="font-semibold">{fact.value}</dd>
+        <% end %>
+      </dl>
+
+      <ul :if={@resources != []} class="border-t border-base-300 px-3.5 py-2 text-xs">
+        <li
+          :for={resource <- @resources}
+          class="grid grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-0.5 py-2 text-xs"
+        >
+          <span class="text-base-content/70">{resource_kind(resource)}</span>
+          <.link
+            :if={resource[:link]}
+            navigate={resource[:link]}
+            class="link min-h-11 py-1 font-semibold underline"
+          >
+            {Map.get(resource, :label) || resource.id}
+          </.link>
+          <span :if={is_nil(resource[:link])} class="font-semibold">
+            {Map.get(resource, :label) || resource.id}
+          </span>
+          <span :if={is_nil(resource[:link])} class="col-start-2 text-base-content/60">
+            no link for this reference
+          </span>
+        </li>
+      </ul>
+
+      <ul
+        :if={@exclusions != []}
+        class="border-t border-base-300 px-3.5 py-2 text-xs text-base-content/70"
+      >
+        <li :for={exclusion <- @exclusions} class="py-0.5">Excluded · {exclusion}</li>
+      </ul>
+
+      <p class="border-t border-base-300 px-3.5 py-2 text-xs text-base-content/60">
+        Source · {@evidence.source_ref} · digest {short_digest(@evidence.digest)}{revision(
+          @evidence.source_revision
+        )}
+      </p>
+    </section>
+    """
+  end
+
+  defp number(value) when is_integer(value), do: Integer.to_string(value)
+  defp number(value), do: to_string(value)
+
+  # The kind is a code-owned label, so it is shown as a word rather than a raw
+  # schema token, without this module naming any pack's resource kinds.
+  defp resource_kind(%{kind: kind}) when is_binary(kind), do: String.capitalize(kind)
+  defp resource_kind(_resource), do: "resource"
+
+  defp short_digest(digest) when is_binary(digest), do: binary_part(digest, 0, 12)
+  defp short_digest(_digest), do: "unavailable"
+
+  defp revision(nil), do: ""
+  defp revision(revision), do: " · revision " <> revision
+
+  defp prose_id(entry), do: "agent-prose-#{entry.id}"
+
   # Copy for the conversation status. The panel announces the same words a
-  # reader sees, so the working, ended, forbidden and exhausted states are
-  # visible and audible from one place (AC-2, AC-4, AC-12, AC-18).
+  # reader sees, so the working, ended, forbidden, unavailable and exhausted
+  # states are visible and audible from one place (AC-2, AC-4, AC-12, AC-18).
   defp status_text(:working), do: "Working…"
   defp status_text(:ended), do: "This conversation ended. Start a new conversation."
   defp status_text(:forbidden), do: "Your access changed. The helper stopped."
+
+  defp status_text(:unavailable),
+    do: "This route or service version is no longer available. The helper stopped."
+
   defp status_text(:limit), do: "This conversation reached its limit. Start a new conversation."
+
+  defp status_text(:allowance_exhausted),
+    do: "Daily assistant limit reached. It resets at 00:00 UTC."
+
   defp status_text(_idle), do: nil
 
   # The hint explains a composer that cannot send; otherwise it repeats the
-  # one review rule that applies to every request.
-  defp composer_hint(:ended), do: "This conversation ended. Start a new conversation."
-  defp composer_hint(:limit), do: "This conversation reached its limit. Start a new conversation."
-  defp composer_hint(_status), do: "Review changes before applying."
+  # one rule that applies to every request. A helper that only reads passes its
+  # own rule, because the default names a review step it never offers.
+  defp composer_hint(:ended, _hint), do: "This conversation ended. Start a new conversation."
 
-  defp send_disabled?(status), do: status in [:working, :ended, :forbidden, :limit]
+  defp composer_hint(:limit, _hint),
+    do: "This conversation reached its limit. Start a new conversation."
 
-  defp composer_locked?(status), do: status in [:ended, :forbidden, :limit]
+  defp composer_hint(:allowance_exhausted, _hint),
+    do: "Try a new conversation after 00:00 UTC."
+
+  defp composer_hint(_status, hint), do: hint
+
+  defp send_disabled?(status),
+    do: status in [:working, :ended, :forbidden, :unavailable, :limit, :allowance_exhausted]
+
+  defp composer_locked?(status),
+    do: status in [:ended, :forbidden, :unavailable, :limit, :allowance_exhausted]
 
   defp entry_badge(%{status: :working}), do: {"Working", nil}
 
@@ -357,16 +532,27 @@ defmodule GtfsPlannerWeb.AgentComponents do
   defp entry_badge(%{status: :done}), do: nil
   defp entry_badge(%{status: :stopped}), do: {"Stopped", nil}
   defp entry_badge(%{status: :incomplete}), do: {"Incomplete", "badge-warning"}
+  defp entry_badge(%{status: :allowance_exhausted}), do: {"Daily limit", "badge-warning"}
   defp entry_badge(%{status: :failed}), do: {"Unavailable", "badge-error"}
   defp entry_badge(%{status: :forbidden}), do: nil
+  defp entry_badge(%{status: :unavailable}), do: nil
 
   defp prepared_badge(%{applied?: true}), do: {"Applied", "badge-success"}
   defp prepared_badge(_entry), do: {"Ready to review", "badge-info"}
 
+  # The caller names the action in data, and this module names no pack command
+  # (INV-1). A caller that prepares more than one kind of change passes a
+  # function of the prepared change, so each card's label promises what its own
+  # button opens.
+  defp review_label(label, _prepared) when is_binary(label), do: label
+  defp review_label(label, prepared) when is_function(label, 1), do: label.(prepared)
+
   defp callout_kind(:stopped), do: "warning"
   defp callout_kind(:incomplete), do: "warning"
   defp callout_kind(:failed), do: "error"
+  defp callout_kind(:allowance_exhausted), do: "warning"
   defp callout_kind(:forbidden), do: "error"
+  defp callout_kind(:unavailable), do: "error"
   defp callout_kind(_status), do: nil
 
   defp activity_noun([_one]), do: "step"

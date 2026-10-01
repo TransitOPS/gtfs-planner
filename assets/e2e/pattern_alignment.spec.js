@@ -739,7 +739,7 @@ test.describe("alignment map", () => {
       { timeout: 20000 },
     );
     await expect(page.locator("#alignment-notice")).toContainText(
-      "Your alignment and stop list are still available.",
+      "Your map line and stop list are still available.",
     );
     // The sections stay usable behind the notice.
     await expect(page.locator("#alignment-section-2")).toBeVisible();
@@ -865,7 +865,7 @@ test.describe("save dialogs", () => {
     await second.locator("#alignment-save-scope-1-shared").check();
     await second.locator("#alignment-save-dialog-confirm").click();
     await expect(second.locator("#status")).toContainText(
-      "Alignment saved.",
+      "Map line saved.",
       { timeout: 15000 },
     );
     await second.close();
@@ -914,8 +914,8 @@ test.describe("imported shapes", () => {
     const versionId = await getVersionId(page);
 
     // The divergent pattern keeps two imported shapes (one trip on the
-    // second): the notice names both and the dialog lists each with its
-    // trip count and length.
+    // second): the notice names both and the imported-line card in the panel
+    // lists each with its trip count and length.
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.goto(
       `/gtfs/${versionId}/routes/${ALIGN_ROUTE}/patterns/BROWSER-ALIGN-IMPORTED?task=alignment`,
@@ -937,43 +937,33 @@ test.describe("imported shapes", () => {
     await captureViewport(page, "imported-1440");
 
     await page.locator("#alignment-review-import").click();
-    await expect(page.locator("#alignment-import-dialog")).toHaveAttribute(
-      "data-open",
-      "true",
-      { timeout: 15000 },
+    await expect(page.locator("#imported-line-card")).toBeVisible({
+      timeout: 15000,
+    });
+    // The review is in the panel; no dialog opens.
+    await expect(page.locator("#alignment-import-dialog")).toHaveCount(0);
+    await expect(page.locator("#imported-shape-form")).toContainText(
+      "Which imported shape is this pattern\u2019s path?",
     );
-    await expect(page.locator("#alignment-import-dialog")).toContainText(
-      "Choose an imported path",
-    );
-    await expect(page.locator("#alignment-import-dialog")).toContainText(
+    await expect(page.locator("#imported-shape-form")).toContainText(
       "IMP-ALIGN-1",
     );
-    await expect(page.locator("#alignment-import-dialog")).toContainText(
+    await expect(page.locator("#imported-shape-form")).toContainText(
       "IMP-ALIGN-2",
     );
-    await expect(page.locator("#alignment-import-dialog")).toContainText(
+    await expect(page.locator("#imported-line-card")).toContainText(
       "Saving the replacement would affect all 2 trips.",
     );
-    await page.locator("#alignment-import-shape-IMP-ALIGN-2").check();
-    await expect(
-      page.locator("#alignment-import-shape-IMP-ALIGN-2"),
-    ).toBeChecked();
-    await page.waitForFunction(
-      () => {
-        const panel = document.querySelector(
-          "#alignment-import-dialog > div > div",
-        );
-        return panel && getComputedStyle(panel).opacity === "1";
-      },
-      { timeout: 5000 },
+    await page.locator("#imported-shape-IMP-ALIGN-2").check();
+    await expect(page.locator("#imported-shape-IMP-ALIGN-2")).toBeChecked();
+    await expect(page.locator("#imported-line-card-title")).toContainText(
+      "Imported shape IMP-ALIGN-2",
     );
-    await captureViewport(page, "import-dialog-1440");
-    await page.locator("#alignment-import-dialog-cancel").click();
-    await expect(page.locator("#alignment-import-dialog")).toHaveAttribute(
-      "data-open",
-      "false",
-      { timeout: 15000 },
-    );
+    await captureViewport(page, "import-card-1440");
+    await page.locator("#imported-line-close").click();
+    await expect(page.locator("#imported-line-card")).toHaveCount(0, {
+      timeout: 15000,
+    });
 
     // The single-shape pattern converts its far shape into a flagged
     // draft: the section stays a straight amber line with an unsaved
@@ -992,21 +982,20 @@ test.describe("imported shapes", () => {
       "Imported path · original shape retained",
     );
     await page.locator("#alignment-review-import").click();
-    await expect(page.locator("#alignment-import-dialog")).toHaveAttribute(
-      "data-open",
-      "true",
-      { timeout: 15000 },
+    await expect(page.locator("#imported-line-card")).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.locator("#alignment-import-dialog")).toHaveCount(0);
+    await expect(page.locator("#imported-line-card")).toContainText(
+      "Imported shape IMP-ALIGN-3",
     );
-    await expect(page.locator("#alignment-import-dialog")).toContainText(
-      "Review imported path",
+    await expect(page.locator("#imported-line-card")).toContainText(
+      "3 points",
     );
-    await expect(page.locator("#alignment-import-dialog")).toContainText(
-      "IMP-ALIGN-3",
-    );
-    await expect(page.locator("#alignment-import-dialog")).toContainText(
-      "3 imported points",
-    );
-    await page.locator("#alignment-import-dialog-confirm").click();
+    await page.locator("#imported-line-draft").click();
+    await expect(page.locator("#imported-line-card")).toHaveCount(0, {
+      timeout: 15000,
+    });
     await expect(page.locator("#alignment-status")).toContainText(
       "Unsaved changes",
       { timeout: 15000 },
@@ -1149,7 +1138,7 @@ test.describe("manual editing journeys", () => {
     ).toBeChecked();
     await page.locator("#alignment-save-dialog-confirm").click();
     await expect(page.locator("#status")).toContainText(
-      "Alignment saved.",
+      "Map line saved.",
       { timeout: 15000 },
     );
   }
@@ -1229,7 +1218,7 @@ test.describe("manual editing journeys", () => {
     await captureViewport(page, "journey-scope-dialog-1440");
     await page.locator("#alignment-save-dialog-confirm").click();
     await expect(page.locator("#status")).toContainText(
-      "Alignment saved.",
+      "Map line saved.",
       { timeout: 15000 },
     );
     await expect(page.locator("#alignment-section-status-3")).toContainText(
@@ -1568,7 +1557,7 @@ test.describe("manual editing journeys", () => {
     );
     await page.locator("#alignment-save").click();
     await expect(page.locator("#status")).toContainText(
-      "Alignment saved.",
+      "Map line saved.",
       { timeout: 15000 },
     );
     await expect(page.locator("#alignment-section-status-2")).toContainText(
@@ -1585,28 +1574,25 @@ test.describe("manual editing journeys", () => {
     await logIn(page);
     await page.setViewportSize({ width: 1440, height: 1000 });
 
-    // The divergent imported pattern keeps its notice and dialog.
+    // The divergent imported pattern keeps its notice and opens the
+    // imported-line card in the panel.
     await openAlignment(page, "BROWSER-ALIGN-IMPORTED");
     await expect(page.locator("#alignment-notice")).toContainText(
       "This pattern uses 2 imported shapes",
     );
     await page.locator("#alignment-review-import").click();
-    await expect(page.locator("#alignment-import-dialog")).toHaveAttribute(
-      "data-open",
-      "true",
-      { timeout: 15000 },
+    await expect(page.locator("#imported-line-card")).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.locator("#alignment-import-dialog")).toHaveCount(0);
+    await expect(page.locator("#imported-shape-form")).toContainText(
+      "Which imported shape is this pattern\u2019s path?",
     );
-    await expect(page.locator("#alignment-import-dialog")).toContainText(
-      "Choose an imported path",
-    );
-    await settleDialog(page, "alignment-import-dialog");
-    await captureViewport(page, "journey-imported-dialog-1440");
-    await page.locator("#alignment-import-dialog-cancel").click();
-    await expect(page.locator("#alignment-import-dialog")).toHaveAttribute(
-      "data-open",
-      "false",
-      { timeout: 15000 },
-    );
+    await captureViewport(page, "journey-imported-card-1440");
+    await page.locator("#imported-line-close").click();
+    await expect(page.locator("#imported-line-card")).toHaveCount(0, {
+      timeout: 15000,
+    });
     expect(await bodyFitsViewport(page)).toBe(true);
 
     // The loop's repeated stop shares one pin labelled with both visits.

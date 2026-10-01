@@ -5,8 +5,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeatTest do
   - A pair that is consecutive in one block on every day type both services run in
     matches, including when the record carries no stops.
   - A trip between the pair on one day type makes the record stale `not_next`,
-    naming only that day type with its label and date count; every failing day type
-    is named in the context's list order.
+    naming only that day type with its label, date count and the natural trip ID
+    the day type runs after the first trip; every failing day type is named in the
+    context's list order.
+  - A first trip that ends its block's order names no next trip, and a cross-block
+    pair names the trip that follows the first trip in its own block.
   - Two non-nil different block IDs, or a missing order for a day type's block,
     are not next.
   - A non-nil record stop that differs from the matching endpoint is
@@ -24,7 +27,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeatTest do
     record ID, and returns `nil` for matches.
 
   The focused gate command is deferred to branch review:
-  `mix test test/gtfs_planner/gtfs/blocking/in_seat_test.exs`. Every expected state
+  `MIX_TEST_PARTITION=_seat11 mix test
+  test/gtfs_planner/gtfs/blocking/in_seat_test.exs`. Every expected state
   is taken from R6 and AC-7, trip rows and day types follow the Context contract's
   key sets, and times are integer seconds written by hand. The module reads no
   database, clock, files or network.
@@ -89,7 +93,61 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeatTest do
                    %{
                      key: wws_day_type().key,
                      label: "Weekday without school",
-                     date_count: 38
+                     date_count: 38,
+                     next_trip_id: "X"
+                   }
+                 ]}}
+    end
+
+    test "names no next trip when the first trip ends its block's order" do
+      context =
+        context(
+          trips: [a_trip(), b_trip(), x_trip()],
+          day_types: [wws_day_type()],
+          sequences: %{{wws_day_type().key, "7"} => ["X", "A"]}
+        )
+
+      assert InSeat.state(row("A", "B"), context) ==
+               {:stale,
+                {:not_next,
+                 [
+                   %{
+                     key: wws_day_type().key,
+                     label: "Weekday without school",
+                     date_count: 38,
+                     next_trip_id: nil
+                   }
+                 ]}}
+    end
+
+    test "a cross-block pair names the trip that follows the first trip in its own block" do
+      context =
+        context(
+          trips: [a_trip(), trip("B", at(9, 10), at(10, 0), block_id: "8"), y_trip()],
+          sequences: %{
+            {wws_day_type().key, "7"} => ["A", "Y"],
+            {saturday_day_type().key, "7"} => ["A", "Y"]
+          }
+        )
+
+      # The second trip is blocked elsewhere, so block 7's order for a day type holds
+      # only the pair's first trip and Y. The pair is not next on either day type, and
+      # both name Y: the trip a rider would really be put on instead of staying aboard.
+      assert InSeat.state(row("A", "B"), context) ==
+               {:stale,
+                {:not_next,
+                 [
+                   %{
+                     key: wws_day_type().key,
+                     label: "Weekday without school",
+                     date_count: 38,
+                     next_trip_id: "Y"
+                   },
+                   %{
+                     key: saturday_day_type().key,
+                     label: "Saturday + Weekday without school",
+                     date_count: 12,
+                     next_trip_id: "Y"
                    }
                  ]}}
     end
@@ -104,6 +162,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeatTest do
           }
         )
 
+      # Both orders end with the pair's first trip, so neither day type has a trip
+      # to name as the one that runs next.
       assert InSeat.state(row("A", "B"), context) ==
                {:stale,
                 {:not_next,
@@ -111,19 +171,29 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeatTest do
                    %{
                      key: saturday_day_type().key,
                      label: "Saturday + Weekday without school",
-                     date_count: 12
+                     date_count: 12,
+                     next_trip_id: nil
                    },
                    %{
                      key: wws_day_type().key,
                      label: "Weekday without school",
-                     date_count: 38
+                     date_count: 38,
+                     next_trip_id: nil
                    }
                  ]}}
     end
 
     test "fails when the two trips carry different block IDs" do
       context =
-        context(trips: [a_trip(), trip("B", at(9, 10), at(10, 0), block_id: "8")])
+        context(
+          trips: [a_trip(), trip("B", at(9, 10), at(10, 0), block_id: "8")],
+          # Block 7 holds only the pair's first trip, so a day type has nothing to
+          # name as the trip that runs next.
+          sequences: %{
+            {wws_day_type().key, "7"} => ["A"],
+            {saturday_day_type().key, "7"} => ["A"]
+          }
+        )
 
       assert InSeat.state(row("A", "B"), context) ==
                {:stale,
@@ -132,12 +202,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeatTest do
                    %{
                      key: wws_day_type().key,
                      label: "Weekday without school",
-                     date_count: 38
+                     date_count: 38,
+                     next_trip_id: nil
                    },
                    %{
                      key: saturday_day_type().key,
                      label: "Saturday + Weekday without school",
-                     date_count: 12
+                     date_count: 12,
+                     next_trip_id: nil
                    }
                  ]}}
     end
@@ -152,7 +224,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeatTest do
                    %{
                      key: wws_day_type().key,
                      label: "Weekday without school",
-                     date_count: 38
+                     date_count: 38,
+                     next_trip_id: nil
                    }
                  ]}}
     end
@@ -324,7 +397,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeatTest do
                    %{
                      key: wws_day_type().key,
                      label: "Weekday without school",
-                     date_count: 38
+                     date_count: 38,
+                     next_trip_id: "X"
                    }
                  ]}}
 
@@ -341,7 +415,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeatTest do
                       %{
                         key: wws_day_type().key,
                         label: "Weekday without school",
-                        date_count: 38
+                        date_count: 38,
+                        next_trip_id: "X"
                       }
                     ]}
                }
@@ -404,24 +479,27 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeatTest do
   # trips in both day types, the record's stops are the trips' endpoints, and the
   # pair shares dates. Each case overrides only what it is about.
   defp context(opts \\ []) do
+    list = Keyword.get(opts, :trips, [a_trip(), b_trip()])
+
     %{
-      trips: trips(Keyword.get(opts, :trips, [a_trip(), b_trip()])),
+      trips: Map.new(list, &{&1.trip_id, &1}),
       service_dates: Keyword.get(opts, :service_dates, service_dates()),
       day_types: Keyword.get(opts, :day_types, [wws_day_type(), saturday_day_type()]),
       sequences:
         Keyword.get(opts, :sequences, %{
           {wws_day_type().key, "7"} => ["A", "B"],
           {saturday_day_type().key, "7"} => ["A", "B"]
-        })
+        }),
+      trip_ids_by_uuid: Map.new(list, &{&1.id, &1.trip_id})
     }
   end
-
-  defp trips(list), do: Map.new(list, &{&1.trip_id, &1})
 
   defp a_trip, do: trip("A", at(8, 0), at(9, 0))
   defp b_trip, do: trip("B", at(9, 10), at(10, 0))
   # Between A (ends 09:00) and B (starts 09:10).
   defp x_trip, do: trip("X", at(9, 2), at(9, 8))
+  # The trip block 7 runs after A instead of B, so a cross-block pair names it.
+  defp y_trip, do: trip("Y", at(9, 2), at(9, 8))
 
   defp row(from_trip_id, to_trip_id, opts \\ []) do
     %{

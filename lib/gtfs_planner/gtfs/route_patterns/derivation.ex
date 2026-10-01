@@ -10,9 +10,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
   Classification keeps supplied `trips.route_pattern_id` values verbatim and
   links only trips whose ordered stop-ID sequence matches a canonical sequence
-  and whose ordered timing vector is representable. Everything else is stored as
-  a terminal custom classification with a bounded reason; imported stop-time rows
-  are never rewritten.
+  and whose timing rows are valid. A stop without a scheduled time is kept as a
+  nil offset pair, so a trip blank between its ends and its timepoints links and
+  every other trip is stored as a terminal custom classification with a bounded
+  reason; imported stop-time rows are never rewritten.
 
   Grouping is bounded: the first pass retains only hash/count/representative
   records for canonical sequences and the second pass loads one trip vector at a
@@ -23,13 +24,19 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
   import Ecto.Query
 
-  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Authorization
+  alias GtfsPlanner.Gtfs.Alignments
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns
+  alias GtfsPlanner.Gtfs.RoutePatterns.Grouping
+  alias GtfsPlanner.Gtfs.RoutePatterns.LabelRules
+  alias GtfsPlanner.Gtfs.RoutePatterns.TimingRules
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
@@ -42,6 +49,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   # A bounded page keeps every read/write batch constant in size for a feed of
   # any length: one label page and one vector page per iteration.
   @trip_page_size 500
+  # Equirectangular projection radius in metres. Stop-to-line distance is a
+  # review-time advisory, and one shared constant keeps it in the same units as
+  # the materializer's haversine lengths.
+  @earth_radius_m 6_371_008.8
   # A whole-route derivation commits in one transaction (INV: a route commits its
   # complete derivation or none of it), so the transaction budget must cover a
   # route-sized feed section. The deployment already budgets 300s for large GTFS
@@ -53,7 +64,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   @short_suffix_lengths [4, 6, 8, 12, 16]
   @endpoint_separator " – "
 
-  @type provenance :: {:import, Ecto.UUID.t() | nil} | {:editor, AuditContext.t()}
+  # The importer owns its exact target version. Its optional `fence` is a zero-arity
+  # callback that every write transaction runs first and that calls `Repo.rollback/1`
+  # (`:lease_lost`) once the importing run was handed over (INV-4). `nil` is unfenced.
+  @type provenance :: {:import, (-> any()) | nil} | {:editor, AuditContext.t()}
 
   @type summary :: %{
           patterns_created: non_neg_integer(),
@@ -76,10 +90,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   A route-local failure is non-fatal: its bounded reason is persisted on the
   route row and the remaining routes continue. Trips whose `route_id` has no
   route row are classified custom in a separate scoped pass instead of creating a
-  fictional route.
+  fictional route. Editor-provenance batch writes use the same reviewed
+  transaction boundary as a single-route derivation.
   """
   @spec derive_version(Ecto.UUID.t(), Ecto.UUID.t(), provenance()) ::
-          {:ok, version_summary()}
+          {:ok, version_summary()} | {:error, atom() | term()}
   def derive_version(organization_id, version_id, provenance) do
     provenance = normalize_provenance!(provenance)
 
@@ -101,28 +116,94 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
         &(&1 not in existing)
       )
 
-    missing_custom = classify_missing_routes(organization_id, version_id, missing_routes)
+    missing_result =
+      if missing_routes == [] do
+        {:ok, 0}
+      else
+        run_batch_write(
+          fn -> classify_missing_routes(organization_id, version_id, missing_routes) end,
+          organization_id,
+          version_id,
+          provenance
+        )
+      end
 
-    {summaries, failed_routes} =
-      present_routes
-      |> Enum.sort()
-      |> Enum.reduce({[], []}, fn route_id, {summaries, failed} ->
-        case derive_route(organization_id, version_id, route_id, provenance) do
-          {:ok, summary} ->
-            {[summary | summaries], failed}
+    with {:ok, missing_custom} <- missing_result,
+         {:ok, {summaries, failed_routes}} <-
+           derive_present_routes(organization_id, version_id, provenance, present_routes) do
+      summary = merge_summaries(summaries, zero_summary(missing_custom))
 
-          {:error, reason} ->
-            persist_route_error!(organization_id, version_id, route_id, reason)
-            {summaries, [route_id | failed]}
+      {:ok, Map.put(summary, :routes_failed, length(failed_routes))}
+    end
+  end
+
+  defp merge_summaries(summaries, initial) do
+    Enum.reduce(summaries, initial, fn summary, acc ->
+      Map.merge(acc, summary, fn _key, left, right -> left + right end)
+    end)
+  end
+
+  defp derive_present_routes(organization_id, version_id, provenance, present_routes) do
+    present_routes
+    |> Enum.sort()
+    |> Enum.reduce_while({:ok, {[], []}}, fn route_id, {:ok, {summaries, failed}} ->
+      derive_route_step(route_id, summaries, failed, organization_id, version_id, provenance)
+    end)
+  end
+
+  defp derive_route_step(route_id, summaries, failed, organization_id, version_id, provenance) do
+    case derive_route(organization_id, version_id, route_id, provenance) do
+      {:ok, summary} ->
+        {:cont, {:ok, {[summary | summaries], failed}}}
+
+      {:error, :forbidden} when elem(provenance, 0) == :editor ->
+        {:halt, {:error, :forbidden}}
+
+      # A superseded import must not record a route error either.
+      {:error, :lease_lost} ->
+        {:halt, {:error, :lease_lost}}
+
+      {:error, reason} ->
+        case persist_failed_route(organization_id, version_id, route_id, reason, provenance) do
+          {:ok, :ok} -> {:cont, {:ok, {summaries, [route_id | failed]}}}
+          {:error, write_reason} -> {:halt, {:error, write_reason}}
         end
-      end)
+    end
+  end
 
-    summary =
-      Enum.reduce(summaries, zero_summary(missing_custom), fn summary, acc ->
-        Map.merge(acc, summary, fn _key, left, right -> left + right end)
-      end)
+  defp persist_failed_route(organization_id, version_id, route_id, reason, provenance) do
+    run_batch_write(
+      fn -> persist_route_error!(organization_id, version_id, route_id, reason) end,
+      organization_id,
+      version_id,
+      provenance
+    )
+  end
 
-    {:ok, Map.put(summary, :routes_failed, length(failed_routes))}
+  # The importer owns its version. A fenced import runs the write in a transaction
+  # that verifies run ownership first. Editor batch writes get a fresh membership
+  # lock and audit scope check at the start of each reviewed retry attempt.
+  # Per-route derivation retains its own independent transaction and check.
+  defp run_batch_write(write, _organization_id, _version_id, {:import, nil}), do: {:ok, write.()}
+
+  defp run_batch_write(write, _organization_id, _version_id, {:import, fence}) do
+    Repo.transaction(fn ->
+      fence.()
+      write.()
+    end)
+  end
+
+  defp run_batch_write(write, organization_id, version_id, {:editor, audit_context}) do
+    run_editor_transaction(fn ->
+      Authorization.lock_editor!(audit_context)
+
+      unless audit_context.organization_id == organization_id and
+               audit_context.gtfs_version_id == version_id do
+        Repo.rollback(:not_found)
+      end
+
+      write.()
+    end)
   end
 
   @doc """
@@ -151,7 +232,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   # SERIALIZABLE with the preserved 300-second route budget. Import provenance
   # keeps its independent unpublished-version contract (plain transaction on
   # the importer's own version), unchanged.
-  defp run_derivation_transaction(transaction, {:import, _import_run_id}),
+  defp run_derivation_transaction(transaction, {:import, _fence}),
     do: Repo.transaction(transaction, timeout: @route_transaction_timeout)
 
   defp run_derivation_transaction(transaction, {:editor, %AuditContext{}}) do
@@ -206,6 +287,199 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
   defp retryable_conflict?(_reason), do: false
 
+  @typedoc "One confirmed group: its preview key, the exported direction and the target it joins."
+  @type selection :: %{key: String.t(), direction_id: 0 | 1, target: :new | Ecto.UUID.t()}
+
+  @doc """
+  Applies a confirmed grouping review to one route's left-out trips.
+
+  The whole apply runs in the reviewed-apply transaction, so the route's row
+  lock, the fingerprint comparison, the trip updates and derivation's own
+  planning commit or roll back together. The preview is recomputed inside that
+  transaction and compared with the caller's fingerprint: any linkage change
+  since the review opened is `{:error, :stale}` and writes nothing (rule 7).
+
+  Every selected group must exist in the recomputed preview and carry a
+  direction of 0 or 1, and an explicit target must be a pattern of this route;
+  anything else is `{:error, :invalid_selection}`. A group with no target joins
+  the rule-5 candidate head, and `:new` plans a new pattern.
+
+  The confirmed groups' trips are set pending with the confirmed direction and
+  then handed to derivation's own planning with a target map, so a grouped
+  route is planned, named and timed exactly as a derived one (CR-4). Only trip
+  linkage, direction, `updated_at`, pattern/timing rows and the route audit
+  entry are written; imported `stop_times` are never touched (rule 3, INV-2).
+
+  Each attempt locks the actor's current editor membership before the route row,
+  so a missing or revoked editor is `{:error, :forbidden}` with nothing written.
+  """
+  @spec group_left_out(String.t(), [selection()], String.t(), AuditContext.t()) ::
+          {:ok, summary()}
+          | {:error, :forbidden | :stale | :not_found | :busy | :invalid_selection | term()}
+  def group_left_out(route_id, selections, fingerprint, %AuditContext{} = audit)
+      when is_binary(route_id) and is_list(selections) and is_binary(fingerprint) do
+    case run_editor_transaction(fn ->
+           group_left_out_transaction(
+             audit.organization_id,
+             audit.gtfs_version_id,
+             route_id,
+             selections,
+             fingerprint,
+             audit
+           )
+         end) do
+      # An unknown route is reported as not found rather than as a
+      # derivation-internal reason, matching how the preview answers the same
+      # scope question.
+      {:error, :missing_route} -> {:error, :not_found}
+      result -> result
+    end
+  end
+
+  def group_left_out(_route_id, _selections, _fingerprint, _audit),
+    do: {:error, :invalid_input}
+
+  defp group_left_out_transaction(
+         organization_id,
+         version_id,
+         route_id,
+         selections,
+         fingerprint,
+         audit
+       ) do
+    Authorization.lock_editor!(audit)
+
+    route = lock_route!(organization_id, version_id, route_id, {:editor, audit})
+    review = left_out_review(route)
+
+    if review.fingerprint != fingerprint, do: Repo.rollback(:stale)
+
+    confirmed = confirm_selections!(selections, review, route)
+    grouped = mark_grouped_pending!(route, confirmed, review)
+
+    derive_locked_route(route, {:editor, audit}, %{
+      targets: selection_targets(confirmed),
+      timing_names: selection_timing_names(confirmed),
+      grouped: grouped
+    })
+  end
+
+  defp confirm_selections!(selections, review, route) do
+    Enum.map(selections, &confirm_selection!(&1, review, route))
+  end
+
+  defp confirm_selection!(selection, review, route) when is_map(selection) do
+    with key when is_binary(key) <- Map.get(selection, :key),
+         group when not is_nil(group) <- Map.get(review.groups_by_key, key),
+         direction when direction in [0, 1] <- Map.get(selection, :direction_id) do
+      {key, group, direction, resolve_target(selection, group, direction, review, route)}
+    else
+      _other -> Repo.rollback(:invalid_selection)
+    end
+  end
+
+  defp confirm_selection!(_selection, _review, _route), do: Repo.rollback(:invalid_selection)
+
+  # `:new` plans a pattern, an explicit id must name one of the group's candidates
+  # in the confirmed direction (same route, direction and stop order), and an
+  # absent target takes the rule-5 candidate head, so an unconfirmed chooser
+  # still resolves to one deterministic pattern.
+  defp resolve_target(selection, group, direction, review, route) do
+    candidates = Grouping.candidates(group, direction, review.pattern_refs)
+
+    case Map.get(selection, :target) do
+      :new ->
+        nil
+
+      id when is_binary(id) ->
+        pattern_id = cast_pattern_id(id)
+
+        if Enum.any?(candidates, &(&1.id == pattern_id)),
+          do: Map.fetch!(route_patterns(route), pattern_id),
+          else: Repo.rollback(:invalid_selection)
+
+      _absent ->
+        case candidates do
+          [%{id: id} | _rest] -> Map.get(route_patterns(route), id)
+          [] -> nil
+        end
+    end
+  end
+
+  defp cast_pattern_id(id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, uuid} -> uuid
+      :error -> id
+    end
+  end
+
+  # Each confirmed group's trips become pending with the confirmed direction, so
+  # derivation's own first pass sees them as the trips it is meant to classify.
+  # The prior direction is read from the same rows the fingerprint covered, so
+  # the audit entry reports what the review was looking at.
+  defp mark_grouped_pending!(route, confirmed, review) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    confirmed
+    |> Enum.flat_map(fn {_key, group, direction, _target} ->
+      prior = Map.new(group.trip_ids, &{&1, Map.get(review.directions, &1)})
+
+      {count, nil} =
+        from(t in Trip,
+          where:
+            t.organization_id == ^route.organization_id and
+              t.gtfs_version_id == ^route.gtfs_version_id and t.route_id == ^route.route_id and
+              t.id in ^Map.keys(prior)
+        )
+        |> Repo.update_all(
+          set: [
+            direction_id: direction,
+            pattern_derivation_state: "pending",
+            pattern_derivation_reason: nil,
+            updated_at: now
+          ]
+        )
+
+      # A trip the review counted that this transaction cannot write means the
+      # review and the write disagree, which is the stale case.
+      if count != map_size(prior), do: Repo.rollback(:stale)
+
+      Enum.map(prior, fn {trip_id, prior_direction_id} ->
+        %{trip_id: trip_id, prior_direction_id: prior_direction_id}
+      end)
+    end)
+    |> Enum.sort_by(& &1.trip_id)
+  end
+
+  # The target override is keyed the way derivation's own planning keys a
+  # derived group, so the confirmed pattern is the one the group's trips join.
+  defp selection_targets(confirmed) do
+    confirmed
+    |> Enum.flat_map(fn {_key, group, direction, target} ->
+      case target do
+        %RoutePattern{} = pattern -> [{plan_group_key(group, direction), pattern}]
+        nil -> []
+      end
+    end)
+    |> Map.new()
+  end
+
+  # Rule 6: the preview already named each group's timing, so the apply reuses
+  # that name instead of naming a second time from a different answer.
+  defp selection_timing_names(confirmed) do
+    confirmed
+    |> Enum.flat_map(fn {_key, group, direction, _target} ->
+      case group.timing_names do
+        [name | _rest] when is_binary(name) -> [{plan_group_key(group, direction), name}]
+        _other -> []
+      end
+    end)
+    |> Map.new()
+  end
+
+  defp plan_group_key(group, direction),
+    do: {direction, derivation_key(direction, group.stop_ids)}
+
   @doc """
   Counts the trips still pending derivation for one route.
 
@@ -222,6 +496,497 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
       :count
     )
   end
+
+  # --- grouping preview (read-only) ------------------------------------------
+
+  @typedoc "One group's card data, as the grouping review reads it."
+  @type preview_group :: %{
+          key: String.t(),
+          stop_ids: [String.t()],
+          stop_names: [String.t()],
+          trip_count: pos_integer(),
+          services: [{String.t(), pos_integer()}],
+          shapes: [{String.t(), pos_integer()}],
+          direction_id: 0 | 1 | nil,
+          suggestion: Grouping.suggestion(),
+          candidates: [Grouping.pattern_ref()],
+          timing_names: [String.t()],
+          stop_distances_m: [{String.t(), float()}] | nil
+        }
+
+  @type preview :: %{
+          groups: [preview_group()],
+          blocked: [%{reason: atom(), trip_ids: [Ecto.UUID.t()]}],
+          fingerprint: String.t()
+        }
+
+  @doc """
+  Previews the grouping of one route's left-out trips without writing anything.
+
+  The route's `custom` trips are paged in `trip_id` order with the same keyset
+  helpers derivation uses, so a feed of any length is read in bounded pages.
+  Each vector is re-checked with the same eligibility rules derivation applies,
+  except that a missing direction is not a failure here: naming a direction is
+  what the review is for. A vector that fails for any other reason is reported
+  in `blocked` with that reason, so the editor sees why a trip is not being
+  offered rather than a silently smaller total.
+
+  The rest are grouped by the pure `Grouping` rules, which decide the direction
+  suggestion (rule 4), the ordered candidates (rule 5), the timing names (rule 6)
+  and the fingerprint (rule 7). `stop_distances_m` is present only when the
+  first candidate already has a saved map line, because distance to a line that
+  does not exist yet would be an invented number.
+
+  An unknown route in the organization/version scope is `{:error, :not_found}`,
+  so a foreign or unpublished route cannot be previewed.
+  """
+  @spec preview_left_out(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, preview()} | {:error, :not_found}
+  def preview_left_out(organization_id, version_id, route_id) when is_binary(route_id) do
+    case RoutePatterns.published_route(organization_id, version_id, route_id) do
+      {:ok, route} ->
+        review = left_out_review(route)
+
+        {:ok,
+         %{
+           groups: review.groups,
+           blocked: review.blocked,
+           fingerprint: review.fingerprint
+         }}
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+    end
+  end
+
+  def preview_left_out(_organization_id, _version_id, _route_id),
+    do: {:error, :not_found}
+
+  # One read of the review the editor is looking at. The preview returns its
+  # display fields and the apply confirms against the same groups, so a rule
+  # cannot answer one way on screen and another way in the transaction.
+  defp left_out_review(route) do
+    context = preview_context(route)
+    {rows, vectors, blocked} = collect_left_out(route, context)
+
+    groups = Grouping.group(vectors)
+    previews = preview_groups(route, context, groups)
+
+    cards =
+      Enum.zip(groups, previews) |> Enum.map(fn {group, preview} -> Map.merge(group, preview) end)
+
+    %{
+      # Key order is the preview's own order, so the cards a review shows and
+      # the groups an apply confirms are the same collection in the same order.
+      groups: cards,
+      groups_by_key: Map.new(cards, &{&1.key, &1}),
+      blocked: blocked_reasons(blocked),
+      fingerprint: Grouping.fingerprint(rows),
+      pattern_refs: context.pattern_refs,
+      directions: Map.new(rows, &{&1.id, &1.direction_id})
+    }
+  end
+
+  defp preview_context(route) do
+    %{
+      eligible_stops: eligible_stop_ids(route),
+      pattern_refs: pattern_refs(route),
+      patterns: route_patterns(route)
+    }
+  end
+
+  # The route's own patterns, with their stop orders, linked-trip counts and
+  # label owners, are what rules 4 and 5 are answered from. This is the same
+  # shape `Grouping.suggest_direction/3` and `candidates/3` take, so the preview
+  # introduces no second notion of a pattern reference.
+  defp route_patterns(route) do
+    from(p in RoutePattern,
+      where:
+        p.organization_id == ^route.organization_id and
+          p.gtfs_version_id == ^route.gtfs_version_id and p.route_id == ^route.route_id,
+      order_by: [asc: p.route_pattern_id]
+    )
+    |> Repo.all()
+    |> Map.new(&{&1.id, &1})
+  end
+
+  defp pattern_refs(route) do
+    patterns = route_patterns(route) |> Map.values()
+    stops_by_pattern = occurrence_stop_ids(Enum.map(patterns, & &1.id))
+    linked = linked_trip_counts(route, Enum.map(patterns, & &1.route_pattern_id))
+
+    Enum.map(patterns, fn pattern ->
+      %{
+        id: pattern.id,
+        route_pattern_id: pattern.route_pattern_id,
+        direction_id: pattern.direction_id,
+        stop_ids: Map.get(stops_by_pattern, pattern.id, []),
+        derivation_key: pattern.derivation_key,
+        linked_trip_count: Map.get(linked, pattern.route_pattern_id, 0),
+        # `Grouping` answers a labelled child's group from its owner, so the
+        # preview has to carry the real owner rather than a placeholder.
+        label_pattern_id: pattern.label_pattern_id
+      }
+    end)
+  end
+
+  defp occurrence_stop_ids([]), do: %{}
+
+  defp occurrence_stop_ids(pattern_ids) do
+    from(o in RoutePatternStop,
+      where: o.route_pattern_id in ^pattern_ids,
+      order_by: [asc: o.route_pattern_id, asc: o.position],
+      select: {o.route_pattern_id, o.stop_id}
+    )
+    |> Repo.all()
+    |> Enum.group_by(&elem(&1, 0), fn {_pattern_id, stop_id} -> stop_id end)
+  end
+
+  defp linked_trip_counts(_route, []), do: %{}
+
+  defp linked_trip_counts(route, natural_ids) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^route.organization_id and
+          t.gtfs_version_id == ^route.gtfs_version_id and t.route_id == ^route.route_id and
+          t.route_pattern_id in ^natural_ids and t.pattern_derivation_state == "linked",
+      group_by: t.route_pattern_id,
+      select: {t.route_pattern_id, count(t.id)}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  # One bounded page of custom trips plus its stop-time vectors, exactly as the
+  # second pass reads them. The retained window is the page, not the feed.
+  defp collect_left_out(route, context) do
+    each_custom_trip_page(route, {[], [], %{}}, fn trips, acc ->
+      rows_by_trip = page_rows(route, page_range(trips))
+      Enum.reduce(trips, acc, &accumulate_left_out(&1, &2, rows_by_trip, context))
+    end)
+  end
+
+  # Every left-out trip contributes to the fingerprint, blocked ones included:
+  # rule 7 makes the review stale on any linkage change, and a blocked trip can
+  # become groupable by exactly such a change.
+  defp accumulate_left_out(trip, {rows, vectors, blocked}, rows_by_trip, context) do
+    {id, trip_row, vector, reason} =
+      classify_vector(trip, Map.get(rows_by_trip, trip.trip_id, []), context)
+
+    blocked = if reason, do: block(blocked, reason, id), else: blocked
+
+    {[trip_row | rows], if(vector, do: [vector | vectors], else: vectors), blocked}
+  end
+
+  defp block(blocked, reason, id), do: Map.update(blocked, reason, [id], &[id | &1])
+
+  # Re-checks one vector with derivation's own rules, direction aside. Only a
+  # missing direction is forgivable: the review exists to supply it. A vector
+  # that no longer passes the step-3 stop and timing rules is blocked with the
+  # reason it fails, so the preview cannot offer a trip derivation would refuse.
+  defp classify_vector(trip, rows, context) do
+    trip_row = fingerprint_row(trip)
+
+    with :ok <- preview_labels(rows, context),
+         {:ok, _timing} <- timing_rows(rows) do
+      {trip.id, trip_row, groupable_vector(trip, rows), nil}
+    else
+      {:error, reason} -> {trip.id, trip_row, nil, reason}
+    end
+  end
+
+  defp preview_labels(rows, context) do
+    if usable_labels?(Enum.map(rows, &{&1.stop_id, &1.stop_sequence}), context.eligible_stops) do
+      :ok
+    else
+      {:error, :unusable_stops}
+    end
+  end
+
+  # The linkage fields rule 7 fingerprints, read from the page's own row.
+  defp fingerprint_row(trip) do
+    %{
+      id: trip.id,
+      pattern_derivation_state: trip.pattern_derivation_state,
+      route_pattern_id: trip.route_pattern_id,
+      timed_pattern_id: trip.timed_pattern_id,
+      direction_id: trip.direction_id,
+      updated_at: trip.updated_at
+    }
+  end
+
+  defp groupable_vector(trip, rows) do
+    %{
+      id: trip.id,
+      trip_id: trip.trip_id,
+      direction_id: trip.direction_id,
+      route_pattern_id: trip.route_pattern_id,
+      service_id: trip.service_id,
+      shape_id: trip.shape_id,
+      stop_ids: Enum.map(rows, & &1.stop_id)
+    }
+  end
+
+  # A supplied pattern ID that names no pattern of this route is a stale
+  # reference, not a groupable stop order: step 15 links those as children.
+  defp blocked_reasons(blocked) do
+    blocked
+    |> Enum.map(fn {reason, trip_ids} ->
+      %{reason: reason, trip_ids: Enum.sort(trip_ids)}
+    end)
+    |> Enum.sort_by(& &1.reason)
+  end
+
+  defp each_custom_trip_page(route, acc, fun, cursor \\ "") do
+    trips = custom_trip_page(route, cursor)
+
+    case trips do
+      [] ->
+        acc
+
+      trips ->
+        each_custom_trip_page(route, fun.(trips, acc), fun, List.last(trips).trip_id)
+    end
+  end
+
+  # The custom-trip page is `pending_trip_page/2` with one state changed, so the
+  # two passes read a route's trips the same way and a preview can never show a
+  # trip derivation has not yet classified.
+  defp custom_trip_page(route, cursor) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^route.organization_id and
+          t.gtfs_version_id == ^route.gtfs_version_id and t.route_id == ^route.route_id and
+          t.pattern_derivation_state == "custom" and t.trip_id > ^cursor,
+      order_by: [asc: t.trip_id],
+      limit: ^@trip_page_size,
+      select: %{
+        id: t.id,
+        trip_id: t.trip_id,
+        direction_id: t.direction_id,
+        route_pattern_id: t.route_pattern_id,
+        timed_pattern_id: t.timed_pattern_id,
+        service_id: t.service_id,
+        shape_id: t.shape_id,
+        pattern_derivation_state: t.pattern_derivation_state,
+        updated_at: t.updated_at
+      }
+    )
+    |> Repo.all()
+  end
+
+  # The direction the card is about: the one the route's own patterns decided,
+  # or the one the trips already agree on. A group with neither has no
+  # direction yet and so has no candidates, which is what leaves the editor to
+  # answer.
+  defp preview_direction(group, groups, refs) do
+    case Grouping.suggest_direction(group, groups, refs) do
+      {:suggested, direction, _reason} -> direction
+      _ -> group.direction_id
+    end
+  end
+
+  defp preview_groups(route, context, groups) do
+    refs = context.pattern_refs
+    service_names = service_names(route, groups)
+    taken = taken_timing_names(refs)
+
+    Enum.map(groups, fn group ->
+      direction = preview_direction(group, groups, refs)
+      candidates = if is_nil(direction), do: [], else: Grouping.candidates(group, direction, refs)
+
+      %{
+        key: group.key,
+        stop_ids: group.stop_ids,
+        stop_names: stop_labels(group.stop_ids, route),
+        trip_count: length(group.trip_ids),
+        services: ordered_counts(group.services),
+        shapes: ordered_counts(group.shapes),
+        direction_id: direction,
+        suggestion: Grouping.suggest_direction(group, groups, refs),
+        candidates: candidates,
+        timing_names: timing_names(group, service_names, taken, candidates),
+        stop_distances_m: stop_distances(context, group, candidates)
+      }
+    end)
+  end
+
+  # Rule 6: one service is named after it, two are joined with "and", and any
+  # other number falls back to the pattern's own next timing name. A new pattern
+  # has no timings yet, so the fallback is the name derivation would give it.
+  defp timing_names(group, service_names, taken, candidates) do
+    names =
+      group.services
+      |> Enum.map(fn {service_id, _count} -> Map.get(service_names, service_id, service_id) end)
+      |> Enum.sort()
+
+    case Grouping.timing_name(names, taken) do
+      :fallback -> [fallback_timing_name(candidates)]
+      name -> [name]
+    end
+  end
+
+  defp fallback_timing_name([]), do: "Timing A"
+  defp fallback_timing_name([%{id: id} | _rest]), do: RoutePatterns.next_timing_name(id)
+
+  # The names a target's timings already hold, so rule 6's " 2", " 3" suffix
+  # never proposes a name the pattern owns.
+  defp taken_timing_names(refs) do
+    pattern_ids = Enum.map(refs, & &1.id)
+
+    if pattern_ids == [] do
+      MapSet.new()
+    else
+      from(t in TimedPattern,
+        where: t.route_pattern_id in ^pattern_ids,
+        select: t.name
+      )
+      |> Repo.all()
+      |> MapSet.new()
+    end
+  end
+
+  defp service_names(_route, []), do: %{}
+
+  defp service_names(route, groups) do
+    service_ids =
+      groups
+      |> Enum.flat_map(fn group -> Map.keys(group.services) end)
+      |> Enum.uniq()
+
+    from(a in CalendarAttribute,
+      where:
+        a.organization_id == ^route.organization_id and
+          a.gtfs_version_id == ^route.gtfs_version_id and a.service_id in ^service_ids,
+      select: {a.service_id, a.service_description}
+    )
+    |> Repo.all()
+    |> Map.new(fn {service_id, description} ->
+      {service_id, service_name(description, service_id)}
+    end)
+  end
+
+  defp service_name(description, _service_id)
+       when is_binary(description) and description != "",
+       do: description
+
+  defp service_name(_description, service_id), do: service_id
+
+  defp stop_labels(stop_ids, route) do
+    names = stop_names(route, Enum.uniq(stop_ids))
+    Enum.map(stop_ids, &stop_label(&1, names))
+  end
+
+  defp ordered_counts(counts) do
+    counts
+    |> Enum.sort_by(fn {value, count} -> {-count, value} end)
+  end
+
+  # Distances are measured against the first candidate's own saved map line, so
+  # the card shows how far a group's stops sit from the line the editor is about
+  # to join. A candidate with no saved line reports `nil` rather than a distance
+  # to a line that does not exist.
+  defp stop_distances(_context, _group, []), do: nil
+
+  defp stop_distances(context, group, [%{id: pattern_id} | _rest]) do
+    case Map.fetch(context.patterns, pattern_id) do
+      {:ok, pattern} -> measure_stop_distances(pattern, group.stop_ids)
+      :error -> nil
+    end
+  end
+
+  # The line is drawn from the pattern's own resolved visits and sections
+  # through the one resolver every reader uses (R3), so the preview measures the
+  # same geometry export draws and cannot drift from it.
+  defp measure_stop_distances(pattern, stop_ids) do
+    resolved = Alignments.resolve(pattern)
+    polyline = polyline(resolved)
+
+    if polyline == [] do
+      nil
+    else
+      coordinates = Map.new(resolved.visits, &{&1.stop_id, {&1.lon, &1.lat}})
+      reference = reference_latitude(polyline)
+
+      stop_ids
+      |> Enum.map(fn stop_id ->
+        {stop_id, distance_to_polyline(Map.get(coordinates, stop_id), polyline, reference)}
+      end)
+    end
+  end
+
+  # A saved line is the pattern's drawn sections in position order: an override
+  # or a shared segment, joined through its visits' coordinates. A section with
+  # no stored segment is a gap in the line, not a straight leg, so the line
+  # stops where the drawing stops instead of inventing the missing road.
+  #
+  # Stored points arrive as `[lon, lat]` lists, so every vertex is normalized to
+  # a `{lon, lat}` tuple here and the projection reads one shape.
+  defp polyline(%{visits: visits, sections: sections}) do
+    coordinates = Map.new(visits, &{&1.occurrence_id, {&1.lon, &1.lat}})
+
+    sections
+    |> Enum.filter(&(&1.kind in [:override, :shared]))
+    |> Enum.flat_map(fn section ->
+      from = Map.get(coordinates, section.from_occurrence_id)
+      to = Map.get(coordinates, section.to_occurrence_id)
+      interior = Enum.map(section.points, fn [lon, lat] -> {lon, lat} end)
+
+      [from, to] |> Enum.reject(&is_nil/1) |> Enum.concat(interior)
+    end)
+  end
+
+  # Equirectangular projection: longitude degrees are scaled by the cosine of a
+  # reference latitude, which is accurate over the few kilometres one feed's
+  # route line spans and keeps the answer in metres.
+  defp project({lon, lat}, reference) do
+    {
+      @earth_radius_m * radians(lon) * :math.cos(radians(reference)),
+      @earth_radius_m * radians(lat)
+    }
+  end
+
+  defp reference_latitude(points) do
+    Enum.sum(Enum.map(points, fn {_lon, lat} -> lat end)) / max(length(points), 1)
+  end
+
+  # A stop with no usable coordinates cannot be measured, and neither can a line
+  # with no vertices; both report zero rather than a fabricated number, and the
+  # review's own copy is what tells the editor a stop has no location.
+  defp distance_to_polyline(nil, _polyline, _reference), do: 0.0
+
+  defp distance_to_polyline({lon, lat}, polyline, reference) do
+    projected = Enum.map(polyline, &project(&1, reference))
+    point = project({lon, lat}, reference)
+
+    projected
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.map(fn [{ax, ay}, to] ->
+      :math.sqrt(distance_squared(point, {ax, ay}, to))
+    end)
+    |> Enum.min(fn -> 0.0 end)
+  end
+
+  # The standard point-to-segment distance, clamped to the segment so a stop
+  # beyond either end measures to that end.
+  defp distance_squared({px, py}, {ax, ay}, {bx, by}) do
+    dx = bx - ax
+    dy = by - ay
+    denominator = dx * dx + dy * dy
+
+    t =
+      if denominator == 0.0 do
+        0.0
+      else
+        ((px - ax) * dx + (py - ay) * dy) / denominator
+      end
+
+    t = max(min(t, 1.0), 0.0)
+
+    (px - (ax + t * dx)) ** 2 + (py - (ay + t * dy)) ** 2
+  end
+
+  defp radians(value), do: :math.pi() * value / 180.0
 
   # --- orchestration ---------------------------------------------------------
 
@@ -294,17 +1059,42 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   # --- one route -------------------------------------------------------------
 
   defp derive_route_transaction(organization_id, version_id, route_id, provenance) do
+    case provenance do
+      {:editor, audit_context} ->
+        Authorization.lock_editor!(audit_context)
+
+        unless audit_context.organization_id == organization_id and
+                 audit_context.gtfs_version_id == version_id do
+          Repo.rollback(:not_found)
+        end
+
+      {:import, nil} ->
+        :ok
+
+      {:import, fence} ->
+        fence.()
+    end
+
     route = lock_route!(organization_id, version_id, route_id, provenance)
+    derive_locked_route(route, provenance, %{})
+  end
+
+  # The body of a route derivation, for a route this transaction already holds
+  # the row lock on. `overrides` carries what a caller has confirmed outside a
+  # fresh import: the grouping review's target map and timing names, and the
+  # trips it set pending. An import passes none, so a derived route is planned
+  # from the imported data alone.
+  defp derive_locked_route(route, provenance, overrides) do
     before = trip_totals(route)
 
     if before.pending == 0 do
       zero_summary()
     else
-      context = load_context(route)
+      context = load_context(route, overrides)
       stage_one = first_pass(route, context)
       plan = plan_patterns!(route, context, stage_one)
 
-      maybe_inject_route_failure!(route_id)
+      maybe_inject_route_failure!(route.route_id)
 
       state =
         second_pass(route, plan)
@@ -315,7 +1105,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
       clear_route_error!(route)
       summary = state.summary
 
-      audit_build!(provenance, route, before, trip_totals(route), summary)
+      audit_build!(
+        provenance,
+        route,
+        before,
+        trip_totals(route),
+        summary,
+        Map.get(overrides, :grouped, [])
+      )
+
       summary
     end
   end
@@ -343,7 +1141,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   # The importer already owns its exact target version; an interactive manual
   # build additionally requires the published-version editor boundary and an
   # authenticated actor.
-  defp ensure_scope!(_route, _version_id, {:import, _import_run_id}), do: :ok
+  defp ensure_scope!(_route, _version_id, {:import, _fence}), do: :ok
 
   defp ensure_scope!(route, version_id, {:editor, %AuditContext{} = audit}) do
     unless audit.organization_id == route.organization_id and
@@ -391,7 +1189,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
   # --- route context ---------------------------------------------------------
 
-  defp load_context(route) do
+  defp load_context(route, overrides) do
     supplied_ids = pending_supplied_ids(route)
     supplied = supplied_patterns(route, supplied_ids)
     derived = derived_patterns(route)
@@ -402,10 +1200,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
       supplied_ids: supplied_ids,
       supplied: supplied,
       derived: derived,
-      occurrences: occurrence_rows(pattern_ids(supplied, derived)),
+      occurrences: occurrence_rows(pattern_ids(supplied, derived, overrides)),
       representatives: representative_sequences(route, supplied, eligible_stops),
       eligible_stops: eligible_stops,
-      names: pattern_names(route)
+      names: pattern_names(route),
+      targets: Map.get(overrides, :targets, %{}),
+      timing_names: Map.get(overrides, :timing_names, %{})
     }
   end
 
@@ -458,9 +1258,19 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     |> Map.new(&{&1.derivation_key, &1})
   end
 
-  defp pattern_ids(supplied, derived) do
-    Enum.map(Map.values(supplied), & &1.id) ++
-      Enum.map(derived, fn {_key, pattern} -> pattern.id end)
+  # A confirmed override names the pattern to join, and that pattern is often a
+  # hand-made one: it has no derivation key and no pending trips pointing at it,
+  # so `supplied` and `derived` are both blind to it. Without its own occurrences
+  # here, `existing_target/3` would insert a second copy of its stops and trip
+  # over the unique position constraint.
+  defp pattern_ids(supplied, derived, overrides) do
+    targets = Map.get(overrides, :targets) || %{}
+
+    supplied_ids = Enum.map(Map.values(supplied), & &1.id)
+    derived_ids = Enum.map(derived, fn {_key, pattern} -> pattern.id end)
+    target_ids = targets |> Map.values() |> Enum.map(& &1.id)
+
+    supplied_ids ++ derived_ids ++ target_ids
   end
 
   defp occurrence_rows([]), do: %{}
@@ -648,14 +1458,16 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
         end
       end)
 
-    {supplied, names} = plan_supplied_targets(route, context, stage_one, context.names)
-    {derived, patterns_created, _names} = plan_derived_targets(route, context, stage_one, names)
+    {supplied, children_created, names} =
+      plan_supplied_targets(route, context, stage_one, context.names)
+
+    {derived, derived_created, _names} = plan_derived_targets(route, context, stage_one, names)
 
     %{
       status: status,
       supplied: supplied,
       derived: derived,
-      patterns_created: patterns_created,
+      patterns_created: children_created + derived_created,
       eligible_stops: context.eligible_stops
     }
   end
@@ -663,15 +1475,138 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   defp status_for(route, pattern_route_id),
     do: if(pattern_route_id == route.route_id, do: :ok, else: :scope_mismatch)
 
-  defp plan_supplied_targets(_route, context, stage_one, names) do
-    targets =
-      stage_one.supplied_referenced
-      |> MapSet.to_list()
-      |> Map.new(fn natural_id ->
-        {natural_id, supplied_target(context, stage_one, natural_id)}
-      end)
+  defp plan_supplied_targets(route, context, stage_one, names) do
+    stop_names = stop_names(route, supplied_sequence_stop_ids(stage_one))
 
-    {targets, names}
+    stage_one.supplied_referenced
+    |> MapSet.to_list()
+    |> Enum.sort()
+    |> Enum.reduce({%{}, 0, names}, fn natural_id, {targets, created, names} ->
+      target = supplied_target(context, stage_one, natural_id)
+
+      {target, created, names} =
+        plan_supplied_children(
+          route,
+          context,
+          stage_one,
+          target,
+          stop_names,
+          created,
+          names
+        )
+
+      {Map.put(targets, natural_id, target), created, names}
+    end)
+  end
+
+  # A supplied trip whose ordered stops differ from its supplied pattern's
+  # canonical sequence joins a child pattern labelled by that owner, so the
+  # exported `route_pattern_id` stays the owner's supplied ID (rule 1 of the
+  # proposal, AC-19). Only the sequences the first pass actually saw are
+  # planned, so a child is never created for a sequence no trip serves.
+  defp plan_supplied_children(
+         route,
+         context,
+         stage_one,
+         %{pattern: owner, sequence: canonical} = target,
+         stop_names,
+         created,
+         names
+       ) do
+    case canonical do
+      nil ->
+        {Map.put(target, :children, %{}), created, names}
+
+      _canonical ->
+        {children, created, names} =
+          stage_one.supplied
+          |> Map.get(owner.route_pattern_id, %{})
+          |> Enum.reject(fn {_key, entry} -> entry.sequence == canonical end)
+          |> Enum.sort_by(fn {key, _entry} -> key end)
+          |> Enum.reduce({%{}, created, names}, fn {key, entry}, {children, created, names} ->
+            {child, created, names} =
+              supplied_child_target(route, context, entry, owner, stop_names, created, names)
+
+            {Map.put(children, key, child), created, names}
+          end)
+
+        {Map.put(target, :children, children), created, names}
+    end
+  end
+
+  # A child is reused when the route already holds the pattern this owner and
+  # this sequence derived before, and created otherwise. Its key names the
+  # owner, the direction and the stop list, so the same express trips always
+  # reach the same child across a re-run.
+  defp supplied_child_target(route, context, entry, owner, stop_names, created, names) do
+    key = child_derivation_key(owner, entry.sequence)
+
+    case Map.get(context.derived, key) do
+      %RoutePattern{} = pattern ->
+        validate_label_pair!(pattern, owner)
+
+        {existing_child_target(context, pattern, entry.sequence), created, names}
+
+      nil ->
+        name = unique_pattern_name(entry.sequence, stop_names, names, key)
+
+        pattern =
+          insert_pattern!(
+            route,
+            owner.direction_id,
+            key,
+            name,
+            0,
+            entry.representative,
+            owner.id
+          )
+
+        validate_label_pair!(pattern, owner)
+
+        occurrences = insert_occurrences!(pattern, entry.sequence)
+
+        child = %{
+          pattern: pattern,
+          sequence: entry.sequence,
+          occurrences: occurrence_ids(occurrences)
+        }
+
+        {child, created + 1, MapSet.put(names, name)}
+    end
+  end
+
+  # INV-3: every label pair is decided by `LabelRules` and nowhere else, and the
+  # transaction rolls back rather than committing an inconsistent pair.
+  defp validate_label_pair!(child, owner) do
+    case LabelRules.validate(child, owner) do
+      :ok -> :ok
+      {:error, _violation} -> Repo.rollback(:invalid_label_pair)
+    end
+  end
+
+  # The key already names the stop list, so an existing child that does not
+  # carry it is not this sequence's child and the route is rolled back instead
+  # of linking trips to a pattern with the wrong stops.
+  defp existing_child_target(context, pattern, sequence) do
+    case Map.get(context.occurrences, pattern.id) do
+      nil ->
+        existing_derived_target(pattern, sequence, true)
+
+      occurrences ->
+        if Enum.map(occurrences, & &1.stop_id) == sequence do
+          occurred_target(pattern, occurrences)
+        else
+          Repo.rollback(:label_child_mismatch)
+        end
+    end
+  end
+
+  defp supplied_sequence_stop_ids(stage_one) do
+    stage_one.supplied
+    |> Map.values()
+    |> Enum.flat_map(fn sequences -> Enum.map(Map.values(sequences), & &1.sequence) end)
+    |> Enum.flat_map(& &1)
+    |> Enum.uniq()
   end
 
   defp supplied_target(context, stage_one, natural_id) do
@@ -745,23 +1680,65 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
          group_key,
          entry,
          planning,
-         {created, names} = progress
+         progress
        ) do
     {direction, _key} = group_key
     derivation_key = derivation_key(direction, entry.sequence)
+    timing_name = Map.get(context.timing_names, {direction, derivation_key})
 
+    # A confirmed grouping target wins over a pattern derivation already owns:
+    # the editor chose the pattern the group's trips join, and derivation's
+    # second pass reaches the same group through this same key.
+    {target, progress} =
+      case Map.get(context.targets, {direction, derivation_key}) do
+        %RoutePattern{} = pattern ->
+          {existing_target(pattern, entry, context), progress}
+
+        _absent ->
+          plan_derived_target_from_context(
+            route,
+            context,
+            group_key,
+            entry,
+            planning,
+            derivation_key,
+            progress
+          )
+      end
+
+    # The confirmed name travels on the target, so a timing the review already
+    # named is created under that name and every other one keeps derivation's
+    # own next-timing-name rule.
+    {Map.put(target, :timing_name, timing_name), progress}
+  end
+
+  defp plan_derived_target_from_context(
+         route,
+         context,
+         group_key,
+         entry,
+         planning,
+         derivation_key,
+         progress
+       ) do
     case Map.get(context.derived, derivation_key) do
       %RoutePattern{} = pattern ->
-        target =
-          case Map.get(context.occurrences, pattern.id) do
-            nil -> existing_derived_target(pattern, entry.sequence, true)
-            occurrences -> existing_derived_target(pattern, occurrences, false)
-          end
-
-        {target, progress}
+        # A derived pattern that survived a previous run already owns its
+        # occurrences, so a retry reuses them the way a supplied pattern's are
+        # reused instead of inserting a second copy of the same positions.
+        {existing_target(pattern, entry, context), progress}
 
       nil ->
-        create_derived_target(route, group_key, derivation_key, entry, planning, {created, names})
+        create_derived_target(route, group_key, derivation_key, entry, planning, progress)
+    end
+  end
+
+  # A pattern's target is its own occurrences, or the sequence derivation would
+  # have given it when it has none yet.
+  defp existing_target(pattern, entry, context) do
+    case Map.get(context.occurrences, pattern.id) do
+      nil -> existing_derived_target(pattern, entry.sequence, true)
+      occurrences -> existing_derived_target(pattern, occurrences, false)
     end
   end
 
@@ -880,7 +1857,17 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     )
   end
 
-  defp insert_pattern!(route, direction, derivation_key, name, typicality, representative_trip_id) do
+  # `label_pattern_id` is deliberately not cast by the changeset, so a label
+  # child is given its owner here and nowhere else (rule 8).
+  defp insert_pattern!(
+         route,
+         direction,
+         derivation_key,
+         name,
+         typicality,
+         representative_trip_id,
+         label_pattern_id \\ nil
+       ) do
     %RoutePattern{}
     |> RoutePattern.changeset(%{
       route_pattern_id: "app-" <> Ecto.UUID.generate(),
@@ -893,6 +1880,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
       organization_id: route.organization_id,
       gtfs_version_id: route.gtfs_version_id
     })
+    |> Ecto.Changeset.change(label_pattern_id: label_pattern_id)
     |> insert_or_rollback!()
   end
 
@@ -929,6 +1917,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   end
 
   defp occurrence_ids(occurrences), do: Enum.map(occurrences, & &1.id)
+
+  defp child_derivation_key(owner, sequence) do
+    "l-" <> owner.route_pattern_id <> "-" <> derivation_key(owner.direction_id, sequence)
+  end
 
   defp derivation_key(direction, sequence) do
     "d#{direction}-#{String.slice(sequence_key(sequence), 0, 32)}"
@@ -1054,11 +2046,21 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
       not usable_labels?(Enum.map(rows, &{&1.stop_id, &1.stop_sequence}), eligible_stops) ->
         custom_decision(trip, :unusable_stops, state)
 
-      Enum.map(rows, & &1.stop_id) != canonical ->
-        custom_decision(trip, :different_stops, state)
-
       true ->
-        assign_trip(target, rows, trip, state)
+        case supplied_sequence_target(target, rows) do
+          nil -> custom_decision(trip, :different_stops, state)
+          sequence_target -> assign_trip(sequence_target, rows, trip, state)
+        end
+    end
+  end
+
+  # The owner's own sequence keeps the owner; any other sequence the supplied
+  # pattern's trips served joins the child planned for it, so the exported
+  # `route_pattern_id` stays the supplied ID.
+  defp supplied_sequence_target(%{sequence: canonical} = target, rows) do
+    case Enum.map(rows, & &1.stop_id) do
+      ^canonical -> target
+      sequence -> Map.get(Map.get(target, :children, %{}), sequence_key(sequence))
     end
   end
 
@@ -1080,7 +2082,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     {:custom, reason, bump(state, :trips_custom)}
   end
 
+  # Rule 7: linking bumps `updated_at`, so a review that was open over these
+  # trips goes stale for the next editor instead of applying twice.
   defp flush_links!(links) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
     Enum.each(links, fn {{pattern_natural_id, timing_id}, trip_ids} ->
       from(t in Trip, where: t.id in ^trip_ids)
       |> Repo.update_all(
@@ -1088,7 +2094,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
           route_pattern_id: pattern_natural_id,
           pattern_derivation_state: "linked",
           pattern_derivation_reason: nil,
-          timed_pattern_id: timing_id
+          timed_pattern_id: timing_id,
+          updated_at: now
         ]
       )
     end)
@@ -1111,50 +2118,72 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
   # --- timings ---------------------------------------------------------------
 
+  # A blank arrival and departure is the absence of a scheduled time, not a
+  # malformed row: it becomes a nil offset pair and `TimingRules` decides whether
+  # its position allows the blank. A half pair is carried through the same way so
+  # the rule that rejects it stays in one owner.
   defp timing_rows(vector) do
-    with :ok <- present_times(vector),
-         {:ok, parsed} <- parse_times(vector),
-         :ok <- valid_chronology(parsed),
+    with {:ok, parsed} <- parse_times(vector),
+         rows = timing_row_values(vector, parsed),
+         :ok <- valid_timing_rows(rows),
          :ok <- valid_attributes(vector) do
-      base = parsed |> hd() |> elem(1)
-
-      rows =
-        vector
-        |> Enum.zip(parsed)
-        |> Enum.map(fn {stop_time, {arrival, departure}} ->
-          %{
-            arrival_offset: arrival - base,
-            departure_offset: departure - base,
-            timepoint: stop_time.timepoint,
-            pickup_type: stop_time.pickup_type,
-            drop_off_type: stop_time.drop_off_type,
-            stop_headsign: stop_time.stop_headsign
-          }
-        end)
-
       {:ok, rows}
     else
       {:error, _reason} = error -> error
     end
   end
 
-  defp present_times(vector) do
-    missing? =
-      Enum.any?(vector, fn row ->
-        not is_binary(row.arrival_time) or not is_binary(row.departure_time) or
-          row.arrival_time == "" or row.departure_time == ""
-      end)
+  # Offsets stay relative to the trip's first departure, and a blank row keeps
+  # its nil pair instead of an offset of zero. A trip whose first row is blank is
+  # rejected as a blank terminal below, so its neutral zero base never persists.
+  defp timing_row_values(vector, parsed) do
+    base =
+      case parsed do
+        [{_arrival, departure} | _rest] -> if(is_integer(departure), do: departure, else: 0)
+      end
 
-    if missing?, do: {:error, :missing_times}, else: :ok
+    vector
+    |> Enum.zip(parsed)
+    |> Enum.map(fn {stop_time, {arrival, departure}} ->
+      %{
+        arrival_offset: relative_offset(arrival, base),
+        departure_offset: relative_offset(departure, base),
+        timepoint: stop_time.timepoint,
+        pickup_type: stop_time.pickup_type,
+        drop_off_type: stop_time.drop_off_type,
+        stop_headsign: stop_time.stop_headsign
+      }
+    end)
   end
+
+  defp relative_offset(nil, _base), do: nil
+  defp relative_offset(seconds, base), do: seconds - base
+
+  defp valid_timing_rows(rows) do
+    case TimingRules.validate(rows) do
+      :ok -> :ok
+      {:error, violations} -> timing_reason(violations)
+    end
+  end
+
+  # Both reasons are custom classifications, so a trip that breaks more than one
+  # rule keeps the more specific one: out of order is a different mistake from a
+  # missing time.
+  defp timing_reason(violations) do
+    if Enum.any?(violations, &match?({_index, :out_of_order}, &1)) do
+      {:error, :invalid_chronology}
+    else
+      {:error, :missing_times}
+    end
+  end
+
+  defp parse_times([]), do: {:error, :missing_times}
 
   defp parse_times(vector) do
     Enum.reduce_while(vector, {:ok, []}, fn row, {:ok, acc} ->
-      with {:ok, arrival} <- GtfsTime.parse(row.arrival_time),
-           {:ok, departure} <- GtfsTime.parse(row.departure_time) do
-        {:cont, {:ok, [{arrival, departure} | acc]}}
-      else
-        {:error, _reason} -> {:halt, {:error, :invalid_time}}
+      case parse_row_times(row) do
+        {:ok, times} -> {:cont, {:ok, [times | acc]}}
+        {:error, _reason} = error -> {:halt, error}
       end
     end)
     |> case do
@@ -1163,29 +2192,29 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     end
   end
 
-  defp valid_chronology(parsed) do
-    case parsed do
-      [{first_arrival, first_departure} | rest] ->
-        if first_departure >= first_arrival do
-          validate_chronology(rest, first_departure)
-        else
-          {:error, :invalid_chronology}
-        end
-
-      [] ->
-        {:error, :missing_times}
+  defp parse_row_times(row) do
+    case {time_value(row.arrival_time), time_value(row.departure_time)} do
+      {{:ok, arrival}, {:ok, departure}} -> {:ok, {arrival, departure}}
+      {:blank, :blank} -> {:ok, {nil, nil}}
+      {{:ok, arrival}, :blank} -> {:ok, {arrival, nil}}
+      {:blank, {:ok, departure}} -> {:ok, {nil, departure}}
+      {{:invalid, _value}, _departure} -> {:error, :invalid_time}
+      {_arrival, {:invalid, _value}} -> {:error, :invalid_time}
     end
   end
 
-  defp validate_chronology([], _preceding_departure), do: :ok
+  # An imported blank is nil or an empty string; anything else that is not a
+  # parseable time is malformed input rather than an absent one.
+  defp time_value(value) when value in [nil, ""], do: :blank
 
-  defp validate_chronology([{arrival, departure} | rest], preceding_departure) do
-    if arrival >= preceding_departure and departure >= arrival do
-      validate_chronology(rest, departure)
-    else
-      {:error, :invalid_chronology}
+  defp time_value(value) when is_binary(value) do
+    case GtfsTime.parse(value) do
+      {:ok, seconds} -> {:ok, seconds}
+      {:error, _reason} -> {:invalid, value}
     end
   end
+
+  defp time_value(value), do: {:invalid, value}
 
   defp valid_attributes(vector) do
     valid? =
@@ -1292,7 +2321,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
         route_pattern: pattern,
         organization_id: pattern.organization_id,
         gtfs_version_id: pattern.gtfs_version_id,
-        name: RoutePatterns.next_timing_name(pattern.id),
+        name: timing_name_for(target, pattern),
         headsign: nil,
         derivation_key: derivation_key
       })
@@ -1327,6 +2356,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     {timing.id, state}
   end
 
+  # A grouping review already named the timing it would create (rule 6), so
+  # that name is used. Every other timing keeps derivation's own rule, so an
+  # import names timings exactly as before.
+  defp timing_name_for(%{timing_name: name}, _pattern) when is_binary(name), do: name
+  defp timing_name_for(_target, pattern), do: RoutePatterns.next_timing_name(pattern.id)
+
   defp record_headsign(state, timing_id, headsign) do
     if MapSet.member?(state.created_timings, timing_id) do
       counts = Map.get(state.headsigns, timing_id, %{})
@@ -1341,7 +2376,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   # A. Custom trips and their imported stop times stay untouched, and retry skips
   # any pattern that already has a timing.
   defp initialize_template_timings(state, plan) do
-    Enum.reduce(Map.values(plan.supplied) ++ Map.values(plan.derived), state, fn target, state ->
+    (Map.values(plan.supplied) ++
+       Map.values(plan.derived) ++ supplied_child_targets(plan.supplied))
+    |> Enum.reduce(state, fn target, state ->
       if length(target.occurrences) >= 2 and not pattern_has_timing?(target.pattern.id) do
         {_timing_id, state} =
           create_timing(target, nil, zero_rows(length(target.occurrences)), state)
@@ -1351,6 +2388,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
         state
       end
     end)
+  end
+
+  defp supplied_child_targets(supplied) do
+    supplied
+    |> Map.values()
+    |> Enum.flat_map(fn target -> Map.values(Map.get(target, :children, %{})) end)
   end
 
   defp pattern_has_timing?(pattern_id) do
@@ -1489,9 +2532,16 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
   # --- audit -----------------------------------------------------------------
 
-  defp audit_build!({:import, _import_run_id}, _route, _before, _after, _summary), do: :ok
+  defp audit_build!({:import, _fence}, _route, _before, _after, _summary, _grouped), do: :ok
 
-  defp audit_build!({:editor, %AuditContext{} = audit}, route, before, after_totals, summary) do
+  defp audit_build!(
+         {:editor, %AuditContext{} = audit},
+         route,
+         before,
+         after_totals,
+         summary,
+         grouped
+       ) do
     if changed?(before, after_totals, summary) do
       attrs = %{
         before: totals(before),
@@ -1500,7 +2550,16 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
         timings_created: summary.timings_created
       }
 
-      case Gtfs.record_change_in_transaction(
+      # A grouped apply records the direction each trip had before the review
+      # wrote it, so the route's build history can answer what grouping changed.
+      attrs =
+        if grouped == [] do
+          attrs
+        else
+          Map.put(attrs, :grouped_trips, grouped)
+        end
+
+      case Audit.record_change_in_transaction(
              %{audit | station_stop_id: nil},
              :route_pattern_build,
              route,
@@ -1537,16 +2596,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
   # --- helpers ---------------------------------------------------------------
 
-  defp normalize_provenance!({:import, import_run_id})
-       when is_nil(import_run_id) or is_binary(import_run_id),
-       do: {:import, import_run_id}
+  defp normalize_provenance!({:import, fence}) when is_nil(fence) or is_function(fence, 0),
+    do: {:import, fence}
 
   defp normalize_provenance!({:editor, %AuditContext{} = audit_context}),
     do: {:editor, audit_context}
 
   defp normalize_provenance!(other) do
     raise ArgumentError,
-          "derivation provenance must be {:import, run_id} or {:editor, %AuditContext{}}, " <>
+          "derivation provenance must be {:import, fence | nil} or {:editor, %AuditContext{}}, " <>
             "got: #{inspect(other)}"
   end
 

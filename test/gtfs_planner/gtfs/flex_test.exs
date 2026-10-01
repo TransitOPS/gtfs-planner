@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.FlexTest do
   use GtfsPlanner.DataCase, async: true
 
+  import GtfsPlanner.FlexFixtures, only: [flex_audit_fixture: 2]
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -73,7 +74,7 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
       {organization, version} = scope()
 
       assert {:ok, service} =
-               Flex.create_service(organization.id, version.id, %{
+               Flex.create_service(flex_audit_fixture(organization.id, version.id), %{
                  name: "Newport Dial-a-Ride",
                  kind: :area,
                  key: "mine"
@@ -82,7 +83,7 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
       assert service.key == "newport-dial-a-ride"
 
       assert {:ok, typed} =
-               Flex.create_service(organization.id, version.id, %{
+               Flex.create_service(flex_audit_fixture(organization.id, version.id), %{
                  "name" => "Toledo Dial-a-Ride",
                  "kind" => "area",
                  "key" => "mine"
@@ -97,7 +98,7 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
       route_fixture(organization.id, version.id, %{route_id: "R20"})
 
       assert {:error, changeset} =
-               Flex.create_service(organization.id, version.id, %{
+               Flex.create_service(flex_audit_fixture(organization.id, version.id), %{
                  name: "Route 20 detour",
                  kind: :detour
                })
@@ -105,7 +106,7 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
       assert %{route_id: [_message]} = errors_on(changeset)
 
       assert {:ok, detour} =
-               Flex.create_service(organization.id, version.id, %{
+               Flex.create_service(flex_audit_fixture(organization.id, version.id), %{
                  name: "Route 20 detour",
                  kind: :detour,
                  route_id: "R20"
@@ -120,7 +121,10 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
       {organization, version} = scope()
 
       assert {:error, changeset} =
-               Flex.create_service(organization.id, version.id, %{name: "!!!", kind: :area})
+               Flex.create_service(
+                 flex_audit_fixture(organization.id, version.id),
+                 %{name: "!!!", kind: :area}
+               )
 
       assert %{key: [_message]} = errors_on(changeset)
       assert service_count(organization.id, version.id) == 0
@@ -132,19 +136,19 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
       {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staging"})
 
       assert {:error, :version_unavailable} =
-               Flex.create_service(organization.id, staging.id, %{
+               Flex.create_service(flex_audit_fixture(organization.id, staging.id), %{
                  name: "Newport Dial-a-Ride",
                  kind: :area
                })
 
       assert {:error, :version_unavailable} =
-               Flex.create_service(other_organization.id, version.id, %{
+               Flex.create_service(flex_audit_fixture(other_organization.id, version.id), %{
                  name: "Newport Dial-a-Ride",
                  kind: :area
                })
 
       assert {:error, :version_unavailable} =
-               Flex.create_service(organization.id, Ecto.UUID.generate(), %{
+               Flex.create_service(flex_audit_fixture(organization.id, Ecto.UUID.generate()), %{
                  name: "Newport Dial-a-Ride",
                  kind: :area
                })
@@ -162,8 +166,7 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
 
       assert {:ok, saved} =
                Flex.save_service(
-                 organization.id,
-                 version.id,
+                 flex_audit_fixture(organization.id, version.id),
                  loaded,
                  %{
                    name: "Newport Shuttle",
@@ -198,10 +201,12 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
       }
 
       assert {:ok, saved} =
-               Flex.save_service(organization.id, version.id, loaded, %{name: service.name}, [
-                 drawn,
-                 moved
-               ])
+               Flex.save_service(
+                 flex_audit_fixture(organization.id, version.id),
+                 loaded,
+                 %{name: service.name},
+                 [drawn, moved]
+               )
 
       assert Enum.map(saved.areas, & &1.key) == ["a1", "a2"]
       assert Enum.map(saved.areas, & &1.position) == [1, 2]
@@ -219,7 +224,12 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
       # A second save that omits the route-distance area deletes it, and the
       # drawn area keeps its row id and its geometry.
       assert {:ok, thinned} =
-               Flex.save_service(organization.id, version.id, saved, %{name: saved.name}, [drawn])
+               Flex.save_service(
+                 flex_audit_fixture(organization.id, version.id),
+                 saved,
+                 %{name: saved.name},
+                 [drawn]
+               )
 
       assert Enum.map(thinned.areas, & &1.key) == ["a1"]
       assert hd(thinned.areas).id == drawn_area.id
@@ -233,18 +243,26 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
       loaded = loaded_service(organization, version, service)
 
       assert {:ok, saved} =
-               Flex.save_service(organization.id, version.id, loaded, %{name: service.name}, [
-                 %{key: "a1", name: "Newport", source: :drawn, geojson: @square}
-               ])
+               Flex.save_service(
+                 flex_audit_fixture(organization.id, version.id),
+                 loaded,
+                 %{name: service.name},
+                 [%{key: "a1", name: "Newport", source: :drawn, geojson: @square}]
+               )
 
       assert {:ok, %{geojson: normalized}} = Geometry.normalize(@square)
       [area] = saved.areas
 
       assert {:error, {:invalid_area, "a2", {:invalid, _reason, [_lon, _lat]}}} =
-               Flex.save_service(organization.id, version.id, saved, %{name: "Renamed"}, [
-                 %{key: "a1", name: "Newport", source: :drawn, geojson: @east},
-                 %{key: "a2", name: "Broken", source: :drawn, geojson: @bowtie}
-               ])
+               Flex.save_service(
+                 flex_audit_fixture(organization.id, version.id),
+                 saved,
+                 %{name: "Renamed"},
+                 [
+                   %{key: "a1", name: "Newport", source: :drawn, geojson: @east},
+                   %{key: "a2", name: "Broken", source: :drawn, geojson: @bowtie}
+                 ]
+               )
 
       {:ok, stored} = Flex.get_service(organization.id, version.id, service.id)
       assert stored.name == service.name
@@ -258,9 +276,12 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
       loaded = loaded_service(organization, version, service)
 
       assert {:error, changeset} =
-               Flex.save_service(organization.id, version.id, loaded, %{name: "Renamed"}, [
-                 %{key: "a1", source: :drawn, geojson: @square}
-               ])
+               Flex.save_service(
+                 flex_audit_fixture(organization.id, version.id),
+                 loaded,
+                 %{name: "Renamed"},
+                 [%{key: "a1", source: :drawn, geojson: @square}]
+               )
 
       assert %{name: [_message]} = errors_on(changeset)
       assert area_count(service.id) == 0
@@ -276,24 +297,32 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
       loaded = loaded_service(organization, version, service)
 
       assert {:ok, saved} =
-               Flex.save_service(organization.id, version.id, loaded, %{name: service.name}, [
-                 %{key: "a1", name: "Newport", source: :drawn, geojson: @square}
-               ])
+               Flex.save_service(
+                 flex_audit_fixture(organization.id, version.id),
+                 loaded,
+                 %{name: service.name},
+                 [%{key: "a1", name: "Newport", source: :drawn, geojson: @square}]
+               )
 
       [area] = saved.areas
       assert Map.has_key?(Geometry.get_geojson([area.id]), area.id)
 
       assert {:ok, switched} =
-               Flex.save_service(organization.id, version.id, saved, %{name: service.name}, [
-                 %{
-                   key: "a1",
-                   name: "Newport",
-                   source: :route_distance,
-                   geojson: nil,
-                   route_ids: ["R20"],
-                   distance_m: 800
-                 }
-               ])
+               Flex.save_service(
+                 flex_audit_fixture(organization.id, version.id),
+                 saved,
+                 %{name: service.name},
+                 [
+                   %{
+                     key: "a1",
+                     name: "Newport",
+                     source: :route_distance,
+                     geojson: nil,
+                     route_ids: ["R20"],
+                     distance_m: 800
+                   }
+                 ]
+               )
 
       assert [switched_area] = switched.areas
       assert switched_area.id == area.id
@@ -309,8 +338,7 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
 
       assert {:ok, _saved} =
                Flex.save_service(
-                 organization.id,
-                 version.id,
+                 flex_audit_fixture(organization.id, version.id),
                  session_a,
                  %{hours: [@weekday_a]},
                  []
@@ -318,8 +346,7 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
 
       assert {:error, :stale} =
                Flex.save_service(
-                 organization.id,
-                 version.id,
+                 flex_audit_fixture(organization.id, version.id),
                  session_b,
                  %{
                    name: "Replaced",
@@ -335,8 +362,7 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
       # Reloading after the conflict saves (the page's "Use their changes").
       assert {:ok, merged} =
                Flex.save_service(
-                 organization.id,
-                 version.id,
+                 flex_audit_fixture(organization.id, version.id),
                  stored,
                  %{name: "Newport Shuttle"},
                  []
@@ -376,8 +402,7 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
 
       assert {:error, :stale} =
                Flex.save_service(
-                 other_organization.id,
-                 other_org_version.id,
+                 flex_audit_fixture(other_organization.id, other_org_version.id),
                  loaded,
                  %{
                    name: "Stolen"
@@ -386,18 +411,35 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
                )
 
       assert {:error, :stale} =
-               Flex.save_service(organization.id, other_version.id, loaded, %{name: "Moved"}, [])
+               Flex.save_service(
+                 flex_audit_fixture(organization.id, other_version.id),
+                 loaded,
+                 %{name: "Moved"},
+                 []
+               )
 
       # The unsafe pair (another organization's id with this version's id)
       # fails on the version, before any service lookup.
       assert {:error, :version_unavailable} =
-               Flex.save_service(other_organization.id, version.id, loaded, %{name: "Stolen"}, [])
+               Flex.save_service(
+                 flex_audit_fixture(other_organization.id, version.id),
+                 loaded,
+                 %{name: "Stolen"},
+                 []
+               )
 
       assert {:error, :not_found} =
-               Flex.set_active(other_organization.id, other_org_version.id, service.id, false)
+               Flex.set_active(
+                 flex_audit_fixture(other_organization.id, other_org_version.id),
+                 service.id,
+                 false
+               )
 
       assert {:error, :not_found} =
-               Flex.delete_service(other_organization.id, other_org_version.id, service.id)
+               Flex.delete_service(
+                 flex_audit_fixture(other_organization.id, other_org_version.id),
+                 service.id
+               )
 
       {:ok, unchanged} = Flex.get_service(organization.id, version.id, service.id)
       assert unchanged.name == service.name
@@ -411,13 +453,18 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
       {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staging"})
 
       assert {:error, :version_unavailable} =
-               Flex.save_service(organization.id, staging.id, loaded, %{name: "Staging save"}, [])
+               Flex.save_service(
+                 flex_audit_fixture(organization.id, staging.id),
+                 loaded,
+                 %{name: "Staging save"},
+                 []
+               )
 
       assert {:error, :version_unavailable} =
-               Flex.set_active(organization.id, staging.id, service.id, false)
+               Flex.set_active(flex_audit_fixture(organization.id, staging.id), service.id, false)
 
       assert {:error, :version_unavailable} =
-               Flex.delete_service(organization.id, staging.id, service.id)
+               Flex.delete_service(flex_audit_fixture(organization.id, staging.id), service.id)
 
       assert Flex.list_services(organization.id, staging.id) == []
       assert {:error, :not_found} = Flex.get_service(organization.id, staging.id, service.id)
@@ -479,8 +526,7 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
 
       assert {:ok, saved} =
                Flex.save_service(
-                 organization.id,
-                 version.id,
+                 flex_audit_fixture(organization.id, version.id),
                  loaded,
                  %{
                    hours: [@weekday_a],
@@ -490,7 +536,9 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
                  [%{key: "a1", name: "Newport", source: :drawn, geojson: @square}]
                )
 
-      assert {:ok, inactive} = Flex.set_active(organization.id, version.id, saved.id, false)
+      assert {:ok, inactive} =
+               Flex.set_active(flex_audit_fixture(organization.id, version.id), saved.id, false)
+
       refute inactive.active
       assert Enum.map(inactive.areas, & &1.key) == ["a1"]
       assert inactive.phone == "(541) 555-0142"
@@ -502,14 +550,18 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
       assert [%{key: "a1", source: :drawn}] = stored.areas
       assert Map.has_key?(Geometry.get_geojson([hd(stored.areas).id]), hd(stored.areas).id)
 
-      assert {:ok, active} = Flex.set_active(organization.id, version.id, saved.id, true)
+      assert {:ok, active} =
+               Flex.set_active(flex_audit_fixture(organization.id, version.id), saved.id, true)
+
       assert active.active
 
-      assert :ok = Flex.delete_service(organization.id, version.id, saved.id)
+      assert :ok = Flex.delete_service(flex_audit_fixture(organization.id, version.id), saved.id)
       assert {:error, :not_found} = Flex.get_service(organization.id, version.id, saved.id)
       assert area_count(service.id) == 0
       assert service_count(organization.id, version.id) == 0
-      assert {:error, :not_found} = Flex.delete_service(organization.id, version.id, saved.id)
+
+      assert {:error, :not_found} =
+               Flex.delete_service(flex_audit_fixture(organization.id, version.id), saved.id)
     end
 
     test "saving one service leaves another service's areas alone" do
@@ -526,7 +578,14 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
       [second_area] = second_stored.areas
 
       {:ok, first_loaded} = Flex.get_service(organization.id, version.id, first.id)
-      assert {:ok, _saved} = Flex.save_service(organization.id, version.id, first_loaded, %{}, [])
+
+      assert {:ok, _saved} =
+               Flex.save_service(
+                 flex_audit_fixture(organization.id, version.id),
+                 first_loaded,
+                 %{},
+                 []
+               )
 
       {:ok, second_after} = Flex.get_service(organization.id, version.id, second.id)
       assert Enum.map(second_after.areas, & &1.id) == [second_area.id]
@@ -551,12 +610,19 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
       loaded = loaded_service(organization, version, service)
 
       {:ok, saved} =
-        Flex.save_service(organization.id, version.id, loaded, %{hours: [@weekday_a]}, [
-          %{key: "a1", name: "Newport", source: :drawn, geojson: @square}
-        ])
+        Flex.save_service(
+          flex_audit_fixture(organization.id, version.id),
+          loaded,
+          %{hours: [@weekday_a]},
+          [
+            %{key: "a1", name: "Newport", source: :drawn, geojson: @square}
+          ]
+        )
 
-      {:ok, _inactive} = Flex.set_active(organization.id, version.id, saved.id, false)
-      assert :ok = Flex.delete_service(organization.id, version.id, saved.id)
+      {:ok, _inactive} =
+        Flex.set_active(flex_audit_fixture(organization.id, version.id), saved.id, false)
+
+      assert :ok = Flex.delete_service(flex_audit_fixture(organization.id, version.id), saved.id)
 
       assert scoped_count(Trip, organization.id, version.id) == before.trips
       assert scoped_count(StopTime, organization.id, version.id) == before.stop_times
@@ -572,7 +638,10 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
   end
 
   defp create(organization, version, name) do
-    Flex.create_service(organization.id, version.id, %{name: name, kind: :area})
+    Flex.create_service(flex_audit_fixture(organization.id, version.id), %{
+      name: name,
+      kind: :area
+    })
   end
 
   defp area_service(organization, version, name \\ "Newport Dial-a-Ride") do
@@ -587,7 +656,10 @@ defmodule GtfsPlanner.Gtfs.FlexTest do
 
   defp save_areas(organization, version, service, inputs) do
     loaded = loaded_service(organization, version, service)
-    {:ok, saved} = Flex.save_service(organization.id, version.id, loaded, %{}, inputs)
+
+    {:ok, saved} =
+      Flex.save_service(flex_audit_fixture(organization.id, version.id), loaded, %{}, inputs)
+
     saved
   end
 

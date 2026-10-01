@@ -92,6 +92,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
       {:error, :battery_too_large} ->
         {:noreply, assign(socket, :run_error, run_error_message(:battery_too_large))}
 
+      {:error, :busy} ->
+        {:noreply, assign(socket, :run_error, run_error_message(:busy))}
+
       {:error, reason} ->
         log_run_error(reason)
         {:noreply, assign(socket, :run_error, run_error_message(reason))}
@@ -155,6 +158,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
 
   defp run_error_message(:run_in_progress) do
     %{title: "A check is already running for this station.", body: "Wait for it to finish."}
+  end
+
+  defp run_error_message(:busy) do
+    %{title: "Another reachability check is running.", body: "Try again when it finishes."}
   end
 
   defp run_error_message(:battery_too_large) do

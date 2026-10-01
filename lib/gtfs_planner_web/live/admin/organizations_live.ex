@@ -21,7 +21,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   Deactivation is server-owned. The browser may only *propose* a user ID; the
   request and the confirmation each resolve that member again from a fresh read
   scoped to the organization currently in the route, and only the resolved
-  server-side identity reaches `Organizations.deactivate_user_in_organization/2`.
+  server-side identity reaches `Organizations.deactivate_user_in_organization/3`.
   """
   use GtfsPlannerWeb, :live_view
 
@@ -354,6 +354,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         organization.id,
         Map.get(params, "roles", []),
         &url(~p"/users/accept_invite/#{&1}"),
+        actor: socket.assigns.current_user,
         login_url: url(~p"/users/log_in")
       )
 
@@ -406,6 +407,20 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
          )
          |> push_patch(to: ~p"/admin/organizations/#{organization.id}")}
 
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> put_feedback(
+           "error",
+           "Your administrator access has changed.",
+           "Nothing was changed. Ask a current organization administrator to send the invitation.",
+           nil
+         )
+         |> push_event("focus_form_error", %{
+           form_id: "invite-form",
+           fallback_id: "invite-service-error"
+         })}
+
       {:error, changeset} ->
         {:noreply,
          socket
@@ -423,7 +438,12 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
 
   def handle_event("resend_invite", %{"user-id" => user_id}, socket) do
     with_resolved_member(socket, user_id, fn socket, member ->
-      case Accounts.resend_user_invite(member.user, &url(~p"/users/accept_invite/#{&1}")) do
+      case Accounts.resend_user_invite(
+             socket.assigns.current_user,
+             socket.assigns.organization.id,
+             member.user.id,
+             &url(~p"/users/accept_invite/#{&1}")
+           ) do
         {:ok, _delivery} ->
           socket
           |> put_feedback(
@@ -444,6 +464,18 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
           )
           |> load_members()
 
+        {:error, :forbidden} ->
+          put_feedback(
+            socket,
+            "error",
+            "Your administrator access has changed.",
+            "Nothing was changed. Ask a current organization administrator to resend the invitation.",
+            nil
+          )
+
+        {:error, :not_found} ->
+          refuse_stale(socket)
+
         {:error, _reason} ->
           socket
           |> put_feedback(
@@ -460,6 +492,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   def handle_event("activate_user", %{"user-id" => user_id}, socket) do
     with_resolved_member(socket, user_id, fn socket, member ->
       case Organizations.activate_user_in_organization(
+             socket.assigns.current_user,
              member.user.id,
              socket.assigns.organization.id
            ) do
@@ -536,6 +569,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
 
   defp deactivate_member(socket, member) do
     case Organizations.deactivate_user_in_organization(
+           socket.assigns.current_user,
            member.user.id,
            socket.assigns.organization.id
          ) do
@@ -570,7 +604,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   # ---------------------------------------------------------------------------
 
   defp save_organization(socket, :new, params) do
-    case Organizations.create_organization(params) do
+    case Organizations.create_organization(socket.assigns.current_user, params) do
       {:ok, organization} ->
         {:noreply,
          socket
@@ -581,13 +615,26 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
          )
          |> push_patch(to: ~p"/admin/organizations")}
 
+      {:error, :forbidden} ->
+        {:noreply,
+         refuse_organization(
+           socket,
+           params,
+           "Your system administrator access has changed.",
+           "The organization was not created. Ask a current system administrator to create it."
+         )}
+
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, reject_organization(socket, changeset, :insert)}
     end
   end
 
   defp save_organization(socket, :edit, params) do
-    case Organizations.update_organization(socket.assigns.organization, params) do
+    case Organizations.update_organization(
+           socket.assigns.current_user,
+           socket.assigns.organization,
+           params
+         ) do
       {:ok, organization} ->
         {:noreply,
          socket
@@ -595,9 +642,44 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
          |> put_organization_feedback("success", "#{organization.name} updated.")
          |> push_patch(to: ~p"/admin/organizations")}
 
+      {:error, :forbidden} ->
+        {:noreply,
+         refuse_organization(
+           socket,
+           params,
+           "Your system administrator access has changed.",
+           "The organization was not changed. Ask a current system administrator to change it."
+         )}
+
+      {:error, :not_found} ->
+        {:noreply,
+         refuse_organization(
+           socket,
+           params,
+           "That organization no longer exists.",
+           "Nothing was changed. Close this drawer to return to the list."
+         )}
+
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, reject_organization(socket, changeset, :update)}
     end
+  end
+
+  # A refused write keeps the drawer open with what was typed and says why
+  # nothing was saved; focus moves to that message.
+  defp refuse_organization(socket, params, title, detail) do
+    draft =
+      socket
+      |> organization_subject()
+      |> Organizations.change_organization(params)
+
+    socket
+    |> assign_organization_form(draft)
+    |> assign(:organization_refusal, %{title: title, detail: detail})
+    |> push_event("focus_form_error", %{
+      form_id: "org-form",
+      fallback_id: "organization-refusal"
+    })
   end
 
   # A rejected save lists its problems in a summary and moves focus to the first
@@ -635,6 +717,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
 
     socket
     |> assign(:organization_form, form)
+    |> assign(:organization_refusal, nil)
     |> assign(:organization_name_errors, name_errors)
     |> assign(:organization_alias_errors, alias_errors)
     |> assign(
@@ -738,6 +821,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   attr :name_errors, :list, required: true
   attr :alias_errors, :list, required: true
   attr :failures, :list, required: true
+  attr :refusal, :map, default: nil
 
   defp organization_form(assigns) do
     assigns = assign(assigns, :product, to_string(assigns.form[:product].value))
@@ -752,6 +836,16 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
       class="flex min-h-0 flex-1 flex-col"
     >
       <div class="grid flex-1 content-start gap-5 overflow-y-auto px-5 py-5 sm:px-6">
+        <.message
+          :if={@refusal}
+          id="organization-refusal"
+          tabindex="-1"
+          kind="error"
+          title={@refusal.title}
+        >
+          {@refusal.detail}
+        </.message>
+
         <.form_error_summary
           id="org-error-summary"
           title={failures_title(@live_action, @failures)}
@@ -1193,6 +1287,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         name_errors={@organization_name_errors}
         alias_errors={@organization_alias_errors}
         failures={@organization_failures}
+        refusal={@organization_refusal}
       />
     </.drawer>
     """

@@ -256,9 +256,15 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
       seed_closure(context)
 
       assert {:ok, _setting} =
-               Gtfs.update_blocking_settings(context.organization.id, context.version.id, %{
-                 min_layover_minutes: 12
-               })
+               Gtfs.update_blocking_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                   context.organization.id,
+                   context.version.id
+                 ),
+                 %{
+                   min_layover_minutes: 12
+                 }
+               )
 
       assert {:ok, inputs} = load_inputs(context.audit, @command)
 
@@ -572,7 +578,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
       token = review_token(context)
 
       assert {:ok, _replacement} =
-               Gtfs.create_trip(%{
+               insert_trip(%{
                  organization_id: context.organization.id,
                  gtfs_version_id: context.version.id,
                  route_id: context.route.route_id,
@@ -601,7 +607,8 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
 
       # The source trip's first endpoint is a child stop with no coordinates of its own, so its
       # reviewed position comes from this parent through `Queries`' fallback.
-      assert {:ok, _parent} = Gtfs.update_stop(scope.parent, %{stop_lat: Decimal.new("43.10")})
+      assert {:ok, _parent} =
+               Gtfs.import_update_stop(scope.parent, %{stop_lat: Decimal.new("43.10")})
 
       refute review_token(context) == token
     end
@@ -611,9 +618,15 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
       token = review_token(context)
 
       assert {:ok, _setting} =
-               Gtfs.update_blocking_settings(context.organization.id, context.version.id, %{
-                 min_layover_minutes: 12
-               })
+               Gtfs.update_blocking_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                   context.organization.id,
+                   context.version.id
+                 ),
+                 %{
+                   min_layover_minutes: 12
+                 }
+               )
 
       refute review_token(context) == token
     end
@@ -1465,8 +1478,8 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
     %{task: task, backend: backend}
   end
 
-  # The direct trip writer's own order: the scoped version row `FOR SHARE` first, then the
-  # insert through the real `Gtfs.create_trip/1` path, committed by this transaction.
+  # The cooperating trip writer's own order: the scoped version row `FOR SHARE` first, then the
+  # trip insert, committed by this transaction.
   defp write_late_trip(scope, parent) do
     unboxed(fn ->
       Repo.transaction(fn ->
@@ -1484,7 +1497,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
 
   defp created_trip_id!(scope) do
     {:ok, trip} =
-      Gtfs.create_trip(%{
+      insert_trip(%{
         organization_id: scope.organization_id,
         gtfs_version_id: scope.version_id,
         route_id: scope.route_id,

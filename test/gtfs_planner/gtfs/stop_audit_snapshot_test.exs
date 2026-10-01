@@ -16,6 +16,7 @@ defmodule GtfsPlanner.Gtfs.StopAuditSnapshotTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Repo
@@ -39,7 +40,7 @@ defmodule GtfsPlanner.Gtfs.StopAuditSnapshotTest do
     from(log in ChangeLog, where: log.organization_id == ^organization_id)
   end
 
-  # `stop_fixture/3` goes through `Gtfs.create_stop/1`, which uses the importer's
+  # `stop_fixture/3` goes through `Gtfs.import_create_stop/1`, which uses the importer's
   # permissive `Stop.changeset/2` and so casts none of the four fields under test.
   # The stop editor casts the first three through `Stop.editor_changeset/2` (step 1)
   # and Settings › Fares writes `zone_id` directly, so the fixture sets all four the
@@ -65,7 +66,8 @@ defmodule GtfsPlanner.Gtfs.StopAuditSnapshotTest do
         zone_id: "NL"
       })
 
-    assert :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "SE First St"})
+    assert :ok =
+             record_change(ctx, :stop, stop, "updated", %{stop_name: "SE First St"})
 
     [log] = Repo.all(own_logs(organization.id))
 
@@ -89,7 +91,8 @@ defmodule GtfsPlanner.Gtfs.StopAuditSnapshotTest do
         stop_url: "https://northcoast.example/stops/2001"
       })
 
-    assert :ok = Gtfs.record_change(ctx, :stop, stop, "created", %{})
+    assert :ok =
+             record_change(ctx, :stop, stop, "created", %{})
 
     [log] = Repo.all(own_logs(organization.id))
 
@@ -113,7 +116,8 @@ defmodule GtfsPlanner.Gtfs.StopAuditSnapshotTest do
         stop_url: "https://northcoast.example/stops/2002"
       })
 
-    assert :ok = Gtfs.record_change(ctx, :stop, stop, "deleted", %{})
+    assert :ok =
+             record_change(ctx, :stop, stop, "deleted", %{})
 
     [log] = Repo.all(own_logs(organization.id))
 
@@ -133,7 +137,8 @@ defmodule GtfsPlanner.Gtfs.StopAuditSnapshotTest do
         stop_name: "Plain Street"
       })
 
-    assert :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Plain St"})
+    assert :ok =
+             record_change(ctx, :stop, stop, "updated", %{stop_name: "Plain St"})
 
     [log] = Repo.all(own_logs(organization.id))
 
@@ -180,7 +185,7 @@ defmodule GtfsPlanner.Gtfs.StopAuditSnapshotTest do
       })
 
     assert :ok =
-             Gtfs.record_change(ctx, :stop, stop, "updated", %{
+             record_change(ctx, :stop, stop, "updated", %{
                stop_code: "3001-B",
                stop_url: "https://northcoast.example/stops/3001-b",
                zone_id: "NL"
@@ -196,5 +201,17 @@ defmodule GtfsPlanner.Gtfs.StopAuditSnapshotTest do
            }
 
     refute Map.has_key?(log.changed_fields, "zone_id")
+  end
+
+  # Upstream moved history out of the facade and into `Audit`, where the entry is
+  # written inside the caller's transaction. The test only needs the entry, so a
+  # transaction of its own carries the same contract.
+  defp record_change(ctx, entity_type, entity, action, attrs) do
+    {:ok, _log} =
+      Repo.transaction(fn ->
+        Audit.record_change_in_transaction(ctx, entity_type, entity, action, attrs)
+      end)
+
+    :ok
   end
 end

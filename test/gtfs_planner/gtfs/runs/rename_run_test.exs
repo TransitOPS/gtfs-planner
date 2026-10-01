@@ -90,8 +90,7 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
     } do
       assert {:ok, %{undo: undo}} =
                Gtfs.rename_run(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  "1006",
                  "3006"
@@ -111,8 +110,7 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
     test "the renamed run is re-derived by the day read, not by the rename", %{world: world} do
       assert {:ok, _} =
                Gtfs.rename_run(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  "1006",
                  "3006"
@@ -129,8 +127,7 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
 
       assert {:ok, %{undo: undo}} =
                Gtfs.rename_run(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  "1006",
                  "3006"
@@ -140,8 +137,7 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
 
       assert {:ok, _} =
                Gtfs.apply_run_moves(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  undo
                )
@@ -154,8 +150,7 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
 
       {:ok, %{undo: undo}} =
         Gtfs.rename_run(
-          world.organization.id,
-          world.version.id,
+          world.audit,
           world.day_type_key,
           "1006",
           "3006"
@@ -163,7 +158,7 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
 
       # Somebody else moves one of the renamed trips after the undo was handed out.
       {:ok, _} =
-        Gtfs.apply_run_moves(world.organization.id, world.version.id, world.day_type_key, [
+        Gtfs.apply_run_moves(world.audit, world.day_type_key, [
           %{trip_id: moved_trip.id, from: "3006", to: "4006"}
         ])
 
@@ -171,8 +166,7 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
 
       assert {:error, :stale_moves} =
                Gtfs.apply_run_moves(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  undo
                )
@@ -189,8 +183,7 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
 
       assert {:error, %Ecto.Changeset{} = changeset} =
                Gtfs.rename_run(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  "1006",
                  "2006"
@@ -209,8 +202,7 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
 
       assert {:error, %Ecto.Changeset{} = changeset} =
                Gtfs.rename_run(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  "1006",
                  "ABCDEFGHI"
@@ -224,8 +216,7 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
     test "an ID with a space is the format error", %{world: world} do
       assert {:error, %Ecto.Changeset{} = changeset} =
                Gtfs.rename_run(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  "1006",
                  "1 2"
@@ -239,8 +230,7 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
 
       assert {:error, :unknown_run} =
                Gtfs.rename_run(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  "9999",
                  "3006"
@@ -254,8 +244,7 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
       # the more useful answer: there is nothing to rename.
       assert {:error, :unknown_run} =
                Gtfs.rename_run(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  "9999",
                  "2006"
@@ -267,8 +256,7 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
 
       assert {:ok, _} =
                Gtfs.rename_run(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  "1006",
                  "1006"
@@ -292,8 +280,10 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
 
       assert {:error, :not_found} =
                Gtfs.rename_run(
-                 world.organization.id,
-                 theirs.version.id,
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                   world.organization.id,
+                   theirs.version.id
+                 ),
                  theirs.day_type_key,
                  "1006",
                  "3006"
@@ -311,8 +301,7 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
 
       assert {:error, :not_found} =
                Gtfs.rename_run(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  "1006",
                  "3006"
@@ -364,8 +353,7 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
     } do
       assert {:ok, _} =
                Gtfs.rename_run(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  "1006",
                  "3006"
@@ -407,8 +395,7 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
 
       assert {:ok, _} =
                Gtfs.rename_run(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  "2006",
                  "5000"

@@ -30,7 +30,11 @@ defmodule GtfsPlannerWeb.UserSessionControllerTest do
       organization = OrganizationsFixtures.organization_fixture()
 
       {:ok, _} =
-        Organizations.add_user_to_organization(user.id, organization.id, ["administrator"])
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: organization.id,
+          roles: ["administrator"]
+        })
 
       conn = log_in_through_pipeline(user)
 
@@ -119,7 +123,8 @@ defmodule GtfsPlannerWeb.UserSessionControllerTest do
 
     test "rejects a deactivated member and issues no token" do
       %{user: user, organization: organization} = member_user()
-      {:ok, _} = Organizations.deactivate_user_in_organization(user.id, organization.id)
+      actor = system_admin_fixture(organization)
+      {:ok, _} = Organizations.deactivate_user_in_organization(actor, user.id, organization.id)
 
       conn = log_in_through_pipeline(user)
 
@@ -287,7 +292,8 @@ defmodule GtfsPlannerWeb.UserSessionControllerTest do
 
     test "post-commit deactivation failure stays logged out with no replacement session" do
       %{user: user, organization: organization} = member_user()
-      {:ok, _} = Organizations.deactivate_user_in_organization(user.id, organization.id)
+      actor = system_admin_fixture(organization)
+      {:ok, _} = Organizations.deactivate_user_in_organization(actor, user.id, organization.id)
 
       # Deactivation deleted prior sessions; install one directly to reach the action.
       conn = build_conn() |> log_in_user(user)
@@ -354,9 +360,13 @@ defmodule GtfsPlannerWeb.UserSessionControllerTest do
     organization = OrganizationsFixtures.organization_fixture()
 
     {:ok, _} =
-      Organizations.add_user_to_organization(user.id, organization.id, [
-        "pathways_studio_editor"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: [
+          "pathways_studio_editor"
+        ]
+      })
 
     %{user: user, organization: organization}
   end

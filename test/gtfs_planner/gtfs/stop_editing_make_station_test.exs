@@ -21,6 +21,7 @@ defmodule GtfsPlanner.Gtfs.StopEditingMakeStationTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
+  alias GtfsPlanner.Accounts
   alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs.AuditContext
@@ -333,9 +334,11 @@ defmodule GtfsPlanner.Gtfs.StopEditingMakeStationTest do
     actor = user_fixture(%{email: "stop-station-#{stamp()}@example.com"})
 
     {:ok, _membership} =
-      Organizations.add_user_to_organization(actor.id, organization_id, [
-        "pathways_studio_editor"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: actor.id,
+        organization_id: organization_id,
+        roles: ["pathways_studio_editor"]
+      })
 
     actor
   end

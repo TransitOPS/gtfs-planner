@@ -323,7 +323,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
       assert Repo.aggregate(own_patterns(organization, version), :count) == 1
     end
 
-    test "a custom-only route shows the honest blocked build state, not an error",
+    test "a custom-only route names why its trip stayed out, not an error",
          %{conn: conn, organization: organization, version: version} do
       route = route(organization, version, "CUSTOM1")
       stops = Enum.map(1..2, &stop(organization, version, "CUSTOM1", &1))
@@ -340,8 +340,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
       {:ok, view, _html} = live(conn, patterns_path(version, route))
 
-      assert has_element?(view, "#patterns-build-blocked", "No trips to group")
-      assert has_element?(view, "#patterns-build-blocked", "1")
+      assert has_element?(view, "#patterns-left-out-title", "1 trip isn\u2019t in a pattern")
+      assert has_element?(view, "#patterns-left-out-codes", "timing_missing")
+      assert has_element?(view, "#patterns-empty-inline")
       refute has_element?(view, "#patterns-unlinked")
       refute has_element?(view, "#patterns-unavailable")
       refute has_element?(view, "#patterns-derivation-error")
@@ -368,7 +369,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
       render_click(element(view, "#patterns-build"))
 
-      assert has_element?(view, "#patterns-build-blocked", "No trips to group")
+      assert has_element?(view, "#patterns-left-out-title", "1 trip isn\u2019t in a pattern")
+      refute has_element?(view, "#patterns-build-blocked")
       refute has_element?(view, "#patterns-unavailable")
       refute has_element?(view, "#patterns-derivation-error")
       refute render(view) =~ "could not be built"
@@ -581,9 +583,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
       assert length(rows) == 2
       assert Enum.all?(rows, &(&1.arrival_offset == 0 and &1.departure_offset == 0))
 
+      # The create navigates with the link marker the offer is asked for, so the
+      # offer survives the remount; the marker's value is the pattern's own UUID.
       assert_redirect(
         view,
-        pattern_path(version, route, created, "?task=timings")
+        pattern_path(version, route, created, "?task=timings&link=#{created.id}")
       )
     end
 
@@ -791,7 +795,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
   describe "pattern alignment task" do
     setup :editor_scope
 
-    test "an existing pattern lists four ordered tasks and patches to the Alignment shell",
+    test "an existing pattern lists four ordered tasks and patches to the Map line shell",
          %{conn: conn, organization: organization, version: version} do
       route = route(organization, version, "ALIGN1")
       stops = Enum.map(1..3, &stop(organization, version, "ALIGN1", &1))
@@ -812,7 +816,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
       assert has_element?(view, "#pattern-task-stops", "Stops")
       assert has_element?(view, "#pattern-task-timings", "Running times")
-      assert has_element?(view, "#pattern-task-alignment", "Alignment")
+      assert has_element?(view, "#pattern-task-alignment", "Map line")
       assert has_element?(view, "#pattern-task-details", "Details")
 
       render_click(element(view, "#pattern-task-alignment"))

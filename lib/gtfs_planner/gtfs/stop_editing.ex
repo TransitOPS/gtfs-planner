@@ -1854,7 +1854,12 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   end
 
   defp insert_station_row(station_attrs, name, audit) do
-    case Stop.changeset(%Stop{}, station_attrs) do
+    # Ownership is never cast from the attributes: since #736 the audit context
+    # is the only source, so the station's organization and version come from the
+    # command's caller and not from the map this function was handed.
+    attrs = Map.drop(station_attrs, ["organization_id", "gtfs_version_id"])
+
+    case Stop.create_changeset(%Stop{}, attrs, audit) do
       %Ecto.Changeset{valid?: true} = changeset ->
         case Repo.insert(changeset) do
           {:ok, station} ->
@@ -1985,7 +1990,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
     {origin, attrs} = Map.pop(attrs, "stop_id_origin")
 
     %Stop{}
-    |> Stop.editor_changeset(attrs)
+    |> Stop.create_changeset(attrs, audit)
     |> Repo.insert()
     |> case do
       {:ok, stop} ->

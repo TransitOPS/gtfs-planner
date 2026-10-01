@@ -27,7 +27,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   Calendar history is audit-only. Writes, anchor creation, child deletion and the
   complete aggregate before/after audit snapshot commit in one transaction through
-  `Gtfs.record_change_in_transaction/5`, and station rollback refuses the
+  `Audit.record_change_in_transaction/5`, and station rollback refuses the
   `calendar` entity. Save, kind conversion, break, exception and multi-calendar date
   commands are planned from the retained source snapshot and applied under one
   version lock and transaction; a bulk date change shares one operation UUID and
@@ -36,10 +36,9 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   import Ecto.Query, warn: false
 
-  alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.UserOrgMembership
-  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.Agency
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Blocking.Queries
@@ -63,7 +62,6 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   alias GtfsPlanner.Versions.GtfsVersion
 
   @published_status "published"
-  @editor_role "pathways_studio_editor"
   @added 1
   @removed 2
   @kinds [:weekly, :dates_only]
@@ -79,6 +77,12 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   @weekly_day_fields ~w(monday tuesday wednesday thursday friday saturday sunday)a
   @weekly_fields @weekly_day_fields ++ [:start_date, :end_date]
   @combination_decisions %{"run" => :run, "no_service" => :no_service}
+  # The approved-extension ceiling is a fixed civil-day bound on the requested
+  # later end date, never a display cap: the complete impact is computed or the
+  # preparation is refused.
+  @max_extension_days 366
+  @max_approval_length 2000
+  @extension_field :approval_text
   @combination_attempts 3
   @combination_trip_batch 500
   @combination_retryable_codes [:serialization_failure, "40001", :deadlock_detected, "40P01"]
@@ -168,6 +172,11 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           | {:in_use, non_neg_integer(), [String.t()]}
           | {:closures_in_use, calendar_usage()}
           | {:closure_reference_lost, calendar_usage()}
+          | :extension_requires_approval
+          | :extension_approval_too_long
+          | :extension_requires_weekly_calendar
+          | :extension_requires_later_end_date
+          | :extension_exceeds_max_days
   @type write_error :: Ecto.Changeset.t() | error()
   @type feed_gap :: %{first_date: Date.t(), last_date: Date.t()}
   @type review_result :: %{
@@ -175,7 +184,22 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           changes: map(),
           warnings: list(),
           affected_service_ids: [String.t()],
-          active_date_count: non_neg_integer()
+          active_date_count: non_neg_integer(),
+          extension: extension_impact() | nil
+        }
+  @type extension_impact :: %{
+          service_id: String.t(),
+          previous_end_date: Date.t(),
+          requested_end_date: Date.t(),
+          added_days: pos_integer(),
+          newly_active_dates: [Date.t()],
+          newly_active_date_count: non_neg_integer(),
+          routes: [%{route_id: String.t(), trip_count: non_neg_integer()}],
+          trip_identities: [%{trip_id: String.t(), route_id: String.t()}],
+          closure_consequences: [closure_path()],
+          retained_exceptions: [%{date: Date.t(), exception_type: 1 | 2}],
+          unresolved_dates: [Date.t()],
+          holiday_policy: :unresolved
         }
   @type combination_review :: %{
           action: :combine,
@@ -422,7 +446,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   def create_calendar(attrs, %AuditContext{} = audit_context) when is_map(attrs) do
     with {:ok, service_id} <- create_service_id(attrs) do
       transact(fn ->
-        authorize_editor!(audit_context)
+        Authorization.lock_editor!(audit_context)
         lock_published_version!(audit_context)
         create_locked!(service_id, attrs, audit_context)
       end)
@@ -446,7 +470,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   def duplicate_calendar(service_id, attrs, %AuditContext{} = audit_context)
       when is_binary(service_id) and is_map(attrs) do
     transact(fn ->
-      authorize_editor!(audit_context)
+      Authorization.lock_editor!(audit_context)
       lock_published_version!(audit_context)
       duplicate_locked!(service_id, attrs, audit_context)
     end)
@@ -483,6 +507,21 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   cannot carry the result natively returns `:native_service_required`. The token is
   computed from the rows the server just loaded, so the supplied fingerprint values are
   only required to be present and well shaped: they are never hashed.
+
+  An approved extension is the ordinary save command `{:save, service_id, attrs}` with an
+  `attrs` map that also carries `:approval_text`. The approval is the fence, not a
+  parallel writer: the same native `save_calendar/2` path writes it. A weekly calendar
+  extended to a later end date within 366 added civil days is accepted; a missing or
+  overlong approval, a date-only calendar, a non-later end date and a request beyond the
+  bound are each refused with their own error and write nothing. The result's `extension`
+  carries the complete computed impact - every newly active date, the exact trip and route
+  identities, the scheduled closures the extension reactivates, the retained exceptions and
+  the newly active dates with no recorded exception (`holiday_policy: :unresolved`, because
+  no agency holiday policy is inferred) - for any other command it is `nil`. That impact is
+  also part of the reviewed token, which binds the service's exact trip and closure
+  identities, so a same-route same-count trip substitution, a newly linked trip or closure
+  and an exception change each make `apply_calendar_change/3` return `{:error, :stale_review}`
+  with no calendar or audit write.
   """
   @spec review_calendar_change(term(), map(), AuditContext.t()) ::
           {:ok, review_result() | combination_review()} | {:error, write_error()}
@@ -533,7 +572,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   defp dispatch_calendar_change(normalized, review_fingerprint, audit_context) do
     transact(fn ->
-      authorize_editor!(audit_context)
+      Authorization.lock_editor!(audit_context)
       lock_published_version!(audit_context)
       apply!(normalized, review_fingerprint, audit_context)
     end)
@@ -563,7 +602,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       when is_binary(destination_id) and is_list(source_ids) do
     assert_read_committed!()
     lock_published_version!(audit_context)
-    lock_editor_membership!(audit_context)
+    Authorization.lock_editor!(audit_context)
 
     selected_ids = [destination_id | source_ids]
     {closure, transfers} = combination_closure!(audit_context, selected_ids)
@@ -623,33 +662,8 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     end
   end
 
-  # AC-13: the actor's *current* membership is resolved again after the version-lock wait and
-  # held `FOR SHARE` through commit, so a revocation committed while a combination waited is
-  # refused and a later one waits for it. `authorize_editor!/1` is not reused because it reads
-  # the membership without the lock this read has to hold.
-  defp lock_editor_membership!(%AuditContext{} = audit_context) do
-    case editor_membership_for_share(audit_context) do
-      %UserOrgMembership{deactivated_at: nil, roles: roles} ->
-        if editor_role?(roles), do: :ok, else: Repo.rollback(:forbidden)
-
-      _other ->
-        Repo.rollback(:forbidden)
-    end
-  end
-
-  defp editor_membership_for_share(%AuditContext{
-         actor_id: actor_id,
-         organization_id: organization_id
-       }) do
-    if uuid?(actor_id) and uuid?(organization_id) do
-      from(m in UserOrgMembership,
-        where: m.user_id == ^actor_id and m.organization_id == ^organization_id,
-        lock: "FOR SHARE"
-      )
-      |> Repo.one()
-    end
-  end
-
+  # AC-13: recheck membership after the version-lock wait, then hold its share lock
+  # through commit. Membership mutations never lock a version, so this order is safe.
   # AC-14/AC-17: the closure starts at every selected trip and grows through the rows that decide
   # the reviewed consequences - every trip on a touched non-nil block anywhere in the version,
   # every type-4/5 record naming one of those trips, each record's counterpart trip and every
@@ -2355,7 +2369,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       }
       |> put_envelope(operation, index)
 
-    case Gtfs.record_change_in_transaction(
+    case Audit.record_change_in_transaction(
            audit_context,
            :trip,
            %{trip | service_id: destination_id, block_id: block_id},
@@ -2409,7 +2423,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
     with {:ok, plans} <- plan_all(normalized, sources, audit_context),
          :ok <- validate_plan_references(plans, audit_context) do
-      review_result(normalized, sources, plans)
+      review_result(normalized, sources, plans, audit_context)
     else
       {:error, reason} -> Repo.rollback(reason)
     end
@@ -2428,7 +2442,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   end
 
   defp review_in_transaction!(normalized, source_fingerprints, audit_context) do
-    authorize_editor!(audit_context)
+    Authorization.lock_editor!(audit_context)
     lock_shared_published_version!(audit_context)
     review!(normalized, source_fingerprints, audit_context)
   end
@@ -2439,7 +2453,10 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   defp apply!(normalized, review_fingerprint, audit_context) do
     sources = current_sources!(command_targets(normalized), audit_context)
 
-    unless secure_equal?(review_fingerprint_for(sources, normalized), review_fingerprint) do
+    unless secure_equal?(
+             review_fingerprint_for(sources, normalized, audit_context),
+             review_fingerprint
+           ) do
       Repo.rollback(:stale_review)
     end
 
@@ -2500,14 +2517,31 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   # The reviewed token binds every retained source fingerprint together with the
   # normalized command, so neither a source change nor a different command can be
-  # applied against an earlier review.
-  defp review_fingerprint_for(sources, normalized) do
-    sources
-    |> Map.new(fn {service_id, source} -> {service_id, source.fingerprint} end)
-    |> review_fingerprint(normalized)
+  # applied against an earlier review. An approved extension additionally binds its
+  # exact trip and closure identities, which is what makes a same-count trip
+  # substitution or a newly linked dependency stale at Apply.
+  defp review_fingerprint_for(sources, normalized, audit_context) do
+    source_fingerprints =
+      Map.new(sources, fn {service_id, source} -> {service_id, source.fingerprint} end)
+
+    case extension_service_id(normalized) do
+      nil ->
+        review_fingerprint(source_fingerprints, normalized)
+
+      service_id ->
+        extension_review_fingerprint(source_fingerprints, normalized, service_id, audit_context)
+    end
   end
 
-  defp review_result(normalized, sources, plans) do
+  defp extension_review_fingerprint(source_fingerprints, command, service_id, audit_context) do
+    digest(%{
+      source: source_fingerprints,
+      command: canonical(command),
+      extension: extension_dependencies(service_id, audit_context)
+    })
+  end
+
+  defp review_result(normalized, sources, plans, audit_context) do
     changed_ids =
       plans
       |> Enum.filter(fn {_service_id, plan} -> plan.changed_count > 0 end)
@@ -2515,13 +2549,21 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       |> Enum.sort()
 
     %{
-      fingerprint: review_fingerprint_for(sources, normalized),
+      fingerprint: review_fingerprint_for(sources, normalized, audit_context),
       changes: review_changes(plans, changed_ids),
       warnings: Enum.flat_map(plans, fn {_service_id, plan} -> plan.warnings end),
       affected_service_ids: changed_ids,
       active_date_count:
-        plans |> Enum.map(fn {_id, plan} -> plan.active_date_count end) |> Enum.sum()
+        plans |> Enum.map(fn {_id, plan} -> plan.active_date_count end) |> Enum.sum(),
+      extension: reviewed_extension(plans)
     }
+  end
+
+  # The complete extension impact travels with the reviewed token. A command that is
+  # not an approved extension carries `nil` rather than an empty impact, so an
+  # ordinary save can never be read as a reviewed extension.
+  defp reviewed_extension(plans) do
+    Enum.find_value(plans, fn {_service_id, plan} -> Map.get(plan, :extension) end)
   end
 
   defp review_changes(plans, _changed_ids) when map_size(plans) == 1 do
@@ -2639,26 +2681,30 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   end
 
   defp plan_command({:save, service_id, attrs}, source, audit_context) do
-    with {:ok, anchor} <- plan_anchor(source, service_id, attrs, audit_context),
+    with {:ok, extension} <- extension_request(attrs, source),
+         {:ok, anchor} <- plan_anchor(source, service_id, attrs, audit_context),
          {:ok, weekly} <- plan_save_weekly(source, attrs) do
-      {:ok,
-       finish_plan(
-         source,
-         service_id,
-         %{
-           action: :save,
-           anchor: anchor,
-           weekly: weekly,
-           changes: %{
-             action: :save,
-             service_id: service_id,
-             kind: kind_for(weekly.calendar),
-             metadata_changed: anchor.changed?,
-             weekly_changed: weekly.action != :keep
-           }
-         },
-         plan_today(audit_context)
-       )}
+      plan =
+        finish_plan(
+          source,
+          service_id,
+          %{
+            action: :save,
+            anchor: anchor,
+            weekly: weekly,
+            extension: extension,
+            changes: %{
+              action: :save,
+              service_id: service_id,
+              kind: kind_for(weekly.calendar),
+              metadata_changed: anchor.changed?,
+              weekly_changed: weekly.action != :keep
+            }
+          },
+          plan_today(audit_context)
+        )
+
+      {:ok, extension_impact(plan, source, service_id, extension, audit_context)}
     end
   end
 
@@ -2917,6 +2963,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       anchor_action: anchor_action,
       anchor_changeset: anchor_changeset,
       weekly_action: weekly_action,
+      extension: Map.get(opts, :extension),
       remove_exception_dates: Map.get(opts, :remove_exception_dates, []),
       put_exceptions: Map.get(opts, :put_exceptions, []),
       projected_calendar: projected_calendar,
@@ -3129,6 +3176,163 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       Date.compare(date, first_date) != :lt and Date.compare(date, last_date) != :gt
     end)
   end
+
+  # -- Approved weekly end-date extension -----------------------------------
+
+  # An approved extension is an ordinary `{:save, service_id, attrs}` command that
+  # additionally carries the editor-entered approval. There is no parallel writer:
+  # the approval is a fence over the same native save, so a refusal leaves the
+  # calendar untouched and an accepted one writes only the requested end date.
+  #
+  # The approval is what makes the request an extension. A save without it keeps the
+  # ordinary native behavior, so the existing editor form is unchanged.
+  defp extension_request(attrs, source) do
+    if key_present?(attrs, @extension_field) do
+      build_extension_request(attrs, source)
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp build_extension_request(attrs, source) do
+    approval = fetch_value(attrs, @extension_field)
+
+    cond do
+      not is_binary(approval) or String.trim(approval) == "" ->
+        {:error, :extension_requires_approval}
+
+      String.length(approval) > @max_approval_length ->
+        {:error, :extension_approval_too_long}
+
+      is_nil(source.calendar) ->
+        {:error, :extension_requires_weekly_calendar}
+
+      true ->
+        case normalize_command_date(fetch_value(attrs, :end_date)) do
+          {:ok, requested} -> extension_range(requested, source.calendar)
+          {:error, _reason} -> {:error, :extension_requires_later_end_date}
+        end
+    end
+  end
+
+  # A calendar name never supplies the bound: the comparison is between the
+  # stored weekly end date and the requested one, so only the added civil days
+  # are counted and a reversed retained range cannot widen it.
+  defp extension_range(requested, %Calendar{end_date: current}) do
+    added = Date.diff(requested, current)
+
+    cond do
+      added <= 0 ->
+        {:error, :extension_requires_later_end_date}
+
+      added > @max_extension_days ->
+        {:error, :extension_exceeds_max_days}
+
+      true ->
+        {:ok, %{previous_end_date: current, requested_end_date: requested, added_days: added}}
+    end
+  end
+
+  # The complete impact, computed rather than capped: every newly active date, every
+  # trip and route identity, every scheduled closure the extension reactivates, and the
+  # exceptions the save retains. `unresolved_dates` names the newly active dates with
+  # no recorded exception, because no agency holiday policy is inferred for them.
+  defp extension_impact(plan, _source, _service_id, nil, _audit_context), do: plan
+
+  defp extension_impact(plan, source, service_id, extension, audit_context) do
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+    first = Date.add(extension.previous_end_date, 1)
+
+    # A date is newly active only when the projected calendar activates it inside the added
+    # window and the stored calendar did not, so an addition that already existed beyond the
+    # old end date is reported as retained rather than as new.
+    newly_active =
+      ServiceDates.active_dates_between(
+        plan.projected_calendar,
+        plan.projected_exceptions,
+        first,
+        extension.requested_end_date
+      ) --
+        ServiceDates.active_dates_between(
+          source.calendar,
+          exception_maps(source.exceptions),
+          first,
+          extension.requested_end_date
+        )
+
+    recorded = MapSet.new(plan.projected_exceptions, & &1.date)
+    usage = one_usage(organization_id, version_id, service_id)
+
+    %{
+      plan
+      | extension: %{
+          service_id: service_id,
+          previous_end_date: extension.previous_end_date,
+          requested_end_date: extension.requested_end_date,
+          added_days: extension.added_days,
+          newly_active_dates: newly_active,
+          newly_active_date_count: length(newly_active),
+          routes: usage.routes,
+          trip_identities: extension_trip_identities(organization_id, version_id, service_id),
+          closure_consequences: usage.closure_paths,
+          retained_exceptions: exception_maps(plan.projected_exceptions),
+          unresolved_dates: Enum.reject(newly_active, &MapSet.member?(recorded, &1)),
+          holiday_policy: :unresolved
+        }
+    }
+  end
+
+  defp extension_trip_identities(organization_id, version_id, service_id) do
+    Repo.all(
+      from(t in Trip,
+        where:
+          t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+            t.service_id == ^service_id,
+        order_by: [asc: t.trip_id],
+        select: %{trip_id: t.trip_id, route_id: t.route_id}
+      )
+    )
+  end
+
+  # The command-bound dependency set of an approved extension. Trip and closure
+  # identities are bound exactly, so replacing one trip with another of the same
+  # count on the same route changes the digest and a newly linked dependency is
+  # detected, which the calendar rows' own source fingerprint cannot see.
+  defp extension_dependencies(service_id, audit_context) do
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+
+    %{
+      service_id: service_id,
+      trips:
+        Repo.all(
+          from(t in Trip,
+            where:
+              t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+                t.service_id == ^service_id,
+            order_by: [asc: t.id],
+            select: {t.id, t.trip_id, t.route_id}
+          )
+        ),
+      closures:
+        Repo.all(
+          from(e in PathwayEvolution,
+            where:
+              e.organization_id == ^organization_id and e.gtfs_version_id == ^version_id and
+                e.service_id == ^service_id,
+            order_by: [asc: e.id],
+            select: {e.id, e.pathway_id, e.start_time, e.end_time}
+          )
+        )
+    }
+  end
+
+  defp extension_service_id({:save, service_id, attrs}) when is_map(attrs) do
+    if key_present?(attrs, @extension_field), do: service_id
+  end
+
+  defp extension_service_id(_command), do: nil
 
   # -- Applying plans --------------------------------------------------------
 
@@ -3616,40 +3820,6 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   # -- Authorization and locking --------------------------------------------
 
-  defp authorize_editor!(%AuditContext{} = audit_context) do
-    case authorize_editor(audit_context) do
-      :ok -> :ok
-      {:error, reason} -> Repo.rollback(reason)
-    end
-  end
-
-  @doc """
-  Rechecks the actor's current active organization membership and editor role.
-
-  Every audited mutation calls this before writing, so a membership deactivated
-  or revoked after mount is refused on the next save. Returns `{:error,
-  :forbidden}` for a missing, foreign, deactivated or role-less membership.
-  """
-  @spec authorize_editor(AuditContext.t()) :: :ok | {:error, :forbidden}
-  def authorize_editor(%AuditContext{
-        actor_id: actor_id,
-        organization_id: organization_id
-      }) do
-    with true <- uuid?(actor_id),
-         true <- uuid?(organization_id),
-         %UserOrgMembership{} = membership <-
-           Accounts.get_user_org_membership(actor_id, organization_id),
-         true <- is_nil(membership.deactivated_at),
-         true <- editor_role?(membership.roles) do
-      :ok
-    else
-      _other -> {:error, :forbidden}
-    end
-  end
-
-  defp editor_role?(roles) when is_list(roles), do: @editor_role in roles
-  defp editor_role?(_roles), do: false
-
   @doc """
   Locks the published version row `FOR SHARE` and checks that `service_id` is a calendar identity.
 
@@ -3917,7 +4087,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   defp audit!(%AuditContext{} = audit_context, anchor, action, attrs) do
     context = %{audit_context | station_stop_id: nil}
 
-    case Gtfs.record_change_in_transaction(context, :calendar, anchor, action, attrs) do
+    case Audit.record_change_in_transaction(context, :calendar, anchor, action, attrs) do
       {:ok, log} -> log
       {:error, changeset} -> Repo.rollback(changeset)
     end

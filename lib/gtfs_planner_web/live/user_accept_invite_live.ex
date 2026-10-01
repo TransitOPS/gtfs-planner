@@ -122,7 +122,10 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLive do
   end
 
   def handle_event("accept_invite", %{"user" => user_params}, socket) do
-    case Accounts.accept_invite_set_password(socket.assigns.user, user_params) do
+    # Only the password fields reach the context; the invite names the organization.
+    passwords = Map.take(user_params, ["password", "password_confirmation"])
+
+    case Accounts.accept_invite_set_password(socket.assigns.user, passwords) do
       {:ok, _user} ->
         {:noreply,
          socket

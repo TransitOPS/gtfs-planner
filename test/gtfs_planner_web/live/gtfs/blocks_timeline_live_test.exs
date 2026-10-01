@@ -41,6 +41,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
 
   defp blocks_path(version_id), do: "/gtfs/#{version_id}/blocks"
 
+  defp stop(context, attrs) do
+    stop_fixture(context.organization.id, context.version.id, attrs)
+  end
+
   defp editor_conn(context) do
     log_in_user(context.conn, context.user, organization: context.organization)
   end
@@ -166,6 +170,45 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
     |> LazyHTML.text()
     |> String.trim()
   end
+
+  # One block of two trips that meet at `stop`, the second starting at `first`,
+  # so the pair has one real wait for a connection record to sit in.
+  defp block_pair(context, block_id, stop, first) do
+    from =
+      trip(context, %{
+        trip_id: "#{block_id}_from",
+        block_id: block_id,
+        first_stop: stop.stop_id,
+        last_stop: stop.stop_id,
+        first: "08:00:00",
+        last: "09:00:00"
+      })
+
+    to =
+      trip(context, %{
+        trip_id: "#{block_id}_to",
+        block_id: block_id,
+        first_stop: stop.stop_id,
+        last_stop: stop.stop_id,
+        first: first,
+        last: "10:00:00"
+      })
+
+    %{from: from, to: to}
+  end
+
+  # The rendered gap bar for one pair, so a case can read its attributes and
+  # build the selector that finds it again.
+  defp gap(view, pair) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query(gap_selector(pair))
+    |> Enum.fetch!(0)
+  end
+
+  defp gap_selector(pair),
+    do: "[data-role='blocks-gap'][data-from='#{pair.from.id}'][data-to='#{pair.to.id}']"
 
   describe "paging" do
     setup :editor_scope
@@ -474,6 +517,140 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
 
       assert element_count(view, "[data-role='blocks-gap'][data-short='true']") == 1
       assert element_count(view, "[data-role='blocks-gap'][data-short='false']") == 1
+    end
+  end
+
+  describe "connection settings on the gaps" do
+    setup :editor_scope
+
+    test "a decided connection marks its gap and an undecided one keeps its minutes",
+         %{version: version} = context do
+      calendar(context, "WK", "Weekday")
+      main = stop(context, %{stop_id: "MAIN", stop_name: "Main St"})
+
+      stay = block_pair(context, "101", main, "09:20:00")
+      reboard = block_pair(context, "102", main, "09:20:00")
+      plain = block_pair(context, "103", main, "09:20:00")
+
+      in_seat_transfer_fixture(context.organization.id, context.version.id, stay.from, stay.to)
+
+      transfer_fixture(context.organization.id, context.version.id, %{
+        from_trip_id: reboard.from.trip_id,
+        to_trip_id: reboard.to.trip_id,
+        from_stop_id: main.stop_id,
+        to_stop_id: main.stop_id,
+        transfer_type: 5
+      })
+
+      conn = editor_conn(context)
+      {:ok, view, _html} = live(conn, blocks_path(version.id))
+
+      # A type 4 record is riders stay on board: the gap draws the link icon in
+      # place of its minutes and says so in its own title.
+      stay_gap = gap(view, stay)
+      assert LazyHTML.attribute(stay_gap, "data-setting") == ["stay"]
+
+      assert has_element?(
+               view,
+               gap_selector(stay) <> " [data-role='blocks-gap-setting'] .hero-link-mini"
+             )
+
+      assert LazyHTML.attribute(stay_gap, "title") |> List.first() =~ "Riders stay on board"
+      refute has_element?(view, gap_selector(stay) <> " .blocks-gap-label")
+
+      # A type 5 record is the other decision, with the exit icon.
+      reboard_gap = gap(view, reboard)
+      assert LazyHTML.attribute(reboard_gap, "data-setting") == ["reboard"]
+
+      assert has_element?(
+               view,
+               gap_selector(reboard) <>
+                 " [data-role='blocks-gap-setting'] .hero-arrow-right-start-on-rectangle-mini"
+             )
+
+      assert LazyHTML.attribute(reboard_gap, "title") |> List.first() =~ "Riders must re-board"
+
+      # A gap nobody has decided keeps its minutes and stays unsetting-marked.
+      plain_gap = gap(view, plain)
+      assert LazyHTML.attribute(plain_gap, "data-setting") == ["none"]
+      assert has_element?(view, gap_selector(plain) <> " .blocks-gap-label", "20")
+      refute has_element?(view, gap_selector(plain) <> " [data-role='blocks-gap-setting']")
+
+      # Each gap still opens the connection it is drawn for.
+      assert has_element?(
+               view,
+               gap_selector(stay) <> "[phx-click='open_gap'][phx-value-to='#{stay.to.id}']"
+             )
+    end
+
+    test "a stale record marks its gap as needing review", %{version: version} = context do
+      calendar(context, "WK", "Weekday")
+      main = stop(context, %{stop_id: "MAIN", stop_name: "Main St"})
+      other = stop(context, %{stop_id: "OTHER", stop_name: "Other St"})
+
+      pair = block_pair(context, "101", main, "09:20:00")
+
+      # The record names the pair but the wrong handoff stops, so the day load
+      # finds it no longer matches the block and the connection needs review.
+      transfer_fixture(context.organization.id, context.version.id, %{
+        from_trip_id: pair.from.trip_id,
+        to_trip_id: pair.to.trip_id,
+        from_stop_id: other.stop_id,
+        to_stop_id: other.stop_id,
+        transfer_type: 4
+      })
+
+      conn = editor_conn(context)
+      {:ok, view, _html} = live(conn, blocks_path(version.id))
+
+      marked = gap(view, pair)
+      assert LazyHTML.attribute(marked, "data-setting") == ["review"]
+
+      assert has_element?(
+               view,
+               gap_selector(pair) <>
+                 " [data-role='blocks-gap-setting'] .hero-exclamation-triangle-mini"
+             )
+
+      assert LazyHTML.attribute(marked, "title") |> List.first() =~ "Needs review"
+      refute has_element?(view, gap_selector(pair) <> " .blocks-gap-label")
+    end
+
+    test "the legend names every connection encoding in words",
+         %{version: version} = context do
+      calendar(context, "WK", "Weekday")
+      block_trips(context, "101", [{"08:00:00", "09:00:00"}, {"09:20:00", "10:00:00"}])
+
+      conn = editor_conn(context)
+      {:ok, view, _html} = live(conn, blocks_path(version.id))
+
+      assert has_element?(view, "#blocks-timeline-legend [data-role='connection-legend']")
+
+      for label <- [
+            "Not stated (minutes)",
+            "Riders stay on board",
+            "Riders must re-board",
+            "Needs review"
+          ] do
+        assert has_element?(view, "#blocks-timeline-legend", label)
+      end
+
+      # The decided keys paint the same grounds the gaps carry, and each names
+      # itself with its icon rather than colour alone.
+      assert has_element?(
+               view,
+               "#blocks-timeline-legend .blocks-legend-stay .hero-link-mini"
+             )
+
+      assert has_element?(
+               view,
+               "#blocks-timeline-legend .blocks-legend-reboard .hero-arrow-right-start-on-rectangle-mini"
+             )
+
+      assert has_element?(
+               view,
+               "#blocks-timeline-legend .blocks-legend-review .hero-exclamation-triangle-mini"
+             )
     end
   end
 

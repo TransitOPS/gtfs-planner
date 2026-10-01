@@ -44,6 +44,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
 
   alias GtfsPlanner.Gtfs.FlexArea
   alias GtfsPlanner.Gtfs.FlexService
+  alias GtfsPlanner.Gtfs.GeoJson
   alias GtfsPlanner.Repo
 
   @max_distance_m FlexArea.max_distance_m()
@@ -625,7 +626,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
              | :swapped_coordinates
              | {:invalid, String.t(), [float()]}}
   def normalize(input) do
-    with {:ok, document} <- decode(input),
+    with {:ok, document} <- GeoJson.decode(input),
          {:ok, geometry, positions} <- polygon_geometry(document),
          :ok <- validate_vertex_count(positions),
          :ok <- validate_coordinate_order(positions) do
@@ -654,8 +655,8 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
            }}
           | {:error, :unreadable | :lines | :swapped}
   def import_features(input) do
-    with {:ok, document} <- decode(input) do
-      polygons = Enum.filter(features(document), &polygon_feature?/1)
+    with {:ok, document} <- GeoJson.decode(input) do
+      polygons = Enum.filter(GeoJson.features(document), &polygon_feature?/1)
 
       cond do
         polygons == [] -> {:error, :lines}
@@ -676,23 +677,10 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
   """
   @spec swap_coordinates(map() | binary()) :: {:ok, map()} | {:error, :unreadable}
   def swap_coordinates(input) do
-    with {:ok, document} <- decode(input) do
+    with {:ok, document} <- GeoJson.decode(input) do
       {:ok, swap_positions(document)}
     end
   end
-
-  # The document's candidate features: a collection's `features`, a `Feature`,
-  # or a bare geometry wrapped as one, so a single-polygon file needs no
-  # special case. Anything else yields none and is answered as `:lines`.
-  defp features(%{"type" => "FeatureCollection", "features" => features}) when is_list(features),
-    do: features
-
-  defp features(%{"type" => "Feature"} = feature), do: [feature]
-
-  defp features(%{"type" => type} = geometry) when type in ["Polygon", "MultiPolygon"],
-    do: [%{"type" => "Feature", "properties" => %{}, "geometry" => geometry}]
-
-  defp features(_document), do: []
 
   defp polygon_feature?(%{"geometry" => %{"type" => type}})
        when type in ["Polygon", "MultiPolygon"],
@@ -1162,15 +1150,6 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
     :ok
   end
 
-  defp decode(input) when is_binary(input) do
-    case Jason.decode(input) do
-      {:ok, document} -> {:ok, document}
-      {:error, _error} -> {:error, :unreadable}
-    end
-  end
-
-  defp decode(input), do: {:ok, input}
-
   defp polygon_geometry(%{"type" => "Feature", "geometry" => geometry}),
     do: polygon_geometry(geometry)
 
@@ -1240,21 +1219,12 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
 
   defp validate_vertex_count(_positions), do: :ok
 
-  # GeoJSON lists longitude first. A latitude beyond ±90 in the second slot means
-  # the pair is reversed, but only a swap that brings every latitude back inside
-  # ±90 (and every longitude inside ±180) is a fix worth offering (AC-13).
+  # GeoJSON lists longitude first; `GeoJson.swapped_axes?/1` owns that rule, and
+  # a reversed file is only a fix worth offering when the swap is complete
+  # (AC-13).
   defp validate_coordinate_order(positions) do
-    if Enum.any?(positions, &out_of_range_latitude?/1) and
-         Enum.all?(positions, &swapable_position?/1) do
-      {:error, :swapped_coordinates}
-    else
-      :ok
-    end
+    if GeoJson.swapped_axes?(positions), do: {:error, :swapped_coordinates}, else: :ok
   end
-
-  defp out_of_range_latitude?([_lon, lat | _rest]), do: abs(lat) > 90
-
-  defp swapable_position?([lon, lat | _rest]), do: abs(lon) <= 90 and abs(lat) <= 180
 
   defp storeable_geometry(geometry, positions) do
     encoded = Jason.encode!(geometry)

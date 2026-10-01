@@ -23,6 +23,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
   alias GtfsPlanner.Gtfs.Import.Failure
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
@@ -33,13 +34,16 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
   @levels_content "level_id,level_index,level_name\nL1,0.0,Ground Floor\n"
   @stops_content "stop_id,stop_name,stop_lat,stop_lon,level_id,location_type,wheelchair_boarding\nS1,Main,40.7,-74.0,L1,1,1\n"
 
-  defp actor do
-    %{id: Ecto.UUID.generate(), email: "importer@example.com"}
+  # Creating a target, publishing and claiming a cleanup reauthorize their actor, so the actor
+  # is a real active editor of the organization.
+  defp actor(organization) do
+    editor = editor_fixture(organization)
+    %{id: editor.id, email: editor.email}
   end
 
   defp seed_claimed_run(organization, name) do
     {:ok, %{run: run, version: _version}} =
-      ImportRuns.create_pending_target(organization.id, actor(), %{name: name})
+      ImportRuns.create_pending_target(organization.id, actor(organization), %{name: name})
 
     {:ok, claimed_run, _version, token} =
       ImportRuns.claim_import(organization.id, run.id, run.lease_token)
@@ -54,7 +58,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       # A prior published version whose rows/files must remain untouched.
       {:ok, prior} = Versions.create_gtfs_version(organization.id, %{name: "Prior"})
 
-      Import.import_files(organization.id, prior.id, [
+      StagedImport.import_files(organization.id, prior.id, [
         %{filename: "levels.txt", content: @levels_content}
       ])
 
@@ -73,7 +77,8 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
         %{filename: "stops.txt", content: @stops_content}
       ]
 
-      assert {:ok, published, result} = Publication.run(run, token, files, "import:test")
+      assert {:ok, published, result} =
+               Publication.run(run, token, StagedImport.stage(files), "import:test")
 
       assert published.id == run.gtfs_version_id
       assert published.publication_status == "published"
@@ -125,7 +130,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
 
       files = [%{filename: "levels.txt", content: @levels_content}]
 
-      assert {:ok, _, _} = Publication.run(run, token, files, "import:test")
+      assert {:ok, _, _} = Publication.run(run, token, StagedImport.stage(files), "import:test")
 
       # Prior file bytes are byte-identical.
       assert File.read!(prior_file) == "prior-bytes"
@@ -151,7 +156,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       files = [%{filename: "levels.txt", content: @levels_content}]
 
       assert {:error, _version, :lease_lost} =
-               Publication.run(run, wrong_token, files, "import:lose")
+               Publication.run(run, wrong_token, StagedImport.stage(files), "import:lose")
 
       # The closure never published: the version stays importing and the run
       # stays running (no insert retry, no second import call).
@@ -178,7 +183,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
     } do
       parent = self()
 
-      files = [%{filename: "levels.txt", content: @levels_content}]
+      files = StagedImport.stage([%{filename: "levels.txt", content: @levels_content}])
 
       task_fn = fn ->
         Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
@@ -228,7 +233,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       ]
 
       assert {:error, target, %Failure{} = failure} =
-               Publication.run(run, token, files, "import:fail")
+               Publication.run(run, token, StagedImport.stage(files), "import:fail")
 
       assert target.id == run.gtfs_version_id
       assert failure.outcome == :failed
@@ -256,7 +261,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       files = [%{filename: "bad.zip", content: "not a real zip"}]
 
       assert {:error, target, %Failure{} = failure} =
-               Publication.run(run, token, files, "import:warn")
+               Publication.run(run, token, StagedImport.stage(files), "import:warn")
 
       assert failure.phase == :phase_2
       assert failure.outcome == :failed
@@ -341,7 +346,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       files = [%{filename: "gtfs.zip", content: zip}]
 
       assert {:error, target, %Failure{} = failure} =
-               Publication.run(run, token, files, "import:img")
+               Publication.run(run, token, StagedImport.stage(files), "import:img")
 
       assert target.id == run.gtfs_version_id
       assert failure.failed_file == nil
@@ -363,7 +368,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       # A prior published version whose rows must remain untouched by the failed run.
       {:ok, prior} = Versions.create_gtfs_version(organization.id, %{name: "Prior"})
 
-      Import.import_files(organization.id, prior.id, [
+      StagedImport.import_files(organization.id, prior.id, [
         %{filename: "levels.txt", content: @levels_content}
       ])
 
@@ -400,7 +405,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       ]
 
       assert {:error, target, %Failure{} = failure} =
-               Publication.run(run, token, files, "import:phase2-late")
+               Publication.run(run, token, StagedImport.stage(files), "import:phase2-late")
 
       assert target.id == run.gtfs_version_id
 
@@ -457,7 +462,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       ]
 
       assert {:error, _target, %Failure{}} =
-               Publication.run(run, token, files, "import:phase2-prior")
+               Publication.run(run, token, StagedImport.stage(files), "import:phase2-prior")
 
       # Published-only lookup still returns the prior version.
       assert %GtfsVersion{} =
@@ -506,7 +511,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       files = [%{filename: "levels.txt", content: @levels_content}]
 
       assert {:error, target, {:publication_failed, _reason}} =
-               Publication.run(run, token, files, "import:dbfail")
+               Publication.run(run, token, StagedImport.stage(files), "import:dbfail")
 
       assert target.id == run.gtfs_version_id
 
@@ -561,13 +566,16 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       files = [%{filename: "levels.txt", content: @levels_content}]
 
       assert {:error, _target, {:publication_failed, _}} =
-               Publication.run(run, token, files, "import:dbfail-retry")
+               Publication.run(run, token, StagedImport.stage(files), "import:dbfail-retry")
 
       # Drop the constraint so the guarded retry can publish.
       {:ok, _} = Repo.query(drop_sql)
 
       assert {:ok, retried_run, retried_version} =
-               ImportRuns.retry_publication(organization.id, run.id)
+               ImportRuns.retry_publication(organization.id, run.id, %{
+                 id: run.actor_id,
+                 email: run.actor_email
+               })
 
       assert retried_run.state == "published"
       assert retried_version.publication_status == "published"
@@ -594,7 +602,9 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
     } do
       files = [%{filename: "levels.txt", content: @levels_content}]
 
-      assert {:ok, published, _result} = Publication.run(run, token, files, "import:exact")
+      assert {:ok, published, _result} =
+               Publication.run(run, token, StagedImport.stage(files), "import:exact")
+
       assert published.id == run.gtfs_version_id
 
       # The current (route) version received no writes.
@@ -632,7 +642,9 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       on_exit(fn -> :telemetry.detach(handler_id) end)
 
       files = [%{filename: "levels.txt", content: @levels_content}]
-      {:ok, _published, _result} = Publication.run(run, token, files, "import:tele")
+
+      {:ok, _published, _result} =
+        Publication.run(run, token, StagedImport.stage(files), "import:tele")
 
       published_event =
         receive_telemetry(fn {_ev, meta} ->
@@ -691,7 +703,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       files = [%{filename: "levels.txt", content: @levels_content}]
 
       {:error, _target, {:publication_failed, _}} =
-        Publication.run(run, token, files, "import:telefail")
+        Publication.run(run, token, StagedImport.stage(files), "import:telefail")
 
       error_event =
         receive_telemetry(fn {_ev, meta} ->
@@ -748,7 +760,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       {run, token} = seed_claimed_run(organization, "New Feed")
       {:ok, prior} = Versions.create_gtfs_version(organization.id, %{name: "Prior"})
 
-      Import.import_files(organization.id, prior.id, [
+      StagedImport.import_files(organization.id, prior.id, [
         %{filename: "levels.txt", content: @levels_content}
       ])
 
@@ -781,7 +793,9 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       # survives the initiating process. Allow the separate runner process DB
       # access (shared sandbox ownership).
       {:ok, %{run: run, version: _version}} =
-        ImportRuns.create_pending_target(organization.id, actor(), %{name: "Runner Feed"})
+        ImportRuns.create_pending_target(organization.id, actor(organization), %{
+          name: "Runner Feed"
+        })
 
       token = run.lease_token
 
@@ -790,7 +804,9 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
         %{filename: "stops.txt", content: @stops_content}
       ]
 
-      {:ok, runner_pid} = Runner.start_import(organization.id, run.id, token, files)
+      {:ok, runner_pid} =
+        Runner.start_import(organization.id, run.id, token, files: StagedImport.stage(files))
+
       refute runner_pid == self()
       Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), runner_pid)
 
@@ -815,7 +831,9 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       # reconcile (no sleeps). No live process holds a connection here, so the
       # reconciliation is deterministic.
       {:ok, %{run: lost_run, version: _lost_version}} =
-        ImportRuns.create_pending_target(organization.id, actor(), %{name: "Lost Executor"})
+        ImportRuns.create_pending_target(organization.id, actor(organization), %{
+          name: "Lost Executor"
+        })
 
       {:ok, _, _, lost_token} =
         ImportRuns.claim_import(organization.id, lost_run.id, lost_run.lease_token)
@@ -871,10 +889,12 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
          %{organization: organization} do
       # Fresh pending target so the runner claims it itself (like ImportLive).
       {:ok, %{run: run, version: _version}} =
-        ImportRuns.create_pending_target(organization.id, actor(), %{name: "Runner Feed"})
+        ImportRuns.create_pending_target(organization.id, actor(organization), %{
+          name: "Runner Feed"
+        })
 
       token = run.lease_token
-      files = [%{filename: "levels.txt", content: @levels_content}]
+      files = StagedImport.stage([%{filename: "levels.txt", content: @levels_content}])
 
       run_id = run.id
       topic = ImportRuns.topic(run_id)
@@ -882,7 +902,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
 
       # Drive the real runner; it broadcasts {:import_run_changed, run_id} only
       # after durable closure.
-      {:ok, runner_pid} = Runner.start_import(organization.id, run_id, token, files)
+      {:ok, runner_pid} = Runner.start_import(organization.id, run_id, token, files: files)
 
       assert_receive {:import_run_changed, ^run_id}, 15_000
 
@@ -927,29 +947,25 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       organization: organization
     } do
       {:ok, %{run: run, version: _version}} =
-        ImportRuns.create_pending_target(organization.id, actor(), %{name: "Reuse Race"})
+        ImportRuns.create_pending_target(organization.id, actor(organization), %{
+          name: "Reuse Race"
+        })
 
       {:ok, _, _, token} = ImportRuns.claim_import(organization.id, run.id, run.lease_token)
       {:ok, _, _} = ImportRuns.fail_import(organization.id, run.id, token, make_failure())
 
       parent = self()
+      first_actor = actor(organization)
+      second_actor = actor(organization)
 
       first = fn ->
         Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
-
-        ImportRuns.claim_cleanup(organization.id, run.id, %{
-          id: Ecto.UUID.generate(),
-          email: "a@example.com"
-        })
+        ImportRuns.claim_cleanup(organization.id, run.id, first_actor)
       end
 
       second = fn ->
         Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
-
-        ImportRuns.claim_cleanup(organization.id, run.id, %{
-          id: Ecto.UUID.generate(),
-          email: "b@example.com"
-        })
+        ImportRuns.claim_cleanup(organization.id, run.id, second_actor)
       end
 
       t1 = Task.async(first)

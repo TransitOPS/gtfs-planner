@@ -3,26 +3,36 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import OverlayDialog from "../overlay_dialog_hook.js";
 
 let originalShowModal;
+let originalShow;
 let originalClose;
 let showModalStub;
+let showStub;
 let closeStub;
 
 function stubNativeDialog() {
   originalShowModal = HTMLDialogElement.prototype.showModal;
+  originalShow = HTMLDialogElement.prototype.show;
   originalClose = HTMLDialogElement.prototype.close;
   showModalStub = vi.fn(function () {
+    this.open = true;
+  });
+  showStub = vi.fn(function () {
     this.open = true;
   });
   closeStub = vi.fn(function () {
     this.open = false;
   });
   HTMLDialogElement.prototype.showModal = showModalStub;
+  HTMLDialogElement.prototype.show = showStub;
   HTMLDialogElement.prototype.close = closeStub;
 }
 
 function restoreNativeDialog() {
   if (originalShowModal !== undefined) {
     HTMLDialogElement.prototype.showModal = originalShowModal;
+  }
+  if (originalShow !== undefined) {
+    HTMLDialogElement.prototype.show = originalShow;
   }
   if (originalClose !== undefined) {
     HTMLDialogElement.prototype.close = originalClose;
@@ -43,6 +53,16 @@ function buildDialog(attrs = {}) {
 
 function closeButtonHTML(label = "Close") {
   return `<button data-dialog-dismiss>${label}</button>`;
+}
+
+function escapeKeydown(target) {
+  const event = new KeyboardEvent("keydown", {
+    key: "Escape",
+    bubbles: true,
+    cancelable: true,
+  });
+  (target || document.body).dispatchEvent(event);
+  return event;
 }
 
 function makeHook(dialog) {
@@ -1040,6 +1060,199 @@ describe("OverlayDialog", () => {
       const hook = makeHook(dialog);
       hook.mounted();
       expect(focusSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // =========================================================================
+  // Non-modal mode
+  // =========================================================================
+  describe("non-modal mode", () => {
+    const mountedHooks = [];
+
+    function mountDialog(dataset) {
+      const dialog = buildDialog({
+        id: "test-dialog",
+        dataset: { open: "true", ...dataset },
+        innerHTML: closeButtonHTML("Close"),
+      });
+      const hook = makeHook(dialog);
+      hook.mounted();
+      mountedHooks.push(hook);
+      return { dialog, hook };
+    }
+
+    afterEach(() => {
+      while (mountedHooks.length) {
+        mountedHooks.pop().destroyed();
+      }
+    });
+
+    it("opens with show() and never with showModal() when data-modal is false", () => {
+      const { dialog } = mountDialog({ modal: "false" });
+
+      expect(showStub).toHaveBeenCalledTimes(1);
+      expect(showModalStub).not.toHaveBeenCalled();
+      expect(dialog.open).toBe(true);
+    });
+
+    it("keeps showModal() for a dialog that does not opt out", () => {
+      mountDialog({});
+
+      expect(showModalStub).toHaveBeenCalledTimes(1);
+      expect(showStub).not.toHaveBeenCalled();
+    });
+
+    it("keeps showModal() for an explicit data-modal=true", () => {
+      mountDialog({ modal: "true" });
+
+      expect(showModalStub).toHaveBeenCalledTimes(1);
+      expect(showStub).not.toHaveBeenCalled();
+    });
+
+    it("opens with show() when data-open flips while data-modal is false", () => {
+      const dialog = buildDialog({
+        dataset: { open: "false", modal: "false" },
+        innerHTML: closeButtonHTML("Close"),
+      });
+      const hook = makeHook(dialog);
+      hook.mounted();
+      mountedHooks.push(hook);
+
+      dialog.dataset.open = "true";
+      hook.updated();
+      expect(showStub).toHaveBeenCalledTimes(1);
+      expect(showModalStub).not.toHaveBeenCalled();
+    });
+
+    it("closes a non-modal drawer on Escape from the page behind it", () => {
+      const { dialog } = mountDialog({ modal: "false" });
+      const dismiss = dialog.querySelector("[data-dialog-dismiss]");
+      const clickSpy = vi.spyOn(dismiss, "click");
+
+      escapeKeydown(document.body);
+      expect(clickSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("closes a non-modal drawer on Escape from inside the panel", () => {
+      const { dialog } = mountDialog({ modal: "false" });
+      const dismiss = dialog.querySelector("[data-dialog-dismiss]");
+      const clickSpy = vi.spyOn(dismiss, "click");
+
+      escapeKeydown(dialog);
+      expect(clickSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves a modal drawer to the browser cancel event on Escape", () => {
+      const { dialog } = mountDialog({});
+      const dismiss = dialog.querySelector("[data-dialog-dismiss]");
+      const clickSpy = vi.spyOn(dismiss, "click");
+
+      escapeKeydown(dialog);
+      expect(clickSpy).not.toHaveBeenCalled();
+    });
+
+    it("ignores Escape aimed at a nested dialog", () => {
+      const { dialog } = mountDialog({ modal: "false" });
+      const dismiss = dialog.querySelector("[data-dialog-dismiss]");
+      const clickSpy = vi.spyOn(dismiss, "click");
+
+      const nested = document.createElement("dialog");
+      nested.innerHTML = closeButtonHTML("Cancel");
+      document.body.appendChild(nested);
+      nested.open = true;
+
+      escapeKeydown(nested);
+      expect(clickSpy).not.toHaveBeenCalled();
+    });
+
+    it("ignores other keys on a non-modal drawer", () => {
+      const { dialog } = mountDialog({ modal: "false" });
+      const dismiss = dialog.querySelector("[data-dialog-dismiss]");
+      const clickSpy = vi.spyOn(dismiss, "click");
+
+      dialog.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
+      expect(clickSpy).not.toHaveBeenCalled();
+    });
+
+    it("blocks Escape on a non-modal drawer while pending", () => {
+      const { dialog } = mountDialog({ modal: "false", pending: "true" });
+      const dismiss = dialog.querySelector("[data-dialog-dismiss]");
+      const clickSpy = vi.spyOn(dismiss, "click");
+
+      escapeKeydown(document.body);
+      expect(clickSpy).not.toHaveBeenCalled();
+    });
+
+    it("ignores Escape on a closed non-modal drawer", () => {
+      const dialog = buildDialog({
+        dataset: { open: "false", modal: "false" },
+        innerHTML: closeButtonHTML("Close"),
+      });
+      const hook = makeHook(dialog);
+      hook.mounted();
+      mountedHooks.push(hook);
+      const dismiss = dialog.querySelector("[data-dialog-dismiss]");
+      const clickSpy = vi.spyOn(dismiss, "click");
+
+      // data-open is false, so a stray keypress must not close anything the
+      // server still considers open.
+      escapeKeydown(document.body);
+      expect(clickSpy).not.toHaveBeenCalled();
+    });
+
+    it("restores the return focus target after a non-modal close", () => {
+      const returnTarget = document.createElement("button");
+      returnTarget.id = "return-target";
+      document.body.appendChild(returnTarget);
+
+      const { dialog, hook } = mountDialog({
+        modal: "false",
+        returnFocusId: "return-target",
+      });
+      const returnSpy = vi.spyOn(returnTarget, "focus");
+
+      dialog.dataset.open = "false";
+      hook.updated();
+
+      expect(closeStub).toHaveBeenCalled();
+      expect(returnSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("applies the initial focus id when a non-modal drawer opens", () => {
+      const dialog = buildDialog({
+        dataset: {
+          open: "true",
+          modal: "false",
+          initialFocus: "heading",
+          initialFocusId: "my-title",
+        },
+        innerHTML: '<h2 id="my-title" tabindex="-1">Title</h2>',
+      });
+      const hook = makeHook(dialog);
+      hook.mounted();
+      mountedHooks.push(hook);
+
+      const heading = dialog.querySelector("#my-title");
+      const focusSpy = vi.spyOn(heading, "focus");
+      dialog.dataset.open = "false";
+      hook.updated();
+      dialog.dataset.open = "true";
+      hook.updated();
+
+      expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
+    });
+
+    it("stops listening for Escape after destroy", () => {
+      const { dialog, hook } = mountDialog({ modal: "false" });
+      hook.destroyed();
+
+      const dismiss = dialog.querySelector("[data-dialog-dismiss]");
+      const clickSpy = vi.spyOn(dismiss, "click");
+      escapeKeydown(document.body);
+
+      expect(clickSpy).not.toHaveBeenCalled();
     });
   });
 });

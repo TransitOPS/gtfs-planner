@@ -67,8 +67,8 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationConcurrencyTest do
     token = review_token(scope)
     before = committed_footprint(scope)
 
-    # The cooperating writer's own order: the scoped version row `FOR SHARE` first, then the real
-    # `Gtfs.create_trip/1` insert, committed by this transaction.
+    # The cooperating writer's own order: the scoped version row `FOR SHARE` first, then the trip
+    # insert, committed by this transaction.
     writer = start_trip_writer(supervisor, scope)
     apply_task = start_apply(supervisor, scope, token)
 
@@ -356,7 +356,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationConcurrencyTest do
 
   defp create_source_trip!(scope, trip_id) do
     {:ok, trip} =
-      Gtfs.create_trip(%{
+      insert_trip(%{
         organization_id: scope.organization_id,
         gtfs_version_id: scope.version_id,
         route_id: scope.route_id,

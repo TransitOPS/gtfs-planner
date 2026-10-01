@@ -348,10 +348,10 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
   Only a level with a resolvable floorplan image is selectable; the caption
   names the levels that have no floorplan rather than hiding them, because a
-  missing image never means the station has no pathways. The image URL comes
-  from `DiagramStorage.public_url_path/4`, the single resolver the station
-  diagram and the published API already use, so an unpublished or absent file
-  yields no floorplan at all instead of a broken image.
+  missing image never means the station has no pathways. The image path comes
+  from `DiagramStorage.public_path/4`; this web component adds the configured
+  endpoint base URL. An unpublished or absent file yields no floorplan at all
+  instead of a broken image.
 
   Stops and pathways keep the station snapshot's stored width-normalized
   coordinates (`Coordinates.normalize_point/1`), the same normalizer the
@@ -424,14 +424,19 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
          station_stop_id
        )
        when is_binary(filename) and filename != "" do
-    case DiagramStorage.public_url_path(
+    case DiagramStorage.public_path(
            organization_id,
            gtfs_version_id,
            station_stop_id,
            filename
          ) do
-      {:ok, url} -> %{level_id: level.level_id, label: level_label(level), image_url: url}
-      {:error, _reason} -> nil
+      {:ok, path} ->
+        url = GtfsPlannerWeb.Endpoint.url() <> path
+
+        %{level_id: level.level_id, label: level_label(level), image_url: url}
+
+      {:error, _reason} ->
+        nil
     end
   end
 

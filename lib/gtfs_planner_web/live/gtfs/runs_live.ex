@@ -44,24 +44,16 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # and they say why: a disabled control with no reason is a dead end.
   @preview_locked_message "Apply or discard the suggestion first."
 
-  alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
-  alias GtfsPlannerWeb.EnsureRole
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlannerWeb.Gtfs.RunsComponents
 
-  on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+  on_mount({GtfsPlannerWeb.EnsureRole, :require_gtfs_access})
 
   # The domain's `:not_found` is "the version is no longer published". The drawer
   # says so in the reader's terms and names what to do, because the alternative —
   # silently doing nothing — reads as a broken button.
   @crew_not_found "That version is no longer published, so these rules cannot be saved."
-
-  # The events that write. Mount checks the editor role once; these re-read the
-  # membership before each write, so a role revoked while the page is open
-  # refuses the next write rather than trusting the mount-time snapshot.
-  @write_events ~w(create_run undo apply_suggestion confirm_rebuild save_crew remove_orphans
-                   rename_run move_piece split_piece)
 
   @impl true
   def mount(_params, _session, socket) do
@@ -123,32 +115,24 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      |> assign(:run_axis, nil)
      |> assign(:run_routes, %{})
      |> assign(:run_pieces, [])
-     |> stream(:run_rows, [], dom_id: &run_dom_id/1)
-     |> attach_hook(:editor_access, :handle_event, &require_editor/3)}
+     |> stream(:run_rows, [], dom_id: &run_dom_id/1)}
   end
 
-  defp require_editor(event, _params, socket) when event in @write_events do
-    if editor_access?(socket) do
-      {:cont, socket}
-    else
-      {:halt,
-       put_toast(socket, "You no longer have editor access to this organization.", :refused)}
-    end
+  defp audit_context(socket) do
+    %{current_user: user, current_organization: organization, current_gtfs_version: version} =
+      socket.assigns
+
+    %AuditContext{
+      actor_id: user.id,
+      actor_email: user.email,
+      organization_id: organization.id,
+      gtfs_version_id: version.id,
+      station_stop_id: nil
+    }
   end
 
-  defp require_editor(_event, _params, socket), do: {:cont, socket}
-
-  defp editor_access?(socket) do
-    with %{id: user_id} <- socket.assigns[:current_user],
-         %{id: organization_id} <- socket.assigns[:current_organization],
-         %UserOrgMembership{} = membership <-
-           Accounts.get_user_org_membership(user_id, organization_id),
-         true <- is_nil(membership.deactivated_at) do
-      EnsureRole.has_role?(membership.roles, :pathways_studio_editor)
-    else
-      _other -> false
-    end
-  end
+  defp editor_refusal(socket),
+    do: put_toast(socket, "You no longer have editor access to this organization.", :refused)
 
   @impl true
   def handle_params(params, _uri, socket) do
@@ -571,10 +555,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # many it will delete before the reader presses, and the count is the domain's
   # own, not a count taken from the list.
   def handle_event("remove_orphans", _params, socket) do
-    %{day: day, current_organization: organization, current_gtfs_version: version} =
-      socket.assigns
+    %{day: day} = socket.assigns
 
-    case Gtfs.remove_run_orphans(organization.id, version.id, day) do
+    case Gtfs.remove_run_orphans(audit_context(socket), day) do
       # A count, not `:ok`: the drawer says how many rows it deleted, and the
       # domain counts the rows it actually removed rather than the rows it
       # believed were there.
@@ -585,6 +568,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
          |> put_toast("#{removed} old run assignments removed.", :done)
          |> load_day()
          |> assign(:problems_open, true)}
+
+      {:error, :forbidden} ->
+        {:noreply, socket |> put_undo(nil) |> editor_refusal()}
 
       {:error, _reason} ->
         {:noreply,
@@ -619,10 +605,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # next move is to fix the ID and re-submit — and a form that clears itself
   # makes them retype it from memory. Nothing is written on any refusal path.
   def handle_event("rename_run", %{"run" => %{"run_id" => new_id}}, socket) do
-    %{day: day, current_organization: organization, current_gtfs_version: version} =
-      socket.assigns
+    %{day: day} = socket.assigns
 
-    case Gtfs.rename_run(organization.id, version.id, day, socket.assigns.run, new_id) do
+    case Gtfs.rename_run(audit_context(socket), day, socket.assigns.run, new_id) do
       {:ok, %{undo: moves}} ->
         # `push_patch/2` returns a socket, not `{:noreply, socket}`. Returning it
         # bare fails the whole LiveView with an ArgumentError that dumps the
@@ -668,6 +653,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
          socket
          |> put_undo(nil)
          |> put_toast("That run is no longer here. Close the drawer and open it again.", :refused)}
+
+      {:error, :forbidden} ->
+        {:noreply, socket |> put_undo(nil) |> editor_refusal()}
 
       {:error, :not_found} ->
         {:noreply,
@@ -837,12 +825,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   defp plan_needs_confirmation?(_assigns), do: false
 
   defp do_apply(socket) do
-    %{current_organization: organization, current_gtfs_version: version, plan: plan} =
-      socket.assigns
+    %{plan: plan} = socket.assigns
 
     socket = assign(socket, :apply_state, :pending)
 
-    case Gtfs.apply_run_plan(organization.id, version.id, plan) do
+    case Gtfs.apply_run_plan(audit_context(socket), plan) do
       {:ok, %{undo: undo_moves}} when undo_moves != [] ->
         {:noreply,
          socket
@@ -871,6 +858,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         # disabled rather than left to fail again, and the plan stays on screen so
         # the reader can see what they were about to write.
         {:noreply, assign(socket, :apply_state, :stale)}
+
+      {:error, :forbidden} ->
+        {:noreply, socket |> put_undo(nil) |> assign(:apply_state, :failed) |> editor_refusal()}
 
       {:error, reason} ->
         {:noreply,
@@ -949,10 +939,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   end
 
   defp save_crew_settings(socket, entries) do
-    %{current_organization: organization, current_gtfs_version: version} = socket.assigns
     attrs = crew_attrs(entries)
 
-    case Gtfs.update_crew_settings(organization.id, version.id, attrs) do
+    case Gtfs.update_crew_settings(audit_context(socket), attrs) do
       {:ok, _crew} ->
         # The rules feed every derivation, so the day is reloaded and the drawer
         # closes: the reader asked to change the rules, not to keep editing them.
@@ -976,6 +965,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
       # form re-renders from `@crew_entries`, which still holds the values from
       # the last change event — so an entry typed and submitted in one go, with
       # no blur in between, would silently revert to the stored value.
+      {:error, :forbidden} ->
+        {:noreply, socket |> assign(:crew_entries, entries) |> editor_refusal()}
+
       {:error, :not_found} ->
         {:noreply,
          socket
@@ -1374,8 +1366,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   defp apply_moves(socket, moves, success, refusal, after_success)
        when is_function(success, 1) and is_function(after_success, 2) do
-    %{day: day, current_organization: organization, current_gtfs_version: version} =
-      socket.assigns
+    %{day: day} = socket.assigns
 
     # An empty move set is refused here, once, for every caller.
     #
@@ -1399,8 +1390,6 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
       _ ->
         apply_moves_now(
           socket,
-          organization,
-          version,
           day,
           moves,
           success,
@@ -1410,8 +1399,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     end
   end
 
-  defp apply_moves_now(socket, organization, version, day, moves, success, refusal, after_success) do
-    case Gtfs.apply_run_moves(organization.id, version.id, day, moves) do
+  defp apply_moves_now(socket, day, moves, success, refusal, after_success) do
+    case Gtfs.apply_run_moves(audit_context(socket), day, moves) do
       {:ok, %{new_run_id: id, undo: undo_moves}} ->
         socket
         |> put_undo(%{moves: undo_moves, trips: undo_trip_count(undo_moves)})
@@ -1427,6 +1416,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         |> put_undo(nil)
         |> put_toast("#{length(trips)} trips on this block are not part of this day.", :refused)
         |> load_day()
+
+      {:error, :forbidden} ->
+        socket |> put_undo(nil) |> editor_refusal()
 
       {:error, :not_found} ->
         socket

@@ -50,7 +50,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
+  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Repo
 
   describe "StationDiagramLive - server-owned destructive confirmations" do
@@ -81,7 +83,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -144,7 +146,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       })
 
       refute has_element?(view, "#station-diagram-confirmation[data-open='true']")
-      assert Gtfs.get_stop(foreign_stop.id)
+      assert Repo.get(GtfsPlanner.Gtfs.Stop, foreign_stop.id)
     end
 
     test "confirmed child-stop deletion uses the server-owned payload and restores its origin", %{
@@ -188,7 +190,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> element("#station-diagram-confirmation-confirm")
       |> render_click()
 
-      assert is_nil(Gtfs.get_stop(child_stop.id))
+      assert is_nil(Repo.get(GtfsPlanner.Gtfs.Stop, child_stop.id))
       assert has_element?(view, "#station-diagram-confirmation[data-open='false']")
     end
   end
@@ -221,7 +223,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -394,7 +396,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert single_link =~ ~s(href="#{path}?pathway=REFUSAL%2FPW+LIFT")
 
       # Nothing was deleted, and the LiveView is still serving renders.
-      assert Gtfs.get_pathway(lift.id)
+      assert Repo.get(GtfsPlanner.Gtfs.Pathway, lift.id)
       assert Repo.get(GtfsPlanner.Gtfs.PathwayEvolution, lift_closure.id)
       assert has_element?(view, "#pathway-row-#{lift.id}")
 
@@ -480,7 +482,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#child-stop-form input[name='stop_name'][value='Refusal bay']")
       assert has_element?(view, "#child-stop-form input[name='x']")
 
-      kept_stop = Gtfs.get_stop!(bay.id)
+      kept_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, bay.id)
       assert kept_stop.diagram_coordinate == %{"x" => 30.0, "y" => 12.0}
       assert kept_stop.level_id == level.level_id
 
@@ -488,7 +490,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#unassigned-stop-row-#{bay.id}")
 
       for pathway <- [lift, stairs, walkway] do
-        assert Gtfs.get_pathway(pathway.id)
+        assert Repo.get(GtfsPlanner.Gtfs.Pathway, pathway.id)
       end
 
       assert Repo.get(GtfsPlanner.Gtfs.PathwayEvolution, lift_closure.id)
@@ -542,14 +544,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       # coordinate, its pathway and the closure that blocks the removal.
       assert has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
 
-      kept_stop = Gtfs.get_stop!(mezzanine.id)
+      kept_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, mezzanine.id)
       assert kept_stop.diagram_coordinate == %{"x" => 12.0, "y" => 40.0}
       assert kept_stop.level_id == level.level_id
 
       assert has_element?(view, "#child-stop-row-#{mezzanine.id}")
       refute has_element?(view, "#unassigned-stop-row-#{mezzanine.id}")
-      assert Gtfs.get_pathway(stairs.id)
-      assert Gtfs.get_pathway(walkway.id)
+      assert Repo.get(GtfsPlanner.Gtfs.Pathway, stairs.id)
+      assert Repo.get(GtfsPlanner.Gtfs.Pathway, walkway.id)
     end
 
     test "a closure-free pathway and child stop keep their existing deletion behavior",
@@ -597,8 +599,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       refute has_element?(view, "#child-stop-in-use-error")
       assert has_element?(view, "#unassigned-stop-row-#{gate.id}")
-      assert Gtfs.get_stop(gate.id)
-      assert Gtfs.get_stop(gate.id).diagram_coordinate == nil
+      assert Repo.get(GtfsPlanner.Gtfs.Stop, gate.id)
+      assert Repo.get(GtfsPlanner.Gtfs.Stop, gate.id).diagram_coordinate == nil
     end
   end
 
@@ -632,7 +634,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -749,7 +751,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       # Associate level with station
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -1054,7 +1056,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       })
       |> render_submit()
 
-      updated = Gtfs.get_stop!(legacy.id)
+      updated = Repo.get!(GtfsPlanner.Gtfs.Stop, legacy.id)
       assert updated.location_type == 3
       assert updated.parent_station == station.stop_id
     end
@@ -1191,7 +1193,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       })
       |> render_submit()
 
-      updated_stop = Gtfs.get_stop!(child_stop.id)
+      updated_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
       assert is_nil(updated_stop.wheelchair_boarding)
     end
 
@@ -1239,7 +1241,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       })
       |> render_submit()
 
-      updated_stop = Gtfs.get_stop!(child_stop.id)
+      updated_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
       assert Decimal.equal?(updated_stop.stop_lat, Decimal.new("40.046627198009965"))
       assert Decimal.equal?(updated_stop.stop_lon, Decimal.new("-73.987654321098765"))
     end
@@ -1342,10 +1344,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       refute has_element?(view, "#child-stop-form")
 
-      updated_stop = Gtfs.get_stop!(child_stop.id)
+      updated_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
       assert updated_stop.stop_id == "mezzanine-west-01"
 
-      updated_pathway = Gtfs.get_pathway!(pathway.id)
+      updated_pathway = Repo.get!(GtfsPlanner.Gtfs.Pathway, pathway.id)
       assert updated_pathway.from_stop_id == "mezzanine-west-01"
       assert updated_pathway.to_stop_id == "other-stop"
     end
@@ -1396,7 +1398,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#child-stop-form")
       assert render(view) =~ "exhausted"
 
-      unchanged_stop = Gtfs.get_stop!(child_stop.id)
+      unchanged_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
       assert unchanged_stop.stop_id == "WILL_EXHAUST"
     end
 
@@ -1433,7 +1435,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station_without_platforms.id,
@@ -1636,7 +1638,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       })
       |> render_submit()
 
-      updated_stop = Gtfs.get_stop!(boarding_area.id)
+      updated_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, boarding_area.id)
       assert updated_stop.parent_station == station.stop_id
     end
 
@@ -1688,7 +1690,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       refute render(view) =~ "Invalid stop selection"
 
-      updated_stop = Gtfs.get_stop!(boarding_area.id)
+      updated_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, boarding_area.id)
       assert updated_stop.diagram_coordinate == %{"x" => 70.0, "y" => 80.0}
     end
 
@@ -1701,7 +1703,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -1722,7 +1724,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -1743,7 +1745,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -1766,7 +1768,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       child_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -1802,7 +1804,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       child_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -1836,7 +1838,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       child_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -1875,7 +1877,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       child_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -1915,7 +1917,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       selected_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -1966,7 +1968,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       level_2 =
         level_fixture(organization.id, gtfs_version.id, %{
@@ -1976,7 +1978,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -2037,7 +2039,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       child_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -2075,7 +2077,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       child_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -2114,7 +2116,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       child_stop =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -2146,7 +2148,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       child_stop_1 =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -2199,7 +2201,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       child_stop_1 =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -2428,7 +2430,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       refute render(view) =~ "Invalid stop selection"
 
-      updated_stop = Gtfs.get_stop!(child_stop.id)
+      updated_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
       assert updated_stop.diagram_coordinate == %{"x" => 99.5, "y" => 42.0}
     end
 
@@ -2478,7 +2480,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       refute render(view) =~ "Invalid stop selection"
 
-      updated_stop = Gtfs.get_stop!(child_stop.id)
+      updated_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
       assert updated_stop.diagram_coordinate == %{"x" => 88.0, "y" => 77.0}
     end
 
@@ -2518,7 +2520,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> render_click()
 
       assert has_element?(view, "#flash-error", "Failed to re-position stop")
-      assert Gtfs.get_stop!(child_stop.id).diagram_coordinate == %{"x" => 20.0, "y" => 30.0}
+
+      assert Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id).diagram_coordinate == %{
+               "x" => 20.0,
+               "y" => 30.0
+             }
     end
 
     test "reposition commits the server-tracked coordinate, not a stale click-time value", %{
@@ -2572,7 +2578,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       refute render(view) =~ "Invalid stop selection"
 
-      updated_stop = Gtfs.get_stop!(child_stop.id)
+      updated_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
       assert updated_stop.diagram_coordinate == %{"x" => 55.5, "y" => 66.5}
     end
 
@@ -2709,7 +2715,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       # Associate level diagram so connect mode is available
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "connect-picker-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "connect-picker-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -2789,7 +2795,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "connect-scope-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "connect-scope-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -2820,7 +2826,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "connect-invalid-id-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "connect-invalid-id-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -2867,7 +2873,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "connect-mixed-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "connect-mixed-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -2895,7 +2901,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert pathway_1.to_stop_id == stop_b.stop_id
 
       # Clean up: delete pathway so next scenario starts fresh
-      {:ok, _} = Gtfs.delete_pathway(pathway_1)
+      {:ok, _} = Gtfs.apply_import_entity(:remove, :pathway, pathway_1, %{})
 
       # Refresh view
       {:ok, view, _html} =
@@ -2937,7 +2943,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "connect-same-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "connect-same-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -2996,7 +3002,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_1} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -3005,7 +3011,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -3062,7 +3068,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       refute has_element?(view, "#child-stop-form")
 
-      assert Gtfs.get_stop!(child_stop.id).stop_name == "Renamed Display"
+      assert Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id).stop_name == "Renamed Display"
 
       assert has_element?(view, "#child-stop-row-#{child_stop.id}", "Renamed Display")
     end
@@ -3134,7 +3140,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       refute has_element?(view, "#child-stop-form")
 
-      updated_stop = Gtfs.get_stop!(child_stop.id)
+      updated_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
       assert Decimal.equal?(updated_stop.stop_lat, Decimal.new("40.046627198009965"))
       assert Decimal.equal?(updated_stop.stop_lon, Decimal.new("-73.987654321098765"))
 
@@ -3188,7 +3194,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       refute has_element?(view, "#child-stop-form")
 
-      assert Gtfs.get_stop!(child_stop.id).level_id == level_2.level_id
+      assert Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id).level_id == level_2.level_id
 
       refute has_element?(view, "#child-stop-row-#{child_stop.id}")
       refute has_element?(view, "#child_stops-#{child_stop.id}")
@@ -3236,7 +3242,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#child-stop-form")
       assert_push_event(view, "set_active_child_stops", _after_save)
 
-      assert Gtfs.get_stop!(child_stop.id).stop_name == "Map Renamed"
+      assert Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id).stop_name == "Map Renamed"
     end
   end
 
@@ -3268,7 +3274,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -3410,7 +3416,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -3536,7 +3542,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -3754,7 +3760,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         actor_email: user.email
       }
 
-      assert {:ok, restored} = Gtfs.rollback_entity(stop_log, audit_ctx)
+      assert {:ok, restored} =
+               Stations.rollback_entity(
+                 audit_ctx,
+                 stop_log.id,
+                 persisted_entity_revision(stop_log)
+               )
+
       assert restored.level_id == level.level_id
       assert restored.diagram_coordinate == %{"x" => 10.0, "y" => 10.0}
     end
@@ -3798,7 +3810,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       # Associate levels with station
       {:ok, _stop_level1} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -3807,7 +3819,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -3948,7 +3960,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_1} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -3957,7 +3969,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -4196,7 +4208,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       # Associate level with station
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -4223,7 +4235,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     } do
       # Add a diagram to the stop_level
       {:ok, _updated_stop_level} =
-        Gtfs.update_stop_level_diagram(stop_level, "test_diagram.png")
+        put_stop_level_diagram(stop_level, "test_diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -4262,7 +4274,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level: stop_level
     } do
       {:ok, _updated_stop_level} =
-        Gtfs.update_stop_level_diagram(stop_level, "test_diagram.png")
+        put_stop_level_diagram(stop_level, "test_diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -4300,7 +4312,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       station: station,
       stop_level: stop_level
     } do
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
@@ -4322,7 +4334,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       station: station,
       stop_level: stop_level
     } do
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
@@ -4400,7 +4412,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level1} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -4408,7 +4420,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -4616,7 +4628,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -4702,7 +4714,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -4743,7 +4755,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -4752,7 +4764,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -4787,7 +4799,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level_a =
         Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
 
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level_a, "level_a.png")
+      {:ok, _} = put_stop_level_diagram(stop_level_a, "level_a.png")
 
       # Create a second level with its own diagram
       level_b =
@@ -4798,14 +4810,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, stop_level_b} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
           level_id: level_b.id
         })
 
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level_b, "level_b.png")
+      {:ok, _} = put_stop_level_diagram(stop_level_b, "level_b.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -4873,14 +4885,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
           level_id: level.id
         })
 
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diagram.png")
 
       %{
         user: user,
@@ -5152,7 +5164,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -5849,7 +5861,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -5933,7 +5945,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -6184,7 +6196,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -6332,7 +6344,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -6431,7 +6443,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -6530,7 +6542,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -6618,7 +6630,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -6925,14 +6937,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
              )
 
       # Verify the database record was updated with swapped stops and signage
-      updated = Gtfs.get_pathway_with_stops!(pathway.id)
+      updated = Repo.get!(GtfsPlanner.Gtfs.Pathway, pathway.id)
       assert updated.from_stop_id == stop_y.stop_id
       assert updated.to_stop_id == stop_x.stop_id
       assert updated.signposted_as == "To X"
       assert updated.reversed_signposted_as == "To Y"
 
       # Verify event payload targeted the selected pathway
-      untouched = Gtfs.get_pathway_with_stops!(other_pathway.id)
+      untouched = Repo.get!(GtfsPlanner.Gtfs.Pathway, other_pathway.id)
       assert untouched.from_stop_id == stop_y.stop_id
       assert untouched.to_stop_id == stop_x.stop_id
       assert untouched.signposted_as == "Other To X"
@@ -6990,7 +7002,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#pathways-table-error", "Pathway not found.")
     end
 
-    test "flip pathway for pathway outside station shows unauthorized error without crashing", %{
+    test "flip pathway for pathway outside station shows not found without crashing", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -7041,7 +7053,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "flip_pathway", %{"id" => unauthorized_pathway.id})
 
-      assert has_element?(view, "#pathways-table-error", "Unauthorized pathway access.")
+      assert has_element?(view, "#pathways-table-error", "Pathway not found.")
     end
   end
 
@@ -7073,7 +7085,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -7193,7 +7205,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       })
       |> render_submit()
 
-      updated_pathway = Gtfs.get_pathway!(nested_pathway.id)
+      updated_pathway = Repo.get!(GtfsPlanner.Gtfs.Pathway, nested_pathway.id)
       assert updated_pathway.pathway_mode == 3
       assert updated_pathway.is_bidirectional == false
       assert updated_pathway.traversal_time == 45
@@ -7234,7 +7246,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       refute has_element?(view, "#pathway-form")
 
-      saved = Gtfs.get_pathway!(nested_pathway.id)
+      saved = Repo.get!(GtfsPlanner.Gtfs.Pathway, nested_pathway.id)
       assert saved.pathway_mode == 5
       assert saved.traversal_time == 63
       assert saved.signposted_as == "Single Saved Sign"
@@ -7250,12 +7262,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
            organization: organization,
            gtfs_version: gtfs_version,
            station: station,
-           unauthorized_pathway: unauthorized_pathway
+           nested_pathway: nested_pathway
          } do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
 
-      render_hook(view, "edit_pathway", %{"id" => unauthorized_pathway.id})
+      view
+      |> element("#pathway-row-#{nested_pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      # The editor's role is revoked after the drawer opened. The write transaction
+      # re-reads the membership and refuses; the cross-station pathway is refused
+      # earlier still, when its drawer is opened.
+      membership = GtfsPlanner.Accounts.get_user_org_membership(user.id, organization.id)
+      deactivate_membership_fixture(membership)
 
       view
       |> form("#pathway-form", %{
@@ -7270,7 +7290,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> render_submit()
 
       assert has_element?(view, "#pathway-form")
-      assert has_element?(view, "#pathway-form-error", "Unauthorized pathway access.")
+
+      assert has_element?(
+               view,
+               "#pathway-outcome",
+               "You no longer have edit access to this organization."
+             )
+
       assert has_element?(view, "#pathway-form input[name='traversal_time'][value='88']")
 
       assert has_element?(
@@ -7282,6 +7308,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                view,
                "#pathway-form select[name='pathway_mode'] option[value='7'][selected]"
              )
+
+      assert Repo.get!(GtfsPlanner.Gtfs.Pathway, nested_pathway.id).traversal_time !=
+               88
     end
 
     test "selecting Exit gate disables the both-directions control and hides reverse signage",
@@ -7340,7 +7369,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> form("#pathway-form")
       |> render_submit()
 
-      saved = Gtfs.get_pathway!(nested_pathway.id)
+      saved = Repo.get!(GtfsPlanner.Gtfs.Pathway, nested_pathway.id)
       assert saved.pathway_mode == 7
       assert saved.is_bidirectional == false
     end
@@ -7397,7 +7426,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -7688,8 +7717,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#pathway-row-#{second.id}")
       assert has_element?(view, "#pathway-row-#{second.id}", "87 s")
 
-      reloaded_first = Gtfs.get_pathway!(first.id)
-      reloaded_second = Gtfs.get_pathway!(second.id)
+      reloaded_first = Repo.get!(GtfsPlanner.Gtfs.Pathway, first.id)
+      reloaded_second = Repo.get!(GtfsPlanner.Gtfs.Pathway, second.id)
 
       assert reloaded_first.id == first.id
       assert reloaded_second.traversal_time == 87
@@ -7911,7 +7940,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_1} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -7920,7 +7949,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -8013,7 +8042,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#pathway-form")
       assert_push_event(view, "set_active_child_stops", _after_save)
 
-      assert Gtfs.get_pathway!(cross_level_pathway.id).pathway_mode == 5
+      assert Repo.get!(GtfsPlanner.Gtfs.Pathway, cross_level_pathway.id).pathway_mode == 5
     end
 
     test "saving a same-level pathway field in map mode does not re-push active child stops", %{
@@ -8049,7 +8078,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#pathway-form")
       refute_push_event(view, "set_active_child_stops", _payload)
 
-      assert Gtfs.get_pathway!(same_level_pathway.id).traversal_time == 99
+      assert Repo.get!(GtfsPlanner.Gtfs.Pathway, same_level_pathway.id).traversal_time == 99
     end
   end
 
@@ -8088,7 +8117,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -8096,15 +8125,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, stop_level_2} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
           level_id: level_2.id
         })
 
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "measure-level-1.png")
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level_2, "measure-level-2.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "measure-level-1.png")
+      {:ok, _} = put_stop_level_diagram(stop_level_2, "measure-level-2.png")
 
       stop_a =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -8286,7 +8315,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
 
       {:ok, _} =
-        Gtfs.update_stop_level_scale(stop_level, %{
+        put_stop_level_scale(stop_level, %{
           scale_point_a: %{"x" => 10.0, "y" => 10.0},
           scale_point_b: %{"x" => 24.0, "y" => 30.0},
           scale_distance_meters: Decimal.new("25"),
@@ -8316,7 +8345,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
 
       {:ok, _} =
-        Gtfs.update_stop_level_scale(stop_level, %{
+        put_stop_level_scale(stop_level, %{
           scale_point_a: %{"x" => 10.0, "y" => 10.0},
           scale_point_b: %{"x" => 20.0, "y" => 10.0},
           scale_distance_meters: Decimal.new("25"),
@@ -8382,8 +8411,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       expected_1 = Gtfs.calculate_pathway_length(updated_stop_level, stop_a, stop_b)
       expected_2 = Gtfs.calculate_pathway_length(updated_stop_level, stop_a, stop_c)
 
-      reloaded_1 = Gtfs.get_pathway!(existing_1.id)
-      reloaded_2 = Gtfs.get_pathway!(existing_2.id)
+      reloaded_1 = Repo.get!(GtfsPlanner.Gtfs.Pathway, existing_1.id)
+      reloaded_2 = Repo.get!(GtfsPlanner.Gtfs.Pathway, existing_2.id)
 
       assert Decimal.equal?(reloaded_1.length, expected_1)
       assert Decimal.equal?(reloaded_2.length, expected_2)
@@ -8449,8 +8478,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                "Scale updated - 1 pathway length recalculated, 1 entered length kept"
              )
 
-      assert Decimal.equal?(Gtfs.get_pathway!(entered_pathway.id).length, Decimal.new("12.50"))
-      refute is_nil(Gtfs.get_pathway!(empty_pathway.id).length)
+      assert Decimal.equal?(
+               Repo.get!(GtfsPlanner.Gtfs.Pathway, entered_pathway.id).length,
+               Decimal.new("12.50")
+             )
+
+      refute is_nil(Repo.get!(GtfsPlanner.Gtfs.Pathway, empty_pathway.id).length)
     end
 
     test "editing scale does not recalculate cross-level pathway lengths", %{
@@ -8495,7 +8528,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> form("#ruler-form", %{"ruler" => %{"distance_meters" => "10"}})
       |> render_submit()
 
-      reloaded_pathway = Gtfs.get_pathway!(pathway.id)
+      reloaded_pathway = Repo.get!(GtfsPlanner.Gtfs.Pathway, pathway.id)
       assert Decimal.equal?(reloaded_pathway.length, Decimal.new("77.77"))
     end
 
@@ -8595,7 +8628,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
 
       {:ok, _} =
-        Gtfs.update_stop_level_scale(stop_level, %{
+        put_stop_level_scale(stop_level, %{
           scale_point_a: %{"x" => 0.0, "y" => 0.0},
           scale_point_b: %{"x" => 10.0, "y" => 0.0},
           scale_distance_meters: Decimal.new("20"),
@@ -8625,7 +8658,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
 
       {:ok, _} =
-        Gtfs.update_stop_level_scale(stop_level, %{
+        put_stop_level_scale(stop_level, %{
           scale_point_a: %{"x" => 0.0, "y" => 0.0},
           scale_point_b: %{"x" => 10.0, "y" => 0.0},
           scale_distance_meters: Decimal.new("20"),
@@ -8668,7 +8701,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
 
       {:ok, _} =
-        Gtfs.update_stop_level_scale(stop_level, %{
+        put_stop_level_scale(stop_level, %{
           scale_point_a: %{"x" => 0.0, "y" => 0.0},
           scale_point_b: %{"x" => 10.0, "y" => 0.0},
           scale_distance_meters: Decimal.new("20"),
@@ -8698,7 +8731,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#pathway-form")
       assert has_element?(view, "#pathway-form input[name='length'][value='10.00']")
 
-      reloaded_pathway = Gtfs.get_pathway!(pathway.id)
+      reloaded_pathway = Repo.get!(GtfsPlanner.Gtfs.Pathway, pathway.id)
       assert is_nil(reloaded_pathway.length)
     end
 
@@ -8715,7 +8748,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
 
       {:ok, _} =
-        Gtfs.update_stop_level_scale(stop_level, %{
+        put_stop_level_scale(stop_level, %{
           scale_point_a: %{"x" => 0.0, "y" => 0.0},
           scale_point_b: %{"x" => 10.0, "y" => 0.0},
           scale_distance_meters: Decimal.new("20"),
@@ -8782,7 +8815,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
 
       {:ok, _} =
-        Gtfs.update_stop_level_scale(stop_level, %{
+        put_stop_level_scale(stop_level, %{
           scale_point_a: %{"x" => 0.0, "y" => 0.0},
           scale_point_b: %{"x" => 10.0, "y" => 0.0},
           scale_distance_meters: Decimal.new("20"),
@@ -8872,7 +8905,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -8964,7 +8997,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -9024,7 +9057,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       })
 
     {:ok, _stop_level_2} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
         stop_id: station.id,
@@ -9175,7 +9208,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -9715,7 +9748,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -9723,7 +9756,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _updated_stop_level} = Gtfs.update_stop_level_diagram(stop_level, "drag-level.png")
+      {:ok, _updated_stop_level} = put_stop_level_diagram(stop_level, "drag-level.png")
 
       %{
         user: user,
@@ -9765,7 +9798,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         "y" => "55.8"
       })
 
-      updated_stop = Gtfs.get_stop!(child_stop.id)
+      updated_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
       assert updated_stop.diagram_coordinate == %{"x" => 44.2, "y" => 55.8}
     end
 
@@ -9858,7 +9891,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "drag_end", %{"id" => to_string(child_stop.id), "x" => "150", "y" => "55"})
 
-      unchanged = Gtfs.get_stop!(child_stop.id)
+      unchanged = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
       assert unchanged.diagram_coordinate == %{"x" => 40.0, "y" => 40.0}
       assert has_element?(view, "#flash-error", "Invalid drag position")
     end
@@ -9894,7 +9927,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         "y" => "103"
       })
 
-      assert Gtfs.get_stop!(child_stop.id).diagram_coordinate == %{"x" => 44.2, "y" => 103.0}
+      assert Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id).diagram_coordinate == %{
+               "x" => 44.2,
+               "y" => 103.0
+             }
     end
 
     test "drag_end rejects a y above the diagram ceiling", %{
@@ -9924,7 +9960,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "drag_end", %{"id" => to_string(child_stop.id), "x" => "55", "y" => "401"})
 
-      assert Gtfs.get_stop!(child_stop.id).diagram_coordinate == %{"x" => 40.0, "y" => 40.0}
+      assert Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id).diagram_coordinate == %{
+               "x" => 40.0,
+               "y" => 40.0
+             }
+
       assert has_element?(view, "#flash-error", "Invalid drag position")
     end
 
@@ -9955,7 +9995,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "drag_end", %{"id" => to_string(child_stop.id), "x" => "55", "y" => "-1"})
 
-      assert Gtfs.get_stop!(child_stop.id).diagram_coordinate == %{"x" => 40.0, "y" => 40.0}
+      assert Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id).diagram_coordinate == %{
+               "x" => 40.0,
+               "y" => 40.0
+             }
+
       assert has_element?(view, "#flash-error", "Invalid drag position")
     end
 
@@ -9990,7 +10034,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         "y" => "103"
       })
 
-      assert Gtfs.get_stop!(child_stop.id).diagram_coordinate == %{"x" => 40.0, "y" => 40.0}
+      assert Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id).diagram_coordinate == %{
+               "x" => 40.0,
+               "y" => 40.0
+             }
+
       assert has_element?(view, "#flash-error", "Invalid drag position")
     end
 
@@ -10021,7 +10069,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "drag_cancel", %{})
       render_hook(view, "drag_end", %{"id" => to_string(child_stop.id), "x" => "65", "y" => "65"})
 
-      unchanged = Gtfs.get_stop!(child_stop.id)
+      unchanged = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
       assert unchanged.diagram_coordinate == %{"x" => 60.0, "y" => 60.0}
       assert has_element?(view, "#flash-error", "Invalid drag position")
     end
@@ -10140,7 +10188,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
 
       # Reposition state should be cleared, stop unchanged
-      unchanged = Gtfs.get_stop!(child_stop.id)
+      unchanged = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
       assert unchanged.diagram_coordinate == %{"x" => 20.0, "y" => 30.0}
 
       # Placement status should be visible
@@ -10156,7 +10204,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       edit_stop: child_stop
     } do
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -10185,7 +10233,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
 
       # Stop should be unchanged
-      unchanged = Gtfs.get_stop!(child_stop.id)
+      unchanged = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
       assert unchanged.diagram_coordinate == %{"x" => 75.0, "y" => 85.0}
 
       assert has_element?(
@@ -10260,7 +10308,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       refute has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
 
-      unchanged = Gtfs.get_stop!(child_stop.id)
+      unchanged = Repo.get!(GtfsPlanner.Gtfs.Stop, child_stop.id)
       assert unchanged.diagram_coordinate == %{"x" => 20.0, "y" => 30.0}
     end
   end
@@ -10300,7 +10348,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -10308,7 +10356,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -10366,7 +10414,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-submit-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "search-submit-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -10403,7 +10451,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-blank-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "search-blank-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -10439,7 +10487,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-current-level-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "search-current-level-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -10480,7 +10528,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-different-level-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "search-different-level-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -10515,7 +10563,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-not-found-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "search-not-found-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -10555,7 +10603,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-other-station-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "search-other-station-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -10592,7 +10640,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-no-coord-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "search-no-coord-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -10629,7 +10677,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "search-orphan-level-diagram.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "search-orphan-level-diagram.png")
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -10692,7 +10740,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -10700,7 +10748,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "audit-level.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "audit-level.png")
 
       %{
         user: user,
@@ -10980,7 +11028,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -11274,7 +11322,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -11456,7 +11504,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -11464,7 +11512,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "lifecycle.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "lifecycle.png")
 
       %{
         user: user,
@@ -11563,7 +11611,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     } do
       stop = lifecycle_child(organization, gtfs_version, station, level, "A")
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Renamed Platform"})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Renamed Platform"
+        })
 
       view = open_diagram(conn, user, organization, gtfs_version, station)
       open_stop_history(view, stop)
@@ -11587,7 +11639,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_b = lifecycle_child(organization, gtfs_version, station, level, "PB")
 
       {:ok, pathway} =
-        Gtfs.create_pathway(%{
+        Gtfs.apply_import_entity(:add, :pathway, nil, %{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           pathway_id: "LIFE_PW",
@@ -11598,7 +11650,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :pathway, pathway, "updated", %{pathway_mode: 2})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :pathway, pathway, "updated", %{
+          pathway_mode: 2
+        })
 
       view = open_diagram(conn, user, organization, gtfs_version, station)
 
@@ -11619,7 +11675,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       level: level
     } do
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :level, level, "updated", %{level_name: "Mezzanine"})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :level, level, "updated", %{
+          level_name: "Mezzanine"
+        })
 
       view = open_diagram(conn, user, organization, gtfs_version, station)
       open_level_history(view)
@@ -11685,8 +11745,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop = lifecycle_child(organization, gtfs_version, station, level, "ERR")
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
 
-      :ok =
-        Gtfs.record_change(ctx, :stop, stop, "updated", %{
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_lat: 1.5,
           stop_name: "Error Platform"
         })
@@ -11733,8 +11793,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_b = lifecycle_child(organization, gtfs_version, station, level, "SCOPE_B")
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
 
-      :ok = Gtfs.record_change(ctx, :stop, stop_a, "updated", %{stop_name: "Alpha Only"})
-      :ok = Gtfs.record_change(ctx, :stop, stop_b, "updated", %{stop_name: "Bravo Only"})
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop_a, "updated", %{
+          stop_name: "Alpha Only"
+        })
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop_b, "updated", %{
+          stop_name: "Bravo Only"
+        })
 
       view = open_diagram(conn, user, organization, gtfs_version, station)
 
@@ -11772,7 +11839,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       control_history_source()
       stop = lifecycle_child(organization, gtfs_version, station, level, "HIDE")
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Ghost Entry"})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Ghost Entry"
+        })
 
       view = open_diagram(conn, user, organization, gtfs_version, station)
       open_stop_history(view, stop)
@@ -11804,7 +11875,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       control_history_source()
       stop = lifecycle_child(organization, gtfs_version, station, level, "GEN")
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Generation One"})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Generation One"
+        })
 
       view = open_diagram(conn, user, organization, gtfs_version, station)
       open_stop_history(view, stop)
@@ -11864,12 +11939,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop = lifecycle_child(organization, gtfs_version, station, level, "REFRESH")
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
 
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Refresh Platform"})
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Refresh Platform"
+        })
 
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
 
-      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Refresh Platform"})
+      {:ok, _updated} = Gtfs.import_update_stop(stop, %{stop_name: "Refresh Platform"})
 
       view = open_diagram(conn, user, organization, gtfs_version, station)
       open_stop_history(view, stop)
@@ -11906,7 +11984,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     } do
       stop = lifecycle_child(organization, gtfs_version, station, level, "XFILTER")
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Filter Platform"})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Filter Platform"
+        })
 
       view = open_diagram(conn, user, organization, gtfs_version, station)
       open_stop_history(view, stop)
@@ -11933,7 +12015,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     } do
       stop = lifecycle_child(organization, gtfs_version, station, level, "SPOOF")
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Spoof Platform"})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Spoof Platform"
+        })
 
       view = open_diagram(conn, user, organization, gtfs_version, station)
       open_stop_history(view, stop)
@@ -11955,8 +12041,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop = lifecycle_child(organization, gtfs_version, station, level, "NOMATCH")
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
 
-      :ok =
-        Gtfs.record_change(ctx, :stop, stop, "updated", %{
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: %{"from" => "Old", "to" => "New"}
         })
 
@@ -11987,8 +12073,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop = lifecycle_child(organization, gtfs_version, station, level, "TZ")
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
 
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Late UTC"})
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Early UTC"})
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Late UTC"
+        })
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Early UTC"
+        })
 
       [late, early] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
@@ -12035,7 +12128,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       stop = lifecycle_child(organization, gtfs_version, station, level, "TZCONFLICT")
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Conflicted"})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Conflicted"
+        })
 
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
@@ -12068,7 +12165,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     } do
       stop = lifecycle_child(organization, gtfs_version, station, level, "TABS")
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Tabbed"})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Tabbed"
+        })
 
       view = open_diagram(conn, user, organization, gtfs_version, station)
       render_hook(view, "edit_child_stop", %{"id" => stop.id})
@@ -12147,7 +12248,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -12155,7 +12256,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "history.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "history.png")
 
       %{
         user: user,
@@ -12196,8 +12297,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       ctx = history_audit_ctx(organization, gtfs_version, station, user)
 
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "First Edit"})
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Second Edit"})
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "First Edit"
+        })
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Second Edit"
+        })
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -12250,7 +12358,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       pathway = pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id)
 
       ctx = history_audit_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :pathway, pathway, "updated", %{length: 50.0})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :pathway, pathway, "updated", %{
+          length: 50.0
+        })
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -12279,7 +12391,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     } do
       ctx = history_audit_ctx(organization, gtfs_version, station, user)
 
-      :ok = Gtfs.record_change(ctx, :level, level, "updated", %{level_name: "Renamed"})
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :level, level, "updated", %{
+          level_name: "Renamed"
+        })
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -12379,7 +12494,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       ctx = history_audit_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Edited"})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Edited"
+        })
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -12420,7 +12539,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       ctx = history_audit_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Edited"})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Edited"
+        })
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -12458,7 +12581,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       ctx = history_audit_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Edited"})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Edited"
+        })
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -12495,7 +12622,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       ctx = history_audit_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Edited"})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Edited"
+        })
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -12549,7 +12680,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -12557,7 +12688,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "preview.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "preview.png")
 
       %{
         user: user,
@@ -12600,12 +12731,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       ctx = preview_audit_ctx(organization, gtfs_version, station, user)
 
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Changed Name"
+        })
 
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
 
-      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+      {:ok, _updated} = Gtfs.import_update_stop(stop, %{stop_name: "Changed Name"})
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -12638,7 +12772,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert stop_name_change.restored == "Original Name"
     end
 
-    test "preview_rollback_change_log filters polluted stop logs to reversible fields",
+    test "preview_rollback_change_log includes a stored stop ID but excludes scope fields",
          %{
            conn: conn,
            user: user,
@@ -12657,7 +12791,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
         })
 
-      {:ok, changed_stop} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+      {:ok, changed_stop} = Gtfs.import_update_stop(stop, %{stop_name: "Changed Name"})
 
       {:ok, log} =
         Repo.insert(%GtfsPlanner.Gtfs.ChangeLog{
@@ -12695,11 +12829,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       %{field_changes: field_changes} = state.socket.assigns.rollback_preview
 
       fields = Enum.map(field_changes, & &1.field)
-      assert fields == ["stop_name"]
+      assert fields == ["stop_id", "stop_name"]
+      refute "organization_id" in fields
+      refute "gtfs_version_id" in fields
 
-      [stop_name_change] = field_changes
+      stop_name_change = Enum.find(field_changes, &(&1.field == "stop_name"))
       assert stop_name_change.current == "Changed Name"
       assert stop_name_change.restored == "Original Name"
+
+      stop_id_change = Enum.find(field_changes, &(&1.field == "stop_id"))
+      assert stop_id_change.current == "PREVIEW_POLLUTED_STOP"
+      assert stop_id_change.restored == "bad_stop_id"
     end
 
     test "preview_rollback_change_log shows coordinate-only stop changes",
@@ -12723,8 +12863,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       ctx = preview_audit_ctx(organization, gtfs_version, station, user)
 
-      :ok =
-        Gtfs.record_change(ctx, :stop, stop, "updated", %{
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           diagram_coordinate: %{"x" => 30.0, "y" => 40.0}
         })
 
@@ -12732,7 +12872,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
 
       {:ok, _updated} =
-        Gtfs.update_stop(stop, %{diagram_coordinate: %{"x" => 30.0, "y" => 40.0}})
+        Gtfs.import_update_stop(stop, %{diagram_coordinate: %{"x" => 30.0, "y" => 40.0}})
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -12769,7 +12909,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       ctx = preview_audit_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Would Change"})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Would Change"
+        })
 
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
@@ -12808,15 +12952,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       ctx = preview_audit_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Later"})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Later"
+        })
 
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
 
-      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Later"})
+      {:ok, _updated} = Gtfs.import_update_stop(stop, %{stop_name: "Later"})
 
       before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
-      before_stop = Gtfs.get_stop!(stop.id)
+      before_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -12835,7 +12983,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
 
-      after_stop = Gtfs.get_stop!(stop.id)
+      after_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
       assert after_stop.stop_name == before_stop.stop_name
       assert after_stop.stop_desc == before_stop.stop_desc
       assert after_stop.level_id == before_stop.level_id
@@ -12861,12 +13009,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       ctx = preview_audit_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Updated"})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Updated"
+        })
 
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
 
-      {:ok, _} = Gtfs.delete_stop(stop)
+      {:ok, _} = Repo.delete(stop)
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -12910,7 +13062,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -12918,7 +13070,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "confirm.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "confirm.png")
 
       %{
         user: user,
@@ -12959,12 +13111,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
 
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Changed Name"
+        })
 
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
 
-      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+      {:ok, _updated} = Gtfs.import_update_stop(stop, %{stop_name: "Changed Name"})
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -12975,7 +13130,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
       render_async(view, 5_000)
 
-      restored = Gtfs.get_stop!(stop.id)
+      restored = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
       assert restored.stop_name == "Original Name"
 
       state = :sys.get_state(view.pid)
@@ -12984,14 +13139,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert [%{action: "rolled_back"} | _] = state.socket.assigns.history_entries
     end
 
-    test "confirm_rollback_change_log reverts legacy polluted stop log", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station,
-      level: level
-    } do
+    test "confirm_rollback_change_log restores an explicit historical stop ID without scope fields",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
       stop =
         stop_fixture(organization.id, gtfs_version.id, %{
           stop_id: "CONFIRM_POLLUTED_STOP",
@@ -13002,7 +13158,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
         })
 
-      {:ok, changed_stop} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+      {:ok, changed_stop} = Gtfs.import_update_stop(stop, %{stop_name: "Changed Name"})
 
       {:ok, log} =
         Repo.insert(%GtfsPlanner.Gtfs.ChangeLog{
@@ -13039,11 +13195,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert result =~ "Change reverted."
 
-      restored = Gtfs.get_stop!(stop.id)
+      restored = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
       assert restored.stop_name == "Original Name"
       assert restored.organization_id == organization.id
       assert restored.gtfs_version_id == gtfs_version.id
-      assert restored.stop_id == "CONFIRM_POLLUTED_STOP"
+      assert restored.stop_id == "bad_stop_id"
     end
 
     test "confirm_rollback_change_log restores a moved child stop coordinate and refreshes rollback history",
@@ -13070,15 +13226,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
 
-      :ok =
-        Gtfs.record_change(ctx, :stop, stop, "updated", %{
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           diagram_coordinate: moved_coordinate
         })
 
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
 
-      {:ok, _updated} = Gtfs.update_stop(stop, %{diagram_coordinate: moved_coordinate})
+      {:ok, _updated} = Gtfs.import_update_stop(stop, %{diagram_coordinate: moved_coordinate})
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -13101,7 +13257,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
       render_async(view, 5_000)
 
-      restored = Gtfs.get_stop!(stop.id)
+      restored = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
       assert restored.diagram_coordinate == original_coordinate
 
       state = :sys.get_state(view.pid)
@@ -13158,12 +13314,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
 
-      :ok = Gtfs.record_change(ctx, :pathway, pathway, "updated", %{traversal_time: 99})
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :pathway, pathway, "updated", %{
+          traversal_time: 99
+        })
 
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "pathway", pathway.id)
 
-      {:ok, _updated} = Gtfs.update_pathway(pathway, %{traversal_time: 99})
+      {:ok, _updated} =
+        Gtfs.apply_import_entity(:modify, :pathway, pathway, %{traversal_time: 99})
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -13174,7 +13334,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
       render_async(view, 5_000)
 
-      restored = Gtfs.get_pathway!(pathway.id)
+      restored = Repo.get!(GtfsPlanner.Gtfs.Pathway, pathway.id)
       assert restored.traversal_time == 30
 
       state = :sys.get_state(view.pid)
@@ -13192,12 +13352,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     } do
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
 
-      :ok = Gtfs.record_change(ctx, :level, level, "updated", %{level_name: "Renamed Level"})
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :level, level, "updated", %{
+          level_name: "Renamed Level"
+        })
 
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "level", level.id)
 
-      {:ok, _updated} = Gtfs.update_level(level, %{level_name: "Renamed Level"})
+      {:ok, _updated} =
+        Gtfs.apply_import_entity(:modify, :level, level, %{level_name: "Renamed Level"})
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -13208,7 +13372,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
       render_async(view, 5_000)
 
-      restored = Gtfs.get_level!(level.id)
+      restored = Repo.get!(GtfsPlanner.Gtfs.Level, level.id)
       assert restored.level_name == "Confirm Level"
 
       state = :sys.get_state(view.pid)
@@ -13235,12 +13399,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Changed Name"
+        })
 
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
 
-      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+      {:ok, _updated} = Gtfs.import_update_stop(stop, %{stop_name: "Changed Name"})
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -13259,9 +13427,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           "log-id" => Ecto.UUID.generate()
         })
 
-      assert result =~ "already been reverted" or result =~ "stale"
+      assert result =~ "entity no longer exists"
 
-      after_stop = Gtfs.get_stop!(stop.id)
+      after_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
       assert after_stop.stop_name == "Changed Name"
 
       assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
@@ -13289,12 +13457,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Changed Name"
+        })
 
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
 
-      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+      {:ok, _updated} = Gtfs.import_update_stop(stop, %{stop_name: "Changed Name"})
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -13307,7 +13479,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert result =~ "already been reverted" or result =~ "stale"
 
-      after_stop = Gtfs.get_stop!(stop.id)
+      after_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
       assert after_stop.stop_name == "Changed Name"
 
       assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
@@ -13342,7 +13514,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -13350,7 +13522,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "rollback_err.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "rollback_err.png")
 
       %{
         user: user,
@@ -13389,7 +13561,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :stop, stop, "created", %{stop_id: stop.stop_id})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "created", %{
+          stop_id: stop.stop_id
+        })
 
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
@@ -13408,7 +13584,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       install_preview(view, preview)
 
-      before_stop = Gtfs.get_stop!(stop.id)
+      before_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
       before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
 
       before_rolled_back =
@@ -13428,7 +13604,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.rollback_preview == nil
 
-      after_stop = Gtfs.get_stop!(stop.id)
+      after_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
       assert after_stop.stop_name == before_stop.stop_name
       assert after_stop.level_id == before_stop.level_id
 
@@ -13464,30 +13640,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
 
-      :ok =
-        Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Changed Name"
+        })
 
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
+
+      {:ok, _updated} = Gtfs.import_update_stop(stop, %{stop_name: "Changed Name"})
 
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      preview = %{
-        log: log,
-        entity_type: "stop",
-        entity_id: stop.id,
-        field_changes: [
-          %{field: "stop_name", current: "Original Name", restored: "Original Name"}
-        ]
-      }
-
-      install_preview(view, preview)
+      open_stop_history(view, stop)
+      render_async(view, 5_000)
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+      assert :sys.get_state(view.pid).socket.assigns.rollback_preview != nil
 
       # Delete the entity out from under the preview.
-      {:ok, _} = Repo.delete(Gtfs.get_stop!(stop.id))
+      {:ok, _} = Repo.delete(Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id))
 
       before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
 
@@ -13499,16 +13673,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
 
-      assert has_element?(
-               view,
-               "#flash-error",
-               "The target entity no longer exists."
-             )
+      assert has_element?(view, "#rollback-outcome", "The target entity no longer exists.")
 
       state = :sys.get_state(view.pid)
-      assert state.socket.assigns.rollback_preview == nil
+      assert state.socket.assigns.rollback_preview.outcome == :not_found
 
-      assert Gtfs.get_stop(stop.id) == nil
+      assert Repo.get(GtfsPlanner.Gtfs.Stop, stop.id) == nil
 
       assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
 
@@ -13521,7 +13691,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert after_rolled_back == before_rolled_back
     end
 
-    test "confirm_rollback_change_log surfaces :rollback_log_failed and rolls back the entity update",
+    test "confirm_rollback_change_log reloads the stored log instead of trusting a tampered preview",
          %{
            conn: conn,
            user: user,
@@ -13542,36 +13712,29 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
 
-      :ok =
-        Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Changed Name"
+        })
 
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
 
-      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+      {:ok, _updated} = Gtfs.import_update_stop(stop, %{stop_name: "Changed Name"})
 
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      # Tamper a non-authorization field so insert_rollback_log/3 fails inside
-      # the transaction (validate_required on entity_external_id) without
-      # tripping the cross-org/version guard before the Multi runs.
+      render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
+      preview = :sys.get_state(view.pid).socket.assigns.rollback_preview
+
+      # A LiveView assign cannot replace the stored log used by Stations.
       tampered_log = %{log | entity_external_id: nil}
+      install_preview(view, %{preview | log: tampered_log})
 
-      preview = %{
-        log: tampered_log,
-        entity_type: "stop",
-        entity_id: stop.id,
-        field_changes: [
-          %{field: "stop_name", current: "Changed Name", restored: "Original Name"}
-        ]
-      }
-
-      install_preview(view, preview)
-
-      before_stop = Gtfs.get_stop!(stop.id)
+      before_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
       before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
 
       before_rolled_back =
@@ -13580,23 +13743,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           :count
         )
 
-      render_hook(view, "confirm_rollback_change_log", %{"log-id" => tampered_log.id})
+      result = render_hook(view, "confirm_rollback_change_log", %{"log-id" => tampered_log.id})
 
-      assert has_element?(
-               view,
-               "#flash-error",
-               "Unable to record the revert."
-             )
+      assert result =~ "Change reverted."
 
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.rollback_preview == nil
 
-      # Transaction should have rolled back the entity update.
-      after_stop = Gtfs.get_stop!(stop.id)
-      assert after_stop.stop_name == before_stop.stop_name
-      assert after_stop.stop_name == "Changed Name"
+      after_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
+      assert before_stop.stop_name == "Changed Name"
+      assert after_stop.stop_name == "Original Name"
 
-      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
+      assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count + 1
 
       after_rolled_back =
         Repo.aggregate(
@@ -13604,10 +13762,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           :count
         )
 
-      assert after_rolled_back == before_rolled_back
+      assert after_rolled_back == before_rolled_back + 1
     end
 
-    test "confirm_rollback_change_log surfaces :already_matches_current and clears stale preview",
+    test "confirm_rollback_change_log keeps a stale preview after a newer matching edit",
          %{
            conn: conn,
            user: user,
@@ -13631,26 +13789,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
 
-      :ok =
-        Gtfs.record_change(ctx, :stop, stop, "updated", %{
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           diagram_coordinate: moved_coordinate
         })
 
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
 
-      {:ok, moved_stop} = Gtfs.update_stop(stop, %{diagram_coordinate: moved_coordinate})
+      {:ok, moved_stop} = Gtfs.import_update_stop(stop, %{diagram_coordinate: moved_coordinate})
 
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
+      open_stop_history(view, stop)
+      render_async(view, 5_000)
       render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
       assert :sys.get_state(view.pid).socket.assigns.rollback_preview != nil
 
       {:ok, _restored_elsewhere} =
-        Gtfs.update_stop(moved_stop, %{diagram_coordinate: original_coordinate})
+        Gtfs.import_update_stop(moved_stop, %{diagram_coordinate: original_coordinate})
 
       before_rolled_back =
         Repo.aggregate(
@@ -13662,13 +13822,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#flash-error",
-               "This change already matches the current state."
+               "#rollback-outcome",
+               "This item changed after the preview. Review the change again."
              )
 
       state = :sys.get_state(view.pid)
-      assert state.socket.assigns.rollback_preview == nil
-      assert Gtfs.get_stop!(stop.id).diagram_coordinate == original_coordinate
+      assert state.socket.assigns.rollback_preview.outcome == :stale
+      assert Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id).diagram_coordinate == original_coordinate
 
       after_rolled_back =
         Repo.aggregate(
@@ -13699,17 +13859,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Changed Name"
+        })
 
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
 
-      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+      {:ok, _updated} = Gtfs.import_update_stop(stop, %{stop_name: "Changed Name"})
 
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      # The server re-reads the log by ID, so the snapshot is removed from the stored row.
+      Repo.update_all(from(l in GtfsPlanner.Gtfs.ChangeLog, where: l.id == ^log.id),
+        set: [snapshot: nil]
+      )
 
       log_without_snapshot = %{log | snapshot: nil}
 
@@ -13717,12 +13886,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         log: log_without_snapshot,
         entity_type: "stop",
         entity_id: stop.id,
+        expected_revision: Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id).lock_version,
         field_changes: []
       }
 
       install_preview(view, preview)
 
-      before_stop = Gtfs.get_stop!(stop.id)
+      before_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
       before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
 
       before_rolled_back =
@@ -13742,7 +13912,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.rollback_preview == nil
 
-      after_stop = Gtfs.get_stop!(stop.id)
+      after_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
       assert after_stop.stop_name == before_stop.stop_name
 
       assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
@@ -13776,17 +13946,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Changed Name"})
+
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Changed Name"
+        })
 
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
 
-      {:ok, _updated} = Gtfs.update_stop(stop, %{stop_name: "Changed Name"})
+      {:ok, _updated} = Gtfs.import_update_stop(stop, %{stop_name: "Changed Name"})
 
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      # The server re-reads the log by ID, so the stored row becomes a rolled_back log
+      # without a snapshot.
+      Repo.update_all(from(l in GtfsPlanner.Gtfs.ChangeLog, where: l.id == ^log.id),
+        set: [action: "rolled_back", snapshot: nil]
+      )
 
       rolled_back_log = %{log | action: "rolled_back", snapshot: nil}
 
@@ -13794,12 +13974,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         log: rolled_back_log,
         entity_type: "stop",
         entity_id: stop.id,
+        expected_revision: Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id).lock_version,
         field_changes: []
       }
 
       install_preview(view, preview)
 
-      before_stop = Gtfs.get_stop!(stop.id)
+      before_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
       before_count = Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count)
 
       before_rolled_back =
@@ -13819,7 +14000,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       state = :sys.get_state(view.pid)
       assert state.socket.assigns.rollback_preview == nil
 
-      after_stop = Gtfs.get_stop!(stop.id)
+      after_stop = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
       assert after_stop.stop_name == before_stop.stop_name
 
       assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
@@ -13915,8 +14096,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       entry =
         build_log(%{
           action: "updated",
-          changed_fields: %{"stop_id" => %{"from" => "OLD", "to" => "NEW"}},
-          snapshot: %{"stop_id" => "OLD"}
+          changed_fields: %{"organization_id" => %{"from" => "OLD", "to" => "NEW"}},
+          snapshot: %{"organization_id" => "OLD"}
         })
 
       html =
@@ -14167,7 +14348,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -14175,7 +14356,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "tabs.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "tabs.png")
 
       %{
         user: user,
@@ -14418,7 +14599,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station_a.id,
@@ -14426,7 +14607,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station_a.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "x.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "x.png")
 
       %{
         user: user,
@@ -14511,7 +14692,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station_a.id,
@@ -14519,7 +14700,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station_a.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "p.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "p.png")
 
       %{
         user: user,
@@ -14558,7 +14739,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         actor_email: user.email
       }
 
-      :ok = Gtfs.record_change(ctx, :stop, stop_in_b, "updated", %{stop_name: "Renamed B"})
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop_in_b, "updated", %{
+          stop_name: "Renamed B"
+        })
 
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop_in_b.id)
@@ -14605,7 +14789,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -14613,7 +14797,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diff.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diff.png")
 
       %{
         user: user,
@@ -14624,7 +14808,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       }
     end
 
-    test "preview surfaces fields present on entity but absent from snapshot", %{
+    test "preview omits fields absent from the shared rollback target", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -14651,7 +14835,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         actor_email: user.email
       }
 
-      :ok = Gtfs.record_change(ctx, :stop, stop, "updated", %{stop_name: "Renamed"})
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+          stop_name: "Renamed"
+        })
 
       [log] =
         Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
@@ -14660,9 +14847,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       # simulate older logs missing keys the current entity now has.
       pruned_snapshot = Map.delete(log.snapshot, "wheelchair_boarding")
 
-      log
-      |> Ecto.Changeset.change(%{snapshot: pruned_snapshot})
-      |> Repo.update!()
+      pruned_log =
+        log
+        |> Ecto.Changeset.change(%{snapshot: pruned_snapshot})
+        |> Repo.update!()
+
+      {:ok, _updated} = Gtfs.import_update_stop(stop, %{stop_name: "Renamed"})
 
       conn = log_in_user(conn, user, organization: organization)
 
@@ -14675,10 +14865,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       preview = state.socket.assigns.rollback_preview
       assert is_map(preview)
 
-      wb_change = Enum.find(preview.field_changes, &(&1.field == "wheelchair_boarding"))
-      assert wb_change, "expected wheelchair_boarding in field_changes"
-      assert wb_change.restored == nil
-      assert wb_change.current == 1
+      assert {:ok, target} = Stations.rollback_target_snapshot(pruned_log)
+      refute Map.has_key?(target, "wheelchair_boarding")
+      refute Enum.any?(preview.field_changes, &(&1.field == "wheelchair_boarding"))
     end
   end
 
@@ -14720,7 +14909,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -14728,7 +14917,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "fb.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "fb.png")
 
       %{
         user: user,
@@ -14788,7 +14977,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -14796,7 +14985,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "noop.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "noop.png")
 
       %{
         user: user,
@@ -15001,7 +15190,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -15009,7 +15198,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "version-scope.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "version-scope.png")
 
       %{
         user: user,
@@ -15066,7 +15255,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert render(view) =~ "Invalid stop selection"
 
       # Foreign stop coordinates should be unchanged
-      unchanged = Gtfs.get_stop!(foreign_stop.id)
+      unchanged = Repo.get!(GtfsPlanner.Gtfs.Stop, foreign_stop.id)
       assert unchanged.diagram_coordinate == %{"x" => 20.0, "y" => 30.0}
     end
 
@@ -15240,7 +15429,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -15248,7 +15437,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "tog.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "tog.png")
 
       %{
         user: user,
@@ -15369,7 +15558,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station_a.id,
@@ -15379,7 +15568,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level =
         Gtfs.get_stop_level(organization.id, gtfs_version.id, station_a.id, level.id)
 
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "rbmove.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "rbmove.png")
 
       %{
         user: user,
@@ -15391,7 +15580,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       }
     end
 
-    test "rolling back a stop moved into station A back to station B drops it from current view",
+    test "rolling back a stop moved into station A back to station B is refused and the stop stays",
          %{
            conn: conn,
            user: user,
@@ -15461,16 +15650,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert :sys.get_state(view.pid).socket.assigns.selected_stop_id == stop.id
 
       render_hook(view, "preview_rollback_change_log", %{"log-id" => log.id})
-      result = render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
+      render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
 
-      assert result =~ "Change reverted."
-
-      reloaded = Gtfs.get_stop!(stop.id)
-      assert reloaded.parent_station == station_b.stop_id
+      # A station command may not move a stop out of the selected station, so the
+      # rollback is refused: the stop keeps its parent, its drawer stays open and the
+      # preview reports the refusal.
+      reloaded = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id)
+      assert reloaded.parent_station == station_a.stop_id
 
       state = :sys.get_state(view.pid)
-      assert state.socket.assigns.selected_stop_id == nil
-      assert state.socket.assigns.rollback_preview == nil
+      assert state.socket.assigns.selected_stop_id == stop.id
+      assert state.socket.assigns.rollback_preview.outcome == :not_found
     end
   end
 
@@ -15523,7 +15713,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -15662,7 +15852,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       {:ok, _stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           stop_id: station.id,
@@ -15670,7 +15860,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
-      {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "diff.png")
+      {:ok, _} = put_stop_level_diagram(stop_level, "diff.png")
 
       %{
         user: user,
@@ -15709,8 +15899,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         actor_email: user.email
       }
 
-      :ok =
-        Gtfs.record_change(ctx, :stop, stop, "updated", %{
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: @long_name,
           stop_desc: nil,
           wheelchair_boarding: 0
@@ -15718,7 +15908,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       [log] = Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
 
-      {:ok, _changed} = Gtfs.update_stop(stop, %{stop_name: @long_name})
+      {:ok, _changed} = Gtfs.import_update_stop(stop, %{stop_name: @long_name})
 
       %{stop: stop, log: log}
     end
@@ -15855,7 +16045,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert :sys.get_state(view.pid).socket.assigns.rollback_preview == nil
       refute has_element?(view, "#rollback-preview-stop")
-      assert Gtfs.get_stop!(stop.id).stop_name == @long_name
+      assert Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id).stop_name == @long_name
       assert Repo.aggregate(GtfsPlanner.Gtfs.ChangeLog, :count) == before_count
     end
 
@@ -15873,7 +16063,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_async(view, 5_000)
 
-      assert Gtfs.get_stop!(stop.id).stop_name == "Short Name"
+      assert Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id).stop_name == "Short Name"
 
       [newest | _] = :sys.get_state(view.pid).socket.assigns.history_entries
       assert newest.action == "rolled_back"
@@ -15940,14 +16130,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       after_first = rolled_back_count.()
 
       assert after_first == 1
-      restored_name = Gtfs.get_stop!(stop.id).stop_name
+      restored_name = Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id).stop_name
 
       result = render_hook(view, "confirm_rollback_change_log", %{"log-id" => log.id})
       assert result =~ "already been reverted" or result =~ "stale"
 
       assert rolled_back_count.() == after_first
 
-      assert Gtfs.get_stop!(stop.id).stop_name == restored_name
+      assert Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id).stop_name == restored_name
       assert_push_event(view, "focus_scoped_target", %{id: _})
     end
 
@@ -15973,7 +16163,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         actor_email: ctx.user.email
       }
 
-      :ok = Gtfs.record_change(audit, :stop, stop, "created", %{stop_id: stop.stop_id})
+      {:ok, _audit_log} =
+        Audit.record_change_in_transaction(audit, :stop, stop, "created", %{
+          stop_id: stop.stop_id
+        })
+
       [log] = Gtfs.list_change_logs_for_entity(organization.id, gtfs_version.id, "stop", stop.id)
 
       view = open_diagram(ctx.conn, ctx.user, organization, gtfs_version, station)
@@ -16007,14 +16201,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           location_type: 1
         })
 
+      # A log is refused only when it names another station and its entity is not in
+      # this one: an entity that is currently a member can still be previewed.
+      other_child =
+        child_stop_fixture(organization.id, gtfs_version.id, other_station.stop_id,
+          stop_id: "DIFF_OTHER_CHILD"
+        )
+
       {:ok, foreign_log} =
         Repo.insert(%GtfsPlanner.Gtfs.ChangeLog{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
           station_stop_id: other_station.stop_id,
           entity_type: "stop",
-          entity_id: stop.id,
-          entity_external_id: stop.stop_id,
+          entity_id: other_child.id,
+          entity_external_id: other_child.stop_id,
           actor_id: ctx.user.id,
           actor_email: ctx.user.email,
           action: "updated",
@@ -16026,7 +16227,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       open_stop_history(view, stop)
       render_async(view, 5_000)
 
-      before_name = Gtfs.get_stop!(stop.id).stop_name
+      before_name = Repo.get!(GtfsPlanner.Gtfs.Stop, other_child.id).stop_name
 
       render_hook(view, "preview_rollback_change_log", %{"log-id" => foreign_log.id})
 
@@ -16035,7 +16236,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "confirm_rollback_change_log", %{"log-id" => foreign_log.id})
 
-      assert Gtfs.get_stop!(stop.id).stop_name == before_name
+      assert Repo.get!(GtfsPlanner.Gtfs.Stop, other_child.id).stop_name == before_name
     end
   end
 end

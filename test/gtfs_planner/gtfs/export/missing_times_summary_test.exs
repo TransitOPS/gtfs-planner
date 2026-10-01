@@ -343,7 +343,7 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimesSummaryTest do
     assert %{estimable_trips: 1, estimable_times: 2} =
              MissingTimes.summary(org.id, version.id)
 
-    {:ok, _} = ExportDefaults.update(org.id, %{estimate_method: :even})
+    {:ok, _} = ExportDefaults.update(org.id, editor_fixture(org), %{estimate_method: :even})
 
     assert %{estimable_trips: 1, estimable_times: 2} =
              MissingTimes.summary(org.id, version.id)

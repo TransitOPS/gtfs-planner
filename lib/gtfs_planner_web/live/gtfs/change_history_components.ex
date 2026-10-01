@@ -30,10 +30,12 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     only: [button: 1, callout: 1, count_strip: 1, empty_state: 1, icon: 1, input: 1, skeleton: 1]
 
   import GtfsPlannerWeb.Components.TransitPresentation, only: [version_diff_row: 1]
+  import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Pathway
+  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlannerWeb.Components.TransitPresentation
   alias GtfsPlannerWeb.Home.ChangeLinks
@@ -601,6 +603,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
       |> assign(:natural_key, key)
       |> assign(:changes, changes)
       |> assign(:field_count, length(changes))
+      |> assign(:outcome, Map.get(preview, :outcome))
       |> assign(:opener_id, "history-entry-action-#{log.id}")
 
     ~H"""
@@ -622,6 +625,20 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
       <p id={"rollback-preview-consequence-#{@entity_type}"} class="text-sm text-default">
         {consequence_sentence(@entity_type, @field_count)} {reapply_sentence(@entity_type)}
       </p>
+
+      <.message
+        :if={@outcome}
+        id="rollback-outcome"
+        kind="warning"
+        title={
+          if(@outcome == :stale,
+            do: "This item changed after the preview. Review the change again.",
+            else: "The target entity no longer exists."
+          )
+        }
+        tabindex="-1"
+        phx-mounted={JS.focus()}
+      />
 
       <.version_diff_row
         id={"rollback-preview-diff-#{@entity_type}"}
@@ -646,6 +663,18 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
           Cancel
         </.button>
         <.button
+          :if={@outcome == :stale}
+          id={"rollback-preview-review-#{@entity_type}"}
+          variant="secondary"
+          size="sm"
+          class="min-h-11"
+          phx-click="preview_rollback_change_log"
+          phx-value-log-id={@log_id}
+        >
+          Review change
+        </.button>
+        <.button
+          :if={is_nil(@outcome)}
           id={"rollback-preview-confirm-#{@entity_type}"}
           variant="danger"
           size="sm"
@@ -678,16 +707,21 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
       MapSet.member?(@system_noise_diff_fields, to_string(field))
     end)
     |> Enum.map(fn {field, change} ->
-      %{
-        field: to_string(field),
-        from: extract_change_value(change, "from", :from),
-        to: extract_change_value(change, "to", :to)
-      }
+      {from, to} = change_pair(change)
+      %{field: to_string(field), from: from, to: to}
     end)
     |> Enum.sort_by(& &1.field)
   end
 
   defp diff_rows(_entry), do: []
+
+  # Stored changed fields are `%{"from" => old, "to" => new}` maps; older logs
+  # hold the same pair as `[old, new]`.
+  defp change_pair([from, to]), do: {from, to}
+
+  defp change_pair(change) do
+    {extract_change_value(change, "from", :from), extract_change_value(change, "to", :to)}
+  end
 
   defp extract_change_value(change, string_key, atom_key) do
     case Map.get(change, string_key, :__missing__) do
@@ -1059,7 +1093,19 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     end
   end
 
-  defp rollback_eligible?(%ChangeLog{} = entry), do: Gtfs.rollback_previewable_fields(entry) != []
+  defp rollback_eligible?(%ChangeLog{} = entry) do
+    case Stations.rollback_target_snapshot(entry) do
+      {:ok, target} ->
+        entry.changed_fields
+        |> Kernel.||(%{})
+        |> Map.keys()
+        |> Enum.any?(&Map.has_key?(target, to_string(&1)))
+
+      _ ->
+        false
+    end
+  end
+
   defp rollback_eligible?(_entry), do: true
 
   defp rollback_button_label(:undo), do: "Undo this change"

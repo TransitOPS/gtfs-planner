@@ -20,6 +20,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
   alias GtfsPlanner.Gtfs.RoutePatternStop
+  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimedPatternStop
@@ -35,7 +36,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
       })
 
     version = gtfs_version_fixture(organization.id)
-    actor = user_fixture()
+    actor = editor_fixture(organization)
 
     %{
       organization: organization,
@@ -136,10 +137,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
                {:import, nil}
              )
 
-    assert summary.patterns_created == 0
-    assert summary.timings_created == 2
-    assert summary.trips_linked == 4
-    assert summary.trips_custom == 4
+    assert summary.patterns_created == 1
+    assert summary.timings_created == 3
+    assert summary.trips_linked == 5
+    assert summary.trips_custom == 3
     assert summary.routes_failed == 0
 
     pattern = red_pattern(context, "Red-1-0")
@@ -157,14 +158,18 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
     assert linked(ok_trip).timed_pattern_id == linked(representative).timed_pattern_id
     refute is_nil(linked(ok_trip).timed_pattern_id)
 
-    assert custom(diff_trip).pattern_derivation_reason == "different_stops"
-    assert custom(diff_trip).route_pattern_id == "Red-1-0"
+    # The differing trip's stop order becomes a child pattern labelled by the
+    # supplied owner, so it links instead of staying custom `different_stops`.
+    child = child_of(context, pattern)
+    assert Enum.map(occurrences(child.id), &{&1.position, &1.stop_id}) == [{1, "A"}, {2, "C"}]
+    assert linked(diff_trip).route_pattern_id == child.route_pattern_id
+
     assert custom(dangling_trip).pattern_derivation_reason == "missing_pattern"
     assert custom(wrong_route_trip).pattern_derivation_reason == "scope_mismatch"
     assert custom(wrong_direction_trip).pattern_derivation_reason == "scope_mismatch"
 
     assert Enum.all?(
-             [diff_trip, dangling_trip, wrong_route_trip, wrong_direction_trip],
+             [dangling_trip, wrong_route_trip, wrong_direction_trip],
              &is_nil(custom(&1).timed_pattern_id)
            )
 
@@ -564,7 +569,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
     assert log.changed_fields["patterns_created"] == 1
     assert log.changed_fields["timings_created"] == 2
 
-    assert {:error, :audit_only_entity} = Gtfs.rollback_target_snapshot(log)
+    assert {:error, :audit_only_entity} = Stations.rollback_target_snapshot(log)
     assert Gtfs.reversible_fields_for("route_pattern_build") == []
 
     # Custom classification alone is not retryable and creates no second summary.
@@ -720,15 +725,17 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
     })
 
     assert {:ok, summary} = derive_route(context, "F1")
-    assert summary.trips_linked == 2
-    assert summary.trips_custom == 1
+    assert summary.trips_linked == 3
+    assert summary.trips_custom == 0
 
     pattern = red_pattern(context, "F1-1-0")
 
     assert Enum.map(occurrences(pattern.id), &{&1.position, &1.stop_id}) ==
              [{1, "A"}, {2, "B"}, {3, "C"}]
 
-    assert custom("f1-t3").pattern_derivation_reason == "different_stops"
+    # The less common order becomes a child of the supplied pattern rather than
+    # a custom reference.
+    assert linked("f1-t3").route_pattern_id == child_of(context, pattern).route_pattern_id
     assert linked("f1-t1").timed_pattern_id == linked("f1-t2").timed_pattern_id
   end
 
@@ -752,8 +759,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
     })
 
     assert {:ok, summary} = derive_route(context, "F1T")
-    assert summary.trips_linked == 1
-    assert summary.trips_custom == 1
+    assert summary.trips_linked == 2
+    assert summary.trips_custom == 0
 
     assert Enum.map(occurrences(red_pattern(context, "F1T-1-0").id), & &1.stop_id) == [
              "A",
@@ -761,7 +768,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
              "C"
            ]
 
-    assert custom("f1t-b").pattern_derivation_reason == "different_stops"
+    # The lexically later trip loses the tie and becomes the labelled child.
+    assert linked("f1t-b").route_pattern_id ==
+             child_of(context, red_pattern(context, "F1T-1-0")).route_pattern_id
   end
 
   test "a direction-mismatched or missing-direction supplied reference stays custom", context do
@@ -901,7 +910,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
     assert {:ok, summary} = derive_route(context, "CUSTOM")
     assert summary.trips_custom == 1
     assert summary.timings_created == 1
-    pattern = Repo.one!(from p in RoutePattern, where: p.route_id == "CUSTOM")
+    pattern = Repo.one!(from(p in RoutePattern, where: p.route_id == "CUSTOM"))
     assert [timing] = timings(pattern.id)
 
     assert Enum.map(timing_rows(timing.id), &{&1.arrival_offset, &1.departure_offset}) == [
@@ -1148,6 +1157,16 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
       organization_id: context.organization.id,
       gtfs_version_id: context.version.id,
       route_pattern_id: natural_id
+    )
+  end
+
+  # The one pattern this supplied owner labelled, which derivation creates when
+  # the supplied pattern's trips serve a second ordered stop list.
+  defp child_of(context, owner) do
+    Repo.get_by!(RoutePattern,
+      organization_id: context.organization.id,
+      gtfs_version_id: context.version.id,
+      label_pattern_id: owner.id
     )
   end
 

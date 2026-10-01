@@ -7,13 +7,19 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
   to drive version switching via localStorage and navigation.
 
   On successful rename, sends `{:gtfs_version_renamed, %GtfsVersion{}}` to
-  the parent LiveView process.
+  the parent LiveView process. The host passes the signed-in user's `actor_id`
+  and the `organization_id`; the rename re-checks that user's editor membership
+  inside its transaction, so a refusal keeps the form open with the typed name.
   """
 
   use GtfsPlannerWeb, :live_component
 
   alias GtfsPlanner.Versions
   alias Phoenix.LiveView.JS
+
+  @permission_error "You no longer have permission to rename versions. " <>
+                      "Ask an organization administrator to restore your access."
+  @missing_error "This version is no longer available. Reload the page."
 
   @impl true
   def update(assigns, socket) do
@@ -22,6 +28,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
       |> reset_edit_if_version_changed(assigns)
       |> assign_new(:editing?, fn -> false end)
       |> assign_new(:form, fn -> nil end)
+      |> assign_new(:refusal, fn -> nil end)
       |> assign(assigns)
 
     {:ok, socket}
@@ -30,7 +37,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
   defp reset_edit_if_version_changed(socket, %{current_version: %{id: incoming_id}}) do
     case socket.assigns do
       %{current_version: %{id: ^incoming_id}} -> socket
-      %{current_version: %{}} -> assign(socket, editing?: false, form: nil)
+      %{current_version: %{}} -> assign(socket, editing?: false, form: nil, refusal: nil)
       _ -> socket
     end
   end
@@ -113,6 +120,14 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
               >
                 {@form[:name].errors |> Enum.map(&translate_error/1) |> Enum.join(", ")}
               </p>
+              <p
+                :if={@refusal}
+                id="gtfs-version-rename-refusal"
+                role="alert"
+                class="text-sm text-error"
+              >
+                {@refusal}
+              </p>
               <div class="flex items-center justify-end gap-2 pt-1">
                 <button
                   type="button"
@@ -194,11 +209,11 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
   @impl true
   def handle_event("start_edit", _params, socket) do
     form = to_form(Versions.change_gtfs_version(socket.assigns.current_version))
-    {:noreply, assign(socket, editing?: true, form: form)}
+    {:noreply, assign(socket, editing?: true, form: form, refusal: nil)}
   end
 
   def handle_event("cancel_edit", _params, socket) do
-    {:noreply, assign(socket, editing?: false, form: nil)}
+    {:noreply, assign(socket, editing?: false, form: nil, refusal: nil)}
   end
 
   def handle_event("validate", %{"gtfs_version" => attrs}, socket) do
@@ -211,14 +226,32 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
   end
 
   def handle_event("save", %{"gtfs_version" => attrs}, socket) do
-    case Versions.update_gtfs_version(socket.assigns.current_version, attrs) do
+    scope = %{
+      actor_id: socket.assigns.actor_id,
+      organization_id: socket.assigns.organization_id
+    }
+
+    case Versions.update_gtfs_version(scope, socket.assigns.current_version.id, attrs) do
       {:ok, updated} ->
         send(self(), {:gtfs_version_renamed, updated})
 
-        {:noreply, assign(socket, editing?: false, form: nil, current_version: updated)}
+        {:noreply,
+         assign(socket, editing?: false, form: nil, refusal: nil, current_version: updated)}
 
-      {:error, changeset} ->
-        {:noreply, assign(socket, form: to_form(changeset))}
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply, assign(socket, form: to_form(changeset), refusal: nil)}
+
+      {:error, :forbidden} ->
+        {:noreply, refuse(socket, attrs, @permission_error)}
+
+      {:error, :not_found} ->
+        {:noreply, refuse(socket, attrs, @missing_error)}
     end
+  end
+
+  # Keeps the typed name in the form so a refused save loses nothing.
+  defp refuse(socket, attrs, message) do
+    draft = to_form(Versions.change_gtfs_version(socket.assigns.current_version, attrs))
+    assign(socket, form: draft, refusal: message)
   end
 end

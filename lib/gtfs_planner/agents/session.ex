@@ -37,6 +37,13 @@ defmodule GtfsPlanner.Agents.Session do
 
   Every listener receives `{:agent_event, session_pid, event}` where the event is
   `{:entry, entry}`, `{:status, status}` or `{:reset, conversation_id}`.
+
+  A session also re-checks its own resource identity (`Scope.authorized_context/1`)
+  and the pack's optional `authorize_context/1` at admission, on delivery and on a
+  prepared lookup, so a deleted route or version ends the conversation the same way
+  a revoked membership does, with the single `:unavailable` result (INV-1). The
+  server evidence a turn produced settles with its entry and is discarded with it,
+  so an answer outlives neither an authorization change nor its turn (INV-2).
   """
 
   use GenServer, restart: :temporary
@@ -60,9 +67,12 @@ defmodule GtfsPlanner.Agents.Session do
   @unavailable_text "The helper is unavailable right now. Try again, or make the change yourself on this page."
   @context_limit_text "This conversation is too large. Start a new conversation or narrow the request."
   @forbidden_text "Your access changed. The helper stopped."
+  @allowance_exhausted_text "Daily assistant limit reached. It resets at 00:00 UTC."
+  @unavailable_context_text "This route or calendar is no longer available, so the helper stopped."
 
   @typedoc "Session status the panel renders alongside the entries."
-  @type status :: :idle | :working | :ended | :forbidden | :limit
+  @type status ::
+          :idle | :working | :ended | :forbidden | :unavailable | :limit | :allowance_exhausted
 
   @typedoc "One visible turn in the transcript."
   @type entry :: %{
@@ -71,8 +81,17 @@ defmodule GtfsPlanner.Agents.Session do
           text: String.t(),
           activity: [String.t()],
           prepared: Pack.prepared() | nil,
+          evidence: [Pack.evidence()],
           applied?: boolean(),
-          status: :done | :working | :stopped | :failed | :incomplete | :forbidden
+          status:
+            :done
+            | :working
+            | :stopped
+            | :failed
+            | :incomplete
+            | :forbidden
+            | :unavailable
+            | :allowance_exhausted
         }
 
   @typedoc "What `attach/1` returns and what `Agents.open/1` exposes."
@@ -94,7 +113,8 @@ defmodule GtfsPlanner.Agents.Session do
   @doc """
   Authorizes, monitors `pid` as a listener once and returns the conversation snapshot.
   """
-  @spec attach(GenServer.server()) :: {:ok, snapshot()} | {:error, :forbidden | :ended}
+  @spec attach(GenServer.server()) ::
+          {:ok, snapshot()} | {:error, :forbidden | :unavailable | :ended}
   def attach(session), do: GenServer.call(session, :attach)
 
   @doc "Removes `pid` as a listener and flushes its monitor."
@@ -105,11 +125,12 @@ defmodule GtfsPlanner.Agents.Session do
   Admits one turn for `text`.
 
   Returns `:ok` once the turn starts, or `{:error, reason}` for a forbidden
-  member, a running turn, blank or overlong text, the exhausted request
-  allowance, or the shared eight-turn capacity.
+  member, an unavailable resource context, a running turn, blank or overlong
+  text, the exhausted request allowance, or the shared eight-turn capacity.
   """
   @spec send_message(GenServer.server(), String.t()) ::
-          :ok | {:error, :forbidden | :busy | :empty | :too_long | :limit | :capacity}
+          :ok
+          | {:error, :forbidden | :unavailable | :busy | :empty | :too_long | :limit | :capacity}
   def send_message(session, text), do: GenServer.call(session, {:send_message, text})
 
   @doc """
@@ -288,10 +309,21 @@ defmodule GtfsPlanner.Agents.Session do
 
   ## Admission
 
+  # Membership, then the server-owned resource context, then the pack's own
+  # precondition: all three are re-read here, on delivery and on a prepared
+  # lookup, so no provider request, tool read or proposal outlives the page that
+  # owns this conversation (INV-1).
   defp authorized(state, fun) do
-    case Scope.authorize(state.scope) do
+    case check_context(state) do
       :ok -> fun.(state)
       {:error, :forbidden} -> revoke(state)
+      {:error, :unavailable} -> stop_unavailable(state)
+    end
+  end
+
+  defp check_context(state) do
+    with :ok <- Scope.authorized_context(state.scope) do
+      Pack.authorize_context(state.pack, state.scope)
     end
   end
 
@@ -430,7 +462,7 @@ defmodule GtfsPlanner.Agents.Session do
   end
 
   defp settle_task_result(state, {:ok, result}) do
-    case Scope.authorize(state.scope) do
+    case check_context(state) do
       :ok ->
         {:cont, complete_turn(state, result)}
 
@@ -438,11 +470,20 @@ defmodule GtfsPlanner.Agents.Session do
         # The membership changed while the answer was in flight: discard the
         # answer and its proposal (AC-12).
         {:stop, settle_forbidden(state, progress_of(result))}
+
+      {:error, :unavailable} ->
+        # The route or version this conversation answers about is gone: the
+        # in-flight answer and its proposal are discarded too (INV-1).
+        {:stop, settle_unavailable(state, progress_of(result))}
     end
   end
 
-  defp settle_task_result(state, {:error, :forbidden, progress}) do
-    {:stop, settle_forbidden(state, progress)}
+  defp settle_task_result(state, {:error, {:context, reason}, progress})
+       when reason in [:forbidden, :unavailable] do
+    case reason do
+      :forbidden -> {:stop, settle_forbidden(state, progress)}
+      :unavailable -> {:stop, settle_unavailable(state, progress)}
+    end
   end
 
   defp settle_task_result(state, {:error, reason, progress}) do
@@ -459,6 +500,7 @@ defmodule GtfsPlanner.Agents.Session do
       result.text,
       :done,
       result.prepared,
+      result.evidence,
       progress_of(result),
       "done",
       result.messages
@@ -467,12 +509,16 @@ defmodule GtfsPlanner.Agents.Session do
 
   defp failed_turn(state, reason, progress) do
     {status, text, outcome} = failure_outcome(reason)
-    settle_turn(state, text, status, nil, progress, outcome, nil)
+    settle_turn(state, text, status, nil, [], progress, outcome, nil)
   end
 
   defp failure_outcome(:step_limit), do: {:incomplete, @incomplete_text, "step_limit"}
   defp failure_outcome(:incomplete_response), do: {:incomplete, @incomplete_text, "incomplete"}
   defp failure_outcome(:context_limit), do: {:incomplete, @context_limit_text, "context_limit"}
+
+  defp failure_outcome(:allowance_exhausted),
+    do: {:allowance_exhausted, @allowance_exhausted_text, "allowance_exhausted"}
+
   defp failure_outcome(_reason), do: {:failed, @unavailable_text, "failed"}
 
   defp timeout_turn(state) do
@@ -483,6 +529,7 @@ defmodule GtfsPlanner.Agents.Session do
       @incomplete_text,
       :incomplete,
       nil,
+      [],
       interrupted_progress(state),
       "timeout",
       nil
@@ -491,7 +538,17 @@ defmodule GtfsPlanner.Agents.Session do
 
   defp stop_turn(state) do
     state = kill_task(state)
-    settle_turn(state, @stopped_text, :stopped, nil, interrupted_progress(state), "stopped", nil)
+
+    settle_turn(
+      state,
+      @stopped_text,
+      :stopped,
+      nil,
+      [],
+      interrupted_progress(state),
+      "stopped",
+      nil
+    )
   end
 
   defp crashed_turn(state) do
@@ -500,6 +557,7 @@ defmodule GtfsPlanner.Agents.Session do
       @unavailable_text,
       :failed,
       nil,
+      [],
       interrupted_progress(state),
       "crashed",
       nil
@@ -514,6 +572,7 @@ defmodule GtfsPlanner.Agents.Session do
       @unavailable_text,
       :failed,
       nil,
+      [],
       interrupted_progress(state),
       "killed",
       nil
@@ -522,8 +581,10 @@ defmodule GtfsPlanner.Agents.Session do
 
   # Settles the running turn exactly once: the person's message and either the
   # generated sequence or one synthetic terminal reply join the history, the
-  # entry records the outcome and no partial tool sequence survives (AC-27).
-  defp settle_turn(state, text, status, prepared, progress, outcome, generated) do
+  # entry records the outcome and no partial tool sequence survives (AC-27). An
+  # interrupted or failed turn keeps no evidence either: a server answer that
+  # never arrived whole must not reach the panel as a card (INV-2).
+  defp settle_turn(state, text, status, prepared, evidence, progress, outcome, generated) do
     turn = state.turn
 
     extra =
@@ -539,6 +600,7 @@ defmodule GtfsPlanner.Agents.Session do
         text: text,
         activity: progress.activity,
         prepared: prepared,
+        evidence: evidence,
         status: status
       })
       |> put_retry_source(turn)
@@ -546,14 +608,24 @@ defmodule GtfsPlanner.Agents.Session do
 
     log_turn(state, turn, outcome, progress)
     state = broadcast(state, {:entry, find_entry(state, turn.entry_id)})
-    state = %{state | status: final_status(state)}
+    state = %{state | status: final_status(state, status)}
     broadcast(state, {:status, state.status}) |> arm_idle()
   end
 
   # Every call from a revoked member ends the conversation: the running task is
   # terminated, the entry settles as forbidden without a proposal, and the panel
   # receives the access-changed status (AC-12).
-  defp revoke(state) do
+  defp revoke(state), do: stop_context(state, :forbidden)
+
+  defp settle_forbidden(state, progress), do: settle_context(state, progress, :forbidden)
+
+  defp settle_unavailable(state, progress), do: settle_context(state, progress, :unavailable)
+
+  # A call refused because the conversation's own resource context is gone ends
+  # it the same way a revoked membership does, with the one `:unavailable`
+  # result: the running task is terminated and the entry settles without a
+  # proposal. Only an idle conversation needs no entry at all.
+  defp stop_context(state, status) do
     {progress, state} =
       if state.turn do
         {interrupted_progress(state), kill_task(state)}
@@ -561,10 +633,14 @@ defmodule GtfsPlanner.Agents.Session do
         {nil, state}
       end
 
-    {:stop, :normal, {:error, :forbidden}, settle_forbidden(state, progress)}
+    {:stop, :normal, {:error, status}, settle_context(state, progress, status)}
   end
 
-  defp settle_forbidden(state, progress) do
+  defp stop_unavailable(state), do: stop_context(state, :unavailable)
+
+  defp settle_context(state, progress, status) do
+    text = context_text(status)
+
     state =
       case state.turn do
         nil ->
@@ -573,22 +649,26 @@ defmodule GtfsPlanner.Agents.Session do
         turn ->
           state =
             state
-            |> commit_messages([turn.pending_user_message, synthetic_message(@forbidden_text)])
+            |> commit_messages([turn.pending_user_message, synthetic_message(text)])
             |> put_entry(turn.entry_id, %{
-              text: @forbidden_text,
+              text: text,
               activity: progress.activity,
               prepared: nil,
-              status: :forbidden
+              evidence: [],
+              status: status
             })
             |> put_retry_source(turn)
             |> clear_turn()
 
-          log_turn(state, turn, "forbidden", progress)
+          log_turn(state, turn, Atom.to_string(status), progress)
           broadcast(state, {:entry, find_entry(state, turn.entry_id)})
       end
 
-    state |> Map.put(:status, :forbidden) |> broadcast({:status, :forbidden})
+    state |> Map.put(:status, status) |> broadcast({:status, status})
   end
+
+  defp context_text(:forbidden), do: @forbidden_text
+  defp context_text(:unavailable), do: @unavailable_context_text
 
   defp reset_conversation(state) do
     state = %{
@@ -608,9 +688,9 @@ defmodule GtfsPlanner.Agents.Session do
     |> arm_idle()
   end
 
-  defp final_status(state) do
-    if state.requests >= @max_requests, do: :limit, else: :idle
-  end
+  defp final_status(_state, :allowance_exhausted), do: :allowance_exhausted
+  defp final_status(state, _entry_status) when state.requests >= @max_requests, do: :limit
+  defp final_status(_state, _entry_status), do: :idle
 
   ## Turn bookkeeping
 
@@ -762,6 +842,7 @@ defmodule GtfsPlanner.Agents.Session do
       text: text,
       activity: [],
       prepared: nil,
+      evidence: [],
       applied?: false,
       status: status
     }

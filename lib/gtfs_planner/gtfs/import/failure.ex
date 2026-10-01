@@ -47,7 +47,7 @@ defmodule GtfsPlanner.Gtfs.Import.Failure do
   # below. Anything unrecognized normalizes to "unknown_error".
   @parse_reason_codes ~w(
     empty_content invalid_utf8 blank_header duplicate_header wrong_field_count
-    unterminated_quote malformed_quote forbidden_control_character
+    unterminated_quote malformed_quote forbidden_control_character record_too_long
     missing_natural_key_header blank_natural_key duplicate_natural_key
     semantic_row unexpected_parser_failure archive_unreadable archive_too_large
     nested_archive duplicate_entity_file
@@ -70,7 +70,8 @@ defmodule GtfsPlanner.Gtfs.Import.Failure do
                   ~w(
                     row_invalid constraint_violation database_error
                     missing_references image_write_failed missing_image
-                    filesystem_error verification_failed executor_lost unknown_error
+                    filesystem_error verification_failed executor_lost forbidden
+                    busy source_not_installed unknown_error
                   )
 
   @failed_file_max 255
@@ -183,6 +184,8 @@ defmodule GtfsPlanner.Gtfs.Import.Failure do
   defp classify({:write_failed, _zip_path, _reason}), do: {"image_write_failed", nil, nil}
 
   defp classify(:executor_lost), do: {"executor_lost", nil, nil}
+
+  defp classify(:source_not_installed), do: {"source_not_installed", nil, nil}
 
   defp classify(_other), do: {"unknown_error", nil, nil}
 

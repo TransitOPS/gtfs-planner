@@ -141,8 +141,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
   defp relief_limit!(context, minutes) do
     assert {:ok, :ok} =
              Gtfs.update_relief_settings(
-               context.organization.id,
-               context.version.id,
+               GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                 context.organization.id,
+                 context.version.id
+               ),
                nil,
                %{max_piece_minutes: minutes, marked: []}
              )
@@ -189,12 +191,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
       )
       |> render_click()
 
-      assert has_element?(view, "#gap-drawer", "Can't reach the next trip")
-      assert has_element?(view, "#gap-drawer", "Block 101 · 6101 → 8101 · Weekday")
+      assert has_element?(view, "#gap-drawer-title", "Route 12 continues as Route 24")
+
+      assert has_element?(
+               view,
+               "#gap-drawer",
+               "Block 101 · trip 6101 → 8101 · Valley College · Weekday"
+             )
 
       assert has_element?(view, "#gap-drawer", "Arrives")
       assert has_element?(view, "#gap-drawer", "06:35 · Valley College")
-      assert has_element?(view, "#gap-drawer", "Next trip departs")
+      assert has_element?(view, "#gap-drawer", "Departs")
       assert has_element?(view, "#gap-drawer", "06:43 · Market Square")
       assert has_element?(view, "#gap-available", "8 min")
       assert has_element?(view, "#gap-drive", "14 min")
@@ -205,9 +212,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
       assert has_element?(view, "#gap-wait", "—")
       assert has_element?(view, "#gap-operators", "No")
 
-      # The rider note stays off an empty move, and the record list is still there.
+      # The rider note stays off an empty move, and the drawer's own outcome
+      # surface is still there.
       refute has_element?(view, "#gap-rider-note")
-      assert has_element?(view, "#gap-transfers", "Stay-on-board records · 0")
+      assert has_element?(view, "#gap-riders", "What trip planners show riders")
     end
 
     test "the callout reads the minutes needed against the time there is", context do
@@ -280,7 +288,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
       base = blocks_path(context.version.id)
       {:ok, view, _html} = live(editor_conn(context), gap_url(base, trips.second, trips.third))
 
-      assert has_element?(view, "#gap-drawer", "22 min between trips")
+      assert has_element?(view, "#gap-available", "22 min · Same stop")
       assert has_element?(view, "#gap-drive", "None · same stop")
       assert has_element?(view, "#gap-wait", "22 min")
       # The vehicle never drives, so there is no pair to enter a driving time for.
@@ -347,8 +355,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
 
       assert texts(view, "#gap-drawer dt") == [
                "Arrives",
-               "Next trip departs",
-               "Time available",
+               "Departs",
+               "On board",
                "Driving without riders",
                "Wait",
                "Operators can change"

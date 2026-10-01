@@ -3,6 +3,7 @@ defmodule GtfsPlanner.OrganizationsTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.User
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Accounts.UserToken
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.AdminReadAdapterMock
@@ -14,6 +15,16 @@ defmodule GtfsPlanner.OrganizationsTest do
   import GtfsPlanner.AccountsFixtures
 
   @adapter_key :organizations_admin_read_adapter
+
+  defp system_admin, do: system_admin_fixture(organization_fixture())
+
+  defp admin_of(organization) do
+    admin = user_fixture()
+    organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
+    admin
+  end
+
+  defp organization_count, do: Repo.aggregate(Organization, :count)
 
   describe "list_organizations/0" do
     test "returns all organizations" do
@@ -81,9 +92,9 @@ defmodule GtfsPlanner.OrganizationsTest do
     end
   end
 
-  describe "create_organization/1" do
+  describe "create_organization/2" do
     test "requires alias and name to be set" do
-      {:error, changeset} = Organizations.create_organization(%{})
+      {:error, changeset} = Organizations.create_organization(system_admin(), %{})
 
       assert %{
                alias: ["can't be blank"],
@@ -93,7 +104,7 @@ defmodule GtfsPlanner.OrganizationsTest do
 
     test "validates alias and name when given" do
       {:error, changeset} =
-        Organizations.create_organization(%{alias: "", name: ""})
+        Organizations.create_organization(system_admin(), %{alias: "", name: ""})
 
       assert %{
                alias: ["can't be blank"],
@@ -105,7 +116,7 @@ defmodule GtfsPlanner.OrganizationsTest do
       %{alias: alias} = organization_fixture()
 
       {:error, changeset} =
-        Organizations.create_organization(%{
+        Organizations.create_organization(system_admin(), %{
           alias: alias,
           name: "Another Name"
         })
@@ -117,21 +128,21 @@ defmodule GtfsPlanner.OrganizationsTest do
       attrs = valid_organization_attributes()
 
       assert {:ok, %Organization{} = organization} =
-               Organizations.create_organization(attrs)
+               Organizations.create_organization(system_admin(), attrs)
 
       assert organization.alias == attrs.alias
       assert organization.name == attrs.name
     end
   end
 
-  describe "update_organization/2" do
+  describe "update_organization/3" do
     setup do
       %{organization: organization_fixture()}
     end
 
     test "requires name to be set", %{organization: organization} do
       {:error, changeset} =
-        Organizations.update_organization(organization, %{name: ""})
+        Organizations.update_organization(system_admin(), organization, %{name: ""})
 
       assert %{name: ["can't be blank"]} = errors_on(changeset)
     end
@@ -140,7 +151,7 @@ defmodule GtfsPlanner.OrganizationsTest do
       other_org = organization_fixture()
 
       {:error, changeset} =
-        Organizations.update_organization(organization, %{alias: other_org.alias})
+        Organizations.update_organization(system_admin(), organization, %{alias: other_org.alias})
 
       assert "has already been taken" in errors_on(changeset).alias
     end
@@ -149,19 +160,128 @@ defmodule GtfsPlanner.OrganizationsTest do
       new_name = "Updated Organization Name"
 
       assert {:ok, %Organization{} = updated} =
-               Organizations.update_organization(organization, %{name: new_name})
+               Organizations.update_organization(system_admin(), organization, %{name: new_name})
 
       assert updated.name == new_name
       assert updated.id == organization.id
     end
   end
 
+  describe "create_organization/2 authorization" do
+    test "refuses editors, organization administrators and a revoked system administrator" do
+      organization = organization_fixture()
+      editor = editor_fixture(organization)
+      org_admin = admin_of(organization)
+      revoked = system_admin_fixture(organization)
+      deactivate_membership_fixture(Repo.get_by!(UserOrgMembership, user_id: revoked.id))
+      before = organization_count()
+
+      for actor <- [editor, org_admin, revoked] do
+        assert {:error, :forbidden} =
+                 Organizations.create_organization(actor, valid_organization_attributes())
+      end
+
+      assert organization_count() == before
+    end
+
+    test "creates the organization and its default version for a system administrator" do
+      attrs = valid_organization_attributes()
+
+      assert {:ok, %Organization{id: id}} =
+               Organizations.create_organization(system_admin(), attrs)
+
+      assert Repo.get_by!(GtfsPlanner.Versions.GtfsVersion, organization_id: id)
+    end
+
+    test "publishes the created organization after commit" do
+      actor = system_admin()
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "organizations")
+
+      {:ok, organization} =
+        Organizations.create_organization(actor, valid_organization_attributes())
+
+      assert_receive {[:organizations, :created], %Organization{id: id}}
+      assert id == organization.id
+    end
+  end
+
+  describe "update_organization/3 authorization" do
+    setup do
+      organization = organization_fixture()
+      %{organization: organization, admin: admin_of(organization)}
+    end
+
+    test "a usable organization administrator renames the organization", %{
+      organization: organization,
+      admin: admin
+    } do
+      assert {:ok, %Organization{name: "Renamed"}} =
+               Organizations.update_organization(admin, organization, %{name: "Renamed"})
+    end
+
+    test "an administrator revoked after the page loaded is refused and nothing changes", %{
+      organization: organization,
+      admin: admin
+    } do
+      other_admin = admin_of(organization)
+      assert other_admin.id != admin.id
+      deactivate_membership_fixture(Repo.get_by!(UserOrgMembership, user_id: admin.id))
+
+      assert {:error, :forbidden} =
+               Organizations.update_organization(admin, organization, %{name: "Renamed"})
+
+      assert Organizations.get_organization!(organization.id).name == organization.name
+    end
+
+    test "refuses editors and administrators of another organization", %{
+      organization: organization
+    } do
+      editor = editor_fixture(organization)
+      foreign_admin = admin_of(organization_fixture())
+
+      for actor <- [editor, foreign_admin] do
+        assert {:error, :forbidden} =
+                 Organizations.update_organization(actor, organization, %{name: "Renamed"})
+      end
+
+      assert Organizations.get_organization!(organization.id).name == organization.name
+    end
+
+    test "a system administrator of another organization renames it", %{
+      organization: organization
+    } do
+      assert {:ok, %Organization{name: "Renamed"}} =
+               Organizations.update_organization(system_admin(), organization, %{name: "Renamed"})
+    end
+
+    test "applies attributes to the current row, not to the struct the page holds", %{
+      organization: organization,
+      admin: admin
+    } do
+      {:ok, _renamed} =
+        Organizations.update_organization(admin, organization, %{name: "Changed elsewhere"})
+
+      assert {:ok, %Organization{name: name}} =
+               Organizations.update_organization(admin, organization, %{name: organization.name})
+
+      assert name == organization.name
+      assert Organizations.get_organization!(organization.id).name == organization.name
+    end
+
+    test "a deleted organization is not found", %{organization: organization, admin: admin} do
+      {:ok, _deleted} = Organizations.delete_organization(organization)
+
+      assert {:error, :not_found} =
+               Organizations.update_organization(admin, organization, %{name: "Renamed"})
+    end
+  end
+
   describe "product field" do
-    test "create_organization/1 without product defaults to :planner" do
+    test "create_organization/2 without product defaults to :planner" do
       attrs = valid_organization_attributes()
 
       assert {:ok, %Organization{} = organization} =
-               Organizations.create_organization(attrs)
+               Organizations.create_organization(system_admin(), attrs)
 
       assert organization.product == :planner
     end
@@ -178,16 +298,18 @@ defmodule GtfsPlanner.OrganizationsTest do
       assert %Organization{product: :planner} = Organizations.get_organization!(id)
     end
 
-    test "update_organization/2 stores :pathways and rejects unknown products" do
+    test "update_organization/3 stores :pathways and rejects unknown products" do
       organization = organization_fixture()
 
       assert {:ok, %Organization{} = updated} =
-               Organizations.update_organization(organization, %{product: "pathways"})
+               Organizations.update_organization(system_admin(), organization, %{
+                 product: "pathways"
+               })
 
       assert updated.product == :pathways
 
       assert {:error, changeset} =
-               Organizations.update_organization(updated, %{product: "other"})
+               Organizations.update_organization(system_admin(), updated, %{product: "other"})
 
       assert %{product: [_ | _]} = errors_on(changeset)
     end
@@ -259,7 +381,10 @@ defmodule GtfsPlanner.OrganizationsTest do
 
     test "trims whitespace from name on create" do
       {:ok, organization} =
-        Organizations.create_organization(%{name: "  Acme  ", alias: "acme-trim-create"})
+        Organizations.create_organization(system_admin(), %{
+          name: "  Acme  ",
+          alias: "acme-trim-create"
+        })
 
       assert organization.name == "Acme"
     end
@@ -268,7 +393,9 @@ defmodule GtfsPlanner.OrganizationsTest do
       organization = organization_fixture()
 
       {:ok, updated} =
-        Organizations.update_organization(organization, %{name: "  Trimmed Name  "})
+        Organizations.update_organization(system_admin(), organization, %{
+          name: "  Trimmed Name  "
+        })
 
       assert updated.name == "Trimmed Name"
     end
@@ -285,138 +412,118 @@ defmodule GtfsPlanner.OrganizationsTest do
     end
   end
 
-  describe "add_user_to_organization/3" do
-    test "adds user with roles" do
-      user = user_fixture()
-      organization = organization_fixture()
-
-      assert {:ok, membership} =
-               Organizations.add_user_to_organization(
-                 user.id,
-                 organization.id,
-                 ["administrator"]
-               )
-
-      assert membership.user_id == user.id
-      assert membership.organization_id == organization.id
-      assert membership.roles == ["administrator"]
-    end
-
-    test "adds user without roles" do
-      user = user_fixture()
-      organization = organization_fixture()
-
-      assert {:ok, membership} =
-               Organizations.add_user_to_organization(user.id, organization.id)
-
-      assert membership.user_id == user.id
-      assert membership.organization_id == organization.id
-      assert membership.roles == []
-    end
-
-    test "returns error when user already in organization" do
-      user = user_fixture()
-      organization = organization_fixture()
-
-      {:ok, _membership1} =
-        Organizations.add_user_to_organization(user.id, organization.id)
-
-      assert {:error, changeset} =
-               Organizations.add_user_to_organization(user.id, organization.id)
-
-      assert "has already been taken" in errors_on(changeset).user_id
-    end
-  end
-
-  describe "remove_user_from_organization/2" do
+  describe "remove_user_from_organization/3" do
     setup do
       user = user_fixture()
       organization = organization_fixture()
+      actor = system_admin_fixture(organization_fixture())
 
       {:ok, membership} =
-        Organizations.add_user_to_organization(user.id, organization.id)
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: organization.id,
+          roles: []
+        })
 
-      %{user: user, organization: organization, membership: membership}
+      %{user: user, actor: actor, organization: organization, membership: membership}
     end
 
     test "removes user from organization", %{
       user: user,
+      actor: actor,
       organization: organization,
       membership: membership
     } do
       assert {:ok, _deleted} =
-               Organizations.remove_user_from_organization(user.id, organization.id)
+               Organizations.remove_user_from_organization(actor, user.id, organization.id)
 
       refute Repo.get(GtfsPlanner.Accounts.UserOrgMembership, membership.id)
     end
 
-    test "returns error when membership does not exist" do
+    test "returns error when membership does not exist", %{actor: actor} do
       user = user_fixture()
       organization = organization_fixture()
 
       assert {:error, :not_found} =
-               Organizations.remove_user_from_organization(user.id, organization.id)
+               Organizations.remove_user_from_organization(actor, user.id, organization.id)
     end
   end
 
-  describe "deactivate_user_in_organization/2" do
+  describe "deactivate_user_in_organization/3" do
     setup do
       user = user_fixture()
       organization = organization_fixture()
-      {:ok, _membership} = Organizations.add_user_to_organization(user.id, organization.id)
+      actor = system_admin_fixture(organization_fixture())
 
-      %{user: user, organization: organization}
+      {:ok, _membership} =
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: organization.id,
+          roles: []
+        })
+
+      %{user: user, actor: actor, organization: organization}
     end
 
-    test "disconnects each open web session and deletes the user's session tokens", %{
+    test "publishes revoked session digests and deletes the user's session tokens", %{
+      actor: actor,
       user: user,
       organization: organization
     } do
       web_token_one = Accounts.generate_user_session_token(user)
       web_token_two = Accounts.generate_user_session_token(user)
       api_token = Accounts.generate_api_session_token(user)
-      topic_one = live_socket_topic(web_token_one)
-      topic_two = live_socket_topic(web_token_two)
-      api_topic = live_socket_topic(api_token)
+      {:ok, api_digest} = UserToken.session_token_digest(api_token)
 
-      :ok = GtfsPlannerWeb.Endpoint.subscribe(topic_one)
-      :ok = GtfsPlannerWeb.Endpoint.subscribe(topic_two)
-      :ok = GtfsPlannerWeb.Endpoint.subscribe(api_topic)
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "session_revocations")
 
       assert {:ok, %{deactivated_at: %DateTime{}}} =
-               Organizations.deactivate_user_in_organization(user.id, organization.id)
+               Organizations.deactivate_user_in_organization(actor, user.id, organization.id)
 
-      assert_receive %Phoenix.Socket.Broadcast{event: "disconnect", topic: ^topic_one}
-      assert_receive %Phoenix.Socket.Broadcast{event: "disconnect", topic: ^topic_two}
-      refute_receive %Phoenix.Socket.Broadcast{topic: ^api_topic}
+      assert_receive {:session_tokens_revoked, digests}
+
+      assert Enum.sort(digests) ==
+               Enum.sort(
+                 Enum.map([web_token_one, web_token_two], fn token ->
+                   {:ok, digest} = UserToken.session_token_digest(token)
+                   digest
+                 end)
+               )
+
+      refute api_digest in digests
       refute Accounts.get_user_by_session_token(web_token_one)
       refute Accounts.get_user_by_session_token(web_token_two)
       refute Accounts.get_user_by_api_session_token(api_token)
     end
 
-    test "sends no disconnect when the membership does not exist", %{user: user} do
+    test "sends no revocation when the membership does not exist", %{user: user} do
       other_organization = organization_fixture()
+      actor = system_admin_fixture(other_organization)
       web_token = Accounts.generate_user_session_token(user)
-      topic = live_socket_topic(web_token)
-      :ok = GtfsPlannerWeb.Endpoint.subscribe(topic)
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "session_revocations")
 
       assert {:error, :not_found} =
-               Organizations.deactivate_user_in_organization(user.id, other_organization.id)
+               Organizations.deactivate_user_in_organization(
+                 actor,
+                 user.id,
+                 other_organization.id
+               )
 
-      refute_receive %Phoenix.Socket.Broadcast{topic: ^topic}
+      refute_receive {:session_tokens_revoked, _}
       assert Accounts.get_user_by_session_token(web_token)
     end
 
-    test "still deactivates an editor", %{organization: organization} do
+    test "still deactivates an editor", %{actor: actor, organization: organization} do
       editor = editor_fixture(organization)
 
       assert {:ok, %{deactivated_at: %DateTime{}}} =
-               Organizations.deactivate_user_in_organization(editor.id, organization.id)
+               Organizations.deactivate_user_in_organization(actor, editor.id, organization.id)
 
       assert Organizations.user_deactivated_in_organization?(editor.id, organization.id)
     end
 
     test "refuses a membership holding administrator and changes nothing", %{
+      actor: actor,
       organization: organization
     } do
       system_administrator = user_fixture()
@@ -428,44 +535,45 @@ defmodule GtfsPlanner.OrganizationsTest do
         ])
 
       token = Accounts.generate_user_session_token(system_administrator)
-      topic = live_socket_topic(token)
-      :ok = GtfsPlannerWeb.Endpoint.subscribe(topic)
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "session_revocations")
       :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "organizations")
 
       assert {:error, :system_administrator} =
                Organizations.deactivate_user_in_organization(
+                 actor,
                  system_administrator.id,
                  organization.id
                )
 
       membership_id = membership.id
-      refute_receive %Phoenix.Socket.Broadcast{topic: ^topic}
+      refute_receive {:session_tokens_revoked, _}
       refute_receive {[:memberships, :deactivated], %{id: ^membership_id}}
       assert Accounts.get_user_by_session_token(token)
       assert Repo.reload!(membership).deactivated_at == nil
     end
 
     test "refuses the only active organization admin and changes nothing", %{
+      actor: actor,
       organization: organization
     } do
       admin = user_fixture()
       membership = organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
       token = Accounts.generate_user_session_token(admin)
-      topic = live_socket_topic(token)
-      :ok = GtfsPlannerWeb.Endpoint.subscribe(topic)
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "session_revocations")
       :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "organizations")
 
       assert {:error, :last_organization_admin} =
-               Organizations.deactivate_user_in_organization(admin.id, organization.id)
+               Organizations.deactivate_user_in_organization(actor, admin.id, organization.id)
 
       membership_id = membership.id
-      refute_receive %Phoenix.Socket.Broadcast{topic: ^topic}
+      refute_receive {:session_tokens_revoked, _}
       refute_receive {[:memberships, :deactivated], %{id: ^membership_id}}
       assert Accounts.get_user_by_session_token(token)
       assert Repo.reload!(membership).deactivated_at == nil
     end
 
     test "deactivates an organization admin when another active admin has a password", %{
+      actor: actor,
       organization: organization
     } do
       admin = user_fixture()
@@ -474,12 +582,13 @@ defmodule GtfsPlanner.OrganizationsTest do
       organization_membership_fixture(other_admin, organization, ["pathways_studio_admin"])
 
       assert {:ok, %{deactivated_at: %DateTime{}}} =
-               Organizations.deactivate_user_in_organization(admin.id, organization.id)
+               Organizations.deactivate_user_in_organization(actor, admin.id, organization.id)
 
       refute Organizations.user_deactivated_in_organization?(other_admin.id, organization.id)
     end
 
     test "refuses the last admin when the only other admin is a pending invitee", %{
+      actor: actor,
       organization: organization
     } do
       admin = user_fixture()
@@ -488,12 +597,13 @@ defmodule GtfsPlanner.OrganizationsTest do
       organization_membership_fixture(invitee, organization, ["pathways_studio_admin"])
 
       assert {:error, :last_organization_admin} =
-               Organizations.deactivate_user_in_organization(admin.id, organization.id)
+               Organizations.deactivate_user_in_organization(actor, admin.id, organization.id)
 
       refute Organizations.user_deactivated_in_organization?(admin.id, organization.id)
     end
 
     test "refuses the last admin when the only other admin is deactivated", %{
+      actor: actor,
       organization: organization
     } do
       admin = user_fixture()
@@ -505,12 +615,13 @@ defmodule GtfsPlanner.OrganizationsTest do
       |> deactivate_membership_fixture()
 
       assert {:error, :last_organization_admin} =
-               Organizations.deactivate_user_in_organization(admin.id, organization.id)
+               Organizations.deactivate_user_in_organization(actor, admin.id, organization.id)
 
       refute Organizations.user_deactivated_in_organization?(admin.id, organization.id)
     end
 
     test "does not count an admin of another organization as another admin", %{
+      actor: actor,
       organization: organization
     } do
       admin = user_fixture()
@@ -522,47 +633,48 @@ defmodule GtfsPlanner.OrganizationsTest do
       ])
 
       assert {:error, :last_organization_admin} =
-               Organizations.deactivate_user_in_organization(admin.id, organization.id)
+               Organizations.deactivate_user_in_organization(actor, admin.id, organization.id)
     end
   end
 
-  describe "update_user_roles/3" do
+  describe "update_user_roles/4" do
     setup do
       user = user_fixture()
       organization = organization_fixture()
+      actor = system_admin_fixture(organization_fixture())
 
       {:ok, _membership} =
-        Organizations.add_user_to_organization(
-          user.id,
-          organization.id,
-          ["pathways_studio_editor"]
-        )
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: organization.id,
+          roles: ["pathways_studio_editor"]
+        })
 
-      %{user: user, organization: organization}
+      %{user: user, actor: actor, organization: organization}
     end
 
-    test "updates user roles", %{user: user, organization: organization} do
+    test "updates user roles", %{user: user, actor: actor, organization: organization} do
       new_roles = ["pathways_studio_admin", "pathways_studio_editor"]
 
       assert {:ok, membership} =
-               Organizations.update_user_roles(user.id, organization.id, new_roles)
+               Organizations.update_user_roles(actor, user.id, organization.id, new_roles)
 
       assert membership.roles == new_roles
     end
 
-    test "updates to empty roles", %{user: user, organization: organization} do
+    test "updates to empty roles", %{user: user, actor: actor, organization: organization} do
       assert {:ok, membership} =
-               Organizations.update_user_roles(user.id, organization.id, [])
+               Organizations.update_user_roles(actor, user.id, organization.id, [])
 
       assert membership.roles == []
     end
 
-    test "returns error when membership does not exist" do
+    test "returns error when membership does not exist", %{actor: actor} do
       user = user_fixture()
       organization = organization_fixture()
 
       assert {:error, :not_found} =
-               Organizations.update_user_roles(user.id, organization.id, ["admin"])
+               Organizations.update_user_roles(actor, user.id, organization.id, ["admin"])
     end
   end
 
@@ -573,10 +685,18 @@ defmodule GtfsPlanner.OrganizationsTest do
       org2 = organization_fixture()
 
       {:ok, _} =
-        Organizations.add_user_to_organization(user.id, org1.id, ["pathways_studio_admin"])
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: org1.id,
+          roles: ["pathways_studio_admin"]
+        })
 
       {:ok, _} =
-        Organizations.add_user_to_organization(user.id, org2.id, ["pathways_studio_editor"])
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: org2.id,
+          roles: ["pathways_studio_editor"]
+        })
 
       orgs = Organizations.list_organizations_for_user(user.id)
 
@@ -605,10 +725,18 @@ defmodule GtfsPlanner.OrganizationsTest do
       user2 = user_fixture()
 
       {:ok, _} =
-        Organizations.add_user_to_organization(user1.id, org.id, ["pathways_studio_admin"])
+        Accounts.create_user_org_membership(%{
+          user_id: user1.id,
+          organization_id: org.id,
+          roles: ["pathways_studio_admin"]
+        })
 
       {:ok, _} =
-        Organizations.add_user_to_organization(user2.id, org.id, ["pathways_studio_editor"])
+        Accounts.create_user_org_membership(%{
+          user_id: user2.id,
+          organization_id: org.id,
+          roles: ["pathways_studio_editor"]
+        })
 
       users = Organizations.list_users_in_organization(org.id)
 
@@ -634,7 +762,13 @@ defmodule GtfsPlanner.OrganizationsTest do
       org2 = organization_fixture()
 
       user = user_fixture()
-      {:ok, _} = Organizations.add_user_to_organization(user.id, org1.id)
+
+      {:ok, _} =
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: org1.id,
+          roles: []
+        })
 
       users_in_org2 = Organizations.list_users_in_organization(org2.id)
 
@@ -647,8 +781,19 @@ defmodule GtfsPlanner.OrganizationsTest do
       user1 = user_fixture(%{email: "zulu@example.com"})
       user2 = user_fixture(%{email: "alpha@example.com"})
 
-      {:ok, _} = Organizations.add_user_to_organization(user1.id, org.id)
-      {:ok, _} = Organizations.add_user_to_organization(user2.id, org.id)
+      {:ok, _} =
+        Accounts.create_user_org_membership(%{
+          user_id: user1.id,
+          organization_id: org.id,
+          roles: []
+        })
+
+      {:ok, _} =
+        Accounts.create_user_org_membership(%{
+          user_id: user2.id,
+          organization_id: org.id,
+          roles: []
+        })
 
       users = Organizations.list_users_in_organization(org.id)
 
@@ -700,7 +845,11 @@ defmodule GtfsPlanner.OrganizationsTest do
       user = user_fixture(%{email: "alpha@example.com"})
 
       {:ok, _} =
-        Organizations.add_user_to_organization(user.id, org.id, ["pathways_studio_admin"])
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: org.id,
+          roles: ["pathways_studio_admin"]
+        })
 
       assert {:ok, [member]} = Organizations.list_users_for_admin(org.id)
       assert %{user: %GtfsPlanner.Accounts.User{}, roles: _, deactivated_at: _} = member
@@ -715,9 +864,22 @@ defmodule GtfsPlanner.OrganizationsTest do
       zulu = user_fixture(%{email: "zulu@example.com"})
       alpha = user_fixture(%{email: "alpha@example.com"})
 
-      {:ok, _} = Organizations.add_user_to_organization(zulu.id, org.id)
-      {:ok, _} = Organizations.add_user_to_organization(alpha.id, org.id)
-      {:ok, _} = Organizations.deactivate_user_in_organization(zulu.id, org.id)
+      {:ok, _} =
+        Accounts.create_user_org_membership(%{
+          user_id: zulu.id,
+          organization_id: org.id,
+          roles: []
+        })
+
+      {:ok, _} =
+        Accounts.create_user_org_membership(%{
+          user_id: alpha.id,
+          organization_id: org.id,
+          roles: []
+        })
+
+      actor = system_admin_fixture(organization_fixture())
+      {:ok, _} = Organizations.deactivate_user_in_organization(actor, zulu.id, org.id)
 
       raw = Organizations.list_users_in_organization(org.id)
 
@@ -805,9 +967,13 @@ defmodule GtfsPlanner.OrganizationsTest do
       user = user_fixture()
 
       {:ok, _} =
-        Organizations.add_user_to_organization(user.id, organization.id, [
-          "pathways_studio_admin"
-        ])
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: organization.id,
+          roles: [
+            "pathways_studio_admin"
+          ]
+        })
 
       assert organization in Organizations.list_organizations()
       assert Organizations.get_organization(organization.id) == organization
@@ -862,18 +1028,13 @@ defmodule GtfsPlanner.OrganizationsTest do
     end
   end
 
-  # The PubSub topic a LiveView socket for this session token listens on.
-  defp live_socket_topic(token) do
-    {:ok, digest} = UserToken.session_token_digest(token)
-    "users_sessions:" <> Base.url_encode64(digest, padding: false)
-  end
-
   # Points the calling process at a real but unreachable Postgres pool so that
   # every checkout is dropped from the queue with a DBConnection.ConnectionError.
   defp with_unreachable_repo(fun) do
     {:ok, pid} =
       GtfsPlanner.Repo.start_link(
         name: nil,
+        url: nil,
         hostname: "127.0.0.1",
         port: 1,
         username: "postgres",

@@ -17,6 +17,7 @@ defmodule GtfsPlanner.Gtfs.Pathway do
           id: Ecto.UUID.t(),
           organization_id: Ecto.UUID.t(),
           gtfs_version_id: Ecto.UUID.t(),
+          lock_version: pos_integer(),
           pathway_id: String.t(),
           pathway_mode: integer(),
           is_bidirectional: boolean(),
@@ -39,6 +40,7 @@ defmodule GtfsPlanner.Gtfs.Pathway do
   @foreign_key_type :binary_id
 
   schema "pathways" do
+    field :lock_version, :integer, default: 1, read_after_writes: true
     field :pathway_id, :string
     field :pathway_mode, :integer
     field :is_bidirectional, :boolean, default: true
@@ -81,26 +83,45 @@ defmodule GtfsPlanner.Gtfs.Pathway do
     end
   end
 
+  @editor_fields [
+    :pathway_mode,
+    :is_bidirectional,
+    :traversal_time,
+    :length,
+    :stair_count,
+    :max_slope,
+    :min_width,
+    :signposted_as,
+    :reversed_signposted_as,
+    :field_notes,
+    :field_completed_at,
+    :from_stop_id,
+    :to_stop_id
+  ]
+
+  @doc "Validates fields editable from the station editor without casting ownership or revision."
+  def editor_changeset(pathway, attrs), do: base_changeset(pathway, attrs, @editor_fields)
+
+  @doc "Creates an editor pathway with ownership supplied by the selected scope."
+  def create_changeset(%__MODULE__{} = pathway, attrs, %{
+        organization_id: organization_id,
+        gtfs_version_id: gtfs_version_id
+      }) do
+    %{pathway | organization_id: organization_id, gtfs_version_id: gtfs_version_id}
+    |> base_changeset(attrs, [:pathway_id | @editor_fields])
+  end
+
   def changeset(pathway, attrs) do
+    base_changeset(
+      pathway,
+      attrs,
+      [:pathway_id | @editor_fields] ++ [:organization_id, :gtfs_version_id]
+    )
+  end
+
+  defp base_changeset(pathway, attrs, fields) do
     pathway
-    |> cast(attrs, [
-      :pathway_id,
-      :pathway_mode,
-      :is_bidirectional,
-      :traversal_time,
-      :length,
-      :stair_count,
-      :max_slope,
-      :min_width,
-      :signposted_as,
-      :reversed_signposted_as,
-      :field_notes,
-      :field_completed_at,
-      :organization_id,
-      :gtfs_version_id,
-      :from_stop_id,
-      :to_stop_id
-    ])
+    |> cast(attrs, fields)
     |> trim_string_fields()
     |> validate_required([
       :pathway_id,

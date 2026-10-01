@@ -28,6 +28,7 @@ defmodule GtfsPlanner.Gtfs.StopEditingMoveReviewTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
+  alias GtfsPlanner.Accounts
   alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs.Alignments
@@ -518,9 +519,11 @@ defmodule GtfsPlanner.Gtfs.StopEditingMoveReviewTest do
         elsewhere = organization_fixture(%{alias: "stop-review-elsewhere-#{stamp()}"})
 
         {:ok, _membership} =
-          Organizations.add_user_to_organization(actor.id, elsewhere.id, [
-            "pathways_studio_editor"
-          ])
+          Accounts.create_user_org_membership(%{
+            user_id: actor.id,
+            organization_id: elsewhere.id,
+            roles: ["pathways_studio_editor"]
+          })
 
         %{
           organization: organization,
@@ -542,7 +545,11 @@ defmodule GtfsPlanner.Gtfs.StopEditingMoveReviewTest do
     actor = user_fixture(%{email: "stop-review-#{stamp()}@example.com"})
 
     {:ok, _membership} =
-      Organizations.add_user_to_organization(actor.id, organization_id, [role])
+      Accounts.create_user_org_membership(%{
+        user_id: actor.id,
+        organization_id: organization_id,
+        roles: [role]
+      })
 
     actor
   end

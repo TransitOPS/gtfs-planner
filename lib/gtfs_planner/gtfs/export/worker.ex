@@ -11,7 +11,11 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
   publishes the main zip alone with a `flex_artifact_too_large` warning; a
   main zip that exceeds the budget by itself closes the run before any file is
   written.  A garage/stop ID collision is durable as one warning per
-  conflicting garage and closes the run with its own failure code.
+  conflicting garage and closes the run with its own failure code.  A build
+  that outlives the export snapshot deadline closes the run with
+  `snapshot_timeout`.  The build's files live in the run's private `.build`
+  directory, which `ArtifactStorage.reconcile/2` removes with a run that is not
+  retained.
   """
 
   alias GtfsPlanner.Gtfs.Export
@@ -93,7 +97,9 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
   # zip only when the run recorded the switch; `:pathways` never carries flex
   # and keeps its single-zip path.
   defp build_export(%{export_type: :pathways} = run) do
-    case export_module().build_zip(run.organization_id, run.gtfs_version_id, :pathways) do
+    case export_module().build_zip(run.organization_id, run.gtfs_version_id, :pathways,
+           run_id: run.id
+         ) do
       {:ok, zip_bytes, export_warnings} -> {:ok, %{main: zip_bytes, flex: nil}, export_warnings}
       {:error, reason} -> {:error, reason}
     end
@@ -102,7 +108,8 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
   defp build_export(run) do
     export_module().build_zips(run.organization_id, run.gtfs_version_id, run.export_type,
       include_flex: run.include_flex,
-      estimate: estimate_option(run)
+      estimate: estimate_option(run),
+      run_id: run.id
     )
   end
 
@@ -334,6 +341,7 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
   defp failure_code(:no_data), do: "no_data"
   defp failure_code(:artifact_storage_unavailable), do: "artifact_storage_unavailable"
   defp failure_code(:artifact_capacity_exceeded), do: "artifact_capacity_exceeded"
+  defp failure_code(:snapshot_timeout), do: "snapshot_timeout"
   defp failure_code(_), do: "export_failed"
 
   defp export_module,

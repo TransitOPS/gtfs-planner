@@ -11,7 +11,22 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
-  @actor %{id: Ecto.UUID.generate(), email: "reviewer@example.com"}
+  # Creating a run and requesting apply, cancel, retry or start-over reauthorize the actor, so the
+  # actor is a real active editor. One editor per organization keeps the actor stable in a test.
+  defp actor(organization) do
+    key = {__MODULE__, :actor, organization.id}
+
+    case Process.get(key) do
+      nil ->
+        editor = editor_fixture(organization)
+        actor = %{id: editor.id, email: editor.email}
+        Process.put(key, actor)
+        actor
+
+      actor ->
+        actor
+    end
+  end
 
   defp review_payload do
     %{
@@ -66,9 +81,14 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
       version = gtfs_version_fixture(organization.id)
 
       assert {:ok, run} =
-               ChangeRuns.create_pending_compute(organization.id, version.id, @actor, [
-                 %{name: "stops.txt", size: 10, sha256: String.duplicate("a", 64)}
-               ])
+               ChangeRuns.create_pending_compute(
+                 organization.id,
+                 version.id,
+                 actor(organization),
+                 [
+                   %{name: "stops.txt", size: 10, sha256: String.duplicate("a", 64)}
+                 ]
+               )
 
       run_id = run.id
       assert run.state == :pending_compute
@@ -76,7 +96,12 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
       assert run.gtfs_version_id == version.id
 
       assert {:ok, same_run} =
-               ChangeRuns.create_pending_compute(organization.id, version.id, @actor, [])
+               ChangeRuns.create_pending_compute(
+                 organization.id,
+                 version.id,
+                 actor(organization),
+                 []
+               )
 
       assert same_run.id == run.id
 
@@ -110,13 +135,15 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
                ChangeRuns.set_decision_status(organization.id, run.id, "stop:central", :approved)
 
       assert {:ok, %ChangeRun{state: :pending_apply}} =
-               ChangeRuns.request_apply(organization.id, run.id)
+               ChangeRuns.request_apply(organization.id, run.id, actor(organization))
     end
 
     test "fences stale generation and token after a database-time reclaim" do
       organization = organization_fixture()
       version = gtfs_version_fixture(organization.id)
-      {:ok, run} = ChangeRuns.create_pending_compute(organization.id, version.id, @actor, [])
+
+      {:ok, run} =
+        ChangeRuns.create_pending_compute(organization.id, version.id, actor(organization), [])
 
       {:ok, claimed, first_generation, first_token} =
         ChangeRuns.claim(organization.id, run.id, :compute)
@@ -152,10 +179,11 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
       organization = organization_fixture()
       version = gtfs_version_fixture(organization.id)
       parent = self()
+      actor = actor(organization)
 
       start_run = fn ->
         Sandbox.allow(Repo, parent, self())
-        ChangeRuns.create_pending_compute(organization.id, version.id, @actor, [])
+        ChangeRuns.create_pending_compute(organization.id, version.id, actor, [])
       end
 
       first = Task.async(start_run)
@@ -176,20 +204,33 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
       other_organization = organization_fixture()
       version = gtfs_version_fixture(organization.id)
       foreign_version = gtfs_version_fixture(other_organization.id)
-      {:ok, run} = ChangeRuns.create_pending_compute(organization.id, version.id, @actor, [])
+
+      {:ok, run} =
+        ChangeRuns.create_pending_compute(organization.id, version.id, actor(organization), [])
 
       assert {:error, :not_found} =
-               ChangeRuns.create_pending_compute(organization.id, foreign_version.id, @actor, [])
+               ChangeRuns.create_pending_compute(
+                 organization.id,
+                 foreign_version.id,
+                 actor(organization),
+                 []
+               )
 
       assert {:error, :not_found} = ChangeRuns.claim(other_organization.id, run.id, :compute)
-      assert {:error, :invalid_transition} = ChangeRuns.retry(organization.id, run.id)
+
+      assert {:error, :invalid_transition} =
+               ChangeRuns.retry(organization.id, run.id, actor(organization))
 
       assert {:ok, computing, generation, token} =
                ChangeRuns.claim(organization.id, run.id, :compute)
 
-      assert {:ok, cancelling} = ChangeRuns.request_cancel(organization.id, run.id)
+      assert {:ok, cancelling} =
+               ChangeRuns.request_cancel(organization.id, run.id, actor(organization))
+
       assert cancelling.cancel_requested_at
-      assert {:error, :invalid_transition} = ChangeRuns.request_cancel(organization.id, run.id)
+
+      assert {:error, :invalid_transition} =
+               ChangeRuns.request_cancel(organization.id, run.id, actor(organization))
 
       assert {:error, :lease_lost} =
                ChangeRuns.renew_lease(organization.id, run.id, generation, token)
@@ -197,9 +238,14 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
       expired = expire!(computing)
       assert ChangeRuns.reconcile_expired(organization.id) == 1
       assert Repo.get!(ChangeRun, expired.id).state == :cancelled
-      assert {:error, :missing_or_corrupt_artifact} = ChangeRuns.retry(organization.id, run.id)
+
+      assert {:error, :missing_or_corrupt_artifact} =
+               ChangeRuns.retry(organization.id, run.id, actor(organization))
+
       assert Repo.get!(ChangeRun, run.id).state == :cancelled
-      assert {:error, :not_found} = ChangeRuns.request_cancel(other_organization.id, run.id)
+
+      assert {:error, :not_found} =
+               ChangeRuns.request_cancel(other_organization.id, run.id, actor(organization))
     end
   end
 
@@ -211,7 +257,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
         run = insert_terminal_run!(organization, version, unquote(state))
 
         assert {:ok, %ChangeRun{state: :cancelled, failure_code: "started_over"}} =
-                 ChangeRuns.start_over(organization.id, run.id)
+                 ChangeRuns.start_over(organization.id, run.id, actor(organization))
 
         assert ChangeRuns.latest_for_version(organization.id, version.id) == nil
       end
@@ -233,7 +279,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
         })
       )
 
-      assert {:ok, _run} = ChangeRuns.start_over(organization.id, run.id)
+      assert {:ok, _run} = ChangeRuns.start_over(organization.id, run.id, actor(organization))
 
       assert [%{decision_id: "level:L1", status: :applied}] =
                ChangeRuns.list_decisions(organization.id, run.id)
@@ -243,10 +289,15 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
       organization = organization_fixture()
       version = gtfs_version_fixture(organization.id)
       run = insert_terminal_run!(organization, version, :partial)
-      {:ok, _run} = ChangeRuns.start_over(organization.id, run.id)
+      {:ok, _run} = ChangeRuns.start_over(organization.id, run.id, actor(organization))
 
       assert {:ok, new_run} =
-               ChangeRuns.create_pending_compute(organization.id, version.id, @actor, [])
+               ChangeRuns.create_pending_compute(
+                 organization.id,
+                 version.id,
+                 actor(organization),
+                 []
+               )
 
       assert new_run.id != run.id
       assert ChangeRuns.latest_for_version(organization.id, version.id).id == new_run.id
@@ -258,7 +309,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
       insert_terminal_run!(organization, version, :completed)
       partial = insert_terminal_run!(organization, version, :partial)
 
-      {:ok, _run} = ChangeRuns.start_over(organization.id, partial.id)
+      {:ok, _run} = ChangeRuns.start_over(organization.id, partial.id, actor(organization))
 
       assert ChangeRuns.latest_for_version(organization.id, version.id) == nil
     end
@@ -267,10 +318,10 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
       organization = organization_fixture()
       version = gtfs_version_fixture(organization.id)
       run = insert_terminal_run!(organization, version, :failed)
-      {:ok, _run} = ChangeRuns.start_over(organization.id, run.id)
+      {:ok, _run} = ChangeRuns.start_over(organization.id, run.id, actor(organization))
 
       assert {:ok, %ChangeRun{state: :cancelled, failure_code: "started_over"}} =
-               ChangeRuns.start_over(organization.id, run.id)
+               ChangeRuns.start_over(organization.id, run.id, actor(organization))
     end
 
     test "refuses a completed run" do
@@ -278,16 +329,22 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
       version = gtfs_version_fixture(organization.id)
       run = insert_terminal_run!(organization, version, :completed)
 
-      assert {:error, :invalid_transition} = ChangeRuns.start_over(organization.id, run.id)
+      assert {:error, :invalid_transition} =
+               ChangeRuns.start_over(organization.id, run.id, actor(organization))
+
       assert %{state: :completed} = ChangeRuns.latest_for_version(organization.id, version.id)
     end
 
     test "refuses a run that is still active" do
       organization = organization_fixture()
       version = gtfs_version_fixture(organization.id)
-      {:ok, run} = ChangeRuns.create_pending_compute(organization.id, version.id, @actor, [])
 
-      assert {:error, :invalid_transition} = ChangeRuns.start_over(organization.id, run.id)
+      {:ok, run} =
+        ChangeRuns.create_pending_compute(organization.id, version.id, actor(organization), [])
+
+      assert {:error, :invalid_transition} =
+               ChangeRuns.start_over(organization.id, run.id, actor(organization))
+
       assert %{state: :pending_compute} = Repo.get!(ChangeRun, run.id)
     end
 
@@ -297,7 +354,9 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
       version = gtfs_version_fixture(organization.id)
       run = insert_terminal_run!(organization, version, :failed)
 
-      assert {:error, :not_found} = ChangeRuns.start_over(other_organization.id, run.id)
+      assert {:error, :not_found} =
+               ChangeRuns.start_over(other_organization.id, run.id, actor(organization))
+
       assert %{state: :failed} = Repo.get!(ChangeRun, run.id)
     end
 
@@ -308,7 +367,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
       run_id = run.id
       Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ChangeRuns.topic(run_id))
 
-      assert {:ok, _run} = ChangeRuns.start_over(organization.id, run_id)
+      assert {:ok, _run} = ChangeRuns.start_over(organization.id, run_id, actor(organization))
       assert_receive {:change_run_changed, ^run_id}
     end
 
@@ -323,7 +382,13 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
         ])
 
       {:ok, run} =
-        ChangeRuns.create_pending_compute(organization.id, version.id, @actor, [file], run_id)
+        ChangeRuns.create_pending_compute(
+          organization.id,
+          version.id,
+          actor(organization),
+          [file],
+          run_id
+        )
 
       {:ok, _run, generation, token} = ChangeRuns.claim(organization.id, run.id, :compute)
 
@@ -332,7 +397,8 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
 
       assert {:ok, [_file]} = ChangeArtifactStorage.read(Repo.get!(ChangeRun, run.id))
 
-      assert {:ok, started_over} = ChangeRuns.start_over(organization.id, run.id)
+      assert {:ok, started_over} =
+               ChangeRuns.start_over(organization.id, run.id, actor(organization))
 
       assert {:error, :missing_or_corrupt_artifact} = ChangeArtifactStorage.read(started_over)
     end

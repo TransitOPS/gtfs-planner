@@ -3,8 +3,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   import Ecto.Query
 
-  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.Alignments
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Headsigns
@@ -12,6 +13,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns.Materializer
+  alias GtfsPlanner.Gtfs.RoutePatterns.TimingRules
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Schedules
   alias GtfsPlanner.Gtfs.Stop
@@ -46,6 +48,37 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       {:ok, %{patterns: patterns}}
     end
   end
+
+  @doc """
+  Counts the trips left outside patterns in one organization and version, grouped
+  by route and reason.
+
+  `route_id` narrows the read to a single published route; `nil` covers the whole
+  version. Rows are ordered by `route_id` and then by descending count, with the
+  reason breaking ties so the order is stable for equal counts.
+  """
+  def left_out(organization_id, version_id, route_id \\ nil) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^organization_id and
+          t.gtfs_version_id == ^version_id and t.pattern_derivation_state == "custom",
+      group_by: [t.route_id, t.pattern_derivation_reason],
+      order_by: [asc: t.route_id],
+      select: %{
+        route_id: t.route_id,
+        reason: t.pattern_derivation_reason,
+        trip_count: count(t.id)
+      }
+    )
+    |> maybe_left_out_route(route_id)
+    |> order_by([t], desc: count(t.id), asc: t.pattern_derivation_reason)
+    |> Repo.all()
+  end
+
+  defp maybe_left_out_route(query, nil), do: query
+
+  defp maybe_left_out_route(query, route_id),
+    do: where(query, [t], t.route_id == ^route_id)
 
   def get_pattern(organization_id, version_id, route_id, pattern_id, timing_id \\ nil) do
     with {:ok, _route} <- published_route(organization_id, version_id, route_id),
@@ -1096,6 +1129,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
          {:ok, stops} <- normalize_stop_ids(attrs),
          :ok <- validate_occurrence_list(stops) do
       run_serializable_write(fn ->
+        Authorization.lock_editor!(audit_context)
         route = lock_published_route!(audit_context, route_id)
         eligible_stops = load_eligible_stops!(route, stops)
 
@@ -1174,6 +1208,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       when is_binary(pattern_id) and is_binary(review_fingerprint) do
     with {:ok, route_id} <- route_id_for_pattern(pattern_id, audit_context) do
       run_serializable_write(fn ->
+        Authorization.lock_editor!(audit_context)
+
         apply_review_transaction(
           pattern_id,
           operation,
@@ -1228,6 +1264,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       when is_binary(pattern_id) and is_list(selections) do
     with {:ok, route_id} <- route_id_for_pattern(pattern_id, audit_context) do
       run_serializable_write(fn ->
+        Authorization.lock_editor!(audit_context)
         route = lock_published_route!(audit_context, route_id)
         pattern = lock_pattern!(route, pattern_id)
         reset_scope_trips!(pattern, scope, selections, audit_context)
@@ -1259,6 +1296,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       when is_binary(pattern_id) and is_map(undo) do
     with {:ok, route_id} <- route_id_for_pattern(pattern_id, audit_context) do
       run_serializable_write(fn ->
+        Authorization.lock_editor!(audit_context)
         route = lock_published_route!(audit_context, route_id)
         pattern = lock_pattern!(route, pattern_id)
         undo_headsign_write!(pattern, undo, audit_context)
@@ -1267,6 +1305,91 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   end
 
   def undo_headsign_update(_, _, _), do: {:error, :invalid_input}
+
+  @doc """
+  Removes one pattern's label owner, leaving the pattern itself in place.
+
+  A label ID is never edited: the only transition a labelled pattern has is
+  losing its owner, so this clears `label_pattern_id` and nothing else. The
+  pattern and its route are locked the same way a reviewed apply locks them, and
+  the write is serializable, so two concurrent removals cannot both observe the
+  same owner. A pattern with no label is refused with `:not_labelled` rather
+  than audited as a no-op, and a pattern outside the audit context's published
+  route rolls back with `:not_found`.
+
+  The owner itself is never touched: it stays a first-class pattern, and it may
+  still be referenced by other children.
+
+  Each attempt locks the actor's current editor membership first; a missing or
+  revoked editor is `{:error, :forbidden}` and nothing is written.
+  """
+  @spec remove_label(String.t(), Ecto.UUID.t(), AuditContext.t()) ::
+          {:ok, RoutePattern.t()} | {:error, :forbidden | :not_found | :not_labelled}
+  def remove_label(route_id, pattern_id, %AuditContext{} = audit_context)
+      when is_binary(route_id) do
+    run_serializable_write(fn ->
+      Authorization.lock_editor!(audit_context)
+      route = lock_published_route!(audit_context, route_id)
+      pattern = lock_pattern!(route, pattern_id)
+
+      if is_nil(pattern.label_pattern_id) do
+        Repo.rollback(:not_labelled)
+      else
+        # The column is not cast, so the clear is written directly. The
+        # constraint still holds the pair: the pattern keeps its own row and
+        # loses only the pointer.
+        {1, nil} =
+          Repo.update_all(
+            from(existing in RoutePattern, where: existing.id == ^pattern.id),
+            set: [label_pattern_id: nil, updated_at: DateTime.utc_now()]
+          )
+
+        updated = load_pattern_for_audit!(pattern.id)
+
+        audit!(audit_context, :route_pattern, updated, "updated", %{
+          before: %{label_pattern_id: pattern.label_pattern_id},
+          after: %{label_pattern_id: nil}
+        })
+
+        updated
+      end
+    end)
+  end
+
+  @doc """
+  Selects every route pattern of one organization and version with the natural
+  ID it is exported under.
+
+  This is the single source of the exported `trips.route_pattern_id` (rule 9):
+  a pattern labelled by an owner exports the owner's `route_pattern_id`, and any
+  other pattern exports its own. The join is scoped to the pattern's own
+  organization and version, so a label can never resolve across a tenant, and a
+  pattern with no owner keeps its stored value through `coalesce/2`.
+
+  Each row is `%{id: uuid, route_id: String.t(), route_pattern_id: String.t(),
+  exported_id: String.t()}`. The trip export joins this on
+  `(route_id, route_pattern_id)`, which is unique per version, so no trip is
+  ever duplicated by the join.
+  """
+  @spec exported_pattern_ids(Ecto.UUID.t(), Ecto.UUID.t()) :: Ecto.Query.t()
+  def exported_pattern_ids(organization_id, gtfs_version_id) do
+    from(pattern in RoutePattern,
+      left_join: owner in RoutePattern,
+      on:
+        owner.id == pattern.label_pattern_id and
+          owner.organization_id == pattern.organization_id and
+          owner.gtfs_version_id == pattern.gtfs_version_id,
+      where:
+        pattern.organization_id == ^organization_id and
+          pattern.gtfs_version_id == ^gtfs_version_id,
+      select_merge: %{
+        id: pattern.id,
+        route_id: pattern.route_id,
+        route_pattern_id: pattern.route_pattern_id,
+        exported_id: coalesce(owner.route_pattern_id, pattern.route_pattern_id)
+      }
+    )
+  end
 
   @doc false
   def audit_snapshot(%RoutePattern{} = pattern), do: pattern_snapshot(pattern)
@@ -1430,15 +1553,23 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   end
 
   defp apply_lifecycle_operation!(route, pattern, :delete, audit_context) do
-    if pattern_used?(route, pattern) do
-      Repo.rollback(:pattern_in_use)
-    else
-      snapshot = pattern_snapshot(load_pattern_for_audit!(pattern.id))
-      audit!(audit_context, :route_pattern, pattern, "deleted", %{before: snapshot})
-      _children = delete_pattern_children!([pattern.id])
-      Alignments.delete_owned_shape!(pattern)
-      Repo.delete!(pattern)
-      %{pattern: nil, trips_updated: 0}
+    cond do
+      # A label owner is still a live label: deleting it would leave its children
+      # pointing at a row that no longer exists, so the children are unlabelled
+      # before it can go.
+      pattern_labelled?(pattern) ->
+        Repo.rollback(:label_in_use)
+
+      pattern_used?(route, pattern) ->
+        Repo.rollback(:pattern_in_use)
+
+      true ->
+        snapshot = pattern_snapshot(load_pattern_for_audit!(pattern.id))
+        audit!(audit_context, :route_pattern, pattern, "deleted", %{before: snapshot})
+        _children = delete_pattern_children!([pattern.id])
+        Alignments.delete_owned_shape!(pattern)
+        Repo.delete!(pattern)
+        %{pattern: nil, trips_updated: 0}
     end
   end
 
@@ -1451,6 +1582,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp apply_details_operation!(pattern, attrs, selection, audit_context) do
     with :ok <- reject_forged_linkage(attrs),
          {:ok, attrs} <- normalize_allowed_attrs(attrs, @pattern_fields),
+         :ok <- reject_labelled_direction_change(pattern, attrs),
          :ok <- validate_noop_or_pattern(pattern, attrs) do
       attrs = RoutePattern.changeset(pattern, attrs).changes
       old_default = Headsigns.normalize(pattern.headsign)
@@ -1691,8 +1823,21 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   end
 
   defp lock_trips_for_operation!(route, pattern, operation) do
-    if trips_lock_required?(operation), do: lock_pattern_trips!(route, pattern)
+    if trips_lock_required?(operation) do
+      lock_pattern_trips!(route, pattern)
+
+      # A details direction change on an owner also writes the children's
+      # trips, so they are locked with the owner's.
+      if direction_change?(operation) do
+        Enum.each(label_children(pattern), &lock_pattern_trips!(route, &1))
+      end
+    end
   end
+
+  defp direction_change?({:details, attrs}) when is_map(attrs),
+    do: Map.has_key?(attrs, :direction_id) or Map.has_key?(attrs, "direction_id")
+
+  defp direction_change?(_operation), do: false
 
   defp load_locked_pattern!(route, pattern, audit_context) do
     case get_pattern(
@@ -1749,7 +1894,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   defp validate_lifecycle_base_operation(pattern, {:details, attrs}, _loaded, _opts) do
     with :ok <- reject_forged_linkage(attrs),
-         {:ok, values} <- normalize_allowed_attrs(attrs, @pattern_fields) do
+         {:ok, values} <- normalize_allowed_attrs(attrs, @pattern_fields),
+         :ok <- reject_labelled_direction_change(pattern, values) do
       validate_noop_or_pattern(pattern, values)
     end
   end
@@ -1799,6 +1945,21 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   defp validate_lifecycle_base_operation(_pattern, _, _, _), do: {:error, :invalid_operation}
 
+  # A labelled child always shares its owner's direction (rule 8), so the
+  # direction is the owner's to move: the owner cascades the change to its
+  # children and their trips, and a child refuses it outright. Only a real
+  # change is refused, so saving a child without touching its direction still
+  # behaves as before.
+  defp reject_labelled_direction_change(pattern, attrs) do
+    changes = RoutePattern.changeset(pattern, attrs).changes
+
+    if is_nil(pattern.label_pattern_id) or not Map.has_key?(changes, :direction_id) do
+      :ok
+    else
+      {:error, :labelled_direction}
+    end
+  end
+
   defp operation_impact({:delete_timing, timing_id}, %{pattern: pattern}) do
     %{trips_affected: count_timing_trips(pattern, timing_id)}
   end
@@ -1838,11 +1999,29 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp details_impact(pattern, attrs, selection) do
     changes = RoutePattern.changeset(pattern, attrs).changes
 
+    direction_change? = Map.has_key?(changes, :direction_id)
+
+    # A direction change on a label owner moves the children with it, so the
+    # review names them and counts the trips that follow them.
+    children = if direction_change?, do: label_children(pattern), else: []
+
     trips_affected =
-      if Map.has_key?(changes, :direction_id), do: count_pattern_trips(pattern), else: 0
+      if direction_change? do
+        count_pattern_trips(pattern) + Enum.sum(Enum.map(children, &count_pattern_trips/1))
+      else
+        0
+      end
 
     %{
       trips_affected: trips_affected,
+      children:
+        Enum.map(children, fn child ->
+          %{
+            route_pattern_id: child.route_pattern_id,
+            route_pattern_name: child.route_pattern_name,
+            trips_affected: count_pattern_trips(child)
+          }
+        end),
       headsign_trips: length(selected_scope_trips(pattern, :pattern, selection))
     }
   end
@@ -2487,8 +2666,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       Enum.map(rows, fn row ->
         %{
           route_pattern_stop_id: map_value(row, :route_pattern_stop_id),
-          arrival_offset: map_value(row, :arrival_offset),
-          departure_offset: map_value(row, :departure_offset),
+          arrival_offset: blank_to_nil(map_value(row, :arrival_offset)),
+          departure_offset: blank_to_nil(map_value(row, :departure_offset)),
           timepoint: map_value(row, :timepoint),
           pickup_type: map_value(row, :pickup_type),
           drop_off_type: map_value(row, :drop_off_type),
@@ -2500,7 +2679,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
          true <-
            Enum.map(normalized, & &1.route_pattern_stop_id) == Enum.map(occurrences, & &1.id),
          true <- Enum.all?(normalized, &valid_service_row?/1),
-         :ok <- validate_relative_rows(normalized) do
+         :ok <- validate_rows(normalized) do
       {:ok, normalized}
     else
       false -> {:error, :invalid_input}
@@ -2510,46 +2689,66 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   defp validate_timing_rows(_pattern, _timing, _rows), do: {:error, :invalid_input}
 
-  defp valid_service_row?(row) do
-    row.timepoint in [nil, 0, 1] and row.pickup_type in [nil, 0, 1, 2, 3] and
-      row.drop_off_type in [nil, 0, 1, 2, 3] and
-      is_integer(row.arrival_offset) and row.arrival_offset in -2_147_483_647..2_147_483_647 and
-      is_integer(row.departure_offset) and row.departure_offset in 0..2_147_483_647
-  end
-
-  defp validate_relative_rows(rows) do
-    rows
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, nil}, fn {row, index}, {:ok, preceding_departure} ->
-      arrival = row.arrival_offset
-      departure = row.departure_offset
-
-      case relative_row_error(arrival, departure, index, preceding_departure) do
-        nil -> {:cont, {:ok, departure}}
-        reason -> {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, _} -> :ok
-      error -> error
+  # A blank cell is the absence of a time, not a parse failure, so the editor's
+  # empty inputs reach the rows as nil and `TimingRules` decides where a nil pair
+  # is allowed: between the ends, at a stop that is not a timepoint, and only as
+  # a pair. A half pair or an out-of-order row is still refused.
+  defp validate_rows(rows) do
+    case TimingRules.validate(rows) do
+      :ok -> first_departure_is_base(rows)
+      {:error, violations} -> {:error, timing_violation(violations)}
     end
   end
 
-  defp relative_row_error(arrival, departure, index, preceding_departure) do
+  # The offsets are measured from the first departure, so that row is the base
+  # every other row is read against. The rule above does not state it, so it is
+  # checked here rather than dropped.
+  defp first_departure_is_base([first | _]) do
+    if is_integer(first.departure_offset) and first.departure_offset != 0,
+      do: {:error, :first_departure_must_be_zero},
+      else: :ok
+  end
+
+  defp first_departure_is_base([]), do: :ok
+
+  defp timing_violation(violations) do
     cond do
-      not is_integer(arrival) or not is_integer(departure) or departure < arrival ->
-        :invalid_chronology
+      Enum.any?(violations, &match?({_index, :terminal_blank}, &1)) ->
+        :explicit_terminal_values_required
 
-      index > 0 and arrival < preceding_departure ->
-        :invalid_chronology
-
-      index == 0 and departure != 0 ->
-        :first_departure_must_be_zero
+      Enum.any?(violations, &match?({_index, :half_timed}, &1)) ->
+        :invalid_time
 
       true ->
-        nil
+        :invalid_chronology
     end
   end
+
+  # A blank input is the absence of a time. Anything else is left alone so the
+  # shape check below still refuses a string, a float or an out-of-range value.
+  defp blank_to_nil(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      _ -> value
+    end
+  end
+
+  defp blank_to_nil(value), do: value
+
+  defp valid_service_row?(row) do
+    row.timepoint in [nil, 0, 1] and row.pickup_type in [nil, 0, 1, 2, 3] and
+      row.drop_off_type in [nil, 0, 1, 2, 3] and offset_in_range?(row.arrival_offset) and
+      departure_in_range?(row.departure_offset)
+  end
+
+  defp offset_in_range?(nil), do: true
+
+  defp offset_in_range?(offset),
+    do: is_integer(offset) and offset in -2_147_483_647..2_147_483_647
+
+  defp departure_in_range?(nil), do: true
+
+  defp departure_in_range?(offset), do: is_integer(offset) and offset in 0..2_147_483_647
 
   # A submitted vector that matches the stored timing row-for-row is a no-op: it
   # must not write rows, clear a derivation signature or record an audit entry.
@@ -2999,14 +3198,35 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     |> Repo.all()
   end
 
+  # The owner and its labelled children always carry the same direction, so
+  # moving the owner moves the children's patterns and the trips linked to
+  # either. The whole family is written in the caller's transaction.
   defp update_trip_direction!(pattern, direction_id) do
-    trips = pattern_trips(pattern)
+    children = label_children(pattern)
+    trips = Enum.flat_map([pattern | children], &pattern_trips/1)
 
     Repo.update_all(from(t in Trip, where: t.id in ^Enum.map(trips, & &1.id)),
       set: [direction_id: direction_id, updated_at: DateTime.utc_now()]
     )
 
+    update_label_children_direction!(children, direction_id)
+
     length(trips)
+  end
+
+  defp update_label_children_direction!([], _direction_id), do: :ok
+
+  defp update_label_children_direction!(children, direction_id) do
+    # A child's `derivation_key` embeds the direction it was derived for, so it
+    # goes the same way the owner's signature does on a direction change.
+    Repo.update_all(
+      from(child in RoutePattern, where: child.id in ^Enum.map(children, & &1.id)),
+      set: [
+        direction_id: direction_id,
+        derivation_key: nil,
+        updated_at: DateTime.utc_now()
+      ]
+    )
   end
 
   defp update_trip_timestamps!([]), do: :ok
@@ -3197,7 +3417,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   end
 
   defp trips_lock_required?({:details, attrs}) when is_map(attrs),
-    do: Map.has_key?(attrs, :direction_id) or Map.has_key?(attrs, "direction_id")
+    do: direction_change?({:details, attrs})
 
   defp trips_lock_required?(_operation), do: false
 
@@ -3400,6 +3620,23 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     Repo.exists?(query)
   end
 
+  # A pattern that still names a label owner cannot be deleted: the reference
+  # restricts the deletion and the child would be left without a label at all.
+  defp pattern_labelled?(pattern), do: Repo.exists?(label_children_query(pattern))
+
+  defp label_children(pattern) do
+    label_children_query(pattern) |> order_by(asc: :id) |> Repo.all()
+  end
+
+  defp label_children_query(pattern) do
+    from(child in RoutePattern,
+      where:
+        child.organization_id == ^pattern.organization_id and
+          child.gtfs_version_id == ^pattern.gtfs_version_id and
+          child.label_pattern_id == ^pattern.id
+    )
+  end
+
   defp count_timing_trips(pattern, timing_id) do
     Repo.aggregate(
       from(trip in Trip,
@@ -3482,7 +3719,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp audit!(audit_context, type, entity, action, attrs) do
     context = %{audit_context | station_stop_id: nil}
 
-    case Gtfs.record_change_in_transaction(context, type, entity, action, attrs) do
+    case Audit.record_change_in_transaction(context, type, entity, action, attrs) do
       {:ok, log} -> log
       {:error, changeset} -> Repo.rollback(changeset)
     end
@@ -3696,8 +3933,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   `:timed_pattern` `"created"` entry with the timing `after` snapshot, sharing
   the caller's `operation_id` when one is set on the audit context (AC-22).
 
-  Call only inside `Repo.transaction/1`, after `lock_published_route!/2` and
-  `lock_pattern!/2`. A rows/occurrences count mismatch rolls the transaction
+  Call only inside an early-authorized editor transaction, after
+  `lock_published_route!/2` and `lock_pattern!/2`. The production caller is
+  `Schedules.create_paste_timings!/4`, reached from `Schedules.apply_paste/5`.
+  The transaction guard and audit scope check do not grant permission. A
+  rows/occurrences count mismatch rolls the transaction
   back, as does any changeset failure, which is why this is a bang function:
   errors abort the enclosing transaction instead of returning tuples.
   """
@@ -3717,6 +3957,13 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
         %AuditContext{} = audit_context,
         operation_id \\ nil
       ) do
+    unless Repo.in_transaction?(),
+      do: raise(ArgumentError, "create_pasted_timing! requires an authorized transaction")
+
+    unless pattern.organization_id == audit_context.organization_id and
+             pattern.gtfs_version_id == audit_context.gtfs_version_id,
+           do: Repo.rollback(:not_found)
+
     occurrences = pattern_occurrences(pattern)
 
     if length(rows) != length(occurrences), do: Repo.rollback(:timing_rows_mismatch)

@@ -1,6 +1,9 @@
 defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
   @timepoint_fallback_columns 12
 
+  # The muted label a cell shows when the stored time is absent, never "0:00".
+  @blank_time_text "No scheduled time"
+
   @moduledoc """
   Pure view model for one pattern's timetable on one calendar and direction.
 
@@ -8,7 +11,9 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
   cells, headway bands and timing lines the Schedules page renders. It reads the
   stored stop times exactly as they are: a cell shows the stored departure (or the
   stored arrival at the last column), never a value recomputed from a timing, so
-  the screen and the exported feed stay equal even if an invariant were broken.
+  the screen and the exported feed stay equal even if an invariant were broken. A
+  cell whose stored time is absent carries `missing?: true` and reads "No
+  scheduled time", which is absence rather than a time of day.
   This module reads no database and takes no lock.
 
   All times are integer seconds parsed by `GtfsPlanner.Gtfs.GtfsTime`; stored clock
@@ -452,9 +457,9 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
     value =
       if last?, do: Map.get(stop_time, :arrival_time), else: Map.get(stop_time, :departure_time)
 
-    case GtfsTime.parse(value) do
-      {:ok, secs} -> time_cell(secs, estimated?)
-      {:error, :invalid_time} -> missing_cell()
+    case value do
+      nil -> blank_cell()
+      value -> parse_cell(value, estimated?)
     end
   end
 
@@ -465,6 +470,19 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
   defp start_cell(start_secs), do: time_cell(start_secs)
 
   defp missing_cell, do: %{text: "—", marker: nil, title: nil, missing?: true, estimated?: false}
+
+  # A stop with no scheduled time is absence, not midnight: the label says so
+  # instead of reading as a time of day. A blank stop is never an estimated one,
+  # because an estimate is a time of day that the export filled in.
+  defp blank_cell,
+    do: %{text: @blank_time_text, marker: nil, title: nil, missing?: true, estimated?: false}
+
+  defp parse_cell(value, estimated?) do
+    case GtfsTime.parse(value) do
+      {:ok, secs} -> time_cell(secs, estimated?)
+      {:error, :invalid_time} -> missing_cell()
+    end
+  end
 
   defp time_cell(secs, estimated? \\ false) do
     days = div(secs, @seconds_per_day)

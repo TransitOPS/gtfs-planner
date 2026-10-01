@@ -3,12 +3,12 @@ defmodule GtfsPlanner.Gtfs.Flex do
   Authored flex services and their areas, scoped to one organization and one
   published version (R10, CR-6).
 
-  `copy_from_version/4` carries every service of another published version of
+  `copy_from_version/2` carries every service of another published version of
   the same organization, with its areas and their geometry, into a version that
   has none (R14).
 
   A service is created with a stable R11 key derived from its name and is
-  renamed without changing that key. `save_service/5` is the service page's one
+  renamed without changing that key. `save_service/4` is the service page's one
   Save: it applies the service changeset with its `lock_version` and replaces
   the service's areas by key in the same transaction, so a page save is one
   all-or-nothing write and a save built from a struct another editor already
@@ -21,10 +21,10 @@ defmodule GtfsPlanner.Gtfs.Flex do
   version of it. A service of another organization or version never resolves, a
   staging version lists nothing and answers `{:error, :not_found}` to a read,
   and a write against one answers `{:error, :version_unavailable}`. Each write
-  takes the version's input-write lock (`Versions.lock_for_input_write!/2`)
-  before touching any row, so it serializes with the version's other input
-  writers; the caller's struct still carries the `lock_version` that decides
-  the `:stale` outcome.
+  checks the actor's current editor membership inside its transaction before
+  taking the version's input-write lock (`Versions.lock_for_input_write!/2`).
+  This serializes with the version's other input writers; the caller's struct
+  still carries the `lock_version` that decides the `:stale` outcome.
 
   `map_payload/2` is the read the browser's flex maps draw from: the active
   services' stored geometry, the version's fixed route lines and its connecting
@@ -39,6 +39,8 @@ defmodule GtfsPlanner.Gtfs.Flex do
 
   import Ecto.Query, warn: false
 
+  alias GtfsPlanner.Authorization
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.Flex.Geometry
   alias GtfsPlanner.Gtfs.FlexArea
@@ -58,7 +60,7 @@ defmodule GtfsPlanner.Gtfs.Flex do
   @slug_separator ~r/[^a-z0-9]+/
 
   # Internal rollback reason for a service that is not in the scoped version;
-  # `transact/3` turns it into `:not_found` (see there).
+  # `transact/2` turns it into `:not_found` (see there).
   @service_missing :service_missing
 
   # The area fields a save may write besides its position; scope fields are set
@@ -487,16 +489,20 @@ defmodule GtfsPlanner.Gtfs.Flex do
   unsuffixed key, because keys are per version. The request's own `key`
   parameter, if any, is ignored: R11 derives the key here.
 
-  Returns `{:error, :version_unavailable}` for a version the organization does
-  not own or that is not published, and the changeset's errors (a missing name
-  or kind, a detour without a route, a name that slugs to nothing) otherwise.
+  Returns `{:error, :forbidden}` when the actor is no longer an editor,
+  `{:error, :version_unavailable}` for a version the organization does not own
+  or that is not published, and the changeset's errors (a missing name or kind,
+  a detour without a route, a name that slugs to nothing) otherwise.
   """
-  @spec create_service(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
-          {:ok, FlexService.t()} | {:error, :version_unavailable | Ecto.Changeset.t()}
-  def create_service(organization_id, version_id, attrs) do
+  @spec create_service(AuditContext.t(), map()) ::
+          {:ok, FlexService.t()}
+          | {:error, :forbidden | :version_unavailable | Ecto.Changeset.t()}
+  def create_service(%AuditContext{} = audit, attrs) do
     attrs = Map.new(attrs)
+    organization_id = audit.organization_id
+    version_id = audit.gtfs_version_id
 
-    transact(organization_id, version_id, fn ->
+    transact(audit, fn ->
       attrs = put_derived_key(attrs, next_key(organization_id, version_id, attr(attrs, :name)))
 
       %FlexService{organization_id: organization_id, gtfs_version_id: version_id}
@@ -522,21 +528,25 @@ defmodule GtfsPlanner.Gtfs.Flex do
   without `geojson` has its stored geometry cleared, so a `:route_distance` area
   never keeps a polygon.
 
-  Returns `{:error, :version_unavailable}` for a version the organization does
-  not own or that is not published, `{:error, :stale}` for a miss or a lost
-  race, and the changeset's errors for attrs or areas the editor changesets
-  refuse.
+  Returns `{:error, :forbidden}` for a revoked editor,
+  `{:error, :version_unavailable}` for a version the organization does not own
+  or that is not published, `{:error, :stale}` for a miss or a lost race, and
+  the changeset's errors for attrs or areas the editor changesets refuse.
   """
-  @spec save_service(Ecto.UUID.t(), Ecto.UUID.t(), FlexService.t(), map(), [area_input()]) ::
+  @spec save_service(AuditContext.t(), FlexService.t(), map(), [area_input()]) ::
           {:ok, FlexService.t()}
           | {:error,
              :stale
+             | :forbidden
              | :version_unavailable
              | Ecto.Changeset.t()
              | {:invalid_area, String.t(), term()}}
-  def save_service(organization_id, version_id, %FlexService{} = loaded, attrs, area_inputs)
+  def save_service(%AuditContext{} = audit, %FlexService{} = loaded, attrs, area_inputs)
       when is_list(area_inputs) do
-    transact(organization_id, version_id, fn ->
+    organization_id = audit.organization_id
+    version_id = audit.gtfs_version_id
+
+    transact(audit, fn ->
       case scoped_service(organization_id, version_id, loaded.id) do
         nil ->
           Repo.rollback(:stale)
@@ -556,12 +566,16 @@ defmodule GtfsPlanner.Gtfs.Flex do
   Deactivating leaves the service's hours, booking rules and areas in place;
   only the export leaves an inactive service out. A whole-page save that landed
   first makes the flag change `{:error, :stale}`, so the caller can reload and
-  retry.
+  retry. A revoked editor receives `{:error, :forbidden}` before a service read.
   """
-  @spec set_active(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), boolean()) ::
-          {:ok, FlexService.t()} | {:error, :not_found | :stale | :version_unavailable}
-  def set_active(organization_id, version_id, id, active) when is_boolean(active) do
-    transact(organization_id, version_id, fn ->
+  @spec set_active(AuditContext.t(), Ecto.UUID.t(), boolean()) ::
+          {:ok, FlexService.t()}
+          | {:error, :forbidden | :not_found | :stale | :version_unavailable}
+  def set_active(%AuditContext{} = audit, id, active) when is_boolean(active) do
+    organization_id = audit.organization_id
+    version_id = audit.gtfs_version_id
+
+    transact(audit, fn ->
       case scoped_service(organization_id, version_id, id) do
         nil ->
           Repo.rollback(@service_missing)
@@ -581,14 +595,15 @@ defmodule GtfsPlanner.Gtfs.Flex do
   Deletes one service and its areas.
 
   The areas go with the service through the `flex_areas` foreign key's
-  `ON DELETE CASCADE`. An unknown, foreign or unpublished service answers
-  `{:error, :not_found}` and writes nothing.
+  `ON DELETE CASCADE`. A revoked editor receives `{:error, :forbidden}` before
+  a service read. An unknown or foreign service answers `{:error, :not_found}`;
+  an unavailable version answers `{:error, :version_unavailable}`.
   """
-  @spec delete_service(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
-          :ok | {:error, :not_found | :version_unavailable}
-  def delete_service(organization_id, version_id, id) do
-    case transact(organization_id, version_id, fn ->
-           delete_scoped_service(organization_id, version_id, id)
+  @spec delete_service(AuditContext.t(), Ecto.UUID.t()) ::
+          :ok | {:error, :forbidden | :not_found | :version_unavailable}
+  def delete_service(%AuditContext{} = audit, id) do
+    case transact(audit, fn ->
+           delete_scoped_service(audit.organization_id, audit.gtfs_version_id, id)
          end) do
       {:ok, :ok} -> :ok
       {:error, reason} -> {:error, reason}
@@ -623,24 +638,31 @@ defmodule GtfsPlanner.Gtfs.Flex do
   the source has none — `{:error, :target_not_empty}` when the target already
   has a service (active or inactive), and `{:error, :not_found}` when either
   version does not belong to the organization, is not published, or the source
-  id is malformed. The whole copy is one transaction: a failure leaves the
+  id is malformed. A revoked editor receives `{:error, :forbidden}` before the
+  target version lock. The whole copy is one transaction: a failure leaves the
   target as it was.
 
   References that the target version cannot resolve — a route, stop or calendar
   that exists only in the source version — are copied as they are; readiness
   reports them in the target as ordinary errors (R14).
 
-  `actor` is the §4 contract's actor argument; flex authoring records no audit
-  actor, so it is accepted and not persisted.
+  The target organization and version and the actor come from the audit context.
+  Flex authoring records no audit actor, so the actor is checked but not persisted.
   """
-  @spec copy_from_version(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), map() | nil) ::
-          {:ok, non_neg_integer()} | {:error, :target_not_empty | :not_found}
-  def copy_from_version(organization_id, target_version_id, source_version_id, _actor) do
+  @spec copy_from_version(AuditContext.t(), Ecto.UUID.t()) ::
+          {:ok, non_neg_integer()} | {:error, :forbidden | :target_not_empty | :not_found}
+  def copy_from_version(%AuditContext{} = audit, source_version_id) do
     result =
       Repo.transaction(fn ->
-        case Versions.lock_for_input_write!(organization_id, target_version_id) do
+        Authorization.lock_editor!(audit)
+
+        case Versions.lock_for_input_write!(audit.organization_id, audit.gtfs_version_id) do
           %GtfsVersion{publication_status: @published_status} ->
-            copy_version_services!(organization_id, target_version_id, source_version_id)
+            copy_version_services!(
+              audit.organization_id,
+              audit.gtfs_version_id,
+              source_version_id
+            )
 
           # A version that is not published cannot be authored (R10), so it is
           # as unavailable to the copy as a version the organization does not
@@ -953,14 +975,16 @@ defmodule GtfsPlanner.Gtfs.Flex do
 
   # --- write steps ------------------------------------------------------------
 
-  # Every write opens with the version's input-write lock. A pair the
-  # organization does not own, or one that is not a version at all, rolls back
-  # `:not_found` and answers `:version_unavailable`; a version that is not
-  # published cannot be authored (R10).
-  defp transact(organization_id, version_id, fun) do
+  # Every write checks current membership before the version's input-write
+  # lock. A pair the organization does not own, or one that is not a version,
+  # rolls back `:not_found` and answers `:version_unavailable`; a version that
+  # is not published cannot be authored (R10).
+  defp transact(%AuditContext{} = audit, fun) do
     result =
       Repo.transaction(fn ->
-        case Versions.lock_for_input_write!(organization_id, version_id) do
+        Authorization.lock_editor!(audit)
+
+        case Versions.lock_for_input_write!(audit.organization_id, audit.gtfs_version_id) do
           %GtfsVersion{publication_status: @published_status} -> fun.()
           %GtfsVersion{} -> Repo.rollback(:version_unavailable)
         end

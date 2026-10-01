@@ -10,7 +10,7 @@ defmodule GtfsPlanner.RunsFixtures do
   `runs_version_fixture/1` is the shared planning day the tests cut into runs: a
   published version with one weekday calendar, a garage, four stops on one
   meridian, block 101 of four trips and block 102 of two. Its relief point is
-  marked through `Blocking.update_relief_settings/4` and its default garage and
+  marked through `Blocking.update_relief_settings/3` and its default garage and
   piece limit through `Blocking`'s own writers, so the fixture takes the same path
   the page takes and a test never has to set a planning input behind the lock that
   owns it.
@@ -40,6 +40,7 @@ defmodule GtfsPlanner.RunsFixtures do
   """
 
   import GtfsPlanner.BlockingFixtures
+  import GtfsPlanner.AccountsFixtures, only: [editor_audit_fixture: 2]
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OperationsFixtures
   import GtfsPlanner.OrganizationsFixtures
@@ -113,6 +114,7 @@ defmodule GtfsPlanner.RunsFixtures do
 
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
+    audit = editor_audit_fixture(organization, version)
     route = route_fixture(organization.id, version.id, %{route_id: "R1"})
 
     calendar_service_fixture(organization.id, version.id, %{service_id: "WK", name: "Weekday"})
@@ -132,7 +134,7 @@ defmodule GtfsPlanner.RunsFixtures do
     # written through the writers that take the version and blocking locks rather
     # than by inserting a settings row behind their back.
     {:ok, _settings} =
-      Blocking.update_settings(organization.id, version.id, %{
+      Blocking.update_settings(audit, %{
         min_layover_minutes: 5,
         max_block_minutes: nil,
         pull_out_buffer_minutes: 0,
@@ -147,7 +149,7 @@ defmodule GtfsPlanner.RunsFixtures do
     # candidate is named by its own `parent_station` — the key `list_relief_candidates/3`
     # returns for a station rather than one of its bays.
     {:ok, :ok} =
-      Blocking.update_relief_settings(organization.id, version.id, nil, %{
+      Blocking.update_relief_settings(audit, nil, %{
         max_piece_minutes: Map.get(opts, :max_piece_minutes, @max_piece_minutes),
         marked: [@relief_stop_id]
       })
@@ -155,6 +157,7 @@ defmodule GtfsPlanner.RunsFixtures do
     %{
       organization: organization,
       version: version,
+      audit: audit,
       route: route,
       day_type_key: day_type_key!(organization, version),
       garage: garage,

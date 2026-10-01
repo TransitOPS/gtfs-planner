@@ -46,12 +46,12 @@ defmodule GtfsPlanner.Gtfs.ExportDefaultsTest do
     end
   end
 
-  describe "update/2" do
+  describe "update/3" do
     test "upserts so a second update changes the same row and keeps an omitted setting" do
       organization = organization_fixture()
 
       assert {:ok, created} =
-               ExportDefaults.update(organization.id, %{
+               ExportDefaults.update(organization.id, editor_fixture(organization), %{
                  include_flex: false,
                  realtime_source: :own
                })
@@ -59,7 +59,10 @@ defmodule GtfsPlanner.Gtfs.ExportDefaultsTest do
       assert created.include_flex == false
       assert created.realtime_source == :own
 
-      assert {:ok, updated} = ExportDefaults.update(organization.id, %{include_flex: true})
+      assert {:ok, updated} =
+               ExportDefaults.update(organization.id, editor_fixture(organization), %{
+                 include_flex: true
+               })
 
       assert updated.id == created.id
       assert updated.include_flex == true
@@ -77,7 +80,7 @@ defmodule GtfsPlanner.Gtfs.ExportDefaultsTest do
       organization = organization_fixture()
 
       assert {:ok, _} =
-               ExportDefaults.update(organization.id, %{
+               ExportDefaults.update(organization.id, editor_fixture(organization), %{
                  estimate_missing_times: false,
                  estimate_method: :even
                })
@@ -93,12 +96,15 @@ defmodule GtfsPlanner.Gtfs.ExportDefaultsTest do
       organization = organization_fixture()
 
       assert {:ok, _} =
-               ExportDefaults.update(organization.id, %{
+               ExportDefaults.update(organization.id, editor_fixture(organization), %{
                  estimate_missing_times: false,
                  estimate_method: :even
                })
 
-      assert {:ok, updated} = ExportDefaults.update(organization.id, %{include_flex: false})
+      assert {:ok, updated} =
+               ExportDefaults.update(organization.id, editor_fixture(organization), %{
+                 include_flex: false
+               })
 
       assert updated.include_flex == false
       assert updated.estimate_missing_times == false
@@ -109,7 +115,9 @@ defmodule GtfsPlanner.Gtfs.ExportDefaultsTest do
       organization = organization_fixture()
 
       assert {:error, changeset} =
-               ExportDefaults.update(organization.id, %{estimate_method: "bogus"})
+               ExportDefaults.update(organization.id, editor_fixture(organization), %{
+                 estimate_method: "bogus"
+               })
 
       refute changeset.valid?
       assert %{estimate_method: ["is invalid"]} = errors_on(changeset)
@@ -131,7 +139,9 @@ defmodule GtfsPlanner.Gtfs.ExportDefaultsTest do
       organization = organization_fixture()
 
       assert {:error, changeset} =
-               ExportDefaults.update(organization.id, %{realtime_source: "bogus"})
+               ExportDefaults.update(organization.id, editor_fixture(organization), %{
+                 realtime_source: "bogus"
+               })
 
       refute changeset.valid?
       assert %{realtime_source: ["is invalid"]} = errors_on(changeset)
@@ -143,7 +153,7 @@ defmodule GtfsPlanner.Gtfs.ExportDefaultsTest do
       organization_b = organization_fixture()
 
       assert {:ok, _} =
-               ExportDefaults.update(organization_a.id, %{
+               ExportDefaults.update(organization_a.id, editor_fixture(organization_a), %{
                  include_flex: false,
                  realtime_source: :flex
                })
@@ -163,7 +173,10 @@ defmodule GtfsPlanner.Gtfs.ExportDefaultsTest do
       organization = organization_fixture()
       version = gtfs_version_fixture(organization.id)
 
-      assert {:ok, _} = ExportDefaults.update(organization.id, %{include_flex: false})
+      assert {:ok, _} =
+               ExportDefaults.update(organization.id, editor_fixture(organization), %{
+                 include_flex: false
+               })
 
       assert {:ok, run} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
       assert run.include_flex == false
@@ -171,7 +184,10 @@ defmodule GtfsPlanner.Gtfs.ExportDefaultsTest do
       assert {:ok, cancelled} = ExportRuns.request_cancel(organization.id, run.id)
       assert cancelled.state == :cancelled
 
-      assert {:ok, _} = ExportDefaults.update(organization.id, %{include_flex: true})
+      assert {:ok, _} =
+               ExportDefaults.update(organization.id, editor_fixture(organization), %{
+                 include_flex: true
+               })
 
       assert {:ok, next_run} =
                ExportRuns.create_pending(organization.id, version.id, @actor, :full)
@@ -184,7 +200,10 @@ defmodule GtfsPlanner.Gtfs.ExportDefaultsTest do
       organization = organization_fixture()
       version = gtfs_version_fixture(organization.id)
 
-      assert {:ok, _} = ExportDefaults.update(organization.id, %{include_flex: true})
+      assert {:ok, _} =
+               ExportDefaults.update(organization.id, editor_fixture(organization), %{
+                 include_flex: true
+               })
 
       assert {:ok, operations} =
                ExportRuns.create_pending(organization.id, version.id, @actor, :operations)
@@ -212,7 +231,10 @@ defmodule GtfsPlanner.Gtfs.ExportDefaultsTest do
 
       assert failed.state == :failed
 
-      assert {:ok, _} = ExportDefaults.update(organization.id, %{include_flex: false})
+      assert {:ok, _} =
+               ExportDefaults.update(organization.id, editor_fixture(organization), %{
+                 include_flex: false
+               })
 
       assert {:ok, retried} = ExportRuns.retry(organization.id, run.id)
       assert retried.id != run.id
@@ -224,7 +246,7 @@ defmodule GtfsPlanner.Gtfs.ExportDefaultsTest do
       version = gtfs_version_fixture(organization.id)
 
       assert {:ok, _} =
-               ExportDefaults.update(organization.id, %{
+               ExportDefaults.update(organization.id, editor_fixture(organization), %{
                  estimate_missing_times: true,
                  estimate_method: :even
                })
@@ -234,7 +256,7 @@ defmodule GtfsPlanner.Gtfs.ExportDefaultsTest do
       assert run.estimate_method == :even
 
       assert {:ok, _} =
-               ExportDefaults.update(organization.id, %{
+               ExportDefaults.update(organization.id, editor_fixture(organization), %{
                  estimate_missing_times: false,
                  estimate_method: :distance
                })
@@ -249,7 +271,7 @@ defmodule GtfsPlanner.Gtfs.ExportDefaultsTest do
       version = gtfs_version_fixture(organization.id)
 
       assert {:ok, _} =
-               ExportDefaults.update(organization.id, %{
+               ExportDefaults.update(organization.id, editor_fixture(organization), %{
                  estimate_missing_times: false,
                  estimate_method: :even
                })

@@ -194,7 +194,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternWorkspaceTest do
             {"stops", "#pattern-save-stops", "Save stops"},
             {"timings", "#timing-save", "Save running times"},
             {"details", "#pattern-details-submit", "Save details"},
-            {"alignment", "#alignment-save", "Save alignment"}
+            {"alignment", "#alignment-save", "Save map line"}
           ] do
         {:ok, view, _html} = live(conn, pattern_path(version, context, "?task=#{task}"))
 
@@ -403,7 +403,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternWorkspaceTest do
 
       viewer = RoutePatternAlignmentComponents.save_state(%{base | editable?: false})
       refute viewer.enabled?
-      assert viewer.title == "Only editors can save alignment."
+      assert viewer.title == "Only editors can save the map line."
 
       offline = RoutePatternAlignmentComponents.save_state(%{base | offline?: true})
       refute offline.enabled?
@@ -411,7 +411,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternWorkspaceTest do
 
       applying = RoutePatternAlignmentComponents.save_state(%{base | applying?: true})
       refute applying.enabled?
-      assert applying.title == "Saving your alignment…"
+      assert applying.title == "Saving your map line…"
 
       generating = RoutePatternAlignmentComponents.save_state(%{base | generating?: true})
       refute generating.enabled?

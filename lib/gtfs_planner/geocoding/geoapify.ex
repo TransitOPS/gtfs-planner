@@ -184,22 +184,14 @@ defmodule GtfsPlanner.Geocoding.Geoapify do
       Map.get(properties, "formatted", "")
   end
 
-  # `autocomplete/2` predates the plug and is called on every keystroke, so it
-  # keeps its own options and takes only the plug. Routing it through the test
-  # plug is what lets a test assert the request it builds.
+  # Both request builders append the configured `:geocoding_req_options`, which is
+  # how a test routes the call through `Req.Test` and asserts the request it builds.
   defp autocomplete_options(params) do
-    case Application.get_env(:gtfs_planner, :geocoding_req_plug) do
-      nil -> [params: params]
-      plug -> [params: params, plug: plug]
-    end
+    [params: params] ++ Application.get_env(:gtfs_planner, :geocoding_req_options, [])
   end
 
   defp req_options(params) do
-    base = [params: params, receive_timeout: 15_000, retry: :safe_transient, max_retries: 2]
-
-    case Application.get_env(:gtfs_planner, :geocoding_req_plug) do
-      nil -> base
-      plug -> Keyword.put(base, :plug, plug)
-    end
+    [params: params, receive_timeout: 15_000, retry: :safe_transient, max_retries: 2] ++
+      Application.get_env(:gtfs_planner, :geocoding_req_options, [])
   end
 end

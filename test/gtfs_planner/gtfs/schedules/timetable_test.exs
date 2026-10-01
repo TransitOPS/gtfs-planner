@@ -129,7 +129,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimetableTest do
              }
     end
 
-    test "shows a missing value as a dash and never as midnight" do
+    test "shows a stored nil as no scheduled time and never as midnight" do
       occurrences = [occurrence(1, "A"), occurrence(2, "B")]
 
       trips = [
@@ -144,7 +144,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimetableTest do
       [row] = Timetable.build(@pattern, occurrences, @stops, [], trips).rows
 
       assert row.cells[1] == %{
-               text: "—",
+               text: "No scheduled time",
                marker: nil,
                title: nil,
                missing?: true,
@@ -465,7 +465,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimetableTest do
       assert row.estimate_problem == nil
 
       assert row.cells[2] == %{
-               text: "—",
+               text: "No scheduled time",
                marker: nil,
                title: nil,
                missing?: true,
@@ -522,7 +522,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimetableTest do
         assert row.estimate_problem == nil
 
         assert row.cells[2] == %{
-                 text: "—",
+                 text: "No scheduled time",
                  marker: nil,
                  title: nil,
                  missing?: true,

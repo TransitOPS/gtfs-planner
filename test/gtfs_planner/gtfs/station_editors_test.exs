@@ -134,8 +134,7 @@ defmodule GtfsPlanner.Gtfs.StationEditorsTest do
   end
 
   defp set_editing_status(organization, gtfs_version, station, editor, started_at) do
-    assert {:ok, status} =
-             Gtfs.set_station_editing_status(organization.id, gtfs_version.id, station, editor)
+    status = station_editing_status_fixture(organization, gtfs_version, station, editor)
 
     # Pin the persisted time so the ordering assertion does not depend on clock resolution.
     {1, _} =

@@ -131,7 +131,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentMapTest do
       assert has_element?(
                view,
                "#alignment-notice",
-               "Your alignment and stop list are still available"
+               "Your map line and stop list are still available"
              )
 
       assert has_element?(view, "#alignment-notice button", "Retry map")

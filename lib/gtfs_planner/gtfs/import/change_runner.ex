@@ -5,26 +5,34 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunner do
 
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Import.{ChangeRun, ChangeRuns, ChangeWorker}
+  alias GtfsPlanner.RunnerAdmission
 
   @default_heartbeat_ms 60_000
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
+  @doc """
+  Starts the compute or apply runner for `run_id`.
+
+  Returns `{:error, :busy}` when the supervisor is at its `:runner_limits` cap.
+  The run is then still pending and the caller closes it with
+  `ChangeRuns.fail_unstarted/3`.
+  """
   @spec start_compute(Ecto.UUID.t(), Ecto.UUID.t(), module(), keyword()) ::
-          DynamicSupervisor.on_start_child()
+          DynamicSupervisor.on_start_child() | {:error, :busy}
   def start_compute(organization_id, run_id, worker_module \\ ChangeWorker, opts \\ []) do
     start(organization_id, run_id, :compute, worker_module, opts)
   end
 
   @spec start_apply(Ecto.UUID.t(), Ecto.UUID.t(), module(), keyword()) ::
-          DynamicSupervisor.on_start_child()
+          DynamicSupervisor.on_start_child() | {:error, :busy}
   def start_apply(organization_id, run_id, worker_module \\ ChangeWorker, opts \\ []) do
     start(organization_id, run_id, :apply, worker_module, opts)
   end
 
   defp start(organization_id, run_id, operation, worker_module, opts) do
-    DynamicSupervisor.start_child(
+    RunnerAdmission.start_child(
       GtfsPlanner.Gtfs.Import.ChangeRunnerSupervisor,
       {__MODULE__,
        Keyword.merge(opts,

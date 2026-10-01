@@ -108,23 +108,45 @@ defmodule GtfsPlanner.Gtfs.Export.ArtifactStorage do
     end
   end
 
-  @doc "Removes run directories whose UUID is not represented by a durable retained row."
-  @spec reconcile([Ecto.UUID.t()], keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
-  def reconcile(kept_run_ids, opts \\ []) when is_list(kept_run_ids) do
+  @doc """
+  Removes run directories whose UUID is not represented by a durable retained row.
+
+  The scan runs under the artifact root lock that `publish/6` also takes, so a
+  publication cannot create a directory between the retained-run snapshot and
+  its deletion. Pass a zero-arity function to read the retained ids inside that
+  lock; a list is a snapshot the caller took outside it.
+
+  A directory modified within `:orphan_grace_seconds` (default `0`) survives
+  even when no retained row names it, which covers creators that do not take
+  the lock.
+  """
+  @spec reconcile([Ecto.UUID.t()] | (-> [Ecto.UUID.t()]), keyword()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def reconcile(kept_run_ids, opts \\ [])
+      when is_list(kept_run_ids) or is_function(kept_run_ids, 0) do
     with {:ok, root} <- root(opts) do
-      base = Path.join(root, "export-runs")
+      grace_seconds = Keyword.get(opts, :orphan_grace_seconds, 0)
 
-      case File.ls(base) do
-        {:ok, organizations} ->
-          kept = MapSet.new(kept_run_ids)
-          {:ok, reconcile_organizations(base, organizations, kept, 0)}
+      TaskArtifactCapacity.with_root_lock(root, fn ->
+        kept = MapSet.new(retained_run_ids(kept_run_ids))
+        reconcile_root(Path.join(root, "export-runs"), kept, grace_seconds)
+      end)
+    end
+  end
 
-        {:error, :enoent} ->
-          {:ok, 0}
+  defp retained_run_ids(kept_run_ids) when is_function(kept_run_ids, 0), do: kept_run_ids.()
+  defp retained_run_ids(kept_run_ids), do: kept_run_ids
 
-        {:error, reason} ->
-          {:error, reason}
-      end
+  defp reconcile_root(base, kept, grace_seconds) do
+    case File.ls(base) do
+      {:ok, organizations} ->
+        {:ok, reconcile_organizations(base, organizations, kept, grace_seconds, 0)}
+
+      {:error, :enoent} ->
+        {:ok, 0}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -273,18 +295,18 @@ defmodule GtfsPlanner.Gtfs.Export.ArtifactStorage do
     Path.join([root, "export-runs", organization_id, version_id, run_id])
   end
 
-  defp reconcile_organizations(_base, [], _kept, count), do: count
+  defp reconcile_organizations(_base, [], _kept, _grace_seconds, count), do: count
 
-  defp reconcile_organizations(base, [organization | rest], kept, count) do
-    count = reconcile_versions(Path.join(base, organization), kept, count)
-    reconcile_organizations(base, rest, kept, count)
+  defp reconcile_organizations(base, [organization | rest], kept, grace_seconds, count) do
+    count = reconcile_versions(Path.join(base, organization), kept, grace_seconds, count)
+    reconcile_organizations(base, rest, kept, grace_seconds, count)
   end
 
-  defp reconcile_versions(path, kept, count) do
+  defp reconcile_versions(path, kept, grace_seconds, count) do
     case File.ls(path) do
       {:ok, versions} ->
         Enum.reduce(versions, count, fn version, acc ->
-          reconcile_runs(Path.join(path, version), kept, acc)
+          reconcile_runs(Path.join(path, version), kept, grace_seconds, acc)
         end)
 
       _ ->
@@ -292,24 +314,37 @@ defmodule GtfsPlanner.Gtfs.Export.ArtifactStorage do
     end
   end
 
-  defp reconcile_runs(path, kept, count) do
+  defp reconcile_runs(path, kept, grace_seconds, count) do
     case File.ls(path) do
       {:ok, runs} ->
-        Enum.reduce(runs, count, &reconcile_run(path, kept, &1, &2))
+        Enum.reduce(runs, count, &reconcile_run(path, kept, grace_seconds, &1, &2))
 
       _ ->
         count
     end
   end
 
-  defp reconcile_run(path, kept, run_id, count) do
-    if MapSet.member?(kept, run_id), do: count, else: remove_run(path, run_id, count)
+  defp reconcile_run(path, kept, grace_seconds, run_id, count) do
+    run_path = Path.join(path, run_id)
+
+    if MapSet.member?(kept, run_id) or within_orphan_grace?(run_path, grace_seconds),
+      do: count,
+      else: remove_run(run_path, count)
   end
 
-  defp remove_run(path, run_id, count) do
-    case File.rm_rf(Path.join(path, run_id)) do
+  defp remove_run(run_path, count) do
+    case File.rm_rf(run_path) do
       {:ok, _} -> count + 1
       _ -> count
+    end
+  end
+
+  defp within_orphan_grace?(_path, grace_seconds) when grace_seconds <= 0, do: false
+
+  defp within_orphan_grace?(path, grace_seconds) do
+    case File.stat(path, time: :posix) do
+      {:ok, %{mtime: modified_at}} -> System.os_time(:second) - modified_at < grace_seconds
+      _ -> false
     end
   end
 end

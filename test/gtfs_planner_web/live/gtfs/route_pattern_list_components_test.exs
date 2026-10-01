@@ -20,12 +20,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponentsTest do
     pattern =
       Map.merge(
         %{
+          id: Ecto.UUID.generate(),
           route_pattern_id: id,
           route_pattern_name: "Pattern #{id}",
           route_pattern_time_desc: "All service days",
           route_pattern_typicality: 1,
           direction_id: direction_id,
-          headsign: "Lincoln City"
+          headsign: "Lincoln City",
+          label_pattern_id: nil
         },
         Map.get(overrides, :pattern, %{})
       )
@@ -120,6 +122,31 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponentsTest do
 
     test "is empty when there are no patterns" do
       assert RoutePatternListComponents.stream_items([]) == []
+    end
+
+    test "puts a label's children under its owner, and an owner with none stays alone" do
+      owner = summary("A", 0)
+      owner_with_child = summary("B", 0)
+
+      child =
+        summary("B-2", 0, %{pattern: %{label_pattern_id: owner_with_child.pattern.id}})
+
+      items = RoutePatternListComponents.stream_items([owner, owner_with_child, child])
+
+      assert Enum.map(items, &{&1.kind, &1.id}) == [
+               {:direction, "direction-0"},
+               {:pattern, "A"},
+               {:label, "label-B"},
+               {:pattern, "B"},
+               {:pattern, "B-2"}
+             ]
+
+      assert [%{kind: :label, label_id: "B", count: 2}, owner_item, child_item] =
+               Enum.drop(items, 2)
+
+      # The two rows in the group say which part they play in it.
+      assert owner_item.label == %{id: "B", role: :owner}
+      assert child_item.label == %{id: "B", role: :child}
     end
   end
 
@@ -253,22 +280,41 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponentsTest do
       assert present?(html, "#patterns-create.btn-primary")
     end
 
-    test "trips that keep imported times explain why nothing can be grouped" do
+    test "trips that keep imported times are listed by reason, not summarised" do
       html =
         render_page(%{
           patterns: [],
           patterns_empty?: true,
           pattern_count: 0,
-          custom_trip_count: 18
+          custom_trip_count: 18,
+          left_out: [
+            %{route_id: "1", reason: "missing_direction", trip_count: 18}
+          ]
         })
 
-      assert text(html, "#patterns-build-blocked") =~ "18 trips on this route keep the stop times"
+      assert text(html, "#patterns-left-out") =~ "18 trips aren\u2019t in a pattern"
+      assert text(html, "#patterns-left-out-missing_direction") =~ "18 trips have no direction"
 
-      assert present?(
-               html,
-               "#patterns-review-schedules[href='/gtfs/version-1/routes/1/schedules']"
-             )
+      # The card carries the reason and its fix, so the blocked message adds
+      # nothing and the first-pattern empty state stays beside it.
+      refute present?(html, "#patterns-build-blocked")
+      assert present?(html, "#patterns-empty-inline #patterns-create-empty")
+    end
 
+    test "a blocked route with nothing outside a pattern says so plainly" do
+      html =
+        render_page(%{
+          patterns: [],
+          patterns_empty?: true,
+          pattern_count: 0,
+          custom_trip_count: 0,
+          build_state: :blocked
+        })
+
+      assert text(html, "#patterns-build-blocked") =~
+               "No trips on this route are waiting to be grouped into patterns."
+
+      refute present?(html, "#patterns-left-out")
       assert present?(html, "#patterns-empty-inline #patterns-create-empty")
     end
 

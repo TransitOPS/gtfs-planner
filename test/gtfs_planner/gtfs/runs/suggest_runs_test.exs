@@ -120,8 +120,7 @@ defmodule GtfsPlanner.Gtfs.Runs.SuggestRunsTest do
 
       assert {:ok, _} =
                Gtfs.apply_run_moves(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  moves
                )
@@ -141,8 +140,7 @@ defmodule GtfsPlanner.Gtfs.Runs.SuggestRunsTest do
       # only interesting on a day type whose scheme has to survive.
       {:ok, _} =
         Gtfs.rename_run(
-          world.organization.id,
-          world.version.id,
+          world.audit,
           world.day_type_key,
           "1001",
           "1013"
@@ -157,8 +155,7 @@ defmodule GtfsPlanner.Gtfs.Runs.SuggestRunsTest do
     test "new_run_ids are the proposed IDs not already in use", %{world: world} do
       {:ok, _} =
         Gtfs.rename_run(
-          world.organization.id,
-          world.version.id,
+          world.audit,
           world.day_type_key,
           "1001",
           "1013"
@@ -178,8 +175,7 @@ defmodule GtfsPlanner.Gtfs.Runs.SuggestRunsTest do
       # the same numbers would hide.
       {:ok, _} =
         Gtfs.rename_run(
-          world.organization.id,
-          world.version.id,
+          world.audit,
           world.day_type_key,
           "1001",
           "1013"
@@ -191,8 +187,7 @@ defmodule GtfsPlanner.Gtfs.Runs.SuggestRunsTest do
 
       assert {:ok, _} =
                Gtfs.apply_run_moves(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  moves
                )
@@ -253,7 +248,7 @@ defmodule GtfsPlanner.Gtfs.Runs.SuggestRunsTest do
       moves = Enum.map(plan.moves, &%{trip_id: &1.trip_id, from: &1.from, to: &1.to})
 
       {:ok, _} =
-        Gtfs.apply_run_moves(world.organization.id, world.version.id, world.day_type_key, moves)
+        Gtfs.apply_run_moves(world.audit, world.day_type_key, moves)
 
       {:ok, runs_day} =
         Gtfs.load_runs(world.organization.id, world.version.id, world.day_type_key)

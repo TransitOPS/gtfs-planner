@@ -94,20 +94,24 @@ async function logIn(page, account = EDITOR) {
 // A click or key press that lands before the LiveView joins is dropped, so each
 // navigation waits for the mounted view first. The socket reports connected
 // before its view channel can push, so the wait has to name the view itself.
-async function waitForLiveView(page) {
-  await page.waitForSelector("[data-phx-main]", { state: "attached" });
-  await page.waitForFunction(() => {
-    const main = document.querySelector("[data-phx-main]");
-    const view = window.liveSocket?.main;
+async function waitForLiveView(page, { timeout } = {}) {
+  await page.waitForSelector("[data-phx-main]", { state: "attached", timeout });
+  await page.waitForFunction(
+    () => {
+      const main = document.querySelector("[data-phx-main]");
+      const view = window.liveSocket?.main;
 
-    return Boolean(
-      main &&
-        view &&
-        view.isConnected() &&
-        !view.joinPending &&
-        !main.hasAttribute("data-phx-pending"),
-    );
-  });
+      return Boolean(
+        main &&
+          view &&
+          view.isConnected() &&
+          !view.joinPending &&
+          !main.hasAttribute("data-phx-pending"),
+      );
+    },
+    undefined,
+    { timeout },
+  );
 }
 
 // A server push can be followed by one next-frame focus re-assertion: the
@@ -576,12 +580,21 @@ test.describe("authoring", () => {
     test("an absent or non-station target exposes no closure data", async ({
       page,
     }) => {
+      // The redirect lands on the Stops page, whose view runs its stop catalog
+      // query while it joins. On the first visit to a database whose tables have
+      // no planner statistics yet that query can run for a minute or more, until
+      // the pool's 120 s ownership timeout turns it into the page's "route
+      // enrichment unavailable" state. The case waits for the joined view and the
+      // loaded count with that bound instead of the 30 s default.
+      test.setTimeout(240_000);
+
       const versionId = await seededVersionId(page);
 
       for (const stopId of ["NO_SUCH_STATION", NON_STATION_STOP]) {
         await page.goto(evolutionsPath(versionId, stopId));
         await page.waitForURL((url) => url.pathname.endsWith(`/stops`));
-        await waitForLiveView(page);
+        await waitForLiveView(page, { timeout: 150_000 });
+        await expect(page.locator("#stops-count")).toBeVisible({ timeout: 10_000 });
 
         await expect(page.locator("#closures-card")).toHaveCount(0);
         await expect(page.locator("#closures-list")).toHaveCount(0);
@@ -2529,9 +2542,11 @@ test.describe("calendars", () => {
     // weekly schedule. They span at most two consecutive months, so the open
     // month and its two neighbours hold exactly three removed cells.
     let removed = 0;
+    let lastRemovedStep = -1;
     let month = await page.locator("#closure-dates-month").textContent();
+    const steps = ["prev", "next", "next"];
 
-    for (const step of ["prev", "next", "next"]) {
+    for (const [index, step] of steps.entries()) {
       await page.locator(`#closure-dates-${step}`).click();
 
       // The step is an async round trip: wait for its month before counting
@@ -2539,12 +2554,24 @@ test.describe("calendars", () => {
       await expect(page.locator("#closure-dates-month")).not.toHaveText(month);
       month = await page.locator("#closure-dates-month").textContent();
 
-      removed += await page
+      const inMonth = await page
         .locator('#closure-dates-months [aria-label*=": Day off, no service"]')
         .count();
+
+      removed += inMonth;
+      if (inMonth > 0) lastRemovedStep = index;
     }
 
     expect(removed).toBe(3);
+
+    // The walk ends on the month after the open one, which holds removed days
+    // only when they cross a month boundary. Step back to the last month that
+    // does, so the capture below shows the removed state whatever today is.
+    for (let back = steps.length - 1 - lastRemovedStep; back > 0; back -= 1) {
+      await page.locator("#closure-dates-prev").click();
+      await expect(page.locator("#closure-dates-month")).not.toHaveText(month);
+      month = await page.locator("#closure-dates-month").textContent();
+    }
 
     await page
       .locator('#closure-dates-months [aria-label*=": Day off, no service"]')

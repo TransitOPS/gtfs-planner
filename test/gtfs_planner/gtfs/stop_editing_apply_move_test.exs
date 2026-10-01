@@ -29,6 +29,7 @@ defmodule GtfsPlanner.Gtfs.StopEditingApplyMoveTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
+  alias GtfsPlanner.Accounts
   alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs.Alignments
@@ -267,9 +268,11 @@ defmodule GtfsPlanner.Gtfs.StopEditingApplyMoveTest do
       # cannot edit is refused earlier, and for a different reason.
       unboxed(fn ->
         {:ok, _membership} =
-          Organizations.add_user_to_organization(fixture.actor.id, elsewhere.id, [
-            "pathways_studio_editor"
-          ])
+          Accounts.create_user_org_membership(%{
+            user_id: fixture.actor.id,
+            organization_id: elsewhere.id,
+            roles: ["pathways_studio_editor"]
+          })
       end)
 
       on_exit(fn ->
@@ -709,9 +712,11 @@ defmodule GtfsPlanner.Gtfs.StopEditingApplyMoveTest do
     actor = user_fixture(%{email: "apply-move-#{stamp()}@example.com"})
 
     {:ok, _membership} =
-      Organizations.add_user_to_organization(actor.id, organization_id, [
-        "pathways_studio_editor"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: actor.id,
+        organization_id: organization_id,
+        roles: ["pathways_studio_editor"]
+      })
 
     actor
   end

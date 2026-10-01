@@ -56,7 +56,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
           user_fixture(%{email: email})
       end
 
-    {:ok, _membership} =
+    {:ok, membership} =
       Accounts.create_user_org_membership(%{
         user_id: user.id,
         organization_id: organization.id,
@@ -64,7 +64,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       })
 
     if Map.get(attrs, :deactivated?, false) do
-      {:ok, _} = Organizations.deactivate_user_in_organization(user.id, organization.id)
+      deactivate_membership_fixture(membership)
     end
 
     user
@@ -454,6 +454,73 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       feedback = view |> element("#organization-action-feedback") |> render()
       assert feedback =~ "New Test Org"
       assert feedback =~ "invite its first administrator"
+    end
+
+    test "creating after the system administrator's access was revoked keeps the drawer and the draft",
+         %{conn: conn, admin_user: admin_user, organization: organization} do
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations/new")
+
+      deactivate_membership_fixture(membership(admin_user.id, organization.id))
+
+      view
+      |> form("#org-form", organization: %{name: "Refused Org", alias: "refused-org"})
+      |> render_submit()
+
+      assert has_element?(view, "dialog#org-drawer-overlay[data-open=true]")
+      assert has_element?(view, "#organization-name[value='Refused Org']")
+      assert has_element?(view, "#organization-alias[value='refused-org']")
+
+      assert has_element?(
+               view,
+               "#organization-refusal",
+               "Your system administrator access has changed."
+             )
+
+      assert_push_event(view, "focus_form_error", %{
+        form_id: "org-form",
+        fallback_id: "organization-refusal"
+      })
+
+      refute Organizations.get_organization_by_alias("refused-org")
+    end
+
+    test "editing after the system administrator's access was revoked keeps the drawer and the typed name",
+         %{conn: conn, admin_user: admin_user, organization: organization} do
+      org = organization_fixture(%{name: "Original Name", alias: "kept-alias"})
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations/#{org.id}/edit")
+
+      deactivate_membership_fixture(membership(admin_user.id, organization.id))
+
+      view
+      |> form("#org-form", organization: %{name: "Refused Name"})
+      |> render_submit()
+
+      assert has_element?(view, "dialog#org-drawer-overlay[data-open=true]")
+      assert has_element?(view, "#organization-name[value='Refused Name']")
+
+      assert has_element?(
+               view,
+               "#organization-refusal",
+               "Your system administrator access has changed."
+             )
+
+      assert Organizations.get_organization!(org.id).name == "Original Name"
+    end
+
+    test "typing again after a refusal clears the refusal message", %{
+      conn: conn,
+      admin_user: admin_user,
+      organization: organization
+    } do
+      org = organization_fixture(%{name: "Original Name", alias: "kept-alias"})
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations/#{org.id}/edit")
+      deactivate_membership_fixture(membership(admin_user.id, organization.id))
+
+      view |> form("#org-form", organization: %{name: "Refused Name"}) |> render_submit()
+      assert has_element?(view, "#organization-refusal")
+
+      view |> form("#org-form", organization: %{name: "Refused Name 2"}) |> render_change()
+      refute has_element?(view, "#organization-refusal")
     end
 
     test "editing an organization keeps the index behind it and saves changes", %{conn: conn} do
@@ -852,6 +919,25 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       end)
 
       assert view |> element("#member-action-feedback") |> render() =~ "pending@example.com"
+    end
+
+    test "resend after the system administrator's access was revoked is refused and sends nothing",
+         %{
+           conn: conn,
+           admin_user: admin_user,
+           organization: organization
+         } do
+      pending = member_fixture(organization, %{email: "pending@example.com", invited?: true})
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations/#{organization.id}")
+
+      deactivate_membership_fixture(membership(admin_user.id, organization.id))
+      view |> element("#resend-invite-#{pending.id}") |> render_click()
+
+      assert view |> element("#member-action-feedback") |> render() =~
+               "Your administrator access has changed."
+
+      refute Repo.get_by(UserToken, user_id: pending.id, context: "invite")
+      assert_no_email_sent()
     end
 
     test "an outcome says what happens next and tints the member it is about", %{

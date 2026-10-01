@@ -78,7 +78,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
       [unassigned | _] = world.blocks["102"]
 
       assert {:ok, %{changed_trips: 3}} =
-               Gtfs.apply_run_moves(world.organization.id, world.version.id, world.day_type_key, [
+               Gtfs.apply_run_moves(world.audit, world.day_type_key, [
                  move(a, "1001", "2001"),
                  move(b, "1001", nil),
                  move(unassigned, nil, "3001")
@@ -97,8 +97,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
 
       assert {:ok, %{changed_trips: 0, new_run_id: nil, undo: []}} =
                Gtfs.apply_run_moves(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  []
                )
@@ -108,7 +107,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
 
     test "a move that changes nothing reports zero changed trips", %{world: world, a: a} do
       assert {:ok, %{changed_trips: 0}} =
-               Gtfs.apply_run_moves(world.organization.id, world.version.id, world.day_type_key, [
+               Gtfs.apply_run_moves(world.audit, world.day_type_key, [
                  move(a, "1001", "1001")
                ])
 
@@ -121,7 +120,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
       b: b
     } do
       assert {:ok, %{new_run_id: "1002", changed_trips: 2}} =
-               Gtfs.apply_run_moves(world.organization.id, world.version.id, world.day_type_key, [
+               Gtfs.apply_run_moves(world.audit, world.day_type_key, [
                  move(a, "1001", :new),
                  move(b, "1001", :new)
                ])
@@ -139,7 +138,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
       [first | _] = world.blocks["101"]
 
       assert {:ok, %{new_run_id: "1"}} =
-               Gtfs.apply_run_moves(world.organization.id, world.version.id, world.day_type_key, [
+               Gtfs.apply_run_moves(world.audit, world.day_type_key, [
                  move(first, nil, :new)
                ])
 
@@ -154,7 +153,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
       b: b
     } do
       assert {:error, :stale_moves} =
-               Gtfs.apply_run_moves(world.organization.id, world.version.id, world.day_type_key, [
+               Gtfs.apply_run_moves(world.audit, world.day_type_key, [
                  move(b, "1001", "2001"),
                  move(a, "WRONG", "2001")
                ])
@@ -171,7 +170,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
 
       # The editor believed the trip was unassigned; it is not.
       assert {:error, :stale_moves} =
-               Gtfs.apply_run_moves(world.organization.id, world.version.id, world.day_type_key, [
+               Gtfs.apply_run_moves(world.audit, world.day_type_key, [
                  move(assigned, nil, "2001")
                ])
 
@@ -209,7 +208,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
       before = stored(world)
 
       assert {:error, {:invalid_trips, invalid}} =
-               Gtfs.apply_run_moves(world.organization.id, world.version.id, world.day_type_key, [
+               Gtfs.apply_run_moves(world.audit, world.day_type_key, [
                  move(saturday_trip, nil, "2001"),
                  move(frequency_trip, nil, "2001")
                ])
@@ -221,7 +220,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
 
     test "an unknown trip UUID is invalid rather than a crash", %{world: world} do
       assert {:error, {:invalid_trips, [missing]}} =
-               Gtfs.apply_run_moves(world.organization.id, world.version.id, world.day_type_key, [
+               Gtfs.apply_run_moves(world.audit, world.day_type_key, [
                  %{trip_id: Ecto.UUID.generate(), from: nil, to: "2001"}
                ])
 
@@ -230,7 +229,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
 
     test "a to of \"1 2\" is an invalid run id and writes nothing", %{world: world, a: a} do
       assert {:error, {:invalid_run_id, "1 2"}} =
-               Gtfs.apply_run_moves(world.organization.id, world.version.id, world.day_type_key, [
+               Gtfs.apply_run_moves(world.audit, world.day_type_key, [
                  move(a, "1001", "1 2")
                ])
 
@@ -239,7 +238,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
 
     test "a too-long run ID is refused", %{world: world, a: a} do
       assert {:error, {:invalid_run_id, "ABCDEFGHI"}} =
-               Gtfs.apply_run_moves(world.organization.id, world.version.id, world.day_type_key, [
+               Gtfs.apply_run_moves(world.audit, world.day_type_key, [
                  move(a, "1001", "ABCDEFGHI")
                ])
 
@@ -255,8 +254,10 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
 
       assert {:error, :not_found} =
                Gtfs.apply_run_moves(
-                 world.organization.id,
-                 theirs.version.id,
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                   world.organization.id,
+                   theirs.version.id
+                 ),
                  theirs.day_type_key,
                  [
                    %{trip_id: a.id, from: nil, to: "2001"}
@@ -321,7 +322,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
       assert before == "101"
 
       assert {:ok, %{changed_trips: 1}} =
-               Gtfs.apply_run_moves(world.organization.id, world.version.id, world.day_type_key, [
+               Gtfs.apply_run_moves(world.audit, world.day_type_key, [
                  move(a, "1001", "101")
                ])
 
@@ -353,7 +354,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
       before = stored(world)
 
       assert {:ok, %{undo: undo, new_run_id: "1002"}} =
-               Gtfs.apply_run_moves(world.organization.id, world.version.id, world.day_type_key, [
+               Gtfs.apply_run_moves(world.audit, world.day_type_key, [
                  move(a, "1001", :new),
                  move(b, "1001", nil)
                ])
@@ -362,8 +363,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
 
       assert {:ok, _} =
                Gtfs.apply_run_moves(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  undo
                )
@@ -377,7 +377,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
       before = stored(world)
 
       assert {:ok, %{undo: undo}} =
-               Gtfs.apply_run_moves(world.organization.id, world.version.id, world.day_type_key, [
+               Gtfs.apply_run_moves(world.audit, world.day_type_key, [
                  move(a, "1001", "2001")
                ])
 
@@ -385,8 +385,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
 
       assert {:ok, _} =
                Gtfs.apply_run_moves(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  undo
                )
@@ -400,14 +399,14 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
       b: b
     } do
       {:ok, %{undo: undo}} =
-        Gtfs.apply_run_moves(world.organization.id, world.version.id, world.day_type_key, [
+        Gtfs.apply_run_moves(world.audit, world.day_type_key, [
           move(a, "1001", "2001"),
           move(b, "1001", "2001")
         ])
 
       # Somebody else moves one of the two trips after the undo was handed out.
       {:ok, _} =
-        Gtfs.apply_run_moves(world.organization.id, world.version.id, world.day_type_key, [
+        Gtfs.apply_run_moves(world.audit, world.day_type_key, [
           move(a, "2001", "3001")
         ])
 
@@ -415,8 +414,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
 
       assert {:error, :stale_moves} =
                Gtfs.apply_run_moves(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  undo
                )
@@ -431,7 +429,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
       before = stored(world)
 
       assert {:ok, %{undo: undo}} =
-               Gtfs.apply_run_moves(world.organization.id, world.version.id, world.day_type_key, [
+               Gtfs.apply_run_moves(world.audit, world.day_type_key, [
                  move(a, "1001", nil)
                ])
 
@@ -439,8 +437,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
 
       assert {:ok, _} =
                Gtfs.apply_run_moves(
-                 world.organization.id,
-                 world.version.id,
+                 world.audit,
                  world.day_type_key,
                  undo
                )
@@ -452,7 +449,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
   describe "the composed day after a write" do
     test "runs are re-derived from the rows, never from the call's return", %{world: world, a: a} do
       assert {:ok, %{changed_trips: 1}} =
-               Gtfs.apply_run_moves(world.organization.id, world.version.id, world.day_type_key, [
+               Gtfs.apply_run_moves(world.audit, world.day_type_key, [
                  move(a, "1001", "2001")
                ])
 

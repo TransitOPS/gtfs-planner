@@ -55,7 +55,6 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationExportTest do
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Export.Snapshot
   alias GtfsPlanner.Gtfs.Frequency
-  alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Import.CsvParser
   alias GtfsPlanner.Gtfs.Level
   alias GtfsPlanner.Gtfs.Route
@@ -69,6 +68,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationExportTest do
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlanner.Versions.GtfsVersion
 
   # The destination's weekly baseline: every Mon-Fri from 2026-11-02 to 2026-11-27, which includes
@@ -612,7 +612,9 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationExportTest do
     reimport = Enum.map(files, fn {name, content} -> %{filename: name, content: content} end)
 
     assert {:ok, _result} =
-             unboxed(fn -> Import.import_files(scope.organization.id, target.id, reimport) end)
+             unboxed(fn ->
+               StagedImport.import_files(scope.organization.id, target.id, reimport)
+             end)
 
     target
   end

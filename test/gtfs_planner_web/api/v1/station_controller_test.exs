@@ -7,8 +7,9 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
   import GtfsPlanner.GtfsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
-  alias GtfsPlanner.Gtfs.{JournalEntry, JournalPhoto, StopLevel}
+  alias GtfsPlanner.Gtfs.{JournalEntry, JournalPhoto, Pathway, Stations, StopLevel}
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
@@ -81,7 +82,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
     Repo.insert!(struct!(JournalEntry, Map.merge(defaults, attrs)))
   end
 
-  # Writes a versioned diagram file so `DiagramStorage.public_url_path/4` (used by
+  # Writes a versioned diagram file so `DiagramStorage.public_path/4` (used by
   # the controller) resolves to the versioned URL. Files are written under the
   # configured (shared, per-run) uploads root at unique org/version dirs and cleaned
   # up after the test.
@@ -397,12 +398,51 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       assert length(data["pathways"]) == 1
       p = hd(data["pathways"])
       assert p["id"] == pathway.id
+      assert is_integer(p["revision"])
+      assert p["revision"] == Repo.get!(Pathway, pathway.id).lock_version
       assert p["pathway_id"] == pathway.pathway_id
 
       # Keep the legacy diagrams[] array for companion client compatibility.
       assert data["diagrams"] == []
 
       assert is_binary(data["downloaded_at"])
+    end
+
+    test "bundle pathway revision advances after a station pathway update", %{
+      conn: conn,
+      user: user,
+      org: org
+    } do
+      version = gtfs_version_fixture(org.id)
+      %{station: station, pathway: pathway} = build_station_data(org.id, version.id)
+
+      audit = %AuditContext{
+        organization_id: org.id,
+        gtfs_version_id: version.id,
+        station_stop_id: station.stop_id,
+        actor_id: user.id,
+        actor_email: user.email
+      }
+
+      assert {:ok, updated} =
+               Stations.update_pathway_fields(
+                 audit,
+                 pathway.id,
+                 %{"traversal_time" => pathway.traversal_time + 30},
+                 pathway.lock_version
+               )
+
+      assert updated.lock_version == pathway.lock_version + 1
+
+      conn =
+        conn
+        |> authed_conn(user)
+        |> get("/api/v1/versions/#{version.id}/stations/#{station.id}/bundle")
+
+      assert %{"data" => %{"pathways" => [pathway_json]}} = json_response(conn, 200)
+      assert pathway_json["id"] == pathway.id
+      assert pathway_json["revision"] == Repo.get!(Pathway, pathway.id).lock_version
+      assert pathway_json["revision"] == pathway.lock_version + 1
     end
 
     test "nests scoped journal history with ordered photos at documented bundle targets", %{
@@ -595,11 +635,15 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       assert floorplan["center_lon"] == -75.1632
       assert floorplan["scale_mpp"] == 0.05
       assert floorplan["rotation_deg"] == 12.5
-      assert is_binary(floorplan["url"])
-      assert String.contains?(floorplan["url"], "/uploads/diagrams/")
-      # The public production URL includes the selected GTFS version ID.
-      assert String.contains?(floorplan["url"], version.id)
-      assert String.contains?(floorplan["url"], "busway_plan.png")
+      # The controller adds the endpoint base to the path DiagramStorage returns.
+      # The base follows the endpoint's configured port, which runtime.exs reads
+      # from PORT, so the expectation takes it from Endpoint.url/0.
+      expected_floorplan_url =
+        GtfsPlannerWeb.Endpoint.url() <>
+          "/uploads/diagrams/#{org.id}/#{version.id}/" <>
+          "#{PathSafety.stop_storage_dir(station.stop_id)}/busway_plan.png"
+
+      assert floorplan["url"] == expected_floorplan_url
     end
 
     test "does not expose a legacy floorplan referenced only by another published version", %{
@@ -623,7 +667,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
         level_fixture(org.id, historical_version.id, level_id: selected_level.level_id)
 
       {:ok, _} =
-        GtfsPlanner.Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           stop_id: historical_station.id,
           level_id: historical_level.id,
           organization_id: org.id,

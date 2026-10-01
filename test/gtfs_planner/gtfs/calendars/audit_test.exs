@@ -7,11 +7,13 @@ defmodule GtfsPlanner.Gtfs.Calendars.AuditTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.ChangeLog
+  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Repo
 
   setup do
@@ -55,9 +57,10 @@ defmodule GtfsPlanner.Gtfs.Calendars.AuditTest do
 
     assert Gtfs.reversible_fields_for("calendar") == []
     assert Gtfs.reversible_fields_for(:calendar) == []
-    assert Gtfs.rollback_previewable_fields(created) == []
-    assert {:error, :audit_only_entity} = Gtfs.rollback_target_snapshot(created)
-    assert {:error, :audit_only_entity} = Gtfs.rollback_entity(created, context.audit)
+    assert Audit.reversible_fields_for(created.entity_type) == []
+
+    assert {:error, :audit_only_entity} =
+             Stations.rollback_target_snapshot(created)
 
     assert ChangeLog.changeset(%ChangeLog{}, %{
              entity_type: "calendar",
@@ -84,8 +87,9 @@ defmodule GtfsPlanner.Gtfs.Calendars.AuditTest do
     assert deleted.action == "deleted"
     assert deleted.changed_fields["after"] == nil
     assert deleted.changed_fields["before"] == after_snapshot
-    assert {:error, :audit_only_entity} = Gtfs.rollback_target_snapshot(deleted)
-    assert {:error, :audit_only_entity} = Gtfs.rollback_entity(deleted, context.audit)
+
+    assert {:error, :audit_only_entity} =
+             Stations.rollback_target_snapshot(deleted)
   end
 
   test "audit snapshots serialize dates as ISO strings and keys as strings", context do

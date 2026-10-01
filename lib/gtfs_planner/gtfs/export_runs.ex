@@ -180,6 +180,47 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
 
   def fail_build(_, _, _, _, _), do: {:error, :lease_lost}
 
+  @doc """
+  Closes a pending run whose runner was refused because the supervisor was at
+  capacity (`Export.Runner.start_build/4` returned `{:error, :busy}`).
+
+  `generation` is the run's `lease_generation` when the caller started it. A
+  `pending` run still at that generation was never claimed; it becomes `failed`
+  with `failure_code` `busy`, so a new request can create a fresh run. A run that
+  was claimed, closed or cancelled in the meantime returns
+  `{:error, :invalid_transition}` and nothing changes.
+  """
+  @spec fail_unstarted(Ecto.UUID.t(), Ecto.UUID.t(), non_neg_integer()) ::
+          {:ok, Run.t()} | {:error, :not_found | :invalid_transition}
+  def fail_unstarted(organization_id, run_id, generation) do
+    transaction_with_broadcast(fn ->
+      case lock_run(organization_id, run_id) do
+        nil -> {{:error, :not_found}, []}
+        run -> close_unstarted(run, generation)
+      end
+    end)
+  end
+
+  defp close_unstarted(
+         %Run{state: :pending, lease_generation: generation, cancel_requested_at: nil} = run,
+         generation
+       ) do
+    now = DateTime.utc_now()
+
+    attrs = %{
+      state: :failed,
+      phase: :cleanup,
+      failure_code: "busy",
+      started_at: now,
+      finished_at: now
+    }
+
+    {:ok, failed} = Repo.update(Run.system_changeset(run, attrs))
+    {{:ok, failed}, [run.id]}
+  end
+
+  defp close_unstarted(_run, _generation), do: {{:error, :invalid_transition}, []}
+
   @spec request_cancel(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, Run.t()} | {:error, term()}
   def request_cancel(organization_id, run_id) do
     transaction_with_broadcast(fn ->
@@ -338,6 +379,8 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
     |> Repo.one()
   end
 
+  # A run closed by `fail_unstarted/3` built nothing, so it does not replace the
+  # export the page was showing.
   @spec latest_for_version(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations) ::
           Run.t() | nil | {:error, :invalid_export_type}
   def latest_for_version(organization_id, version_id, export_type)
@@ -346,6 +389,7 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
       where:
         r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id and
           r.export_type == ^export_type,
+      where: r.state != :failed or coalesce(r.failure_code, "") != "busy",
       order_by: [desc: r.inserted_at],
       limit: 1
     )

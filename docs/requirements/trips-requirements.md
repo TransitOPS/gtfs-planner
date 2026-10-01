@@ -616,16 +616,21 @@ As a schedule editor, I want to be warned about overlapping trips on the same bl
 
 ### 4.11 In-Seat Transfers
 
-**AC-TRIP-041: In-seat transfer checkbox**
-- Given I am editing a trip
-- Then I see an "In-seat transfers allowed" checkbox
-- And checking it indicates passengers may remain on the vehicle to the next trip
+**AC-TRIP-041: In-seat transfer choice on a block connection**
+- Given I am on a trip connection in Operations › Blocks
+- Then I can choose one of three settings for the connection
+- And the settings are "Not stated", "Riders stay on board" and "Riders must re-board"
+- And choosing stay on board records `transfer_type=4` and choosing must re-board records `transfer_type=5`
+- And the record stores the from-trip's last stop and the to-trip's first stop
+- And "Not stated" removes the connection's record instead of writing one
+- And the choice is offered only when the to-trip immediately follows the from-trip on every date both trips run, and is refused with the reason otherwise
 
-**AC-TRIP-042: In-seat transfer generates transfer record**
-- Given in-seat transfers are enabled for a trip
-- When GTFS is exported
-- Then appropriate transfer records (transfer_type=4) are generated
-- And trip planners allow passengers to remain on board
+**AC-TRIP-042: In-seat transfer records are authored, not derived**
+- Given I saved an in-seat setting on a block connection
+- Then exactly one transfer record names that trip pair
+- And the record was written by that save, not derived from a trip's settings when the feed is built
+- And the trip form offers no in-seat setting of its own
+- And trip planners see the record that was saved
 
 ### 4.12 Trip Information Fields
 

@@ -4,6 +4,8 @@ defmodule GtfsPlanner.AccountsFixtures do
   entities via to `GtfsPlanner.Accounts` context.
   """
 
+  alias GtfsPlanner.Accounts.User
+
   @doc """
   Extracts a token from a confirmation/reset email sent to given user.
 
@@ -38,6 +40,15 @@ defmodule GtfsPlanner.AccountsFixtures do
       |> GtfsPlanner.Accounts.register_user()
 
     user
+  end
+
+  @doc """
+  Generate a user who was invited and has not set a password.
+  """
+  def invited_user_fixture(attrs \\ %{}) do
+    %User{}
+    |> User.invite_changeset(Enum.into(attrs, %{email: unique_user_email()}))
+    |> GtfsPlanner.Repo.insert!()
   end
 
   @doc """
@@ -83,6 +94,39 @@ defmodule GtfsPlanner.AccountsFixtures do
   def editor_fixture(organization) do
     user = user_fixture()
     organization_membership_fixture(user, organization)
+    user
+  end
+
+  @doc "Creates a real editor and the server-style audit context for a scoped writer test."
+  def editor_audit_fixture(organization, version) do
+    organization_id = if is_map(organization), do: organization.id, else: organization
+    version_id = if is_map(version), do: version.id, else: version
+    key = {__MODULE__, :editor_audit_fixture, organization_id}
+
+    actor =
+      case Process.get(key) do
+        nil ->
+          actor = editor_fixture(%{id: organization_id})
+          Process.put(key, actor)
+          actor
+
+        actor ->
+          actor
+      end
+
+    %GtfsPlanner.Gtfs.AuditContext{
+      organization_id: organization_id,
+      gtfs_version_id: version_id,
+      actor_id: actor.id,
+      actor_email: actor.email,
+      station_stop_id: nil
+    }
+  end
+
+  @doc "Creates a system administrator who can manage the given organization."
+  def system_admin_fixture(organization) do
+    user = user_fixture()
+    organization_membership_fixture(user, organization, ["administrator"])
     user
   end
 

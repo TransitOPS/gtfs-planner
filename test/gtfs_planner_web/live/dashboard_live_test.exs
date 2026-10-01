@@ -181,7 +181,11 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       deactivated_admin = member_fixture(organization, ["pathways_studio_admin"])
 
       {:ok, _} =
-        Organizations.deactivate_user_in_organization(deactivated_admin.id, organization.id)
+        Organizations.deactivate_user_in_organization(
+          admin,
+          deactivated_admin.id,
+          organization.id
+        )
 
       user = member_fixture(organization, ["pathways_studio_editor"])
       conn = log_in_user(conn, user, organization: organization)
@@ -242,7 +246,11 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       deactivated_admin = member_fixture(organization, ["pathways_studio_admin"])
 
       {:ok, _} =
-        Organizations.deactivate_user_in_organization(deactivated_admin.id, organization.id)
+        Organizations.deactivate_user_in_organization(
+          admin,
+          deactivated_admin.id,
+          organization.id
+        )
 
       # Membership exists but neither editor nor organization-admin product role.
       user = member_fixture(organization, [])
@@ -273,7 +281,9 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       active_member = member_fixture(organization, ["pathways_studio_editor"])
 
       deactivated = member_fixture(organization, ["pathways_studio_editor"])
-      {:ok, _} = Organizations.deactivate_user_in_organization(deactivated.id, organization.id)
+
+      {:ok, _} =
+        Organizations.deactivate_user_in_organization(admin, deactivated.id, organization.id)
 
       conn = log_in_user(conn, admin, organization: organization)
 
@@ -436,7 +446,11 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       non_current = Versions.get_published_gtfs_version_for_org!(organization.id, non_current_id)
       original_name = non_current.name
 
-      {:ok, renamed_other} = Versions.update_gtfs_version(non_current, %{name: "Renamed Other"})
+      editor = editor_fixture(organization)
+      scope = %{actor_id: editor.id, organization_id: organization.id}
+
+      {:ok, renamed_other} =
+        Versions.update_gtfs_version(scope, non_current.id, %{name: "Renamed Other"})
 
       send(view.pid, {:gtfs_version_renamed, renamed_other})
       _ = render(view)
@@ -471,7 +485,11 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       assigns_before = :sys.get_state(view.pid).socket.assigns
       current = assigns_before.current_gtfs_version
 
-      {:ok, renamed_current} = Versions.update_gtfs_version(current, %{name: "Renamed Current"})
+      editor = editor_fixture(organization)
+      scope = %{actor_id: editor.id, organization_id: organization.id}
+
+      {:ok, renamed_current} =
+        Versions.update_gtfs_version(scope, current.id, %{name: "Renamed Current"})
 
       send(view.pid, {:gtfs_version_renamed, renamed_current})
       _ = render(view)

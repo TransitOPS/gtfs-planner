@@ -221,6 +221,10 @@ defmodule GtfsPlannerWeb.Router do
     ]
 
     get "/:version/export-runs/:run_id/download", GtfsExportDownloadController, :show
+    # The map line a pattern or a whole route is drawn from, as a downloadable
+    # file. `?pattern=` names one pattern or `all`, and `?format=` chooses
+    # `geojson` or `kml`; anything else is the same plain 404.
+    get "/:version/routes/:route_id/map-lines", MapLineDownloadController, :show
   end
 
   # -- Companion API pipelines --------------------------------------------------

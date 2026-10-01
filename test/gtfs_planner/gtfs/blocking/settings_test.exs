@@ -19,6 +19,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.SettingsTest do
   use GtfsPlanner.DataCase, async: false
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.Accounts.{User, UserOrgMembership}
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.BlockingSetting
@@ -73,7 +74,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.SettingsTest do
     end
   end
 
-  describe "update_settings/3" do
+  describe "update_settings/2" do
     test "saving every field stores them and a second save replaces every column on the same row" do
       organization = organization_fixture()
       version = gtfs_version_fixture(organization.id)
@@ -82,8 +83,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.SettingsTest do
 
       assert {:ok, first} =
                Blocking.update_settings(
-                 organization.id,
-                 version.id,
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
                  Map.put(@valid, :default_garage_id, garage.id)
                )
 
@@ -120,7 +120,12 @@ defmodule GtfsPlanner.Gtfs.Blocking.SettingsTest do
         max_piece_minutes: 720
       }
 
-      assert {:ok, second} = Blocking.update_settings(organization.id, version.id, replacement)
+      assert {:ok, second} =
+               Blocking.update_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 replacement
+               )
+
       assert second.id == first.id
       assert Repo.aggregate(BlockingSetting, :count) == 1
 
@@ -140,16 +145,24 @@ defmodule GtfsPlanner.Gtfs.Blocking.SettingsTest do
       organization = organization_fixture()
       version = gtfs_version_fixture(organization.id)
 
-      assert {:ok, _} = Blocking.update_settings(organization.id, version.id, @valid)
+      assert {:ok, _} =
+               Blocking.update_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 @valid
+               )
+
       assert Blocking.get_settings(organization.id, version.id).max_block_minutes == 600
       assert Blocking.get_settings(organization.id, version.id).max_piece_minutes == 330
 
       assert {:ok, _} =
-               Blocking.update_settings(organization.id, version.id, %{
-                 @valid
-                 | max_block_minutes: "",
-                   max_piece_minutes: ""
-               })
+               Blocking.update_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 %{
+                   @valid
+                   | max_block_minutes: "",
+                     max_piece_minutes: ""
+                 }
+               )
 
       settings = Blocking.get_settings(organization.id, version.id)
       assert settings.max_block_minutes == nil
@@ -206,8 +219,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.SettingsTest do
 
       assert {:ok, %BlockingSetting{default_garage_id: stored}} =
                Blocking.update_settings(
-                 organization.id,
-                 version.id,
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
                  Map.put(@valid, :default_garage_id, garage.id)
                )
 
@@ -222,18 +234,20 @@ defmodule GtfsPlanner.Gtfs.Blocking.SettingsTest do
 
       assert {:ok, _} =
                Blocking.update_settings(
-                 organization.id,
-                 version.id,
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
                  Map.put(@valid, :default_garage_id, garage.id)
                )
 
       stored = Blocking.get_settings(organization.id, version.id)
 
       assert {:error, _} =
-               Blocking.update_settings(organization.id, version.id, %{
-                 @valid
-                 | min_layover_minutes: 121
-               })
+               Blocking.update_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 %{
+                   @valid
+                   | min_layover_minutes: 121
+                 }
+               )
 
       assert Blocking.get_settings(organization.id, version.id) == stored
       assert Repo.aggregate(BlockingSetting, :count) == 1
@@ -301,10 +315,19 @@ defmodule GtfsPlanner.Gtfs.Blocking.SettingsTest do
       other_organization = organization_fixture()
       foreign_version = gtfs_version_fixture(other_organization.id)
 
-      assert Blocking.update_settings(organization.id, staging.id, @valid) ==
+      assert Blocking.update_settings(
+               GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, staging.id),
+               @valid
+             ) ==
                {:error, :not_found}
 
-      assert Blocking.update_settings(organization.id, foreign_version.id, @valid) ==
+      assert Blocking.update_settings(
+               GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                 organization.id,
+                 foreign_version.id
+               ),
+               @valid
+             ) ==
                {:error, :not_found}
 
       assert Repo.aggregate(BlockingSetting, :count) == 0
@@ -316,16 +339,25 @@ defmodule GtfsPlanner.Gtfs.Blocking.SettingsTest do
       other_version = gtfs_version_fixture(organization.id)
 
       assert {:ok, %BlockingSetting{}} =
-               Blocking.update_settings(organization.id, version.id, %{
-                 @valid
-                 | min_layover_minutes: 12
-               })
+               Blocking.update_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 %{
+                   @valid
+                   | min_layover_minutes: 12
+                 }
+               )
 
       assert {:ok, %BlockingSetting{}} =
-               Blocking.update_settings(organization.id, other_version.id, %{
-                 @valid
-                 | min_layover_minutes: 30
-               })
+               Blocking.update_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                   organization.id,
+                   other_version.id
+                 ),
+                 %{
+                   @valid
+                   | min_layover_minutes: 30
+                 }
+               )
 
       assert Blocking.get_settings(organization.id, version.id).min_layover_minutes == 12
       assert Blocking.get_settings(organization.id, other_version.id).min_layover_minutes == 30
@@ -345,7 +377,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.SettingsTest do
           gtfs_version_id: foreign_version.id
         })
 
-      assert {:ok, stored} = Blocking.update_settings(organization.id, version.id, attrs)
+      assert {:ok, stored} =
+               Blocking.update_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 attrs
+               )
 
       assert stored.organization_id == organization.id
       assert stored.gtfs_version_id == version.id
@@ -355,7 +391,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.SettingsTest do
     end
   end
 
-  describe "update_settings/3 under a held blocking lock" do
+  describe "update_settings/2 under a held blocking lock" do
     test "the writer waits for lock_blocking!1 and succeeds after the release" do
       scope =
         unboxed(fn ->
@@ -377,7 +413,13 @@ defmodule GtfsPlanner.Gtfs.Blocking.SettingsTest do
             {:ok, %{rows: [[backend_pid]]}} = Repo.query("select pg_backend_pid()")
             send(parent, {:writer_pid, backend_pid})
 
-            Blocking.update_settings(scope.organization_id, scope.version_id, @valid)
+            Blocking.update_settings(
+              GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                scope.organization_id,
+                scope.version_id
+              ),
+              @valid
+            )
           end)
         end)
 
@@ -436,10 +478,13 @@ defmodule GtfsPlanner.Gtfs.Blocking.SettingsTest do
       assert Gtfs.get_blocking_settings(organization.id, version.id) == @defaults
 
       assert {:ok, %BlockingSetting{min_layover_minutes: 12}} =
-               Gtfs.update_blocking_settings(organization.id, version.id, %{
-                 @valid
-                 | min_layover_minutes: 12
-               })
+               Gtfs.update_blocking_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 %{
+                   @valid
+                   | min_layover_minutes: 12
+                 }
+               )
 
       assert Gtfs.get_blocking_settings(organization.id, version.id).min_layover_minutes == 12
       assert Gtfs.get_blocking_settings(organization.id, version.id).max_block_minutes == 600
@@ -449,8 +494,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.SettingsTest do
   defp assert_rejected(organization_id, gtfs_version_id, field, value) do
     assert {:error, changeset} =
              Blocking.update_settings(
-               organization_id,
-               gtfs_version_id,
+               GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                 organization_id,
+                 gtfs_version_id
+               ),
                Map.put(@valid, field, value)
              )
 
@@ -485,8 +532,21 @@ defmodule GtfsPlanner.Gtfs.Blocking.SettingsTest do
   # version.
   defp cleanup_committed_scope(scope) do
     unboxed(fn ->
+      actor_ids =
+        Repo.all(
+          from(m in UserOrgMembership,
+            where: m.organization_id == ^scope.organization_id,
+            select: m.user_id
+          )
+        )
+
+      Repo.delete_all(
+        from(m in UserOrgMembership, where: m.organization_id == ^scope.organization_id)
+      )
+
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^scope.organization_id))
       Repo.delete_all(from(o in Organization, where: o.id == ^scope.organization_id))
+      Repo.delete_all(from(u in User, where: u.id in ^actor_ids))
     end)
   end
 

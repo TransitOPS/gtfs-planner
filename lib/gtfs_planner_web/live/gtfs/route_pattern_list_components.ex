@@ -19,12 +19,20 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   import GtfsPlannerWeb.RouteWorkspace, only: [route_header: 1]
 
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlannerWeb.Gtfs.LeftOutWording
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents
+  alias GtfsPlannerWeb.Gtfs.RoutePatternComponents
 
   @doc """
   Turns the loaded pattern summaries into the items of the `:patterns` stream: a
   heading before the first pattern of each direction, then that direction's
   patterns. The summaries arrive ordered by direction, so a direction is one run.
+
+  A supplied route-pattern label keeps its owner and the children that carry its
+  ID together: the label's own row leads, the owner follows it, and the children
+  are indented under the owner in the order they loaded. A pattern with no
+  children behind it is an ordinary row, and a labelled pattern whose owner is not
+  in this list at all keeps a row of its own rather than disappearing.
   """
   def stream_items(summaries) do
     summaries
@@ -39,8 +47,123 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
         count: length(group)
       }
 
-      [heading | Enum.map(group, &%{id: &1.id, kind: :pattern, summary: &1})]
+      [heading | direction_items(group)]
     end)
+  end
+
+  # The children are reached through their owner, so only the patterns that
+  # carry no label of their own lead a run of rows.
+  defp direction_items(group) do
+    owners = MapSet.new(group, & &1.pattern.id)
+    children = Enum.group_by(group, & &1.pattern.label_pattern_id)
+
+    group
+    |> Enum.filter(fn summary ->
+      label = summary.pattern.label_pattern_id
+
+      is_nil(label) or not MapSet.member?(owners, label)
+    end)
+    |> Enum.flat_map(&owner_items(&1, Map.get(children, &1.pattern.id, [])))
+  end
+
+  defp owner_items(summary, []), do: [pattern_item(summary, nil)]
+
+  defp owner_items(summary, children) do
+    label_id = summary.pattern.route_pattern_id
+
+    [
+      %{
+        # The stream prefixes this with the stream's own name, so the group's
+        # head cell carries the `#pattern-label-<id>` a caller can reach.
+        id: "label-#{label_id}",
+        kind: :label,
+        label_id: label_id,
+        # The owner exports under the label too, so it counts as a stop order.
+        count: length(children) + 1
+      },
+      pattern_item(summary, %{id: label_id, role: :owner})
+    ] ++ Enum.map(children, &pattern_item(&1, %{id: label_id, role: :child}))
+  end
+
+  defp pattern_item(summary, label) do
+    %{id: summary.id, kind: :pattern, summary: summary, label: label}
+  end
+
+  @doc """
+  The Patterns list's "Download map lines" menu (step 35).
+
+  One download for the whole route: both links name `pattern=all`, so the file
+  holds every pattern of this route with its stops, in either format. It links
+  straight at step 34's `MapLineDownloadController` as `<a download>` elements, so
+  the browser saves the file without a LiveView event.
+  """
+  attr :version, :map, required: true, doc: "the current published GTFS version"
+  attr :route, :map, required: true, doc: "the route whose patterns are listed"
+
+  def map_lines_menu(assigns) do
+    ~H"""
+    <details id="patterns-download-map-lines" class="relative">
+      <summary
+        id="patterns-download-map-lines-toggle"
+        class="flex min-h-11 cursor-pointer list-none items-center gap-1.5 rounded-control border border-control bg-white px-3 text-sm font-[650] text-strong hover:bg-canvas [&::-webkit-details-marker]:hidden"
+      >
+        <.icon name="hero-arrow-down-tray" class="size-4" /> Download map lines
+        <.icon name="hero-chevron-down" class="size-4 text-muted" />
+      </summary>
+      <div
+        role="menu"
+        aria-label="Map line files"
+        class="absolute right-0 top-full z-30 mt-2 w-[min(320px,calc(100vw-48px))] rounded-card border border-subtle bg-white p-2 shadow-float"
+      >
+        <p class="px-3 pb-1 pt-2 text-[13px] font-[650] text-default">
+          Download every pattern on this route
+        </p>
+        <.map_lines_menu_item
+          id="patterns-download-map-lines-kml"
+          href={
+            ~p"/gtfs/#{@version.id}/routes/#{@route.route_id}/map-lines?#{%{pattern: "all", format: "kml"}}"
+          }
+          title="KML file"
+          subtitle="For Google Earth and Google My Maps. A folder per direction."
+        />
+        <.map_lines_menu_item
+          id="patterns-download-map-lines-geojson"
+          href={
+            ~p"/gtfs/#{@version.id}/routes/#{@route.route_id}/map-lines?#{%{pattern: "all", format: "geojson"}}"
+          }
+          title="GeoJSON file"
+          subtitle="For QGIS, ArcGIS and geojson.io. One feature per pattern."
+        />
+        <p class="mx-1 mt-1 rounded-control bg-canvas px-3 py-2 text-[13px] text-default">
+          Each pattern&rsquo;s map line and its stops, named as on this list. A pattern with
+          no path in some sections downloads its line in pieces.
+        </p>
+      </div>
+    </details>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :href, :string, required: true
+  attr :title, :string, required: true
+  attr :subtitle, :string, required: true
+
+  defp map_lines_menu_item(assigns) do
+    ~H"""
+    <a
+      id={@id}
+      role="menuitem"
+      href={@href}
+      download
+      class="flex min-h-11 w-full items-start gap-2 rounded-control px-3 py-2 text-left hover:bg-canvas"
+    >
+      <.icon name="hero-arrow-down-tray" class="mt-0.5 size-4 shrink-0 text-muted" />
+      <span class="min-w-0">
+        <span class="block font-[650] text-strong">{@title}</span>
+        <span class="block text-[13px] text-muted">{@subtitle}</span>
+      </span>
+    </a>
+    """
   end
 
   attr :load_state, :atom, required: true, values: [:loading, :unavailable, :ready]
@@ -52,6 +175,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   attr :route_trip_count, :integer, required: true
   attr :pending_trip_count, :integer, required: true
   attr :custom_trip_count, :integer, required: true
+  attr :left_out, :list, default: [], doc: "counts by derivation reason for this route"
   attr :derivation_error, :string, default: nil
   attr :build_state, :atom, required: true
   attr :build_error, :string, default: nil
@@ -67,6 +191,16 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   attr :bulk_result, :map, default: nil
   attr :bulk_error, :atom, default: nil
   attr :bulk_pending, :boolean, default: false
+
+  attr :grouped_summary, :map,
+    default: nil,
+    doc: "the derivation summary returned by a grouping review that was applied"
+
+  attr :link_offer, :map, default: nil, doc: "the offer to link left-out trips, when one matches"
+  attr :link_done, :map, default: nil, doc: "the summary of trips a confirmed link joined"
+  attr :link_pending, :boolean, default: false
+  attr :label, :map, default: nil, doc: "the open route-pattern label's group, when one is open"
+  attr :label_remove, :map, default: nil, doc: "the child a Remove label confirm is open for"
 
   def page(%{load_state: :loading} = assigns) do
     ~H"""
@@ -149,6 +283,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
       |> assign(:editable?, assigns.editable? and not assigns.editor_revoked?)
       |> assign(:build_failed?, assigns.derivation_error != nil or assigns.build_error != nil)
       |> assign(:blocked?, blocked?(assigns))
+      |> assign(:left_out_rows, left_out_rows(assigns.left_out))
+      |> then(fn assigns ->
+        assign(assigns, :group_offered?, LeftOutWording.group_offered?(assigns.left_out_rows))
+      end)
 
     assigns = assign(assigns, :create_mode, create_mode(assigns))
 
@@ -170,6 +308,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
             Stop patterns
           </h2>
           <div class="flex flex-wrap items-center gap-2">
+            <.map_lines_menu :if={@pattern_count > 0} version={@version} route={@route} />
             <.button
               :if={@pattern_count > 0}
               id="patterns-compare"
@@ -197,6 +336,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
 
         <div class="mt-4 hidden gap-4 has-[>*]:grid">
           <.build_summary_message :if={@build_summary} summary={@build_summary} />
+
+          <.grouped_message :if={@grouped_summary} summary={@grouped_summary} />
+
+          <div
+            :if={@editable? and (@link_offer != nil or @link_done != nil)}
+            id="pattern-link-offer"
+          >
+            <RoutePatternComponents.link_offer
+              offer={@link_offer}
+              done={@link_done}
+              pending={@link_pending}
+            />
+          </div>
 
           <.message
             :if={@stale?}
@@ -307,6 +459,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
           </.message>
         </div>
 
+        <.left_out_card
+          :if={@left_out_rows != []}
+          rows={@left_out_rows}
+          route={@route}
+          version={@version}
+          editable?={@editable?}
+        />
+
         <div class="mt-4">
           <%= cond do %>
             <% not @patterns_empty? -> %>
@@ -338,18 +498,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
               </.first_use>
             <% @blocked? -> %>
               <div class="grid gap-4">
-                <.message id="patterns-build-blocked" kind="info" title="No trips to group">
-                  <%= if @custom_trip_count > 0 do %>
-                    {custom_trips_sentence(@custom_trip_count)} so nothing can be grouped
-                    automatically. Create a pattern by hand, or <.link
-                      id="patterns-review-schedules"
-                      navigate={~p"/gtfs/#{@version.id}/routes/#{@route.route_id}/schedules"}
-                      class="font-[650] underline"
-                    >
-                      review those trips on the Schedules tab</.link>.
-                  <% else %>
-                    No trips on this route are waiting to be grouped into patterns.
-                  <% end %>
+                <%!-- The left-out card above already says why these trips stayed out. --%>
+                <.message
+                  :if={@left_out_rows == []}
+                  id="patterns-build-blocked"
+                  kind="info"
+                  title="No trips to group"
+                >
+                  No trips on this route are waiting to be grouped into patterns.
                 </.message>
                 <.first_pattern
                   id="patterns-empty-inline"
@@ -373,6 +529,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
       </section>
 
       <.bulk_dialog dialog={@bulk_dialog} selected={@bulk_selected} />
+
+      <%= if @label != nil do %>
+        <.label_drawer label={@label} editable?={@editable?} />
+        <.label_remove_dialog remove={@label_remove} />
+      <% end %>
     </div>
     """
   end
@@ -394,6 +555,115 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
     </.first_use>
     """
   end
+
+  attr :rows, :list, required: true, doc: "one row per derivation reason, from `left_out_rows/1`"
+  attr :route, :map, required: true
+  attr :version, :map, required: true
+  attr :editable?, :boolean, required: true
+  # The trips import left outside patterns, one row per reason with the fix that
+  # reason can have here. A viewer reads why they are there and takes no action.
+  defp left_out_card(assigns) do
+    assigns =
+      assigns
+      |> assign(:total, LeftOutWording.total(assigns.rows))
+      |> then(fn assigns -> assign(assigns, :one?, assigns.total == 1) end)
+
+    ~H"""
+    <section
+      id="patterns-left-out"
+      aria-labelledby="patterns-left-out-title"
+      class="mt-5 overflow-hidden rounded-card border border-subtle bg-white"
+    >
+      <div class="px-5 pb-3 pt-4">
+        <h3
+          id="patterns-left-out-title"
+          class="font-display text-[18px] font-semibold leading-tight tracking-[-0.01em] text-strong"
+        >
+          {LeftOutWording.title(@total)}
+        </h3>
+        <p class="mt-0.5 max-w-[86ch] text-[15px] leading-relaxed text-muted">
+          Import left {if @one?, do: "it", else: "them"} out. Until {if @one?,
+            do: "it is",
+            else: "they are"} in a pattern you can’t edit {if @one?,
+            do: "its map line",
+            else: "their map lines"}, and {if @one?, do: "it", else: "they"} still export exactly as imported. Trips with no
+          direction can be grouped here; the rest need a fix in the source feed and a re-import.
+        </p>
+      </div>
+      <ul>
+        <li
+          :for={row <- @rows}
+          id={row.id}
+          class="flex flex-wrap items-start gap-x-4 gap-y-3 border-t border-subtle px-5 py-4"
+        >
+          <span class={[
+            "grid size-9 shrink-0 place-items-center rounded-control",
+            row.tone == :error && "bg-error-bg text-error-fg",
+            row.tone == :warning && "bg-warning-bg text-warning-fg"
+          ]}>
+            <.icon name="hero-exclamation-triangle" class="size-[18px]" />
+          </span>
+          <div class="min-w-0 flex-1 basis-[320px]">
+            <p class="text-[15px] font-bold text-strong">{row.title}</p>
+            <p class="mt-0.5 max-w-[78ch] text-[15px] leading-relaxed text-default">
+              {row.body}
+            </p>
+          </div>
+          <.button
+            :if={@editable? and row.action}
+            id={row.action.id}
+            patch={left_out_action_path(row.action.target, @version, @route)}
+            variant={if(row.action.primary?, do: "primary", else: "secondary")}
+            class="min-h-11 shrink-0"
+          >
+            {row.action.label}
+          </.button>
+        </li>
+      </ul>
+      <details
+        id="patterns-left-out-codes"
+        class="group border-t border-subtle px-5 text-[13px] text-muted"
+      >
+        <summary class="inline-flex min-h-11 cursor-pointer items-center gap-1 font-[650] text-default hover:underline">
+          <.icon name="hero-chevron-right" class="size-4 transition-transform group-open:rotate-90" />
+          Technical details
+        </summary>
+        <p class="pb-3">
+          Derivation reasons:
+          <%= for row <- @rows do %>
+            <code class="font-mono text-[12px] text-strong">{row.code}</code>
+          <% end %>
+        </p>
+      </details>
+    </section>
+    """
+  end
+
+  defp left_out_action_path(:group, version, route),
+    do: ~p"/gtfs/#{version.id}/routes/#{route.route_id}/patterns?review=group"
+
+  defp left_out_action_path(:schedules, version, route),
+    do: ~p"/gtfs/#{version.id}/routes/#{route.route_id}/schedules"
+
+  # One row per derivation reason, worded for the operator; the raw code stays in
+  # Technical details. The wording is shared with the import result, which reads
+  # the same reasons for every route; only these ids and links are this page's.
+  defp left_out_rows(left_out) do
+    left_out
+    |> LeftOutWording.rows()
+    |> Enum.map(fn row ->
+      Map.put(row, :id, "patterns-left-out-#{row.code}")
+      |> Map.update!(:action, fn
+        nil -> nil
+        action -> Map.put(action, :id, left_out_action_id(action.target, row.code))
+      end)
+    end)
+  end
+
+  # One id per action. The grouping review keeps the stable id the criteria name;
+  # the rows that share the Schedules link are addressed by their reason.
+  defp left_out_action_id(:group, _code), do: "patterns-left-out-group"
+  defp left_out_action_id(:schedules, code), do: "patterns-left-out-#{code}-trips"
 
   attr :id, :string, required: true
   attr :variant, :string, required: true
@@ -417,7 +687,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
 
   attr :busy, :string, required: true
   slot :inner_block, required: true
-
   # The label of a button that re-reads the list. While its click is in flight the
   # icon spins and the label says so; `phx-disable-with` would replace the icon.
   defp reload_label(assigns) do
@@ -441,6 +710,40 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
     </.message>
     """
   end
+
+  # What the grouping review just wrote. It names the trips that got a direction
+  # and the patterns they joined, and says the one thing an operator checks
+  # afterwards: their times did not change.
+  attr :summary, :map, required: true
+
+  defp grouped_message(assigns) do
+    ~H"""
+    <.message
+      id="patterns-grouped"
+      kind="success"
+      title={grouped_title(@summary)}
+    >
+      {grouped_body(@summary)}
+    </.message>
+    """
+  end
+
+  defp grouped_title(%{trips_linked: linked}) do
+    "Grouped #{plural(linked, "trip", "trips")} into patterns"
+  end
+
+  defp grouped_body(%{patterns_created: created, timings_created: timings}) do
+    "Their direction is set and exported, and their times did not change. " <>
+      created_part(created) <> timings_part(timings)
+  end
+
+  defp created_part(0), do: "No new pattern was needed. "
+  defp created_part(1), do: "One new pattern was created. "
+  defp created_part(created), do: "#{created} new patterns were created. "
+
+  defp timings_part(0), do: ""
+  defp timings_part(1), do: "One new timing was named after its service."
+  defp timings_part(timings), do: "#{timings} new timings were named after their services."
 
   attr :route, :map, required: true
   attr :version, :map, required: true
@@ -570,10 +873,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
         <tbody id="patterns-list" phx-update="stream" class="max-md:block">
           <%= for {id, item} <- @patterns do %>
             <.direction_row :if={item.kind == :direction} id={id} item={item} />
+            <.label_row :if={item.kind == :label} id={id} item={item} />
             <.pattern_row
               :if={item.kind == :pattern}
               id={id}
               summary={item.summary}
+              label={item.label}
               bulk_result={@bulk_result}
             />
           <% end %>
@@ -590,7 +895,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   end
 
   defp head_class, do: "h-11 px-4 py-0 text-[13px] font-[650] text-default"
-
   # Legend, closed until asked. It defines the words the list uses once, so the
   # rows can stay short.
   defp help_panel(assigns) do
@@ -659,7 +963,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
 
   attr :candidates, :list, required: true
   attr :first?, :boolean, required: true
-
   # Map lines that still need paths. It leads the card when most patterns need
   # them (right after an import) and closes it otherwise.
   defp attention(assigns) do
@@ -718,9 +1021,50 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   end
 
   attr :id, :string, required: true
-  attr :summary, :map, required: true
-  attr :bulk_result, :map, default: nil
+  attr :item, :map, required: true
 
+  # One supplied label, its owner and the children under it. The row is the
+  # group's head: it says which ID the group exports as, and it is what opens the
+  # label's details.
+  defp label_row(assigns) do
+    ~H"""
+    <tr id={@id} class="border-t border-subtle bg-canvas">
+      <td
+        id={"pattern-label-#{@item.label_id}"}
+        colspan="6"
+        class="py-1 pl-5 pr-4 align-middle max-md:px-4"
+      >
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span class="text-sm text-default">
+            Exported as route pattern
+            <strong class="font-mono text-[13px] font-[650] text-strong">{@item.label_id}</strong>
+          </span>
+          <span class="text-[13px] text-muted">{label_order_count(@item)}</span>
+          <button
+            type="button"
+            id={"pattern-label-details-#{@item.label_id}"}
+            phx-click="open_label"
+            phx-value-label-id={@item.label_id}
+            class={[
+              "-mr-2 ml-auto inline-flex min-h-11 items-center gap-1.5 rounded-control px-2 font-[650] text-action hover:underline",
+              "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+            ]}
+          >
+            Label details
+          </button>
+        </div>
+      </td>
+    </tr>
+    """
+  end
+
+  defp label_order_count(%{count: 1}), do: "1 stop order"
+  defp label_order_count(%{count: count}), do: "#{count} stop orders, exported as one"
+
+  attr :id, :string, required: true
+  attr :summary, :map, required: true
+  attr :label, :map, default: nil
+  attr :bulk_result, :map, default: nil
   # The whole row opens the pattern; the name button is the keyboard path and the
   # map-line cell keeps its own target. Below `md` the cells wrap into one card.
   defp pattern_row(assigns) do
@@ -732,6 +1076,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
       |> assign(:pattern, pattern)
       |> assign(:natural_id, natural_id)
       |> assign(:name, pattern_name(pattern))
+      |> assign(:child?, assigns.label != nil and assigns.label.role == :child)
       |> assign(:bulk_entry, bulk_entry(assigns.bulk_result, natural_id))
 
     ~H"""
@@ -739,12 +1084,23 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
       id={@id}
       phx-click="open_pattern"
       phx-value-pattern-id={@natural_id}
+      data-label={if(@label, do: @label.id, else: nil)}
+      data-label-role={if(@label, do: @label.role, else: nil)}
       class={[
         "cursor-pointer border-t border-subtle hover:bg-canvas",
         "max-md:flex max-md:flex-wrap max-md:items-center max-md:gap-x-3 max-md:gap-y-1 max-md:px-4 max-md:py-3"
       ]}
     >
-      <td data-label="Pattern" class="py-3 pl-5 pr-4 align-middle max-md:basis-full max-md:p-0">
+      <td
+        data-label="Pattern"
+        class={[
+          "py-3 pr-4 align-middle max-md:basis-full max-md:p-0",
+          if(@child?,
+            do: "pl-8 shadow-[inset_3px_0_0_var(--color-subtle)] max-md:pl-8",
+            else: "pl-5"
+          )
+        ]}
+      >
         <button
           id={"pattern-open-#{@summary.id}"}
           type="button"
@@ -759,6 +1115,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
         </button>
         <p class="mt-0.5 text-[13px] text-muted">
           {service_description(@pattern)} · {plural(@summary.timing_count, "timing", "timings")}
+          <%= if @label do %>
+            ·
+            <span
+              id={"pattern-label-note-#{@natural_id}"}
+              class="text-default"
+            >
+              {label_note(@label)}
+            </span>
+          <% end %>
         </p>
       </td>
       <.headsign_cell summary={@summary} natural_id={@natural_id} />
@@ -868,7 +1233,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   attr :name, :string, required: true
   attr :natural_id, :string, required: true
   attr :bulk_entry, :map, default: nil
-
   # The map-line cell is the way to the pattern's map-line task. After a bulk run
   # it reports what the run found for this pattern instead.
   defp map_cell(%{bulk_entry: nil} = assigns) do
@@ -976,7 +1340,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
 
   attr :dialog, :map, default: nil
   attr :selected, :any, default: nil
-
   # Choose the patterns to include, see how many sections that covers, then
   # confirm. The list holds the selection, so the limit is met by unchecking.
   defp bulk_dialog(assigns) do
@@ -1069,7 +1432,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   end
 
   # --- state ------------------------------------------------------------------
-
   # Nothing can be grouped automatically: the build found nothing waiting, or every
   # trip keeps its imported times.
   defp blocked?(assigns) do
@@ -1082,6 +1444,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   # back to secondary while the body offers a bigger next step (building patterns
   # from trips), and disappears when an empty state already offers it.
   defp create_mode(%{editable?: false}), do: :hidden
+
+  defp create_mode(%{group_offered?: true}), do: :secondary
 
   defp create_mode(%{patterns_empty?: false}), do: :primary
 
@@ -1113,8 +1477,168 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
 
   defp bulk_entry(_result, _id), do: nil
 
-  # --- wording ----------------------------------------------------------------
+  # --- the label drawer -------------------------------------------------------
 
+  attr :label, :map, required: true
+  attr :editable?, :boolean, required: true
+  # Everything about a supplied route-pattern label is a fact about the feed, so
+  # the drawer only reads. The one thing it can do is take a child back out of
+  # the label, and that is offered on the child alone.
+  defp label_drawer(assigns) do
+    label = assigns.label
+    owner = label.owner
+    owner_pattern = owner.pattern
+
+    assigns =
+      assigns
+      |> assign(:owner, owner)
+      |> assign(:owner_name, pattern_name(owner_pattern))
+      |> assign(
+        :when_it_runs,
+        if(blank?(owner_pattern.route_pattern_time_desc),
+          do: "Not set",
+          else: owner_pattern.route_pattern_time_desc
+        )
+      )
+
+    {_tone, use_text} = use_label(owner_pattern.route_pattern_typicality)
+    assigns = assign(assigns, :use_text, use_text)
+
+    ~H"""
+    <.drawer
+      id="label-drawer"
+      chrome="planner"
+      class="max-w-[440px]"
+      title={@label.id}
+      open
+      on_close="close_label"
+      return_focus_id={"pattern-label-details-#{@label.id}"}
+    >
+      <:lede>Route pattern from the imported feed</:lede>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6">
+        <p id="label-drawer-summary" class="text-sm text-default">
+          Exported as one route pattern for {plural(@label.count, "stop order", "stop orders")}.
+          Riders don’t see it; realtime feeds and trip-planning tools may match trips by its ID, so the
+          ID stays as imported.
+        </p>
+
+        <section aria-labelledby="label-carrier" class="mt-5">
+          <h3 id="label-carrier" class="text-sm font-bold text-strong">Carried by</h3>
+          <p id="label-owner-name" class="mt-1 text-sm font-[650] text-strong">{@owner_name}</p>
+          <p class="text-[13px] text-muted">
+            {plural(@owner.stop_count, "stop", "stops")} · {plural(@owner.trip_count, "trip", "trips")} ·
+            apps take the route pattern’s stops and map line from this pattern
+          </p>
+          <dl id="label-owner-details" class="mt-3 rounded-card border border-subtle px-4">
+            <.detail_row term="Route pattern ID">
+              <span class="inline-flex items-center gap-2 font-mono">
+                <.icon name="hero-lock-closed" class="size-4 text-muted" />{@label.id}
+              </span>
+            </.detail_row>
+            <.detail_row term="Exported name">{@owner_name}</.detail_row>
+            <.detail_row term="Use on this route">{@use_text}</.detail_row>
+            <.detail_row term="When it runs">
+              <span :if={@when_it_runs == "Not set"} class="text-muted">Not set</span>
+              <span :if={@when_it_runs != "Not set"}>{@when_it_runs}</span>
+            </.detail_row>
+          </dl>
+          <p id="label-rename-note" class="mt-2 text-[13px] text-muted">
+            These are that pattern’s own details. Renaming it renames the exported route pattern.
+          </p>
+          <.link
+            id="label-edit-owner"
+            navigate={@label.owner_path}
+            class="mt-1 inline-flex min-h-11 items-center gap-1.5 rounded-control font-[650] text-action hover:underline"
+          >
+            <.icon name="hero-pencil-square" class="size-4" /> Edit on {@owner_name}
+          </.link>
+        </section>
+
+        <section aria-labelledby="label-children" class="mt-5 border-t border-subtle pt-4">
+          <h3 id="label-children" class="text-sm font-bold text-strong">
+            Also under {@label.id}
+          </h3>
+          <div
+            :for={child <- @label.children}
+            id={"label-child-#{child.id}"}
+            class="mt-2 rounded-card border border-subtle px-4 py-3"
+          >
+            <p class="text-sm font-[650] leading-snug text-strong">{pattern_name(child.pattern)}</p>
+            <p class="text-[13px] text-muted">
+              {plural(child.stop_count, "stop", "stops")} · {plural(child.trip_count, "trip", "trips")} ·
+              its own name isn’t exported
+            </p>
+            <p class="mt-2 text-[13px] text-default">
+              Removing the label makes it export as its own route pattern with a new ID. Anything
+              matching these {plural(child.trip_count, "trip", "trips")} by {@label.id} stops finding
+              them.
+            </p>
+            <.button
+              :if={@editable?}
+              id={"label-remove-#{child.id}"}
+              type="button"
+              variant="secondary"
+              phx-click="request_remove_label"
+              phx-value-pattern-id={child.id}
+              class="mt-2 text-error-fg"
+            >
+              Remove label
+            </.button>
+          </div>
+        </section>
+      </div>
+    </.drawer>
+    """
+  end
+
+  attr :term, :string, required: true
+  slot :inner_block, required: true
+
+  defp detail_row(assigns) do
+    ~H"""
+    <div class="grid gap-x-4 gap-y-0.5 border-t border-subtle py-2.5 first:border-t-0 sm:grid-cols-[150px_minmax(0,1fr)]">
+      <dt class="text-[13px] text-muted">{@term}</dt>
+      <dd class="text-sm text-strong">{render_slot(@inner_block)}</dd>
+    </div>
+    """
+  end
+
+  attr :remove, :map, default: nil
+  # The last thing a label can be asked to do, so it is confirmed with the same
+  # component every other write on this page uses.
+  defp label_remove_dialog(assigns) do
+    ~H"""
+    <.confirm_dialog
+      id="label-remove-dialog"
+      chrome="planner"
+      open={@remove != nil}
+      title={remove_title(@remove)}
+      confirm_label="Remove label"
+      pending_label="Removing…"
+      on_confirm="remove_label"
+      on_cancel="cancel_remove_label"
+      described_by="label-remove-dialog-body"
+      return_focus_id={@remove && "label-remove-#{@remove.natural_id}"}
+    >
+      <div :if={@remove}>
+        <p>
+          {@remove.name} will export as its own route pattern with a new ID, and anything matching
+          its {plural(@remove.trip_count, "trip", "trips")} by {@remove.label_id} will stop finding
+          them.
+        </p>
+        <p class="mt-3">
+          The pattern itself keeps its stops, running times and name, and {@remove.owner_name} keeps
+          its ID.
+        </p>
+      </div>
+    </.confirm_dialog>
+    """
+  end
+
+  defp remove_title(%{name: name}), do: "Remove the label on #{name}?"
+  defp remove_title(nil), do: "Remove label"
+
+  # --- wording ----------------------------------------------------------------
   defp plural(1, one, _many), do: "1 #{one}"
   defp plural(count, _one, many), do: "#{count} #{many}"
 
@@ -1131,13 +1655,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
       else: pattern.route_pattern_time_desc
   end
 
+  # What a label means for this row: the owner's name is the exported name, and
+  # a child's own name is not exported at all.
+  defp label_note(%{role: :owner, id: id}),
+    do: "Carries #{id}; its name is the exported name"
+
+  defp label_note(%{role: :child, id: id}),
+    do: "Under #{id}; its own name isn’t exported"
+
   defp blank?(value), do: not is_binary(value) or String.trim(value) == ""
-
-  defp custom_trips_sentence(1),
-    do: "1 trip on this route keeps the stop times it was imported with,"
-
-  defp custom_trips_sentence(count),
-    do: "#{count} trips on this route keep the stop times they were imported with,"
 
   defp build_failed_body(pending) when pending > 0 do
     "#{plural(pending, "trip is", "trips are")} still not in a pattern. Their times are unchanged. " <>
@@ -1179,7 +1705,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   defp use_label(4), do: {:warning, "Detour"}
   defp use_label(5), do: {:info, "Reference"}
   defp use_label(_typicality), do: {:neutral, "Unknown"}
-
   # Same precedence as the map line's summary everywhere else: missing sections,
   # then blocked, then how the saved line compares with the export.
   defp map_status(nil), do: {:neutral, "hero-minus-circle", "Not saved yet"}

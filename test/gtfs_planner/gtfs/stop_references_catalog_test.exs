@@ -35,6 +35,12 @@ defmodule GtfsPlanner.Gtfs.StopReferencesCatalogTest do
   order by table_name, column_name
   """
 
+  # Only a constraint that references `stops` by its `id` alone is a stop
+  # reference. Since #736 a containment foreign key is composite — it is
+  # `(stop_id, organization_id, gtfs_version_id)` onto `(id, organization_id,
+  # gtfs_version_id)` — so its ownership columns name a scope rather than a stop,
+  # and the `stop_id` half of it is already in the catalog. Counting `id` among
+  # the referenced columns therefore selects the single-column constraints only.
   @foreign_key_columns_sql """
   select tc.table_name, kcu.column_name
   from information_schema.table_constraints tc
@@ -49,6 +55,18 @@ defmodule GtfsPlanner.Gtfs.StopReferencesCatalogTest do
     and ccu.table_schema = 'public'
     and ccu.table_name = 'stops'
     and ccu.column_name = 'id'
+    and tc.constraint_name in (
+      select kcu2.constraint_name
+      from information_schema.key_column_usage kcu2
+      join information_schema.constraint_column_usage ccu2
+        on ccu2.constraint_name = kcu2.constraint_name
+       and ccu2.constraint_schema = kcu2.constraint_schema
+      where ccu2.table_schema = 'public'
+        and ccu2.table_name = 'stops'
+        and ccu2.column_name = 'id'
+      group by kcu2.constraint_name
+      having count(*) = 1
+    )
   order by 1, 2
   """
 

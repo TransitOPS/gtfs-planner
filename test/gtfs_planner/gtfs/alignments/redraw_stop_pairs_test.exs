@@ -27,6 +27,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.RedrawStopPairsTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
+  alias GtfsPlanner.Accounts
   alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs.Alignments
@@ -578,9 +579,11 @@ defmodule GtfsPlanner.Gtfs.Alignments.RedrawStopPairsTest do
     actor = user_fixture(%{email: "redraw-#{stamp()}@example.com"})
 
     {:ok, _membership} =
-      Organizations.add_user_to_organization(actor.id, organization_id, [
-        "pathways_studio_editor"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: actor.id,
+        organization_id: organization_id,
+        roles: ["pathways_studio_editor"]
+      })
 
     actor
   end

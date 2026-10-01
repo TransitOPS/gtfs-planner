@@ -31,7 +31,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsFloorplanTest do
     parent_station: nil
   }
 
-  # A real (if tiny) raster, so `DiagramStorage.public_url_path/4` resolves the
+  # A real (if tiny) raster, so `DiagramStorage.public_path/4` resolves the
   # published file exactly as it does for an uploaded station floorplan.
   @floorplan_png Base.decode64!(
                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLqXQAAAABJRU5ErkJggg=="
@@ -83,7 +83,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsFloorplanTest do
 
     for {level, filename} <- [{concourse, "floorplan_l1.png"}, {street, "floorplan_l2.png"}] do
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: version.id,
           stop_id: station.id,
@@ -213,7 +213,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsFloorplanTest do
       })
 
     {:ok, _stop_level} =
-      Gtfs.create_stop_level(%{
+      insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: version.id,
         stop_id: station.id,
@@ -349,9 +349,15 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsFloorplanTest do
       assert attributes.selected_id == ""
       assert attributes.closed_ids == []
 
-      # The published file the resolver found, not a path built here.
-      assert attributes.image_url =~ "/uploads/diagrams/"
-      assert attributes.image_url =~ "floorplan_l1.png"
+      # The component adds the endpoint base to the path DiagramStorage returns.
+      # The base follows the endpoint's configured port, which runtime.exs reads
+      # from PORT, so the expectation takes it from Endpoint.url/0.
+      expected_image_url =
+        GtfsPlannerWeb.Endpoint.url() <>
+          "/uploads/diagrams/#{organization.id}/#{version.id}/" <>
+          "FLOORPLAN_STATION/floorplan_l1.png"
+
+      assert attributes.image_url == expected_image_url
       assert has_element?(view, "#closure-floorplan-image[src='#{attributes.image_url}']")
 
       # Every plotted stop of the Concourse with its stored coordinate. Street

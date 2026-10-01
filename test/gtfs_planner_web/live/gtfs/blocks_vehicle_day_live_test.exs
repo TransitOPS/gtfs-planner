@@ -285,9 +285,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksVehicleDayLiveTest do
       # carry the mark and no problem is raised for the block.
       refute has_element?(view, "#block-day", "operators can change")
 
-      Blocking.update_settings(context.organization.id, context.version.id, %{
-        max_piece_minutes: 180
-      })
+      Blocking.update_settings(
+        GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+          context.organization.id,
+          context.version.id
+        ),
+        %{
+          max_piece_minutes: 180
+        }
+      )
 
       {:ok, view, _html} =
         live(editor_conn(context), blocks_path(context.version.id) <> "?block=101")

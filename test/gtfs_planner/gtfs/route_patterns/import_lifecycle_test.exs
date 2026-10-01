@@ -29,6 +29,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ImportLifecycleTest do
   alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlanner.TaskSupervisor
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
@@ -91,7 +92,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ImportLifecycleTest do
     organization =
       organization_fixture(%{alias: "route-pattern-import-#{System.system_time(:nanosecond)}"})
 
-    actor = user_fixture()
+    # Creating a target, publishing and claiming a cleanup reauthorize the actor, so the actor is
+    # an active editor.
+    actor = editor_fixture(organization)
 
     %{organization: organization, actor: actor}
   end
@@ -108,7 +111,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ImportLifecycleTest do
       )
 
     {:ok, runner_pid} =
-      Runner.start_import(context.organization.id, run.id, run.lease_token, feed())
+      Runner.start_import(
+        context.organization.id,
+        run.id,
+        run.lease_token,
+        files: StagedImport.stage(feed())
+      )
 
     refute runner_pid == self()
     Sandbox.allow(Repo, self(), runner_pid)
@@ -183,7 +191,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ImportLifecycleTest do
     Application.put_env(:gtfs_planner, :route_pattern_derivation_inject_failure, "Blue")
 
     assert {:ok, published, result} =
-             Publication.run(claimed, token, feed(), "import:derivation-retry")
+             Publication.run(
+               claimed,
+               token,
+               StagedImport.stage(feed()),
+               "import:derivation-retry"
+             )
 
     assert published.publication_status == "published"
     assert Import.Result.publishable?(result)
@@ -275,7 +288,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ImportLifecycleTest do
         ]
 
     assert {:error, failed_version, %Failure{} = failure} =
-             Publication.run(claimed, token, files, "import:derivation-cleanup")
+             Publication.run(
+               claimed,
+               token,
+               StagedImport.stage(files),
+               "import:derivation-cleanup"
+             )
 
     assert failure.phase == :extensions
     assert failed_version.publication_status == "failed"

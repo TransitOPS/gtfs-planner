@@ -10,7 +10,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
   and their frequency rows in six queries whatever the trip count: the trips
   themselves, one first and one last `DISTINCT ON (trip_id)` stop-time query, one
   query for the endpoint stops, one for their parent stations and one grouped
-  `frequencies` query. Endpoints are chosen by `stop_sequence` in SQL, never by an
+  `frequencies` query. The endpoint stops are chosen by `stop_sequence` in SQL, never by an
   ordering of clock text, and the clock values are parsed with `GtfsTime.parse/1`
   in Elixir, so `25:10:00` becomes the integer 90_600 and orders after `05:00:00` (CR-3).
 
@@ -99,7 +99,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
           to_trip_id: String.t(),
           transfer_type: 4 | 5,
           from_stop_id: String.t() | nil,
-          to_stop_id: String.t() | nil
+          to_stop_id: String.t() | nil,
+          updated_at: DateTime.t()
         }
 
   @doc """
@@ -135,6 +136,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
         route_id: t.route_id,
         service_id: t.service_id,
         block_id: t.block_id,
+        direction_id: t.direction_id,
         trip_headsign: t.trip_headsign,
         route_pattern_id: t.route_pattern_id,
         shape_id: t.shape_id,
@@ -291,7 +293,41 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
         to_trip_id: t.to_trip_id,
         transfer_type: t.transfer_type,
         from_stop_id: t.from_stop_id,
-        to_stop_id: t.to_stop_id
+        to_stop_id: t.to_stop_id,
+        updated_at: t.updated_at
+      }
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Loads every type 4/5 transfer record of one version, in the version's own order.
+
+  This is `in_seat_rows/3` without a day: the whole record set, for a caller that
+  asks about the version rather than about the trips one day type runs. The rows
+  are the same shape and carry the same `order_by` - by their two trip IDs and
+  their UUID - so the version's listing is stable and reads as the day's listing
+  restricted and extended, not as a second ordering.
+
+  Rows are not joined to the trips they name, so a record whose trip is absent
+  from the version is returned like any other. One query answers whatever the
+  number of records.
+  """
+  @spec all_in_seat_rows(Ecto.UUID.t(), Ecto.UUID.t()) :: [in_seat_row()]
+  def all_in_seat_rows(organization_id, gtfs_version_id) do
+    from(t in Transfer,
+      where:
+        t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
+          t.transfer_type in [4, 5],
+      order_by: [asc: t.from_trip_id, asc: t.to_trip_id, asc: t.id],
+      select: %{
+        id: t.id,
+        from_trip_id: t.from_trip_id,
+        to_trip_id: t.to_trip_id,
+        transfer_type: t.transfer_type,
+        from_stop_id: t.from_stop_id,
+        to_stop_id: t.to_stop_id,
+        updated_at: t.updated_at
       }
     )
     |> Repo.all()
@@ -541,7 +577,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
         stop_id: st.stop_id,
         stop_sequence: st.stop_sequence,
         arrival_time: st.arrival_time,
-        departure_time: st.departure_time
+        departure_time: st.departure_time,
+        pickup_type: st.pickup_type,
+        drop_off_type: st.drop_off_type
       }
     )
   end
@@ -620,6 +658,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
       stop_id: stop.stop_id,
       name: stop.name,
       parent_station: stop.parent_station,
+      parent_name: parent && parent.name,
       lat: coordinate(stop.lat) || coordinate(parent && parent.lat),
       lon: coordinate(stop.lon) || coordinate(parent && parent.lon)
     }
@@ -647,6 +686,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
       route_id: trip.route_id,
       service_id: trip.service_id,
       block_id: trip.block_id,
+      direction_id: trip.direction_id,
       trip_headsign: trip.trip_headsign,
       route_pattern_id: trip.route_pattern_id,
       shape_id: trip.shape_id,
@@ -657,6 +697,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
       first_departure: first_departure,
       last_arrival: last_arrival,
       last_departure: last_departure,
+      first_pickup_type: first && first.pickup_type,
+      last_drop_off_type: last && last.drop_off_type,
       first_stop: stop_ref_for(first, stop_refs),
       last_stop: stop_ref_for(last, stop_refs),
       plottable?:

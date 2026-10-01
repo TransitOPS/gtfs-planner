@@ -39,7 +39,15 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeat do
           | :no_shared_date
           | :no_block
           | :stops_changed
-          | {:not_next, [%{key: String.t(), label: String.t(), date_count: pos_integer()}]}
+          | {:not_next,
+             [
+               %{
+                 key: String.t(),
+                 label: String.t(),
+                 date_count: pos_integer(),
+                 next_trip_id: String.t() | nil
+               }
+             ]}
 
   @type state ::
           :matches
@@ -50,7 +58,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeat do
           trips: %{String.t() => Checks.trip_row()},
           service_dates: %{String.t() => MapSet.t(Date.t())},
           day_types: [DayTypes.day_type()],
-          sequences: %{{String.t(), String.t()} => [Ecto.UUID.t()]}
+          sequences: %{{String.t(), String.t()} => [Ecto.UUID.t()]},
+          trip_ids_by_uuid: %{Ecto.UUID.t() => String.t()}
         }
 
   @doc """
@@ -72,6 +81,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeat do
      trips are not the same block's consecutive trips is reported as
      `{:stale, {:not_next, failures}}`, one entry per such day type in list order.
   8. Otherwise `:matches`.
+
+  A not-next failure names `next_trip_id`: the natural trip ID the day type's own
+  order runs after the first trip, which is the trip a rider would actually be put
+  on instead. It is nil when the first trip ends the block's order for that day type
+  or the order holds nothing at all.
   """
   @spec state(in_seat_row(), context()) :: state()
   def state(row, context) do
@@ -148,7 +162,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeat do
       context.day_types
       |> Enum.filter(&runs_both?(&1, from, to))
       |> Enum.reject(&consecutive?(&1, from, to, context.sequences))
-      |> Enum.map(&failure/1)
+      |> Enum.map(&failure(&1, from, context))
 
     case failures do
       [] -> :matches
@@ -175,8 +189,26 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeat do
     is_integer(index) and Enum.at(order, index + 1) == to_id
   end
 
-  defp failure(day_type) do
-    %{key: day_type.key, label: day_type.label, date_count: day_type.date_count}
+  defp failure(day_type, from, context) do
+    %{
+      key: day_type.key,
+      label: day_type.label,
+      date_count: day_type.date_count,
+      next_trip_id: next_trip_id(day_type, from, context)
+    }
+  end
+
+  # The trip the day type's own order runs after the first trip, named by its natural
+  # trip ID. The order is the one the rule already reads to decide that the pair is not
+  # next, so a cross-block pair names the trip that follows in the first trip's block and
+  # a first trip that ends its block's order names nothing.
+  defp next_trip_id(day_type, from, context) do
+    order = Map.get(context.sequences, {day_type.key, from.block_id}, [])
+
+    case Enum.find_index(order, &(&1 == from.id)) do
+      nil -> nil
+      index -> context.trip_ids_by_uuid |> Map.get(Enum.at(order, index + 1))
+    end
   end
 
   defp build(row, context, code, severity, reason) do

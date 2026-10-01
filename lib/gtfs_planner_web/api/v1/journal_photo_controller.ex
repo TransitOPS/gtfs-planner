@@ -20,6 +20,9 @@ defmodule GtfsPlannerWeb.Api.V1.JournalPhotoController do
       {:error, :not_found} ->
         not_found(conn)
 
+      {:error, :forbidden} ->
+        error(conn, 403, "forbidden")
+
       {:error, :id_conflict} ->
         error(conn, 409, "id_conflict")
 

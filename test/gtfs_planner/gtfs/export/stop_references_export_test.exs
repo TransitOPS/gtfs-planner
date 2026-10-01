@@ -14,6 +14,7 @@ defmodule GtfsPlanner.Gtfs.Export.StopReferencesExportTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
+  alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Export.Run
   alias GtfsPlanner.Gtfs.Export.Worker
@@ -342,9 +343,11 @@ defmodule GtfsPlanner.Gtfs.Export.StopReferencesExportTest do
     actor = user_fixture(%{email: "stop-refs-#{System.unique_integer([:positive])}@example.com"})
 
     {:ok, _membership} =
-      Organizations.add_user_to_organization(actor.id, organization_id, [
-        "pathways_studio_editor"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: actor.id,
+        organization_id: organization_id,
+        roles: ["pathways_studio_editor"]
+      })
 
     actor
   end

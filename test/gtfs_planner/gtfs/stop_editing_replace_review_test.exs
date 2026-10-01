@@ -25,6 +25,7 @@ defmodule GtfsPlanner.Gtfs.StopEditingReplaceReviewTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
+  alias GtfsPlanner.Accounts
   alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs.AlignmentSegment
@@ -506,7 +507,7 @@ defmodule GtfsPlanner.Gtfs.StopEditingReplaceReviewTest do
       })
 
     {:ok, _stop_level} =
-      GtfsPlanner.Gtfs.create_stop_level(%{
+      GtfsPlanner.GtfsFixtures.insert_stop_level(%{
         organization_id: fixture.organization.id,
         gtfs_version_id: fixture.version.id,
         stop_id: station.id,
@@ -631,9 +632,11 @@ defmodule GtfsPlanner.Gtfs.StopEditingReplaceReviewTest do
     actor = user_fixture(%{email: "stop-replace-#{stamp()}@example.com"})
 
     {:ok, _membership} =
-      Organizations.add_user_to_organization(actor.id, organization_id, [
-        "pathways_studio_editor"
-      ])
+      Accounts.create_user_org_membership(%{
+        user_id: actor.id,
+        organization_id: organization_id,
+        roles: ["pathways_studio_editor"]
+      })
 
     actor
   end

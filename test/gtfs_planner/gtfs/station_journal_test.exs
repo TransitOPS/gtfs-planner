@@ -4,6 +4,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.{JournalEntry, JournalPhoto}
+  alias GtfsPlanner.Gtfs.StationJournal
   alias GtfsPlanner.Gtfs.StationJournal.Scope
   alias GtfsPlanner.Repo
 
@@ -181,7 +182,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       level = level_fixture(organization.id, version.id, level_id: "L1")
 
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: version.id,
           stop_id: station.id,
@@ -193,7 +194,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: version.id,
         station_id: station.id,
         station_stop_id: station.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(organization).id
       }
 
       %{
@@ -371,7 +372,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: other_version.id,
         station_id: other_station.id,
         station_stop_id: other_station.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(other_organization).id
       }
 
       id = Ecto.UUID.generate()
@@ -443,7 +444,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: other_version.id,
         station_id: other_station.id,
         station_stop_id: other_station.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(other_organization).id
       }
 
       assert %{synced_count: 0, errors: [%{id: ^id, code: :id_conflict}]} =
@@ -500,7 +501,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       assert is_nil(unrefreshed.lon)
 
       {:ok, aligned_stop_level} =
-        Gtfs.update_stop_level_alignment(stop_level, %{
+        put_stop_level_alignment(stop_level, %{
           floorplan_center_lat: 40.7128,
           floorplan_center_lon: -74.006,
           floorplan_scale_mpp: 0.25,
@@ -521,7 +522,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: other_version.id,
         station_id: other_station.id,
         station_stop_id: other_station.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(other_organization).id
       }
 
       unrelated_pin =
@@ -538,7 +539,12 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         )
         |> Repo.insert!()
 
-      assert {:ok, 1} = Gtfs.refresh_pin_coordinates_for_stop_level(aligned_stop_level, 1000, 800)
+      assert {:ok, 1} =
+               StationJournal.refresh_pin_coordinates_for_stop_level(
+                 aligned_stop_level,
+                 1000,
+                 800
+               )
 
       refreshed = Repo.get!(JournalEntry, pin_id)
       assert refreshed.diagram_x == 50.0
@@ -628,7 +634,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: version.id,
         station_id: station.id,
         station_stop_id: station.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(organization).id
       }
 
       {:ok, scope: scope, child: child, pathway: pathway}
@@ -988,7 +994,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: other_ver.id,
         station_id: other_station.id,
         station_stop_id: other_station.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(other_org).id
       }
 
       Gtfs.sync_journal_entries(other_scope, [
@@ -1088,7 +1094,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: version.id,
         station_id: station.id,
         station_stop_id: station.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(organization).id
       }
 
       {:ok, scope: scope}
@@ -1169,7 +1175,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: other_ver.id,
         station_id: other_station.id,
         station_stop_id: other_station.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(other_org).id
       }
 
       other_id = Ecto.UUID.generate()
@@ -1283,7 +1289,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: ver_a.id,
         station_id: station_a.id,
         station_stop_id: station_a.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(org_a).id
       }
 
       org_b = organization_fixture()
@@ -1300,7 +1306,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: ver_b.id,
         station_id: station_b.id,
         station_stop_id: station_b.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(org_b).id
       }
 
       ver_a_2 = gtfs_version_fixture(org_a.id)
@@ -1316,7 +1322,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: ver_a_2.id,
         station_id: station_a_2.id,
         station_stop_id: station_a_2.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(org_a).id
       }
 
       station_a_3 =
@@ -1330,7 +1336,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         gtfs_version_id: ver_a.id,
         station_id: station_a_3.id,
         station_stop_id: station_a_3.stop_id,
-        actor_id: Ecto.UUID.generate()
+        actor_id: editor_fixture(org_a).id
       }
 
       {:ok, scope_a: scope_a, scope_b: scope_b, scope_c: scope_c, scope_d: scope_d}
@@ -1471,7 +1477,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         level_fixture(scope_a.organization_id, scope_a.gtfs_version_id, level_id: "L1_NOTIF")
 
       {:ok, stop_level} =
-        Gtfs.create_stop_level(%{
+        insert_stop_level(%{
           organization_id: scope_a.organization_id,
           gtfs_version_id: scope_a.gtfs_version_id,
           stop_id: scope_a.station_id,
@@ -1495,7 +1501,7 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
       assert_receive {:station_journal_changed, ^station_id_a}
 
       {:ok, aligned_stop_level} =
-        Gtfs.update_stop_level_alignment(stop_level, %{
+        put_stop_level_alignment(stop_level, %{
           floorplan_center_lat: 40.7128,
           floorplan_center_lon: -74.006,
           floorplan_scale_mpp: 0.25,
@@ -1503,7 +1509,11 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         })
 
       assert {:ok, 1} =
-               Gtfs.refresh_pin_coordinates_for_stop_level(aligned_stop_level, 1000, 800)
+               StationJournal.refresh_pin_coordinates_for_stop_level(
+                 aligned_stop_level,
+                 1000,
+                 800
+               )
 
       # CRIT-005: refresh_pin_coordinates_for_stop_level must not broadcast
       refute_receive {:station_journal_changed, _}
@@ -1539,8 +1549,10 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
 
     Enum.each(tasks, &send(&1, :sync))
 
+    # Each sync reauthorizes its editor and the syncs serialize on the same rows, so allow
+    # more than the default 100 ms for every one to finish.
     Enum.map(tasks, fn task ->
-      assert_receive {:sync_finished, ^task, result}
+      assert_receive {:sync_finished, ^task, result}, 5_000
       result
     end)
   end

@@ -410,7 +410,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternFillTest do
       assert has_element?(
                view,
                "#timing-blank-note",
-               "1 stop needs times before you can save."
+               "1 stop doesn’t have times yet."
              )
 
       assert has_element?(view, "#timing-blank-fill")
@@ -428,7 +428,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternFillTest do
         three_stop_pattern(org, version, "FILL9")
 
       set_timepoints(timing, [1, 0, 1])
-      {:ok, _} = ExportDefaults.update(org.id, %{estimate_method: :even})
+      {:ok, _} = ExportDefaults.update(org.id, editor_fixture(org), %{estimate_method: :even})
       {:ok, view, _} = live(conn, pattern_path(version, route, pattern))
       blank_middle(view)
 
