@@ -21,6 +21,12 @@ defmodule GtfsPlanner.Gtfs.Fares do
   and converts imported fares in later steps. `save_prices/2` is the writer the
   price grid calls, and `Fares.Transfers` follows.
 
+  `preview_price_change/3` and `apply_price_change/3` are the Change prices
+  dialog's pair (AC-15). The preview raises no prices and shows the rows a
+  chosen scope, amount or percentage, rounding and half-fare rule would change;
+  the apply writes exactly those rows through the same fenced path
+  `save_prices/2` uses, with each row's `now` as the amount it reviewed.
+
   ## How a write is fenced
 
   Every writer in this module runs through the private `write/4` helper, so
@@ -198,6 +204,89 @@ defmodule GtfsPlanner.Gtfs.Fares do
       when is_list(cells) do
     write(scope, "Changed #{pluralize(length(cells), "price", "prices")}", @price_inverse, fn
       _setting -> apply_prices(organization_id, gtfs_version_id, cells)
+    end)
+  end
+
+  @doc """
+  The price changes a Change prices dialog is showing, computed and not written
+  (AC-15).
+
+  `options` is the dialog's own state:
+
+      %{scope: :single | :pass | :all,
+        riders: [String.t()],
+        how: :amount | :percent,
+        value: Decimal.t() | String.t() | number,
+        round: Decimal.t() | String.t() | number,
+        half_reduced?: boolean}
+
+  `scope` names the fares: `:single` and `:pass` are the products the editor
+  recorded as one ride or as a bundle, and `:all` is every fare a rider reads.
+  A transfer fee is none of those — R6 reads its amount out of the transfer
+  rules, and R9 reserves a negative amount for the transfer-fee writer — so no
+  scope changes one. `riders` are the rider categories to change, `how` moves
+  each price by `value` (an amount of dollars, which may be negative to lower
+  prices, or a percentage) and `round` is the step the new price is rounded to.
+
+  Each row is one `fare_products` row that would change:
+
+      %{fare_product_id: String.t(),
+        rider_category_id: String.t(),
+        fare_media_id: String.t() | nil,
+        now: Decimal.t(),
+        new: Decimal.t()}
+
+  A price that is absent, free or already equal to the new one is not in the
+  answer: a fare a rider is not sold on, a child who rides free, and a price the
+  chosen rule would not move are all left alone. With `half_reduced?` the
+  `reduced` rider's new price is half the new adult price of the same fare and
+  payment method, rounded the same way — a fare whose adult price the dialog
+  cannot see (no adult row at all) falls back to the ordinary rule for that row.
+
+  Everything here is read through the version pair (INV-5), so no row of
+  another organization or another version can be previewed. An amount that
+  would fall below zero is raised to zero rather than refused, because a lower
+  price is a thing an operator asks for.
+  """
+  @spec preview_price_change(Ecto.UUID.t(), Ecto.UUID.t(), map()) :: [map()]
+  def preview_price_change(organization_id, gtfs_version_id, options)
+      when is_binary(organization_id) and is_binary(gtfs_version_id) and is_map(options) do
+    products = version_products(organization_id, gtfs_version_id)
+    change = price_change(products, organization_id, gtfs_version_id, options)
+
+    products
+    |> price_change_products(change)
+    |> Enum.flat_map(&price_change_row(&1, products, change))
+    |> Enum.sort_by(&{&1.fare_product_id, &1.rider_category_id, &1.fare_media_id || ""})
+  end
+
+  @doc """
+  Writes exactly the rows a `preview_price_change/3` showed, through the same
+  fenced path `save_prices/2` takes (AC-15).
+
+  `rows` are the preview's own rows, and each row's `now` is the amount this
+  write reviewed: a row somebody else has changed since the preview refuses the
+  whole change with `{:error, {:stale, cells}}` and writes nothing, exactly as
+  `save_prices/2` does. One change-log entry is recorded with the summary
+  `"Changed N prices with Change prices"`, so the history says where the change
+  came from, and the inverse is the price inverse `undo/3` already applies.
+
+  The options are the dialog's state the rows were previewed from, kept so the
+  dialog can hold them in one form; the rows are what is written, so a caller
+  that hands over rows of its own has written what it named.
+  """
+  @spec apply_price_change(scope(), map(), [map()]) :: write_result()
+  def apply_price_change(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        _options,
+        rows
+      )
+      when is_list(rows) do
+    summary =
+      "Changed #{pluralize(length(rows), "price", "prices")} with Change prices"
+
+    write(scope, summary, @price_inverse, fn _setting ->
+      apply_prices(organization_id, gtfs_version_id, Enum.map(rows, &price_change_cell/1))
     end)
   end
 
@@ -835,6 +924,213 @@ defmodule GtfsPlanner.Gtfs.Fares do
   defp wrap_inverse(_inverse_key, nil), do: nil
   defp wrap_inverse(inverse_key, inverse), do: %{inverse_key => inverse}
 
+  # -- Changing many prices at once ----------------------------------------------
+
+  # The rider the half-fare rule follows. R10's setup, the prototype's dialog and
+  # R9's grid all name the reduced rider by this id, so a bulk change is not the
+  # only place that knows it.
+  @reduced_rider_id "reduced"
+
+  # The fare kinds a bulk price change may touch. A transfer fee is excluded: R6
+  # reads its amount out of the transfer rules, and R9 reserves a negative amount
+  # for the transfer-fee writer, so raising it here would price a rule rather
+  # than a ride.
+  @changeable_kinds ["single", "pass"]
+
+  # The step a dialog that names no rounding rounds to: a cent, which leaves the
+  # price in the currency's own minor units and is what "Don't round" means (R9).
+  @no_rounding Decimal.new("0.01")
+
+  # The dialog's state, read once so every row is priced by the same rule: the
+  # rider types it changes, whether it moves by an amount or a percentage, that
+  # amount, the step it rounds to, whether the reduced rider stays at half, and
+  # the currency the new amounts are stored in (R9).
+  defp price_change(products, organization_id, gtfs_version_id, options) do
+    %{
+      scope: options[:scope] || :all,
+      riders: MapSet.new(List.wrap(options[:riders])),
+      percent?: options[:how] == :percent,
+      value: change_number(options[:value], Decimal.new(0)),
+      step: change_number(options[:round], @no_rounding),
+      half_reduced?: options[:half_reduced?] == true,
+      adult: default_rider_id(organization_id, gtfs_version_id),
+      currency: currency(products),
+      details: detail_index(organization_id, gtfs_version_id)
+    }
+  end
+
+  # The version's one default rider type, which is whose price a fare's other
+  # rider types are read against (R8). A version with no default has no adult
+  # row to move, so no row is treated as one.
+  defp default_rider_id(organization_id, gtfs_version_id) do
+    RiderCategory
+    |> scoped(organization_id, gtfs_version_id)
+    |> where([rider], rider.is_default_fare_category == 1)
+    |> select([rider], rider.rider_category_id)
+    |> Repo.one()
+  end
+
+  # The dialog types a number the way an operator reads it, so `$`, a comma and a
+  # leading or trailing space are stripped and a minus sign is kept — lowering a
+  # price is a thing the dialog offers. Anything that is not a number at all
+  # moves nothing, so a half-typed field previews no change rather than raising
+  # while the operator is still typing.
+  defp change_number(value, default)
+  defp change_number(%Decimal{} = value, _default), do: value
+  defp change_number(value, _default) when is_integer(value), do: Decimal.new(value)
+
+  defp change_number(value, _default) when is_float(value) do
+    value |> Float.round(6) |> Decimal.from_float()
+  end
+
+  defp change_number(value, default) when is_binary(value) do
+    value
+    |> String.replace(~r/[$,\s]/, "")
+    |> Decimal.parse()
+    |> case do
+      {number, ""} -> number
+      _other -> default
+    end
+  end
+
+  defp change_number(_value, default), do: default
+
+  # The rows the scope and the chosen rider types leave in play: a stored price
+  # of a fare in scope, sold to a rider type the dialog changes. A fare is a kind
+  # the editor recorded, so the scope reads `fare_product_details` the same way
+  # the grid's own read model does.
+  defp price_change_products(products, change) do
+    details = change.details
+
+    products
+    |> Enum.group_by(& &1.fare_product_id)
+    |> Enum.flat_map(fn {product_id, rows} ->
+      product_kind = kind(Map.get(details, product_id), rows)
+
+      if changeable_kind?(product_kind, change.scope) do
+        Enum.filter(rows, &changeable_row?(&1, change))
+      else
+        []
+      end
+    end)
+  end
+
+  defp changeable_kind?(product_kind, :all), do: product_kind in @changeable_kinds
+  defp changeable_kind?("single", :single), do: true
+  defp changeable_kind?("pass", :pass), do: true
+  defp changeable_kind?(_product_kind, _scope), do: false
+
+  # A rider a fare is not sold on holds no row at all, and a free price stays
+  # free (R9), so neither is in the answer.
+  defp changeable_row?(product, change) do
+    MapSet.member?(change.riders, product.rider_category_id) and
+      not is_nil(product.amount) and
+      not Decimal.equal?(product.amount, 0)
+  end
+
+  # One row of the preview, or none when the chosen rule leaves the price where
+  # it is: a dialog that lists a row nobody's price changes is showing work that
+  # is not there.
+  defp price_change_row(product, products, change) do
+    new = changed_amount(product, products, change)
+
+    if Decimal.equal?(new, product.amount) do
+      []
+    else
+      [
+        %{
+          fare_product_id: product.fare_product_id,
+          rider_category_id: product.rider_category_id,
+          fare_media_id: product.fare_media_id,
+          now: product.amount,
+          new: new
+        }
+      ]
+    end
+  end
+
+  # The default rider's price moves by the chosen rule, the reduced rider's moves
+  # with it when the dialog was asked to keep it at half, and every other rider
+  # moves by the rule on its own stored price — which is what the dialog says
+  # about app prices: the same rule, whatever the method.
+  defp changed_amount(product, products, change) do
+    cond do
+      product.rider_category_id == change.adult ->
+        moved_amount(product.amount, change)
+
+      change.half_reduced? and product.rider_category_id == @reduced_rider_id ->
+        case adult_new_amount(product, products, change) do
+          nil -> moved_amount(product.amount, change)
+          adult_new -> rounded(half(adult_new), change)
+        end
+
+      true ->
+        moved_amount(product.amount, change)
+    end
+  end
+
+  # The new price of the adult row this reduced row follows: the same fare sold
+  # to the default rider on the same payment method, falling back to the fare's
+  # method-less row, which GTFS reads as one price payable any way. A fare with
+  # no adult price at all has nothing to be half of, and answers `nil` so the
+  # caller moves this row by the ordinary rule instead.
+  defp adult_new_amount(product, products, change) do
+    adult_rows =
+      Enum.filter(products, fn row ->
+        row.fare_product_id == product.fare_product_id and
+          row.rider_category_id == change.adult and not is_nil(row.amount)
+      end)
+
+    Enum.find_value(adult_rows, fn row ->
+      if row.fare_media_id == product.fare_media_id or is_nil(row.fare_media_id) do
+        moved_amount(row.amount, change)
+      end
+    end)
+  end
+
+  # A percentage moves the price by that share of itself, an amount by that many
+  # dollars. Either way the result is rounded to the step the dialog chose and
+  # stored in the currency's minor units (R9).
+  defp moved_amount(amount, change) do
+    moved =
+      if change.percent? do
+        Decimal.mult(amount, Decimal.add(1, Decimal.div(change.value, 100)))
+      else
+        Decimal.add(amount, change.value)
+      end
+
+    rounded(moved, change)
+  end
+
+  defp rounded(amount, change) do
+    amount
+    |> rounded_to_step(change)
+    |> then(&Decimal.max(&1, Decimal.new(0)))
+    |> Decimal.round(Money.minor_units(change.currency))
+  end
+
+  defp rounded_to_step(amount, %{step: step}) do
+    amount
+    |> Decimal.div(step)
+    |> Decimal.round(0)
+    |> Decimal.mult(step)
+  end
+
+  defp half(amount), do: Decimal.div(amount, Decimal.new(2))
+
+  # The cell `apply_prices/3` writes, carrying the previewed `now` as the amount
+  # this write reviewed — which is what makes a row somebody else has changed
+  # since the preview refuse the whole change.
+  defp price_change_cell(row) do
+    %{
+      fare_product_id: row[:fare_product_id],
+      rider_category_id: row[:rider_category_id],
+      fare_media_id: row[:fare_media_id],
+      reviewed: row[:now],
+      amount: row[:new]
+    }
+  end
+
   # -- Prices --------------------------------------------------------------------
 
   # Every cell is checked before anything is written, so one stale cell refuses
@@ -916,7 +1212,9 @@ defmodule GtfsPlanner.Gtfs.Fares do
   # refused too: a `fare_products` row may hold one, but only the transfer-fee
   # writer stores one (R9).
   defp parse_amount(cell, code) do
-    case Money.parse(cell[:amount]) do
+    cell[:amount]
+    |> money_amount()
+    |> case do
       {:ok, nil} ->
         {:ok, nil}
 
@@ -931,6 +1229,15 @@ defmodule GtfsPlanner.Gtfs.Fares do
         {:error, :invalid_price}
     end
   end
+
+  # A price reaches this writer either as the string an operator typed, which
+  # `Fares.Money.parse/1` reads, or as the `Decimal` a preview computed for this
+  # package's own writers — `preview_price_change/3` hands its rows straight to
+  # `apply_price_change/3` — which is already a price and needs only the
+  # currency's minor units below. A `Decimal` is never read from a person, so
+  # `Money.parse/1` is not asked to parse one.
+  defp money_amount(%Decimal{} = amount), do: {:ok, amount}
+  defp money_amount(amount), do: Money.parse(amount)
 
   # The fence: every cell's stored row must still hold the amount the editor
   # reviewed, and a cell that reviewed no row must still have none. The answer
