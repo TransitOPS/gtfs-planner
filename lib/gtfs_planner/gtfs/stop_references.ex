@@ -566,16 +566,22 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
     end)
   end
 
-  # The names the import review already renders. The shared list splits a two
-  # column table into a from and a to entry; the review says "2 transfers", not
-  # "1 transfer from, 1 transfer to".
-  defp report_key(%{key: key}) when key in [:transfers_from, :transfers_to], do: :transfers
-  defp report_key(%{key: key}) when key in [:pathways_from, :pathways_to], do: :pathways
+  @doc """
+  The name a review or a delete result reports this ref under.
 
-  defp report_key(%{key: key}) when key in [:fare_leg_join_from, :fare_leg_join_to],
+  The shared list splits a two-column table into a from and a to entry; a
+  delete says "2 transfers removed", not "1 from, 1 to". Public so
+  `StopEditing.delete_stop/3` names its removed counts the same way the review
+  that listed them did — two spellings of one count would be worse than one.
+  """
+  @spec report_key(ref()) :: atom()
+  def report_key(%{key: key}) when key in [:transfers_from, :transfers_to], do: :transfers
+  def report_key(%{key: key}) when key in [:pathways_from, :pathways_to], do: :pathways
+
+  def report_key(%{key: key}) when key in [:fare_leg_join_from, :fare_leg_join_to],
     do: :fare_leg_join_rules
 
-  defp report_key(ref), do: ref.key
+  def report_key(ref), do: ref.key
 
   # The column a "to" entry's paired "from" entry already counted.
   defp counted_in(:transfers_to), do: :from_stop_id

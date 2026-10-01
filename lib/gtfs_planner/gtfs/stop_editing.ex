@@ -868,6 +868,162 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   end
 
   @doc """
+  Answers "what would deleting this stop remove", without writing (AC-17).
+
+  Read-only in the same sense `move_review/3` is: it takes no row locks, so
+  asking the question does not serialize behind another editor's save.
+
+  Answers `{:ok, %{blocking:, descriptive:, fingerprint:}}`, where `blocking`
+  and `descriptive` are `StopReferences.usage/3`'s items. **Any** blocking item
+  refuses the delete. The refusal is on the *presence* of the item, never on a
+  count reaching a threshold: `StopReferences.counts/3` is structurally unable
+  to see the `via: :fk_uuid` references — `stop_levels` and `journal_entries`
+  match on `stops.id`, and an unimported stop ID has none — so a count-based
+  refusal would be passing for the wrong reason on exactly the rows a station
+  delete most needs to refuse on. `usage/3` runs the ref's own scoped query and
+  so sees all three `via` shapes.
+
+  `fingerprint` covers the usage and the stop itself, and is what
+  `delete_stop/3` re-checks: a reference created after the editor read this
+  answer must refuse the delete rather than cascade a row nobody saw.
+  """
+  @spec delete_review(Ecto.UUID.t(), AuditContext.t()) ::
+          {:ok, map()} | {:error, atom()}
+  def delete_review(stop_uuid, %AuditContext{} = audit) when is_binary(stop_uuid) do
+    if authorize_editor?(audit) do
+      case scoped_stop(stop_uuid, audit) do
+        {:ok, stop} -> {:ok, build_delete_review(stop, audit)}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:error, :forbidden}
+    end
+  end
+
+  def delete_review(_stop_uuid, _audit), do: {:error, :invalid_input}
+
+  defp build_delete_review(stop, audit) do
+    usage = StopReferences.usage(audit.organization_id, audit.gtfs_version_id, stop)
+
+    Map.merge(usage, %{fingerprint: delete_fingerprint(stop, usage, audit)})
+  end
+
+  # Everything the review read, hashed: the stop's own identity and content,
+  # and every reference item with its count. The stop's content is included
+  # rather than only its `updated_at` because that column is a whole second
+  # (see `review_fingerprint/4`), and a stop renamed inside the same second
+  # would otherwise pass a fingerprint that no longer describes it.
+  defp delete_fingerprint(stop, usage, audit) do
+    items =
+      (usage.blocking ++ usage.descriptive)
+      |> Enum.map(&{&1.key, &1.count})
+      |> Enum.sort()
+
+    :crypto.hash(
+      :sha256,
+      inspect({
+        stop.id,
+        stop.stop_id,
+        stop.updated_at,
+        stop_content(stop),
+        items,
+        audit.organization_id,
+        audit.gtfs_version_id
+      })
+    )
+    |> Base.encode16(case: :lower)
+  end
+
+  @doc """
+  Deletes a stop and exactly the descriptive rows `delete_review/2` listed,
+  audited in the same transaction (AC-17).
+
+  Answers `{:ok, %{removed: %{atom() => non_neg_integer()}}}`, or one of
+
+    * `{:error, {:blocked, items}}` — a blocking reference exists. Nothing is
+      written and every blocking row is still there. A station with a level, a
+      `stop_levels` row, a journal entry or an editing status is in this
+      case: those rows are the station's structure, and cascading them would
+      destroy a drawing an editor built rather than tidy up after a stop.
+    * `{:error, :stale_review}` — the review's fingerprint no longer matches,
+      so a reference appeared or disappeared since the editor read the answer.
+    * `{:error, :forbidden | :not_found | :busy | :failed_audit}` — as for
+      `create_stop/2`.
+
+  A stop is never deleted through a foreign-key cascade. The descriptive rows
+  are deleted explicitly, by the same `StopReferences` entries that listed
+  them, so "exactly those rows" is a property of this function rather than of
+  whatever constraints the schema happens to carry.
+  """
+  @spec delete_stop(Ecto.UUID.t(), String.t(), AuditContext.t()) ::
+          {:ok, %{removed: %{atom() => non_neg_integer()}}}
+          | {:error,
+             {:blocked, [map()]}
+             | :stale_review
+             | :forbidden
+             | :not_found
+             | :busy
+             | :failed_audit}
+  def delete_stop(stop_uuid, fingerprint, %AuditContext{} = audit)
+      when is_binary(stop_uuid) and is_binary(fingerprint) do
+    run_command_transaction(fn -> commit_delete(stop_uuid, fingerprint, audit) end)
+  end
+
+  def delete_stop(_stop_uuid, _fingerprint, _audit), do: {:error, :invalid_input}
+
+  defp commit_delete(stop_uuid, fingerprint, audit) do
+    :ok = authorize_editor!(audit)
+    _version = lock_published_version!(audit)
+
+    stop = lock_stop!(stop_uuid, audit)
+    usage = StopReferences.usage(audit.organization_id, audit.gtfs_version_id, stop)
+
+    if usage.blocking != [] do
+      Repo.rollback({:blocked, usage.blocking})
+    else
+      apply_delete(stop, usage, fingerprint, audit)
+    end
+  end
+
+  # The rows go before the stop, and the audit entry last, so a stop is never
+  # absent while rows still name it — which is what a cascade would do and
+  # what makes a cascade unreviewable. `INV-2`: the audit is written in the
+  # same transaction, so a deleted stop with no history entry rolls back.
+  defp apply_delete(stop, usage, fingerprint, audit) do
+    if matches_fingerprint?(fingerprint, delete_fingerprint(stop, usage, audit)) do
+      removed = Enum.reduce(usage.descriptive, %{}, &delete_descriptive_item(&1, &2, stop))
+
+      audit!(stop, audit, "deleted", %{"removed" => removed})
+
+      case Repo.delete(stop) do
+        {:ok, _deleted} -> %{removed: removed}
+        {:error, %Ecto.Changeset{} = failed} -> Repo.rollback(failed)
+      end
+    else
+      Repo.rollback(:stale_review)
+    end
+  end
+
+  # One entry from `StopReferences.all/0` at a time, through its own
+  # `scope_query/2`. The delete therefore removes exactly the rows the review
+  # counted, on the same scope and the same column, and a new reference kind
+  # becomes deletable by adding it to that one list.
+  defp delete_descriptive_item(item, removed, stop) do
+    case StopReferences.fetch(item.key) do
+      nil ->
+        # A review item with no catalog entry cannot be deleted, and leaving
+        # the row would leave the stop's ID in a file the export writes.
+        # Refusing is the honest answer; this is unreachable while
+        # `usage/3` and `all/0` are built from the same list.
+        Repo.rollback(:stale_review)
+
+      ref ->
+        {count, _} = Repo.delete_all(StopReferences.scope_query(ref, stop))
+        Map.update(removed, StopReferences.report_key(ref), count, &(&1 + count))
+    end
+  end
+
+  @doc """
   Creates a stop in a version, audited in the same transaction (AC-12).
 
   `attrs` is the editor's draft. A blank or absent `stop_id` is filled by the
