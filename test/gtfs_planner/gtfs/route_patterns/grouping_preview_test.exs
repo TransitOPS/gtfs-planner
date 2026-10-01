@@ -105,6 +105,17 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.GroupingPreviewTest do
     assert group_of(preview!(context, "1"), 18).stop_distances_m == nil
   end
 
+  test "a labelled child's group is answered by its owner", context do
+    owner = build_labelled_scenario(context)
+
+    group = group_of(preview!(context, "1"), 3)
+
+    # The owner has no derivation key and the child does, so rule 5 would rank
+    # the child first: only the child's real `label_pattern_id` in the preview's
+    # pattern refs makes the owner the answer instead.
+    assert group.suggestion == {:suggested, 0, {:same_endpoints, owner.id}}
+  end
+
   test "the fingerprint covers the trips' linkage", context do
     build_scenario(context)
 
@@ -155,6 +166,67 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.GroupingPreviewTest do
     )
 
     assert Gtfs.preview_left_out("1", context.audit) == {:error, :not_found}
+  end
+
+  # Two patterns over one stop order: an owner with no derivation key and a
+  # label child that carries one, so the child is the pattern rule 5 would answer
+  # with first. Only the child's real `label_pattern_id` makes the owner the
+  # answer instead, which is what this preview has to carry.
+  defp build_labelled_scenario(context) do
+    org_id = context.organization.id
+    version_id = context.version.id
+
+    route_fixture(org_id, version_id, %{route_id: "1"})
+
+    stop_ids =
+      for index <- 1..6 do
+        stop_fixture(org_id, version_id, %{
+          stop_id: "stop_label_#{index}",
+          stop_name: "Label Stop #{index}",
+          stop_lat: @line_lat + index * @line_step,
+          stop_lon: @line_lon
+        }).stop_id
+      end
+
+    owner = insert_order_pattern(org_id, version_id, "pattern_owner", nil, stop_ids, nil)
+    insert_order_pattern(org_id, version_id, "pattern_child", "d0-child", stop_ids, owner.id)
+
+    calendar_attribute_fixture(org_id, version_id, %{
+      service_id: "LB1",
+      service_description: "Label benchmark"
+    })
+
+    insert_supplement(org_id, version_id, stop_ids, "label", stop_ids, 3, "LB1", 0)
+
+    owner
+  end
+
+  # `label_pattern_id` is not cast by the changeset, so a child is linked the
+  # same way derivation links one.
+  defp insert_order_pattern(
+         org_id,
+         version_id,
+         route_pattern_id,
+         derivation_key,
+         stop_ids,
+         owner_id
+       ) do
+    pattern =
+      route_pattern_fixture(org_id, version_id, %{
+        route_pattern_id: route_pattern_id,
+        route_id: "1",
+        direction_id: 0,
+        derivation_key: derivation_key,
+        representative_trip_id: "supplement_label_1"
+      })
+
+    stop_ids
+    |> Enum.with_index(1)
+    |> Enum.each(fn {stop_id, position} ->
+      route_pattern_stop_fixture(pattern, stop_id, position)
+    end)
+
+    Ecto.Changeset.change(pattern, label_pattern_id: owner_id) |> Repo.update!()
   end
 
   defp preview!(context, route_id) do

@@ -38,9 +38,12 @@ defmodule GtfsPlanner.Gtfs.MapLineFiles do
   @earth_radius_m 6_371_008.8
 
   # A KMZ entry is untrusted, so its inflate reads the compressed bytes in
-  # chunks and stops once this much has come out of it.
+  # chunks and stops once this much has come out of it. A chunk is 16 KiB, so
+  # the running total is checked against every chunk's output before it is kept:
+  # the overshoot a high-ratio entry could otherwise make is bounded by one
+  # chunk rather than by the entry's claimed size.
   @max_inflate_bytes 20 * 1024 * 1024
-  @inflate_chunk_bytes 65_536
+  @inflate_chunk_bytes 16 * 1024
 
   @doc """
   Reads an uploaded map file into the lines it offers.
@@ -498,8 +501,13 @@ defmodule GtfsPlanner.Gtfs.MapLineFiles do
   # costs the memory its size claims.
   defp inflate(compressed) do
     z = :zlib.open()
-    :zlib.inflateInit(z, -15)
-    inflate_step(z, compressed, 0, [], 0)
+
+    try do
+      :zlib.inflateInit(z, -15)
+      inflate_step(z, compressed, 0, [], 0)
+    after
+      :zlib.close(z)
+    end
   end
 
   defp inflate_step(z, compressed, offset, chunks, total) do
@@ -516,21 +524,24 @@ defmodule GtfsPlanner.Gtfs.MapLineFiles do
           )
 
         case :zlib.safeInflate(z, chunk) do
-          {:continue, output} ->
-            inflate_step(
-              z,
-              compressed,
-              offset + byte_size(chunk),
-              [output | chunks],
-              add(total, output)
-            )
-
-          other ->
-            inflate_done(other, chunks)
+          {:continue, output} -> keep(z, compressed, offset, chunks, total, output, chunk)
+          other -> inflate_done(other, chunks)
         end
 
       true ->
         drain(z, compressed, offset, chunks, total)
+    end
+  end
+
+  # Output is only kept once the total it would make is still inside the cap, so
+  # the limit is checked before a chunk is appended rather than after it.
+  defp keep(z, compressed, offset, chunks, total, output, input) do
+    total = add(total, output)
+
+    if total > @max_inflate_bytes do
+      {:error, :too_large}
+    else
+      inflate_step(z, compressed, offset + byte_size(input), [output | chunks], total)
     end
   end
 
@@ -543,7 +554,7 @@ defmodule GtfsPlanner.Gtfs.MapLineFiles do
         if IO.iodata_length(output) == 0 do
           {:error, :unreadable}
         else
-          inflate_step(z, compressed, offset, [output | chunks], add(total, output))
+          keep(z, compressed, offset, chunks, total, output, <<>>)
         end
 
       other ->
