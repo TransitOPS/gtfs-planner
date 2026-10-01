@@ -265,7 +265,7 @@ defmodule GtfsPlannerWeb.AgentComponents do
           <p class="mt-1 text-[13px] text-muted">{@scope_line}</p>
         </header>
 
-        {@inner_block}
+        {render_slot(@inner_block)}
       </section>
     <% else %>
       <aside
@@ -292,7 +292,7 @@ defmodule GtfsPlannerWeb.AgentComponents do
           <p class="mt-1.5 text-xs text-base-content/70">{@scope_line}</p>
         </header>
 
-        {@inner_block}
+        {render_slot(@inner_block)}
       </aside>
     <% end %>
     """
