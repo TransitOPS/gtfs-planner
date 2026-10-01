@@ -1,7 +1,7 @@
 defmodule GtfsPlanner.Operations do
   @moduledoc """
-  Organization-wide operational assets (TODS garages, vehicle types and
-  vehicles).
+  Organization-wide operational assets (TODS garages, vehicle types, vehicles
+  and operators).
 
   Every read and write filters on the caller's `organization_id` only; GTFS
   versions remain navigation context. `organization_id`, the assignment
@@ -35,6 +35,8 @@ defmodule GtfsPlanner.Operations do
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Operations.Garage
+  alias GtfsPlanner.Operations.Operator
+  alias GtfsPlanner.Operations.OperatorImport
   alias GtfsPlanner.Operations.Tods
   alias GtfsPlanner.Operations.Vehicle
   alias GtfsPlanner.Operations.VehicleType
@@ -87,6 +89,11 @@ defmodule GtfsPlanner.Operations do
   # rejected once it exceeds the vehicle_id column limit.
   @range_limit 200
   @max_vehicle_id_length 255
+
+  # Rows per operator insert statement. PostgreSQL caps a statement at 65535 bind
+  # parameters and an operator row binds eight, so one `insert_all` fails above
+  # about 8,000 rows; 500 stays far below that, as `Runs`' write batch does.
+  @operator_insert_batch 500
 
   # --- garages ---------------------------------------------------------------
 
@@ -763,6 +770,291 @@ defmodule GtfsPlanner.Operations do
       {summary_sort_key(bucket.garage), summary_sort_key(bucket.vehicle_type)}
     end)
   end
+
+  # --- Operators -------------------------------------------------------------
+
+  @doc """
+  Lists the organization's operators in seniority order.
+
+  Seniority numbers ascend with blanks last; equal numbers are ordered by
+  employee ID and an operator without a number by display name, then employee
+  ID. This is the single ordering every operator list reads (domain rule 11).
+  """
+  @spec list_operators(Ecto.UUID.t()) :: [Operator.t()]
+  def list_operators(organization_id) do
+    Operator
+    |> where([o], o.organization_id == ^organization_id)
+    |> order_by([o],
+      asc_nulls_last: o.seniority_number,
+      asc: fragment("CASE WHEN ? IS NULL THEN ? END", o.seniority_number, o.display_name),
+      asc: o.employee_id
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets an operator by organization and id, or nil when it does not exist or
+  belongs to another organization. A malformed id is treated as missing.
+
+  This is how another context resolves a submitted operator id without reading
+  the `operators` table itself — `GtfsPlanner.Gtfs.Rosters.assign_operator/3`
+  uses it, the way the block writers resolve a garage or vehicle type.
+  """
+  @spec get_operator(Ecto.UUID.t(), term()) :: Operator.t() | nil
+  def get_operator(organization_id, id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, id} -> Repo.get_by(Operator, id: id, organization_id: organization_id)
+      :error -> nil
+    end
+  end
+
+  @doc """
+  Returns a changeset for tracking operator changes.
+  """
+  @spec change_operator(Operator.t(), map()) :: Ecto.Changeset.t()
+  def change_operator(%Operator{} = operator, attrs \\ %{}) do
+    Operator.changeset(operator, attrs)
+  end
+
+  @doc """
+  Creates an operator for the organization and records the acting user.
+
+  An employee ID the organization already holds is refused with an error naming
+  the operator who holds it, so the editor is not left searching the list. An
+  actor who is no longer an editor of the organization is
+  `{:error, :forbidden}` and nothing is written.
+  """
+  @spec create_operator(Ecto.UUID.t(), actor(), map()) ::
+          {:ok, Operator.t()} | {:error, Ecto.Changeset.t() | :forbidden}
+  def create_operator(organization_id, actor, attrs) do
+    authorized_write(organization_id, actor, fn ->
+      changeset =
+        %Operator{organization_id: organization_id, updated_by_id: actor_id(actor)}
+        |> Operator.changeset(attrs)
+
+      with {:ok, changeset} <- refuse_employee_id(changeset, organization_id, nil) do
+        Repo.insert(changeset, mode: :savepoint)
+      end
+    end)
+  end
+
+  @doc """
+  Updates an operator belonging to the organization and records the acting user.
+
+  Returns `{:error, :not_found}` for a missing, malformed or foreign id and
+  changes nothing. An employee ID another operator already holds is refused with
+  an error naming the holder. An actor who is no longer an editor of the
+  organization is `{:error, :forbidden}`.
+  """
+  @spec update_operator(Ecto.UUID.t(), actor(), term(), map()) ::
+          {:ok, Operator.t()} | {:error, Ecto.Changeset.t() | :not_found | :forbidden}
+  def update_operator(organization_id, actor, id, attrs) do
+    authorized_write(organization_id, actor, fn ->
+      update_operator_row(organization_id, actor, id, attrs)
+    end)
+  end
+
+  # The update itself, for a caller that has already locked the actor's editor
+  # membership in its own transaction.
+  defp update_operator_row(organization_id, actor, id, attrs) do
+    case get_operator(organization_id, id) do
+      nil ->
+        {:error, :not_found}
+
+      operator ->
+        changeset =
+          operator
+          |> Operator.changeset(attrs)
+          |> put_change(:updated_by_id, actor_id(actor))
+
+        with {:ok, changeset} <- refuse_employee_id(changeset, organization_id, operator.id) do
+          Repo.update(changeset, mode: :savepoint)
+        end
+    end
+  end
+
+  @doc """
+  Deletes an operator belonging to the organization and returns the deleted row.
+
+  The delete is organization-scoped and hard: the row is gone. Its roster lines
+  are not — the foreign key empties `roster_lines.operator_id`, so every line the
+  operator held, in any version, shows Open rather than disappearing with them
+  (domain rule 12, AC-6). A caller names those lines with
+  `GtfsPlanner.Gtfs.Rosters.operator_holdings/2` before it confirms.
+
+  Returns `{:error, :not_found}` for a missing, malformed or foreign id and
+  deletes nothing, and `{:error, :forbidden}` when the actor is no longer an
+  editor of the organization.
+  """
+  @spec delete_operator(Ecto.UUID.t(), actor(), term()) ::
+          {:ok, Operator.t()} | {:error, :not_found | :forbidden}
+  def delete_operator(organization_id, actor, id) do
+    authorized_write(organization_id, actor, fn ->
+      case get_operator(organization_id, id) do
+        nil -> {:error, :not_found}
+        operator -> Repo.delete(operator)
+      end
+    end)
+  end
+
+  # --- Operator import -------------------------------------------------------
+
+  @doc """
+  Classifies a parsed operators CSV against the organization's stored operators.
+
+  A valid row carrying an employee ID the organization already holds is an
+  update, any other valid row is an add, and an invalid row is skipped with its
+  reason. Skipped rows and `ignored_columns` come from
+  `Operations.OperatorImport.classify/2` unchanged: only `employee_id`,
+  `display_name` and `seniority_number` are read, and a file without a
+  `seniority_number` column marks every row `:keep`.
+  """
+  @spec preview_operator_import(Ecto.UUID.t(), Tods.parsed()) :: OperatorImport.preview()
+  def preview_operator_import(organization_id, parsed) do
+    classify_operators(organization_id, parsed, false)
+  end
+
+  @doc """
+  Applies a previewed operators CSV in one transaction, or changes nothing.
+
+  The organization's operators are locked `FOR UPDATE` in employee ID order and
+  the preview is recomputed from them, so an operator created, deleted or
+  re-identified since the preview changes the add or update ID set and the apply
+  returns `{:error, {:preview_changed, preview}}` with a fresh preview instead of
+  writing. Adds are inserted with `on_conflict: :nothing`; a short insert (a
+  concurrent insert claimed an ID after the recompute) rolls back every write and
+  returns a freshly read `{:error, {:preview_changed, preview}}` too.
+
+  The editor membership is locked first, so an actor who is no longer an editor
+  of the organization gets `{:error, :forbidden}` and nothing is written.
+
+  Updates keep `update_operator/4`'s rules — they record the acting user and
+  keep its duplicate employee ID refusal — and only the file's mapped fields are
+  written: a file with no `seniority_number` column leaves the stored number
+  alone and a blank cell clears it. No stored operator is deleted and an update
+  keeps the row's UUID.
+  """
+  @spec apply_operator_import(Ecto.UUID.t(), actor(), Tods.parsed(), OperatorImport.preview()) ::
+          {:ok, %{added: non_neg_integer(), updated: non_neg_integer()}}
+          | {:error, {:preview_changed, OperatorImport.preview()} | :forbidden}
+  def apply_operator_import(organization_id, actor, parsed, preview) do
+    outcome =
+      Repo.transaction(fn ->
+        authorize_editor!(organization_id, actor)
+        existing = load_operators(organization_id, true)
+        fresh = classify_operators(existing, parsed)
+
+        if same_operator_plan?(fresh, preview) do
+          write_operator_import(organization_id, actor, existing, fresh)
+        else
+          Repo.rollback({:preview_changed, fresh})
+        end
+      end)
+
+    case outcome do
+      {:ok, %{added: _added, updated: _updated} = result} ->
+        {:ok, result}
+
+      {:error, {:preview_changed, fresh}} ->
+        {:error, {:preview_changed, fresh}}
+
+      {:error, :short_insert} ->
+        {:error, {:preview_changed, preview_operator_import(organization_id, parsed)}}
+
+      {:error, :forbidden} ->
+        {:error, :forbidden}
+    end
+  end
+
+  defp classify_operators(organization_id, parsed, lock?) do
+    organization_id
+    |> load_operators(lock?)
+    |> classify_operators(parsed)
+  end
+
+  defp classify_operators(existing, parsed) do
+    OperatorImport.classify(parsed, MapSet.new(Map.keys(existing)))
+  end
+
+  # Every stored operator of the organization is locked, not only the ones the
+  # file names: the plan comparison reads the whole employee ID set, and an
+  # update writes the locked row rather than a row read after the lock.
+  defp load_operators(organization_id, lock?) do
+    Operator
+    |> where([o], o.organization_id == ^organization_id)
+    |> lock_rows(lock?)
+    |> order_by([o], asc: o.employee_id)
+    |> Repo.all()
+    |> Map.new(&{&1.employee_id, &1})
+  end
+
+  defp same_operator_plan?(fresh, preview) do
+    Enum.sort(employee_ids(fresh.add)) == Enum.sort(employee_ids(Map.get(preview, :add, []))) and
+      Enum.sort(employee_ids(fresh.update)) ==
+        Enum.sort(employee_ids(Map.get(preview, :update, [])))
+  end
+
+  defp employee_ids(rows), do: Enum.map(rows, & &1.employee_id)
+
+  # Each update goes through `update_operator_row/4` against the locked row, so
+  # the acting user is recorded and its duplicate employee ID refusal stays: the
+  # stored row carries the file's employee ID, and the holder lookup excludes
+  # the row being updated.
+  defp write_operator_import(organization_id, actor, existing, fresh) do
+    Enum.each(fresh.update, fn row ->
+      {:ok, _operator} =
+        update_operator_row(
+          organization_id,
+          actor,
+          Map.fetch!(existing, row.employee_id).id,
+          operator_import_fields(row)
+        )
+    end)
+
+    added = insert_operator_adds(organization_id, actor_id(actor), fresh.add)
+
+    %{added: added, updated: length(fresh.update)}
+  end
+
+  # `:keep` leaves the stored seniority number untouched; a present cell,
+  # including a blank one, is written as it stands.
+  defp operator_import_fields(row) do
+    fields = %{employee_id: row.employee_id, display_name: row.display_name}
+
+    case row.seniority_number do
+      :keep -> fields
+      number -> Map.put(fields, :seniority_number, number)
+    end
+  end
+
+  defp insert_operator_adds(_organization_id, _actor_id, []), do: 0
+
+  defp insert_operator_adds(organization_id, actor_id, rows) do
+    now = DateTime.utc_now()
+
+    entries =
+      Enum.map(rows, fn row ->
+        %{
+          id: Ecto.UUID.generate(),
+          organization_id: organization_id,
+          employee_id: row.employee_id,
+          display_name: row.display_name,
+          # An add has no stored seniority to keep, so `:keep` inserts none.
+          seniority_number: new_seniority_number(row.seniority_number),
+          updated_by_id: actor_id,
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    entries
+    |> Enum.chunk_every(@operator_insert_batch)
+    |> Enum.map(&insert_planned(Operator, &1, length(&1)))
+    |> Enum.sum()
+  end
+
+  defp new_seniority_number(:keep), do: nil
+  defp new_seniority_number(seniority_number), do: seniority_number
 
   # --- TODS import -----------------------------------------------------------
 
@@ -1578,4 +1870,42 @@ defmodule GtfsPlanner.Operations do
 
   defp actor_id(%{id: id}), do: id
   defp actor_id(_), do: nil
+
+  # The holder is read before the write, the way `Rosters.assign_operator/3`
+  # reads the line an operator already holds: an insert that violates the unique
+  # index leaves a failed transaction behind, and this refusal is one scoped read
+  # that never fails. The index still rejects a concurrent insert that claimed
+  # the ID between the read and the write; that write keeps Ecto's own message.
+  #
+  # The sentence names the ID as well as the holder, because the editor is
+  # looking at a form and the ID they typed is what tells them *which* of their
+  # own entries collided. "is already used by Aurelia Nowak." alone leaves them
+  # to work out what it is about.
+  defp refuse_employee_id(changeset, organization_id, operator_id) do
+    employee_id = Ecto.Changeset.get_field(changeset, :employee_id)
+
+    holder =
+      changeset.valid? and is_binary(employee_id) and employee_id != "" and
+        employee_id_holder(organization_id, employee_id, operator_id)
+
+    if holder,
+      do:
+        {:error,
+         Ecto.Changeset.add_error(
+           changeset,
+           :employee_id,
+           "#{employee_id} is already used by #{holder.display_name}."
+         )},
+      else: {:ok, changeset}
+  end
+
+  defp employee_id_holder(organization_id, employee_id, operator_id) do
+    Operator
+    |> where([o], o.organization_id == ^organization_id and o.employee_id == ^employee_id)
+    |> exclude_operator(operator_id)
+    |> Repo.one()
+  end
+
+  defp exclude_operator(query, nil), do: query
+  defp exclude_operator(query, operator_id), do: where(query, [o], o.id != ^operator_id)
 end

@@ -246,33 +246,35 @@ for (const { width, height, label } of VIEWPORTS) {
       ).toHaveText("Blocks");
       await capture(page, testInfo, `operations-${label}`);
 
-      for (const [tab, title] of [
-        ["operations-tab-runs", "Runs"],
-        ["operations-tab-rosters", "Rosters"],
-        ["operations-tab-blocks", "Blocks"],
+      // `[tab, tab label, page heading]`: the Operations sub nav names a tab,
+      // and the page under it is free to name itself something more specific —
+      // Rosters is titled "Roster lines", so one string cannot be both.
+      for (const [tab, label, heading] of [
+        ["operations-tab-runs", "Runs", "Runs"],
+        ["operations-tab-rosters", "Rosters", "Roster lines"],
+        ["operations-tab-blocks", "Blocks", "Blocks"],
       ]) {
         await page.locator(`#${tab}`).click();
-        await page.waitForURL(new RegExp(`/${title.toLowerCase()}$`));
+        await page.waitForURL(new RegExp(`/${label.toLowerCase()}$`));
         await waitForLiveView(page);
 
-        await expect(page.locator("h1")).toHaveText(title);
+        await expect(page.locator("h1")).toHaveText(heading);
         await expect(
           page.locator("#operations-sub-nav a[aria-current='page']"),
         ).toHaveCount(1);
         await expect(
           page.locator("#operations-sub-nav a[aria-current='page']"),
-        ).toHaveText(title);
-        // Rosters is the one Operations placeholder left; Runs and Blocks are
-        // built pages and must not render it.
-        if (title === "Rosters") {
-          await expect(page.locator("#coming-soon-status")).toHaveText(
-            /Coming soon/,
-          );
-        } else {
-          await expect(page.locator("#coming-soon")).toHaveCount(0);
-        }
-        if (title === "Runs") {
+        ).toHaveText(label);
+        // Rosters became a real page in spec 09 step 24, so it joins Runs and
+        // Blocks: it must not render the placeholder. This block is now empty
+        // for every tab, which is the point — a destination that is not
+        // listed here has no placeholder to assert.
+        await expect(page.locator("#coming-soon")).toHaveCount(0);
+        if (label === "Runs") {
           await expect(page.locator("#runs-page")).toBeAttached();
+        }
+        if (label === "Rosters") {
+          await expect(page.locator("#rosters-page")).toBeAttached();
         }
         await expectNoPageOverflow(page);
       }

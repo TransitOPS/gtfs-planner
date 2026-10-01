@@ -574,14 +574,16 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
   A rebuild is the one apply a reader cannot undo by reading the diff, because it
   renumbers runs a planner may have tuned by hand. So it asks first, and the
-  sentence names both things that will change: how many trips move, and that the
-  numbering moves with them. The cancel button is "Keep current runs" rather
-  than "Cancel", because that is what it does.
+  sentences name everything that will change: how many trips move, that the
+  numbering moves with them, and — when the roster holds slots of this day type
+  — how many of the runs being renumbered the roster is using. The cancel button
+  is "Keep current runs" rather than "Cancel", because that is what it does.
   """
   attr :plan, :map, required: true
   attr :day_label, :string, required: true
   attr :open, :boolean, default: false
   attr :pending, :boolean, default: false
+  attr :roster_slots, :map, default: %{lines: 0, slots: 0}
 
   def rebuild_confirm(assigns) do
     ~H"""
@@ -610,6 +612,15 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
         Every block is cut again and every piece paired again. {length(@plan.moves)}
         {if length(@plan.moves) == 1, do: "trip changes", else: "trips change"} run, and runs are renumbered in sign-on order, so a run you renamed or
         tuned may come back under a different number.
+      </p>
+      <%!-- Renumbering is invisible to the Rosters page: the slots stay set and
+            simply stop matching the runs they name. The sentence is here, before
+            the button that does it, and absent when the roster holds nothing of
+            this day type — there is nothing to warn about then. --%>
+      <p :if={@roster_slots.slots > 0} id="runs-rebuild-confirm-rosters">
+        Roster lines use {@roster_slots.slots} of these runs on {@roster_slots.lines}
+        {if @roster_slots.lines == 1, do: "line", else: "lines"}. After the rebuild their slots show as
+        changed or removed until you set them again.
       </p>
     </.confirm_dialog>
     """

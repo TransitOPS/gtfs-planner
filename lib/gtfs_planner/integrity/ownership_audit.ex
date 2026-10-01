@@ -16,6 +16,7 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
     deadhead_times fare_transfer_rules fare_zones feed_info flex_areas flex_services frequencies
     gtfs_change_runs gtfs_export_runs gtfs_validation_runs journal_entries levels
     locations networks pathway_evolutions pathways relief_points rider_categories route_networks
+    roster_line_days roster_lines
     route_operating_settings route_pattern_stops route_patterns routes shapes station_editing_statuses
     stop_areas stop_levels stop_times stops timed_patterns timeframes transfers
     translations trip_runs trips walkability_tests
@@ -33,6 +34,8 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
     {"flex_areas→flex_services", "flex_areas", "flex_service_id", "flex_services"},
     {"journal_entries.station_id→stops", "journal_entries", "station_id", "stops"},
     {"trip_runs.trip_id→trips", "trip_runs", "trip_id", "trips"},
+    {"roster_line_days.roster_line_id→roster_lines", "roster_line_days", "roster_line_id",
+     "roster_lines"},
     {"station_editing_statuses.station_id→stops", "station_editing_statuses", "station_id",
      "stops"}
   ]
@@ -48,7 +51,8 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
     {"blocking_settings.default_garage_id→garages", "blocking_settings", "default_garage_id",
      "garages"},
     {"vehicles.garage_id→garages", "vehicles", "garage_id", "garages"},
-    {"vehicles.vehicle_type_id→vehicle_types", "vehicles", "vehicle_type_id", "vehicle_types"}
+    {"vehicles.vehicle_type_id→vehicle_types", "vehicles", "vehicle_type_id", "vehicle_types"},
+    {"roster_lines.operator_id→operators", "roster_lines", "operator_id", "operators"}
   ]
 
   @doc "Lists the tables whose rows must belong to their named GTFS version."

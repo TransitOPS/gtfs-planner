@@ -49,7 +49,7 @@ Org name                                        [Version ▾]   [Initials ▾]
 | Home (`/`) | Organization tasks for the signed-in user | Organization | Live |
 | Routes | Route catalog, transfers, route and pattern pages | This version | Live |
 | Calendars | Service calendars | This version | Live |
-| Operations | Blocks · Runs · Rosters | This version | Planned; grouping Proposed |
+| Operations | Blocks · Runs · Rosters | This version | Live; grouping Proposed |
 | Stops & stations | Stops, stations, floorplans, reports, closures | This version | Live |
 | Flex | On-demand services layered on routes | This version | Proposed |
 | GTFS | Export (default tab): export runs, validation, publishing. Import: creates a new version from GTFS files | Export: this version. Import: organization | Live; GTFS grouping Proposed |
@@ -130,10 +130,10 @@ flowchart LR
 
   app --> orgs[Organizations]
 
-  class app,routes,routeList,route,rDetails,rPatterns,pattern,pTabs,cals,calList,cal,stops,station,sTabs,imp,exp,orgs live;
+  class app,routes,routeList,route,rDetails,rPatterns,pattern,pTabs,cals,calList,cal,stops,station,sTabs,imp,exp,orgs,blocks,runs,rosters live;
   class rSchedules live;
   class compare live;
-  class paste,blocks,runs,rosters,evol planned;
+  class paste,evol planned;
   class transfers,pAlign,combine,ops,flex,flexSvc,gtfs,publish,settings,sVersion,sAll,sOrg proposed;
 ```
 
@@ -265,20 +265,20 @@ Calendars                           /gtfs/:version/calendars
 
 ```
 Operations                          /gtfs/:version/…
-├── Blocks                          Planned  day-type timeline, unassigned pool, checks, block drawer
-├── Runs                            Planned  duty chart, run drawer, suggest runs, crew settings
-└── Rosters                         Planned  weekly lines, open work, operators, assignments
+├── Blocks                          Live  day-type timeline, unassigned pool, checks, block drawer
+├── Runs                            Live  duty chart, run drawer, suggest runs, crew settings
+└── Rosters                         Live  weekly lines, open work, operators, assignments
 ```
 
-- **Blocks** (planned basic and advanced blocking): one day type at a time.
-  - Planned drawers for deadhead times, relief points and interlining stay on this page.
+- **Blocks** (basic and advanced blocking): one day type at a time.
+  - The drawers for deadhead times, relief points and interlining are on this page.
   - *Proposed:* the block drawer lists each trip-to-trip connection with a **Riders stay on
     board** choice: follows the block (default, no row), stay on board (type 4) or must re-board
     (type 5). Block edits flag, never delete, a row that no longer matches the block.
   - When no garages exist, the empty state links to Settings › Garages.
-- **Runs** (planned basic runs): cuts blocks into operator work for a day type.
-- **Rosters** (planned basic rosters): weekly bid lines built from runs, with operator assignment
-  and a crew export.
+- **Runs** (basic runs): cuts blocks into operator work for a day type.
+- **Rosters** (basic rosters): weekly bid lines built from runs, with operator assignment and
+  the planned crew export.
 - The planned work puts Garages and Fleet under a Blocks sub-navigation and gives Rosters its own
   pill. Here, Garages and Fleet move to Settings › All versions, and Rosters becomes an Operations
   tab.
@@ -344,8 +344,11 @@ The pill is current on Export, Import and the validation and station reachabilit
 opened from an export run.
 
 **Export** (Live): choose Full GTFS or Pathways, run the export, and see validation results. Garages and
-fleet (#697) added a "GTFS + operations (TODS)" type. The crew export from the planned roster work
-starts on Operations › Rosters; its runs also appear in the export history here.
+fleet (#697) added a "GTFS + operations (TODS)" type. Planned operator assignments are part of that
+same operations export: Operations › Rosters records each pick and links to
+`/gtfs/:version/export?type=operations`, where `employee_run_dates.txt` is built from the export's own
+snapshot, so the crew rows and the run rows always match. The Rosters page carries the planned-data
+note, the warnings and a row preview; there is no separate download on that page.
 - *Proposed:* **Publish to feed URL** sits next to Download on a finished full export, after
   validation.
   - Publishing an export with validation errors needs a confirmation that names the error count.
@@ -483,7 +486,7 @@ its feature is specified.
 | Calendars | [Calendars](requirements/calendars-and-service-periods-requirements.md) AC-CAL-001 to AC-CAL-032 | Calendars list and Calendar | Live; coverage bars and combine Proposed |
 | Trips and frequencies | [Trips](requirements/trips-requirements.md) | Route › Schedules | Planned / Proposed |
 | In-seat transfers | AC-TRIP-041, AC-TRIP-042 | Operations › Blocks › block drawer | Proposed |
-| Blocks | [Schedules and blocks](requirements/schedules-and-blocks-requirements.md) | Operations › Blocks | Planned |
+| Blocks | [Schedules and blocks](requirements/schedules-and-blocks-requirements.md) | Operations › Blocks | Live |
 | Transfers | [Transfers](requirements/transfers-requirements.md) | Routes › Transfers | Live |
 | Fare zones | [Stops and stations](requirements/stops-and-stations-requirements.md) AC-STOP-023 to AC-STOP-026 | Settings › Fares › Zones | Live |
 | Agencies and feed info | [System configuration](requirements/system-configuration-requirements.md) AC-CONFIG-001 to AC-CONFIG-017, AC-CONFIG-040 | Settings › Agencies, Feed details; Route › Details | Proposed |

@@ -14,6 +14,11 @@ defmodule GtfsPlanner.Gtfs.BlockingSetting do
   `settings_fields/0` or `changeset/2`: `GtfsPlanner.Gtfs.Runs` owns them through
   its own `crew_fields/0` and `crew_changeset/2`, so a Block rules save never
   rewrites a crew rule and a crew save never rewrites a Block rule.
+
+  The three roster columns on the same row — `min_rest_minutes`,
+  `weekly_hours_warn_above` and `roster_day_types` — are the roster rules, and
+  are owned the same way by `GtfsPlanner.Gtfs.Rosters` through
+  `roster_fields/0` and `roster_changeset/2`.
   """
 
   use Ecto.Schema
@@ -35,6 +40,9 @@ defmodule GtfsPlanner.Gtfs.BlockingSetting do
     field :sign_off_minutes, :integer, default: 5
     field :paid_break_max_minutes, :integer, default: 30
     field :max_spread_minutes, :integer, default: 720
+    field :min_rest_minutes, :integer, default: 600
+    field :weekly_hours_warn_above, :integer, default: 48
+    field :roster_day_types, :map, default: %{}
 
     belongs_to :default_garage, GtfsPlanner.Operations.Garage
 
@@ -63,6 +71,9 @@ defmodule GtfsPlanner.Gtfs.BlockingSetting do
           sign_off_minutes: integer(),
           paid_break_max_minutes: integer(),
           max_spread_minutes: integer(),
+          min_rest_minutes: integer(),
+          weekly_hours_warn_above: integer(),
+          roster_day_types: %{optional(String.t()) => String.t()},
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }
@@ -87,6 +98,21 @@ defmodule GtfsPlanner.Gtfs.BlockingSetting do
   """
   @spec crew_fields() :: [atom()]
   def crew_fields, do: @crew_fields
+
+  # The three roster columns, as the one list the roster settings writer
+  # replaces. It sits with the schema for the same reason `@crew_fields` does.
+  @roster_fields [:min_rest_minutes, :weekly_hours_warn_above, :roster_day_types]
+
+  @doc """
+  The three roster rules, in the order the reader returns them.
+
+  They are in neither `settings_fields/0` nor `crew_fields/0`, so no save can
+  rewrite another owner's columns.
+  """
+  @spec roster_fields() :: [atom()]
+  def roster_fields, do: @roster_fields
+
+  @roster_weekdays ["1", "2", "3", "4", "5", "6", "7"]
 
   # A value that must always be submitted: a blank string is not a valid number
   # here, so it is left to `cast/4` as an "is invalid" field error rather than
@@ -152,6 +178,70 @@ defmodule GtfsPlanner.Gtfs.BlockingSetting do
       message: "must be a whole number between 240 and 1080"
     )
   end
+
+  @doc """
+  Changeset for the three roster rules.
+
+  Only `roster_fields/0` is cast, so `organization_id` and `gtfs_version_id` in
+  submitted parameters are ignored; the caller sets those on the struct. As in
+  `crew_changeset/2` a blank input is an "is invalid" error rather than the
+  column default: a roster rule has no unset state, only a range. Each range is
+  checked here and again by the named database constraint.
+
+  `roster_day_types` maps a weekday number `"1"`–`"7"` to a day-type key. Only
+  the shape is checked here; whether the key is a current day type with dates on
+  that weekday is the writer's check, because it needs the version's calendars.
+  """
+  @spec roster_changeset(t(), map()) :: Ecto.Changeset.t()
+  def roster_changeset(setting, attrs) do
+    setting
+    |> cast(attrs, @roster_fields, empty_values: [])
+    |> validate_required(@roster_fields)
+    |> validate_number(:min_rest_minutes,
+      greater_than_or_equal_to: 480,
+      less_than_or_equal_to: 720,
+      message: "must be a whole number between 480 and 720"
+    )
+    |> validate_number(:weekly_hours_warn_above,
+      greater_than_or_equal_to: 40,
+      less_than_or_equal_to: 60,
+      message: "must be a whole number between 40 and 60"
+    )
+    |> validate_change(:roster_day_types, &validate_roster_day_types/2)
+    |> check_constraint(:min_rest_minutes,
+      name: :min_rest_range,
+      message: "must be a whole number between 480 and 720"
+    )
+    |> check_constraint(:weekly_hours_warn_above,
+      name: :weekly_hours_warn_range,
+      message: "must be a whole number between 40 and 60"
+    )
+  end
+
+  # Every offending entry adds its own error on `:roster_day_types`, so one
+  # bad key and one blank value are two reports rather than one blurred message.
+  # The value's existence as a real day type is not checked here: that needs the
+  # version's calendars, so it belongs to `Rosters.update_roster_settings/2`.
+  defp validate_roster_day_types(:roster_day_types, day_types) when is_map(day_types) do
+    Enum.flat_map(day_types, fn {weekday, key} ->
+      cond do
+        weekday not in @roster_weekdays ->
+          [roster_day_types_error("must use weekday numbers 1 to 7")]
+
+        blank_day_type_key?(key) ->
+          [roster_day_types_error("must choose a day type for every weekday")]
+
+        true ->
+          []
+      end
+    end)
+  end
+
+  defp validate_roster_day_types(:roster_day_types, _day_types), do: []
+
+  defp blank_day_type_key?(key), do: not (is_binary(key) and String.trim(key) != "")
+
+  defp roster_day_types_error(message), do: {:roster_day_types, {message, []}}
 
   @doc """
   The eight Block rules settings, in the order the reader returns them.

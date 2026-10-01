@@ -1486,6 +1486,29 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   @doc """
+  Returns every day type a version's calendars currently derive, in derivation order.
+
+  Day types are recomputed from `Calendars.list_calendars/3` on every read and never
+  stored (INV-6), so a caller that needs to ask "is this key still a day type, and
+  does it run on that weekday" answers it from this list rather than from a stored
+  key it would have to trust. `Rosters.update_roster_settings/2` is the caller: a
+  stored base-week choice is only accepted while its day type is current and has a
+  date on that weekday.
+
+  The calendars are read through `load_calendars!/2`, so this belongs inside the
+  caller's transaction and rolls that transaction back on `{:error, :not_found}` —
+  an unpublished or foreign version is refused rather than answered with an empty
+  list, which would read as "this version has no day type" rather than as a
+  refused scope.
+  """
+  @spec list_day_types(Ecto.UUID.t(), Ecto.UUID.t()) :: [DayTypes.day_type()]
+  def list_day_types(organization_id, gtfs_version_id) do
+    organization_id
+    |> load_calendars!(gtfs_version_id)
+    |> DayTypes.derive()
+  end
+
+  @doc """
   Loads one day type of a published version as blocks, the pool and the day's checks.
 
   A `nil` key selects the first day type in `DayTypes.derive/1` order. An unknown
