@@ -632,6 +632,30 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
     %{blocking: blocking, descriptive: descriptive}
   end
 
+  @doc """
+  Whether any row of the given kind references this stop, in its own scope.
+
+  `usage/3` answers "what would a delete remove", which deliberately means
+  rows this organization's own import created. A move review is a different
+  question — "is anything drawing riders to this stop" — and routing
+  materialization is something an operator may have produced outside that
+  boundary, so a stop in a delivered feed must not read as unserved just
+  because no import of this app wrote the pattern row.
+
+  Every `via` shape is handled by `scope_query/2` itself, so the flex array
+  columns and the encoded deadhead references are answered as carefully as the
+  plain ones. A key that is not in the list is `false` rather than an error, so
+  a caller that misspells one gets a visible wrong answer instead of a raise
+  in the middle of a review.
+  """
+  @spec serving?(atom(), Stop.t()) :: boolean()
+  def serving?(key, %Stop{} = stop) when is_atom(key) do
+    case Enum.find(@all, &(&1.key == key)) do
+      nil -> false
+      ref -> Repo.exists?(scope_query(ref, stop))
+    end
+  end
+
   defp collect(refs, stop) do
     refs
     |> Enum.map(fn ref -> item(ref, stop) end)
@@ -674,11 +698,27 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
   # number reflects regular service rather than a one-off Saturday-only trip. One
   # grouped query counts them for every pattern at once, so a stop on ten patterns
   # still costs two queries here, not ten.
+  # The route join is scoped to the pattern's own organization and version.
+  # Joining on `route_id` alone looks right — route IDs are unique inside a
+  # feed, not inside a database — and in a single-organization database it is.
+  # In any real deployment every organization has a route "1", so the join
+  # fanned out once per matching row in the whole table: `usage/3` reported a
+  # count of 4 beside a list of a hundred duplicates, and anything that summed
+  # the details — the step 14 move review's weekday figure — was off by the
+  # size of the database. Found by the review, not by a test of this module.
   defp detail_query(%{key: :route_pattern_stops} = ref, stop) do
     ref
     |> scope_query(stop)
     |> join(:inner, [row], pattern in RoutePattern, on: pattern.id == row.route_pattern_id)
-    |> join(:left, [row, pattern], r in Route, on: r.route_id == pattern.route_id)
+    |> join(
+      :left,
+      [row, pattern],
+      r in Route,
+      on:
+        r.route_id == pattern.route_id and
+          r.organization_id == pattern.organization_id and
+          r.gtfs_version_id == pattern.gtfs_version_id
+    )
     |> select([_row, pattern, r], %{
       route_short_name: r.route_short_name,
       route_long_name: r.route_long_name,

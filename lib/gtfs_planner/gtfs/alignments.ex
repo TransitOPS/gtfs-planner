@@ -38,6 +38,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopPlacement
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
@@ -1317,6 +1318,153 @@ defmodule GtfsPlanner.Gtfs.Alignments do
       _ -> {:error, :not_found}
     end
   end
+
+  @doc """
+  Suggests street-routed interior points for every pair of stops around one
+  moved stop (step 14, AC-14).
+
+  A stop's map line is drawn through the pairs it sits between, so moving it
+  changes the interior of at most two of them: the pair it *follows* on each
+  pattern it is on, and the pair it *precedes*. Every pattern in the version
+  that visits the stop is scanned once, both pairs are collected and
+  deduplicated, and each distinct pair is routed once — a pair two patterns
+  share is one request and one suggestion, which is what makes the review able
+  to say "both of these redraw" from a single fact.
+
+  The new point is always one endpoint and the neighbouring stop's own
+  coordinates the other, in the pair's own direction, so a leg's interior is
+  oriented the way the pattern runs it. Endpoints are the stop anchors (R5,
+  `[lon, lat]` per INV-1): only interior points are suggested.
+
+  Returns `%{pairs, suggestions, failed}`. A pair whose neighbour has no
+  coordinates, or whose routing call fails, appears in `failed` with the
+  adapter's bare atom rather than being dropped — the review has to be able to
+  say *why* a line is not being redrawn. Nothing is written, and this runs
+  outside any transaction: a routing call is an external request and has no
+  business holding a database transaction open.
+  """
+  @spec suggest_stop_pairs(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), StopPlacement.point()) :: %{
+          pairs: [{String.t(), String.t()}],
+          suggestions: %{{String.t(), String.t()} => [[float()]]},
+          failed: %{{String.t(), String.t()} => atom()}
+        }
+  def suggest_stop_pairs(organization_id, gtfs_version_id, stop_id, {new_lon, new_lat})
+      when is_binary(stop_id) and is_number(new_lon) and is_number(new_lat) do
+    new_point = [new_lon * 1.0, new_lat * 1.0]
+    pairs = stop_pairs(organization_id, gtfs_version_id, stop_id)
+    neighbours = stop_points(organization_id, gtfs_version_id, neighbours_of(pairs))
+
+    {suggestions, failed} =
+      Enum.reduce(pairs, {%{}, %{}}, fn {from_id, to_id} = pair, {suggestions, failed} ->
+        from = Map.get(neighbours, from_id, new_point)
+        to = if to_id == stop_id, do: new_point, else: Map.get(neighbours, to_id, new_point)
+
+        case suggest_pair_leg(from, to) do
+          {:ok, points} -> {Map.put(suggestions, pair, points), failed}
+          {:error, reason} -> {suggestions, Map.put(failed, pair, reason)}
+        end
+      end)
+
+    %{pairs: pairs, suggestions: suggestions, failed: failed}
+  end
+
+  # The distinct `{from, to}` pairs on either side of the stop, in a stable
+  # order so a review of the same version twice lists the same rows.
+  #
+  # The window is computed over a subquery of *every* occurrence in the version
+  # and the stop's own row is filtered afterwards. Written the other way round
+  # — filtering first — the window would only ever see the stop's own rows, so
+  # every LAG and LEAD would be nil and the review would find no pairs at all.
+  # That failure is silent: an empty pair list reads as "nothing to redraw".
+  defp stop_pairs(organization_id, gtfs_version_id, stop_id) do
+    neighbours =
+      from(occurrence in RoutePatternStop,
+        where:
+          occurrence.organization_id == ^organization_id and
+            occurrence.gtfs_version_id == ^gtfs_version_id,
+        select: %{
+          stop_id: occurrence.stop_id,
+          previous_stop_id:
+            type(
+              fragment(
+                "LAG(?) OVER (PARTITION BY ? ORDER BY ?)",
+                occurrence.stop_id,
+                occurrence.route_pattern_id,
+                occurrence.position
+              ),
+              :string
+            ),
+          next_stop_id:
+            type(
+              fragment(
+                "LEAD(?) OVER (PARTITION BY ? ORDER BY ?)",
+                occurrence.stop_id,
+                occurrence.route_pattern_id,
+                occurrence.position
+              ),
+              :string
+            )
+        }
+      )
+
+    neighbours
+    |> subquery()
+    |> where([row], row.stop_id == ^stop_id)
+    |> Repo.all()
+    |> Enum.flat_map(fn row ->
+      [
+        if(is_nil(row.previous_stop_id), do: nil, else: {row.previous_stop_id, stop_id}),
+        if(is_nil(row.next_stop_id), do: nil, else: {stop_id, row.next_stop_id})
+      ]
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp neighbours_of(pairs) do
+    pairs
+    |> Enum.flat_map(fn {from_id, to_id} -> [from_id, to_id] end)
+    |> Enum.uniq()
+  end
+
+  # `[lon, lat]` for every named stop that has both, and nil for one that does
+  # not. A missing coordinate is `nil` rather than a dropped entry so the
+  # caller's fallback is explicit about *why* it fell back.
+  defp stop_points(organization_id, gtfs_version_id, stop_ids) do
+    from(stop in Stop,
+      where:
+        stop.organization_id == ^organization_id and
+          stop.gtfs_version_id == ^gtfs_version_id and
+          stop.stop_id in ^stop_ids,
+      select: {stop.stop_id, stop.stop_lon, stop.stop_lat}
+    )
+    |> Repo.all()
+    |> Map.new(fn {stop_id, lon, lat} -> {stop_id, point_pair(lon, lat)} end)
+  end
+
+  defp point_pair(lon, lat) when is_float(lon) or is_integer(lon) do
+    if is_float(lat) or is_integer(lat), do: [lon * 1.0, lat * 1.0]
+  end
+
+  defp point_pair(%Decimal{} = lon, %Decimal{} = lat),
+    do: [Decimal.to_float(lon), Decimal.to_float(lat)]
+
+  defp point_pair(_lon, _lat), do: nil
+
+  # One leg, through `suggest_between/2` so the endpoint validation and the
+  # "interior points only" rule stay in one place.
+  defp suggest_pair_leg(from, to) do
+    with true <- valid_endpoint?(from),
+         true <- valid_endpoint?(to) do
+      suggest_between(from, to)
+    else
+      _invalid -> {:error, :no_coordinates}
+    end
+  end
+
+  defp valid_endpoint?([lon, lat]) when is_number(lon) and is_number(lat), do: true
+  defp valid_endpoint?(_point), do: false
 
   @doc """
   Suggests street-routed interior points for the given section positions (step 32).
