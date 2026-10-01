@@ -3968,9 +3968,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     socket = assign(socket, :level_form, to_form(params))
 
     case result do
-      {:ok, %{level: level}} ->
-        {:noreply, finish_level_save(socket, level)}
-
+      # A StopLevel also has a `:level` key (its association), so it matches first.
       {:ok, %StopLevel{level_id: level_id}} ->
         case scoped_level_in_version(socket, level_id) do
           %Gtfs.Level{} = level -> {:noreply, finish_level_save(socket, level)}
@@ -3982,6 +3980,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          socket
          |> finish_level_save(level)
          |> maybe_refresh_history_entries("level", level.id)}
+      {:ok, %{level: level}} ->
+        {:noreply, finish_level_save(socket, level)}
+
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply,
