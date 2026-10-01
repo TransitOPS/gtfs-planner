@@ -5,9 +5,9 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
   This module is the date-bounded change planner (A36). It never writes a
   calendar, trip, time, block, transfer, run or audit row, and it exposes no
   apply, prepared command or execution token (INV-1, AC-10, AC-11). It owns
-  intent normalization and acceptance, and the one coherent read those are
-  computed from; the later computation steps are `project_times/3` and
-  `prepare/2`.
+  intent normalization and acceptance, the one coherent read those are
+  computed from, and the pure date and clock computation over that read; the
+  remaining step is `prepare/2`.
 
   ## Two server-owned steps
 
@@ -99,6 +99,27 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
   first, and a workload above `@max_date_work_cells` cells is
   `{:incomplete, reason}` rather than a partial complete answer (AC-5, AC-6,
   AC-7, CR-3).
+
+  ## Exact service-day clocks
+
+  `project_times/3` moves the accepted shift over the temporary dates, using
+  the native `GtfsTime` integer seconds. A service day is not a 24-hour day
+  and is never wrapped: `25:10:00` with `+300` is `25:15:00` on the same
+  service day, never `01:15:00` of the next one, and a normal date keeps the
+  clocks it already has (AC-8).
+
+  Arrival and departure are read and moved separately, so a stop's dwell
+  survives. A value GTFS leaves empty stays unknown, and the stop's other clock
+  is never a stand-in for it: a blank arrival is unknown in both positions, not
+  a departure fallback. A clock that cannot be read, or whose projected seconds
+  fall below 0 or above the supported range, is refused the same way rather
+  than wrapped.
+
+  A frequency window is a template, not a listed occurrence, so its stored
+  window is disclosed and no clock is projected for it. Every such case is an
+  entry in `unresolved`, and `timing` is `:complete` only when that list is
+  empty: a refused, unknown or excluded trip never reads as a complete
+  exact-timing plan, and complete date computation stays a separate claim.
   """
 
   import Ecto.Query
@@ -110,6 +131,7 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.Calendars.ServiceDates
   alias GtfsPlanner.Gtfs.Frequency
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RouteOperatingSetting
   alias GtfsPlanner.Gtfs.RoutePattern
@@ -141,11 +163,25 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
   @max_dependency_rows 20_000
   @max_date_work_cells 200_000
 
+  # The native `GtfsTime` supported range. A projection outside it is refused
+  # rather than wrapped into a clock the service day never had.
+  @max_gtfs_seconds 2_147_483_647
+
   @read_timeout_env :gtfs_dated_change_read_timeout_ms
   @read_timeout_ms 30_000
 
   @weekday_fields [:monday, :tuesday, :wednesday, :thursday, :friday, :saturday, :sunday]
   @published_status "published"
+
+  # The exact row shape `partition/2` produces, in sorted order.
+  @partition_keys [
+    :normal_dates,
+    :original_dates,
+    :selected_trip_ids,
+    :service_id,
+    :temporary_dates,
+    :unaffected_trip_ids
+  ]
 
   @accepted_keys [
     :approval_note,
@@ -321,6 +357,61 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
 
   @typedoc "One partition per selected service, ordered by `service_id`."
   @type partitions :: [partition()]
+
+  @typedoc """
+  One stop's clocks before and after the shift, as native `GtfsTime` seconds.
+
+  A value the stored row does not carry, cannot be read, or cannot be moved
+  within the supported range is `:unknown` in both positions rather than an
+  invented clock, and the projection's `unresolved` list says why.
+  """
+  @type clock_row :: %{
+          trip_id: Ecto.UUID.t(),
+          stop_sequence: integer(),
+          before_arrival: non_neg_integer() | :unknown,
+          before_departure: non_neg_integer() | :unknown,
+          temporary_arrival: non_neg_integer() | :unknown,
+          temporary_departure: non_neg_integer() | :unknown
+        }
+
+  @typedoc "One frequency window, disclosed as stored and never expanded."
+  @type frequency_window :: %{
+          trip_id: Ecto.UUID.t(),
+          service_id: String.t(),
+          start_time: String.t(),
+          end_time: String.t(),
+          headway_secs: integer(),
+          exact_times: integer() | nil
+        }
+
+  @typedoc "Why one clock could not be projected exactly."
+  @type unresolved_reason :: %{
+          reason: atom(),
+          service_id: String.t(),
+          trip_id: Ecto.UUID.t(),
+          stop_sequence: integer() | nil,
+          clock: :arrival | :departure | nil
+        }
+
+  @typedoc """
+  The proposed service-day clocks for the temporary dates, and what stays unknown.
+
+  `projected_clocks` describes the temporary dates only; a normal date keeps the
+  `before_*` clocks. `timing` is `:complete` only when `unresolved` is empty, so
+  a plan that refused or could not read any exact timing can never present itself
+  as a complete one (AC-8).
+  """
+  @type clock_projection :: %{
+          schema_version: pos_integer(),
+          input_digest: String.t(),
+          dependency_digest: String.t(),
+          partitions_digest: String.t(),
+          delta_seconds: integer(),
+          timing: :complete | :unresolved,
+          projected_clocks: [clock_row()],
+          frequency_windows: [frequency_window()],
+          unresolved: [unresolved_reason()]
+        }
 
   @typedoc "Field-keyed validation messages a host renders on the submitted form."
   @type field_errors :: %{optional(atom()) => [String.t()]}
@@ -1055,6 +1146,356 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
 
   defp calendar_label(nil), do: nil
   defp calendar_label(calendar), do: calendar.service_id
+
+  # -- exact service-day clocks ----------------------------------------------
+
+  @doc """
+  Projects the accepted shift onto the exact service-day clocks the temporary
+  dates would run.
+
+  `snapshot` is a `load/2` snapshot, `accepted` is the source it was read for and
+  `partitions` is what `partition/2` returned for that same source, so the three
+  inputs have to describe one plan: a source the snapshot was not read for, a
+  partition that is not this snapshot's own output, a selected trip the snapshot
+  did not load and a selected trip the partition files under another service are
+  all `{:error, {:incomplete, reason}}` before any clock is projected (INV-2).
+
+  Clocks are the native `GtfsTime` integer seconds of `0..2147483647`, moved by
+  the accepted whole-second delta. A service day is not a 24-hour day and is never
+  wrapped: `25:10:00` with `+300` is `25:15:00` on the same service day, and the
+  date is never reduced modulo 86,400 into the next one (AC-8).
+
+  Arrival and departure are read and moved separately, which is what keeps a
+  stop's dwell: a stop arriving at `06:00:00` and leaving at `06:05:00` with
+  `+300` arrives at `06:05:00` and leaves at `06:10:00`. A value GTFS leaves
+  empty stays unknown; the other clock of the same stop is not a stand-in for
+  it, so a blank arrival is `:unknown` in both positions and is reported as
+  unresolved rather than as a departure fallback (AC-8).
+
+  A clock that cannot be read, or whose projected seconds fall below 0 or above
+  the supported range, is refused the same way: `:unknown` in both positions,
+  never a wrapped or invented clock. A frequency-based trip is disclosed with
+  its stored windows and no projected clock, because a headway window is a
+  template rather than a listed service occurrence, and expanding it would invent
+  occurrences the feed never listed. A listed trip with no stored stop times is
+  reported for the same reason.
+
+  Rows are projected for the temporary dates only. A partition with no temporary
+  date proposes no clock, so it contributes no rows and keeps the clocks its
+  normal dates already have; `projected_clocks` is empty for a plan that would
+  change nothing.
+
+  `timing` is `:complete` only when `unresolved` is empty, so exact timing is
+  never claimed for a refused, unknown or excluded trip. Nothing here writes,
+  relinks or persists a timing, and no separate native review read is taken
+  (CR-1, INV-1).
+  """
+  @spec project_times(snapshot() | map(), accepted() | map(), partitions() | list()) ::
+          {:ok, clock_projection()} | {:error, incomplete()}
+  def project_times(snapshot, accepted, partitions)
+      when is_map(snapshot) and is_map(accepted) do
+    with {:ok, read} <- projection_input(snapshot),
+         {:ok, source} <- accepted_source(accepted),
+         :ok <- matched_source(snapshot, source),
+         {:ok, bound} <- readable_partitions(read, partitions) do
+      {:ok, build_projection(read, bound, source, partitions)}
+    end
+  end
+
+  def project_times(snapshot, _accepted, _partitions) when is_map(snapshot),
+    do: {:error, {:incomplete, :invalid_accepted_source}}
+
+  def project_times(_snapshot, _accepted, _partitions),
+    do: {:error, {:incomplete, :invalid_snapshot}}
+
+  # Everything the projection reads, taken once from the snapshot: no second read
+  # of the source, so the projection cannot mix two database states or two
+  # snapshots. Empty stop times and empty frequencies are readable content, not a
+  # missing read: they are what an unresolved trip looks like.
+  defp projection_input(snapshot) do
+    trips = snapshot |> Map.get(:trips) |> Enum.filter(&is_map/1)
+    dependency_digest = Map.get(snapshot, :dependency_digest)
+
+    with true <- trips != [],
+         true <- is_binary(dependency_digest) do
+      {:ok,
+       %{
+         dependency_digest: dependency_digest,
+         by_id: Map.new(trips, &{&1.id, &1}),
+         selected: readable_selection_ids(Map.get(snapshot, :selected_trip_ids)),
+         stop_times: group_by_trip(snapshot, :stop_times),
+         frequencies: group_by_trip(snapshot, :frequencies)
+       }}
+    else
+      _unreadable -> {:error, {:incomplete, :invalid_snapshot}}
+    end
+  end
+
+  # The snapshot's timing rows are keyed by the imported `Trip.trip_id`, which is
+  # a different namespace from the `Trip.id` UUID a plan is written in; the
+  # caller converts at the trip, never inside a row.
+  defp group_by_trip(snapshot, kind) do
+    snapshot |> Map.get(kind) |> Enum.filter(&is_map/1) |> Enum.group_by(& &1.trip_id)
+  end
+
+  # The partitions have to be this snapshot's own partition of this source's own
+  # selection, so each is bound to a readable row shape and then to the trips it
+  # claims. A hand-made list is refused rather than projected: a date the
+  # original service does not run, or a trip outside the read, would describe a
+  # different plan than the one the data behind it supports.
+  defp readable_partitions(read, partitions) do
+    with :ok <- well_formed_partitions(partitions),
+         :ok <- bound_services(partitions, read) do
+      {:ok,
+       Enum.map(partitions, fn partition ->
+         {partition, Enum.map(partition.selected_trip_ids, &read.by_id[&1])}
+       end)}
+    end
+  end
+
+  defp well_formed_partitions(partitions) when is_list(partitions) do
+    cond do
+      partitions == [] ->
+        {:error, {:incomplete, :invalid_partitions}}
+
+      Enum.any?(partitions, &(not partition_shape?(&1))) ->
+        {:error, {:incomplete, :invalid_partitions}}
+
+      service_ids(partitions) != Enum.uniq(service_ids(partitions)) ->
+        {:error, {:incomplete, :duplicate_partition_service}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp well_formed_partitions(_partitions), do: {:error, {:incomplete, :invalid_partitions}}
+
+  # A partition names its own date lists, so T and N overlapping would project a
+  # shift onto a date that is also claimed unchanged.
+  defp partition_shape?(partition) when is_map(partition) do
+    Map.keys(partition) |> Enum.sort() == @partition_keys and
+      partition_identity?(partition) and
+      partition_dates?(partition)
+  end
+
+  defp partition_shape?(_partition), do: false
+
+  defp partition_identity?(partition) do
+    is_binary(partition.service_id) and partition.service_id != "" and
+      partition.selected_trip_ids != [] and
+      readable_selection_ids(partition.selected_trip_ids) == partition.selected_trip_ids and
+      readable_selection_ids(partition.unaffected_trip_ids) == partition.unaffected_trip_ids
+  end
+
+  defp partition_dates?(partition) do
+    readable_dates(partition.original_dates) and
+      readable_dates(partition.temporary_dates) and
+      readable_dates(partition.normal_dates) and
+      MapSet.disjoint?(
+        MapSet.new(partition.temporary_dates),
+        MapSet.new(partition.normal_dates)
+      )
+  end
+
+  defp readable_dates(dates),
+    do: is_list(dates) and Enum.all?(dates, &match?(%Date{}, &1))
+
+  defp service_ids(partitions), do: Enum.map(partitions, & &1.service_id)
+
+  defp bound_services(partitions, read) do
+    Enum.reduce_while(partitions, :ok, fn partition, :ok ->
+      case bound_trip_ids(partition, read) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp bound_trip_ids(partition, read) do
+    Enum.reduce_while(partition.selected_trip_ids, :ok, fn trip_id, :ok ->
+      case bound_trip(partition, trip_id, read) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  # A trip outside the read's own selection is a different plan: widening the
+  # selected set here would project clocks the editor never accepted.
+  defp bound_trip(partition, trip_id, read) do
+    if trip_id in read.selected and Map.has_key?(read.by_id, trip_id) do
+      bound_service(partition, Map.fetch!(read.by_id, trip_id))
+    else
+      {:error, {:incomplete, {:unselected_trip, trip_id}}}
+    end
+  end
+
+  defp bound_service(partition, %{id: trip_id, service_id: service_id})
+       when service_id != partition.service_id,
+       do: {:error, {:incomplete, {:partition_service_mismatch, trip_id}}}
+
+  defp bound_service(_partition, _trip), do: :ok
+
+  defp build_projection(read, bound, source, described) do
+    {clocks, windows, unresolved} =
+      Enum.reduce(bound, {[], [], []}, fn
+        # A partition with no temporary date proposes no clock at all, so it
+        # contributes nothing: its normal dates keep the clocks they already have.
+        {%{temporary_dates: []}, _trips}, projected ->
+          projected
+
+        {_partition, trips}, projected ->
+          Enum.reduce(trips, projected, fn trip, {clocks, windows, unresolved} ->
+            trip_projection = project_trip(trip, read, source.delta_seconds)
+
+            {Enum.reverse(trip_projection.clocks) ++ clocks,
+             Enum.reverse(trip_projection.windows) ++ windows,
+             Enum.reverse(trip_projection.unresolved) ++ unresolved}
+          end)
+      end)
+
+    %{
+      schema_version: @schema_version,
+      input_digest: source.input_digest,
+      dependency_digest: read.dependency_digest,
+      partitions_digest: dependency_digest([{:partitions, described}]),
+      delta_seconds: source.delta_seconds,
+      timing: if(unresolved == [], do: :complete, else: :unresolved),
+      projected_clocks: Enum.reverse(clocks),
+      frequency_windows: Enum.reverse(windows),
+      unresolved: Enum.reverse(unresolved)
+    }
+  end
+
+  # One selected trip's proposed clocks, or why it has none. A frequency window
+  # is a template: the occurrences it would run are not listed in the feed, so
+  # the plan discloses the stored window and projects no clock for it.
+  defp project_trip(trip, read, delta) do
+    windows = read.frequencies |> Map.get(trip.trip_id, []) |> ordered_windows()
+    rows = read.stop_times |> Map.get(trip.trip_id, []) |> ordered_stop_times()
+
+    cond do
+      windows != [] ->
+        %{
+          clocks: [],
+          windows: Enum.map(windows, &frequency_window(trip, &1)),
+          unresolved: [unresolved_reason(trip, :frequency_not_exact, nil, nil)]
+        }
+
+      rows == [] ->
+        %{
+          clocks: [],
+          windows: [],
+          unresolved: [unresolved_reason(trip, :no_listed_stop_times, nil, nil)]
+        }
+
+      true ->
+        {clocks, unresolved} = project_rows(trip, rows, delta)
+        %{clocks: clocks, windows: [], unresolved: unresolved}
+    end
+  end
+
+  defp ordered_stop_times(rows),
+    do: Enum.sort_by(rows, &{&1.stop_sequence, &1.id})
+
+  defp ordered_windows(rows), do: Enum.sort_by(rows, &{&1.start_time, &1.id})
+
+  defp frequency_window(trip, row) do
+    %{
+      trip_id: trip.id,
+      service_id: trip.service_id,
+      start_time: row.start_time,
+      end_time: row.end_time,
+      headway_secs: row.headway_secs,
+      exact_times: row.exact_times
+    }
+  end
+
+  # Each stop's two clocks are read and moved separately, which is what keeps a
+  # stop's dwell across the shift: the same whole-second delta applies to both
+  # fields of a row, and a field that cannot be moved becomes unknown on its own
+  # rather than taking the other field's value with it.
+  defp project_rows(trip, rows, delta) do
+    Enum.reduce(rows, {[], []}, fn row, {clocks, unresolved} ->
+      {arrival, arrival_reason} = project_clock(row.arrival_time, delta)
+      {departure, departure_reason} = project_clock(row.departure_time, delta)
+
+      clock = %{
+        trip_id: trip.id,
+        stop_sequence: row.stop_sequence,
+        before_arrival: original_clock(row.arrival_time),
+        before_departure: original_clock(row.departure_time),
+        temporary_arrival: arrival,
+        temporary_departure: departure
+      }
+
+      {[clock | clocks],
+       unresolved ++
+         field_reason(trip, row, :arrival, arrival_reason) ++
+         field_reason(trip, row, :departure, departure_reason)}
+    end)
+    |> then(fn {clocks, unresolved} -> {Enum.reverse(clocks), unresolved} end)
+  end
+
+  # A stored clock and the same clock moved by the shift. A blank value is
+  # unknown in both positions: GTFS leaves it empty, and the stop's other clock
+  # is not a stand-in for it. A projected second below zero or above the
+  # supported range is refused rather than wrapped into a clock this service day
+  # never had.
+  defp project_clock(value, delta) do
+    case read_clock(value) do
+      {:unknown, reason} -> {:unknown, reason}
+      {seconds, nil} -> move_clock(seconds, delta)
+    end
+  end
+
+  defp read_clock(value) do
+    if blank_clock?(value) do
+      {:unknown, :unknown_clock}
+    else
+      case GtfsTime.parse(value) do
+        {:ok, seconds} -> {seconds, nil}
+        {:error, :invalid_time} -> {:unknown, :invalid_clock}
+      end
+    end
+  end
+
+  defp move_clock(seconds, delta) do
+    case seconds + delta do
+      projected when projected < 0 -> {:unknown, :negative_time}
+      projected when projected > @max_gtfs_seconds -> {:unknown, :time_overflow}
+      projected -> {projected, nil}
+    end
+  end
+
+  # The stored clock, read the same way the moved one is, so a value the reader
+  # cannot parse is unknown before the shift rather than only after it.
+  defp original_clock(value) do
+    case project_clock(value, 0) do
+      {seconds, nil} -> seconds
+      {:unknown, _reason} -> :unknown
+    end
+  end
+
+  defp blank_clock?(nil), do: true
+  defp blank_clock?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank_clock?(_value), do: false
+
+  defp field_reason(_trip, _row, _clock, nil), do: []
+
+  defp field_reason(trip, row, clock, reason),
+    do: [unresolved_reason(trip, reason, row.stop_sequence, clock)]
+
+  defp unresolved_reason(trip, reason, stop_sequence, clock) do
+    %{
+      reason: reason,
+      service_id: trip.service_id,
+      trip_id: trip.id,
+      stop_sequence: stop_sequence,
+      clock: clock
+    }
+  end
 
   # -- normalization ---------------------------------------------------------
 
