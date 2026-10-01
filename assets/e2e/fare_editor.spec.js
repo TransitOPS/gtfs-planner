@@ -805,3 +805,126 @@ await captureDrawer(page, testInfo, `drawers-fare-create-${viewport.label}`);
   await captureReference(page, testInfo, "?state=rider-create", "ref-rider-create");
   await captureReference(page, testInfo, "?state=media-create", "ref-media-create");
 });
+
+// ── bulk ──────────────────────────────────────────────────────────────────
+
+// The Change prices dialog. The journey proves the preview is computed and
+// never written, that Update writes exactly what the preview listed, that Undo
+// reverses it, and that choices moving nothing leave Update disabled with the
+// reason on screen. The seeded North Coast version prices Local ride at $1.50
+// adult on the cash method and $1.25 in the NCT Ride app, so the default
+// +$0.25 preview lists both of those.
+test("bulk", async ({ page }, testInfo) => {
+  await routeBlankTiles(page);
+  await logIn(page);
+
+  const versionId = await versionIdByName(page, VERSIONS.managed);
+
+  const openPrices = async () => {
+    await page.goto(`/gtfs/${versionId}/settings/fares`);
+    await waitForLiveView(page);
+    await expect(page.locator("#fare-table")).toBeAttached();
+  };
+
+  // The dialog opens on the prototype's defaults, with a preview rather than a
+  // save: nothing is written until Update.
+  await openPrices();
+  await page.locator("#change-prices").click();
+  await expect(page.locator("#price-change-dialog")).toBeAttached();
+  await expect(page.locator("#price-change-preview-badge")).toHaveText(
+    "Preview · not saved",
+  );
+  await expect(page.locator("#price-change-scope")).toHaveValue("single");
+  await expect(page.locator("#price-change-amount")).toHaveValue("0.25");
+  await expect(page.locator("#price-change-round")).toHaveValue("0.05");
+  await expect(page.locator("#price-change-half")).toBeChecked();
+  await expect(page.locator("#price-change-rider-child")).toBeDisabled();
+
+  const count = Number(
+    (await page.locator("#price-change-count").innerText()).split("\n")[0].trim(),
+  );
+  expect(count).toBeGreaterThan(0);
+  await expect(page.locator("#price-change-largest")).toContainText("+$0.25");
+  await expect(page.locator("#price-change-row-local_ride_adult_cash")).toContainText(
+    "$1.75",
+  );
+  await expect(page.locator("#price-change-empty")).toHaveCount(0);
+
+  // A preview writes nothing.
+  await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
+
+  // The choices recompute the preview: a percentage on one rider type.
+  await page.locator("#price-change-rider-adult").check();
+  await page.locator("#price-change-rider-reduced").uncheck();
+  await page.locator("#price-change-rider-youth").uncheck();
+  await page.locator("#price-change-how").selectOption("percent");
+  await page.locator("#price-change-percent").fill("10");
+  await page.locator("#price-change-round").selectOption("0.25");
+
+  // 10% of Coast ride's $3.50 is $3.85, which rounds down to $3.75.
+  await expect(page.locator("#price-change-row-coast_ride_adult_cash")).toContainText(
+    "$3.75",
+  );
+  await expect(page.locator("#price-change-row-local_ride_reduced_cash")).toHaveCount(
+    0,
+  );
+
+  // A choice that moves nothing disables Update and says why.
+  await page.locator("#price-change-percent").fill("0");
+  await expect(page.locator("#price-change-empty")).toBeAttached();
+  await expect(page.locator("#price-change-dialog-confirm")).toBeDisabled();
+  await expect(page.locator("#price-change-dialog-confirm")).toHaveText(
+    "Update prices",
+  );
+  await expect(page.locator("#price-change-status")).toContainText(
+    "Nothing changes until you update.",
+  );
+
+  // An unreadable amount is refused the same way, with its own reason.
+  await page.locator("#price-change-percent").fill("ten percent");
+  await expect(page.locator("#price-change-value-error")).toBeAttached();
+  await expect(page.locator("#price-change-dialog-confirm")).toBeDisabled();
+
+  // ── captures ────────────────────────────────────────────────────────────
+  for (const viewport of [DESKTOP, PHONE]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await openPrices();
+
+    await page.locator("#change-prices").click();
+    await expect(page.locator("#price-change-dialog")).toBeAttached();
+    await expect(page.locator("#price-change-count")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `bulk-${viewport.label}`);
+
+    // The disabled state, with the reason on the status line.
+    await page.locator("#price-change-amount").fill("0.00");
+    await expect(page.locator("#price-change-empty")).toBeAttached();
+    await expect(page.locator("#price-change-dialog-confirm")).toBeDisabled();
+    await captureDrawer(page, testInfo, `bulk-empty-${viewport.label}`);
+
+    await page.locator("#price-change-dialog-cancel").click();
+    await expect(page.locator("#price-change-dialog")).toHaveCount(0);
+  }
+
+  // Update writes exactly what the preview listed, and Undo reverses it.
+  await openPrices();
+  await page.locator("#change-prices").click();
+  await page.locator("#price-change-rider-reduced").uncheck();
+  await page.locator("#price-change-rider-youth").uncheck();
+  await page.locator("#price-change-rider-adult").check();
+
+  await expect(page.locator("#price-change-dialog-confirm")).toHaveText(
+    "Update 8 prices",
+  );
+  await page.locator("#price-change-dialog-confirm").click();
+  await expect(page.locator("#price-change-dialog")).toHaveCount(0);
+  await expect(page.locator("#fare-note")).toContainText("8 prices changed");
+  await expect(page.locator("#undo-prices")).toBeAttached();
+  await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.75");
+
+  await page.locator("#undo-prices").click();
+  await expect(page.locator("#fare-note")).toContainText("Change undone.");
+  await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
+
+  await captureReference(page, testInfo, "?state=bulk", "ref-bulk");
+});

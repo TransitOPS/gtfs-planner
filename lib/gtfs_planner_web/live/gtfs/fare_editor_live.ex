@@ -61,6 +61,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       loading: 1,
       media_delete_dialog: 1,
       media_drawer: 1,
+      price_change_dialog: 1,
       price_save_bar: 1,
       rider_delete_dialog: 1,
       rider_drawer: 1
@@ -105,6 +106,8 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
      |> assign(:media_draft, nil)
      |> assign(:media_focus, nil)
      |> assign(:media_delete, nil)
+     |> assign(:price_change, nil)
+     |> assign(:price_change_focus, nil)
      |> assign(:drawer_pending?, false)}
   end
 
@@ -563,6 +566,246 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
                text: "That payment method couldn’t be deleted (#{reason})."
              })}
         end
+    end
+  end
+
+  # -- Change prices ------------------------------------------------------------
+
+  # The dialog opens with the choices the prototype opens it on: single rides,
+  # every rider type a fare is sold to, +$0.25 to the nearest nickel and the
+  # reduced rider kept at half. Nothing is written here — the dialog's whole
+  # first answer is `Fares.preview_price_change/3`, which is computed against
+  # the version's own stored rows (INV-5).
+  #
+  # It closes the drawers because a dialog and a drawer are both overlays over
+  # the same prices, and Escape must return focus to one control rather than
+  # two.
+  #
+  # It does not open over unsaved prices. The grid's edits are held against the
+  # amounts they were typed at, and a change across the whole version would move
+  # those amounts under them; saving afterwards would then write what the
+  # operator reviewed against a price nobody reviewed. The note says so and the
+  # grid's own save bar stays the next action.
+  @impl true
+  def handle_event("open_change_prices", _params, socket) do
+    if socket.assigns.price_edits == %{} do
+      {:noreply,
+       socket
+       |> close_fare_and_media()
+       |> close_rider_and_media()
+       |> assign(:price_change, price_change(socket))
+       |> assign(:price_change_focus, "change-prices")
+       |> assign(:price_note, nil)}
+    else
+      {:noreply,
+       assign(socket, :price_note, %{
+         text: "Save or discard your unsaved prices before changing prices across the version."
+       })}
+    end
+  end
+
+  # Every control in the dialog is one form, so a change carries the whole set of
+  # choices rather than the one that was touched. The preview is recomputed on
+  # every change and nothing is written, so what the tiles count and what the
+  # table lists are always the rows Update would hand the writer.
+  @impl true
+  def handle_event("change_price_options", %{"change" => params}, socket)
+      when is_map(params) do
+    case socket.assigns.price_change do
+      nil ->
+        {:noreply, socket}
+
+      change ->
+        {:noreply, assign(socket, :price_change, preview_price_change(change, params, socket))}
+    end
+  end
+
+  def handle_event("change_price_options", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("cancel_change_prices", _params, socket) do
+    {:noreply, assign(socket, :price_change, nil)}
+  end
+
+  # The write is exactly the preview the operator reviewed: the rows
+  # `Fares.preview_price_change/3` returned, each carrying the amount it was
+  # reviewed at, so a price another operator has changed since refuses the whole
+  # change rather than overwriting it (AC-14's fence, INV-1).
+  @impl true
+  def handle_event("apply_price_change", _params, socket) do
+    case socket.assigns.price_change do
+      nil ->
+        {:noreply, socket}
+
+      %{rows: []} = change ->
+        {:noreply,
+         assign(socket, :price_change, %{change | error: "There is nothing to update."})}
+
+      change ->
+        {:noreply, apply_price_change(socket, change)}
+    end
+  end
+
+  # The dialog's own state, opened with the prototype's defaults: single rides,
+  # every rider type the version charges, $0.25, the nearest nickel, and the
+  # reduced rider kept at half its fare's new adult price.
+  defp price_change(socket) do
+    preview_price_change(
+      %{
+        scope: :single,
+        how: :amount,
+        amount: "0.25",
+        percent: "10",
+        round: "0.05",
+        half_reduced?: true,
+        riders: priced_riders(socket.assigns.workspace),
+        error: nil,
+        value_invalid?: false
+      },
+      %{},
+      socket
+    )
+  end
+
+  # The chosen rider types default to the ones a fare in this scope is sold to.
+  # A rider type with no priced row cannot change and is disabled in the dialog.
+  defp priced_riders(workspace) do
+    Enum.filter(workspace.riders, &rider_priced?(&1, workspace))
+    |> Enum.map(& &1.rider_category_id)
+  end
+
+  defp rider_priced?(rider, workspace) do
+    Enum.any?(workspace.fares, fn fare ->
+      case Map.get(fare.prices, rider.rider_category_id) do
+        nil -> false
+        amount -> not Decimal.equal?(amount, 0)
+      end
+    end)
+  end
+
+  # One preview of the choices as they stand. The amount is read through
+  # `Fares.Money.parse/1` (CR-3) and an unreadable one previews nothing rather
+  # than raising while the operator is still typing: the dialog shows the reason
+  # and Update stays disabled.
+  defp preview_price_change(change, params, socket) do
+    change =
+      change
+      |> put_scope(params["scope"])
+      |> put_how(params["how"])
+      |> put_value(params)
+      |> put_round(params["round"])
+      |> put_riders(params["riders"])
+      |> put_half(params["half_reduced?"])
+
+    amount = change_value(change)
+
+    rows =
+      if amount == nil do
+        []
+      else
+        Fares.preview_price_change(organization_id(socket), version_id(socket), %{
+          scope: change.scope,
+          riders: change.riders,
+          how: change.how,
+          value: amount,
+          round: change.round,
+          half_reduced?: change.half_reduced?
+        })
+      end
+
+    change
+    |> Map.put(:rows, rows)
+    |> Map.put(:value_invalid?, is_nil(amount))
+    |> Map.put(:error, preview_error(change, amount))
+  end
+
+  defp preview_error(_change, nil),
+    do: "Type a number, such as 0.25 or -0.10, to see the prices this changes."
+
+  defp preview_error(%{error: error}, _amount) when is_binary(error), do: error
+  defp preview_error(_change, _amount), do: nil
+
+  defp put_scope(change, scope) when scope in ~w(single pass all),
+    do: %{change | scope: String.to_existing_atom(scope)}
+
+  defp put_scope(change, _scope), do: change
+
+  defp put_how(change, how) when how in ~w(amount percent),
+    do: %{change | how: String.to_existing_atom(how)}
+
+  defp put_how(change, _how), do: change
+
+  defp put_value(change, params) do
+    case change.how do
+      :percent -> %{change | percent: to_string(Map.get(params, "percent", change.percent))}
+      :amount -> %{change | amount: to_string(Map.get(params, "amount", change.amount))}
+    end
+  end
+
+  defp put_round(change, round) when round in ~w(0.01 0.05 0.25), do: %{change | round: round}
+  defp put_round(change, _round), do: change
+
+  # A form's unticked boxes are absent from its payload rather than sent as
+  # false. The dialog's hidden marker field means a payload that carries the
+  # list at all says how many rider types are ticked — including none — while a
+  # payload without the marker is not a rider choice at all and keeps the ones
+  # already chosen.
+  defp put_riders(change, riders) when is_list(riders) do
+    case Enum.reject(riders, &(&1 == "")) do
+      [] -> %{change | riders: []}
+      chosen -> %{change | riders: chosen}
+    end
+  end
+
+  defp put_riders(change, riders) when is_binary(riders), do: put_riders(change, [riders])
+  defp put_riders(change, _riders), do: change
+
+  # The hidden marker field sends `false` when the box is unticked, so `nil` here
+  # is a payload that never carried the choice and keeps it as it stands.
+  defp put_half(change, half) when is_binary(half), do: %{change | half_reduced?: half == "true"}
+  defp put_half(change, _half), do: change
+
+  # The amount or percentage the choices name, read through the one money parser
+  # (CR-3), or nil while it is blank or unreadable.
+  defp change_value(%{how: :amount, amount: amount}), do: parsed_amount(amount)
+  defp change_value(%{how: :percent, percent: percent}), do: parsed_amount(percent)
+
+  defp parsed_amount(text) do
+    case Money.parse(text) do
+      {:ok, nil} -> nil
+      {:ok, amount} -> amount
+      {:error, :invalid} -> nil
+    end
+  end
+
+  # The write. One call, with the preview's own rows, so what was reviewed is
+  # what is stored; the answer decides the three outcomes the tab already knows
+  # how to show — written with Undo, refused as stale, or refused outright.
+  defp apply_price_change(socket, change) do
+    case Fares.apply_price_change(fare_scope(socket), change, change.rows) do
+      {:ok, %{operation_id: operation_id, inverse: inverse}} ->
+        socket
+        |> load_workspace()
+        |> assign(:price_change, nil)
+        |> assign(:price_change_focus, nil)
+        |> assign(:price_note, %{
+          text:
+            "#{price_count_text(length(change.rows))} changed to #{socket.assigns.current_gtfs_version.name} service.",
+          undo: [{operation_id, inverse}]
+        })
+
+      {:error, {:stale, cells}} ->
+        # Somebody changed a price this preview reviewed. Nothing was written,
+        # and the dialog stays open with the reason rather than closing over a
+        # change that did not happen.
+        assign(socket, :price_change, %{
+          change
+          | error:
+              "#{price_count_text(length(cells))} changed since this preview. Nothing was saved — preview again and update."
+        })
+
+      {:error, reason} ->
+        assign(socket, :price_change, %{change | error: "Prices couldn't be changed (#{reason})."})
     end
   end
 
@@ -1498,6 +1741,14 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
           :if={@media_delete}
           media_delete={@media_delete}
           return_focus_id={@media_focus}
+        />
+        <.price_change_dialog
+          :if={@price_change}
+          change={@price_change}
+          workspace={@workspace}
+          version_name={@current_gtfs_version.name}
+          published?={published?(@current_gtfs_version)}
+          return_focus_id={@price_change_focus}
         />
       </div>
     </Layouts.app>

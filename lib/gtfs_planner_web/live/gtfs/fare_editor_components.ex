@@ -20,7 +20,8 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
   differently, and an editable price cell each. The cells are read from the
   workspace's own `cells`, `prices` and `media_prices`, so what the grid shows
   is what `Fares.save_prices/2` will be handed; nothing here infers an id from a
-  name.
+  name. Its toolbar carries the older-format lens and the Change prices action,
+  the two things that change what the grid means rather than one of its cells.
 
   The older-format lens tints exactly the cells the projection carries — a
   single ride, the default rider type, the fare's base payment method, and
@@ -39,6 +40,8 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
       form_error_summary: 1,
       message: 1
     ]
+
+  import GtfsPlannerWeb.RouteWorkspace, only: [badge: 1]
 
   alias GtfsPlanner.Gtfs.Fares.Money
   alias GtfsPlanner.Gtfs.Stop
@@ -231,6 +234,15 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
             class="size-5 accent-[var(--color-action)]"
           /> Show what the older format includes
         </label>
+        <.button
+          id="change-prices"
+          type="button"
+          variant="secondary"
+          class="min-h-11"
+          phx-click="open_change_prices"
+        >
+          <.icon name="hero-percent-badge" class="size-4" /> Change prices
+        </.button>
       </div>
 
       <p
@@ -987,6 +999,17 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
   defp version_phrase(name, true), do: "#{name} service, a published version"
   defp version_phrase(name, false), do: "#{name} service"
 
+  # The Change prices dialog's status line says when riders see the new prices,
+  # which is the version's own publication state rather than a promise about
+  # when this page is next exported.
+  defp export_phrase(nil, _published?), do: "Nothing changes until you update."
+
+  defp export_phrase(name, true),
+    do: "#{name} service is published: riders see new prices at your next export."
+
+  defp export_phrase(name, false),
+    do: "#{name} service is not published yet, so riders see new prices when you publish it."
+
   defp note_tone(%{tone: :neutral}), do: "bg-canvas text-default"
   defp note_tone(_note), do: "bg-soft text-info-fg"
 
@@ -1202,6 +1225,13 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
 
   defp currency_name("USD"), do: "US dollars"
   defp currency_name(code), do: code
+
+  defp rider_name(workspace, rider_id) do
+    case Enum.find(workspace.riders, &(&1.rider_category_id == rider_id)) do
+      %{name: name} -> name
+      nil -> rider_id
+    end
+  end
 
   defp medium_name(workspace, medium_id) do
     case Enum.find(workspace.media, &(&1.fare_media_id == medium_id)) do
@@ -2165,6 +2195,402 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
   end
 
   # -- Drawer text -------------------------------------------------------------
+
+  @doc """
+  Renders the Change prices dialog: which fares to move, by how much, for whom,
+  and the prices that would change.
+
+  `change` is the LiveView's whole dialog state — the scope, whether the change
+  is an amount or a percentage, the typed value, the rounding step, the checked
+  rider types, whether the reduced rider stays at half, the rows
+  `Fares.preview_price_change/3` returned for those choices, and any reason the
+  dialog cannot be used as it stands.
+
+  Every row of the preview names a `fare_products` row, so the fare and rider
+  type it reads are the ones the grid shows for that row, and the amounts are
+  formatted through `Fares.Money.format/2` (CR-3). The table is the only thing
+  that scrolls, so the actions stay in view however many prices change.
+
+  Nothing here writes. Update is disabled while the preview is empty, and the
+  status line then says why — a choice that moves no price is not a save.
+  """
+  attr :change, :map, required: true
+  attr :workspace, :map, required: true
+  attr :version_name, :string, default: nil
+  attr :published?, :boolean, default: true
+  attr :return_focus_id, :string, default: nil
+  attr :pending?, :boolean, default: false
+
+  def price_change_dialog(assigns) do
+    assigns =
+      assigns
+      |> assign(:rows, change_rows(assigns.change.rows, assigns.workspace))
+      |> assign(:scope_options, price_scope_options(assigns.workspace))
+      |> assign(:currency, assigns.workspace.currency)
+
+    ~H"""
+    <.confirm_dialog
+      id="price-change-dialog"
+      chrome="planner"
+      size="2xl"
+      open={true}
+      pending={@pending?}
+      title="Change prices"
+      confirm_label={
+        if @rows == [],
+          do: "Update prices",
+          else: "Update #{counted(length(@rows), "price", "prices")}"
+      }
+      pending_label="Updating…"
+      confirm_disabled={@rows == []}
+      on_confirm="apply_price_change"
+      on_cancel="cancel_change_prices"
+      cancel_label="Keep prices"
+      return_focus_id={@return_focus_id}
+    >
+      <p
+        id="price-change-context"
+        class="flex flex-wrap items-center gap-2 text-[13px] text-muted"
+      >
+        <span>{version_phrase(@version_name, @published?)}</span>
+        <.badge id="price-change-preview-badge" tone="warning">Preview · not saved</.badge>
+      </p>
+
+      <form id="price-change-form" phx-change="change_price_options" class="mt-4 grid gap-5">
+        <div class="grid gap-4 sm:grid-cols-2">
+          <.input
+            id="price-change-scope"
+            name="change[scope]"
+            type="select"
+            label="Which fares"
+            value={to_string(@change.scope)}
+            options={@scope_options}
+          />
+          <fieldset>
+            <legend class="text-sm font-semibold text-strong">Change by</legend>
+            <div class="mt-1.5 flex flex-wrap items-center gap-2">
+              <.input
+                id="price-change-how"
+                name="change[how]"
+                type="select"
+                aria-label="Change by amount or percent"
+                value={to_string(@change.how)}
+                options={[{"An amount", "amount"}, {"A percentage", "percent"}]}
+                class="w-[160px]"
+              />
+              <.change_value_input
+                :if={@change.how == :percent}
+                id="price-change-percent"
+                name="change[percent]"
+                value={@change.percent}
+                label="Percent"
+                mark="%"
+                side={:right}
+                invalid?={@change.value_invalid?}
+              />
+              <.change_value_input
+                :if={@change.how == :amount}
+                id="price-change-amount"
+                name="change[amount]"
+                value={@change.amount}
+                label="Amount"
+                mark="$"
+                side={:left}
+                invalid?={@change.value_invalid?}
+              />
+            </div>
+            <p
+              :if={@change.value_invalid?}
+              id="price-change-value-error"
+              class="mt-1.5 text-[13px] text-error-fg"
+            >
+              {@change.error}
+            </p>
+            <p class="mt-1.5 text-[13px] text-muted">Use a minus sign to lower prices.</p>
+          </fieldset>
+        </div>
+
+        <fieldset>
+          <legend class="text-sm font-semibold text-strong">Rider types</legend>
+          <%!-- The hidden field is the marker that the rider list arrived at all:
+            an unticked checkbox is absent from a form's payload, so a dialog
+            where nobody is ticked sends no `riders` key at all. --%>
+          <input type="hidden" name="change[riders][]" value="" />
+          <div class="mt-1 flex flex-wrap gap-x-6">
+            <.fare_checkbox
+              :for={rider <- @workspace.riders}
+              id={"price-change-rider-#{rider.rider_category_id}"}
+              name="change[riders][]"
+              value={rider.rider_category_id}
+              label={rider.name}
+              checked={rider.rider_category_id in @change.riders}
+              disabled={not rider_priced?(rider, @workspace)}
+            />
+          </div>
+          <p class="mt-1 text-[13px] text-muted">Free prices stay free.</p>
+        </fieldset>
+
+        <div class="grid gap-x-6 sm:grid-cols-2">
+          <.input
+            id="price-change-round"
+            name="change[round]"
+            type="select"
+            label="Round to"
+            value={@change.round}
+            options={[
+              {"Nearest 5 cents", "0.05"},
+              {"Nearest 25 cents", "0.25"},
+              {"Don’t round", "0.01"}
+            ]}
+          />
+          <div class="pt-6">
+            <input type="hidden" name="change[half_reduced?]" value="false" />
+            <.fare_checkbox
+              id="price-change-half"
+              name="change[half_reduced?]"
+              value="true"
+              label="Keep reduced fares at half the adult price"
+              checked={@change.half_reduced?}
+            />
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <.price_change_tile
+            id="price-change-count"
+            number={to_string(length(@rows))}
+            label="prices change"
+          />
+          <.price_change_tile
+            id="price-change-largest"
+            number={largest_change_text(@rows, @currency)}
+            label="largest increase"
+          />
+          <.price_change_tile
+            id="price-change-fares"
+            number={to_string(change_fare_count(@rows, @workspace))}
+            label="fares affected"
+          />
+        </div>
+
+        <div
+          id="price-change-preview"
+          class="max-h-[260px] overflow-auto rounded-card border border-subtle bg-white"
+        >
+          <table class="w-full border-collapse text-sm">
+            <caption class="sr-only">
+              The prices these choices change, with what each one is now.
+            </caption>
+            <thead class="sticky top-0">
+              <tr>
+                <th
+                  scope="col"
+                  class="border-b border-subtle bg-canvas px-3 py-2 text-left text-[13px] font-semibold text-strong"
+                >
+                  Fare
+                </th>
+                <th
+                  scope="col"
+                  class="border-b border-subtle bg-canvas px-3 py-2 text-left text-[13px] font-semibold text-strong"
+                >
+                  Rider type
+                </th>
+                <th
+                  scope="col"
+                  class="border-b border-subtle bg-canvas px-3 py-2 text-right text-[13px] font-semibold text-strong"
+                >
+                  Now
+                </th>
+                <th
+                  scope="col"
+                  class="border-b border-subtle bg-canvas px-3 py-2 text-right text-[13px] font-semibold text-strong"
+                >
+                  New
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr :for={row <- @rows} id={"price-change-row-#{row.fare_product_id}"}>
+                <td class="border-b border-subtle px-3 py-2 text-strong">{row.fare}</td>
+                <td class="border-b border-subtle px-3 text-muted">
+                  {row.rider}
+                  <span :if={row.medium} class="text-[13px]">· {row.medium}</span>
+                </td>
+                <td class="border-b border-subtle px-3 text-right tabular-nums text-muted">
+                  {row.now_text}
+                </td>
+                <td class="border-b border-subtle px-3 text-right font-semibold tabular-nums text-strong">
+                  {row.new_text}
+                </td>
+              </tr>
+              <tr :if={@rows == []}>
+                <td colspan="4" class="px-3 py-4 text-center text-muted" id="price-change-empty">
+                  No prices change with these choices.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p id="price-change-note" class="text-[13px] text-muted">
+          App prices change by the same rule. A fare change usually starts with a new service
+          version, so riders see the new prices from its start date.
+        </p>
+      </form>
+
+      <:status>
+        <p id="price-change-status" class="mb-2 text-[13px] text-muted">
+          {if @change.error,
+            do: @change.error,
+            else: "Nothing changes until you update. #{export_phrase(@version_name, @published?)}"}
+        </p>
+      </:status>
+    </.confirm_dialog>
+    """
+  end
+
+  @doc false
+  # One tile of the dialog's summary: how many prices change, by how much at
+  # most, and across how many fares.
+  attr :id, :string, required: true
+  attr :number, :string, required: true
+  attr :label, :string, required: true
+
+  defp price_change_tile(assigns) do
+    ~H"""
+    <div id={@id} class="rounded-card border border-subtle bg-white px-3 py-2">
+      <p class="font-display text-[26px] font-semibold leading-tight tabular-nums text-strong">
+        {@number}
+      </p>
+      <p class="text-[13px] text-muted">{@label}</p>
+    </div>
+    """
+  end
+
+  @doc false
+  # The typed amount or percentage, with its mark inside the field and the text
+  # it was typed as kept exactly, so a half-typed field is never reformatted
+  # under the cursor.
+  attr :id, :string, required: true
+  attr :name, :string, required: true
+  attr :value, :string, required: true
+  attr :label, :string, required: true
+  attr :mark, :string, required: true
+  attr :side, :atom, values: [:left, :right], required: true
+  attr :invalid?, :boolean, default: false
+
+  defp change_value_input(assigns) do
+    ~H"""
+    <div class="relative w-[110px]">
+      <span class={[
+        "pointer-events-none absolute top-1/2 -translate-y-1/2 text-sm text-muted",
+        if(@side == :left, do: "left-3", else: "right-3")
+      ]}>
+        {@mark}
+      </span>
+      <input
+        type="text"
+        id={@id}
+        name={@name}
+        value={@value}
+        inputmode="decimal"
+        autocomplete="off"
+        aria-label={@label}
+        aria-invalid={to_string(@invalid?)}
+        phx-debounce="300"
+        class={[
+          "h-11 w-full rounded-control border bg-white text-right text-sm tabular-nums text-strong",
+          "focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-focus",
+          if(@side == :left, do: "pl-7 pr-3", else: "pl-3 pr-7"),
+          if(@invalid?, do: "border-error-line", else: "border-control")
+        ]}
+      />
+    </div>
+    """
+  end
+
+  # The scope choices with the counts the version holds for each, so the
+  # operator picks a scope by what it would cover.
+  defp price_scope_options(workspace) do
+    singles = Enum.count(workspace.fares, &(&1.kind == "single"))
+    passes = Enum.count(workspace.fares, &(&1.kind == "pass"))
+
+    [
+      {"Single rides (#{singles})", "single"},
+      {"Passes (#{passes})", "pass"},
+      {"All fares (#{length(workspace.fares)})", "all"}
+    ]
+  end
+
+  # A rider type no fare is sold to, which the dialog therefore cannot change.
+  defp rider_priced?(rider, workspace) do
+    Enum.any?(workspace.fares, fn fare ->
+      case Map.get(fare.prices, rider.rider_category_id) do
+        nil -> false
+        amount -> not Decimal.equal?(amount, 0)
+      end
+    end)
+  end
+
+  # Each preview row with the fare, rider type and payment method the grid shows
+  # for that `fare_products` row, and both amounts formatted for the version's
+  # own currency.
+  defp change_rows(rows, workspace) do
+    Enum.map(rows, fn row ->
+      fare = change_fare(row.fare_product_id, workspace)
+      # The fare's own method is the row the grid leads with, so it is named in
+      # the Fare column by the fare's name alone; a price on another method is
+      # the grid's sub-row, and names the method it differs on.
+      base? = fare && row.fare_media_id == fare.base_media_id
+
+      %{
+        fare_product_id: row.fare_product_id,
+        fare: if(fare, do: fare.name, else: row.fare_product_id),
+        rider: rider_name(workspace, row.rider_category_id),
+        medium: if(base?, do: nil, else: medium_name(workspace, row.fare_media_id)),
+        now_text: Money.format(row.now, workspace.currency) || "",
+        new_text: Money.format(row.new, workspace.currency) || "",
+        increase: Decimal.sub(row.new, row.now)
+      }
+    end)
+  end
+
+  defp change_fare(nil, _workspace), do: nil
+
+  defp change_fare(product_id, workspace) do
+    Enum.find(workspace.fares, &(product_id in &1.product_ids))
+  end
+
+  # How many of the version's fares the preview touches. It is counted by the
+  # fare each row belongs to rather than by row, because one fare holds several
+  # `fare_products` rows — one per rider type and payment method.
+  defp change_fare_count(rows, workspace) do
+    rows
+    |> Enum.map(fn row ->
+      case change_fare(row.fare_product_id, workspace) do
+        nil -> row.fare_product_id
+        fare -> fare.name
+      end
+    end)
+    |> Enum.uniq()
+    |> Enum.count()
+  end
+
+  # The largest increase the preview makes, as the tiles state it: the biggest
+  # any single price rises, or an em dash when nothing rises.
+  defp largest_change_text([], _currency), do: "—"
+
+  defp largest_change_text(rows, currency) do
+    rows
+    |> Enum.map(& &1.increase)
+    |> Enum.max()
+    |> then(fn amount ->
+      case Money.format(amount, currency) do
+        nil -> "—"
+        text -> "+#{text}"
+      end
+    end)
+  end
 
   defp fare_drawer_title(%{key: nil}), do: "Create fare"
   defp fare_drawer_title(%{name: name}), do: "Edit fare · #{name}"
