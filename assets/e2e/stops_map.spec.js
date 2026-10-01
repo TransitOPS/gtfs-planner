@@ -31,6 +31,9 @@ const EDITOR = {
 
 const VERSION_NAME = "Browser Stops Map Version";
 
+// A published version with no stops, for the list's first-use state.
+const EMPTY_VERSION_NAME = "Browser Stops Map Empty Version";
+
 const DESKTOP = { width: 1440, height: 900, label: "desktop" };
 const MOBILE = { width: 390, height: 844, label: "mobile" };
 
@@ -1792,3 +1795,105 @@ async function onMapMarkerBox(page) {
     return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
   });
 }
+
+// ── list entry points (step 35) ────────────────────────────────────────────
+
+// The list's own header is where an editor who is not on the map reaches the
+// map. The switch says which view is being looked at, and the Add stop primary
+// carries `?add=1`, so the Map view opens straight into the placement flow
+// rather than at a browse panel an editor has to start from.
+test("the list's map entry points @list", async ({ page }, testInfo) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+
+  await page.goto(`/gtfs/${versionId}/stops`);
+  await waitForLiveView(page);
+
+  await expect(page.locator("#stops-page")).toBeAttached();
+  await expect(page.locator("#stops-view-list")).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await expect(page.locator("#stops-view-map")).toHaveText("Map");
+  await expect(page.locator("#stops-view-map")).toHaveAttribute(
+    "href",
+    `/gtfs/${versionId}/stops/map`,
+  );
+  await expect(page.locator("#stops-add-stop")).toHaveText("Add stop");
+  await expect(page.locator("#stops-add-stop")).toHaveAttribute(
+    "href",
+    `/gtfs/${versionId}/stops/map?add=1`,
+  );
+  await expect(page.locator("#stops-add-stop-note")).toContainText(
+    "Add stop opens the map",
+  );
+
+  await captureBoth(page, testInfo, "header", "list-");
+
+  // The reference is a file:// page, so the production route is reopened
+  // before the entry point is followed.
+  await captureReference(page, testInfo, "list", "header", "list-ref-");
+
+  await page.goto(`/gtfs/${versionId}/stops`);
+  await waitForLiveView(page);
+
+  // The Add stop primary lands on the add panel, not on the browse panel: the
+  // link's whole claim is that placing a stop starts from the place.
+  await page.locator("#stops-add-stop").click();
+  await waitForLiveView(page);
+  await waitForMapReady(page);
+
+  await expect(page.locator("#stops-map-add-panel")).toBeAttached();
+
+  // The map asks for a place, not for a name: the caption is the mode the
+  // panel asked for.
+  await expect(page.locator("#stops-map-caption")).toContainText(
+    "Click the curb",
+  );
+});
+
+// A version with no stops offers the same entry point from the first-use state,
+// where an editor who has neither a feed nor a stop needs one of the two.
+test("the list's first-use state @list", async ({ page }, testInfo) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+
+  // The seed's second version for this organization is published and has no
+  // stops, so the first-use state is a page an editor can actually open.
+  const versionId = await versionIdByName(page, EMPTY_VERSION_NAME);
+
+  await page.goto(`/gtfs/${versionId}/stops`);
+  await waitForLiveView(page);
+
+  await captureBoth(page, testInfo, "first-use", "list-");
+
+  // One primary per view: Add stop is the filled button and Import feed is the
+  // outlined one beside it.
+  await page.goto(`/gtfs/${versionId}/stops`);
+  await waitForLiveView(page);
+  await expect(page.locator("#stops-first-use-empty")).toBeVisible();
+  await expect(page.locator("#stops-first-use-add-stop")).toHaveClass(
+    /btn-primary/,
+  );
+  await expect(page.locator("#stops-first-use-add-stop")).toHaveAttribute(
+    "href",
+    `/gtfs/${versionId}/stops/map?add=1`,
+  );
+  await expect(page.locator("#stops-first-use-import")).toHaveClass(
+    /btn-outline/,
+  );
+
+  // The header's own switch and primary stay in this state too, so an editor
+  // who scrolls past the empty card still has both ways onward.
+  await expect(page.locator("#stops-view-map")).toBeVisible();
+  await expect(page.locator("#stops-add-stop")).toBeVisible();
+
+  await captureReference(page, testInfo, "list", "first-use", "list-ref-");
+});

@@ -167,6 +167,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
      |> assign(:checks, nil)
      |> assign(:checks_open, false)
      |> assign(:dismissed_checks, MapSet.new())
+     |> assign(:requested_stop_id, nil)
+     |> assign(:requested_add?, false)
      |> assign_edit_state()
      |> assign_add_state()
      |> assign_search("", [], [], false)}
@@ -357,6 +359,17 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
           assign(socket, :requested_stop_id, nil)
         end
 
+      # `?add=1` is the list's Add stop primary arriving here. It is remembered
+      # for the same reason `?stop=` is: the add panel replaces the browse or
+      # first-use panel, and which of those the page shows is only known once
+      # the model says whether the version holds any stops.
+      socket =
+        if params["add"] in ["1", "true"] do
+          assign(socket, :requested_add?, true)
+        else
+          assign(socket, :requested_add?, false)
+        end
+
       {:noreply, start_load(socket)}
     else
       {:noreply, socket}
@@ -373,7 +386,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       |> assign_new_panel()
       |> start_checks(model)
 
-    {:noreply, push_scene(open_requested_stop(socket))}
+    {:noreply, push_scene(open_requested(socket))}
   end
 
   def handle_async(:load_model, {:ok, {:error, :unavailable}}, socket) do
@@ -2060,6 +2073,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     if stop_in_model?(socket.assigns, stop_id) do
       socket
       |> assign(:requested_stop_id, nil)
+      |> assign(:requested_add?, false)
       |> open_edit(stop_id)
     else
       assign(socket, :requested_stop_id, nil)
@@ -2067,6 +2081,28 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   end
 
   defp open_requested_stop(socket), do: socket
+
+  # `?add=1` is answered here too, for the same reason: the add panel needs the
+  # scene drawn under it, and the scene comes with the model. A version that
+  # holds no stops would otherwise open on its first-use card with the add panel
+  # nowhere in it, which is the one state where an editor most needs a place to
+  # put a stop.
+  defp open_requested_add(%{assigns: %{requested_add?: true}} = socket) do
+    socket
+    |> assign(:requested_add?, false)
+    |> begin_add(:stop)
+    |> push_map_mode()
+  end
+
+  defp open_requested_add(socket), do: socket
+
+  # `?stop=` names one stop and `?add=1` names no stop, so the two cannot both
+  # be asked for; the stop wins because it names a subject and the add does not.
+  defp open_requested(%{assigns: %{requested_stop_id: stop_id}} = socket)
+       when is_binary(stop_id),
+       do: open_requested_stop(socket)
+
+  defp open_requested(socket), do: open_requested_add(socket)
 
   # Opening the panel is one query for the row and a second, asynchronous, for
   # what uses it. `usage/3` reads fourteen tables, so the panel paints its

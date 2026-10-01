@@ -670,6 +670,54 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapAddTest do
     end
   end
 
+  describe "the list's Add stop primary" do
+    test "?add=1 opens the add panel with an empty draft", ctx do
+      northbound_line(ctx)
+
+      {:ok, view, _html} =
+        live(ctx.editor_conn, ~p"/gtfs/#{ctx.version.id}/stops/map?add=1")
+
+      render_async(view, 2_000)
+      render_async(view, 2_000)
+
+      # The whole claim of the link is that it lands here rather than on the
+      # browse panel: an empty, named draft with nothing placed and no way to
+      # save until there is a place.
+      assert has_element?(view, "#stops-map-add-panel")
+      refute has_element?(view, "#stops-map-panel")
+      assert has_element?(view, "#stops-map-add-name[value='']")
+
+      # A stop, not a station: the list's primary says "Add stop".
+      assert has_element?(view, "#stops-map-add-panel", "Create stop")
+      refute has_element?(view, "#stops-map-add-create", "Create station")
+    end
+
+    test "?add=1 opens the add panel on a version with no stops", ctx do
+      # The version holds no stops, so the page would otherwise open on its
+      # first-use card — the one state where an editor most needs a place to
+      # put a stop.
+      {:ok, view, _html} =
+        live(ctx.editor_conn, ~p"/gtfs/#{ctx.version.id}/stops/map?add=1")
+
+      render_async(view, 2_000)
+      render_async(view, 2_000)
+
+      assert has_element?(view, "#stops-map-add-panel")
+      refute has_element?(view, "#stops-map-first-use")
+    end
+
+    test "the map without ?add=1 stays on the browse panel", ctx do
+      {:ok, view, _html} =
+        live(ctx.editor_conn, ~p"/gtfs/#{ctx.version.id}/stops/map")
+
+      render_async(view, 2_000)
+      render_async(view, 2_000)
+
+      assert has_element?(view, "#stops-map-panel")
+      refute has_element?(view, "#stops-map-add-panel")
+    end
+  end
+
   # --- helpers ---------------------------------------------------------------
 
   # The rows the create wrote, read back through the same scope the command

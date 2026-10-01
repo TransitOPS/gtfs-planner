@@ -9184,6 +9184,12 @@ case Accounts.register_first_admin(%{
     {:ok, stops_map_version} =
       Versions.create_gtfs_version(stops_map_org.id, %{name: "Browser Stops Map Version"})
 
+    # A published version with no stops at all, so the list's first-use state —
+    # where an editor has neither a feed nor a stop — is a real page rather than
+    # a claim about one that cannot be opened.
+    {:ok, stops_map_empty_version} =
+      Versions.create_gtfs_version(stops_map_org.id, %{name: "Browser Stops Map Empty Version"})
+
     {:ok, stops_map_editor} =
       Accounts.register_user(%{
         email: "stops-map@gtfs-planner.test",
@@ -9201,7 +9207,8 @@ case Accounts.register_first_admin(%{
 
     IO.puts(
       "Browser seed: stops map editor #{stops_map_editor.email} in #{stops_map_org.name} " <>
-        "(id=#{stops_map_org.id}), version #{stops_map_version.name} (id=#{stops_map_version.id})"
+        "(id=#{stops_map_org.id}), version #{stops_map_version.name} (id=#{stops_map_version.id}), " <>
+        "empty version #{stops_map_empty_version.name} (id=#{stops_map_empty_version.id})"
     )
 
     stops_map_at = ~U[2026-09-01 00:00:00.000000Z]
