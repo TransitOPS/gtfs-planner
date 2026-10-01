@@ -286,7 +286,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
       base = blocks_path(context.version.id)
       {:ok, view, _html} = live(editor_conn(context), gap_url(base, trips.second, trips.third))
 
-      assert has_element?(view, "#gap-drawer", "22 min between trips")
+      assert has_element?(view, "#gap-available", "22 min · Same stop")
       assert has_element?(view, "#gap-drive", "None · same stop")
       assert has_element?(view, "#gap-wait", "22 min")
       # The vehicle never drives, so there is no pair to enter a driving time for.
