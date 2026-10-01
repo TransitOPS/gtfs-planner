@@ -11091,7 +11091,7 @@ case Accounts.register_first_admin(%{
       )
 
     {:ok, _alerts_agency} =
-      Gtfs.create_agency(%{
+      GtfsFixtures.insert_agency(%{
         organization_id: org.id,
         gtfs_version_id: alerts_version.id,
         agency_id: "BROWSER_ALERTS_AGENCY",
@@ -11119,7 +11119,7 @@ case Accounts.register_first_admin(%{
       ]
       |> Enum.map(fn {stop_id, stop_name, stop_code, lat, lon} ->
         {:ok, stop} =
-          Gtfs.create_stop(%{
+          GtfsFixtures.insert_stop(%{
             organization_id: org.id,
             gtfs_version_id: alerts_version.id,
             stop_id: stop_id,
@@ -11142,7 +11142,7 @@ case Accounts.register_first_admin(%{
       ]
       |> Enum.map(fn {route_id, short_name, long_name, route_type} ->
         {:ok, route} =
-          Gtfs.create_route(%{
+          GtfsFixtures.insert_route(%{
             organization_id: org.id,
             gtfs_version_id: alerts_version.id,
             route_id: route_id,

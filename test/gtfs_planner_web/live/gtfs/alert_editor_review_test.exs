@@ -317,7 +317,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
     rows
     |> Enum.map(fn {stop_id, stop_name} ->
       {:ok, stop} =
-        Gtfs.create_stop(%{
+        insert_stop(%{
           organization_id: organization.id,
           gtfs_version_id: version.id,
           stop_id: stop_id,
@@ -339,7 +339,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
   # and a destination for the wording's fill-ins.
   defp route(organization, version, first, middle, last) do
     {:ok, route} =
-      Gtfs.create_route(%{
+      insert_route(%{
         organization_id: organization.id,
         gtfs_version_id: version.id,
         route_id: "R1",

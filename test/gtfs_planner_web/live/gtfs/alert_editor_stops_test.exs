@@ -602,7 +602,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
 
   defp stop(context, stop_id, stop_name, platform_code) do
     {:ok, stop} =
-      Gtfs.create_stop(%{
+      insert_stop(%{
         organization_id: context.organization.id,
         gtfs_version_id: context.version.id,
         stop_id: stop_id,
@@ -619,7 +619,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
 
   defp other_version_stop(other_version, stop_id, stop_name) do
     {:ok, stop} =
-      Gtfs.create_stop(%{
+      insert_stop(%{
         organization_id: other_version.organization_id,
         gtfs_version_id: other_version.id,
         stop_id: stop_id,
@@ -637,7 +637,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
   # read. The pattern's own order is the order the skipped-stop list shows.
   defp pattern(context, route_id, stops) do
     {:ok, route} =
-      Gtfs.create_route(%{
+      insert_route(%{
         organization_id: context.organization.id,
         gtfs_version_id: context.version.id,
         route_id: route_id,

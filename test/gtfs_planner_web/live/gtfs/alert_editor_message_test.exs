@@ -419,7 +419,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
     rows
     |> Enum.map(fn {stop_id, stop_name} ->
       {:ok, stop} =
-        Gtfs.create_stop(%{
+        insert_stop(%{
           organization_id: organization.id,
           gtfs_version_id: version.id,
           stop_id: stop_id,
@@ -441,7 +441,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
   # question's list and the destination in the message's `[direction]`.
   defp route(organization, version, first, middle, last) do
     {:ok, route} =
-      Gtfs.create_route(%{
+      insert_route(%{
         organization_id: organization.id,
         gtfs_version_id: version.id,
         route_id: "R1",
