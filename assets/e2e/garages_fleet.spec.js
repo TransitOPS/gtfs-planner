@@ -712,12 +712,12 @@ test.describe("Garages, Fleet and operations export", () => {
     await page.goto(`/gtfs/${versionId}/export?type=operations`);
     await waitForLiveView(page);
 
-    // The first click can still race the view's join, so the retry is itself
-    // retried until the ready artifact appears.
-    await expect(async () => {
-      await page.locator("#retry-export").click();
-      await expect(page.locator("#export-download-link")).toBeVisible({ timeout: 20_000 });
-    }).toPass({ timeout: 150_000 });
+    // The view has joined, so one click restarts the failed run. Restarting
+    // again would not help: while the build runs the button is replaced, and a
+    // second click would wait for a button that only a failed run renders. The
+    // build gets the time it needs on a busy machine.
+    await page.locator("#retry-export").click();
+    await expect(page.locator("#export-download-link")).toBeVisible({ timeout: 150_000 });
 
     await expect(page.locator("#export-conflicts")).toHaveCount(0);
 
