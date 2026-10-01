@@ -707,16 +707,21 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
       MapSet.member?(@system_noise_diff_fields, to_string(field))
     end)
     |> Enum.map(fn {field, change} ->
-      %{
-        field: to_string(field),
-        from: extract_change_value(change, "from", :from),
-        to: extract_change_value(change, "to", :to)
-      }
+      {from, to} = change_pair(change)
+      %{field: to_string(field), from: from, to: to}
     end)
     |> Enum.sort_by(& &1.field)
   end
 
   defp diff_rows(_entry), do: []
+
+  # Stored changed fields are `%{"from" => old, "to" => new}` maps; older logs
+  # hold the same pair as `[old, new]`.
+  defp change_pair([from, to]), do: {from, to}
+
+  defp change_pair(change) do
+    {extract_change_value(change, "from", :from), extract_change_value(change, "to", :to)}
+  end
 
   defp extract_change_value(change, string_key, atom_key) do
     case Map.get(change, string_key, :__missing__) do
@@ -1096,9 +1101,11 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         |> Map.keys()
         |> Enum.any?(&Map.has_key?(target, to_string(&1)))
 
-      _ -> false
+      _ ->
+        false
     end
   end
+
   defp rollback_eligible?(_entry), do: true
 
   defp rollback_button_label(:undo), do: "Undo this change"
