@@ -338,10 +338,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.ConnectionsTest do
       assert group.place.name == "Alpha Yard"
 
       assert [group] = Connections.filter(groups, %{setting: :reboard})
-      assert group.place.name == "Gamma Yard"
+      assert group.place.name == "Delta Yard"
 
       assert [group] = Connections.filter(groups, %{setting: :none})
-      assert group.place.name == "Delta Yard"
+      assert group.place.name == "Gamma Yard"
     end
 
     test "route matches either of a connection's routes", %{groups: groups} do

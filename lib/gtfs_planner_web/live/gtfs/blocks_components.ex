@@ -6066,18 +6066,28 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # the group holds one. The stay and reboard marks are the counts
   # `Blocking.Connections` reports under the same rule the filter applies, so a
   # mark never promises a connection the filter would then drop.
-  defp connection_marks(counts) do
+  defp connection_marks(group) do
+    # The stay and re-board marks are the connections the filter kept, so they
+    # count the group's own decidable connections rather than every row the
+    # station holds; a mark never promises a connection the filter would drop.
+    decidable = Enum.reject(group.connections, & &1.review?)
+
     [
-      %{kind: :stay, count: counts.quiet_stay, label: "stay on board", icon: "hero-link-mini"},
+      %{
+        kind: :stay,
+        count: Enum.count(decidable, &(&1.setting == :stay)),
+        label: "stay on board",
+        icon: "hero-link-mini"
+      },
       %{
         kind: :reboard,
-        count: counts.quiet_reboard,
+        count: Enum.count(decidable, &(&1.setting == :reboard)),
         label: "must re-board",
         icon: "hero-arrow-right-start-on-rectangle-mini"
       },
       %{
         kind: :review,
-        count: counts.review,
+        count: group.counts.review,
         label: "need review",
         icon: "hero-exclamation-triangle-mini"
       }
@@ -6532,7 +6542,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             @group
           )} min
         </span>
-        <.connection_mark :for={mark <- connection_marks(@group.counts)} {mark} />
+        <.connection_mark :for={mark <- connection_marks(@group)} {mark} />
       </span>
     </button>
     """
