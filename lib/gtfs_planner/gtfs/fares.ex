@@ -543,6 +543,24 @@ defmodule GtfsPlanner.Gtfs.Fares do
   end
 
   @doc """
+  The version's saved journeys, ordered by name.
+
+  This is what the Prices tab's save bar prices on a draft: an unsaved price
+  edit is priced against these journeys before it is written, so the operator
+  sees which saved expectations the change would move. It is a read through the
+  version pair only, so another organization's or another version's journeys are
+  absent rather than filtered out by the caller (INV-5).
+  """
+  @spec saved_journeys(Ecto.UUID.t(), Ecto.UUID.t()) :: [FareSavedJourney.t()]
+  def saved_journeys(organization_id, gtfs_version_id)
+      when is_binary(organization_id) and is_binary(gtfs_version_id) do
+    FareSavedJourney
+    |> scoped(organization_id, gtfs_version_id)
+    |> order_by([journey], journey.name)
+    |> Repo.all()
+  end
+
+  @doc """
   Whether the version's fares are managed here.
 
   True exactly when a `fare_version_settings` row exists for this organization
@@ -623,7 +641,7 @@ defmodule GtfsPlanner.Gtfs.Fares do
       managed?: rows.managed?,
       older_format: setting && setting.older_format,
       currency: currency(rows.fare_products),
-      fares: build_fares(rows.fare_products, details, media, riders),
+      fares: build_fares(rows.fare_products, details, media, riders, rows.fare_leg_rules),
       riders: riders,
       media: media,
       groups: groups,
@@ -684,11 +702,16 @@ defmodule GtfsPlanner.Gtfs.Fares do
   # several riders and payment methods. `prices` are the amounts at the fare's
   # first payment method, and `media_prices` the per-medium amounts that differ
   # from it, which is exactly the sub-row the grid draws. A rider the fare is not
-  # sold to holds `nil`, which reads as "not sold" rather than free.
-  defp build_fares(fare_products, details, media, riders) do
+  # sold to holds `nil`, which reads as "not sold" rather than free. `cells`
+  # names the `fare_product_id` each grid cell writes, `base_media_id` the medium
+  # the main row prices, and `rules` the charging conditions of that fare, which
+  # is what the grid's "where" line reads.
+  defp build_fares(fare_products, details, media, riders, leg_rules) do
     fare_products
     |> Enum.group_by(&fare_name/1)
-    |> Enum.map(fn {name, products} -> build_fare(name, products, details, media, riders) end)
+    |> Enum.map(fn {name, products} ->
+      build_fare(name, products, details, media, riders, leg_rules)
+    end)
     |> Enum.sort_by(&{fare_order(&1.kind), &1.position, &1.name})
   end
 
@@ -697,7 +720,7 @@ defmodule GtfsPlanner.Gtfs.Fares do
 
   defp fare_name(%FareProduct{fare_product_id: id}), do: id
 
-  defp build_fare(name, products, details, media, riders) do
+  defp build_fare(name, products, details, media, riders, leg_rules) do
     detail = products |> Enum.map(&Map.get(details, &1.fare_product_id)) |> Enum.find(& &1)
     sold = sold_media(products)
     base = base_medium(sold, media)
@@ -710,13 +733,48 @@ defmodule GtfsPlanner.Gtfs.Fares do
       position: (detail && detail.position) || 0,
       product_ids: products |> Enum.map(& &1.fare_product_id) |> Enum.uniq() |> Enum.sort(),
       media: if(sold == [], do: List.wrap(base), else: sold),
+      base_media_id: base,
       prices: prices,
+      cells: fare_cells(products),
+      rules: fare_rules(products, leg_rules),
       media_prices:
         by_medium
         |> Enum.reject(fn {medium, amounts} -> medium == base or amounts == prices end)
         |> Map.new(),
       accepted_network_ids: (detail && detail.accepted_network_ids) || []
     }
+  end
+
+  # The `fare_products` rows of one fare as the grid's cells: each is named by the
+  # fare's own id, its rider, and the medium it is sold on, which is the triple
+  # `Fares.save_prices/2` writes and reads a cell by.
+  defp fare_cells(products) do
+    products
+    |> Enum.map(
+      &%{
+        fare_product_id: &1.fare_product_id,
+        rider_category_id: &1.rider_category_id,
+        fare_media_id: &1.fare_media_id
+      }
+    )
+    |> Enum.uniq()
+    |> Enum.sort_by(&{&1.rider_category_id || "", &1.fare_media_id || ""})
+  end
+
+  # The leg rules that charge this fare, which is what says where it applies. A
+  # pass is charged by no rule of its own — `Fares.Normalize` mirrors its
+  # accepted groups onto the single rides it stands in for — so a pass reports
+  # none here and its drawer names those groups instead.
+  defp fare_rules(products, leg_rules) do
+    product_ids = MapSet.new(products, & &1.fare_product_id)
+
+    leg_rules
+    |> Enum.filter(&MapSet.member?(product_ids, &1.fare_product_id))
+    |> Enum.map(fn rule ->
+      %{network_id: rule.network_id, from_area_id: rule.from_area_id, to_area_id: rule.to_area_id}
+    end)
+    |> Enum.uniq()
+    |> Enum.sort_by(&{&1.network_id || "", &1.from_area_id || "", &1.to_area_id || ""})
   end
 
   defp sold_media(products) do

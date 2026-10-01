@@ -188,6 +188,50 @@ defmodule GtfsPlanner.Gtfs.Fares.WorkspaceTest do
     end
   end
 
+  describe "a fare's cells and rules" do
+    test "name every `fare_products` row the fare is written from", context do
+      {:ok, workspace} = load(context)
+
+      fare = Enum.find(workspace.fares, &(&1.name == "Local ride"))
+
+      # Local ride is sold to four rider types and priced differently on the
+      # app, so it is eight rows: the four the grid shows on its own row, and
+      # the four it prices on a second payment method.
+      assert length(fare.cells) == 8
+      assert fare.base_media_id == "cash"
+      assert Enum.all?(fare.cells, &is_binary(&1.fare_product_id))
+
+      assert [adult_cash] =
+               Enum.filter(
+                 fare.cells,
+                 &(&1.rider_category_id == "adult" and &1.fare_media_id == "cash")
+               )
+
+      assert adult_cash.fare_product_id == "local_ride_adult_cash"
+    end
+
+    test "carry the charging rule that makes a fare a single ride", context do
+      {:ok, workspace} = load(context)
+
+      ride = Enum.find(workspace.fares, &(&1.name == "Local ride"))
+      assert ride.kind == "single"
+      # The three same-area charging rules `fare_leg_rules.txt` holds for the
+      # ride: the same network in, the same area out.
+      assert ride.rules == [
+               %{network_id: "N_LOCAL", from_area_id: "CST", to_area_id: "CST"},
+               %{network_id: "N_LOCAL", from_area_id: "NPT", to_area_id: "NPT"},
+               %{network_id: "N_LOCAL", from_area_id: "TOL", to_area_id: "TOL"}
+             ]
+
+      # A pass names a network but no fare area at all: its leg rules stand in
+      # for other fares rather than charge a ride, which is why the older format
+      # has no row for it. The rule is still reported, because it is the reason.
+      pass = Enum.find(workspace.fares, &(&1.name == "Day pass"))
+      assert pass.kind == "pass"
+      assert pass.rules == [%{network_id: "N_LOCAL", from_area_id: nil, to_area_id: nil}]
+    end
+  end
+
   describe "pass rows" do
     test "never appear as a matrix cell, even when they name both areas", context do
       # A pass rule naming a zone pair is what the managed form produces: a pass

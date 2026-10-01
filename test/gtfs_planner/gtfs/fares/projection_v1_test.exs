@@ -129,6 +129,29 @@ defmodule GtfsPlanner.Gtfs.Fares.ProjectionV1Test do
     Map.put(context, :rows, Interpreter.load_rows(organization.id, version.id))
   end
 
+  describe "the fare ids the projection carries" do
+    test "are exactly the `fare_attributes` ids, so a lens cannot disagree with the export",
+         context do
+      assert Projection.carried_fare_ids(context.organization.id, context.version.id) ==
+               MapSet.new(fare_ids(attributes(context)))
+    end
+
+    test "are empty for a version the older format is not projected from", context do
+      # The same feed imported and never converted: an unmanaged version's
+      # fares are not projected, so nothing is carried and nothing is tinted.
+      other = gtfs_version_fixture(context.organization.id, %{name: "Unconverted North Coast"})
+      import!(context.organization, other, "north_coast_v2")
+
+      assert Projection.carried_fare_ids(context.organization.id, other.id) ==
+               MapSet.new()
+
+      assert MapSet.equal?(
+               Projection.carried_fare_ids(context.organization.id, context.version.id),
+               Projection.carried_fare_ids(context.organization.id, context.version.id)
+             )
+    end
+  end
+
   describe "the fare_attributes a version derives" do
     test "one row per single-ride fare a leg rule charges", context do
       attributes = attributes(context)

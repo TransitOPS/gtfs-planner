@@ -119,6 +119,33 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
   end
 
   @doc """
+  The older-format fare ids this version's `fare_attributes.txt` rows name.
+
+  `v1_rows/2` is the projection itself, worked out from rows the export already
+  loads; this is the same answer as the set of its `fare_attributes` ids, so a
+  caller that needs to know *which* fares the older format carries asks here
+  rather than reading the exported files or re-deriving the rule. The Prices
+  tab's older-format lens tints from it, so the tint and the export can never
+  disagree.
+
+  Every read is scoped by `organization_id` and `gtfs_version_id` together
+  (INV-5). An unmanaged version's fares are not projected, so it carries no ids
+  and nothing is tinted.
+  """
+  @spec carried_fare_ids(Ecto.UUID.t(), Ecto.UUID.t()) :: MapSet.t(String.t())
+  def carried_fare_ids(organization_id, gtfs_version_id)
+      when is_binary(organization_id) and is_binary(gtfs_version_id) do
+    if Fares.managed?(organization_id, gtfs_version_id) do
+      organization_id
+      |> v1_rows(gtfs_version_id)
+      |> Map.fetch!(@attributes_file)
+      |> MapSet.new(& &1.fare_id)
+    else
+      MapSet.new()
+    end
+  end
+
+  @doc """
   The `fare_attributes.txt`, `fare_rules.txt`, `areas.txt` and `stop_areas.txt`
   rows this version exports instead of streaming, the `calendar.txt` rows it
   appends, and whether `routes.txt` loses its `network_id` column (R2, R7, R10,

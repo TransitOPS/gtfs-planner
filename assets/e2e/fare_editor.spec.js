@@ -302,3 +302,211 @@ test("shell", async ({ page }, testInfo) => {
   await captureReference(page, testInfo, "?state=loading", "ref-loading");
   await captureReference(page, testInfo, "?state=load-error", "ref-load-error");
 });
+
+// ── prices ─────────────────────────────────────────────────────────────────
+
+// The Prices tab's fare grid, the save bar's unsaved preview, the conflict
+// panel, and the older-format lens. Each state is proved through the DOM the
+// LiveView renders — the grid is one cell per fare and rider type named for the
+// row it writes, the save bar counts and describes what is unsaved, a concurrent
+// change blocks the save until a price is chosen, and the lens tints exactly
+// the cells the older format carries.
+test("prices", async ({ page }, testInfo) => {
+  await routeBlankTiles(page);
+  await logIn(page);
+
+  const versionId = await versionIdByName(page, VERSIONS.managed);
+
+  // The grid itself: one row per fare, one column per rider type, and the
+  // payment method sub-row for a fare the app prices differently.
+  await page.goto(`/gtfs/${versionId}/settings/fares`);
+  await waitForLiveView(page);
+
+  const table = page.locator("#fare-table");
+  await expect(table).toBeAttached();
+  await expect(page.locator("#fare-table-title")).toHaveText("Fare table");
+  await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
+  await expect(page.locator("#price-local_ride-adult-app")).toHaveValue("$1.25");
+  await expect(page.locator("#price-local_ride-child")).toHaveValue("Free");
+  await expect(page.locator("#price-save-bar")).toHaveCount(0);
+
+  // Editing one price raises the save bar, which names what is unsaved and how.
+  await page.locator("#price-local_ride-adult").fill("1.75");
+  await page.locator("#price-local_ride-adult").blur();
+
+  const saveBar = page.locator("#price-save-bar");
+  await expect(saveBar).toBeAttached();
+  await expect(page.locator("#save-prices")).toHaveText("Save 1 price");
+  await expect(saveBar).toContainText("Local ride · Adult $1.50 → $1.75");
+  await expect(page.locator("#fares-conflict")).toHaveCount(0);
+
+  // A price `Fares.Money.parse/1` refuses keeps its own text, is marked
+  // invalid, and blocks the save rather than being read as a blank.
+  await page.locator("#price-local_ride-adult").fill("1..5");
+  await page.locator("#price-local_ride-adult").blur();
+
+  await expect(page.locator("#price-local_ride-adult")).toHaveValue("1..5");
+  await expect(page.locator("#price-local_ride-adult")).toHaveAttribute(
+    "aria-invalid",
+    "true",
+  );
+  await expect(page.locator("#save-prices")).toHaveAttribute(
+    "aria-disabled",
+    "true",
+  );
+  await expect(saveBar).toContainText("Fix the highlighted price to save.");
+
+  // The lens tints exactly the cells the older format carries: the default
+  // rider type on a single ride's own row, and nothing else.
+  await page.locator("#price-local_ride-adult").fill("1.75");
+  await page.locator("#price-local_ride-adult").blur();
+
+  await page.locator("#fare-lens").check();
+  await expect(page.locator("#fare-lens-note")).toBeAttached();
+
+  const tinted = page.locator('#fare-table [data-lens="in"]');
+  await expect(tinted).toHaveCount(5);
+  await expect(page.locator("#price-local_ride-adult").locator("xpath=..")).toHaveAttribute(
+    "data-lens",
+    "in",
+  );
+  await expect(page.locator("#price-local_ride-adult-app").locator("xpath=..")).toHaveAttribute(
+    "data-lens",
+    "out",
+  );
+  await expect(page.locator("#price-local_ride-reduced").locator("xpath=..")).toHaveAttribute(
+    "data-lens",
+    "out",
+  );
+
+  await page.locator("#fare-lens").uncheck();
+  await expect(page.locator("#price-local_ride-adult").locator("xpath=..")).toHaveAttribute(
+    "data-lens",
+    "off",
+  );
+
+  // Discarding throws the edit away without writing anything.
+  await page.locator("#discard-prices").click();
+  await expect(page.locator("#price-save-bar")).toHaveCount(0);
+  await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
+
+  // Saving writes the reviewed cell and notes it, with the Undo beside it.
+  await page.locator("#price-local_ride-adult").fill("1.75");
+  await page.locator("#price-local_ride-adult").blur();
+  await page.locator("#save-prices").click();
+
+  await expect(page.locator("#fare-note")).toContainText("1 price saved");
+  await expect(page.locator("#undo-prices")).toBeAttached();
+  await expect(page.locator("#price-save-bar")).toHaveCount(0);
+  await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.75");
+
+  // Undo puts the reviewed amount back.
+  await page.locator("#undo-prices").click();
+  await expect(page.locator("#fare-note")).toContainText("Change undone.");
+  await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
+
+  // ── captures ────────────────────────────────────────────────────────────
+  // The grid and each of its states at both prepared viewports, beside the
+  // prototype states they follow.
+  for (const viewport of [DESKTOP, PHONE]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+
+    await page.goto(`/gtfs/${versionId}/settings/fares`);
+    await waitForLiveView(page);
+    await expect(page.locator("#fare-table")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await capture(page, testInfo, `prices-${viewport.label}`);
+
+    // The save bar with an unsaved price, the editing state.
+    await page.locator("#price-local_ride-adult").fill("1.75");
+    await page.locator("#price-local_ride-adult").blur();
+    await expect(page.locator("#price-save-bar")).toBeAttached();
+    await capture(page, testInfo, `prices-editing-${viewport.label}`);
+    await page.locator("#discard-prices").click();
+
+    // The invalid state: a price the parser refuses.
+    await page.locator("#price-local_ride-adult").fill("1..5");
+    await page.locator("#price-local_ride-adult").blur();
+    await expect(page.locator("#save-prices")).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    await capture(page, testInfo, `prices-invalid-${viewport.label}`);
+    await page.locator("#discard-prices").click();
+
+    // The saved state: the note with its Undo beside it.
+    await page.locator("#price-local_ride-adult").fill("1.75");
+    await page.locator("#price-local_ride-adult").blur();
+    await page.locator("#save-prices").click();
+    await expect(page.locator("#fare-note")).toContainText("1 price saved");
+    await capture(page, testInfo, `prices-saved-${viewport.label}`);
+    await page.locator("#undo-prices").click();
+    await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
+
+    // The conflict panel, reached the way it happens: a second editor on the
+    // same version saves the cell between this editor's edit and their save.
+    // The second tab is the same signed-in session, so it is the same operator
+    // on another tab rather than a fixture-only shortcut.
+    const second = await page.context().newPage();
+    await second.goto(`/gtfs/${versionId}/settings/fares`);
+    await waitForLiveView(second);
+
+    await page.locator("#price-local_ride-adult").fill("1.75");
+    await page.locator("#price-local_ride-adult").blur();
+
+    await second.locator("#price-local_ride-adult").fill("1.60");
+    await second.locator("#price-local_ride-adult").blur();
+    await second.locator("#save-prices").click();
+    await expect(second.locator("#fare-note")).toContainText("1 price saved");
+
+    await page.locator("#save-prices").click();
+    await expect(page.locator("#fares-conflict")).toBeAttached();
+    await expect(page.locator("#save-prices")).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    await expect(page.locator("#fares-conflict")).toContainText("Local ride · Adult");
+    await expect(page.locator("#fares-conflict")).toContainText("$1.60");
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await capture(page, testInfo, `prices-conflict-${viewport.label}`);
+
+    // Choosing this editor's price resolves the conflict and saves. The panel
+    // is scrolled to the top of the viewport first: the save bar is sticky to
+    // the bottom of the panel, and a radio scrolled under it is not clickable.
+    await page.locator("#fares-conflict").evaluate((panel) => {
+      panel.scrollIntoView({ block: "start" });
+    });
+    await page
+      .locator('#fares-conflict input[value="mine"]')
+      .first()
+      .check();
+    await page.locator("#save-prices").click();
+    await expect(page.locator("#fares-conflict")).toHaveCount(0);
+    await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.75");
+
+    // Undo takes that save back to what was stored when it was reviewed, and a
+    // last edit puts the version back at the sample's own $1.50 so the journeys
+    // after this one read the fixture they seeded.
+    await page.locator("#undo-prices").click();
+    await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.60");
+
+    await second.close();
+
+    await page.locator("#price-local_ride-adult").fill("1.50");
+    await page.locator("#price-local_ride-adult").blur();
+    await page.locator("#save-prices").click();
+    await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
+
+    // The older-format lens.
+    await page.locator("#fare-lens").check();
+    await expect(page.locator("#fare-lens-note")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await capture(page, testInfo, `prices-lens-${viewport.label}`);
+    await page.locator("#fare-lens").uncheck();
+  }
+
+  await captureReference(page, testInfo, "?state=prices", "ref-prices-grid");
+  await captureReference(page, testInfo, "?state=prices-editing", "ref-prices-editing");
+  await captureReference(page, testInfo, "?state=prices-conflict", "ref-prices-conflict");
+  await captureReference(page, testInfo, "?state=prices-lens", "ref-prices-lens");
+});

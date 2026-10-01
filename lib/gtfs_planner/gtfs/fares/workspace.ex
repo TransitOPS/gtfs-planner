@@ -27,7 +27,11 @@ defmodule GtfsPlanner.Gtfs.Fares.Workspace do
       methods. `prices` holds each rider's amount at the fare's first payment
       method (lowest `fare_media_type`, then id) and `media_prices` holds the
       per-medium amounts of the methods whose prices differ from it, which is
-      exactly the sub-row the prototype draws.
+      exactly the sub-row the prototype draws. `base_media_id` is the method
+      those main-row prices belong to, `cells` the `fare_products` rows
+      themselves — each named by its `fare_product_id`, rider and medium, which
+      is the triple `Fares.save_prices/2` writes a cell by — and `rules` the leg
+      rules that charge the fare, which is what its "where" line reads.
 
     * `riders` and `media` — the rider categories and payment methods, the grid's
       columns and its medium columns.
@@ -72,14 +76,29 @@ defmodule GtfsPlanner.Gtfs.Fares.Workspace do
           fare_media_type: integer() | nil
         }
 
+  @type fare_cell :: %{
+          fare_product_id: String.t(),
+          rider_category_id: String.t() | nil,
+          fare_media_id: String.t() | nil
+        }
+
+  @type fare_rule :: %{
+          network_id: String.t() | nil,
+          from_area_id: String.t() | nil,
+          to_area_id: String.t() | nil
+        }
+
   @type fare :: %{
           name: String.t(),
           kind: String.t(),
           position: integer(),
           product_ids: [String.t()],
           media: [String.t()],
+          base_media_id: String.t() | nil,
           prices: %{optional(String.t()) => Decimal.t() | nil},
           media_prices: %{optional(String.t()) => %{optional(String.t()) => Decimal.t() | nil}},
+          cells: [fare_cell()],
+          rules: [fare_rule()],
           accepted_network_ids: [String.t()]
         }
 

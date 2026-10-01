@@ -298,6 +298,45 @@ defmodule GtfsPlanner.Gtfs.Fares.SavedJourneysTest do
     end
   end
 
+  describe "the version's saved journeys" do
+    test "are listed by name, with the rows the Prices tab's preview needs", context do
+      assert {:ok, _a} = Fares.save_journey(context.scope, toledo_to_corvallis())
+      assert {:ok, _b} = Fares.save_journey(context.scope, corvallis_to_toledo())
+
+      assert [first, second] =
+               Fares.saved_journeys(context.organization.id, context.version.id)
+
+      # "Corvallis to Toledo" sorts before "Toledo to Corvallis".
+      assert first.name == "Corvallis to Toledo"
+      assert second.name == "Toledo to Corvallis"
+
+      # Everything `Fares.Pricing.price_journey/2` needs to price a draft
+      # without rebuilding the journey.
+      assert first.rider_category_id == "adult"
+      assert first.fare_media_id == "cash"
+      assert first.service_date == @monday
+      assert [%{"route_id" => "10"} | _] = first.legs
+      assert Decimal.equal?(second.expected_amount, Decimal.new("6.00"))
+    end
+
+    test "belong to the organization and version asked for, and to no other", context do
+      assert {:ok, saved} = Fares.save_journey(context.scope, toledo_to_corvallis())
+      assert [_journey] = Fares.saved_journeys(context.organization.id, context.version.id)
+
+      other_organization = organization_fixture(%{alias: "fares-journeys-other"})
+
+      other_version = gtfs_version_fixture(context.organization.id, %{name: "Unconverted"})
+      import!(context.organization, other_version, "north_coast_v2")
+
+      assert [] = Fares.saved_journeys(other_organization.id, context.version.id)
+      assert [] = Fares.saved_journeys(context.organization.id, other_version.id)
+
+      # The journey is still where it was saved, and nothing about another
+      # scope's read touched it (INV-5).
+      assert stored(context).id == saved.journey.id
+    end
+  end
+
   describe "a journey of another version" do
     setup context do
       organization = context.organization
@@ -358,6 +397,33 @@ defmodule GtfsPlanner.Gtfs.Fares.SavedJourneysTest do
           to_stop_id: "CORVALLIS",
           departs: 8 * 3600 + 20 * 60,
           arrives: 10 * 3600 + 20 * 60
+        }
+      ]
+    }
+  end
+
+  # The same two routes the other way, so a second journey is stored and the
+  # listed order has something to sort.
+  defp corvallis_to_toledo do
+    %{
+      name: "Corvallis to Toledo",
+      rider_category_id: "adult",
+      fare_media_id: "cash",
+      service_date: @monday,
+      legs: [
+        %{
+          route_id: "10",
+          from_stop_id: "CORVALLIS",
+          to_stop_id: "NTC",
+          departs: 11 * 3600,
+          arrives: 12 * 3600 + 50 * 60
+        },
+        %{
+          route_id: "4",
+          from_stop_id: "NTC",
+          to_stop_id: "TOLEDO",
+          departs: 13 * 3600 + 20 * 60,
+          arrives: 14 * 3600 + 30 * 60
         }
       ]
     }
