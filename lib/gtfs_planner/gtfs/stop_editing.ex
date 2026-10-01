@@ -1741,6 +1741,170 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   end
 
   @doc """
+  Makes a stop the first bay of a new station (AC-21).
+
+  The stop keeps its own GTFS ID and everything that names it — its stop times,
+  its transfers, its place in every pattern. A station is created beside it at
+  the same coordinates, and the stop is re-parented onto that station. Nothing
+  that referenced the stop is rewritten, which is the whole reason the operation
+  is safe to offer on a stop that is already in service.
+
+  `attrs` carries `station_name` and `platform_code`. The station's ID comes from
+  `Stop.generate_stop_id/2` and is made unique by `Gtfs.unique_stop_id/4`, so two
+  stations with the same name get two IDs rather than one overwriting the other.
+
+  Answers `{:ok, %{station: Stop.t(), stop: Stop.t()}}`, or
+
+    * `{:error, :child}` — the stop is already a bay. Nesting a bay in a station
+      is not something GTFS means, and the editor that offered this did not know
+      about the parent.
+    * `{:error, :has_children}` — the stop already has bays. It is a station
+      already, however it was recorded, and this is not the command that changes
+      one station into another.
+    * `{:error, :forbidden | :not_found | :busy | :failed_audit | :invalid_station}` —
+      as for `create_stop/2`, plus a station name that yields no ID.
+
+  Both stops are written in one transaction with both audit entries (INV-2): a
+  bay whose station was rolled back would be a bay naming nothing.
+  """
+  @spec make_station(Ecto.UUID.t(), map(), AuditContext.t()) ::
+          {:ok, %{station: Stop.t(), stop: Stop.t()}}
+          | {:error,
+             :child
+             | :has_children
+             | :invalid_station
+             | :forbidden
+             | :not_found
+             | :busy
+             | :failed_audit
+             | Ecto.Changeset.t()}
+  def make_station(stop_uuid, attrs, %AuditContext{} = audit)
+      when is_binary(stop_uuid) and is_map(attrs) do
+    run_command_transaction(fn -> commit_make_station(stop_uuid, attrs, audit) end)
+  end
+
+  def make_station(_stop_uuid, _attrs, _audit), do: {:error, :invalid_input}
+
+  defp commit_make_station(stop_uuid, attrs, audit) do
+    :ok = authorize_editor!(audit)
+    _version = lock_published_version!(audit)
+
+    stop = lock_stop!(stop_uuid, audit)
+
+    with :ok <- refuse_unstationable(stop) do
+      station = insert_station(stop, attrs, audit)
+      bay = reparent_stop(stop, attrs, station, audit)
+
+      %{station: station, stop: bay}
+    end
+  end
+
+  # Both refusals are asked of the stop itself. A bay already has a parent, and a
+  # stop with children is a station whether or not its `location_type` says so —
+  # which is exactly the state a partially imported feed leaves behind.
+  defp refuse_unstationable(stop) do
+    cond do
+      is_binary(stop.parent_station) and stop.parent_station != "" ->
+        Repo.rollback(:child)
+
+      child_stop_count(stop) > 0 ->
+        Repo.rollback(:has_children)
+
+      true ->
+        :ok
+    end
+  end
+
+  defp child_stop_count(stop) do
+    Stop
+    |> where(
+      [s],
+      s.parent_station == ^stop.stop_id and s.organization_id == ^stop.organization_id and
+        s.gtfs_version_id == ^stop.gtfs_version_id
+    )
+    |> Repo.aggregate(:count, :id)
+  end
+
+  defp insert_station(stop, attrs, audit) do
+    attrs = stringify_keys(attrs)
+    name = attrs["station_name"]
+    base = Stop.generate_stop_id(1, name)
+
+    if base == "" do
+      Repo.rollback(:invalid_station)
+    else
+      station_id =
+        Gtfs.unique_stop_id(audit.organization_id, audit.gtfs_version_id, base)
+
+      # The station is placed where the stop is: an editor turning one stop into
+      # a station is describing the place it already is, not moving it.
+      station_attrs = %{
+        "stop_id" => station_id,
+        "stop_name" => name,
+        "location_type" => 1,
+        "stop_lat" => stop.stop_lat,
+        "stop_lon" => stop.stop_lon,
+        "organization_id" => audit.organization_id,
+        "gtfs_version_id" => audit.gtfs_version_id
+      }
+
+      insert_station_row(station_attrs, name, audit)
+    end
+  end
+
+  defp insert_station_row(station_attrs, name, audit) do
+    case Stop.changeset(%Stop{}, station_attrs) do
+      %Ecto.Changeset{valid?: true} = changeset ->
+        case Repo.insert(changeset) do
+          {:ok, station} ->
+            audit!(station, audit, "created", %{"stop_name" => name})
+            station
+
+          {:error, %Ecto.Changeset{} = failed} ->
+            Repo.rollback(failed)
+        end
+
+      failed ->
+        Repo.rollback(failed)
+    end
+  end
+
+  # The bay is renamed to say where it is — "Newport City Hall, Bay A" — so a
+  # rider reading a stop list sees the station rather than a bare code. Its ID
+  # and every reference to it are untouched, which is the difference between
+  # this and a replace.
+  defp reparent_stop(stop, attrs, station, audit) do
+    attrs = stringify_keys(attrs)
+    name = attrs["station_name"]
+    platform_code = attrs["platform_code"]
+
+    bay_attrs = %{
+      "parent_station" => station.stop_id,
+      "platform_code" => platform_code,
+      "stop_name" => bay_name(name, platform_code)
+    }
+
+    case Stop.editor_changeset(stop, bay_attrs) do
+      %Ecto.Changeset{valid?: true} = changeset ->
+        case Repo.update(changeset) do
+          {:ok, bay} ->
+            audit!(stop, audit, "updated", bay_attrs)
+            bay
+
+          {:error, %Ecto.Changeset{} = failed} ->
+            Repo.rollback(failed)
+        end
+
+      failed ->
+        Repo.rollback(failed)
+    end
+  end
+
+  defp bay_name(name, nil), do: name
+  defp bay_name(name, ""), do: name
+  defp bay_name(name, platform_code), do: "#{name}, Bay #{platform_code}"
+
+  @doc """
   Creates a stop in a version, audited in the same transaction (AC-12).
 
   `attrs` is the editor's draft. A blank or absent `stop_id` is filled by the
