@@ -1,0 +1,658 @@
+defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
+  @moduledoc """
+  Step 17: a stop target is a selection, never typed text (AC-18, CL-18).
+
+  Every expectation is a literal from the specification's stop-question rules
+  (spec AC-18, R7, R1) or from the fixture's own stop and route names, never a
+  value recomputed by the module under test. The ids are the ones the templates
+  give each control, the situations are `GtfsPlanner.Alerts.Alert`'s own, and
+  the shared-stop question is the prototype's sentence about the fixture's own
+  two routes.
+  """
+
+  use GtfsPlannerWeb.ConnCase, async: true
+
+  import Phoenix.LiveViewTest
+
+  import GtfsPlanner.AccountsFixtures
+  import GtfsPlanner.AlertsFixtures
+  import GtfsPlanner.GtfsFixtures
+  import GtfsPlanner.OrganizationsFixtures
+  import GtfsPlanner.VersionsFixtures
+
+  alias GtfsPlanner.Alerts
+  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
+
+  setup do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id, %{name: "Fall 2026 service"})
+    other_version = gtfs_version_fixture(organization.id, %{name: "Spring 2026 service"})
+    actor = editor_fixture(organization)
+    agency_fixture(organization.id, version.id, %{agency_timezone: "America/Los_Angeles"})
+    agency_fixture(organization.id, other_version.id, %{agency_timezone: "America/Los_Angeles"})
+
+    %{
+      organization: organization,
+      version: version,
+      other_version: other_version,
+      actor: actor,
+      audit: audit_context(organization, version, actor)
+    }
+  end
+
+  describe "the place question" do
+    setup :editor_conn
+
+    test "a chosen stop is stored by its row UUID and names the routes that serve it", context do
+      %{depot: depot, harbor: harbor} = stops(context)
+      _route_1 = pattern(context, "R1", [{"S_DEPOT", 0}, {"S_HARBOR", 600}])
+      _route_12 = pattern(context, "R12", [{"S_DEPOT", 0}, {"S_NYE", 600}])
+
+      alert = alert_with(context, %{"urgency" => "now", "situation" => "stop_moved"})
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=place")
+
+      assert has_element?(view, "#alert-question-title", "Which stop or station?")
+      assert has_element?(view, "#alert-place-stop")
+
+      view
+      |> render_change("autosave", %{"place" => %{"stop_id" => depot.id}})
+
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.scope.stop_ids == [depot.id]
+      assert saved.scope.shape == :stop_all_routes
+
+      # The routes that call at the chosen place are preselected, so the routes
+      # question lists what the place actually has.
+      serving = Alerts.routes_at_stops(context.audit, [depot.id])
+      assert Enum.sort(saved.scope.route_ids) == Enum.sort(Enum.map(serving, & &1.id))
+      assert length(serving) == 2
+
+      # The stops a reader would not have searched for are not offered, and the
+      # one that is stored is the one that was chosen.
+      assert not has_element?(view, "#alert-place-stop[data-stop='#{harbor.id}']")
+    end
+
+    test "typed text alone never becomes a stop", context do
+      %{depot: depot} = stops(context)
+      _route = pattern(context, "R1", [{"S_DEPOT", 0}])
+
+      alert =
+        alert_with(context, %{
+          "urgency" => "now",
+          "situation" => "stop_moved",
+          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [depot.id]}
+        })
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=place")
+
+      revision = alert.revision
+
+      # "Main" matches nothing in this version, and a keystroke carries text, not
+      # an identity: nothing is written.
+      render_change(view, "live_select_change", %{
+        "id" => "alert-place-stop",
+        "text" => "Main"
+      })
+
+      assert {:ok, unchanged} = Alerts.get_alert(context.audit, alert.id)
+      assert unchanged.scope.stop_ids == [depot.id]
+      assert unchanged.revision == revision
+    end
+
+    test "typing over a chosen label clears the identity it belonged to", context do
+      %{depot: depot} = stops(context)
+      _route = pattern(context, "R1", [{"S_DEPOT", 0}])
+
+      alert =
+        alert_with(context, %{
+          "urgency" => "now",
+          "situation" => "stop_moved",
+          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [depot.id]}
+        })
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=place")
+
+      # The label the stop renders is not what the editor just typed, so the
+      # identity is dropped rather than left attached to new text (R7, PM-9).
+      render_change(view, "live_select_change", %{
+        "id" => "alert-place-stop",
+        "text" => "Newport Transit Center"
+      })
+
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.scope.stop_ids == []
+      assert has_element?(view, "#alert-place-stop")
+    end
+
+    test "a forged selection for another version's stop saves nothing", context do
+      %{coast: coast} = stops(context)
+      other = other_version_stop(context.other_version, "S_OTHER", "Somewhere Else")
+
+      _route = pattern(context, "R1", [{"S_COAST", 0}])
+
+      alert = alert_with(context, %{"urgency" => "now", "situation" => "stop_moved"})
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=place")
+
+      revision = alert.revision
+
+      view |> render_change("autosave", %{"place" => %{"stop_id" => other.id}})
+      view |> render_change("autosave", %{"place" => %{"stop_id" => coast.id}})
+
+      # The stop of the sibling version is not in this version's lookup, so it
+      # stored nothing; the stop of this version did (R1, CR-4).
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.scope.stop_ids == [coast.id]
+      assert saved.revision == revision + 1
+    end
+
+    test "a combobox the editor does not render is refused", context do
+      _named_stops = stops(context)
+      alert = alert_with(context, %{"urgency" => "now", "situation" => "stop_moved"})
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=place")
+
+      revision = alert.revision
+
+      render_change(view, "live_select_change", %{
+        "id" => "alert-somewhere-else",
+        "text" => "Depot"
+      })
+
+      assert {:ok, unchanged} = Alerts.get_alert(context.audit, alert.id)
+      assert unchanged.revision == revision
+    end
+  end
+
+  describe "the skipped-stops question" do
+    setup :editor_conn
+
+    test "each toggle is saved as it is made and Continue carries them on", context do
+      %{coast: coast, depot: depot, harbor: harbor} = stops(context)
+      coast_route = pattern(context, "R1", [{"S_COAST", 0}, {"S_DEPOT", 600}, {"S_HARBOR", 1200}])
+
+      alert = detour_alert(context, coast_route.id)
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=stops")
+
+      # The list is the chosen route's own stops, in the order riders meet them.
+      assert has_element?(view, "#alert-question-title", "Which stops will buses skip?")
+      assert has_element?(view, "#alert-stop-#{coast.id}", "Newport Transit Center")
+      assert has_element?(view, "#alert-stop-#{depot.id}", "Depot Street")
+      assert has_element?(view, "#alert-stop-#{harbor.id}", "Harbor Street")
+
+      view |> element("#alert-stop-#{harbor.id}") |> render_click()
+
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.scope.stop_ids == [harbor.id]
+      assert has_element?(view, "#alert-stop-#{harbor.id}[aria-pressed='true']")
+
+      view |> element("#alert-stops-continue") |> render_click()
+
+      assert has_element?(
+               view,
+               "#alert-question-title",
+               "Are other routes affected at these stops?"
+             )
+
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.scope.stop_ids == [harbor.id]
+    end
+
+    test "Continue with nothing chosen says so and writes nothing", context do
+      %{coast: _coast} = stops(context)
+      coast_route = pattern(context, "R1", [{"S_COAST", 0}])
+      alert = detour_alert(context, coast_route.id)
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=stops")
+
+      revision = alert.revision
+
+      view |> element("#alert-stops-continue") |> render_click()
+
+      assert has_element?(view, "#alert-stops-error", "at least one stop")
+      assert has_element?(view, "#alert-question-title", "Which stops will buses skip?")
+      assert {:ok, unchanged} = Alerts.get_alert(context.audit, alert.id)
+      assert unchanged.revision == revision
+    end
+
+    test "a stretch resolves to the stops between the two ends, in route order", context do
+      %{depot: depot, harbor: harbor} = stops(context)
+      coast_route = pattern(context, "R1", [{"S_COAST", 0}, {"S_DEPOT", 600}, {"S_HARBOR", 1200}])
+
+      alert = detour_alert(context, coast_route.id)
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=stops")
+
+      # The ends are reported one at a time, so the pair is built up from the two
+      # selects; the first alone stores nothing.
+      view
+      |> element("#alert-stretch-from")
+      |> render_change(%{"value" => depot.id})
+
+      assert {:ok, unchanged} = Alerts.get_alert(context.audit, alert.id)
+      assert unchanged.scope.stretch_from_stop_id == nil
+
+      view
+      |> element("#alert-stretch-to")
+      |> render_change(%{"value" => harbor.id})
+
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.scope.stretch_from_stop_id == depot.id
+      assert saved.scope.stretch_to_stop_id == harbor.id
+      assert saved.scope.stop_ids == [depot.id, harbor.id]
+      refute saved.scope.stop_ids == [harbor.id, depot.id]
+      assert saved.scope.shape == :route_stops
+    end
+
+    test "all stops still served changes the situation to a delay", context do
+      %{harbor: _harbor} = stops(context)
+      coast_route = pattern(context, "R1", [{"S_HARBOR", 0}])
+      alert = detour_alert(context, coast_route.id)
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=stops")
+
+      view |> element("#all-stops-served") |> render_click()
+
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.situation == :delay
+      assert saved.scope.stop_ids == []
+    end
+  end
+
+  describe "the shared-stop question" do
+    setup :editor_conn
+
+    test "a stop another route also serves asks about that route by name", context do
+      %{depot: depot} = stops(context)
+      coast_route = pattern(context, "R1", [{"S_COAST", 0}, {"S_DEPOT", 600}])
+      _other_route = pattern(context, "R12", [{"S_DEPOT", 0}, {"S_NYE", 600}])
+
+      alert =
+        alert_with(context, %{
+          "urgency" => "now",
+          "situation" => "detour",
+          "scope" => %{
+            "shape" => "route_stops",
+            "route_ids" => [coast_route.id],
+            "stop_ids" => [depot.id]
+          }
+        })
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=shared")
+
+      other =
+        Alerts.routes_at_stops(context.audit, [depot.id]) |> Enum.find(&(&1.id != coast_route.id))
+
+      assert other != nil
+
+      assert has_element?(
+               view,
+               "#alert-shared-#{other.id}",
+               "#{other.label} also stops at Depot Street"
+             )
+
+      assert has_element?(view, "#alert-shared-#{other.id}-yes")
+      assert has_element?(view, "#alert-shared-#{other.id}-no")
+
+      # The question is the one the step sequence only shows when a stop the
+      # alert names is served by a route it does not (INV-2).
+      assert has_element?(view, "#alert-step-shared[aria-current='step']")
+    end
+
+    test "saying yes stores the pairs that make the other route affected there too", context do
+      %{depot: depot} = stops(context)
+      coast_route = pattern(context, "R1", [{"S_COAST", 0}, {"S_DEPOT", 600}])
+      _other_route = pattern(context, "R12", [{"S_DEPOT", 0}, {"S_NYE", 600}])
+
+      alert =
+        alert_with(context, %{
+          "urgency" => "now",
+          "situation" => "detour",
+          "scope" => %{
+            "shape" => "route_stops",
+            "route_ids" => [coast_route.id],
+            "stop_ids" => [depot.id]
+          }
+        })
+
+      other =
+        Alerts.routes_at_stops(context.audit, [depot.id]) |> Enum.find(&(&1.id != coast_route.id))
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=shared")
+
+      render_click(view, "choose_shared", %{"answer" => "yes"})
+
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.scope.all_routes_at_stops == true
+      assert [%{route_id: route_id, stop_id: stop_id}] = saved.scope.route_stop_pairs
+      assert route_id == other.id
+      assert stop_id == depot.id
+
+      # The answer advanced to the next question this alert asks.
+      assert has_element?(view, "#alert-question-title", "Where should riders board instead?")
+    end
+
+    test "saying no stores that the other route is not affected", context do
+      %{depot: depot} = stops(context)
+      coast_route = pattern(context, "R1", [{"S_COAST", 0}, {"S_DEPOT", 600}])
+      _other_route = pattern(context, "R12", [{"S_DEPOT", 0}, {"S_NYE", 600}])
+
+      alert =
+        alert_with(context, %{
+          "urgency" => "now",
+          "situation" => "detour",
+          "scope" => %{
+            "shape" => "route_stops",
+            "route_ids" => [coast_route.id],
+            "stop_ids" => [depot.id]
+          }
+        })
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=shared")
+
+      render_click(view, "choose_shared", %{"answer" => "no"})
+
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.scope.all_routes_at_stops == false
+      assert saved.scope.route_stop_pairs == []
+    end
+
+    test "no unchosen route at the stops means the question is not asked", context do
+      %{coast: coast} = stops(context)
+      coast_route = pattern(context, "R1", [{"S_COAST", 0}])
+
+      alert =
+        alert_with(context, %{
+          "urgency" => "now",
+          "situation" => "detour",
+          "scope" => %{
+            "shape" => "route_stops",
+            "route_ids" => [coast_route.id],
+            "stop_ids" => [coast.id]
+          }
+        })
+
+      {:ok, view, _html} = live(context.conn, edit_path(context.version, alert) <> "?step=stops")
+
+      # `steps_for/2` leaves `shared` out entirely, so the URL falls back to the
+      # first question this alert asks rather than rendering an empty card.
+      assert has_element?(view, "#alert-question-title", "Which stops will buses skip?")
+      refute has_element?(view, "#alert-step-shared")
+    end
+  end
+
+  describe "the boarding alternative" do
+    setup :editor_conn
+
+    test "the search leaves out the affected stops and lists the chosen routes' stops first",
+         context do
+      %{depot: depot} = stops(context)
+
+      coast_route =
+        pattern(context, "R1", [{"S_COAST", 0}, {"S_DEPOT", 600}, {"S_HARBOR", 1200}])
+
+      alert =
+        alert_with(context, %{
+          "urgency" => "now",
+          "situation" => "detour",
+          "scope" => %{
+            "shape" => "route_stops",
+            "route_ids" => [coast_route.id],
+            "stop_ids" => [depot.id]
+          }
+        })
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=alternative")
+
+      assert has_element?(view, "#alert-question-title", "Where should riders board instead?")
+      assert has_element?(view, "#alert-boarding-stop")
+
+      # The affected stop cannot be offered to itself, and a stop of a route the
+      # alert named is offered first, which is the case `search_stops/3`'s
+      # `:prefer_route_ids` names (AC-10).
+      stops_found =
+        Alerts.search_stops(context.audit, "Street", prefer_route_ids: [coast_route.id])
+
+      assert Enum.all?(stops_found, &(&1.id != depot.id))
+    end
+
+    test "choosing a stop stores its UUID and clears written directions", context do
+      %{coast: coast, depot: depot, harbor: harbor} = stops(context)
+
+      _coast_route =
+        pattern(context, "R1", [{"S_COAST", 0}, {"S_DEPOT", 600}, {"S_HARBOR", 1200}])
+
+      alert =
+        alert_with(context, %{
+          "urgency" => "now",
+          "situation" => "stop_moved",
+          "scope" => %{
+            "shape" => "stop_all_routes",
+            "stop_ids" => [depot.id],
+            "alternative_directions" => "Board on the corner."
+          }
+        })
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=alternative")
+
+      view |> render_change("autosave", %{"alternative" => %{"stop_id" => harbor.id}})
+
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.scope.alternative_stop_id == harbor.id
+      assert saved.scope.alternative_directions == nil
+      _ = coast
+    end
+
+    test "write directions saves the text and clears the chosen stop", context do
+      %{depot: depot, harbor: harbor} = stops(context)
+      _coast_route = pattern(context, "R1", [{"S_DEPOT", 0}, {"S_HARBOR", 600}])
+
+      alert =
+        alert_with(context, %{
+          "urgency" => "now",
+          "situation" => "stop_moved",
+          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [depot.id]}
+        })
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=alternative")
+
+      view |> render_change("autosave", %{"alternative" => %{"stop_id" => harbor.id}})
+
+      view |> element("#write-directions") |> render_click()
+
+      assert {:ok, cleared} = Alerts.get_alert(context.audit, alert.id)
+      assert cleared.scope.alternative_stop_id == nil
+
+      view
+      |> render_change("autosave", %{
+        "alert" => %{
+          "scope" => %{"alternative_directions" => "Board at the temporary stop on NE Main St."}
+        }
+      })
+
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.scope.alternative_directions == "Board at the temporary stop on NE Main St."
+    end
+
+    test "a moved stop cannot advance without a stop or written directions", context do
+      %{depot: depot} = stops(context)
+      _coast_route = pattern(context, "R1", [{"S_DEPOT", 0}])
+
+      alert =
+        alert_with(context, %{
+          "urgency" => "now",
+          "situation" => "stop_moved",
+          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [depot.id]}
+        })
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=alternative")
+
+      view |> element("#alert-alternative-continue") |> render_click()
+
+      assert has_element?(view, "#alert-alternative-error", "write directions instead")
+      assert has_element?(view, "#alert-question-title", "Where should riders board instead?")
+
+      view
+      |> render_change("autosave", %{
+        "alert" => %{"scope" => %{"alternative_directions" => "Board on the corner."}}
+      })
+
+      view |> element("#alert-alternative-continue") |> render_click()
+
+      assert has_element?(view, "#alert-question-title", "When should this alert end?")
+    end
+
+    test "an accessibility alert also asks what facility is unavailable", context do
+      %{depot: depot} = stops(context)
+      _coast_route = pattern(context, "R1", [{"S_DEPOT", 0}])
+
+      alert =
+        alert_with(context, %{
+          "urgency" => "now",
+          "situation" => "accessibility",
+          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [depot.id]}
+        })
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=alternative")
+
+      assert has_element?(view, "#alert_scope_facility")
+
+      view
+      |> render_change("autosave", %{
+        "alert" => %{"scope" => %{"facility" => "North entrance ramp"}}
+      })
+
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.scope.facility == "North entrance ramp"
+    end
+  end
+
+  # -- Fixtures ------------------------------------------------------------
+
+  # Three coded stops and one that only another route serves, so the shared-stop
+  # question has a real other route to name.
+  defp stops(context) do
+    %{
+      coast: stop(context, "S_COAST", "Newport Transit Center", "1001"),
+      depot: stop(context, "S_DEPOT", "Depot Street", "1012"),
+      harbor: stop(context, "S_HARBOR", "Harbor Street", "1014"),
+      nye: stop(context, "S_NYE", "Nye Beach", "1102")
+    }
+  end
+
+  defp stop(context, stop_id, stop_name, platform_code) do
+    {:ok, stop} =
+      Gtfs.create_stop(%{
+        organization_id: context.organization.id,
+        gtfs_version_id: context.version.id,
+        stop_id: stop_id,
+        stop_name: stop_name,
+        location_type: 0,
+        stop_lat: Decimal.new("44.6210"),
+        stop_lon: Decimal.new("-124.0490")
+      })
+
+    stop
+    |> Ecto.Changeset.change(platform_code: platform_code)
+    |> GtfsPlanner.Repo.update!()
+  end
+
+  defp other_version_stop(other_version, stop_id, stop_name) do
+    {:ok, stop} =
+      Gtfs.create_stop(%{
+        organization_id: other_version.organization_id,
+        gtfs_version_id: other_version.id,
+        stop_id: stop_id,
+        stop_name: stop_name,
+        location_type: 0,
+        stop_lat: Decimal.new("44.0000"),
+        stop_lon: Decimal.new("-124.0000")
+      })
+
+    stop
+  end
+
+  # A route with a pattern over the named stops and one trip, so
+  # `Alerts.route_stops/2` and `Alerts.routes_at_stops/2` both have a schedule to
+  # read. The pattern's own order is the order the skipped-stop list shows.
+  defp pattern(context, route_id, stops) do
+    {:ok, route} =
+      Gtfs.create_route(%{
+        organization_id: context.organization.id,
+        gtfs_version_id: context.version.id,
+        route_id: route_id,
+        route_short_name: "Route #{route_id}",
+        route_long_name: "Route #{route_id}",
+        route_type: 3
+      })
+
+    bundle =
+      schedule_pattern_fixture(context.organization.id, context.version.id, %{
+        route_id: route_id,
+        direction_id: 0,
+        headsign: "To the end of the line",
+        stops: Enum.map(stops, fn {stop_id, offset} -> {stop_id, offset, offset, 0} end)
+      })
+
+    service = calendar_fixture(context.organization.id, context.version.id)
+
+    schedule_trip_fixture(
+      context.organization.id,
+      context.version.id,
+      route_id,
+      bundle,
+      %{service_id: service.service_id, trip_id: "T-#{route_id}"}
+    )
+
+    route
+  end
+
+  defp detour_alert(context, route_id) do
+    alert_with(context, %{
+      "urgency" => "now",
+      "situation" => "detour",
+      "scope" => %{"shape" => "routes", "route_ids" => [route_id]}
+    })
+  end
+
+  defp editor_conn(context) do
+    %{
+      context
+      | conn: log_in_user(build_conn(), context.actor, organization: context.organization)
+    }
+  end
+
+  defp edit_path(version, alert), do: "/gtfs/#{version.id}/alerts/#{alert.id}"
+
+  defp alert_with(context, attrs), do: alert_fixture(context.audit, attrs)
+
+  defp audit_context(organization, version, actor) do
+    %AuditContext{
+      organization_id: organization.id,
+      gtfs_version_id: version.id,
+      station_stop_id: nil,
+      actor_id: actor.id,
+      actor_email: actor.email
+    }
+  end
+end

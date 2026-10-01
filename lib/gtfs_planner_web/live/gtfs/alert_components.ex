@@ -37,6 +37,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   alias Phoenix.LiveView.JS
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlannerWeb.Components.RouteIdentity
+  alias LiveSelect.Component, as: LiveSelectComponent
 
   # The words a reader recognizes: the situation is what the alert is about and
   # the effect is what riders' apps do about it. The preview names the effect
@@ -1059,6 +1060,382 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
 
   defp scope_of(%{scope: nil}), do: %GtfsPlanner.Alerts.ScopeAnswer{}
   defp scope_of(%{scope: scope}), do: scope
+
+  @doc """
+  Which place the alert is about: a `LiveSelect` over the version's stops.
+
+  The combobox is the same control `Gtfs.TransfersLive` uses, so a stop an
+  operator can find in the transfer editor is a stop they can find here. It
+  carries no `phx-change` of its own: `LiveSelect` writes the chosen value into
+  the form's hidden field and the form's own `phx-change` carries it, so a
+  selection and a typed answer arrive through one writer (INV-1).
+
+  The search matches on name, number and platform code, and lists only stops of
+  the alert's own version, so the widget cannot offer a stop this alert could
+  not store (CR-4). The prototype's "Affected routes at this place" is answered
+  by the routes question that follows, which arrives with the serving routes
+  already pressed.
+  """
+  attr :field, :any, required: true, doc: "the `to_form/2` field the combobox writes to"
+
+  def place_question(assigns) do
+    ~H"""
+    <div id="alert-place" class="grid gap-2">
+      <label for="place_stop_id_text_input" class="text-[13px] font-semibold text-strong">
+        Find the stop or station
+      </label>
+      <.stop_search
+        id="alert-place-stop"
+        field={@field}
+        placeholder="Stop name or number"
+        hint="Search by name, number or platform code. Choosing a result names the place; typing alone does not."
+      />
+    </div>
+    """
+  end
+
+  @doc """
+  Which stops a detour skips, and the stretch that names them in one answer.
+
+  The list is the chosen route's own stops in the order riders meet them, each
+  one a toggle that writes at once, so Back loses nothing and Continue is only
+  the action that moves on (AC-17, AC-18).
+
+  The stretch is a `from`/`to` pair over the same list: choosing the two ends
+  resolves the stops between them server-side, because the route's stop order is
+  data and an editor should not have to count stops to describe a detour.
+  """
+  attr :options, :list,
+    required: true,
+    doc: "`Alerts.route_stops/2` options for the chosen routes"
+
+  attr :selected, :list, required: true, doc: "row UUIDs the alert already skips"
+
+  attr :stretch, :map,
+    default: %{},
+    doc: "the two ends named so far, keyed by \"from\" and \"to\""
+
+  attr :error, :string, default: nil
+
+  def stops_question(assigns) do
+    assigns = assign(assigns, :selected, MapSet.new(assigns.selected))
+
+    ~H"""
+    <div id="alert-stops" class="grid gap-4">
+      <p class="text-sm text-muted">
+        Select only stops riders cannot use. Stops that still have service stay out of this alert.
+      </p>
+
+      <fieldset id="alert-stops-list" class="grid gap-2">
+        <legend class="sr-only">Skipped stops</legend>
+        <button
+          :for={stop <- @options}
+          id={"alert-stop-#{stop.id}"}
+          type="button"
+          phx-click="toggle_stop"
+          phx-value-id={stop.id}
+          aria-pressed={to_string(MapSet.member?(@selected, stop.id))}
+          class={[
+            "flex min-h-11 items-center gap-2 rounded-control border p-3 text-left text-sm",
+            MapSet.member?(@selected, stop.id) && "border-action bg-selection",
+            not MapSet.member?(@selected, stop.id) && "border-control hover:bg-canvas"
+          ]}
+        >
+          <span class="min-w-0 flex-1 font-semibold text-strong">{stop.label}</span>
+          <span :if={stop.platform_code} class="text-[13px] text-muted">{stop.platform_code}</span>
+          <.icon
+            :if={MapSet.member?(@selected, stop.id)}
+            name="hero-check"
+            class="size-4 shrink-0 text-action"
+          />
+        </button>
+
+        <p :if={@options == []} id="alert-stops-empty" class="text-sm text-muted">
+          Choose a route first, and its stops are listed here in the order riders meet them.
+        </p>
+      </fieldset>
+
+      <details
+        :if={@options != []}
+        id="alert-stops-stretch"
+        class="rounded-control border border-subtle p-3"
+      >
+        <summary class="cursor-pointer text-sm font-semibold text-strong">
+          Select a stretch of stops
+        </summary>
+        <div class="mt-3 grid gap-3 sm:grid-cols-2">
+          <div class="grid gap-1.5">
+            <label for="alert-stretch-from" class="text-[13px] font-semibold text-strong">
+              First skipped stop
+            </label>
+            <select
+              id="alert-stretch-from"
+              phx-change="select_stretch"
+              phx-value-which="from"
+              aria-label="First skipped stop"
+              class="h-11 w-full rounded-control border border-control bg-white px-3 text-sm text-strong"
+            >
+              <option value="">Choose…</option>
+              <option :for={stop <- @options} value={stop.id} selected={stop.id == @stretch["from"]}>
+                {stop.label}
+              </option>
+            </select>
+          </div>
+
+          <div class="grid gap-1.5">
+            <label for="alert-stretch-to" class="text-[13px] font-semibold text-strong">
+              Last skipped stop
+            </label>
+            <select
+              id="alert-stretch-to"
+              phx-change="select_stretch"
+              phx-value-which="to"
+              aria-label="Last skipped stop"
+              class="h-11 w-full rounded-control border border-control bg-white px-3 text-sm text-strong"
+            >
+              <option value="">Choose…</option>
+              <option :for={stop <- @options} value={stop.id} selected={stop.id == @stretch["to"]}>
+                {stop.label}
+              </option>
+            </select>
+          </div>
+        </div>
+        <.button id="alert-stretch-select" type="button" class="mt-3" phx-click="select_stretch">
+          Select stops
+        </.button>
+        <p class="mt-2 text-[13px] text-muted">
+          Every stop between the two ends is skipped, in the route's own order.
+        </p>
+      </details>
+
+      <p
+        :if={@error}
+        id="alert-stops-error"
+        role="alert"
+        tabindex="-1"
+        class="text-sm font-semibold text-error-fg"
+      >
+        {@error}
+      </p>
+
+      <div class="border-t border-subtle pt-3">
+        <.button id="all-stops-served" type="button" variant="quiet" phx-click="all_stops_served">
+          All stops still served
+        </.button>
+        <p class="mt-1 text-[13px] text-muted">
+          Riders can still reach every stop on these routes, so this is a delay notice rather than a
+          detour.
+        </p>
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
+  Whether the routes the alert does not name are affected at the same stops.
+
+  This is the question the prototype asks in the stop's own words: "Route 12
+  also stops at N Coast Hwy & NE 6th St. Is it affected too?" Each unchosen
+  route that serves a chosen stop is named, with the stops it shares, because the
+  reader is deciding about that place and not about a route in the abstract.
+
+  Both answers are self-contained and save at once (AC-17). "Yes" stores the
+  route/stop pairs that make those routes affected, so the alert's target stays
+  the stops; "no" stores that they are not affected. The question is absent
+  entirely when no unchosen route serves a chosen stop, which is the
+  `steps_for/2` condition rather than a card that renders empty.
+  """
+  attr :routes, :list, required: true, doc: "unchosen routes with the stops they share"
+  attr :all_routes?, :boolean, default: nil
+
+  def shared_question(assigns) do
+    ~H"""
+    <div id="alert-shared" class="grid gap-4">
+      <p :if={@routes == []} class="text-sm text-muted">
+        No other route in this version serves the stops you chose.
+      </p>
+
+      <fieldset :if={@routes != []} class="rounded-control bg-info-bg p-4">
+        <legend class="text-sm font-bold text-info-fg">Other routes use these stops too</legend>
+
+        <p
+          :for={entry <- @routes}
+          id={"alert-shared-#{entry.route.id}"}
+          class="mt-2 text-sm text-info-fg"
+        >
+          {shared_phrase(entry)}
+        </p>
+
+        <div :for={entry <- @routes} class="mt-3 grid gap-2 sm:grid-cols-2">
+          <button
+            id={"alert-shared-#{entry.route.id}-no"}
+            type="button"
+            phx-click="choose_shared"
+            phx-value-answer="no"
+            aria-pressed={to_string(@all_routes? == false)}
+            class={[
+              "flex min-h-11 items-center gap-2 rounded-control border bg-white p-3 text-left text-sm",
+              @all_routes? == false && "border-action bg-selection",
+              @all_routes? != false && "border-control hover:bg-canvas"
+            ]}
+          >
+            <span class="min-w-0 flex-1 font-semibold text-strong">
+              Only {entry.route.label}
+            </span>
+          </button>
+
+          <button
+            id={"alert-shared-#{entry.route.id}-yes"}
+            type="button"
+            phx-click="choose_shared"
+            phx-value-answer="yes"
+            aria-pressed={to_string(@all_routes? == true)}
+            class={[
+              "flex min-h-11 items-center gap-2 rounded-control border bg-white p-3 text-left text-sm",
+              @all_routes? == true && "border-action bg-selection",
+              @all_routes? != true && "border-control hover:bg-canvas"
+            ]}
+          >
+            <span class="min-w-0 flex-1 font-semibold text-strong">
+              {entry.route.label} is affected too
+            </span>
+          </button>
+        </div>
+      </fieldset>
+    </div>
+    """
+  end
+
+  # "Route 12 also stops at N Coast Hwy & NE 6th St. Is it affected too?" - the
+  # prototype's own sentence, with the route's label and the stop names the
+  # version gave them.
+  defp shared_phrase(entry) do
+    names =
+      entry.stops
+      |> Map.values()
+      |> Enum.sort()
+      |> Enum.join(", ")
+
+    "#{entry.route.label} also stops at #{names}. Is it affected too?"
+  end
+
+  @doc """
+  Where riders should board instead, and what is unavailable at an
+  accessibility alert's place.
+
+  Two answers to one question, as the reference has them: a stop from this
+  version's list, or a written temporary location. The combobox excludes the
+  stops the alert is already about and lists the chosen routes' stops first, so
+  the affected stop cannot be offered to itself and the nearest stop on the same
+  route is the first thing an editor sees (AC-18).
+
+  **Write directions instead** clears the chosen stop rather than adding to it,
+  because the two are alternatives; the textarea carries `phx-debounce="450"`
+  like every other typed answer, so it saves once the typing settles. The
+  facility field is the accessibility question's own answer and is cast by the
+  same changeset.
+  """
+  attr :alert, :any, required: true
+  attr :form, :any, required: true, doc: "the editor's `to_form/2` form, refused writes included"
+  attr :field, :any, required: true, doc: "the `to_form/2` field the boarding combobox writes to"
+  attr :directions_open?, :boolean, default: false
+  attr :error, :string, default: nil
+
+  def alternative_question(assigns) do
+    ~H"""
+    <div id="alert-alternative" class="grid gap-4">
+      <div id="alert-boarding" class="grid gap-2">
+        <label for="alternative_stop_id_text_input" class="text-[13px] font-semibold text-strong">
+          Where should riders board instead?
+        </label>
+        <.stop_search
+          id="alert-boarding-stop"
+          field={@field}
+          placeholder="Stop name or number"
+          hint="Search by stop name or number. The stops this alert already names are not offered."
+        />
+      </div>
+
+      <.button id="write-directions" type="button" variant="quiet" phx-click="write_directions">
+        <.icon name="hero-pencil" class="size-4" /> Write directions instead
+      </.button>
+
+      <.inputs_for :let={f} field={@form[:scope]}>
+        <.input
+          :if={@directions_open?}
+          id="write-directions-field"
+          field={f[:alternative_directions]}
+          type="textarea"
+          label="Other boarding instructions"
+          rows="3"
+          maxlength="500"
+          phx-debounce="450"
+          help="Describe a temporary stop here, or add instructions for the selected stop."
+        />
+
+        <.input
+          :if={@alert && @alert.situation == :accessibility}
+          field={f[:facility]}
+          type="text"
+          label="Affected elevator, entrance or ramp"
+          maxlength="200"
+          phx-debounce="450"
+          help="Name the facility riders cannot use."
+        />
+      </.inputs_for>
+
+      <p
+        :if={@error}
+        id="alert-alternative-error"
+        role="alert"
+        tabindex="-1"
+        class="text-sm font-semibold text-error-fg"
+      >
+        {@error}
+      </p>
+    </div>
+    """
+  end
+
+  # The one combobox both stop questions use, styled like the transfers editor's
+  # so the same control looks the same wherever an operator meets it.
+  attr :id, :string, required: true
+  attr :field, :any, required: true
+  attr :placeholder, :string, required: true
+  attr :hint, :string, required: true
+
+  defp stop_search(assigns) do
+    ~H"""
+    <div class="relative">
+      <.icon
+        name="hero-magnifying-glass"
+        class="pointer-events-none absolute left-3 top-[13px] z-10 size-5 text-muted"
+      />
+      <.live_component
+        module={LiveSelectComponent}
+        id={@id}
+        field={@field}
+        options={[]}
+        debounce={200}
+        update_min_len={0}
+        placeholder={@placeholder}
+        container_class="relative"
+        text_input_class="h-11 w-full rounded-control border border-control bg-white pl-10 pr-3 text-sm text-strong placeholder:text-muted"
+        text_input_selected_class="text-strong"
+        dropdown_class="absolute inset-x-0 top-full z-50 mt-1 max-h-64 overflow-auto rounded-card border border-subtle bg-white p-1 text-strong shadow-float"
+        option_class="flex min-h-11 flex-col justify-center rounded-control px-3 py-1.5 text-sm"
+        active_option_class="bg-selection"
+        available_option_class="cursor-pointer hover:bg-canvas"
+      >
+        <:option :let={option}>
+          <span class="font-[650] text-strong">{option.label}</span>
+          <span :if={Map.get(option, :hint)} class="text-[13px] text-muted">{option.hint}</span>
+        </:option>
+      </.live_component>
+    </div>
+    <p class="mt-1 text-[13px] text-muted">{@hint}</p>
+    """
+  end
 
   @doc """
   The rider message fields: the two pieces of text an alert is made of.

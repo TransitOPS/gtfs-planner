@@ -56,6 +56,22 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   **Load latest** and **Save as new alert**. There is no action that overwrites a
   newer revision, because a stale write never overwrites one (R6, AC-16).
 
+  ## Stop targets are selections, never text
+
+  The place, skipped-stops, shared-stop and boarding-alternative questions
+  answer with identities, not with what an editor typed. Each combobox is a
+  `LiveSelect` whose options come from `Alerts.search_stops/3` scoped to the
+  alert's own version, and every identity that reaches a handler is re-read
+  through `Alerts.stops_by_id/2` before it is stored: a UUID of another version
+  is simply not there, so a forged event saves nothing (R1, R7, CR-4).
+
+  Search text and stored identity are separate values, which is the whole of
+  R7. Typing a name and moving on stores nothing, because only a selection
+  carries an identity; typing over a chosen label clears the identity rather
+  than leaving the old stop attached to new text. `live_select_change` carries
+  only the text, so the label a stored stop renders is compared against what was
+  typed and the identity is dropped when they differ.
+
   ## What this frame does not do
 
   It carries no publication state and no publication action: saving an alert
@@ -71,18 +87,22 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
   import GtfsPlannerWeb.Gtfs.AlertComponents,
     only: [
+      alternative_question: 1,
       change_question: 1,
       conflict_banner: 1,
       direction_question: 1,
       mode_control: 1,
       mode_question: 1,
       message_fields: 1,
+      place_question: 1,
       progress: 1,
       question_card: 1,
       rider_preview: 1,
       routes_question: 1,
       save_bar: 1,
+      shared_question: 1,
       situation_question: 1,
+      stops_question: 1,
       urgency_question: 1
     ]
 
@@ -96,10 +116,18 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   alias GtfsPlanner.Alerts.Recurrence
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlannerWeb.Gtfs.AlertComponents
+  alias LiveSelect.Component, as: LiveSelectComponent
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   @modes [:form, :assistant]
+
+  # The two single-value stop searches this editor renders, keyed by the
+  # LiveSelect component's own id. A `live_select_change` naming any other id is
+  # refused, so a hand-made event cannot search this version's stops through a
+  # control that does not exist.
+  @stop_searches %{"alert-place-stop" => :place, "alert-boarding-stop" => :alternative}
+  @stop_search_kinds Map.new(@stop_searches, fn {id, kind} -> {kind, id} end)
 
   # The question each step asks, in the reader's words. The step *order* is
   # `steps_for/2`; this is only the wording, keyed by the same URL step keys so a
@@ -181,6 +209,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
      |> assign(:route_query, "")
      |> assign(:route_options, [])
      |> assign(:route_error, nil)
+     |> assign(:place_field, stop_field(nil, :place))
+     |> assign(:boarding_field, stop_field(nil, :alternative))
+     |> assign(:route_stop_options, [])
+     |> assign(:shared_routes, [])
+     |> assign(:stop_error, nil)
+     |> assign(:stretch_ends, %{})
+     |> assign(:directions_open?, false)
      |> assign(:mode_route_types, [])
      |> assign(:directions, [])
      |> assign(:form, draft_form(%Alert{}))}
@@ -344,6 +379,27 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # The autosave path. Every keystroke that settles reaches here through the
   # form's `phx-change`, carrying the whole form and this editor's base
   # revision in the hidden field. Nothing else writes this row (INV-1).
+  # A `LiveSelect` selection is not an event of its own: it writes the chosen
+  # value into a hidden input that belongs to this form, so it arrives here with
+  # the rest of the change. The field it writes is named for the question rather
+  # than for the answer, because the identity still has to be checked against the
+  # version before it is stored (R7, R1).
+  def handle_event("autosave", %{"place" => %{"stop_id" => id}} = params, socket)
+      when is_binary(id) do
+    case socket.assigns.alert do
+      nil -> {:noreply, socket}
+      alert -> pick_place(socket, alert, id, params)
+    end
+  end
+
+  def handle_event("autosave", %{"alternative" => %{"stop_id" => id}} = params, socket)
+      when is_binary(id) do
+    case socket.assigns.alert do
+      nil -> {:noreply, socket}
+      alert -> pick_alternative(socket, alert, id, params)
+    end
+  end
+
   def handle_event("autosave", %{"alert" => params}, socket) when is_map(params) do
     case socket.assigns.alert do
       # Nothing has been answered yet, so there is no row to save. The first
@@ -447,7 +503,451 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     end
   end
 
+  # -- Stop questions ----------------------------------------------------
+
+  # A `LiveSelect` pushes this on every keystroke. It carries the text the
+  # editor typed and the component's own id, and nothing else: a selection
+  # arrives through the form instead, because `LiveSelect` writes its selection
+  # into a hidden input that belongs to the form (R7).
+  #
+  # An id this editor does not render is refused, so a hand-made event cannot
+  # search this version's stops through a control that is not on the page.
+  def handle_event("live_select_change", %{"id" => id} = params, socket) when is_binary(id) do
+    case Map.fetch(@stop_searches, id) do
+      {:ok, kind} -> {:noreply, search_stop_options(socket, kind, params["text"])}
+      :error -> {:noreply, socket}
+    end
+  end
+
+  # **Write directions instead** is the alternative to choosing a stop, so it
+  # clears the chosen stop and opens the field the answer is typed into. The
+  # directions themselves arrive through the form, on the same 450 ms debounce
+  # every other typed answer uses.
+  def handle_event("write_directions", _params, socket) do
+    case socket.assigns.alert do
+      nil ->
+        {:noreply, socket}
+
+      _alert ->
+        case write_stop(socket, %{"scope" => %{"alternative_stop_id" => nil}}) do
+          {:noreply, socket} -> {:noreply, assign(socket, :directions_open?, true)}
+          other -> other
+        end
+    end
+  end
+
+  # A skipped stop is one toggle and one write, which is what keeps Back
+  # lossless: the list is on the row before Continue is pressed.
+  def handle_event("toggle_stop", %{"id" => id}, socket) when is_binary(id) do
+    alert = socket.assigns.alert
+
+    with %{} = alert <- alert,
+         %{^id => _stop} <- Alerts.stops_by_id(audit_context(socket), [id]) do
+      chosen = scope(alert).stop_ids || []
+      ids = if id in chosen, do: List.delete(chosen, id), else: chosen ++ [id]
+
+      write_stop(socket, %{"scope" => %{"shape" => "route_stops", "stop_ids" => ids}})
+    else
+      _not_an_alert_or_not_in_scope -> {:noreply, socket}
+    end
+  end
+
+  # A stretch is the two ends the editor names, and the stops between them are
+  # what the detour skips, so the resolved list is stored beside the pair. Each
+  # end is chosen in its own select, so one of them is reported by the event and
+  # the other is the half the editor already chose; a half pair says so rather
+  # than saving something the editor did not name.
+  #
+  # Both ends are re-read through the scoped lookup, and the slice is taken from
+  # the route's own stop order, so a pair of UUIDs from another version resolves
+  # nothing at all.
+  def handle_event("select_stretch", %{"which" => which, "value" => value}, socket)
+      when is_binary(which) do
+    alert = socket.assigns.alert
+    ends = Map.put(socket.assigns.stretch_ends, which, value)
+    stops = stretch_stops(socket, ends["from"], ends["to"], socket.assigns.route_stop_options)
+
+    case {alert, stops} do
+      {nil, _stops} ->
+        {:noreply, socket}
+
+      {_alert, nil} ->
+        {:noreply,
+         socket
+         |> assign(:stretch_ends, ends)
+         |> assign(:stop_error, "Choose both ends of the stretch.")}
+
+      {_alert, stops} ->
+        {from_id, to_id} = {List.first(stops), List.last(stops)}
+
+        case write_stop(socket, %{
+               "scope" => %{
+                 "shape" => "route_stops",
+                 "stop_ids" => stops,
+                 "stretch_from_stop_id" => from_id,
+                 "stretch_to_stop_id" => to_id
+               }
+             }) do
+          {:noreply, socket} ->
+            {:noreply, socket |> assign(:stretch_ends, %{}) |> assign(:stop_error, nil)}
+
+          other ->
+            other
+        end
+    end
+  end
+
+  # "All stops still served" is not a detour, so it is answered by changing the
+  # situation rather than by answering the question the situation opened.
+  def handle_event("all_stops_served", _params, socket) do
+    case socket.assigns.alert do
+      nil ->
+        {:noreply, socket}
+
+      alert ->
+        case Alerts.save_draft(audit_context(socket), alert.id, alert.revision, %{
+               "situation" => "delay",
+               "scope" => %{
+                 "stop_ids" => [],
+                 "stretch_from_stop_id" => nil,
+                 "stretch_to_stop_id" => nil
+               }
+             }) do
+          {:ok, saved} ->
+            {:noreply,
+             socket
+             |> assign(:alert, saved)
+             |> assign(:form, draft_form(saved))
+             |> assign(:save_state, :saved)
+             |> rebuild(saved)
+             |> push_patch(to: saved_path(socket, saved, advance(saved, :routes, socket)))}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, write_error_message(reason))}
+        end
+    end
+  end
+
+  # The shared-stop answer is one question about the routes the alert does not
+  # name. "Yes" stores the pairs that make those routes affected at the same
+  # stops, so the target is the stops rather than the routes, which is what the
+  # alert means; "no" stores that they are not (AC-18).
+  def handle_event("choose_shared", %{"answer" => "yes"}, socket) do
+    case socket.assigns.alert do
+      nil ->
+        {:noreply, socket}
+
+      alert ->
+        case shared_pairs(socket, alert) do
+          [] ->
+            {:noreply, socket}
+
+          pairs ->
+            answer_and_advance(socket, :shared, alert, %{
+              "scope" => %{"all_routes_at_stops" => true, "route_stop_pairs" => pairs}
+            })
+        end
+    end
+  end
+
+  def handle_event("choose_shared", %{"answer" => "no"}, socket) do
+    case socket.assigns.alert do
+      nil ->
+        {:noreply, socket}
+
+      alert ->
+        answer_and_advance(socket, :shared, alert, %{"scope" => %{"all_routes_at_stops" => false}})
+    end
+  end
+
+  # The skipped-stop list is a multi-select, so it is written as it is chosen and
+  # Continue is the explicit action that moves on. Nothing chosen says so inline
+  # rather than advancing over an answer that was never stored.
+  def handle_event("continue_stops", _params, socket) do
+    case socket.assigns.alert do
+      nil ->
+        {:noreply, socket}
+
+      alert ->
+        if present?(scope(alert).stop_ids) do
+          {:noreply, advance_without_writing(socket, alert, :stops)}
+        else
+          {:noreply, assign(socket, :stop_error, "Choose at least one stop this detour skips.")}
+        end
+    end
+  end
+
+  # A moved stop and an accessibility alert have to say where riders go
+  # instead, so this question refuses to advance until it has a stop or written
+  # directions. A closed stop and a detour may leave it as it is (AC-18).
+  def handle_event("continue_alternative", _params, socket) do
+    case socket.assigns.alert do
+      nil ->
+        {:noreply, socket}
+
+      alert ->
+        if alternative_required?(alert) and not alternative_answered?(alert) do
+          {:noreply,
+           assign(socket, :stop_error, "Choose a stop to board at, or write directions instead.")}
+        else
+          {:noreply, advance_without_writing(socket, alert, :alternative)}
+        end
+    end
+  end
+
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  # R7, and the failure EV-16 exists to reject: a label the editor then types
+  # over is no longer the stop it named. The identity is dropped here rather
+  # than left attached to new text, and the combobox is told the selection is
+  # gone so it cannot put the label back.
+  defp search_stop_options(socket, kind, text) do
+    text = if is_binary(text), do: text, else: ""
+
+    socket
+    |> clear_edited_label(kind, text)
+    |> send_stop_options(kind, text)
+  end
+
+  defp send_stop_options(socket, kind, text) do
+    send_update(LiveSelectComponent,
+      id: Map.fetch!(@stop_search_kinds, kind),
+      options: socket |> stop_search(kind, text) |> Enum.map(&stop_option/1)
+    )
+
+    socket
+  end
+
+  # The place question searches every selectable stop in the alert's version.
+  # The boarding alternative searches what the alert has not already made
+  # unusable, with the chosen routes' own stops first so "the next stop on this
+  # route" reads at the top of the list (AC-18).
+  defp stop_search(socket, :place, text) do
+    Alerts.search_stops(audit_context(socket), text)
+  end
+
+  defp stop_search(socket, :alternative, text) do
+    answer = scope(socket.assigns.alert)
+
+    Alerts.search_stops(audit_context(socket), text,
+      exclude_stop_ids: answer.stop_ids || [],
+      prefer_route_ids: answer.route_ids || []
+    )
+  end
+
+  # The stored stop's own label decides whether the text still names it. A
+  # different text is an edit over a selection, and a blank one is a clear.
+  defp clear_edited_label(socket, kind, text) do
+    alert = socket.assigns.alert
+    chosen = chosen_stop_id(alert, kind)
+
+    cond do
+      chosen == nil ->
+        socket
+
+      text == stop_label(socket, chosen) ->
+        socket
+
+      true ->
+        forget_stop(socket, kind, chosen)
+    end
+  end
+
+  # Written directions and a chosen stop are two answers to one question, so
+  # either one clearing the other is the rule rather than a special case.
+  defp forget_stop(socket, :place, chosen) do
+    write_stop(socket, %{"scope" => %{"stop_ids" => []}})
+    |> clear_combobox(:place, chosen)
+  end
+
+  defp forget_stop(socket, :alternative, chosen) do
+    write_stop(socket, %{"scope" => %{"alternative_stop_id" => nil}})
+    |> clear_combobox(:alternative, chosen)
+  end
+
+  defp clear_combobox({:noreply, socket}, kind, _chosen) do
+    send_update(LiveSelectComponent,
+      id: Map.fetch!(@stop_search_kinds, kind),
+      value: nil,
+      options: []
+    )
+
+    socket
+  end
+
+  defp clear_combobox(other, _kind, _chosen), do: other
+  # The two ends travel as form fields, so a select that changed its value but
+  # not its selection is still readable here.
+  # The slice of the route's own stop list between two named ends, or `nil` when
+  # either end is not a stop of that list.
+  defp stretch_stops(socket, from_id, to_id, options) do
+    known = Alerts.stops_by_id(audit_context(socket), [from_id, to_id])
+    order = Enum.map(options, & &1.id)
+
+    with %{id: from} <- Map.get(known, from_id, %{}),
+         %{id: to} <- Map.get(known, to_id, %{}),
+         a when is_integer(a) <- Enum.find_index(order, &(&1 == from.id)),
+         b when is_integer(b) <- Enum.find_index(order, &(&1 == to.id)) do
+      Enum.slice(order, min(a, b), abs(a - b) + 1)
+    else
+      _not_on_this_route -> nil
+    end
+  end
+
+  # -- Stop answers ------------------------------------------------------
+
+  # Every stop answer goes through the one writer. A `nil` alert is the new-alert
+  # frame, which writes nothing before the first answer (AC-15, INV-1).
+  defp write_stop(socket, attrs) do
+    case socket.assigns.alert do
+      nil -> {:noreply, socket}
+      alert -> save(socket, alert, attrs)
+    end
+  end
+
+  # A chosen place is the alert's own stop. The routes serving it are preselected,
+  # because a place question exists to name a place and the routes that call at
+  # it are what the alert is about; the editor removes any that are not affected
+  # on the routes question, which is where a route is chosen at all.
+  #
+  # The identity is re-read through the scoped lookup first, so a stop of another
+  # version is absent from the result and nothing is written for it (R1, CR-4).
+  defp pick_place(socket, alert, id, params) do
+    with %{^id => stop} <- Alerts.stops_by_id(audit_context(socket), [id]) do
+      serving = Enum.map(Alerts.routes_at_stops(audit_context(socket), [id]), & &1.id)
+
+      attrs =
+        with_scope(params, %{
+          "shape" => "stop_all_routes",
+          "stop_ids" => [id],
+          "route_ids" => serving,
+          "all_routes_at_stops" => true
+        })
+
+      case save(socket, alert, attrs) do
+        {:noreply, socket} ->
+          {:noreply, socket |> reset_stop_fields() |> send_chosen(:place, stop)}
+
+        other ->
+          other
+      end
+    else
+      _not_in_this_version -> {:noreply, reset_stop_fields(socket)}
+    end
+  end
+
+  # A chosen boarding stop and written directions are two answers to one
+  # question, so choosing the stop clears the text. The alternative search
+  # already excluded the affected stops, which is why this identity cannot be
+  # one of them by accident.
+  defp pick_alternative(socket, alert, id, params) do
+    with %{^id => stop} <- Alerts.stops_by_id(audit_context(socket), [id]) do
+      attrs = with_scope(params, %{"alternative_stop_id" => id, "alternative_directions" => nil})
+
+      case save(socket, alert, attrs) do
+        {:noreply, socket} ->
+          {:noreply, socket |> reset_stop_fields() |> send_chosen(:alternative, stop)}
+
+        other ->
+          other
+      end
+    else
+      _not_in_this_version -> {:noreply, reset_stop_fields(socket)}
+    end
+  end
+
+  # The rest of the form travels with the selection, so a typed direction typed
+  # before the pick is saved with it rather than dropped.
+  defp with_scope(%{"alert" => %{"scope" => scope} = params}, answer)
+       when is_map(scope) do
+    put_in(params, ["scope"], Map.merge(scope, answer))
+  end
+
+  defp with_scope(params, _answer), do: Map.delete(params, "revision")
+
+  # `LiveSelect` keeps the option list it first rendered across a parent
+  # re-render, so a chosen stop is sent back to its own component with the label
+  # that value belongs to.
+  defp send_chosen(socket, kind, stop) do
+    send_update(LiveSelectComponent,
+      id: Map.fetch!(@stop_search_kinds, kind),
+      value: stop.id,
+      options: [stop_option(stop)]
+    )
+
+    socket
+  end
+
+  # The pair that makes an unchosen route affected at the stops the alert names.
+  # Only the stops that route actually serves appear, so the stored pair can
+  # never name a stop the route does not call at.
+  defp shared_pairs(socket, alert) do
+    answer = scope(alert)
+    stops = answer.stop_ids || []
+    chosen = MapSet.new(answer.route_ids || [])
+    audit = audit_context(socket)
+
+    audit
+    |> Alerts.routes_at_stops(stops)
+    |> Enum.reject(&MapSet.member?(chosen, &1.id))
+    |> Enum.flat_map(fn route ->
+      served =
+        audit
+        |> Alerts.route_stops(route.id)
+        |> Enum.map(& &1.id)
+        |> MapSet.new()
+
+      stops
+      |> Enum.filter(&MapSet.member?(served, &1))
+      |> Enum.map(&%{"route_id" => route.id, "stop_id" => &1})
+    end)
+  end
+
+  defp alternative_required?(%Alert{situation: situation})
+       when situation in [:stop_moved, :accessibility],
+       do: true
+
+  defp alternative_required?(_alert), do: false
+
+  defp alternative_answered?(%Alert{} = alert) do
+    answer = scope(alert)
+
+    not is_nil(answer.alternative_stop_id) or present?(answer.alternative_directions) or
+      (alert.situation == :accessibility and present?(answer.facility))
+  end
+
+  defp chosen_stop_id(nil, _kind), do: nil
+  defp chosen_stop_id(alert, :place), do: List.first(scope(alert).stop_ids)
+  defp chosen_stop_id(alert, :alternative), do: scope(alert).alternative_stop_id
+
+  # The label the stored stop renders, read through the same scoped lookup a pick
+  # uses, so the comparison is between two values this version produced.
+  defp stop_label(socket, id) do
+    case Map.fetch(Alerts.stops_by_id(audit_context(socket), [id]), id) do
+      {:ok, stop} -> stop.label
+      :error -> nil
+    end
+  end
+
+  # The comboboxes read their value from the row rather than from an assign a
+  # keystroke could have set, so a cleared identity cannot be re-picked by the
+  # next unrelated autosave (R7).
+  defp reset_stop_fields(socket) do
+    alert = socket.assigns.alert
+
+    socket
+    |> assign(:place_field, stop_field(alert, :place))
+    |> assign(:boarding_field, stop_field(alert, :alternative))
+  end
+
+  defp stop_field(alert, kind), do: to_form(%{"stop_id" => chosen_stop_id(alert, kind)}, as: kind)
+
+  defp stop_option(stop) do
+    %{label: stop.label, value: stop.id, hint: stop_hint(stop)}
+  end
+
+  defp stop_hint(%{platform_code: code}) when is_binary(code) and code != "", do: code
+  defp stop_hint(_stop), do: nil
 
   # -- Autosave ------------------------------------------------------------
 
@@ -593,6 +1093,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> assign(:flags, flags)
     |> assign(:steps, prepare_steps(steps_for(alert, flags), socket.assigns.step, flags, socket))
     |> assign(:preview, preview(socket, alert))
+    |> prepare_stop_questions(alert)
   end
 
   # -- Loading ------------------------------------------------------------
@@ -657,7 +1158,62 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> assign(:route_error, nil)
     |> assign(:mode_route_types, question_options(socket, alert, step, :mode_route_types))
     |> assign(:directions, question_options(socket, alert, step, :directions))
+    |> assign(:stop_error, nil)
+    |> assign(:stretch_ends, %{})
+    |> assign(:directions_open?, false)
     |> assign(:form, draft_form(alert || %Alert{}))
+    |> prepare_stop_questions(alert)
+  end
+
+  # The three reads the stop questions need, taken when the row changes rather
+  # than in the render function: the route's own stop list for the skipped-stop
+  # question, the routes that share the stops the alert names, and the combobox
+  # fields. Every read goes through the audit context, so all three are the
+  # alert's own version's (CR-4).
+  defp prepare_stop_questions(socket, alert) do
+    socket
+    |> reset_stop_fields()
+    |> assign(:route_stop_options, route_stop_options(socket, alert))
+    |> assign(:shared_routes, shared_route_options(socket, alert))
+  end
+
+  # The prototype's skipped-stop list is the chosen route's own stops, in the
+  # order riders meet them. Several chosen routes contribute their stops in the
+  # order the routes were named, without a stop appearing twice.
+  defp route_stop_options(_socket, nil), do: []
+
+  defp route_stop_options(socket, alert) do
+    audit = audit_context(socket)
+
+    (scope(alert).route_ids || [])
+    |> Enum.flat_map(&Alerts.route_stops(audit, &1))
+    |> Enum.uniq_by(& &1.id)
+  end
+
+  # The routes the alert does not name that also serve the stops it does name.
+  # Each carries the stops they share, because the question is about those
+  # stops and not about a route in the abstract.
+  defp shared_route_options(_socket, nil), do: []
+
+  defp shared_route_options(socket, alert) do
+    audit = audit_context(socket)
+    answer = scope(alert)
+    chosen = MapSet.new(answer.route_ids || [])
+    stops = answer.stop_ids || []
+
+    audit
+    |> Alerts.routes_at_stops(stops)
+    |> Enum.reject(&MapSet.member?(chosen, &1.id))
+    |> Enum.map(fn route ->
+      served =
+        audit
+        |> Alerts.route_stops(route.id)
+        |> Enum.map(& &1.id)
+        |> MapSet.new()
+
+      shared = Enum.filter(stops, &MapSet.member?(served, &1))
+      %{route: route, stops: Map.new(Alerts.stops_by_id(audit, shared), &{&1.id, &1.label})}
+    end)
   end
 
   # The two questions that need more than the alert's own answers read their
@@ -1046,11 +1602,26 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # The single-choice questions say what moving on means; the multi-select says
   # what it needs instead, because Continue is what carries a reader on there.
   defp question_hint(:routes), do: "Choose at least one route, or the whole system."
+  defp question_hint(:stops), do: "Choose the stops riders cannot use, or a stretch of them."
+  defp question_hint(:place), do: "Search this version's stops by name or number."
+
   defp question_hint(_step), do: "Choose an option to move on. You can go back at any time."
 
   # The questions this step renders. Everything else in the sequence belongs to a
   # later step and still says so rather than rendering an empty card.
-  @choice_steps [:urgency, :situation, :mode, :change, :routes, :direction, :message]
+  @choice_steps [
+    :urgency,
+    :situation,
+    :mode,
+    :change,
+    :routes,
+    :direction,
+    :place,
+    :stops,
+    :shared,
+    :alternative,
+    :message
+  ]
 
   defp placeholder_step?(step), do: step not in @choice_steps
 
@@ -1235,6 +1806,31 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
                     directions={@directions}
                   />
 
+                  <.place_question :if={@step == :place} field={@place_field} />
+
+                  <.stops_question
+                    :if={@step == :stops}
+                    options={@route_stop_options}
+                    selected={scope(@alert).stop_ids || []}
+                    stretch={@stretch_ends}
+                    error={@stop_error}
+                  />
+
+                  <.shared_question
+                    :if={@step == :shared}
+                    routes={@shared_routes}
+                    all_routes?={scope(@alert).all_routes_at_stops}
+                  />
+
+                  <.alternative_question
+                    :if={@step == :alternative}
+                    alert={@alert}
+                    form={@form}
+                    field={@boarding_field}
+                    directions_open?={@directions_open?}
+                    error={@stop_error}
+                  />
+
                   <.message_fields
                     :if={@step == :message}
                     form={@form}
@@ -1256,6 +1852,28 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
                       variant="primary"
                       class="ml-auto"
                       phx-click="continue_routes"
+                    >
+                      Continue
+                    </.button>
+
+                    <.button
+                      :if={@step == :stops}
+                      id="alert-stops-continue"
+                      type="button"
+                      variant="primary"
+                      class="ml-auto"
+                      phx-click="continue_stops"
+                    >
+                      Continue
+                    </.button>
+
+                    <.button
+                      :if={@step == :alternative}
+                      id="alert-alternative-continue"
+                      type="button"
+                      variant="primary"
+                      class="ml-auto"
+                      phx-click="continue_alternative"
                     >
                       Continue
                     </.button>

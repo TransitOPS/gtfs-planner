@@ -897,3 +897,198 @@ test.describe("alert choice questions", () => {
     );
   });
 });
+
+// The stop questions, as spec 30's step 17 renders them: a place found by
+// search, a detour's skipped stops and its stretch, the shared-stop question in
+// the stop's own words, and a boarding alternative that never offers the stops
+// the alert is already about (AC-18, R7).
+
+async function captureStopsReference(page, testInfo, state, width) {
+  if (!fs.existsSync(REFERENCE_PATH)) return;
+
+  await page.goto(`file://${REFERENCE_PATH}?state=${state}`);
+  await page.waitForLoadState("load");
+
+  await page.screenshot({
+    path: capturePath(testInfo, `stops-ref-${state}-${width}.png`),
+    fullPage: false,
+  });
+}
+
+// The seeded version runs Routes 1, 12 and 50, and Newport Transit Center is
+// the stop Route 1 and Route 12 share, which is what raises the shared-stop
+// question. The journey walks the editor's own flow rather than inventing a row.
+async function openDetourStops(page) {
+  await openNewAlert(page);
+  await waitForEditorMounted(page);
+
+  await page.locator("#alert-urgency-now").click();
+  await page.waitForURL(/step=situation/, { timeout: 15_000 });
+  await page.locator("#situation-detour").click();
+
+  // The seeded version is multimodal, so the mode question sits between the
+  // situation and the routes.
+  await page.waitForSelector("#mode-3", { timeout: 15_000 });
+  await page.locator("#mode-3").click();
+  await page.waitForSelector("#alert-routes-continue", { timeout: 15_000 });
+
+  await page.locator("#alert-route-search").pressSequentially("Route 1");
+  await page.waitForSelector("#alert-route-options button", { timeout: 15_000 });
+  await page
+    .locator("#alert-route-options button")
+    .filter({ hasText: /^Route 1$/ })
+    .first()
+    .click();
+  await page.locator("#alert-routes-continue").click();
+
+  await page.waitForSelector("#alert-stops", { timeout: 15_000 });
+  return page.url().split("?")[0];
+}
+
+test.describe("alert stop questions", () => {
+  test.describe.configure({ timeout: 120_000 });
+
+  test("a detour names the stops it skips and the stretch between two ends @stops", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openDetourStops(page);
+
+    await expect(page.locator("#alert-question-title")).toHaveText(
+      "Which stops will buses skip?",
+    );
+    await expect(page.locator("#alert-stops-list button")).toHaveCount(6);
+    await expect(
+      page.locator("#alert-stops-list button").first(),
+    ).toContainText("Newport Transit Center");
+
+    await page.screenshot({
+      path: capturePath(testInfo, "stops-skipped-1440.png"),
+      fullPage: false,
+    });
+
+    // A stretch is two ends on the route's own list, and the stops between them
+    // are what the detour skips.
+    await page.locator("#alert-stops-stretch summary").click();
+    await page
+      .locator("#alert-stretch-from")
+      .selectOption({ label: "N Coast Hwy & NE 6th St" });
+    await page
+      .locator("#alert-stretch-to")
+      .selectOption({ label: "N Coast Hwy & NE 20th St" });
+    await page.locator("#alert-stretch-select").click();
+
+    await expect(page.locator("#alert-stop-AL_CST6-shown")).toHaveCount(0);
+    const pressed = page.locator("#alert-stops-list button[aria-pressed='true']");
+    await expect(pressed).toHaveCount(3);
+    await expect(pressed.first()).toContainText("N Coast Hwy & NE 6th St");
+
+    await page.screenshot({
+      path: capturePath(testInfo, "stops-stretch-1440.png"),
+      fullPage: false,
+    });
+
+    await captureStopsReference(page, testInfo, "form-stops", "1440");
+  });
+
+  test("a shared stop asks about the other route by name @stops", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openDetourStops(page);
+
+    // Newport Transit Center is the stop Route 1 and Route 12 share.
+    await page
+      .locator("#alert-stops-list button")
+      .filter({ hasText: "Newport Transit Center" })
+      .click();
+    await page.locator("#alert-stops-continue").click();
+
+    await page.waitForSelector("#alert-shared", { timeout: 15_000 });
+    await expect(page.locator("#alert-question-title")).toHaveText(
+      "Are other routes affected at these stops?",
+    );
+    await expect(page.locator("#alert-shared fieldset")).toContainText(
+      "Route 12 also stops at Newport Transit Center. Is it affected too?",
+    );
+
+    await page.screenshot({
+      path: capturePath(testInfo, "stops-shared-1440.png"),
+      fullPage: false,
+    });
+
+    await page.locator("#alert-shared button[id$='-yes']").first().click();
+    await page.waitForSelector("#alert-boarding", { timeout: 15_000 });
+
+    await captureStopsReference(page, testInfo, "form-shared", "1440");
+  });
+
+  test("the boarding alternative excludes the affected stops and works by keyboard @stops", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openDetourStops(page);
+
+    await page
+      .locator("#alert-stops-list button")
+      .filter({ hasText: "N Coast Hwy & NE 20th St" })
+      .click();
+    await page.locator("#alert-stops-continue").click();
+    await page.waitForSelector("#alert-boarding", { timeout: 15_000 });
+
+    // The combobox is a search: typing offers stops and stores nothing, which is
+    // what R7 requires.
+    const search = page.locator("#alternative_stop_id_text_input");
+    await search.click();
+    await search.pressSequentially("N Coast");
+    await page.waitForSelector(
+      "#alert-boarding-stop ul li div[data-idx]",
+      { timeout: 15_000 },
+    );
+
+    // The affected stop is not offered to itself, and the keyboard drives the
+    // same list a pointer does.
+    await search.press("ArrowDown");
+    await search.press("Enter");
+    await page.waitForSelector("#alert-alternative", { timeout: 15_000 });
+
+    await page.screenshot({
+      path: capturePath(testInfo, "stops-boarding-1440.png"),
+      fullPage: false,
+    });
+
+    // Escape closes the list without changing the answer.
+    await search.click();
+    await search.press("Escape");
+    await expect(page.locator("#alert-boarding-stop ul")).toHaveCount(0);
+
+    // Written directions replace the chosen stop rather than joining it.
+    await page.locator("#write-directions").click();
+    await page.waitForSelector("#write-directions-field", { timeout: 15_000 });
+    await page
+      .locator("#write-directions-field")
+      .fill("Board at the temporary stop on NE Main St.");
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+    await page.screenshot({
+      path: capturePath(testInfo, "stops-boarding-search-1440.png"),
+      fullPage: false,
+    });
+
+    await captureStopsReference(page, testInfo, "form-access", "1440");
+  });
+
+  test("the stop questions fit the narrow width @stops", async ({ page }, testInfo) => {
+    await page.setViewportSize(NARROW);
+    await openDetourStops(page);
+
+    await expect(page.locator("#alert-stops")).toBeVisible();
+    expect(await fitsViewport(page)).toBe(true);
+    // The narrow viewport is shorter than the stop list, so this capture is the
+    // whole page: a cropped one would show the header and no stops.
+    await page.screenshot({
+      path: capturePath(testInfo, "stops-skipped-320.png"),
+      fullPage: true,
+    });
+    await captureStopsReference(page, testInfo, "form-stops", "320");
+  });
+});

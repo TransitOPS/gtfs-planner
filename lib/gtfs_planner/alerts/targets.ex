@@ -369,6 +369,33 @@ defmodule GtfsPlanner.Alerts.Targets do
     end
   end
 
+  @doc """
+  Returns the stop rows the given row UUIDs name, keyed by that UUID.
+
+  An editor's stop pick is an identity that arrived from a combobox, so it is
+  re-read here before anything is stored: a UUID of another version, another
+  organization or a stop this version no longer holds is simply absent from the
+  result, and the caller saves nothing for it. This is the same scoped read
+  `routes_by_id/2` performs for a route, and it is why a stop the editor could
+  not have chosen cannot be stored by naming its UUID (R1, CR-4).
+  """
+  @spec stops_by_id(AuditContext.t(), [String.t()]) :: %{optional(Ecto.UUID.t()) => stop_option()}
+  def stops_by_id(%AuditContext{organization_id: o, gtfs_version_id: v}, ids) do
+    case uuids(ids) do
+      [] ->
+        %{}
+
+      stop_uuids ->
+        from(s in Stop,
+          where: s.organization_id == ^o and s.gtfs_version_id == ^v,
+          where: s.id in ^stop_uuids,
+          where: is_nil(s.location_type) or s.location_type in [0, 1]
+        )
+        |> Repo.all()
+        |> Map.new(&{&1.id, stop_option(&1)})
+    end
+  end
+
   # -- Options -------------------------------------------------------------
 
   defp route_option(route) do
