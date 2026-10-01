@@ -6453,6 +6453,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           type="button"
           variant="secondary"
           class="mt-3"
+          phx-click="open_bulk_review"
+          phx-disabled-with="Reviewing…"
           disabled={is_nil(@bulk_choice)}
         >
           Review {count_label(length(@group.connections), "connection", "connections")}
@@ -6529,6 +6531,231 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # is that id encoded without padding: the same rule the list's section ids and
   # the group's token follow, for the same reason.
   defp connection_row_token(connection), do: Base.url_encode64(connection.id, padding: false)
+
+  @doc """
+  Renders the Set-all review: what saving one setting across a whole group would
+  do, connection by connection, before anything is written (AC-20, R10).
+
+  The drawer is the page's second non-modal inspector (`modal={false}`, CR-5): the
+  group panel's rows, its choice and its filters stay readable and clickable
+  beside it, because the review describes those rows rather than replacing them.
+  It is wide enough for the four-column table and no wider.
+
+  Every number and every row here is the LiveView's own derivation: the counts
+  tally the rows' results, each row's "now → result" is its `from` beside the
+  result its `refusal` or its records decided, and the counts card labels are the
+  ones AC-20 names. A pair the write rule refused carries
+  `Blocking.RiderOutcomes.refusal_text/1`'s own sentence (CR-3) and has no
+  include box, because a save cannot act on it; a pair already carrying the
+  chosen setting has none either, because there is nothing to write.
+  """
+  attr :review, :map, required: true
+  attr :routes, :map, required: true
+
+  def set_all_review(assigns) do
+    group = assigns.review.group
+    counts = set_all_review_counts(assigns.review)
+    included = Enum.count(assigns.review.rows, & &1.include?)
+    actionable = Enum.count(assigns.review.rows, &(&1.result in [:add, :replace, :remove]))
+
+    assigns =
+      assigns
+      |> assign(:group, group)
+      |> assign(:counts, counts)
+      |> assign(
+        :count_columns,
+        if(length(counts) == 2, do: "sm:grid-cols-2", else: "sm:grid-cols-4")
+      )
+      |> assign(:included, included)
+      |> assign(:actionable, actionable)
+      |> assign(:title, "Review: #{bulk_setting_label(assigns.review.choice)}")
+
+    ~H"""
+    <.drawer
+      id="set-all-review"
+      chrome="planner"
+      modal={false}
+      open={true}
+      on_close="close_bulk_review"
+      title={@title}
+      return_focus_id="bulk-review-open"
+      class="max-w-[min(100vw,42rem)]"
+    >
+      <:lede>
+        <.route_badge_for route_id={@group.from_route_id} routes={@routes} />
+        <.icon name={connection_join_icon(@group)} class="size-4 shrink-0 text-muted" />
+        <.route_badge_for route_id={@group.to_route_id} routes={@routes} />
+        at {@group.place.name} · {count_label(length(@review.rows), "connection", "connections")} ·
+        Preview, not saved
+      </:lede>
+
+      <.drawer_scroll>
+        <dl id="set-all-review-counts" class={["grid gap-2", @count_columns]}>
+          <div
+            :for={{label, value} <- @counts}
+            id={"set-all-review-count-#{bulk_count_id(label)}"}
+            class="rounded-control border border-subtle px-3 py-2"
+          >
+            <dt class="text-[13px] text-muted">{label}</dt>
+            <dd class="font-display text-[24px] font-semibold tabular-nums text-strong">{value}</dd>
+          </div>
+        </dl>
+
+        <p id="set-all-review-note" class="text-[13px] text-muted">
+          Each connection gets its own record, applied on every date both trips run.
+          Clear a box to leave a connection as it is.
+        </p>
+
+        <div class="max-w-full overflow-x-auto">
+          <table
+            id="set-all-review-table"
+            class="mt-2 w-full min-w-[480px] border-collapse text-left text-[13px]"
+          >
+            <thead>
+              <tr class="bg-white text-default">
+                <th scope="col" class="h-9 w-11 font-[650]"><span class="sr-only">Include</span></th>
+                <th scope="col" class="whitespace-nowrap pr-3 font-[650]">Block · arrives</th>
+                <th scope="col" class="pr-3 text-right font-[650]">Wait</th>
+                <th scope="col" class="font-[650]">Now → result</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                :for={row <- @review.rows}
+                id={"set-all-review-row-#{connection_row_token(row.connection)}"}
+                data-result={row.result}
+                class={[
+                  "border-t border-subtle align-top",
+                  if(row.result == :skip,
+                    do: "bg-warning-bg",
+                    else: "bg-white"
+                  )
+                ]}
+              >
+                <td class="py-1">
+                  <label
+                    :if={row.result in [:add, :replace, :remove]}
+                    class="flex size-11 cursor-pointer items-center justify-center"
+                  >
+                    <input
+                      type="checkbox"
+                      id={"set-all-review-include-#{connection_row_token(row.connection)}"}
+                      checked={row.include?}
+                      phx-click="toggle_bulk_row"
+                      phx-value-id={row.id}
+                      aria-label={"Include block #{row.connection.block_id}, #{clock(
+                        row.connection.from.last_arrival
+                      )}"}
+                      class="size-[18px] accent-action"
+                    />
+                  </label>
+                </td>
+                <td class="whitespace-nowrap py-2.5 pr-3">
+                  <strong>{row.connection.block_id}</strong>
+                  · <span class="tabular-nums">{clock(row.connection.from.last_arrival)}</span>
+                  <span class="block text-[12px] text-muted">
+                    {row.connection.from.trip_id} → {row.connection.to.trip_id}
+                  </span>
+                </td>
+                <td class="whitespace-nowrap py-2.5 pr-3 text-right tabular-nums">
+                  {connection_wait_minutes(row.connection)} min
+                </td>
+                <td class="py-2.5">{bulk_row_result_text(row)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </.drawer_scroll>
+
+      <.drawer_footer>
+        <p
+          id="set-all-review-included"
+          class="mr-auto text-[13px] text-muted"
+          role="status"
+          aria-live="polite"
+        >
+          {@included} of {@actionable} included
+        </p>
+
+        <button
+          type="button"
+          id="set-all-review-cancel"
+          class="btn btn-ghost min-h-11"
+          phx-click="close_bulk_review"
+        >
+          Cancel
+        </button>
+        <.button
+          id="set-all-review-save"
+          type="button"
+          class="min-h-11"
+          disabled={@included == 0}
+        >
+          Save {count_label(@included, "connection", "connections")}
+        </.button>
+      </.drawer_footer>
+    </.drawer>
+    """
+  end
+
+  # The counts AC-20 names, in the order it names them: a review that removes
+  # records reports what it removes and what was already not stated, and a review
+  # that writes one reports adds, replaces, pairs already carrying it and pairs
+  # the rule refused.
+  defp set_all_review_counts(%{choice: "none", rows: rows}) do
+    [
+      {"Removes", count_result(rows, :remove)},
+      {"Already not stated", count_result(rows, :same)}
+    ]
+  end
+
+  defp set_all_review_counts(%{rows: rows}) do
+    [
+      {"Adds", count_result(rows, :add)},
+      {"Replaces", count_result(rows, :replace)},
+      {"Already set", count_result(rows, :same)},
+      {"Can't be set", count_result(rows, :skip)}
+    ]
+  end
+
+  defp count_result(rows, result), do: Enum.count(rows, &(&1.result == result))
+
+  # A count card's DOM id: its label without the spaces and apostrophe, so a
+  # case names the card it means.
+  defp bulk_count_id(label),
+    do: label |> String.downcase() |> String.replace(~r/[^a-z0-9]+/, "-") |> String.trim("-")
+
+  defp bulk_setting_label("none"), do: "not stated"
+  defp bulk_setting_label("stay"), do: "riders stay on board"
+  defp bulk_setting_label("reboard"), do: "riders must re-board"
+
+  # The "now → result" cell. A refused pair says what the rule said and why it
+  # matters here; a pair already carrying the setting says so and stops; every
+  # other pair says what it has today and what saving would do to it.
+  defp bulk_row_result_text(%{result: :skip} = assigns) do
+    ~H"""
+    <span class="font-semibold text-warning-fg">Can’t be set.</span>
+    {@refusal}
+    """
+  end
+
+  defp bulk_row_result_text(%{result: :same} = assigns) do
+    ~H"""
+    <span class="text-muted">Already set</span>
+    """
+  end
+
+  defp bulk_row_result_text(assigns) do
+    assigns = Map.put(assigns, :label, bulk_result_label(assigns.result))
+
+    ~H"""
+    {@from} → <strong>{@label}</strong>
+    """
+  end
+
+  defp bulk_result_label(:add), do: "Adds record"
+  defp bulk_result_label(:replace), do: "Replaces record"
+  defp bulk_result_label(:remove), do: "Removes record"
 
   defp filtered_empty_text(%{status: :problems, route: route}) when not is_nil(route),
     do: "No block on this route has a problem on this service day."
