@@ -87,15 +87,23 @@ A screen that appears twice without explanation would be a partition error.
 | Measure | Count |
 |---|---|
 | Routes registered | 79 |
-| Screens inventoried | 57 |
-| IDs issued | 0 (issued per row when the inventories are written) |
-| Shared | 2 |
+| Screens inventoried (LiveView page routes) | 57 |
+| IDs issued | 57 (`SCRN-001` … `SCRN-057`, contiguous and unique) |
 | Excluded (with reason) | 22 |
 | **Unassigned** | 0 |
+| Shared (cross-referenced, inventoried once) | 2 of the 57 |
 
-Every unassigned route: none. The 79 registered routes account for as 57 LiveView page
-routes, 11 `/api/v1` companion API routes, 3 LiveView socket transports under `/live`, and
-8 controller-only endpoints. Reasons are in section 8.
+The 22 exclusions are the 11 `/api/v1` companion API routes, the 3 LiveView socket transports
+under `/live`, and the 8 controller-only endpoints; every one of them is named with a reason
+in section 8. The two shared surfaces are rows inside the 57 (`SCRN-007` and `SCRN-008`, both
+in INV-002, cross-referenced from the other six inventories), not an extra 2.
+
+Unassigned routes: none. Every registered route is either a row in exactly one inventory or
+an entry in section 8.
+
+Reconciliation is mechanical and was checked in both directions: each LiveView page route
+appears in exactly one inventory row, and each inventory row names a route that is
+registered. 57 + 22 = 79.
 
 Regenerate the route list with:
 
@@ -115,6 +123,8 @@ generated listing.
 | `/admin/users/organization-settings` | Configuration for the organization's members and product, reached by an organization admin | Instance administration, because it names "organization" | INV-005 | product owner |
 | `/gtfs/:version/export-runs/:run_id/download` | A screen an editor reaches from the export runs table | A download endpoint, excluded with the other non-LiveView responses | Excluded (section 8) | product owner |
 | Product field `planner` vs `pathways` | Two products with their own journeys, deserving their own operation inventories | One product with hidden areas, since nothing denies the hidden routes | One INV-003/INV-004 pair, recorded as a seam | product owner |
+| `/admin/users/invite` and `/admin/organizations/:org_id/invite` | One invitation journey that happens to have two URLs | Two audiences' journeys: an organization admin inviting a member of their own organization (INV-005) versus a system administrator inviting the first member of an organization they just created (INV-006) | INV-005 and INV-006 respectively | product owner |
+| `/gtfs/:version/settings/:section` | A screen per section slug, so each slug is a row | One screen with a section action, since the named sections already have literal routes and the literals are declared first | One `SCRN-047` row in INV-004; the named sections are separate rows | product owner |
 
 ## 8. Excluded
 
@@ -145,9 +155,19 @@ generated listing.
 - `docs/routes-and-access.md` does not mention the design-system pages or the
   `pathways_studio_editor` role requirement that every `Gtfs.*Live` enforces through its
   own `on_mount`, rather than through the router pipeline.
+- It lists two GTFS routes that are not registered: `/gtfs/:version/validate` and
+  `/gtfs/:version/switch`. Validation results are read at
+  `/gtfs/:version/validation/:validation_id` (`SCRN-036`), and the version is a path segment
+  rather than a switchable route.
+- Its summary matrix heads its first column `/organizations`, a prefix the router does not
+  register; read that column as the instance-administration screens in INV-006.
+- The Pathways Studio Admin view note says that role "must also have viewer/editor role to
+  see GTFS routes". No `viewer` role exists: `GtfsPlanner.Authorization.Roles` defines
+  exactly `administrator`, `pathways_studio_admin` and `pathways_studio_editor`.
 
 ## Changelog
 
 | Date | Version | Change | Author |
 |---|---|---|---|
 | 2026-10-01 | 1 | Initial index: axes derived from the router and mount hooks, partition unverified without a permission model | spec step 28 |
+| 2026-10-01 | 2 | Reconciled every registered route against the inventory rows in both directions: 57 issued IDs, zero unassigned routes, two further ambiguous boundaries and four further contradictions with `docs/routes-and-access.md` | spec step 30 |
