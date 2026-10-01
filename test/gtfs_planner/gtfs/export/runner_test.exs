@@ -11,6 +11,10 @@ defmodule GtfsPlanner.Gtfs.Export.RunnerTest do
 
   @actor %{id: Ecto.UUID.generate(), email: "exporter@example.com"}
 
+  # A real build writes and publishes a zip, which outlasts assert_receive's 100 ms
+  # default when the machine is loaded.
+  @build_timeout 2_000
+
   defmodule WaitingWorker do
     def build(_run, _generation, _token, _topic) do
       receive do
@@ -46,9 +50,9 @@ defmodule GtfsPlanner.Gtfs.Export.RunnerTest do
 
     assert {:ok, runner} = Runner.start_build(organization.id, run.id)
     ref = Process.monitor(runner)
-    assert_receive {:export_run_changed, _}
-    assert_receive {:export_run_changed, _}
-    assert_receive {:DOWN, ^ref, :process, ^runner, :normal}
+    assert_receive {:export_run_changed, _}, @build_timeout
+    assert_receive {:export_run_changed, _}, @build_timeout
+    assert_receive {:DOWN, ^ref, :process, ^runner, :normal}, @build_timeout
     assert %Run{state: :ready, artifact_size_bytes: size} = Repo.get!(Run, run.id)
     assert size > 0
   end
@@ -66,9 +70,9 @@ defmodule GtfsPlanner.Gtfs.Export.RunnerTest do
       DynamicSupervisor.which_children(GtfsPlanner.Gtfs.Export.RunnerSupervisor)
 
     ref = Process.monitor(runner)
-    assert_receive {:export_run_changed, _}
-    assert_receive {:export_run_changed, _}
-    assert_receive {:DOWN, ^ref, :process, ^runner, _reason}
+    assert_receive {:export_run_changed, _}, @build_timeout
+    assert_receive {:export_run_changed, _}, @build_timeout
+    assert_receive {:DOWN, ^ref, :process, ^runner, _reason}, @build_timeout
     assert %Run{state: :ready} = Repo.get!(Run, run.id)
   end
 
