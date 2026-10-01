@@ -20,6 +20,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.ExportRoundTripTest do
   import GtfsPlanner.VersionsFixtures
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.ConcurrencyHelpers
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.Alignments
@@ -517,6 +518,10 @@ defmodule GtfsPlanner.Gtfs.Alignments.ExportRoundTripTest do
 
   defp cleanup(organization_ids) do
     unboxed(fn ->
+      # The alignment save needs an editor, which `editor_fixture/1` commits with the
+      # organization's membership; deleting the organization alone leaves the user.
+      ConcurrencyHelpers.delete_committed_members!(organization_ids)
+
       timing_ids =
         Repo.all(
           from(t in TimedPattern, where: t.organization_id in ^organization_ids, select: t.id)
