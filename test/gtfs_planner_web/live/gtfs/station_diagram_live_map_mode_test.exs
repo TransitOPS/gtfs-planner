@@ -939,7 +939,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       stop_level: stop_level
     } do
       {:ok, station} =
-        Gtfs.update_stop(station, %{
+        Gtfs.import_update_stop(station, %{
           stop_lat: Decimal.new("42.3601"),
           stop_lon: Decimal.new("-71.0589")
         })
@@ -972,7 +972,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       stop_level: stop_level
     } do
       {:ok, station} =
-        Gtfs.update_stop(station, %{stop_lat: nil, stop_lon: nil})
+        Gtfs.import_update_stop(station, %{stop_lat: nil, stop_lon: nil})
 
       {:ok, _} = Gtfs.update_stop_level_diagram(stop_level, "map-diagram.png")
       conn = log_in_user(conn, user, organization: organization)

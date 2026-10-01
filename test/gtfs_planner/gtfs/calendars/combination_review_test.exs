@@ -601,7 +601,8 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
 
       # The source trip's first endpoint is a child stop with no coordinates of its own, so its
       # reviewed position comes from this parent through `Queries`' fallback.
-      assert {:ok, _parent} = Gtfs.update_stop(scope.parent, %{stop_lat: Decimal.new("43.10")})
+      assert {:ok, _parent} =
+               Gtfs.import_update_stop(scope.parent, %{stop_lat: Decimal.new("43.10")})
 
       refute review_token(context) == token
     end

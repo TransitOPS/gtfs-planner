@@ -150,7 +150,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ConcurrencyTest do
                  "PW_ENTRY"
                ) do
             nil -> {:error, :not_found}
-            pathway -> Gtfs.delete_pathway(pathway)
+            pathway -> Gtfs.apply_import_entity(:remove, :pathway, pathway, %{})
           end
         end
       end)

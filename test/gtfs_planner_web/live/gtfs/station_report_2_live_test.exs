@@ -1930,7 +1930,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
         actor_email: ctx.user.email
       }
 
-      assert {:ok, restored} = Gtfs.rollback_entity(log, audit_ctx)
+      assert {:ok, restored} =
+               GtfsPlanner.Gtfs.Stations.rollback_entity(
+                 audit_ctx,
+                 log.id,
+                 persisted_entity_revision(log)
+               )
+
       assert restored.stop_name == "Entrance One"
 
       assert Gtfs.get_stop_by_stop_id(ctx.organization.id, ctx.gtfs_version.id, "ENT_1").stop_name ==
@@ -2002,6 +2008,53 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
 
       assert Gtfs.get_stop_by_stop_id(other_organization.id, other_version.id, "FOREIGN_1").stop_name ==
                foreign.stop_name
+    end
+
+    test "a stop in another station of the same version is refused", ctx do
+      other_station =
+        stop_fixture(ctx.organization.id, ctx.gtfs_version.id, %{
+          stop_id: "OTHER_REPORT_STATION",
+          location_type: 1
+        })
+
+      foreign_child =
+        child_stop_fixture(
+          ctx.organization.id,
+          ctx.gtfs_version.id,
+          other_station.stop_id,
+          %{stop_id: "OTHER_REPORT_CHILD", stop_name: "Other Station Platform"}
+        )
+
+      render_click(ctx.view, "select_entity", %{
+        "entity_id" => foreign_child.stop_id,
+        "entity_type" => "stop"
+      })
+
+      refute has_element?(ctx.view, "#report-stop-edit-form")
+      assert has_element?(ctx.view, "#report-stop-lookup-error")
+
+      assert Repo.get!(GtfsPlanner.Gtfs.Stop, foreign_child.id).stop_name ==
+               "Other Station Platform"
+    end
+
+    test "a stale save keeps the entered name and shows a focused warning", ctx do
+      open_stop_drawer(ctx.view, "Entrance One")
+      stop = Gtfs.get_stop_by_stop_id(ctx.organization.id, ctx.gtfs_version.id, "ENT_1")
+      assert {:ok, _} = Gtfs.import_update_stop(stop, %{stop_name: "Changed elsewhere"})
+
+      ctx.view
+      |> form("#report-stop-edit-form", stop: %{stop_name: "My draft name"})
+      |> render_submit()
+
+      assert has_element?(ctx.view, "#report-stop-save-error[role='alert']")
+
+      assert has_element?(
+               ctx.view,
+               "#report-stop-edit-form input[name='stop[stop_name]'][value='My draft name']"
+             )
+
+      assert Repo.get!(GtfsPlanner.Gtfs.Stop, stop.id).stop_name == "Changed elsewhere"
+      assert stop_change_logs(ctx) == []
     end
 
     test "a same-id stop in another version is never the one edited", ctx do

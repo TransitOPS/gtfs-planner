@@ -402,7 +402,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
 
       {update_writer, update_backend} =
         start_writer(supervisor, fn ->
-          Gtfs.update_stop(parent, %{stop_lat: "41.5", stop_lon: "-73.5"})
+          Gtfs.import_update_stop(parent, %{stop_lat: "41.5", stop_lon: "-73.5"})
         end)
 
       {insert_writer, insert_backend} =
@@ -480,25 +480,37 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
       scope = seed_scope("stop-delete")
       on_exit(fn -> cleanup([scope.organization.id]) end)
 
-      stop =
+      {station, stop} =
         unboxed(fn ->
-          stop_fixture(scope.organization.id, scope.version.id, %{stop_id: "STOP_TO_DELETE"})
+          station = stop_fixture(scope.organization.id, scope.version.id, %{location_type: 1})
+
+          stop =
+            child_stop_fixture(scope.organization.id, scope.version.id, station.stop_id, %{
+              stop_id: "STOP_TO_DELETE"
+            })
+
+          {station, stop}
         end)
+
+      audit = bulk_audit(scope, station.stop_id)
+      on_exit(fn -> cleanup([], [audit.actor_id]) end)
 
       {holder, holder_backend} = hold_exclusive_version(scope, supervisor)
 
       {writer, backend} =
-        start_writer(supervisor, fn -> Gtfs.delete_stop(stop) end)
+        start_writer(supervisor, fn ->
+          Stations.delete_child_stop(audit, stop.id, stop.lock_version)
+        end)
 
       send(writer.pid, :go)
       assert_blocked_by(backend, holder_backend)
-      assert stop_ids(scope) == ["STOP_TO_DELETE"]
+      assert stop_ids(scope) == Enum.sort([station.stop_id, "STOP_TO_DELETE"])
 
       send(holder.pid, :release)
       assert Task.await(holder, @collect_timeout) == {:error, :released}
 
       assert {:ok, %Stop{stop_id: "STOP_TO_DELETE"}} = Task.await(writer, @collect_timeout)
-      assert stop_ids(scope) == []
+      assert stop_ids(scope) == [station.stop_id]
 
       # The delete committed and released its share lock, so an exclusive version owner can now
       # take the row.
@@ -510,7 +522,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
       scope = seed_scope("stop-cascade")
       on_exit(fn -> cleanup([scope.organization.id]) end)
 
-      {station, stop_time, transfer} =
+      {station, child, stop_time, transfer} =
         unboxed(fn ->
           station =
             stop_fixture(scope.organization.id, scope.version.id, %{
@@ -518,10 +530,20 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
               location_type: 1
             })
 
+          level_fixture(scope.organization.id, scope.version.id, %{level_id: "L1"})
+
+          child =
+            stop_fixture(scope.organization.id, scope.version.id, %{
+              stop_id: "CASCADE_CHILD",
+              parent_station: "CASCADE_STATION",
+              level_id: "L1"
+            })
+
           stop_fixture(scope.organization.id, scope.version.id, %{
-            stop_id: "CASCADE_CHILD",
-            parent_station: "CASCADE_STATION",
-            level_id: "L1"
+            stop_id: "CASCADE_BOARDING",
+            parent_station: child.stop_id,
+            level_id: child.level_id,
+            location_type: 4
           })
 
           stop_time =
@@ -529,23 +551,31 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
               scope.organization.id,
               scope.version.id,
               "trip_cascade",
-              "CASCADE_STATION"
+              "CASCADE_CHILD"
             )
 
           transfer =
             transfer_fixture(scope.organization.id, scope.version.id, %{
-              from_stop_id: "CASCADE_STATION",
-              to_stop_id: "CASCADE_CHILD"
+              from_stop_id: "CASCADE_CHILD",
+              to_stop_id: "CASCADE_STATION"
             })
 
-          {station, stop_time, transfer}
+          {station, child, stop_time, transfer}
         end)
+
+      audit = bulk_audit(scope, station.stop_id)
+      on_exit(fn -> cleanup([], [audit.actor_id]) end)
 
       {holder, holder_backend} = hold_exclusive_version(scope, supervisor)
 
       {writer, backend} =
         start_writer(supervisor, fn ->
-          Gtfs.update_stop_with_cascade(station, %{stop_id: "CASCADE_STATION_RENAMED"})
+          Stations.update_child_stop(
+            audit,
+            child.id,
+            %{stop_id: "CASCADE_CHILD_RENAMED"},
+            child.lock_version
+          )
         end)
 
       send(writer.pid, :go)
@@ -553,29 +583,29 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
 
       # No stop row, stop time, transfer or parent reference is rewritten while the version is
       # exclusively owned.
-      assert stop_ids(scope) == ["CASCADE_CHILD", "CASCADE_STATION"]
-      assert child_parent_stations(scope) == ["CASCADE_STATION"]
-      assert stop_time_stop_ids(scope) == ["CASCADE_STATION"]
-      assert transfer_stop_ids(scope) == [{"CASCADE_STATION", "CASCADE_CHILD"}]
+      assert stop_ids(scope) == ["CASCADE_BOARDING", "CASCADE_CHILD", "CASCADE_STATION"]
+      assert child_parent_stations(scope) == ["CASCADE_CHILD", "CASCADE_STATION"]
+      assert stop_time_stop_ids(scope) == ["CASCADE_CHILD"]
+      assert transfer_stop_ids(scope) == [{"CASCADE_CHILD", "CASCADE_STATION"}]
 
       send(holder.pid, :release)
       assert Task.await(holder, @collect_timeout) == {:error, :released}
 
-      assert {:ok, %Stop{stop_id: "CASCADE_STATION_RENAMED"}} =
+      assert {:ok, %Stop{stop_id: "CASCADE_CHILD_RENAMED"}} =
                Task.await(writer, @collect_timeout)
 
       # The linked rows keep pointing at the renamed stop through stop_id itself, so their
       # identities and their existing stop-time rows survive the cascade.
-      assert stop_ids(scope) == ["CASCADE_CHILD", "CASCADE_STATION_RENAMED"]
-      assert child_parent_stations(scope) == ["CASCADE_STATION_RENAMED"]
-      assert stop_time_stop_ids(scope) == ["CASCADE_STATION_RENAMED"]
-      assert transfer_stop_ids(scope) == [{"CASCADE_STATION_RENAMED", "CASCADE_CHILD"}]
+      assert stop_ids(scope) == ["CASCADE_BOARDING", "CASCADE_CHILD_RENAMED", "CASCADE_STATION"]
+      assert child_parent_stations(scope) == ["CASCADE_CHILD_RENAMED", "CASCADE_STATION"]
+      assert stop_time_stop_ids(scope) == ["CASCADE_CHILD_RENAMED"]
+      assert transfer_stop_ids(scope) == [{"CASCADE_CHILD_RENAMED", "CASCADE_STATION"}]
 
       assert unboxed(fn -> Repo.get!(StopTime, stop_time.id).stop_id end) ==
-               "CASCADE_STATION_RENAMED"
+               "CASCADE_CHILD_RENAMED"
 
       assert unboxed(fn -> Repo.get!(Transfer, transfer.id).from_stop_id end) ==
-               "CASCADE_STATION_RENAMED"
+               "CASCADE_CHILD_RENAMED"
     end
   end
 
@@ -723,14 +753,24 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
       stop =
         unboxed(fn ->
           stop_fixture(scope.organization.id, scope.version.id, %{
-            stop_id: "ROLLBACK_STOP",
-            stop_name: "Original"
+            stop_id: "ROLLBACK_STATION",
+            location_type: 1
           })
+
+          child_stop_fixture(
+            scope.organization.id,
+            scope.version.id,
+            "ROLLBACK_STATION",
+            %{stop_id: "ROLLBACK_STOP", stop_name: "Original"}
+          )
         end)
 
       unboxed(fn ->
-        Gtfs.record_change(audit, :stop, stop, "updated", %{stop_name: "Changed"})
-        Gtfs.update_stop(stop, %{stop_name: "Changed"})
+        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(audit, :stop, stop, "updated", %{
+          stop_name: "Changed"
+        })
+
+        Gtfs.import_update_stop(stop, %{stop_name: "Changed"})
       end)
 
       log = unboxed(fn -> Repo.one!(stop_change_log_query(scope, stop.id, "updated")) end)
@@ -738,7 +778,9 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
       {holder, holder_backend} = hold_exclusive_version(scope, supervisor)
 
       {writer, backend} =
-        start_writer(supervisor, fn -> Gtfs.rollback_entity(log, audit) end)
+        start_writer(supervisor, fn ->
+          GtfsPlanner.Gtfs.Stations.rollback_entity(audit, log.id, persisted_entity_revision(log))
+        end)
 
       send(writer.pid, :go)
       assert_blocked_by(backend, holder_backend)
@@ -1535,7 +1577,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
   defp bulk_audit(scope, station_stop_id) do
     actor =
       unboxed(fn ->
-        user_fixture(%{email: "bulk-stop-#{System.system_time(:microsecond)}@example.com"})
+        editor_fixture(scope.organization)
       end)
 
     %AuditContext{

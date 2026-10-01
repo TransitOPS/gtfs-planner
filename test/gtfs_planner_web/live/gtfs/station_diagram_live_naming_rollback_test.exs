@@ -258,10 +258,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveNamingRollbackTest do
         level_id: level.id
       })
 
-    :ok =
-      Gtfs.record_change(scope.audit, :stop_level, stop_level, "updated", %{
-        floorplan_scale_mpp: Decimal.new("2")
-      })
+    {:ok, _audit_log} =
+      GtfsPlanner.Gtfs.Audit.record_change_in_transaction(
+        scope.audit,
+        :stop_level,
+        stop_level,
+        "updated",
+        %{
+          floorplan_scale_mpp: Decimal.new("2")
+        }
+      )
 
     [log] = logs(scope, "stop_level", stop_level.id)
     assert {:error, :audit_only_entity} = Stations.rollback_preview(scope.audit, log.id)

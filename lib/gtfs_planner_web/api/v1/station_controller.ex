@@ -65,9 +65,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
     with {:ok, _} <- Ecto.UUID.cast(version_id),
          {:ok, _} <- Ecto.UUID.cast(station_id),
          %{} = _version <- Versions.get_published_gtfs_version_for_org(org_id, version_id),
-         %{} = station <- Gtfs.get_stop(station_id),
-         true <- station.organization_id == org_id,
-         true <- station.gtfs_version_id == version_id,
+         %{} = station <- Gtfs.get_stop_by_id(org_id, version_id, station_id),
          true <- station.location_type == 1,
          true <- is_nil(station.parent_station) do
       journal_scope = %Scope{

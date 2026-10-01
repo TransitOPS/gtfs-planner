@@ -10,13 +10,32 @@ defmodule GtfsPlanner.GtfsFixtures do
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.Level
+  alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Gtfs.Transfer
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
+
+  @doc "Returns the persisted revision to use when exercising a station rollback in tests."
+  def persisted_entity_revision(%GtfsPlanner.Gtfs.ChangeLog{} = log) do
+    schema =
+      case log.entity_type do
+        "stop" -> Stop
+        "level" -> Level
+        "pathway" -> Pathway
+        _ -> nil
+      end
+
+    case schema && log.entity_id && Repo.get(schema, log.entity_id) do
+      %{lock_version: revision} -> revision
+      _ -> 1
+    end
+  end
 
   @doc """
   Generate valid level attributes for testing.
@@ -124,7 +143,7 @@ defmodule GtfsPlanner.GtfsFixtures do
         from_stop_id: from_stop_id,
         to_stop_id: to_stop_id
       })
-      |> Gtfs.create_pathway()
+      |> then(&Gtfs.apply_import_entity(:add, :pathway, nil, &1))
 
     pathway
   end

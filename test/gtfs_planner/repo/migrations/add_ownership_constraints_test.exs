@@ -486,7 +486,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
                :after_observed
              end)
 
-    assert {:ok, _} = Gtfs.delete_stop(station)
+    assert {:ok, _} = Repo.delete(station)
 
     assert %{rows: [[0]]} =
              Repo.query!("SELECT count(*) FROM journal_entries WHERE id = $1", [

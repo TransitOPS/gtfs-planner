@@ -372,7 +372,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
       })
 
     {:ok, pathway} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         organization_id: context.organization.id,
         gtfs_version_id: context.gtfs_version.id,
         pathway_id: "JOURNAL_EDIT_PATHWAY",

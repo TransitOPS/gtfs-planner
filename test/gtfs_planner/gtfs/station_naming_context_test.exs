@@ -379,7 +379,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
       refute Gtfs.get_stop_by_stop_id(org.id, version.id, "PLAT_X")
 
       # Verify pathway references updated
-      updated_pathway = Gtfs.get_pathway!(pathway.id)
+      updated_pathway = Repo.get!(GtfsPlanner.Gtfs.Pathway, pathway.id)
       assert updated_pathway.from_stop_id == "ticket-hall-01"
       assert updated_pathway.to_stop_id == "platform-1-01"
     end
@@ -470,7 +470,7 @@ defmodule GtfsPlanner.Gtfs.StationNamingContextTest do
       refute Gtfs.get_stop_by_stop_id(org.id, version.id, "PLAT_X")
 
       # Verify pathway references updated
-      updated_pathway = Gtfs.get_pathway!(pathway.id)
+      updated_pathway = Repo.get!(GtfsPlanner.Gtfs.Pathway, pathway.id)
       assert updated_pathway.from_stop_id == "main_node_stairs_l0_01"
       assert updated_pathway.to_stop_id == "main_platform_stairs_l0_01"
     end

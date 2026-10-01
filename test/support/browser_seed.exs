@@ -377,7 +377,7 @@ case Accounts.register_first_admin(%{
     # real connectivity route with a step table. Without it every pair is
     # unreachable and print evidence never exercises the step-table path.
     {:ok, browser_pathway} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         pathway_id: "BROWSER_PW_ELEVATOR",
@@ -680,7 +680,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, browser_same_level_pw} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         pathway_id: "BROWSER_PW_SAME_LEVEL",
@@ -693,7 +693,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, _browser_cross_level_pw} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         pathway_id: "BROWSER_PW_CROSS_LEVEL",
@@ -3133,7 +3133,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, _full_pathway} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         pathway_id: "CATALOG_PW_FULL",
         pathway_mode: 2,
         is_bidirectional: false,
@@ -3147,7 +3147,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, _partial_pathway} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         pathway_id: "CATALOG_PW_PARTIAL",
         pathway_mode: 1,
         is_bidirectional: true,
@@ -7929,7 +7929,7 @@ case Accounts.register_first_admin(%{
     # A slash and spaces in one pathway_id, so a `?pathway=` link has to be
     # encoded and decoded exactly rather than read as a path segment.
     {:ok, _evo_walkway} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         pathway_id: "BROWSER_EVO_PW_WALK",
@@ -7942,7 +7942,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, _evo_elevator} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         pathway_id: "BROWSER_EVO/PW LIFT 1",
@@ -7955,7 +7955,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, _evo_stairs} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         pathway_id: "BROWSER_EVO_PW_STAIR",
@@ -8031,7 +8031,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, _evo_empty_pathway} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         pathway_id: "BROWSER_EVO_EMPTY_PW",
@@ -8100,7 +8100,7 @@ case Accounts.register_first_admin(%{
       })
 
     {:ok, _evo_nocal_pathway} =
-      Gtfs.create_pathway(%{
+      Gtfs.apply_import_entity(:add, :pathway, nil, %{
         pathway_id: "BROWSER_EVO_NOCAL_PW",
         pathway_mode: 1,
         is_bidirectional: true,

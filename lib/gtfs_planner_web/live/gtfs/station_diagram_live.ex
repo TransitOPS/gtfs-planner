@@ -48,7 +48,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias GtfsPlannerWeb.Gtfs.StationJournalMarkers
   alias GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents
   alias GtfsPlannerWeb.StationWorkspace
-  on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+  on_mount({GtfsPlannerWeb.EnsureRole, :require_gtfs_access})
 
   @history_key :history_load
   @journal_load_key :journal_load
@@ -7097,7 +7097,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
     with {:ok, uuid} <- Ecto.UUID.cast(id),
-         %Stop{} = stop <- Gtfs.get_stop(uuid),
+         %Stop{} = stop <- Gtfs.get_stop_by_id(organization_id, gtfs_version_id, uuid),
          true <- stop.organization_id == organization_id,
          true <- stop.gtfs_version_id == gtfs_version_id do
       {:ok, stop}
@@ -7228,7 +7228,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         socket
 
       active_point_id ->
-        case Gtfs.get_stop(active_point_id) do
+        case Gtfs.get_stop_by_id(
+               socket.assigns.current_organization.id,
+               socket.assigns.current_gtfs_version.id,
+               active_point_id
+             ) do
           nil -> socket
           stop -> stream_insert(socket, :child_stops, stop)
         end
@@ -7939,7 +7943,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     station = socket.assigns.station
 
     with {:ok, uuid} <- Ecto.UUID.cast(id),
-         level when not is_nil(level) <- Gtfs.get_level(uuid),
+         level when not is_nil(level) <- Enum.find(socket.assigns.levels, &(&1.id == uuid)),
          stop_level when not is_nil(stop_level) <-
            Gtfs.get_stop_level(organization_id, gtfs_version_id, station.id, uuid) do
       count =

@@ -87,7 +87,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.PathwayDeletionTest do
       pathway =
         Gtfs.get_pathway_by_pathway_id(context.organization.id, context.version.id, "PW_ENTRY")
 
-      assert {:error, :pathway_in_use} = Gtfs.delete_pathway(pathway)
+      assert {:error, :pathway_in_use} = Gtfs.apply_import_entity(:remove, :pathway, pathway, %{})
 
       assert %Pathway{pathway_id: "PW_ENTRY"} =
                Gtfs.get_pathway_by_pathway_id(
@@ -103,7 +103,8 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.PathwayDeletionTest do
       pathway =
         Gtfs.get_pathway_by_pathway_id(context.organization.id, context.version.id, "PW_FREE")
 
-      assert {:ok, %Pathway{pathway_id: "PW_FREE"}} = Gtfs.delete_pathway(pathway)
+      assert {:ok, %Pathway{pathway_id: "PW_FREE"}} =
+               Gtfs.apply_import_entity(:remove, :pathway, pathway, %{})
 
       assert Gtfs.get_pathway_by_pathway_id(
                context.organization.id,

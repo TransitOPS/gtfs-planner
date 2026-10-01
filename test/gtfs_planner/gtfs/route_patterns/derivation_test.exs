@@ -568,7 +568,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
     assert log.changed_fields["patterns_created"] == 1
     assert log.changed_fields["timings_created"] == 2
 
-    assert {:error, :audit_only_entity} = Gtfs.rollback_target_snapshot(log)
+    assert {:error, :audit_only_entity} = GtfsPlanner.Gtfs.Stations.rollback_target_snapshot(log)
     assert Gtfs.reversible_fields_for("route_pattern_build") == []
 
     # Custom classification alone is not retryable and creates no second summary.
@@ -909,7 +909,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
     assert {:ok, summary} = derive_route(context, "CUSTOM")
     assert summary.trips_custom == 1
     assert summary.timings_created == 1
-    pattern = Repo.one!(from p in RoutePattern, where: p.route_id == "CUSTOM")
+    pattern = Repo.one!(from(p in RoutePattern, where: p.route_id == "CUSTOM"))
     assert [timing] = timings(pattern.id)
 
     assert Enum.map(timing_rows(timing.id), &{&1.arrival_offset, &1.departure_offset}) == [

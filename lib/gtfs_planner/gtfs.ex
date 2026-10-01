@@ -21,7 +21,6 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.Calendars
-  alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.CatalogReadAdapter
   alias GtfsPlanner.Gtfs.Coordinates
@@ -64,7 +63,6 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.StationEditingStatus
   alias GtfsPlanner.Gtfs.StationJournal
   alias GtfsPlanner.Gtfs.StationJournal.Scope
-  alias GtfsPlanner.Gtfs.StopReferences
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopArea
   alias GtfsPlanner.Gtfs.StopLevel
@@ -76,8 +74,6 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Translation
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Versions
-
-  require Logger
 
   @default_catalog_read_adapter CatalogReadAdapter.Repo
   @default_reviewed_apply_transaction ReviewedApplyTransaction.Repo
@@ -1735,36 +1731,6 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Gets a single level.
-
-  Returns nil if the Level does not exist.
-
-  ## Examples
-
-      iex> get_level(id)
-      %Level{}
-
-      iex> get_level(Ecto.UUID.generate())
-      nil
-  """
-  def get_level(id), do: Repo.get(Level, id)
-
-  @doc """
-  Gets a single level.
-
-  Raises `Ecto.NoResultsError` if the Level does not exist.
-
-  ## Examples
-
-      iex> get_level!(id)
-      %Level{}
-
-      iex> get_level!(Ecto.UUID.generate())
-      ** (Ecto.NoResultsError)
-  """
-  def get_level!(id), do: Repo.get!(Level, id)
-
-  @doc """
   Gets a level by its level_id within an organization and GTFS version.
 
   Returns nil if the level does not exist.
@@ -1801,71 +1767,6 @@ defmodule GtfsPlanner.Gtfs do
     %Level{}
     |> Level.changeset(attrs)
     |> Repo.insert()
-    |> broadcast([:levels, :created])
-  end
-
-  @doc """
-  Updates a level.
-
-  ## Examples
-
-      iex> update_level(level, %{level_name: "Ground Floor"})
-      {:ok, %Level{}}
-
-      iex> update_level(level, %{level_id: nil})
-      {:error, %Ecto.Changeset{}}
-  """
-  def update_level(%Level{} = level, attrs) do
-    level
-    |> Level.changeset(attrs)
-    |> Repo.update()
-    |> broadcast([:levels, :updated])
-  end
-
-  @doc """
-  Updates a level, cascading level_id changes to all referencing entities
-  within the same organization and GTFS version.
-
-  When level_id is unchanged, delegates to update_level/2.
-  """
-  def update_level_with_cascade(%Level{} = level, attrs) do
-    new_level_id = attrs[:level_id] || attrs["level_id"]
-
-    if new_level_id == level.level_id or is_nil(new_level_id) do
-      update_level(level, attrs)
-    else
-      mapping = %{level.level_id => new_level_id}
-      now = DateTime.utc_now()
-
-      multi =
-        Ecto.Multi.new()
-        |> Ecto.Multi.run(:update_level, fn _repo, _changes ->
-          level
-          |> Level.changeset(attrs)
-          |> Repo.update()
-        end)
-        |> Ecto.Multi.run(:cascade_references, fn repo, _changes ->
-          {:ok,
-           update_level_id_references(
-             repo,
-             mapping,
-             level.organization_id,
-             level.gtfs_version_id,
-             now
-           )}
-        end)
-
-      case Repo.transaction(multi) do
-        {:ok, %{update_level: updated_level}} ->
-          broadcast({:ok, updated_level}, [:levels, :updated])
-
-        {:error, :update_level, changeset, _changes} ->
-          {:error, changeset}
-
-        {:error, _step, reason, _changes} ->
-          {:error, reason}
-      end
-    end
   end
 
   @doc """
@@ -1873,7 +1774,6 @@ defmodule GtfsPlanner.Gtfs do
   """
   def delete_stop_level(%StopLevel{} = stop_level) do
     Repo.delete(stop_level)
-    |> broadcast([:stop_levels, :deleted])
   end
 
   @doc """
@@ -1889,7 +1789,6 @@ defmodule GtfsPlanner.Gtfs do
       scale_meters_per_unit: nil
     })
     |> Repo.update()
-    |> broadcast([:stop_levels, :updated])
   end
 
   @doc """
@@ -1899,7 +1798,6 @@ defmodule GtfsPlanner.Gtfs do
     stop_level
     |> StopLevel.scale_changeset(attrs)
     |> Repo.update()
-    |> broadcast([:stop_levels, :updated])
   end
 
   @doc """
@@ -1909,7 +1807,6 @@ defmodule GtfsPlanner.Gtfs do
     stop_level
     |> StopLevel.alignment_changeset(attrs)
     |> Repo.update()
-    |> broadcast([:stop_levels, :updated])
   end
 
   @doc """
@@ -1919,7 +1816,6 @@ defmodule GtfsPlanner.Gtfs do
     stop_level
     |> StopLevel.alignment_changeset(attrs)
     |> Repo.update()
-    |> broadcast([:stop_levels, :updated])
   end
 
   @doc """
@@ -2292,11 +2188,6 @@ defmodule GtfsPlanner.Gtfs do
 
   defp publish_preview_result({:ok, result}) do
     %{active_stop_level: stop_level, changed_stops: changed_stops, rows: rows} = result
-    broadcast({:ok, stop_level}, [:stop_levels, :updated])
-
-    Enum.each(changed_stops, fn stop ->
-      broadcast({:ok, stop}, [:stops, :updated])
-    end)
 
     {:ok,
      %{
@@ -2608,17 +2499,10 @@ defmodule GtfsPlanner.Gtfs do
   defp publish_reviewed_result({:ok, result}) do
     %{
       active_stop_level: stop_level,
-      changed_stops: changed_stops,
       updated_stop_count: updated_count,
       unchanged_count: unchanged_count,
       unplaced_count: unplaced_count
     } = result
-
-    broadcast({:ok, stop_level}, [:stop_levels, :updated])
-
-    Enum.each(changed_stops, fn stop ->
-      broadcast({:ok, stop}, [:stops, :updated])
-    end)
 
     {:ok,
      %{
@@ -2789,9 +2673,8 @@ defmodule GtfsPlanner.Gtfs do
   eligible child stop of `stop_level`.
 
   Derives coordinates via `derive_child_stop_coords/3`, then updates all derived
-  stops atomically in a single `Repo.transaction`. Each successful update emits a
-  `[:stops, :updated]` broadcast. A single failed changeset rolls back every write
-  in the call.
+  stops atomically in a single `Repo.transaction`. A single failed changeset
+  rolls back every write in the call.
 
   Returns `{:ok, count}` with the number of updated stops, `{:ok, 0}` when no
   eligible stops exist, or `{:error, reason}` on derivation or persistence failure.
@@ -2824,10 +2707,6 @@ defmodule GtfsPlanner.Gtfs do
 
     case transaction_result do
       {:ok, updated_stops} ->
-        Enum.each(updated_stops, fn stop ->
-          broadcast({:ok, stop}, [:stops, :updated])
-        end)
-
         {:ok, length(updated_stops)}
 
       {:error, reason} ->
@@ -2914,8 +2793,7 @@ defmodule GtfsPlanner.Gtfs do
   Infers and persists floorplan alignment for `stop_level`.
 
   Calls `infer_level_alignment/3` and, on success, writes the inferred
-  `floorplan_*` fields via `StopLevel.alignment_changeset/2`. Emits a
-  `[:stop_levels, :updated]` broadcast only on successful update.
+  `floorplan_*` fields via `StopLevel.alignment_changeset/2`.
   """
   @spec save_inferred_level_alignment(StopLevel.t(), pos_integer(), pos_integer()) ::
           {:ok, StopLevel.t(), map()}
@@ -2931,7 +2809,6 @@ defmodule GtfsPlanner.Gtfs do
     with {:ok, %{inferred_alignment: inferred} = result} <-
            infer_level_alignment(stop_level, image_w, image_h),
          {:ok, updated} <- persist_inferred_alignment(stop_level, inferred) do
-      broadcast({:ok, updated}, [:stop_levels, :updated])
       {:ok, updated, result}
     end
   end
@@ -3194,7 +3071,6 @@ defmodule GtfsPlanner.Gtfs do
 
     case transaction_result do
       {:ok, result} ->
-        broadcast({:ok, result.stop_level}, [:stop_levels, :updated])
         {:ok, result}
 
       {:error, reason} ->
@@ -3250,7 +3126,6 @@ defmodule GtfsPlanner.Gtfs do
   """
   def delete_level(%Level{} = level) do
     Repo.delete(level)
-    |> broadcast([:levels, :deleted])
   end
 
   @doc """
@@ -3436,34 +3311,17 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Gets a single stop.
+  Gets a stop by UUID only within the selected organization and GTFS version.
 
-  Returns nil if the Stop does not exist.
-
-  ## Examples
-
-      iex> get_stop(id)
-      %Stop{}
-
-      iex> get_stop(Ecto.UUID.generate())
-      nil
+  Returns nil when the stop is missing or outside that scope.
   """
-  def get_stop(id), do: Repo.get(Stop, id)
-
-  @doc """
-  Gets a single stop.
-
-  Raises `Ecto.NoResultsError` if the Stop does not exist.
-
-  ## Examples
-
-      iex> get_stop!(id)
-      %Stop{}
-
-      iex> get_stop!(Ecto.UUID.generate())
-      ** (Ecto.NoResultsError)
-  """
-  def get_stop!(id), do: Repo.get!(Stop, id)
+  def get_stop_by_id(organization_id, gtfs_version_id, id) do
+    Repo.get_by(Stop,
+      id: id,
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
+    )
+  end
 
   @doc """
   Gets a stop by its stop_id within an organization and GTFS version.
@@ -3955,7 +3813,6 @@ defmodule GtfsPlanner.Gtfs do
     %Stop{}
     |> Stop.changeset(attrs)
     |> insert_with_input_write_lock()
-    |> broadcast([:stops, :created])
   end
 
   @doc """
@@ -3965,64 +3822,6 @@ defmodule GtfsPlanner.Gtfs do
     %Stop{}
     |> Stop.import_changeset(attrs)
     |> insert_with_input_write_lock()
-    |> broadcast([:stops, :created])
-  end
-
-  @doc """
-  Updates a stop.
-
-  ## Examples
-
-      iex> update_stop(stop, %{stop_name: "Updated Station Name"})
-      {:ok, %Stop{}}
-
-      iex> update_stop(stop, %{stop_id: nil})
-      {:error, %Ecto.Changeset{}}
-  """
-  def update_stop(%Stop{} = stop, attrs) do
-    stop
-    |> Stop.changeset(attrs)
-    |> update_with_input_write_lock()
-    |> broadcast([:stops, :updated])
-  end
-
-  @doc """
-  Updates a stop, cascading stop_id changes to all referencing records when the
-  stop_id is modified. Delegates to `update_stop/2` when the stop_id is unchanged.
-  """
-  def update_stop_with_cascade(%Stop{} = stop, attrs) do
-    new_stop_id = attrs[:stop_id] || attrs["stop_id"]
-
-    if new_stop_id == stop.stop_id or is_nil(new_stop_id) do
-      update_stop(stop, attrs)
-    else
-      mapping = %{stop.stop_id => new_stop_id}
-
-      multi =
-        Ecto.Multi.new()
-        |> Ecto.Multi.run(:lock_version, fn _repo, _changes ->
-          {:ok, Versions.lock_for_exclusive_write!(stop.organization_id, stop.gtfs_version_id)}
-        end)
-        |> Ecto.Multi.run(:update_stop, fn _repo, _changes ->
-          stop
-          |> Stop.changeset(attrs)
-          |> Repo.update()
-        end)
-        |> Ecto.Multi.run(:cascade_references, fn _repo, _changes ->
-          {:ok, StopReferences.rename!(stop.organization_id, stop.gtfs_version_id, mapping)}
-        end)
-
-      case Repo.transaction(multi) do
-        {:ok, %{update_stop: updated_stop}} ->
-          broadcast({:ok, updated_stop}, [:stops, :updated])
-
-        {:error, :update_stop, changeset, _changes} ->
-          {:error, changeset}
-
-        {:error, _step, reason, _changes} ->
-          {:error, reason}
-      end
-    end
   end
 
   @doc """
@@ -4032,23 +3831,6 @@ defmodule GtfsPlanner.Gtfs do
     stop
     |> Stop.import_changeset(attrs)
     |> update_with_input_write_lock()
-    |> broadcast([:stops, :updated])
-  end
-
-  @doc """
-  Deletes a stop.
-
-  ## Examples
-
-      iex> delete_stop(stop)
-      {:ok, %Stop{}}
-
-      iex> delete_stop(stop)
-      {:error, %Ecto.Changeset{}}
-  """
-  def delete_stop(%Stop{} = stop) do
-    delete_with_input_write_lock(stop)
-    |> broadcast([:stops, :deleted])
   end
 
   @doc """
@@ -4094,7 +3876,7 @@ defmodule GtfsPlanner.Gtfs do
     |> Repo.transaction()
     |> case do
       {:ok, %{stop: deleted_stop}} ->
-        broadcast({:ok, deleted_stop}, [:stops, :deleted])
+        {:ok, deleted_stop}
 
       {:error, _step, reason, _changes} ->
         {:error, reason}
@@ -4171,7 +3953,6 @@ defmodule GtfsPlanner.Gtfs do
       {:ok, _} ->
         Repo.get!(Stop, stop.id)
         |> then(&{:ok, &1})
-        |> broadcast([:stops, :updated])
 
       {:error, _step, reason, _changes} ->
         {:error, reason}
@@ -4502,7 +4283,6 @@ defmodule GtfsPlanner.Gtfs do
     %StopLevel{}
     |> StopLevel.changeset(attrs)
     |> Repo.insert()
-    |> broadcast([:stop_levels, :created])
   end
 
   @doc """
@@ -4517,7 +4297,6 @@ defmodule GtfsPlanner.Gtfs do
     stop
     |> Stop.changeset(%{diagram_coordinate: coordinate})
     |> Repo.update()
-    |> broadcast([:stops, :updated])
   end
 
   @doc """
@@ -4753,41 +4532,6 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  Creates a pathway.
-
-  ## Examples
-
-      iex> create_pathway(%{pathway_id: "P1", pathway_mode: 1, ...})
-      {:ok, %Pathway{}}
-  """
-  def create_pathway(attrs \\ %{}) do
-    %Pathway{}
-    |> Pathway.changeset(attrs)
-    |> Repo.insert()
-    |> broadcast([:pathways, :created])
-  end
-
-  @doc """
-  Gets a single pathway.
-
-  Raises `Ecto.NoResultsError` if the Pathway does not exist.
-
-  ## Examples
-
-      iex> get_pathway!(id)
-      %Pathway{}
-
-      iex> get_pathway!(Ecto.UUID.generate())
-      ** (Ecto.NoResultsError)
-  """
-  def get_pathway!(id), do: Repo.get!(Pathway, id)
-
-  @doc """
-  Gets a single pathway, returning `nil` if it does not exist.
-  """
-  def get_pathway(id), do: Repo.get(Pathway, id)
-
-  @doc """
   Gets a single pathway by its GTFS pathway_id within an org+version scope.
 
   Returns `nil` if no matching pathway exists.
@@ -4799,70 +4543,6 @@ defmodule GtfsPlanner.Gtfs do
           p.pathway_id == ^pathway_id
     )
     |> Repo.one()
-  end
-
-  @doc """
-  Gets a single pathway with manually populated from_stop and to_stop.
-
-  Raises `Ecto.NoResultsError` if the Pathway does not exist.
-
-  ## Examples
-
-      iex> get_pathway_with_stops!(id)
-      %Pathway{from_stop: %Stop{}, to_stop: %Stop{}}
-
-      iex> get_pathway_with_stops!(Ecto.UUID.generate())
-      ** (Ecto.NoResultsError)
-  """
-  def get_pathway_with_stops!(id) do
-    pathway = Repo.get!(Pathway, id)
-
-    from_stop =
-      get_stop_by_stop_id(pathway.organization_id, pathway.gtfs_version_id, pathway.from_stop_id)
-
-    to_stop =
-      get_stop_by_stop_id(pathway.organization_id, pathway.gtfs_version_id, pathway.to_stop_id)
-
-    %{pathway | from_stop: from_stop, to_stop: to_stop}
-  end
-
-  @doc """
-  Updates a pathway.
-
-  ## Examples
-
-      iex> update_pathway(pathway, %{pathway_mode: 2})
-      {:ok, %Pathway{}}
-
-      iex> update_pathway(pathway, %{pathway_mode: nil})
-      {:error, %Ecto.Changeset{}}
-  """
-  def update_pathway(%Pathway{} = pathway, attrs) do
-    pathway
-    |> Pathway.changeset(attrs)
-    |> Repo.update()
-    |> broadcast([:pathways, :updated])
-  end
-
-  @doc """
-  Deletes a pathway.
-
-  Returns `{:error, :pathway_in_use}` when a scheduled closure references the
-  pathway instead of raising the step-1 `ON DELETE RESTRICT` violation.
-
-  ## Examples
-
-      iex> delete_pathway(pathway)
-      {:ok, %Pathway{}}
-
-      iex> delete_pathway(pathway)
-      {:error, :pathway_in_use}
-  """
-  @spec delete_pathway(Pathway.t()) ::
-          {:ok, Pathway.t()} | {:error, :pathway_in_use | Ecto.Changeset.t()}
-  def delete_pathway(%Pathway{} = pathway) do
-    delete_pathway_record(pathway)
-    |> broadcast([:pathways, :deleted])
   end
 
   # Shared step-6 deletion guard (R1-F4): scoped closure precheck plus a
@@ -6810,96 +6490,8 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   # ============================================================================
-  # Station Naming
-  # ============================================================================
-
-  defp update_level_id_references(repo, mapping, organization_id, gtfs_version_id, now) do
-    stops =
-      update_stop_field_values(repo, :level_id, mapping, organization_id, gtfs_version_id, now)
-
-    translations =
-      mapping
-      |> Enum.reduce(0, fn {old_id, new_id}, count ->
-        {updated_count, _} =
-          from(t in Translation,
-            where:
-              t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
-                t.table_name == "levels" and t.record_id == ^old_id
-          )
-          |> repo.update_all(set: [record_id: new_id, updated_at: now])
-
-        count + updated_count
-      end)
-
-    %{stops: stops, translations: translations}
-  end
-
-  defp update_stop_field_values(repo, field, mapping, organization_id, gtfs_version_id, now) do
-    mapping
-    |> Enum.reduce(0, fn {old_id, new_id}, count ->
-      {updated_count, _} =
-        from(s in Stop,
-          where:
-            s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
-              field(s, ^field) == ^old_id
-        )
-        |> repo.update_all(set: [{field, new_id}, {:updated_at, now}])
-
-      count + updated_count
-    end)
-  end
-
-  defp broadcast({:ok, result}, event_topic) do
-    broadcast_result =
-      case event_topic do
-        [:levels, _] ->
-          Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "levels", {event_topic, result})
-
-        [:stops, _] ->
-          Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "stops", {event_topic, result})
-
-        [:pathways, _] ->
-          Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "pathways", {event_topic, result})
-
-        [:stop_levels, _] ->
-          Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, "stop_levels", {event_topic, result})
-      end
-
-    case broadcast_result do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        Logger.error("Failed to broadcast #{inspect(event_topic)} event: #{inspect(reason)}")
-    end
-
-    {:ok, result}
-  end
-
-  defp broadcast({:error, reason}, _event_topic) do
-    {:error, reason}
-  end
-
-  # ============================================================================
   # Change Log / Audit
   # ============================================================================
-
-  @doc """
-  Records a change log entry for a mutation.
-
-  This legacy entrypoint logs insertion errors and returns `:ok`.
-  """
-  @spec record_change(AuditContext.t(), atom(), struct() | nil, String.t(), map()) :: :ok
-  def record_change(%AuditContext{} = ctx, entity_type, entity_or_nil, action, attrs \\ %{}) do
-    case Audit.record_change_in_transaction(ctx, entity_type, entity_or_nil, action, attrs) do
-      {:ok, _log} ->
-        :ok
-
-      {:error, changeset} ->
-        Logger.error("Failed to insert change_log: #{inspect(changeset.errors)}")
-        :ok
-    end
-  end
 
   @doc false
   defdelegate route_audit_snapshot(route), to: Audit
@@ -7051,132 +6643,6 @@ defmodule GtfsPlanner.Gtfs do
   @doc "Builds a normalized entity snapshot."
   defdelegate entity_snapshot(entity_type, entity), to: Audit
 
-  @doc """
-  Rolls back a stop, pathway, or level to the state captured in a change log entry.
-
-  Only works for "updated" entries. Produces a new "rolled_back" change log entry
-  attributed to `audit_ctx`. Identity fields (stop_id, pathway_id, level_id,
-  from_stop_id, to_stop_id) are preserved.
-
-  Returns `{:ok, entity}` or `{:error, reason}`.
-  """
-  @spec rollback_entity(ChangeLog.t(), AuditContext.t()) ::
-          {:ok, Stop.t() | Pathway.t() | Level.t()} | {:error, atom()}
-  def rollback_entity(%ChangeLog{} = log, %AuditContext{} = audit_ctx)
-      when audit_ctx.organization_id != log.organization_id or
-             audit_ctx.gtfs_version_id != log.gtfs_version_id do
-    {:error, :unauthorized}
-  end
-
-  def rollback_entity(%ChangeLog{entity_type: type}, %AuditContext{})
-      when type in [
-             "route",
-             "route_pattern",
-             "timed_pattern",
-             "route_pattern_build",
-             "calendar",
-             "trip",
-             "transfer",
-             "pathway_evolution"
-           ],
-      do: {:error, :audit_only_entity}
-
-  def rollback_entity(%ChangeLog{} = log, %AuditContext{} = audit_ctx) do
-    with {:ok, target_snapshot} <- rollback_target_snapshot(log),
-         {:ok, entity} <- rollback_entity_for_log(log),
-         :ok <- ensure_rollback_changes_entity(log.entity_type, entity, target_snapshot) do
-      update_attrs = snapshot_to_update_attrs(log.entity_type, target_snapshot)
-      rollback_entity_transaction(update_attrs, log, audit_ctx, entity)
-    end
-  end
-
-  @doc """
-  Calculates the snapshot an entity should be restored to for a rollback.
-  """
-  @spec rollback_target_snapshot(ChangeLog.t()) :: {:ok, map()} | {:error, atom()}
-  def rollback_target_snapshot(%ChangeLog{entity_type: type})
-      when type in [
-             "route",
-             "route_pattern",
-             "timed_pattern",
-             "route_pattern_build",
-             "calendar",
-             "trip",
-             "transfer",
-             "pathway_evolution"
-           ],
-      do: {:error, :audit_only_entity}
-
-  def rollback_target_snapshot(%ChangeLog{action: action})
-      when action in ["created", "deleted"] do
-    {:error, :cannot_rollback_create_or_delete}
-  end
-
-  def rollback_target_snapshot(%ChangeLog{action: action, snapshot: nil})
-      when action in ["updated", "rolled_back"] do
-    {:error, :missing_rollback_snapshot}
-  end
-
-  def rollback_target_snapshot(%ChangeLog{
-        action: action,
-        entity_type: entity_type,
-        snapshot: snapshot,
-        changed_fields: changed_fields
-      })
-      when action in ["updated", "rolled_back"] do
-    target_snapshot =
-      snapshot
-      |> fill_snapshot_from_changed_fields(changed_fields)
-      |> then(&sanitize_rollback_snapshot(entity_type, &1))
-
-    {:ok, target_snapshot}
-  end
-
-  @doc """
-  Returns changed field names that can be previewed and applied by rollback.
-  """
-  @spec rollback_previewable_fields(ChangeLog.t()) :: [String.t()]
-  def rollback_previewable_fields(%ChangeLog{} = log) do
-    changed_field_names =
-      log.changed_fields
-      |> Kernel.||(%{})
-      |> Map.keys()
-      |> Enum.map(&to_string/1)
-      |> MapSet.new()
-
-    reversible_field_names =
-      log.entity_type
-      |> reversible_fields_for()
-      |> MapSet.new()
-
-    changed_field_names
-    |> MapSet.intersection(reversible_field_names)
-    |> MapSet.to_list()
-    |> Enum.sort()
-  end
-
-  defp update_entity_without_broadcast(%Stop{} = stop, attrs) do
-    stop
-    |> Stop.changeset(attrs)
-    |> Repo.update()
-  end
-
-  defp update_entity_without_broadcast(%Pathway{} = pathway, attrs) do
-    pathway
-    |> Pathway.changeset(attrs)
-    |> Repo.update()
-  end
-
-  defp update_entity_without_broadcast(%Level{} = level, attrs) do
-    level
-    |> Level.changeset(attrs)
-    |> Repo.update()
-  end
-
-  defp broadcast_topic_for(%Stop{}), do: [:stops, :updated]
-  defp broadcast_topic_for(%Pathway{}), do: [:pathways, :updated]
-  defp broadcast_topic_for(%Level{}), do: [:levels, :updated]
-
   # -- Direct input writer coordination --
 
   # Direct trip, stop-time and agency inserts are reviewed inputs of a calendar combination
@@ -7225,17 +6691,6 @@ defmodule GtfsPlanner.Gtfs do
     end
   end
 
-  defp delete_with_input_write_lock(row) do
-    Repo.transaction(fn ->
-      Versions.lock_for_input_write!(row.organization_id, row.gtfs_version_id)
-
-      case Repo.delete(row) do
-        {:ok, deleted} -> deleted
-        {:error, changeset} -> Repo.rollback(changeset)
-      end
-    end)
-  end
-
   # The stop cascade and the child-deletion transaction lock the version as their first step,
   # before the `FOR UPDATE` on the referenced rows and before any stop_id rewrite.
   defp lock_input_write_multi(multi, organization_id, gtfs_version_id) do
@@ -7249,219 +6704,5 @@ defmodule GtfsPlanner.Gtfs do
       Ecto.Changeset.get_field(changeset, :organization_id),
       Ecto.Changeset.get_field(changeset, :gtfs_version_id)
     )
-  end
-
-  defp entity_module_for("stop"), do: Stop
-  defp entity_module_for("pathway"), do: Pathway
-  defp entity_module_for("level"), do: Level
-
-  defp fill_snapshot_from_changed_fields(snapshot, changed_fields) when is_map(changed_fields) do
-    Enum.reduce(changed_fields, snapshot, fn
-      {field, %{"from" => from}}, acc ->
-        put_missing_snapshot_field(acc, field, from)
-
-      _entry, acc ->
-        acc
-    end)
-  end
-
-  defp fill_snapshot_from_changed_fields(snapshot, _changed_fields), do: snapshot
-
-  @spec sanitize_rollback_snapshot(String.t(), map()) :: map()
-  defp sanitize_rollback_snapshot(entity_type, snapshot) when is_map(snapshot) do
-    reversible_fields = reversible_fields_for(entity_type)
-
-    Map.filter(snapshot, fn {key, _value} ->
-      to_string(key) in reversible_fields
-    end)
-  end
-
-  defp rollback_entity_for_log(log) do
-    case Repo.get(entity_module_for(log.entity_type), log.entity_id) do
-      nil -> {:error, :entity_not_found}
-      entity -> {:ok, entity}
-    end
-  end
-
-  defp ensure_rollback_changes_entity(entity_type, entity, target_snapshot) do
-    if rollback_would_change_entity?(entity_type, entity, target_snapshot) do
-      :ok
-    else
-      {:error, :already_matches_current}
-    end
-  end
-
-  defp rollback_entity_transaction(update_attrs, log, audit_ctx, entity) do
-    log
-    |> rollback_multi(audit_ctx, entity, update_attrs)
-    |> Repo.transaction()
-    |> handle_rollback_transaction_result(log)
-  end
-
-  defp rollback_multi(log, audit_ctx, entity, update_attrs) do
-    Ecto.Multi.new()
-    |> lock_input_write_multi(log.organization_id, log.gtfs_version_id)
-    |> Ecto.Multi.run(:update_entity, fn _repo, _changes ->
-      update_entity_without_broadcast(entity, update_attrs)
-    end)
-    |> Ecto.Multi.run(:rollback_log, fn _repo, _changes ->
-      insert_rollback_log(log, audit_ctx, entity, update_attrs)
-    end)
-  end
-
-  defp handle_rollback_transaction_result({:ok, %{update_entity: updated_entity}}, _log) do
-    broadcast({:ok, updated_entity}, broadcast_topic_for(updated_entity))
-    {:ok, updated_entity}
-  end
-
-  defp handle_rollback_transaction_result(
-         {:error, :update_entity, %Ecto.Changeset{} = changeset, _changes},
-         log
-       ) do
-    Logger.error(
-      "Rollback update failed change_log_id=#{log.id} entity_type=#{log.entity_type} entity_id=#{log.entity_id} errors=#{inspect(changeset.errors)}"
-    )
-
-    {:error, changeset}
-  end
-
-  defp handle_rollback_transaction_result({:error, :update_entity, reason, _changes}, _log) do
-    {:error, reason}
-  end
-
-  defp handle_rollback_transaction_result({:error, :rollback_log, reason, _changes}, _log) do
-    Logger.error("Failed to insert rollback change_log: #{inspect(reason)}")
-    {:error, :rollback_log_failed}
-  end
-
-  defp rollback_would_change_entity?(entity_type, entity, target_snapshot) do
-    current_snapshot =
-      entity_type
-      |> entity_snapshot(entity)
-      |> stringify_map_keys()
-
-    identity_fields = identity_fields_for(entity_type)
-
-    target_snapshot
-    |> stringify_map_keys()
-    |> Map.drop(identity_fields)
-    |> Enum.any?(fn {field, target_value} ->
-      current_value = Map.get(current_snapshot, field)
-      not same_value?(current_value, target_value)
-    end)
-  end
-
-  defp put_missing_snapshot_field(snapshot, field, value) do
-    if snapshot_field_present?(snapshot, field) do
-      snapshot
-    else
-      Map.put(snapshot, field, value)
-    end
-  end
-
-  defp snapshot_field_present?(snapshot, field) do
-    Map.has_key?(snapshot, field) or snapshot_has_existing_atom_key?(snapshot, field)
-  end
-
-  defp snapshot_has_existing_atom_key?(snapshot, field) when is_binary(field) do
-    case safe_string_to_existing_atom(field) do
-      {:ok, atom_key} -> Map.has_key?(snapshot, atom_key)
-      :error -> false
-    end
-  end
-
-  defp snapshot_has_existing_atom_key?(_snapshot, _field), do: false
-
-  defp same_value?(a, b), do: normalize_value(a) == normalize_value(b)
-
-  defp normalize_value(nil), do: nil
-  defp normalize_value(%Decimal{} = d), do: Decimal.to_string(d)
-
-  defp normalize_value(%DateTime{} = dt) do
-    dt |> DateTime.truncate(:second) |> DateTime.to_iso8601()
-  end
-
-  defp normalize_value(%NaiveDateTime{} = ndt) do
-    ndt |> NaiveDateTime.truncate(:second) |> NaiveDateTime.to_iso8601()
-  end
-
-  defp normalize_value(value) when is_binary(value), do: value
-  defp normalize_value(value) when is_number(value), do: value
-  defp normalize_value(value) when is_boolean(value), do: value
-  defp normalize_value(%_{} = struct), do: inspect(struct)
-  defp normalize_value(value) when is_map(value), do: value
-  defp normalize_value(value) when is_list(value), do: value
-
-  defp stringify_map_keys(map) when is_map(map) do
-    Map.new(map, fn {k, v} -> {to_string(k), v} end)
-  end
-
-  defp snapshot_to_update_attrs(_entity_type, nil), do: %{}
-
-  defp snapshot_to_update_attrs(entity_type, snapshot) when is_map(snapshot) do
-    snapshot
-    |> then(&sanitize_rollback_snapshot(entity_type, &1))
-    |> Enum.reduce(%{}, fn {key, value}, acc ->
-      key_str = to_string(key)
-
-      case safe_string_to_existing_atom(key_str) do
-        {:ok, atom_key} -> Map.put(acc, atom_key, value)
-        :error -> acc
-      end
-    end)
-  end
-
-  defp safe_string_to_existing_atom(str) do
-    try do
-      {:ok, String.to_existing_atom(str)}
-    rescue
-      ArgumentError -> :error
-    end
-  end
-
-  defp insert_rollback_log(
-         %ChangeLog{} = log,
-         %AuditContext{} = ctx,
-         current_entity,
-         update_attrs
-       ) do
-    pre_rollback_snapshot = Audit.entity_snapshot(log.entity_type, current_entity)
-
-    %ChangeLog{}
-    |> ChangeLog.changeset(%{
-      entity_type: log.entity_type,
-      entity_id: log.entity_id,
-      entity_external_id: log.entity_external_id,
-      station_stop_id: log.station_stop_id,
-      actor_id: ctx.actor_id,
-      actor_email: ctx.actor_email,
-      snapshot: pre_rollback_snapshot,
-      changed_fields: rollback_changed_fields(pre_rollback_snapshot, update_attrs),
-      action: "rolled_back",
-      rolled_back_to_log_id: log.id,
-      organization_id: log.organization_id,
-      gtfs_version_id: log.gtfs_version_id
-    })
-    |> Repo.insert()
-  end
-
-  defp rollback_changed_fields(pre_rollback_snapshot, update_attrs) do
-    current = stringify_map_keys(pre_rollback_snapshot)
-    target = stringify_map_keys(update_attrs)
-
-    target
-    |> Enum.reduce(%{}, fn {field, target_value}, acc ->
-      current_value = Map.get(current, field)
-
-      if same_value?(current_value, target_value) do
-        acc
-      else
-        Map.put(acc, field, %{"from" => current_value, "to" => target_value})
-      end
-    end)
-    |> case do
-      empty when map_size(empty) == 0 -> nil
-      changed -> changed
-    end
   end
 end

@@ -700,9 +700,10 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.MutationsTest do
       assert Enum.sort(Enum.map(logs, & &1.action)) == ["created", "deleted", "updated"]
 
       for log <- logs do
-        assert Gtfs.rollback_previewable_fields(log) == []
-        assert {:error, :audit_only_entity} = Gtfs.rollback_target_snapshot(log)
-        assert {:error, :audit_only_entity} = Gtfs.rollback_entity(log, context.audit)
+        assert GtfsPlanner.Gtfs.Audit.reversible_fields_for(log.entity_type) == []
+
+        assert {:error, :audit_only_entity} =
+                 GtfsPlanner.Gtfs.Stations.rollback_target_snapshot(log)
       end
     end
   end

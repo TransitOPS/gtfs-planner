@@ -64,15 +64,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
   @doc "The stable id of the failed-save summary, used as the focus fallback."
   def error_summary_id, do: @error_summary_id
 
-  attr :drawer_entity, :any, default: nil
-  attr :drawer_entity_id, :string, default: nil
-  attr :drawer_form, :any, default: nil
-  attr :drawer_error, :string, default: nil
-  attr :drawer_levels, :list, default: [], doc: "every level of the report's GTFS version"
+  attr(:drawer_entity, :any, default: nil)
+  attr(:drawer_entity_id, :string, default: nil)
+  attr(:drawer_form, :any, default: nil)
+  attr(:drawer_error, :string, default: nil)
+  attr(:drawer_save_error, :string, default: nil)
+  attr(:drawer_levels, :list, default: [], doc: "every level of the report's GTFS version")
 
-  attr :drawer_return_focus_id, :string,
+  attr(:drawer_return_focus_id, :string,
     default: nil,
     doc: "id of the report control that opened the drawer, restored on close"
+  )
 
   def entity_drawer(assigns) do
     ~H"""
@@ -96,6 +98,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
           entity={@drawer_entity}
           form={@drawer_form}
           levels={@drawer_levels}
+          save_error={@drawer_save_error}
         />
       </div>
     </.drawer>
@@ -116,7 +119,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
 
   # -- Lookup recovery --------------------------------------------------------
 
-  attr :message, :string, required: true
+  attr(:message, :string, required: true)
 
   defp lookup_recovery(assigns) do
     ~H"""
@@ -140,9 +143,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
 
   # -- Stop form --------------------------------------------------------------
 
-  attr :entity, :map, required: true
-  attr :form, :any, required: true
-  attr :levels, :list, required: true
+  attr(:entity, :map, required: true)
+  attr(:form, :any, required: true)
+  attr(:levels, :list, required: true)
+  attr(:save_error, :string, default: nil)
 
   defp stop_drawer_form(assigns) do
     level_required? = level_required?(assigns.entity)
@@ -179,6 +183,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
       class="flex min-h-0 flex-1 flex-col"
     >
       <.drawer_scroll>
+        <.message
+          :if={@save_error}
+          id="report-stop-save-error"
+          kind="warning"
+          title="Nothing was saved"
+          tabindex="-1"
+        >
+          {@save_error}
+        </.message>
         <%!-- A failed save is the only state that earns a summary. Validation on
               change marks its own fields and must not shout about a save that
               was never attempted. --%>
@@ -299,9 +312,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
     """
   end
 
-  attr :label, :string, required: true
-  attr :gtfs_key, :string, required: true
-  attr :value, :string, required: true
+  attr(:label, :string, required: true)
+  attr(:gtfs_key, :string, required: true)
+  attr(:value, :string, required: true)
 
   defp identity_row(assigns) do
     ~H"""

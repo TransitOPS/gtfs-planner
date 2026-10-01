@@ -460,7 +460,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}", on_error: :warn)
 
-      assert {:ok, _station} = Gtfs.delete_stop(station)
+      assert {:ok, _station} = Repo.delete(station)
 
       render_click(view, "set_station_editing_status")
 
