@@ -27,6 +27,7 @@ defmodule GtfsPlanner.AgentsTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Agents
+  alias GtfsPlanner.Agents.Packs.Alerts
   alias GtfsPlanner.Agents.Packs.Calendars
   alias GtfsPlanner.Agents.Packs.ServiceQueries
   alias GtfsPlanner.Agents.Scope
@@ -48,7 +49,11 @@ defmodule GtfsPlanner.AgentsTest do
 
   describe "the pack registry" do
     test "packs/0 maps every shipped pack id to its module" do
-      assert Agents.packs() == %{"calendars" => Calendars, "service_queries" => ServiceQueries}
+      assert Agents.packs() == %{
+               "alerts" => Alerts,
+               "calendars" => Calendars,
+               "service_queries" => ServiceQueries
+             }
 
       assert Agents.packs() |> Map.keys() |> Enum.sort() ==
                Agents.packs() |> Map.values() |> Enum.map(& &1.id()) |> Enum.sort()

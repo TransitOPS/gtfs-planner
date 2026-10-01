@@ -26,7 +26,9 @@ defmodule GtfsPlanner.Agents do
   conversation while the same user on another route never does (INV-1).
   `subject_id` is `nil` for a pack with no subject record.
 
-  `packs/0` is the only function here that names a concrete pack (INV-1).
+  `packs/0` is the only function here that names a concrete pack (INV-1). The
+  Alerts pack is keyed by a subject: its tools read one alert of the scope's
+  organization and version and prepare answers for the editor to apply.
   """
 
   alias GtfsPlanner.Agents.Pack
@@ -38,6 +40,7 @@ defmodule GtfsPlanner.Agents do
   @call_timeout 5_000
 
   @packs %{
+    "alerts" => GtfsPlanner.Agents.Packs.Alerts,
     "calendars" => GtfsPlanner.Agents.Packs.Calendars,
     "service_queries" => GtfsPlanner.Agents.Packs.ServiceQueries
   }
