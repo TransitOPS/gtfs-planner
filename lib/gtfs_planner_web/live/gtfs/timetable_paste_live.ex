@@ -2099,8 +2099,15 @@ import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
     end
   end
 
+  # The route's own UUID, the same identity the Schedules page binds, because
+  # `Scope.authorized_context/1` resolves a route identity by UUID; the URL
+  # parameter is the route's GTFS id. A page whose route has not loaded falls
+  # back to the whole-version context, which this pack refuses.
   defp source_base_context(socket) do
-    Scope.context({:route, socket.assigns.route_id})
+    case socket.assigns[:route] do
+      %GtfsPlanner.Gtfs.Route{} = route -> Scope.context({:route, route.id})
+      _other -> Scope.context({:version, socket.assigns.current_gtfs_version.id})
+    end
   end
 
   # Step 5 mounts the panel with the timetable pack. Until then the host keeps
