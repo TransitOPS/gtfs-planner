@@ -7454,22 +7454,48 @@ case Accounts.register_first_admin(%{
       })
     end
 
+    # Route creation on the editor surface is two-phase: `create_editor_route/3`
+    # authorizes and inserts against an audit and a signed attempt id, and the
+    # attempt is what makes a retry replay rather than duplicate. A seed makes
+    # one deliberate attempt per route, so each gets its own id.
+    rosters_audit = seed_audit.(rosters_version)
+
+    seed_rosters_route = fn attrs ->
+      attempt = %{
+        creation_attempt_id: Ecto.UUID.generate(),
+        actor_id: editor.id,
+        organization_id: org.id,
+        gtfs_version_id: rosters_version.id
+      }
+
+      {:ok, %{route: route}} = Gtfs.create_editor_route(attrs, attempt, rosters_audit)
+
+      case Gtfs.reconcile_creation(attempt, rosters_audit) do
+        {:ok, ^route} ->
+          :ok
+
+        other ->
+          raise "browser seed route reconcile did not return the created route: #{inspect(other)}"
+      end
+
+      route
+    end
+
     rosters_routes =
       [
         {"RS_R10", "10", "Riverside - Valley", "1F5FBF"},
         {"RS_R20", "20", "Riverside Crosstown", "267548"}
       ]
       |> Map.new(fn {route_id, short_name, long_name, color} ->
-        {:ok, route} =
-          Gtfs.create_route(%{
-            organization_id: org.id,
-            gtfs_version_id: rosters_version.id,
+        route =
+          seed_rosters_route.(%{
             route_id: route_id,
             route_short_name: short_name,
             route_long_name: long_name,
             route_type: 3,
             route_color: color,
-            route_text_color: "FFFFFF"
+            route_text_color: "FFFFFF",
+            text_mode: "automatic"
           })
 
         {route_id, route}
