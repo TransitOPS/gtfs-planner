@@ -97,6 +97,13 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
   # the group around it.
   @all_version_pages [
     %{
+      key: :alerts,
+      slug: "alerts",
+      title: "Alerts",
+      summary:
+        "The wording your organization uses for alerts: message scripts and writing guidelines."
+    },
+    %{
       key: :garages,
       slug: "garages",
       title: "Garages",

@@ -27,7 +27,9 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
   ]
 
   # Working pages first; the two placeholders sit last, under the Coming soon band.
+  # Alerts leads: it is the organization-wide page of this branch (step 23).
   @all_version_entry_keys [
+    :alerts,
     :garages,
     :fleet,
     :export_defaults,
@@ -94,7 +96,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
   describe "overview" do
     setup :editor_setup
 
-    test "an editor sees the three version and four all-version entries, with no Organization group",
+    test "an editor sees the three version and five all-version entries, with no Organization group",
          %{conn: conn, user: user, organization: organization, version: version} do
       conn = log_in_user(conn, user, organization: organization)
 
@@ -169,6 +171,11 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
 
       assert_entry(doc, :garages, "Garages", section_path(version.id, "garages"), :working)
       assert_entry(doc, :fleet, "Fleet", section_path(version.id, "fleet"), :working)
+
+      assert_entry(doc, :alerts, "Alerts", section_path(version.id, "alerts"), :working)
+
+      assert text_of(doc, "#settings-entry-alerts-summary") ==
+               "The wording your organization uses for alerts: message scripts and writing guidelines."
     end
 
     test "placeholder rows sit under a Coming soon band, after the working rows",
@@ -198,8 +205,8 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
       {:ok, view, _html} = live(conn, settings_path(version.id))
       doc = LazyHTML.from_fragment(render(view))
 
-      assert Enum.count(LazyHTML.query(doc, "#settings-overview li")) == 7
-      assert Enum.count(LazyHTML.query(doc, "#settings-overview li > a")) == 7
+      assert Enum.count(LazyHTML.query(doc, "#settings-overview li")) == 8
+      assert Enum.count(LazyHTML.query(doc, "#settings-overview li > a")) == 8
       assert Enum.empty?(LazyHTML.query(doc, "#settings-overview li button"))
     end
 
@@ -486,7 +493,9 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
   end
 
   describe "product filtering (ProductSurfaces)" do
-    # The seven Settings sections a Pathways organization hides (spec R5).
+    # The seven Settings sections a Pathways organization hides (spec R5). Alerts
+    # is deliberately not among them: alert wording is organization-wide and is
+    # not a Pathways-hidden surface, so it stays visible to both editions.
     defp pathways_hidden_keys do
       [:feed_details, :agencies, :fares, :export_defaults, :feed_url, :garages, :fleet]
     end
@@ -498,7 +507,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
       %{organization: organization, member: member, version: version}
     end
 
-    test "a Pathways editor+admin sees only the Organization group",
+    test "a Pathways editor+admin sees the Alerts group and the Organization group",
          %{conn: conn} do
       %{organization: organization, member: admin, version: version} =
         product_org_with_version(:pathways, [
@@ -516,8 +525,13 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
 
       refute has_element?(view, "#settings-empty")
 
+      # Alerts is not a Pathways-hidden surface, so the All versions group is
+      # kept rather than dropped for being otherwise empty.
       assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-overview section"), "id") ==
-               ["settings-organization"]
+               ["settings-all-versions", "settings-organization"]
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-all-versions li"), "id") ==
+               ["settings-entry-alerts"]
 
       assert text_of(doc, "#settings-organization h2") == "Organization"
 
@@ -532,7 +546,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
       assert_entry(doc, :users, "Users", "/admin/users", :working)
     end
 
-    test "a Pathways editor without admin sees the empty state and no groups",
+    test "a Pathways editor without admin sees Alerts and no Organization group",
          %{conn: conn} do
       %{organization: organization, member: editor, version: version} =
         product_org_with_version(:pathways, ["pathways_studio_editor"])
@@ -541,14 +555,14 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
       {:ok, view, _html} = live(conn, settings_path(version.id))
       doc = LazyHTML.from_fragment(render(view))
 
-      assert has_element?(view, "#settings-empty")
-      assert text_of(doc, "#settings-empty h2") == "No settings are available for your role"
+      refute has_element?(view, "#settings-empty")
+      refute has_element?(view, "#settings-organization")
 
-      # One next step, into a page a Pathways editor can use.
-      assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-empty-action"), "href") ==
-               ["/gtfs/#{version.id}/stops"]
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-overview section"), "id") ==
+               ["settings-all-versions"]
 
-      refute has_element?(view, "#settings-overview")
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-all-versions li"), "id") ==
+               ["settings-entry-alerts"]
     end
 
     test "a Planner editor+admin sees every entry", %{conn: conn} do

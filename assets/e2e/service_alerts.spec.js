@@ -2032,3 +2032,226 @@ test.describe("alert review", () => {
     await captureReviewReference(page, testInfo, "review-now", "320");
   });
 });
+
+// Settings › Alerts, as spec 30's step 23 renders it: the Message scripts and
+// Writing guidelines tabs, the scripts table with read-only built-ins, the
+// script drawer with its placeholder reference, and the guidelines form
+// (AC-24, AC-11). The prototype's Alert feed tab, Languages and Used columns
+// and every publishing control are absent from both surfaces, because this
+// package saves wording and never publishes an alert (R2, CR-1).
+
+// The prototype states this view is compared against.
+async function captureSettingsReference(page, testInfo, state, width) {
+  if (!fs.existsSync(REFERENCE_PATH)) return;
+
+  await page.goto(`file://${REFERENCE_PATH}?state=${state}`);
+  await page.waitForLoadState("load");
+
+  await page.screenshot({
+    path: capturePath(testInfo, `settings-ref-${state}-${width}.png`),
+    fullPage: false,
+  });
+}
+
+// The version this tab opens against, resolved through the header's own version
+// panel the way the other alert journeys resolve theirs.
+async function alertsVersionId(page) {
+  return versionIdFor(page, ALERTS_VERSION);
+}
+
+async function openAlertSettings(page, tab = "scripts") {
+  await logIn(page, EDITOR);
+  return openAlertSettingsSignedIn(page, tab);
+}
+
+// A second page of the same context is already signed in, so this skips the
+// sign-in journey and goes straight to the page under test.
+async function openAlertSettingsSignedIn(page, tab = "scripts") {
+  const versionId = await alertsVersionId(page);
+  await page.goto(`/gtfs/${versionId}/settings/alerts?tab=${tab}`);
+  // A full page load leaves the view connecting, and a change made before it is
+  // mounted is never sent, so every interaction here waits for the page itself.
+  await page.waitForSelector("#alert-settings-page", { timeout: 15000 });
+  await page.waitForSelector("#alert-settings-tabs[role='tablist']", { timeout: 15000 });
+  return versionId;
+}
+
+test.describe("alert settings", () => {
+  test.describe.configure({ timeout: 120_000 });
+
+  test("the scripts tab lists the organization's scripts and the read-only built-ins @settings", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openAlertSettings(page);
+
+    // The organization's own script comes first; the built-ins follow and each
+    // one offers Copy to edit rather than Edit (AC-11, FH-24).
+    await expect(page.locator("#scripts-status")).toContainText("1 script of your own");
+    await expect(page.locator("#scripts-status")).toContainText("8 built-ins to copy");
+
+    const rows = page.locator("#scripts tr");
+    await expect(rows).toHaveCount(9);
+    await expect(rows.first().locator("button")).toContainText("Route detour");
+
+    await expect(page.locator("#copy-builtin-detour")).toBeVisible();
+    await expect(page.locator("#script-for-builtin-detour")).toContainText("Detour");
+    await expect(page.locator("#copy-builtin-detour")).toHaveAttribute(
+      "aria-label",
+      /Copy to edit/,
+    );
+
+    await page.screenshot({
+      path: capturePath(testInfo, "settings-scripts-1440.png"),
+      fullPage: false,
+    });
+
+    // The narrow viewport is shorter than the table, so this capture is the
+    // whole page: a cropped one would show the heading and no built-ins.
+    await page.setViewportSize(NARROW);
+    await expect(page.locator("#copy-builtin-suspension")).toBeVisible();
+    expect(await fitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "settings-scripts-320.png"),
+      fullPage: true,
+    });
+
+    await captureSettingsReference(page, testInfo, "settings-scripts", "1440");
+  });
+
+  test("a script is created, refused and copied in the drawer @settings", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openAlertSettings(page);
+
+    await page.locator("#create-script").click();
+    await page.waitForSelector("#script-form", { timeout: 15_000 });
+    await expect(page.locator("#script-fill-ins")).toContainText("Fill-ins");
+
+    // An unknown placeholder is refused on the field that caused it, and the
+    // templates that were typed stay in the form (R10, AC-24).
+    await page.locator("#script-name").fill("Detour notice");
+    await page.locator("#script-situation").selectOption("detour");
+    await page.locator("#script-header").fill("[route] detour: [headline]");
+    await page.locator("#script-description").fill("[route] is not serving [stop].");
+    await page.locator("#script-save").click();
+
+    await expect(page.locator("#script-header-error")).toContainText(
+      "which this app does not fill in",
+    );
+    await expect(page.locator("#script-header")).toHaveValue("[route] detour: [headline]");
+    await expect(page.locator("#script-description")).toHaveValue(
+      "[route] is not serving [stop].",
+    );
+
+    await page.screenshot({
+      path: capturePath(testInfo, "settings-script-error-1440.png"),
+      fullPage: false,
+    });
+
+    // Correcting the placeholder stores the script; the built-in's own wording
+    // is unchanged, so the organization starts from the recommended text.
+    await page.locator("#script-header").fill("[route] detour: [stop] not served");
+    await page.locator("#script-save").click();
+    await page.waitForSelector("#script-notice", { timeout: 15_000 });
+    await expect(page.locator("#script-notice")).toContainText("Detour notice saved.");
+    await expect(page.locator("#scripts-status")).toContainText("2 scripts of your own");
+
+    // Copy to edit creates an organization script from the read-only default and
+    // opens that new row in the drawer, so one tenant's copy stays theirs.
+    await page.locator("#copy-builtin-detour").click();
+    await page.waitForSelector("#script-form", { timeout: 15_000 });
+    await expect(page.locator("#script-drawer-title")).toContainText("Edit script");
+    await expect(page.locator("#script-name")).toHaveValue("Detour, stops skipped");
+    await expect(page.locator("#script-header")).toHaveValue(
+      "Route [route] detour: [first skipped] to [last skipped] not served",
+    );
+    await expect(page.locator("#scripts-status")).toContainText("3 scripts of your own");
+
+    await page.screenshot({
+      path: capturePath(testInfo, "settings-script-edit-1440.png"),
+      fullPage: false,
+    });
+
+    await captureSettingsReference(page, testInfo, "settings-script-edit", "1440");
+  });
+
+  test("guidelines save and a stale revision says so @settings", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openAlertSettings(page, "guidelines");
+
+    // The recommended text is shown at revision 0, and reading it stored nothing.
+    await expect(page.locator("#guidelines-revision")).toContainText(
+      "Recommended guidelines, not changed yet",
+    );
+    await expect(page.locator("#guidelines-text")).toHaveValue(
+      /Lead with the route and the change/,
+    );
+    await expect(page.locator("#guidelines-apply")).toContainText("Where these apply");
+
+    await page.screenshot({
+      path: capturePath(testInfo, "settings-guidelines-1440.png"),
+      fullPage: false,
+    });
+
+    await page.locator("#guidelines-text").fill("Our own wording, one guideline per paragraph.");
+    await page.locator("#save-guidelines").click();
+    await page.waitForSelector("#guidelines-notice", { timeout: 15_000 });
+    await expect(page.locator("#guidelines-notice")).toContainText("Guidelines saved.");
+    await expect(page.locator("#guidelines-revision")).toContainText("Revision 1");
+
+    // A second session's save moves the revision, so this tab's next save is a
+    // stale one: it is refused with the conflict sentence rather than silently
+    // overwriting (R6, FH-24).
+    await page.locator("#guidelines-text").fill("A second wording from this tab.");
+    const otherSession = await page.context().newPage();
+    await openAlertSettingsSignedIn(otherSession, "guidelines");
+    await otherSession.locator("#guidelines-text").fill("Another editor's wording.");
+    await otherSession.locator("#save-guidelines").click();
+    await otherSession.waitForSelector("#guidelines-revision:has-text('Revision 2')", {
+      timeout: 15_000,
+    });
+    await otherSession.close();
+
+    await page.locator("#save-guidelines").click();
+    await page.waitForSelector("#guidelines-reload", { timeout: 15_000 });
+    await expect(page.locator("#guidelines-notice")).toContainText(
+      "Someone else changed these guidelines. Reload to see their version.",
+    );
+    await expect(page.locator("#guidelines-text")).toHaveValue(
+      "A second wording from this tab.",
+    );
+
+    // Reload is the way through: it takes the other editor's text and its
+    // revision rather than forcing this tab's own.
+    await page.locator("#guidelines-reload").click();
+    await expect(page.locator("#guidelines-reload")).toHaveCount(0);
+    await expect(page.locator("#guidelines-text")).toHaveValue("Another editor's wording.");
+    await expect(page.locator("#guidelines-revision")).toContainText("Revision 2");
+  });
+
+  test("the overview lists Alerts first under All versions @settings", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    const versionId = await openAlertSettings(page);
+
+    await page.locator("#settings-back").click();
+    await page.waitForURL(/\/settings$/, { timeout: 15_000 });
+
+    const allVersions = page.locator("#settings-all-versions li");
+    await expect(allVersions.first()).toHaveAttribute("id", "settings-entry-alerts");
+    await expect(page.locator("#settings-entry-alerts a")).toHaveAttribute(
+      "href",
+      `/gtfs/${versionId}/settings/alerts`,
+    );
+
+    await page.screenshot({
+      path: capturePath(testInfo, "settings-overview-1440.png"),
+      fullPage: false,
+    });
+  });
+});

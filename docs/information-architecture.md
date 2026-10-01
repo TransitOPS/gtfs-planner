@@ -126,7 +126,7 @@ flowchart LR
 
   app --> settings[Settings]
   settings --> sVersion["This version: Feed details · Agencies · Fares"]
-  settings --> sAll["All versions: Export defaults · Published feed URL · Garages · Fleet"]
+  settings --> sAll["All versions: Alerts · Export defaults · Published feed URL · Garages · Fleet"]
   settings --> sOrg["Organization: Name · Users"]
 
   app --> orgs[Organizations]
@@ -372,6 +372,7 @@ Settings
 │   ├── Agencies            name · URL · timezone · routes
 │   └── Fares               Zones · Fare rules
 ├── All versions
+│   ├── Alerts              message scripts (built-ins read-only, copy to edit) + writing guidelines
 │   ├── Export defaults     ID formats, interpolation + estimate method, GTFS-flex files
 │   ├── Published feed URL  URL, Copy URL, what is live, permanence note
 │   ├── Garages             Live (#697) at /blocks/garages; moves here
