@@ -168,22 +168,19 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
     test "refuses a conversation with no subject alert", context do
       scope = %{context.scope | subject_id: nil}
 
-      assert Dispatch.call(AlertsPack, scope, "get_draft", "{}") ==
-               {:tool_error, "Open the assistant from an alert to use it."}
+      assert Dispatch.call(AlertsPack, scope, "get_draft", "{}") == {:error, :unavailable}
     end
 
-    test "refuses a subject alert of another version with a message, not data", context do
+    test "refuses a subject alert of another version before any tool reads it", context do
       elsewhere = alert_fixture(context.sibling_audit, %{"urgency" => "planned"})
       scope = %{context.scope | subject_id: elsewhere.id}
 
-      assert Dispatch.call(AlertsPack, scope, "get_draft", "{}") ==
-               {:tool_error, "This alert is not in this service version."}
+      assert Dispatch.call(AlertsPack, scope, "get_draft", "{}") == {:error, :unavailable}
 
       assert Dispatch.call(AlertsPack, scope, "search_routes", ~s|{"query":"12"}|) ==
-               {:tool_error, "This alert is not in this service version."}
+               {:error, :unavailable}
 
-      assert Dispatch.call(AlertsPack, scope, "check_draft", "{}") ==
-               {:tool_error, "This alert is not in this service version."}
+      assert Dispatch.call(AlertsPack, scope, "check_draft", "{}") == {:error, :unavailable}
     end
 
     test "refuses a subject alert of another organization", context do
@@ -196,8 +193,16 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
 
       scope = %{context.scope | subject_id: elsewhere.id}
 
-      assert Dispatch.call(AlertsPack, scope, "get_draft", "{}") ==
-               {:tool_error, "This alert is not in this service version."}
+      assert Dispatch.call(AlertsPack, scope, "get_draft", "{}") == {:error, :unavailable}
+    end
+
+    test "refuses a subject alert that was deleted", context do
+      assert AlertsPack.authorize_context(context.scope) == :ok
+
+      Repo.delete!(context.alert)
+
+      assert AlertsPack.authorize_context(context.scope) == {:error, :unavailable}
+      assert Dispatch.call(AlertsPack, context.scope, "get_draft", "{}") == {:error, :unavailable}
     end
 
     test "a tool read that loses a race with a delete answers a message, not data", context do
@@ -261,11 +266,11 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       assert draft["urgency"] == "planned"
       assert draft["scope"]["route_ids"] == [sibling_route.id]
 
-      # The same alert read through this version's scope is a message, not data.
+      # The same alert read through this version's scope is refused, not read.
       foreign_scope = %{sibling_scope | gtfs_version_id: context.version.id}
 
       assert Dispatch.call(AlertsPack, foreign_scope, "get_draft", "{}") ==
-               {:tool_error, "This alert is not in this service version."}
+               {:error, :unavailable}
     end
   end
 

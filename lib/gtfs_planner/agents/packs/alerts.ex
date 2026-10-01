@@ -5,13 +5,15 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
 
   Every call resolves the subject alert through `Alerts.get_alert/2` with the
   scope's own audit context, so an alert of another tenant, another version or
-  another record is a message, not data (R1, FH-27). Every read after that is
-  built from the loaded row's own organization and version, never from the
-  version the person happens to have selected in the navigation, so an alert is
-  always read against the schedule it was written against (CR-4). The identity
-  of the organization, version, actor and alert comes from the scope alone: no
-  tool declares an identity argument, so `GtfsPlanner.Agents.Dispatch` refuses
-  one before this module runs (R11).
+  another record is never data (R1, FH-27). `authorize_context/1` makes the same
+  read before each provider request, tool and delivered result, so a deleted or
+  foreign alert ends the session; a tool read that loses a race with a delete is
+  a message instead. Every read after that is built from the loaded row's own
+  organization and version, never from the version the person happens to have
+  selected in the navigation, so an alert is always read against the schedule it
+  was written against (CR-4). The identity of the organization, version, actor
+  and alert comes from the scope alone: no tool declares an identity argument, so
+  `GtfsPlanner.Agents.Dispatch` refuses one before this module runs (R11).
 
   Nothing here writes. `propose_changes` validates its arguments with
   `Alert.draft_changeset/2` - the same changeset the editor autosaves and saves
@@ -186,6 +188,17 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
     ]
   end
 
+  # The subject alert is part of this conversation's resource context. Once it is
+  # deleted, or is not in this version for this person, the session ends before
+  # the next provider request instead of answering about a record that is gone.
+  @impl true
+  def authorize_context(%Scope{} = scope) do
+    case Alerts.get_alert(Scope.audit_context(scope), scope.subject_id) do
+      {:ok, _alert} -> :ok
+      {:error, _reason} -> {:error, :unavailable}
+    end
+  end
+
   @impl true
   def call(name, args, %Scope{} = scope) do
     with {:ok, context, alert} <- subject(scope) do
@@ -194,10 +207,9 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
   end
 
   # The subject alert is resolved once per call, before any tool runs, so no
-  # tool can read an alert the scope does not name.
-  defp subject(%Scope{subject_id: nil}),
-    do: {:error, "Open the assistant from an alert to use it."}
-
+  # tool can read an alert the scope does not name. `authorize_context/1` has
+  # already refused an absent or foreign alert; this read is the one the tool
+  # runs on, and it answers a message if the alert went away in between.
   defp subject(%Scope{} = scope) do
     case Alerts.get_alert(Scope.audit_context(scope), scope.subject_id) do
       {:ok, alert} -> {:ok, alert_context(Scope.audit_context(scope), alert), alert}
