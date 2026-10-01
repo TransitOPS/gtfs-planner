@@ -215,6 +215,31 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentGenerationTest do
     end)
   end
 
+  # Holds the routing request open until the test sends `:release` to the
+  # stub process named in the `{:routing_held, stub}` message. A test that
+  # cancels or supersedes the flight waits for that message first, so the
+  # kill never lands mid-query on the shared sandbox connection, and never
+  # releases the stub.
+  defp stub_held_routing(leg) do
+    test_pid = self()
+
+    Req.Test.stub(@routing_owner, fn conn ->
+      send(test_pid, {:routing_held, self()})
+
+      receive do
+        :release -> :ok
+      after
+        5_000 -> raise "routing stub was never released"
+      end
+
+      Plug.Conn.send_resp(
+        Plug.Conn.put_resp_content_type(conn, "application/json"),
+        200,
+        Jason.encode!(routing_response([leg]))
+      )
+    end)
+  end
+
   defp four_stops(organization, version, prefix) do
     coord_stop(organization, version, "#{prefix}A", "#{prefix} Alpha", "40.712800", "-74.006000")
     coord_stop(organization, version, "#{prefix}B", "#{prefix} Beta", "40.713800", "-74.005000")
@@ -383,31 +408,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentGenerationTest do
 
       leg = [[-74.006, 40.7128], [-74.0055, 40.7133], [-74.005, 40.7138]]
 
-      test_pid = self()
-
-      Req.Test.stub(@routing_owner, fn conn ->
-        # The test supersedes the flight only once it is sleeping here, so
-        # the kill never lands mid-query on the shared sandbox connection.
-        send(test_pid, :generation_routing_started)
-        Process.sleep(600)
-
-        Plug.Conn.send_resp(
-          Plug.Conn.put_resp_content_type(conn, "application/json"),
-          200,
-          Jason.encode!(routing_response([leg]))
-        )
-      end)
+      stub_held_routing(leg)
 
       {:ok, view, _html} = live(conn, pattern_path(version, route, cancel_pattern))
 
       view |> element("#alignment-generate-section") |> render_click()
       assert has_element?(view, "#alignment-generating", "Finding a street path…")
-      assert_receive :generation_routing_started, 10_000
+      assert_receive {:routing_held, _stub}, 10_000
 
       view |> element("#alignment-cancel-generation") |> render_click()
       refute has_element?(view, "#alignment-generating")
 
-      # The stub responds after the sleep; the cancelled flight must push nothing.
+      # The stub is never released; the cancelled flight must push and write nothing.
       refute_push_event(view, "alignment:suggestions", %{}, 1_500)
       assert segments_count(organization, version) == 0
     end
@@ -426,26 +438,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentGenerationTest do
 
       leg = [[-74.006, 40.7128], [-74.0055, 40.7133], [-74.005, 40.7138]]
 
-      test_pid = self()
-
-      Req.Test.stub(@routing_owner, fn conn ->
-        # The test supersedes the flight only once it is sleeping here, so
-        # the kill never lands mid-query on the shared sandbox connection.
-        send(test_pid, :generation_routing_started)
-        Process.sleep(600)
-
-        Plug.Conn.send_resp(
-          Plug.Conn.put_resp_content_type(conn, "application/json"),
-          200,
-          Jason.encode!(routing_response([leg]))
-        )
-      end)
+      stub_held_routing(leg)
 
       {:ok, view, _html} = live(conn, pattern_path(version, route, first_pattern))
 
       view |> element("#alignment-generate-section") |> render_click()
       assert has_element?(view, "#alignment-generating", "Finding a street path…")
-      assert_receive :generation_routing_started, 10_000
+      assert_receive {:routing_held, _stub}, 10_000
 
       render_patch(view, pattern_path(version, route, second_pattern))
       assert has_element?(view, "#alignment-title", "Path between stops")
