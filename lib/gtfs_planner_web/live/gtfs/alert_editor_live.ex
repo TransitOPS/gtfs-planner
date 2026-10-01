@@ -555,13 +555,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # change makes it differ from the current facts, which is what raises
   # **Review wording** instead of quietly overwriting the text a rider would
   # have read.
-  def handle_event("autosave", %{"alert" => %{"message" => _message}} = all, socket) do
+  def handle_event("autosave", %{"alert" => %{"message" => message} = params}, socket)
+      when is_map(message) do
     case socket.assigns.alert do
       nil ->
         {:noreply, socket}
 
       alert ->
-        save(socket, alert, as_customized(all))
+        save(socket, alert, customized_message(params, message))
     end
   end
 
@@ -1741,10 +1742,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     if step == :message and needs_generated_message?(alert) do
       case generated_alert(socket, alert) do
         {:ok, saved} -> {saved, assign(socket, :browse_scripts?, false)}
-        :refused -> {alert, assign(socket, :browse_scripts?, true)}
+        :refused -> {alert, assign(socket, :browse_scripts?, browsing_scripts?(alert))}
       end
     else
-      {alert, assign(socket, :browse_scripts?, browsing_scripts?(socket, alert))}
+      {alert, assign(socket, :browse_scripts?, browsing_scripts?(alert))}
     end
   end
 
@@ -1862,18 +1863,25 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       (message_of(alert).customized != true and blank_text?(message_of(alert).header))
   end
 
-  defp browsing_scripts?(_socket, nil), do: true
+  defp browsing_scripts?(nil), do: true
 
-  defp browsing_scripts?(socket, alert) do
-    socket.assigns.browse_scripts? == true or blank_text?(message_of(alert).header)
-  end
+  # The wording is what the operator came for, so arriving with something to read
+  # opens the editor and leaves the scripts behind the chooser. The chooser's own
+  # state is per arrival rather than remembered across steps: a step that opens
+  # with the scripts and no wording to edit is the only case that needs it.
+  defp browsing_scripts?(%Alert{} = alert), do: blank_text?(message_of(alert).header)
 
   defp blank_text?(nil), do: true
   defp blank_text?(text) when is_binary(text), do: String.trim(text) == ""
   defp blank_text?(_other), do: false
 
-  defp as_customized(%{"alert" => %{"message" => message}} = params) do
-    put_in(params, ["alert", "message"], Map.put(message, "customized", true))
+  # The alert's own attributes, with the message marked as the operator's. The
+  # event carries the whole form, so the alert's params are the inner
+  # `%{"message" => ...}` map `Alerts.save_draft/4` casts - handing it the outer
+  # form would leave the embed uncast, and a write with no changes looks exactly
+  # like a save that happened.
+  defp customized_message(params, message) when is_map(message) do
+    Map.put(params, "message", Map.put(message, "customized", true))
   end
 
   # -- Autosave ------------------------------------------------------------

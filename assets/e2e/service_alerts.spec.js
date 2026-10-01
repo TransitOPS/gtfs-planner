@@ -1782,12 +1782,15 @@ test.describe("alert message", () => {
       path: capturePath(testInfo, "message-scripts-1440.png"),
       fullPage: false,
     });
-    await captureMessageReference(page, testInfo, "form-scripts", "1440");
 
     await matching.first().click();
     await expect(page.locator("#message-scripts")).toHaveCount(0);
     await expect(page.locator("#alert-save-status")).toHaveText("Saved");
     expect(await page.locator("#message-header").inputValue()).toContain("Route 1");
+
+    // The reference capture navigates away from the app, so it is the last thing
+    // this test does rather than a step in the middle of the journey.
+    await captureMessageReference(page, testInfo, "form-scripts", "1440");
   });
 
   test("edited wording is kept and a later answer asks about it @message", async ({
@@ -1796,31 +1799,40 @@ test.describe("alert message", () => {
     await page.setViewportSize(DESKTOP);
     await openMessage(page);
 
+    // The editor's own URL for this question, kept because the reference capture
+    // navigates away from the app and the journey comes back here.
+    const messageUrl = page.url();
+
     // A header longer than the advisory limit is advised about and still saves.
     const long =
       "Route 1 detour overnight while Highway 101 is repaved near the depot";
     await page.locator("#message-header").fill(long);
     await expect(page.locator("#message-header")).toHaveValue(long);
+    // The checks are recomputed from the stored answer, so wait for the write
+    // rather than for the keystroke.
+    await waitForSave(page);
     await expect(page.locator("#message-check-short")).toContainText(
       "Apps may cut it off after about 60",
     );
-    await waitForSave(page);
     await expect(page.locator("#alert-save-status")).toHaveText("Saved");
 
     await page.screenshot({
       path: capturePath(testInfo, "message-advisory-1440.png"),
       fullPage: false,
     });
-    await captureMessageReference(page, testInfo, "form-message", "1440");
 
     // The answers change under the wording: the time the alert applies moves,
-    // which changes the fact the text was generated from.
-    await page.goto(page.url().replace(/step=[a-z_]+/, "step=timing"));
+    // which changes the fact the text was generated from. A full page load
+    // leaves the view connecting, and a change made before it is mounted is
+    // never sent, so wait for the editor to be live before typing into it.
+    await page.goto(messageUrl.replace(/step=[a-z_]+/, "step=timing"));
+    await waitForEditorMounted(page);
     await page.waitForSelector("#timing-start-time", { timeout: 15_000 });
     await page.locator("#timing-start-time").fill("09:00");
     await waitForSave(page);
 
-    await page.goto(page.url().replace(/step=[a-z_]+/, "step=message"));
+    await page.goto(messageUrl.replace(/step=[a-z_]+/, "step=message"));
+    await waitForEditorMounted(page);
     await page.waitForSelector("#review-wording", { timeout: 15_000 });
 
     // The wording is still the operator's: the callout reports, it does not
@@ -1837,6 +1849,8 @@ test.describe("alert message", () => {
     await expect(page.locator("#review-wording")).toHaveCount(0);
     await expect(page.locator("#alert-save-status")).toHaveText("Saved");
     expect(await page.locator("#message-header").inputValue()).not.toBe(long);
+
+    await captureMessageReference(page, testInfo, "form-message", "1440");
   });
 
   test("a script can be chosen by keyboard at the narrow width @message", async ({

@@ -110,6 +110,22 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
       refute has_element?(view, "#message-scripts")
     end
 
+    test "arriving opens the wording, with the scripts behind the chooser", context do
+      alert = detour_alert(context)
+      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+
+      # The step is opened by URL as often as it is reached by Continue, so the
+      # wording has to be what a fresh load shows rather than whatever the last
+      # arrival happened to leave on screen.
+      assert view |> element("#message-header") |> render() =~ @detour_header
+      assert has_element?(view, "#browse-scripts")
+      refute has_element?(view, "#message-scripts")
+
+      view |> element("#browse-scripts") |> render_click()
+
+      assert has_element?(view, "#message-scripts")
+    end
+
     test "a script the chooser never offered stores nothing", context do
       alert = detour_alert(context)
       {:ok, view, _html} = live(context.conn, message_path(context, alert))
