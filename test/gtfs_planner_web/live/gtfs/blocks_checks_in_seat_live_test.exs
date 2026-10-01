@@ -74,21 +74,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksChecksInSeatLiveTest do
     )
   end
 
-  # One day type holding both of AC-21's scopes, and holding them *apart*:
-  # "Remove {k} records that no longer match" is k = the day's rows whose state
-  # is `{:stale, _}`, which are rows on a gap of this day, while "This version ·
-  # {m}" is `Blocking.unmatched_in_seat_records/2`, which is stale for the three
-  # reasons no block can reach. The two sets cannot share a row, so one day can
-  # only exercise them one after the other:
+  # One day type holding both of AC-21's scopes: "Remove {k} records that no
+  # longer match" is k = every row of the day whose state is `{:stale, _}`,
+  # whether a gap of the day hosts it or not, while "This version · {m}" is
+  # `Blocking.unmatched_in_seat_records/2`, the rows stale for the three reasons
+  # no block can reach. A no-block row running on the day belongs to both:
   #
   #   * `a -> b` is one gap of block 101 carrying two records, so the connection
   #     needs a choice. Neither record is stale, which is what "conflicts
   #     excluded" in the {k} definition asks for;
   #   * `e -> f` is a second gap of block 101 whose single record drifted off
-  #     the stops, so it is `{:stale, :stops_changed}` and joins {k};
+  #     the stops, so it is `{:stale, :stops_changed}` and joins {k} only;
   #   * `a -> c` and `b -> d` name trips with no block, so each is
-  #     `{:stale, :no_block}` with no gap of this day to open, and each is one
-  #     of the version's unmatched records rather than one of {k}.
+  #     `{:stale, :no_block}` with no gap of this day to open, and each is in
+  #     {k} and among the version's unmatched records.
   defp in_seat_day(context) do
     calendar(context, "WK", "Weekday")
 
@@ -153,14 +152,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksChecksInSeatLiveTest do
     view
   end
 
-  defp texts(view, selector) do
-    view
-    |> render()
-    |> LazyHTML.from_fragment()
-    |> LazyHTML.query(selector)
-    |> Enum.map(&(&1 |> LazyHTML.text() |> String.replace(~r/\s+/, " ") |> String.trim()))
-  end
-
   defp count(view, selector) do
     view |> render() |> LazyHTML.from_fragment() |> LazyHTML.query(selector) |> Enum.count()
   end
@@ -178,8 +169,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksChecksInSeatLiveTest do
       view = open_checks(view)
 
       # Four rows need review - one conflicting pair, one stale row on a gap of
-      # this day and two stale rows no gap hosts - and the removal counts only
-      # the stale ones.
+      # this day and two stale rows no gap hosts - and the removal counts the
+      # three stale ones.
       assert has_element?(
                view,
                "#checks-in-seat",
@@ -213,8 +204,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksChecksInSeatLiveTest do
                "A trip has no block."
              )
 
-      # The drifted row on the second gap is the only row {k} counts: a gap of
-      # this day hosts it, so it opens its connection rather than a trip.
+      # A gap of this day hosts the drifted row, so it opens its connection
+      # rather than a trip.
       assert has_element?(view, "#checks-in-seat-stale-#{drifted.id}", "trip e \u2192 f")
 
       assert has_element?(
@@ -226,7 +217,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksChecksInSeatLiveTest do
       assert has_element?(
                view,
                "#checks-remove-stale",
-               "Remove 1 records that no longer match"
+               "Remove 3 records that no longer match"
              )
 
       assert has_element?(
@@ -269,6 +260,34 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksChecksInSeatLiveTest do
       assert has_element?(view, "#checks-remove-unmatched", "Remove 2 records")
     end
 
+    test "one stale record is named in the singular", %{version: version} = context do
+      calendar(context, "WK", "Weekday")
+
+      a = trip(context, %{trip_id: "a", block_id: "101", first: "06:00:00", last: "07:00:00"})
+      b = trip(context, %{trip_id: "b", block_id: "101", first: "08:00:00", last: "09:00:00"})
+
+      _drifted =
+        transfer_fixture(context.organization.id, context.version.id, %{
+          from_trip_id: a.trip_id,
+          to_trip_id: b.trip_id,
+          to_stop_id: "DRIFTED_OLD",
+          transfer_type: 4
+        })
+
+      conn = editor_conn(context)
+      {:ok, view, _html} = live(conn, blocks_path(version.id))
+
+      view = open_checks(view)
+
+      assert has_element?(view, "#checks-remove-stale", "Remove 1 record that no longer matches")
+
+      view |> element("#checks-remove-stale") |> render_click()
+
+      assert has_element?(view, "#remove-stale-dialog", "Remove 1 in-seat record?")
+      assert has_element?(view, "#remove-stale-dialog", "This record no longer matches")
+      assert has_element?(view, "#remove-stale-dialog-confirm", "Remove 1 record")
+    end
+
     test "a version with nothing unmatched says so and offers no question",
          %{version: version} = context do
       calendar(context, "WK", "Weekday")
@@ -305,36 +324,38 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksChecksInSeatLiveTest do
 
       view |> element("#checks-remove-stale") |> render_click()
 
-      assert has_element?(view, "#remove-stale-dialog", "Remove 1 in-seat records?")
+      assert has_element?(view, "#remove-stale-dialog", "Remove 3 in-seat records?")
       assert has_element?(view, "#remove-stale-dialog", "These records no longer match")
       assert has_element?(view, "#remove-stale-dialog", "Weekday blocks")
       assert has_element?(view, "#remove-stale-dialog", "Each deletion is audited")
-      assert has_element?(view, "#remove-stale-dialog-confirm", "Remove 1 records")
+      assert has_element?(view, "#remove-stale-dialog-confirm", "Remove 3 records")
 
       # Cancelling asks nothing and deletes nothing.
       view |> element("#remove-stale-dialog-cancel") |> render_click()
 
       assert has_element?(view, "#remove-stale-dialog[data-open='false']")
       assert Repo.get(Transfer, drifted.id)
+      assert Repo.get(Transfer, stale_a.id)
+      assert Repo.get(Transfer, stale_b.id)
 
       view |> element("#checks-remove-stale") |> render_click()
       html = view |> element("#remove-stale-dialog-confirm") |> render_click()
 
-      assert html =~ "Removed 1 in-seat records."
+      assert html =~ "Removed 3 in-seat records."
 
-      # Exactly {k} went. The conflicting pair needs a choice, and the two
-      # no-block rows are the version scope's, not this one's.
+      # Exactly {k} went; the conflicting pair needs a choice and stays.
       assert Repo.get(Transfer, drifted.id) == nil
+      assert Repo.get(Transfer, stale_a.id) == nil
+      assert Repo.get(Transfer, stale_b.id) == nil
       assert Repo.get(Transfer, stay.id)
       assert Repo.get(Transfer, reboard.id)
-      assert Repo.get(Transfer, stale_a.id)
-      assert Repo.get(Transfer, stale_b.id)
 
-      # Both counts refresh from the reloaded day and the reloaded version read,
-      # and the version section is untouched: the two scopes are disjoint.
-      assert has_element?(view, "#checks-in-seat", "In-seat records that need review \u00b7 3")
+      # Both counts refresh from the reloaded day and the reloaded version read:
+      # the no-block rows were the version's unmatched rows too.
+      assert has_element?(view, "#checks-in-seat", "In-seat records that need review \u00b7 1")
       refute has_element?(view, "#checks-remove-stale")
-      assert has_element?(view, "#checks-in-seat-version", "This version \u00b7 2")
+      assert has_element?(view, "#checks-in-seat-version", "This version \u00b7 0")
+      assert has_element?(view, "#checks-in-seat-version", "None left.")
     end
 
     test "the version question names m and deletes exactly the unmatched rows",
@@ -393,7 +414,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksChecksInSeatLiveTest do
 
       # The reload shows the reader the listing that is actually stored.
       assert has_element?(view, "#checks-in-seat", "In-seat records that need review \u00b7 4")
-      assert has_element?(view, "#checks-remove-stale", "Remove 1 records that no longer match")
+      assert has_element?(view, "#checks-remove-stale", "Remove 3 records that no longer match")
     end
 
     test "a viewer cannot remove: the permission flash answers and every row stays",
