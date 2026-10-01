@@ -13,15 +13,26 @@
 // the tester and prints the observation, `note` and `finish` close the tester's
 // side of the run, and `close` stops it. The commands that inspect a run
 // afterwards work from its files and need no driver: `report` prints the
-// proxies, and `finalize` writes `result.json` from the check's exit code.
+// proxies, `finalize` writes `result.json` from the check's exit code and
+// `record` writes the replay trail of a run that passed. `replay` is the one
+// inspection command that needs the driver again, because it re-runs the
+// recorded steps through it.
 
 import { execFileSync, spawn } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  writeFileSync
+} from "node:fs";
 import { createConnection } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { MAX_STEPS } from "./actions.mjs";
+import { COUNTED, MAX_STEPS } from "./actions.mjs";
 import { readRecords } from "./driver.mjs";
 import { STUB_PATH_PREFIXES } from "./events.mjs";
 import { computeProxies } from "./metrics.mjs";
@@ -29,10 +40,12 @@ import { loadScenarios, selectScenarios } from "./scenario.mjs";
 import {
   gitPrimary,
   readSession,
+  replaysRoot,
   resultStatus,
   runDirName,
   runsRoot,
   socketPathFor,
+  trailFileName,
   writeSession
 } from "./session.mjs";
 
@@ -53,6 +66,12 @@ const STEP_TIMEOUT_MS = 60_000;
 // The poll interval while `open` waits; a tool interval is not a deadline.
 const OPEN_POLL_MS = 250;
 
+// A replay is one long command: every step is a live step and a trail may
+// wait for an import. The client's deadline is the sum of the waits the trail
+// asked for plus an allowance per step, so a trail that waits does not get
+// reported as a driver that hung.
+const REPLAY_TIMEOUT_SLACK_MS = 60_000;
+
 // The processes a run records in `session.json`. Nothing else is ever stopped.
 const PROCESS_NAMES = ["phoenix", "driver"];
 
@@ -67,7 +86,9 @@ const USAGE = `usage: node assets/qa/drive.mjs <command> [options]
   finish --run DIR --claim done|gave-up [--reason T] [--eyes host-vision|codex-relay|source-only]
   close --run DIR [--timeout S]
   report --run DIR
-  finalize --run DIR --check-exit N --server-alive yes|no`;
+  finalize --run DIR --check-exit N --server-alive yes|no
+  record --run DIR
+  replay --run DIR --trail FILE`;
 
 // `--flag value` pairs, `--flag` booleans, and bare words collected as `_`.
 export function parseFlags(argv, booleans = []) {
@@ -170,6 +191,10 @@ async function main(argv) {
       return report(rest);
     case "finalize":
       return finalize(rest);
+    case "record":
+      return record(rest);
+    case "replay":
+      return replay(rest);
     case undefined:
       throw new Error(USAGE);
     default:
@@ -506,6 +531,125 @@ export function formatReportReply(reply) {
   return `${JSON.stringify(reply.proxies ?? null, null, 2)}\n`;
 }
 
+// The trail's steps (contract C-7): the ok action steps of a passing run, in
+// order, each carrying exactly the target the vocabulary produced. `look` and
+// `scroll` are left out because they change nothing the application can drift
+// on, `wait` is kept because an import or a validation is asynchronous and a
+// trail that dropped the wait would fail on a correct flow (rule R7), and a
+// step a replay produced is left out because a replay is not an exploration.
+const TRAIL_ACTIONS = [...COUNTED, "wait"];
+
+// The trail of one run. The scenario, the run it came from and the commit it
+// was recorded at are what a reader needs to know the path is being replayed
+// against that state.
+export function buildTrail({ session, records }) {
+  return {
+    scenario: session.scenario,
+    recordedFrom: session.run,
+    commit: session.commit ?? null,
+    steps: records
+      .filter(
+        record =>
+          record.kind === "step" &&
+          record.ok === true &&
+          TRAIL_ACTIONS.includes(record.action) &&
+          record.replay !== true
+      )
+      .map(record => ({ action: record.action, ...record.target }))
+  };
+}
+
+// Written through a temporary file in the same folder and renamed, so a reader
+// never sees a half-written trail and a replay can never load one.
+function writeJsonAtomic(path, value) {
+  const temporary = `${path}.${process.pid}.tmp`;
+
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  renameSync(temporary, path);
+
+  return path;
+}
+
+// `record` writes the replay trail of a run whose check passed. Only a
+// completed run is recorded: a trail built from a run that did not reach its
+// goal would replay a path the application never really took, and its drift
+// would say nothing (rule R9).
+function record(argv) {
+  const flags = parseFlags(argv);
+  const { run: runDir } = flags;
+
+  if (runDir === undefined) throw new Error("record needs --run");
+
+  const session = readSession(runDir);
+  const resultPath = join(runDir, "result.json");
+
+  if (!existsSync(resultPath)) {
+    throw new Error(`record needs ${resultPath}, which finalize writes`);
+  }
+
+  const result = JSON.parse(readFileSync(resultPath, "utf8"));
+
+  if (result.status !== "completed") {
+    return failure(`the run is ${result.status}, so no trail is recorded: only a passing run is replayed`, 1);
+  }
+
+  const trail = buildTrail({ session, records: readRecords(runDir) });
+  const path = writeJsonAtomic(
+    join(replaysRoot(gitPrimary()), trailFileName(session.scenario)),
+    trail
+  );
+
+  return { ok: true, code: 0, trail: path, steps: trail.steps.length };
+}
+
+// `replay` hands a trail to the run's driver. A trail for another scenario is
+// a usage error rather than a drift: the steps would be answered by a page the
+// scenario never visits, so the failure would name a step that never drifted.
+function replay(argv) {
+  const flags = parseFlags(argv);
+  const { run: runDir } = flags;
+
+  if (runDir === undefined || flags.trail === undefined) {
+    throw new Error("replay needs --run and --trail");
+  }
+
+  const session = readSession(runDir);
+  const trail = JSON.parse(readFileSync(flags.trail, "utf8"));
+
+  if (trail?.scenario !== session.scenario) {
+    throw new Error(
+      `the trail is for "${trail?.scenario ?? "no scenario"}" but this run is ${session.scenario}`
+    );
+  }
+
+  const waits = (trail.steps ?? [])
+    .filter(step => step.action === "wait")
+    .reduce((total, step) => total + (Number(step.timeout) || 30) * 1000, 0);
+
+  return sendCommand(
+    session.socket,
+    { cmd: "replay", run: runDir, trail },
+    { timeoutMs: waits + (trail.steps?.length ?? 0) * STEP_TIMEOUT_SLACK_MS + REPLAY_TIMEOUT_SLACK_MS }
+  );
+}
+
+// The replay's own line. A drift names the step, the error and the screenshot,
+// because the whole value of a replay is knowing which step stopped; a clean
+// replay says how many steps ran and what it removed.
+export function formatReplayReply(reply) {
+  if (reply.ok !== true) {
+    const shot = reply.screenshot ? ` (screenshot: ${reply.screenshot})` : "";
+
+    return `drift at step ${reply.failedStep ?? "?"}: ${reply.error ?? "unknown"}${shot}\n`;
+  }
+
+  const pruned = reply.pruned ?? [];
+  const removed = pruned.length === 0 ? "" : `; pruned ${pruned.length} stale capture${pruned.length === 1 ? "" : "s"}`;
+
+  return `replay ok: ${reply.steps} steps, no drift${removed}\n`;
+}
+
 const invokedDirectly =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
@@ -517,7 +661,9 @@ if (invokedDirectly) {
           ? formatStepReply(reply)
           : process.argv[2] === "report"
             ? formatReportReply(reply)
-            : `${JSON.stringify(reply)}\n`
+            : process.argv[2] === "replay"
+              ? formatReplayReply(reply)
+              : `${JSON.stringify(reply)}\n`
       );
       process.exit(typeof reply.code === "number" ? reply.code : reply.ok === true ? 0 : 2);
     })

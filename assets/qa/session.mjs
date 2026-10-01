@@ -64,6 +64,19 @@ export function runDirName(date, scenarioId) {
   return `${stamp}-${scenarioId.replaceAll("/", "-")}`;
 }
 
+// `<primary>/.specs/ux-qa/replays` holds the trail a passing run records
+// (rule R9). It resolves beside the runs root so the replay client, the driver
+// and the launcher cannot disagree about where a trail lives.
+export function replaysRoot(primary) {
+  return join(primary, ".specs", "ux-qa", "replays");
+}
+
+// `JRNY-001-import.json`: a trail is named by its scenario ID with the slash
+// replaced, the same shape a run directory name takes.
+export function trailFileName(scenarioId) {
+  return `${scenarioId.replaceAll("/", "-")}.json`;
+}
+
 export function sessionPath(runDir) {
   return join(runDir, SESSION_FILE);
 }

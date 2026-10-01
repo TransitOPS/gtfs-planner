@@ -17,16 +17,17 @@
 // — the parser, the registry and the command loop — never needs the browser
 // package to be installed.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, connect } from "node:net";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { ACCOUNTS } from "./accounts.mjs";
 import { MUTATING, validateStep } from "./actions.mjs";
+import { assertRootIgnored, captureRoot, journeyCapturePath, staleCaptureFiles } from "./captures.mjs";
 import { EventBuffer } from "./events.mjs";
 import { loadScenarios, selectScenarios, briefText } from "./scenario.mjs";
-import { readSession } from "./session.mjs";
+import { gitPrimary, readSession } from "./session.mjs";
 
 // The device viewport every tester run uses; the review reads captures at this
 // size, so a capture taken elsewhere is not comparable.
@@ -734,8 +735,11 @@ function capturePath(runDir, n) {
 
 // The single code path for a tester step: live steps and replay steps both
 // come through here, so the vocabulary check, the settle, the record and the
-// observation cannot drift apart. `requireIntent: false` is the replay shape.
-export async function executeStep(state, { flags, requireIntent = true } = {}) {
+// observation cannot drift apart. `requireIntent: false` is the replay shape,
+// `captureTo` sends a replay step's screenshot to the capture root instead of
+// the run's own folder, and `replay` marks the record so a reader can tell the
+// two apart in one step log.
+export async function executeStep(state, { flags, requireIntent = true, captureTo = null, replay = false } = {}) {
   const { page, session, scenario, buffer } = state;
 
   // A finished run is closed to steps, and nothing is appended when it is.
@@ -812,7 +816,7 @@ export async function executeStep(state, { flags, requireIntent = true } = {}) {
   // network errors in the record and the observation are the ones since the
   // previous step.
   const events = buffer.drain();
-  const wanted = capturePath(session.run, n);
+  const wanted = captureTo ?? capturePath(session.run, n);
   const captured = await page
     .screenshot({ path: wanted })
     .then(() => wanted, () => null);
@@ -833,6 +837,9 @@ export async function executeStep(state, { flags, requireIntent = true } = {}) {
     target: targetOf(step),
     intent,
     expected,
+    // Only a replayed step carries the mark, so a live step's record keeps
+    // exactly the fields contract C-5 names.
+    ...(replay ? { replay: true } : {}),
     urlBefore,
     urlAfter: observation.url,
     ok: error === null,
@@ -929,6 +936,96 @@ export function registerFinish(registry, state) {
   return registry;
 }
 
+// The capture files a shorter trail leaves behind: this scenario's own
+// `<slug>-s<NNN>` files whose step number is above the new count. Only this
+// scenario's slug is selected, so a replay never removes another scenario's
+// captures out of the same journey folder.
+export function pruneStaleCaptures(folder, slug, keepCount, { list = readdirSync, remove = rmSync } = {}) {
+  if (!existsSync(folder)) return [];
+
+  const stale = staleCaptureFiles(list(folder), slug, keepCount);
+
+  for (const fileName of stale) remove(join(folder, fileName));
+
+  return stale;
+}
+
+// The screenshot of the step a replay stopped at, kept in the run's own
+// folder: it is the evidence of the drift, and the run is what the reviewer
+// reads. A screenshot that cannot be taken is reported as none rather than
+// failing the step that already failed.
+async function failureCapture(state, n) {
+  const wanted = join(state.session.run, "captures", `fail-s${String(n).padStart(CAPTURE_DIGITS, "0")}.png`);
+
+  return state.page.screenshot({ path: wanted }).then(() => wanted, () => null);
+}
+
+// Replay executes a recorded trail (contract C-7, rule R9). Every step goes
+// through the same executor a live step uses, so the vocabulary check, the
+// settle and the record are the ones a tester walked; what differs is the
+// capture, which is written to the capture root under the step's trail number,
+// and the fact that an intent and an expectation are not required. The first
+// failing step stops the replay: a drift detector never carries on and never
+// explores, because the steps after a failed one say nothing about the
+// application. A trail that passes leaves the capture folder holding exactly
+// one capture per trail step, so a shorter trail takes its own stale files
+// with it.
+//
+// `primary` and `isIgnored` name the two things outside this repository — the
+// primary checkout and git's answer about the capture root — so a caller can
+// address a disposable root instead of the real one.
+export function registerReplay(registry, state, { primary = gitPrimary, isIgnored } = {}) {
+  registry.register("replay", async command => {
+    const trail = command.trail;
+
+    if (trail === null || typeof trail !== "object" || !Array.isArray(trail.steps)) {
+      return failure("a replay needs a trail with a steps array", 1);
+    }
+
+    // The capture root is proved ignored before the first write, so a replay
+    // can never put a capture into a commit. A root that cannot be proven
+    // ignored is a harness error and no step runs.
+    let root;
+
+    try {
+      root = assertRootIgnored(captureRoot(primary()), isIgnored);
+    } catch (error) {
+      return failure(error);
+    }
+
+    const scenarioId = state.scenario.id ?? state.session.scenario;
+    const folder = dirname(journeyCapturePath(root, scenarioId, 1));
+
+    mkdirSync(folder, { recursive: true });
+
+    for (const [index, step] of trail.steps.entries()) {
+      const n = index + 1;
+      const reply = await executeStep(state, {
+        flags: step,
+        requireIntent: false,
+        replay: true,
+        captureTo: journeyCapturePath(root, scenarioId, n)
+      });
+
+      if (reply.ok !== true) {
+        return {
+          ok: false,
+          code: 1,
+          failedStep: n,
+          error: reply.error ?? "unknown",
+          screenshot: await failureCapture(state, reply.n ?? n)
+        };
+      }
+    }
+
+    const pruned = pruneStaleCaptures(folder, state.scenario.slug, trail.steps.length);
+
+    return ok({ steps: trail.steps.length, pruned });
+  });
+
+  return registry;
+}
+
 async function shutdown(state, server) {
   if (state.shuttingDown) return;
 
@@ -983,8 +1080,11 @@ export async function run(argv) {
   writeFileSync(join(runDir, "brief.md"), briefText(scenario), "utf8");
 
   const state = createState({ session, scenario });
-  const registry = registerFinish(
-    registerNote(registerStep(registerBuiltins(createRegistry(), state), state), state),
+  const registry = registerReplay(
+    registerFinish(
+      registerNote(registerStep(registerBuiltins(createRegistry(), state), state), state),
+      state
+    ),
     state
   );
 
