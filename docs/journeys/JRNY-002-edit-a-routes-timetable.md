@@ -372,15 +372,21 @@ by its backticked ID, never by an image path.
 - **Reference actions:** 6
 - **Entry route:** /gtfs/:version/routes/:route_id/schedules
 
-The six reference actions are the ones after sign-in, waits excluded: press the route in the Routes
-list; press `Schedules` in the route navigation; press `Edit` on the trip that leaves Nye County
-Airport (Demo) at 1:00 p.m.; select the `Departure` field's value; type the new time; press
-`Save trip`. Reading the flash and the reloaded row are not actions. On the demo feed the timetable
-displays 24-hour clocks, so the field the tester types into shows `13:00` where the goal says
-1:00 p.m.; the same offset applies to every other time in this goal.
+The six reference actions are the ones after sign-in, waits excluded, and the executed reference
+trail reaches them: open `Routes` from the dashboard; open route `AAMV` in the list; press
+`Schedules` in the route navigation; press `Edit trip AAMV3` on the row that leaves Nye County
+Airport (Demo) at 13:00; type `13:45` into `Departure`; press `Save trip`. Reading the flash and the
+reloaded row are not actions. On the demo feed the timetable displays 24-hour clocks, so the field
+the tester types into shows `13:00` where the goal says 1:00 p.m.; the same offset applies to every
+other time in this goal.
 
-This count is an estimate until the reference trail for `JRNY-002/change-times` runs, and the
-executed trail's count replaces it (OQ-006).
+The row's Edit button is named for the trip it edits (`Edit trip AAMV3`), because a timetable with
+two rows otherwise carries two buttons whose accessible name is only `Edit`. The recorded trail's
+seventh step is a `wait` on the flash and is not counted.
+
+The count is the executed trail's, recorded at
+`.specs/ux-qa/reference-trails/JRNY-002-change-times.json`; it replaces the traced estimate
+(OQ-006).
 
 ### add-trip
 
@@ -421,8 +427,9 @@ trail's count replaces it (OQ-006).
   `calendar_attributes.txt` and therefore no calendar description. Whether a tester should be sent
   to a feed that names its calendars is a seeding decision, not a documentation one. Owner: product
   owner.
-- OQ-006 — `Reference actions: 6` and `8` are counted from the traced flow, not executed. Each
-  reference trail's count replaces its own estimate. Owner: the reference-trail step.
+- OQ-006 — `Reference actions: 6` is the executed `change-times` trail's count; `8` is still
+  counted from the traced `add-trip` flow, not executed. Each reference trail's count replaces its
+  own estimate. Owner: the reference-trail step.
 - OQ-007 — No capture of this journey exists, so section 9 cites none. Which states the pilot
   captures must cover — the timetable, the Add drawer's result card, the Edit drawer, the undo bar —
   is a decision for the pilot steps. Owner: product owner.
@@ -432,3 +439,4 @@ trail's count replaces it (OQ-006).
 | Date | Version | Change | Author |
 |---|---|---|---|
 | 2026-10-01 | 1 | Initial page: stages, seams, examples and the `change-times` and `add-trip` scenarios for JRNY-002 | spec step 38 |
+| 2026-10-01 | 2 | `change-times`: the executed reference trail's six actions replace the traced estimate, and each row's Edit button is named for its trip | spec step 63 |
