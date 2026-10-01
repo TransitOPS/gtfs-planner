@@ -52,6 +52,23 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   The headers are `PlannerComponents.sort_header/1`, which carries `aria-sort`
   and the indicator; the grid keeps its own sticky chrome in `#rosters-grid`'s
   CSS, so the header looks the same whether or not it sorts.
+
+  ## A row is one Tab stop, and the server says so
+
+  Seven days a row each being a tab stop is forty tab presses to cross one
+  week, so each row's slots share one roving tabindex: Monday carries
+  `tabindex="0"` in the server's own HTML and the other six `-1`, and the
+  `.RosterRows` hook moves the zero when a key arrives. The split is the Runs
+  duty chart's and the reason for it is the same: a client-owned tabindex
+  leaves a row with no stop at all in the HTML a browser receives first, which
+  is a row no keyboard can enter. `Enter` is deliberately not in the hook — a
+  slot is a real `<button>`, so activating the focused one is the browser's
+  own click, and the handler behind it is the page's `open_slot` event.
+
+  The hint under the table names the keys in words rather than leaving them to
+  be discovered, because a keyboard rule a reader has to find is a rule most
+  readers never use. While the grid is paused every slot is disabled and none of
+  the keys do anything, so the hint says the pause instead.
   """
 
   use GtfsPlannerWeb, :html
@@ -531,7 +548,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
       tabindex="-1"
       class="rosters-grid-scroll"
     >
-      <table id="rosters-grid" aria-describedby="rosters-grid-hint">
+      <table id="rosters-grid" aria-describedby="rosters-grid-hint" phx-hook=".RosterRows">
         <caption class="sr-only">
           Roster lines: one week of runs per line, with days off, weekly paid time,
           problems and operator
@@ -624,7 +641,86 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
         </tbody>
       </table>
     </div>
+    <div class="flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-subtle px-5 py-3 text-[13px] text-muted">
+      <p id="rosters-grid-hint">{keyboard_hint(@paused_reason)}</p>
+    </div>
+
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".RosterRows">
+      // A row's seven days are ONE tab stop, not one tab stop each.
+      //
+      // The server owns the tabindex, so a row that has never been focused and a
+      // row whose focus has moved look the same in the initial HTML; this hook
+      // only moves focus and re-points the roving tabindex when a key arrives.
+      // That split is deliberate: if the client owned the tabindex, a row would
+      // arrive with no tab stop at all and be unreachable by keyboard.
+      export default {
+        mounted() {
+          // The day each row was last left on, by row id. Re-applied after a
+          // patch, so a re-streamed row comes back on the day its reader was
+          // standing on rather than silently jumping back to Monday.
+          this.rover = {}
+          this.handleKeydown = e => this.move(e)
+          this.el.addEventListener("keydown", this.handleKeydown)
+          this.apply()
+        },
+        updated() {
+          this.apply()
+        },
+        destroyed() {
+          this.el.removeEventListener("keydown", this.handleKeydown)
+        },
+        apply() {
+          this.el.querySelectorAll("#rosters-grid-body tr").forEach(row => {
+            const days = Array.from(row.querySelectorAll(".rosters-slot"))
+            if (days.length === 0) return
+            const to = Math.min(this.rover[row.id] ?? 0, days.length - 1)
+            days.forEach((day, i) => { day.tabIndex = i === to ? 0 : -1 })
+          })
+        },
+        // Only the four keys a roving row owns. Everything else is left alone,
+        // so Tab still leaves the row, Enter still activates the button, and a
+        // reader's own browser shortcuts keep working.
+        move(e) {
+          const keys = ["ArrowRight", "ArrowLeft", "Home", "End"]
+          if (!keys.includes(e.key)) return
+
+          const day = e.target.closest?.(".rosters-slot")
+          if (!day || !this.el.contains(day)) return
+
+          // One row, its seven days in document order. The empty-filter row
+          // carries no slots and is skipped by the length check.
+          const row = day.closest("tr")
+          const days = Array.from(row.querySelectorAll(".rosters-slot"))
+          const index = days.indexOf(day)
+          if (index < 0) return
+
+          const last = days.length - 1
+          // Clamped rather than wrapped: Right on Sunday and Left on Monday
+          // stay where they are. Wrapping would make a reader who overshot
+          // believe they had changed row.
+          const to = {
+            ArrowRight: Math.min(index + 1, last),
+            ArrowLeft: Math.max(index - 1, 0),
+            Home: 0,
+            End: last
+          }[e.key]
+
+          e.preventDefault()
+          this.rover[row.id] = to
+          this.apply()
+          days[to].focus()
+        }
+      };
+    </script>
     """
+  end
+
+  # The hint, or the pause. One sentence, written once, because the table's
+  # `aria-describedby` and the paragraph a reader reads are the same fact.
+  defp keyboard_hint(paused_reason) do
+    paused_reason ||
+      "A row’s seven days are one Tab stop. Left and Right move between days; " <>
+        "Home and End jump to Monday and Sunday. Enter opens the day."
   end
 
   # "Monday · Weekday" for each weekday's own heading, read from the base week
@@ -685,6 +781,11 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   hole in the row. What each state carries is in `data-slot`, so a test and a
   reviewer can tell work from off from stale without reading the words.
 
+  The `tabindex` is the roving half of one Tab stop per row: Monday is the
+  stop and the other six are skipped, and the `.RosterRows` hook on the table
+  moves the zero. It is server-rendered so the row has a stop in the HTML the
+  browser receives before any script runs.
+
   The warning marker is on the **later** day of a short rest, because that is the
   day the planner would change: it is the one that starts too soon.
   """
@@ -705,6 +806,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
         run_errors?(@line, @weekday) && "rosters-slot-error"
       ]}
       data-slot={slot_state(@line, @weekday)}
+      tabindex={rover_tabindex(@weekday)}
       data-warning={slot_warning(@line, @weekday)}
       phx-click="open_slot"
       phx-value-line={@line.id}
@@ -725,6 +827,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
     </button>
     """
   end
+
+  # Monday is the row's tab stop until a key moves it. A weekday outside the
+  # week (which the composition never produces) is not a stop either, so a
+  # malformed index cannot leave a row with two.
+  defp rover_tabindex(1), do: 0
+  defp rover_tabindex(_weekday), do: -1
 
   # The slot's three states, read from the composition: no row for the weekday is
   # a day off, a stale slot says so, and anything else is a working day.

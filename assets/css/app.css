@@ -1171,12 +1171,16 @@ body {
 #rosters-page .rosters-slot:disabled { cursor: not-allowed; }
 #rosters-page .rosters-slot:disabled:hover { border-color: transparent; }
 
+/* One focus ring for the grid's own controls, at the app's focus token: 2px of
+   `--color-focus` set off the target by 2px, the same ring every other page's
+   controls carry. A slot is a tinted target inside a dense table, so the ring
+   has to clear the slot's own border to be seen at all. */
 #rosters-page .rosters-slot:focus-visible,
 #rosters-page .rosters-line-link:focus-visible,
 #rosters-page .rosters-pick-link:focus-visible {
   z-index: 1;
-  outline: 3px solid var(--color-focus);
-  outline-offset: 1px;
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
 }
 
 /* Weekly paid: hours and minutes, right-aligned, with the hours over 40 beneath
