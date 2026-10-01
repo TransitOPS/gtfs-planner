@@ -351,7 +351,8 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
       transfers: review_transfers(stop, new_point, audit),
       relief_points: review_relief_points(stop, audit),
       suggestions: routed.suggestions,
-      fingerprint: review_fingerprint(stop, new_point, users, audit)
+      fingerprint:
+        review_fingerprint(stop, new_point, users, affected_lock_versions(stop, users, audit))
     }
   end
 
@@ -617,22 +618,27 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   # unreviewed. Hashing the fields the review actually read closes that, and
   # is also what makes the fingerprint mean what it says: it covers the
   # review's inputs, not merely a clock.
-  defp review_fingerprint(stop, new_point, users, audit) do
+  defp review_fingerprint(stop, new_point, users, lock_versions) do
     pattern_ids = users |> Enum.map(& &1.pattern_id) |> Enum.sort()
-    lock_versions = affected_lock_versions(stop, users, audit)
 
-    :crypto.hash(
-      :sha256,
-      inspect({
-        stop.id,
-        stop.updated_at,
-        point_of(stop),
-        new_point,
-        pattern_ids,
-        lock_versions,
-        stop_content(stop)
-      })
-    )
+    digest({
+      stop.id,
+      stop.updated_at,
+      point_of(stop),
+      new_point,
+      pattern_ids,
+      lock_versions,
+      stop_content(stop)
+    })
+  end
+
+  # The hash of a term's whole binary encoding, in a form that does not
+  # depend on map key order. `inspect/1` is not used here: it stops printing a
+  # collection after 50 elements, so for a stop on many patterns or segments
+  # the later elements would never reach the hash and a change to them would
+  # read as no change at all.
+  defp digest(term) do
+    :crypto.hash(:sha256, :erlang.term_to_binary(term, [:deterministic]))
     |> Base.encode16(case: :lower)
   end
 
@@ -658,8 +664,15 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
           segment.gtfs_version_id == ^audit.gtfs_version_id and
           (segment.from_stop_id == ^stop.stop_id or segment.to_stop_id == ^stop.stop_id) and
           segment.to_stop_id in ^tos,
-      select: {segment.from_stop_id, segment.to_stop_id, segment.lock_version},
-      order_by: [asc: segment.from_stop_id, asc: segment.to_stop_id]
+      select:
+        {segment.from_stop_id, segment.to_stop_id, segment.from_occurrence_id,
+         segment.lock_version},
+      order_by: [
+        asc: segment.from_stop_id,
+        asc: segment.to_stop_id,
+        asc: segment.from_occurrence_id,
+        asc: segment.id
+      ]
     )
     |> Repo.all()
   end
@@ -727,7 +740,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
     stop = lock_stop!(stop_uuid, audit)
     new_point = new_point(Map.get(options, :point) || coords_from(attrs))
 
-    :ok = refuse_moved_review(stop, new_point, options, audit)
+    {:ok, reviewed} = refuse_moved_review(stop, new_point, options, audit)
     :ok = refuse_unanswered_far_move(stop, new_point, options)
 
     editable = move_attrs(attrs, new_point, audit)
@@ -737,7 +750,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
         audit_move(stop, moved, attrs, new_point, options, audit)
 
         %{redrawn: redrawn, stale: stale} =
-          redraw_after_move(moved, options, audit)
+          redraw_after_move(moved, reviewed, options, audit)
 
         %{stop: moved, redrawn: redrawn, stale: stale}
 
@@ -752,13 +765,17 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   # the same old point it saw when the editor was shown the review. Reading
   # the stop again after the write would compare the new point against itself
   # and never match — which would make every apply answer `:stale_review`.
+  #
+  # Answers `{:ok, lock_versions}`, the segment versions the matching
+  # fingerprint covered.
   defp refuse_moved_review(stop, new_point, options, audit) do
     users = pair_users_for(Alignments.stop_pairs(audit, stop), audit)
 
-    expected = review_fingerprint(stop, new_point, users, audit)
+    lock_versions = affected_lock_versions(stop, users, audit)
+    expected = review_fingerprint(stop, new_point, users, lock_versions)
 
     if matches_fingerprint?(Map.get(options, :fingerprint), expected) do
-      :ok
+      {:ok, lock_versions}
     else
       Repo.rollback(:stale_review)
     end
@@ -829,7 +846,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   # `:redraw` hands the geometry to step 15; `:keep` writes the coordinates
   # and nothing else, so every pattern the review listed is stale by
   # definition — the editor has decided the lines stay as they are.
-  defp redraw_after_move(moved, options, audit) do
+  defp redraw_after_move(moved, reviewed, options, audit) do
     case Map.get(options, :lines, :keep) do
       :redraw ->
         case Alignments.redraw_stop_pairs!(
@@ -838,7 +855,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
                %{
                  suggestions: Map.get(options, :suggestions, %{}),
                  failed: Map.get(options, :failed, %{}),
-                 reviewed_lock_versions: reviewed_lock_versions(moved, options, audit),
+                 reviewed_lock_versions: reviewed_lock_versions(reviewed),
                  audit_context: audit
                }
              ) do
@@ -858,16 +875,12 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
     end
   end
 
-  # The segment lock versions as they stand inside this transaction, so
-  # step 15 refuses a row that moved on between the review and the apply.
-  defp reviewed_lock_versions(moved, options, audit) do
-    if is_binary(Map.get(options, :fingerprint)) do
-      Enum.reduce(affected_lock_versions(moved, [], audit), %{}, fn {from, to, version}, acc ->
-        Map.put(acc, {from, to, nil}, version)
-      end)
-    else
-      %{}
-    end
+  # The segment lock versions the fingerprint check just matched against the
+  # review, keyed the way the redraw looks segments up. The redraw reads each
+  # segment again before writing it, and a segment another editor saved in
+  # between is refused there instead of being overwritten.
+  defp reviewed_lock_versions(reviewed) do
+    Map.new(reviewed, fn {from, to, occurrence, version} -> {{from, to, occurrence}, version} end)
   end
 
   @doc """
@@ -922,19 +935,15 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
       |> Enum.map(&{&1.key, &1.count})
       |> Enum.sort()
 
-    :crypto.hash(
-      :sha256,
-      inspect({
-        stop.id,
-        stop.stop_id,
-        stop.updated_at,
-        stop_content(stop),
-        items,
-        audit.organization_id,
-        audit.gtfs_version_id
-      })
-    )
-    |> Base.encode16(case: :lower)
+    digest({
+      stop.id,
+      stop.stop_id,
+      stop.updated_at,
+      stop_content(stop),
+      items,
+      audit.organization_id,
+      audit.gtfs_version_id
+    })
   end
 
   @doc """
@@ -1431,19 +1440,15 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   # reviewed. Every count is in the hash because a new reference row changes
   # what the replace would do without changing either stop.
   defp replace_fingerprint(old, new, counts, audit) do
-    :crypto.hash(
-      :sha256,
-      inspect({
-        {old.id, old.stop_id, old.updated_at, stop_content(old)},
-        {new.id, new.stop_id, new.updated_at, stop_content(new)},
-        old.location_type,
-        new.location_type,
-        counts,
-        audit.organization_id,
-        audit.gtfs_version_id
-      })
-    )
-    |> Base.encode16(case: :lower)
+    digest({
+      {old.id, old.stop_id, old.updated_at, stop_content(old)},
+      {new.id, new.stop_id, new.updated_at, stop_content(new)},
+      old.location_type,
+      new.location_type,
+      counts,
+      audit.organization_id,
+      audit.gtfs_version_id
+    })
   end
 
   @doc """

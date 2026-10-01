@@ -200,6 +200,30 @@ defmodule GtfsPlanner.Gtfs.StopEditingApplyMoveTest do
       assert unboxed(fn -> snapshot(fixture) end) == before
     end
 
+    test "a rename after the review is :stale_review for a stop on many patterns", context do
+      fixture = context.fixture
+      stub_routing(200)
+
+      # Enough segments touching the stop that a fingerprint built from a
+      # truncated printout would stop before reaching the stop's own fields.
+      unboxed(fn -> seed_feeder_patterns(fixture, 24) end)
+
+      review = review(fixture)
+
+      # `update_all` leaves `updated_at` alone, so only the stop's content
+      # tells the fingerprint that this happened.
+      unboxed(fn ->
+        Stop
+        |> where([s], s.id == ^fixture.stops["1434"].id)
+        |> Repo.update_all(set: [stop_name: "Main St (renamed)"])
+      end)
+
+      before = snapshot(fixture)
+
+      assert {:error, :stale_review} = apply_move(fixture, review, lines: :redraw)
+      assert unboxed(fn -> snapshot(fixture) end) == before
+    end
+
     test "a far move with no answer is :answer_required and changes nothing", context do
       fixture = context.fixture
       stub_routing(200)
@@ -637,6 +661,38 @@ defmodule GtfsPlanner.Gtfs.StopEditingApplyMoveTest do
         stops: stops
       }
     end)
+  end
+
+  # `count` more patterns, each arriving at 1434 from a stop of its own over
+  # a saved segment, so every one adds a segment that touches the moved stop.
+  defp seed_feeder_patterns(fixture, count) do
+    organization_id = fixture.organization.id
+    gtfs_version_id = fixture.version.id
+    route = named_route(organization_id, gtfs_version_id, "F")
+
+    for number <- 1..count do
+      feeder = "F#{number}"
+
+      stop_fixture(organization_id, gtfs_version_id, %{
+        stop_id: feeder,
+        stop_name: "Feeder #{number}",
+        stop_lat: Decimal.from_float(44.6190),
+        stop_lon: Decimal.from_float(@stop_lon)
+      })
+
+      segment(organization_id, gtfs_version_id, feeder, "1434", [[-124.06, 44.63]])
+
+      pattern_fixture(
+        organization_id,
+        gtfs_version_id,
+        route,
+        "F-#{number}",
+        [feeder, "1434"],
+        nil
+      )
+    end
+
+    :ok
   end
 
   defp seed_stops(organization_id, gtfs_version_id) do

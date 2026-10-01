@@ -792,7 +792,7 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
       }
     })
     |> Repo.all()
-    |> Enum.map(&pattern_detail(&1, stop))
+    |> pattern_details(stop)
   end
 
   defp detail_query(%{key: :transfers_from} = ref, stop) do
@@ -949,12 +949,18 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
 
   # Detail helpers. Kept together after the `detail_query/2` clauses so the
   # clauses of one function stay grouped.
-  defp pattern_detail(row, stop) do
-    %{
-      label: route_label(row.route_short_name, row.route_long_name, row.route_id, row.headsign),
-      detail: row.detail,
-      weekday_trips: Map.get(weekday_trip_counts(stop), row.route_pattern_id, 0)
-    }
+  # The weekday trip counts are one aggregate over the whole version, so they
+  # are read once for all the rows rather than once per row.
+  defp pattern_details(rows, stop) do
+    trip_counts = weekday_trip_counts(stop)
+
+    Enum.map(rows, fn row ->
+      %{
+        label: route_label(row.route_short_name, row.route_long_name, row.route_id, row.headsign),
+        detail: row.detail,
+        weekday_trips: Map.get(trip_counts, row.route_pattern_id, 0)
+      }
+    end)
   end
 
   defp weekday_trip_counts(stop) do
