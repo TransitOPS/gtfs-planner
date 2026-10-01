@@ -106,6 +106,27 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   again rather than being answered once and for all. The checks beside the text
   are advisory: they are reported, and `Alerts.save_draft/4` reads none of them.
 
+  ## The review, and the one action that finishes an alert
+
+  The last question of every sequence reads the alert back: the exact header
+  and description the row stores, the facts beside them, and the guidelines'
+  own results. It is a reading of saved answers, so it cannot describe an alert
+  the row does not hold, and it carries the Rider preview's own derivations
+  rather than a second reading of the same facts.
+
+  **Save alert** is the whole action set of that step. It writes through
+  `Alerts.save_draft/4` first, so the question "is this alert finished?" is
+  asked of the row this editor holds, and then it runs
+  `Alerts.Completion.errors/1` - the same function the row's `complete` flag
+  comes from. With questions outstanding they are listed with a link to each
+  step that answers one, and the summary takes the reader to the first; with
+  none, the editor returns to the list with the flash **Alert saved.**
+  (AC-23, FH-23).
+
+  Nothing on this step publishes. There is no Live, Scheduled, Ended, End,
+  Publish, Schedule or feed copy here or anywhere else in this LiveView,
+  because saving an alert never publishes one in this package (R2, CR-1).
+
   ## What this frame does not do
 
   It carries no publication state and no publication action: saving an alert
@@ -133,6 +154,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       progress: 1,
       question_card: 1,
       reason_question: 1,
+      review_actions: 1,
+      review_details: 1,
       rider_preview: 1,
       routes_question: 1,
       save_bar: 1,
@@ -290,6 +313,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
      |> assign(:message_review?, false)
      |> assign(:message_script_name, nil)
      |> assign(:message_guidelines, "")
+     |> assign(:review_errors, [])
+     |> assign(:review_checks, [])
      |> assign(:form, draft_form(%Alert{}))}
   end
 
@@ -1153,7 +1178,53 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     end
   end
 
+  def handle_event("save_alert", _params, socket) do
+    # The write goes first, so the completeness question is asked of the row
+    # this editor holds rather than of the row as it was before the last
+    # answer. A refused or stale write keeps the editor open, exactly as
+    # `save_and_close` does, rather than answering a question about a row the
+    # database refused (INV-1, R6).
+    case write_pending(socket) do
+      {:ok, socket} -> finish_review(socket)
+      {:refused, socket} -> {:noreply, socket}
+    end
+  end
+
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  # **Save alert** is the review's one action. The outstanding questions come
+  # from `Alerts.Completion.errors/1` - the same function the `complete` flag
+  # the row stores is derived from - so a draft with none is finished, and a
+  # draft with some is told exactly which step answers each one (AC-23).
+  defp finish_review(socket) do
+    case socket.assigns.alert do
+      nil ->
+        {:noreply, socket}
+
+      alert ->
+        case Completion.errors(alert) do
+          [] ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "Alert saved.")
+             |> push_navigate(to: alerts_path(socket))}
+
+          errors ->
+            {:noreply, assign(socket, :review_errors, review_failures(socket, errors))}
+        end
+    end
+  end
+
+  # Each outstanding question links to the editor's own URL for the step that
+  # answers it, so the summary is a way through rather than a list to read
+  # (AC-23). The step key is `Completion`'s own, and the editor falls back to
+  # the first question of the sequence for a step this alert's situation does
+  # not ask, so a stale key cannot send a reader nowhere.
+  defp review_failures(socket, errors) do
+    Enum.map(errors, fn {step, _field, message} ->
+      %{href: editor_path(socket, step: step), msg: message}
+    end)
+  end
 
   # R7, and the failure EV-16 exists to reject: a label the editor then types
   # over is no longer the stop it named. The identity is dropped here rather
@@ -2093,6 +2164,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> assign(:save_state, if(is_nil(alert), do: :idle, else: :saved))
     |> assign(:conflict, nil)
     |> assign(:pending_attrs, nil)
+    |> assign(:review_errors, [])
     |> assign(:route_query, socket.assigns[:route_query] || "")
     |> assign(:route_options, socket.assigns[:route_options] || [])
     |> assign(:route_error, nil)
@@ -2121,6 +2193,23 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> prepare_departure_question()
     |> prepare_timing_question(alert)
     |> prepare_message_question(alert)
+    |> prepare_review_question(alert)
+  end
+
+  # The review reads the same advisory checks the message step read, so the two
+  # cannot report different advice about the same stored wording (AC-22,
+  # AC-23). The outstanding questions are not read here: they are the answer to
+  # **Save alert**, which is the action that asks whether the alert is finished
+  # (AC-23), so they are cleared on every arrival and set by that one event.
+  defp prepare_review_question(socket, alert) do
+    if socket.assigns.step == :review and not is_nil(alert) do
+      checks =
+        Message.checks(message_of(alert), Message.facts(alert, message_labels(socket, alert)))
+
+      assign(socket, :review_checks, checks)
+    else
+      assign(socket, :review_checks, [])
+    end
   end
 
   # The prototype's skipped-stop list is the chosen route's own stops, in the
@@ -2581,6 +2670,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp question_hint(:message),
     do: "Add a headline and details, replace any fill-ins, and check text marked for review."
 
+  defp question_hint(:review),
+    do: "Check what riders will see. Saving keeps the alert with this version."
+
   defp question_hint(_step), do: "Choose an option to move on. You can go back at any time."
 
   # The questions this step renders. Everything else in the sequence belongs to a
@@ -2602,7 +2694,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     :message
   ]
 
-  defp placeholder_step?(step), do: step not in @choice_steps
+  defp placeholder_step?(step), do: step not in @choice_steps and step != :review
 
   defp selected_route_ids(nil), do: []
   defp selected_route_ids(alert), do: scope(alert).route_ids || []
@@ -2844,6 +2936,18 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
                     guidelines={@message_guidelines}
                   />
 
+                  <.review_details
+                    :if={@step == :review}
+                    alert={@alert}
+                    effect={@preview.effect}
+                    routes={@preview.routes}
+                    header={@preview.header}
+                    when_summary={@preview.when_summary}
+                    where={@preview.where}
+                    what={@preview.what}
+                    errors={@review_errors}
+                  />
+
                   <p :if={placeholder_step?(@step)} class="text-sm text-muted">
                     This question is still being added. Everything you have already answered is saved.
                   </p>
@@ -2947,7 +3051,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
               </.form>
             </div>
 
+            <.review_actions :if={@step == :review} effect={@preview.effect} checks={@review_checks} />
+
             <.rider_preview
+              :if={@step != :review}
               alert={@preview.alert}
               header={@preview.header}
               when_summary={@preview.when_summary}

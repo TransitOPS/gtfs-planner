@@ -1884,3 +1884,151 @@ test.describe("alert message", () => {
     await captureMessageReference(page, testInfo, "form-message", "320");
   });
 });
+
+// The review step, as spec 30's step 22 renders it: the alert as a rider reads
+// it, the facts beside it, the guidelines' own results, and Save alert in place
+// of the prototype's Publish and Schedule (AC-23). Nothing here looks for a
+// publication state or an action (R2, CR-1).
+
+// The prototype states this view is compared against.
+async function captureReviewReference(page, testInfo, state, width) {
+  if (!fs.existsSync(REFERENCE_PATH)) return;
+
+  await page.goto(`file://${REFERENCE_PATH}?state=${state}`);
+  await page.waitForLoadState("load");
+
+  await page.screenshot({
+    path: capturePath(testInfo, `review-ref-${state}-${width}.png`),
+    fullPage: false,
+  });
+}
+
+// A delay is the shortest sequence that reaches the review, and the message
+// step's Continue is the click that carries the reader on, so this walks the
+// editor's own flow rather than opening a URL for a draft that never existed.
+async function openReview(page) {
+  await openMessage(page);
+
+  await page.locator("#alert-message-continue").click();
+  await page.waitForSelector("#alert-review", { timeout: 15_000 });
+  return page.url();
+}
+
+// The same review with one question unanswered: the headline is cleared on the
+// message step, which is the one answer this path can lose without walking a
+// whole second sequence. A full page load leaves the view connecting, and a
+// change made before the editor is mounted is never sent, so every step here
+// waits for the editor the way the harness's own readiness signal says.
+async function openIncompleteReview(page) {
+  const url = await openReview(page);
+
+  await page.goto(url.replace(/step=[a-z_]+/, "step=message"));
+  await waitForEditorMounted(page);
+  await page.locator("#message-header").fill("");
+  await waitForSave(page);
+
+  await page.goto(url.replace(/step=[a-z_]+/, "step=review"));
+  await waitForEditorMounted(page);
+  await page.locator("#save-alert").click();
+  await page.waitForSelector("#review-errors", { timeout: 15_000 });
+
+  return url;
+}
+
+test.describe("alert review", () => {
+  test.describe.configure({ timeout: 120_000 });
+
+  test("a finished alert is read back and Save alert keeps it @review", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openReview(page);
+
+    // The words the editor stored are the words the review shows, beside the
+    // facts it derived from the same answers.
+    await expect(page.locator("#review-riders")).toBeVisible();
+    await expect(page.locator("#review-header")).toContainText("Route 1");
+    await expect(page.locator("#review-description")).toContainText("Route 1");
+    await expect(page.locator("#review-when")).toContainText("Oct 1");
+    await expect(page.locator("#review-where")).toContainText("Route 1");
+    await expect(page.locator("#review-what")).toContainText("Delays");
+    await expect(page.locator("#review-details")).toBeVisible();
+    await expect(page.locator("#review-guidelines")).toBeVisible();
+    await expect(page.locator("#review-check-short")).toBeVisible();
+
+    // Saving an alert never publishes one in this package, so the editor's own
+    // frame carries no publication state and no publication action.
+    await expect(page.locator("#alert-editor")).not.toContainText(/Schedule/);
+    await expect(page.locator("#alert-editor")).not.toContainText(/Publish/);
+
+    await page.screenshot({
+      path: capturePath(testInfo, "review-1440.png"),
+      fullPage: false,
+    });
+
+    // Save alert is the whole action set of this step: with nothing
+    // outstanding it finishes the draft and says so.
+    await page.locator("#save-alert").click();
+    await page.waitForURL(/\/alerts$/, { timeout: 15_000 });
+    await expect(page.locator("#alerts-page")).toBeVisible();
+    await expect(page.locator("#flash-group")).toContainText("Alert saved.");
+
+    // The reference capture navigates away from the app, so it is last.
+    await captureReviewReference(page, testInfo, "review-planned", "1440");
+  });
+
+  test("an unfinished alert lists what is missing and focuses the first @review", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    const url = await openIncompleteReview(page);
+
+    // The refusal is a list, and each entry is a way through to the step that
+    // answers it rather than a sentence to read (AC-23).
+    await expect(page.locator("#review-errors")).toContainText(
+      "This alert is not finished yet",
+    );
+    await expect(page.locator("#review-errors a")).toHaveCount(1);
+
+    const first = page.locator("#review-errors a").first();
+
+    await expect(first).toContainText("Write the headline riders will see.");
+    await expect(first).toHaveAttribute("href", /step=message/);
+
+    // Focus follows the refusal onto the first question, which is the one the
+    // reader has to answer next.
+    const focused = await page.evaluate(() => {
+      const active = document.activeElement;
+      return active ? active.textContent.trim() : null;
+    });
+
+    expect(focused).toBe("Write the headline riders will see.");
+
+    // The editor stayed on the review, and the draft is still there.
+    await expect(page.locator("#alert-question-title")).toContainText("Review alert");
+    expect(page.url()).toBe(url);
+
+    await page.screenshot({
+      path: capturePath(testInfo, "review-errors-1440.png"),
+      fullPage: false,
+    });
+  });
+
+  test("the review reads at the narrow width @review", async ({ page }, testInfo) => {
+    await page.setViewportSize(NARROW);
+    await openReview(page);
+
+    await expect(page.locator("#alert-review")).toBeVisible();
+    await expect(page.locator("#alert-review-actions")).toBeVisible();
+    await expect(page.locator("#save-alert")).toBeVisible();
+    expect(await fitsViewport(page)).toBe(true);
+
+    // The narrow viewport is shorter than the review, so this capture is the
+    // whole page: a cropped one would show the rider card and no details.
+    await page.screenshot({
+      path: capturePath(testInfo, "review-320.png"),
+      fullPage: true,
+    });
+    await captureReviewReference(page, testInfo, "review-now", "320");
+  });
+});

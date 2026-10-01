@@ -34,6 +34,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   import GtfsPlannerWeb.CoreComponents,
     only: [button: 1, callout: 1, icon: 1, input: 1, segmented_control: 1, status_badge: 1]
 
+  import GtfsPlannerWeb.PlannerComponents, only: [form_error_summary: 1]
+
   alias Phoenix.LiveView.JS
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlannerWeb.Components.RouteIdentity
@@ -2310,23 +2312,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
 
         <div id="message-guidelines" class="rounded-card bg-canvas px-4 py-3">
           <p class="text-sm font-bold text-strong">Your writing guidelines</p>
-          <ul id="message-checks" class="mt-1.5 grid gap-1">
-            <li
-              :for={check <- @checks}
-              id={"message-check-#{check.key}"}
-              class={[
-                "flex items-start gap-2 text-sm",
-                check.ok? && "text-default",
-                not check.ok? && "font-semibold text-warning-fg"
-              ]}
-            >
-              <.icon
-                name={if check.ok?, do: "hero-check", else: "hero-exclamation-triangle"}
-                class={["size-4 mt-0.5 shrink-0", check.ok? && "text-success-fg"]}
-              />
-              <span>{check.text}</span>
-            </li>
-          </ul>
+          <.advisory_checks scope="message" checks={@checks} />
 
           <details :if={@guidelines != ""} id="message-guidelines-text" class="group mt-1">
             <summary class="flex min-h-11 cursor-pointer list-none items-center justify-between text-[13px] font-[650] text-action [&::-webkit-details-marker]:hidden">
@@ -2428,6 +2414,230 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
       label -> label |> String.downcase()
     end
   end
+
+  # One list of guideline results, so the message step and the review cannot
+  # report the same checks differently. `scope` names the surface, which keeps
+  # each list's ids apart: the message step's checks and the review's are two
+  # readings of `Message.checks/2`, not one list rendered twice.
+  attr :scope, :string, required: true
+  attr :checks, :list, required: true
+
+  defp advisory_checks(assigns) do
+    ~H"""
+    <ul id={"#{@scope}-checks"} class="mt-1.5 grid gap-1">
+      <li
+        :for={check <- @checks}
+        id={"#{@scope}-check-#{check.key}"}
+        class={[
+          "flex items-start gap-2 text-sm",
+          check.ok? && "text-default",
+          not check.ok? && "font-semibold text-warning-fg"
+        ]}
+      >
+        <.icon
+          name={if check.ok?, do: "hero-check", else: "hero-exclamation-triangle"}
+          class={["size-4 mt-0.5 shrink-0", check.ok? && "text-success-fg"]}
+        />
+        <span>{check.text}</span>
+      </li>
+    </ul>
+    """
+  end
+
+  @doc """
+  The review step's body: the words a rider will read, and the facts beside them
+  (AC-23).
+
+  Two cards, in the prototype's own order. **What riders see** holds the header
+  and description exactly as the row stores them - the operator's words,
+  character for character, never a regenerated version - under the effect and
+  the route badges. **Details** holds the answers as they were saved: When from
+  `Alerts.Recurrence.summary/1`, Where riders see it and What's happening from
+  the same `Alerts.labels_for/2` labels the Rider preview reads, Why from the
+  chosen cause, and the link when the wording carries one. Every value is a
+  reading of the saved row, so the review cannot describe an alert the row does
+  not hold (CR-4).
+
+  The questions still unanswered sit above them as `<.form_error_summary>`,
+  each one a link to the step that answers it. They appear when **Save alert**
+  runs `Alerts.Completion.errors/1` and finds some, and the summary takes the
+  reader to the first: a refusal that leaves the reader on the button they just
+  pressed is a refusal they can miss (AC-23, FH-23).
+
+  The prototype's **Data sent to apps** card is absent with every publication
+  state and action, because this package saves an alert and never sends one
+  anywhere (R2, CR-1).
+  """
+  attr :alert, :any, required: true, doc: "the loaded alert, or `nil` before the first answer"
+
+  attr :effect, :atom,
+    default: nil,
+    doc: "`Alerts.Completion.effect_for/1` for this alert"
+
+  attr :routes, :list, default: [], doc: "affected route rows for their identity badges"
+  attr :header, :string, default: nil
+  attr :when_summary, :string, default: ""
+  attr :where, :string, default: nil
+  attr :what, :string, default: nil
+
+  attr :errors, :list,
+    default: [],
+    doc: "`Alerts.Completion.errors/1` for the row, as `%{href: step path, msg: message}`"
+
+  def review_details(assigns) do
+    ~H"""
+    <div id="alert-review" class="grid gap-4">
+      <%!-- The summary is rendered only after **Save alert** has found these
+           questions, so its own arrival is the moment to move the reader onto
+           it. `phx-mounted` runs once, when LiveView adds the element, which is
+           after the reply that drew it, and `:first-of-type` keeps the reader
+           on the first question rather than the last of the list. --%>
+      <div
+        :if={@errors != []}
+        id="review-errors-region"
+        phx-mounted={JS.focus(to: "#review-errors a:first-of-type")}
+      >
+        <.form_error_summary
+          id="review-errors"
+          title="This alert is not finished yet"
+          failures={@errors}
+          class=""
+        />
+      </div>
+
+      <section id="review-riders" class="overflow-clip rounded-card border border-subtle bg-white">
+        <div class="border-b border-subtle px-4 py-3 sm:px-5">
+          <h3 id="review-riders-title" class="text-base font-bold tracking-normal text-strong">
+            What riders see
+          </h3>
+        </div>
+        <div class="px-4 py-4 sm:px-5">
+          <div class={["rounded-card border border-l-4 bg-white px-4 py-3", effect_border(@effect)]}>
+            <div class="flex flex-wrap items-center gap-1.5">
+              <span
+                :if={@effect}
+                id="review-effect"
+                class="inline-flex items-center gap-1 text-[13px] font-semibold text-strong"
+              >
+                <.icon name={effect_icon(@effect)} class="size-4" />
+                {effect_label(@effect)}
+              </span>
+              <.all_routes_badge :if={@routes == [] and @effect} />
+              <span :if={@routes != []} class="flex flex-wrap items-center gap-1">
+                <RouteIdentity.route_badge :for={route <- @routes} route={route} />
+              </span>
+            </div>
+            <p id="review-header" class="mt-1.5 text-[15px] font-bold leading-snug text-strong">
+              {if blank?(@header), do: "Short message", else: @header}
+            </p>
+            <p
+              :if={not blank?(description(@alert))}
+              id="review-description"
+              class="mt-1 text-sm leading-6 text-default"
+            >
+              {description(@alert)}
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="review-details" class="overflow-clip rounded-card border border-subtle bg-white">
+        <div class="border-b border-subtle px-4 py-3 sm:px-5">
+          <h3 id="review-details-title" class="text-base font-bold tracking-normal text-strong">
+            Details
+          </h3>
+        </div>
+        <dl>
+          <.detail_row id="review-when" label="When" value={@when_summary} />
+          <.detail_row id="review-where" label="Where riders see it" value={@where} />
+          <.detail_row id="review-what" label="What's happening" value={@what} />
+          <.detail_row
+            id="review-why"
+            label="Why"
+            value={cause_label(@alert && @alert.cause)}
+          />
+          <.detail_row id="review-link" label="Link" value={url_of(@alert)} />
+        </dl>
+      </section>
+    </div>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :label, :string, required: true
+  attr :value, :string, default: nil
+
+  defp detail_row(assigns) do
+    ~H"""
+    <div id={@id} class="grid gap-1 border-t border-subtle px-4 py-3 sm:grid-cols-[200px_1fr] sm:px-5">
+      <dt class="text-sm text-muted">{@label}</dt>
+      <dd class="text-sm text-strong">{if blank?(@value), do: "Not chosen yet", else: @value}</dd>
+    </div>
+    """
+  end
+
+  @doc """
+  The review step's right-hand card: what saving this alert means, the writing
+  guidelines' own results, and the one action that finishes it (AC-23).
+
+  **Save alert** is the whole action set of this step. It is the prototype's
+  **Publish alert** and **Schedule alert** with the publication this package
+  does not do removed, so the review ends in saving a draft rather than in
+  sending one (R2, CR-1).
+
+  A `:no_service` alert says what that effect does to a rider's trip plan,
+  because it is the one effect that changes what a planner suggests rather than
+  what an app displays. No other effect gets a consequence sentence, because no
+  other effect has one to give.
+
+  The checks are `Message.checks/2` over the same stored answer the message step
+  read, so the review reports the same advice the operator already saw, and
+  nothing here refuses the save: the checks are advisory (AC-12, AC-22).
+  """
+  attr :effect, :atom, default: nil, doc: "`Alerts.Completion.effect_for/1` for this alert"
+  attr :checks, :list, default: [], doc: "`Message.checks/2` over the stored answer"
+
+  def review_actions(assigns) do
+    ~H"""
+    <aside id="alert-review-actions" class="grid content-start gap-4 lg:sticky lg:top-4">
+      <section class="grid gap-3 rounded-card border border-subtle bg-white p-4 sm:p-5">
+        <h2 id="review-actions-title" class="text-base font-bold tracking-normal text-strong">
+          Save this alert
+        </h2>
+        <p id="review-outcome" class="text-sm text-default">
+          Saving keeps this alert with the version you are editing. You can change any answer,
+          and the message, whenever you come back.
+        </p>
+
+        <p
+          :if={@effect == :no_service}
+          id="review-no-service"
+          class="rounded-card bg-warning-bg px-3 py-2 text-sm text-warning-fg"
+        >
+          Trip planners may show these trips as cancelled.
+        </p>
+
+        <div id="review-guidelines" class="rounded-card bg-canvas px-3 py-2.5">
+          <p id="review-guidelines-title" class="text-sm font-bold text-strong">
+            Your writing guidelines
+          </p>
+          <p :if={@checks == []} id="review-checks-empty" class="text-sm text-muted">
+            Write a headline and details, and this is where they are checked against your
+            guidelines.
+          </p>
+          <.advisory_checks scope="review" checks={@checks} />
+        </div>
+
+        <.button id="save-alert" type="button" variant="primary" class="w-full" phx-click="save_alert">
+          <.icon name="hero-check" class="size-4" /> Save alert
+        </.button>
+      </section>
+    </aside>
+    """
+  end
+
+  defp url_of(%{message: %{url: url}}), do: url
+  defp url_of(_alert), do: nil
 
   @doc """
   The banner a stale save raises in place of the ordinary question body.
