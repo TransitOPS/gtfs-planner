@@ -37,7 +37,10 @@ defmodule GtfsPlanner.Reachability.Runner do
         diagnostics: graph.diagnostics,
         topology: topology,
         started_at: started_at,
-        completed_at: completed_at
+        completed_at: completed_at,
+        # The digest covers this exact snapshot, not a later database read, so
+        # an edit made after the run cannot describe what was routed.
+        input_provenance: Envelope.input_provenance(snapshot)
       })
 
     {:ok, envelope}
