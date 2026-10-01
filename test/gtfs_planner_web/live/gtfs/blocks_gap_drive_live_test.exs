@@ -141,8 +141,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
   defp relief_limit!(context, minutes) do
     assert {:ok, :ok} =
              Gtfs.update_relief_settings(
-               context.organization.id,
-               context.version.id,
+               GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                 context.organization.id,
+                 context.version.id
+               ),
                nil,
                %{max_piece_minutes: minutes, marked: []}
              )

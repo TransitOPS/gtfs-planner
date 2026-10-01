@@ -330,7 +330,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRunsTest do
   defp cut_runs(world) do
     for key <- day_type_keys(world) do
       {:ok, plan} = Gtfs.suggest_runs(world.organization.id, world.version.id, key, :replace_all)
-      {:ok, _result} = Gtfs.apply_run_plan(world.organization.id, world.version.id, plan)
+      {:ok, _result} = Gtfs.apply_run_plan(world.audit, plan)
     end
 
     world
@@ -349,7 +349,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRunsTest do
         %{trip_id: trip.id, from: run_of(world, key, trip.id), to: nil}
       end
 
-    {:ok, _result} = Gtfs.apply_run_moves(world.organization.id, world.version.id, key, moves)
+    {:ok, _result} = Gtfs.apply_run_moves(world.audit, key, moves)
     world
   end
 
@@ -400,7 +400,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRunsTest do
       %{trip_id: second.id, from: victim.run_id, to: Gtfs.next_run_id(existing ++ ["1"])}
     ]
 
-    {:ok, _result} = Gtfs.apply_run_moves(world.organization.id, world.version.id, key, moves)
+    {:ok, _result} = Gtfs.apply_run_moves(world.audit, key, moves)
 
     {world, victim.run_id}
   end

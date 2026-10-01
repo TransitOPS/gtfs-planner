@@ -226,7 +226,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.ApplyPlanTest do
       # Each case is its own transaction so a rollback in one cannot decide the next.
       for change <- [
             fn ->
-              Gtfs.update_blocking_settings(organization.id, version.id, %{max_block_minutes: 240})
+              Gtfs.update_blocking_settings(
+                GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                %{max_block_minutes: 240}
+              )
             end,
             fn -> put_deadhead(organization, version) end,
             fn -> mark_relief(organization, version) end,
@@ -358,11 +361,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.ApplyPlanTest do
       # refused by the audit layer's own changeset, which is the shape a
       # database-rejected or audit-layer-refused log takes.
       #
-      # A changeset the audit layer refuses: the transaction is run with an audit
-      # context whose actor is missing, so `record_change_in_transaction/5` returns an
-      # invalid changeset for every moved trip.
+      # Keep the real authorized actor, but omit the email required by the audit
+      # row so the later audit insert fails after the plan has attempted its writes.
       assert {:error, {:audit_failed, reason}} =
-               Gtfs.apply_block_plan(key, plan, %{audit(scope) | actor_id: nil})
+               Gtfs.apply_block_plan(key, plan, %{audit(scope) | actor_email: nil})
 
       assert is_map(reason)
 
@@ -680,10 +682,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.ApplyPlanTest do
   defp mark_relief(organization, version) do
     key = weekday_key(organization, version)
 
-    Gtfs.update_relief_settings(organization.id, version.id, key, %{
-      max_piece_minutes: 240,
-      marked: ["S1"]
-    })
+    Gtfs.update_relief_settings(
+      GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+      key,
+      %{
+        max_piece_minutes: 240,
+        marked: ["S1"]
+      }
+    )
   end
 
   defp move_garage(organization, actor, garage) do

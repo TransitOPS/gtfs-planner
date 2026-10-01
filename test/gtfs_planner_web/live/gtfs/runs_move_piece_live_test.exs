@@ -401,7 +401,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsMovePieceLiveTest do
       [trip | _] = piece.trips
 
       {:ok, _} =
-        Gtfs.apply_run_moves(w.organization.id, w.version.id, w.day_type_key, [
+        Gtfs.apply_run_moves(w.audit, w.day_type_key, [
           %{trip_id: trip.id, from: "1002", to: "1003"}
         ])
 
@@ -466,7 +466,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsMovePieceLiveTest do
       [trip | _] = piece.trips
 
       {:ok, _} =
-        Gtfs.apply_run_moves(w.organization.id, w.version.id, w.day_type_key, [
+        Gtfs.apply_run_moves(w.audit, w.day_type_key, [
           %{trip_id: trip.id, from: "1001", to: "1002"}
         ])
 

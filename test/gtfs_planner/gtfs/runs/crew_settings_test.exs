@@ -88,7 +88,11 @@ defmodule GtfsPlanner.Gtfs.Runs.CrewSettingsTest do
       other_organization = organization_fixture()
       other_version = gtfs_version_fixture(other_organization.id)
 
-      assert {:ok, _} = Gtfs.update_crew_settings(organization.id, version.id, @valid)
+      assert {:ok, _} =
+               Gtfs.update_crew_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 @valid
+               )
 
       assert Runs.get_crew_settings(other_organization.id, other_version.id) == @crew_defaults
     end
@@ -98,7 +102,12 @@ defmodule GtfsPlanner.Gtfs.Runs.CrewSettingsTest do
     test "stores the values and answers with them", context do
       %{organization: organization, version: version} = context
 
-      assert {:ok, saved} = Gtfs.update_crew_settings(organization.id, version.id, @valid)
+      assert {:ok, saved} =
+               Gtfs.update_crew_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 @valid
+               )
+
       assert saved == @valid
 
       assert Runs.get_crew_settings(organization.id, version.id) == @valid
@@ -110,10 +119,19 @@ defmodule GtfsPlanner.Gtfs.Runs.CrewSettingsTest do
     test "a second save replaces the crew values and keeps one row", context do
       %{organization: organization, version: version} = context
 
-      assert {:ok, _} = Gtfs.update_crew_settings(organization.id, version.id, @valid)
+      assert {:ok, _} =
+               Gtfs.update_crew_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 @valid
+               )
 
       updated = Map.put(@valid, :max_spread_minutes, 900)
-      assert {:ok, ^updated} = Gtfs.update_crew_settings(organization.id, version.id, updated)
+
+      assert {:ok, ^updated} =
+               Gtfs.update_crew_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 updated
+               )
 
       assert Runs.get_crew_settings(organization.id, version.id) == updated
       assert Repo.aggregate(BlockingSetting, :count) == 1
@@ -138,10 +156,20 @@ defmodule GtfsPlanner.Gtfs.Runs.CrewSettingsTest do
                max_spread_minutes: 1080
              }}
           ] do
-        assert {:ok, ^lower} = Gtfs.update_crew_settings(organization.id, version.id, lower)
+        assert {:ok, ^lower} =
+                 Gtfs.update_crew_settings(
+                   GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                   lower
+                 )
+
         assert Runs.get_crew_settings(organization.id, version.id) == lower
 
-        assert {:ok, ^upper} = Gtfs.update_crew_settings(organization.id, version.id, upper)
+        assert {:ok, ^upper} =
+                 Gtfs.update_crew_settings(
+                   GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                   upper
+                 )
+
         assert Runs.get_crew_settings(organization.id, version.id) == upper
       end
     end
@@ -161,7 +189,12 @@ defmodule GtfsPlanner.Gtfs.Runs.CrewSettingsTest do
       for {field, value, message} <- out_of_range do
         attrs = Map.put(@valid, field, value)
 
-        assert {:error, changeset} = Gtfs.update_crew_settings(organization.id, version.id, attrs)
+        assert {:error, changeset} =
+                 Gtfs.update_crew_settings(
+                   GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                   attrs
+                 )
+
         assert %{^field => [^message]} = errors_on(changeset)
 
         # Nothing was written: a refused value leaves no row at all on a version
@@ -174,12 +207,15 @@ defmodule GtfsPlanner.Gtfs.Runs.CrewSettingsTest do
     test "a refused save after a good one leaves the stored values untouched", context do
       %{organization: organization, version: version} = context
 
-      assert {:ok, _} = Gtfs.update_crew_settings(organization.id, version.id, @valid)
+      assert {:ok, _} =
+               Gtfs.update_crew_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 @valid
+               )
 
       assert {:error, changeset} =
                Gtfs.update_crew_settings(
-                 organization.id,
-                 version.id,
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
                  Map.put(@valid, :sign_off_minutes, 16)
                )
 
@@ -194,8 +230,7 @@ defmodule GtfsPlanner.Gtfs.Runs.CrewSettingsTest do
 
       assert {:error, changeset} =
                Gtfs.update_crew_settings(
-                 organization.id,
-                 version.id,
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
                  Map.put(@valid, :report_pull_out_minutes, "")
                )
 
@@ -214,8 +249,7 @@ defmodule GtfsPlanner.Gtfs.Runs.CrewSettingsTest do
 
       assert {:ok, _} =
                Gtfs.update_crew_settings(
-                 organization.id,
-                 version.id,
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
                  Map.merge(@valid, %{
                    organization_id: other_organization.id,
                    gtfs_version_id: other_version.id
@@ -231,10 +265,17 @@ defmodule GtfsPlanner.Gtfs.Runs.CrewSettingsTest do
     test "a Block rules save after a crew save leaves every crew value unchanged", context do
       %{organization: organization, version: version} = context
 
-      assert {:ok, _} = Gtfs.update_crew_settings(organization.id, version.id, @valid)
+      assert {:ok, _} =
+               Gtfs.update_crew_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 @valid
+               )
 
       assert {:ok, %BlockingSetting{}} =
-               Gtfs.update_blocking_settings(organization.id, version.id, @block_rules)
+               Gtfs.update_blocking_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 @block_rules
+               )
 
       # The mutation that must not occur: the Block rules writer replaces only its
       # own eight columns, so the crew rules are exactly as the crew save left them.
@@ -252,18 +293,29 @@ defmodule GtfsPlanner.Gtfs.Runs.CrewSettingsTest do
       %{organization: organization, version: version} = context
 
       assert {:ok, %BlockingSetting{}} =
-               Gtfs.update_blocking_settings(organization.id, version.id, %{
-                 @block_rules
-                 | max_piece_minutes: nil
-               })
+               Gtfs.update_blocking_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 %{
+                   @block_rules
+                   | max_piece_minutes: nil
+                 }
+               )
 
       assert {:ok, :ok} =
-               Gtfs.update_relief_settings(organization.id, version.id, nil, %{
-                 max_piece_minutes: 330,
-                 marked: []
-               })
+               Gtfs.update_relief_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 nil,
+                 %{
+                   max_piece_minutes: 330,
+                   marked: []
+                 }
+               )
 
-      assert {:ok, _} = Gtfs.update_crew_settings(organization.id, version.id, @valid)
+      assert {:ok, _} =
+               Gtfs.update_crew_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 @valid
+               )
 
       # And the other way round: the crew upsert replaced only the five crew
       # columns, so the eight Block rules and the piece limit are untouched.
@@ -296,7 +348,13 @@ defmodule GtfsPlanner.Gtfs.Runs.CrewSettingsTest do
             {other_organization.id, version.id}
           ] do
         assert {:error, :not_found} =
-                 Gtfs.update_crew_settings(organization_id, gtfs_version_id, @valid)
+                 Gtfs.update_crew_settings(
+                   GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                     organization_id,
+                     gtfs_version_id
+                   ),
+                   @valid
+                 )
       end
 
       # A refused scope writes nothing, so the version's own row is not created by
@@ -309,7 +367,12 @@ defmodule GtfsPlanner.Gtfs.Runs.CrewSettingsTest do
     test "renders the stored values and carries a rejected field's error", context do
       %{organization: organization, version: version} = context
 
-      assert {:ok, _} = Gtfs.update_crew_settings(organization.id, version.id, @valid)
+      assert {:ok, _} =
+               Gtfs.update_crew_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 @valid
+               )
+
       crew = Runs.get_crew_settings(organization.id, version.id)
 
       changeset = Runs.change_crew_settings(crew, %{})

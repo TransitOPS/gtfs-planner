@@ -256,9 +256,15 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
       seed_closure(context)
 
       assert {:ok, _setting} =
-               Gtfs.update_blocking_settings(context.organization.id, context.version.id, %{
-                 min_layover_minutes: 12
-               })
+               Gtfs.update_blocking_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                   context.organization.id,
+                   context.version.id
+                 ),
+                 %{
+                   min_layover_minutes: 12
+                 }
+               )
 
       assert {:ok, inputs} = load_inputs(context.audit, @command)
 
@@ -612,9 +618,15 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationReviewTest do
       token = review_token(context)
 
       assert {:ok, _setting} =
-               Gtfs.update_blocking_settings(context.organization.id, context.version.id, %{
-                 min_layover_minutes: 12
-               })
+               Gtfs.update_blocking_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                   context.organization.id,
+                   context.version.id
+                 ),
+                 %{
+                   min_layover_minutes: 12
+                 }
+               )
 
       refute review_token(context) == token
     end

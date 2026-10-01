@@ -140,8 +140,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksOperatorChangesLiveTest do
   defp relief_limit!(context, minutes) do
     assert {:ok, :ok} =
              Gtfs.update_relief_settings(
-               context.organization.id,
-               context.version.id,
+               GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                 context.organization.id,
+                 context.version.id
+               ),
                nil,
                %{max_piece_minutes: minutes, marked: []}
              )
@@ -152,18 +154,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksOperatorChangesLiveTest do
   # the rolled-back rows rather than from a mock.
   defp stored_limit(context) do
     Repo.one(
-      from setting in BlockingSetting,
+      from(setting in BlockingSetting,
         where: setting.gtfs_version_id == ^context.version.id,
         select: setting.max_piece_minutes
+      )
     )
   end
 
   defp stored_marks(context) do
     Repo.all(
-      from mark in ReliefPoint,
+      from(mark in ReliefPoint,
         where: mark.gtfs_version_id == ^context.version.id,
         select: mark.stop_id,
         order_by: [asc: mark.stop_id]
+      )
     )
   end
 

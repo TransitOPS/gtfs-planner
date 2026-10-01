@@ -32,10 +32,12 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
   use GtfsPlanner.DataCase, async: false
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.Accounts.{User, UserOrgMembership}
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.BlockingSetting
   alias GtfsPlanner.Gtfs.ReliefPoint
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
@@ -246,17 +248,21 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
     end
   end
 
-  describe "update_relief_settings/4" do
+  describe "update_relief_settings/3" do
     test "stores the limit and the ticked candidates, and a later save unticks", context do
       %{organization: organization, version: version} = context
 
       planned_day(context)
 
       assert {:ok, :ok} =
-               Gtfs.update_relief_settings(organization.id, version.id, nil, %{
-                 max_piece_minutes: 330,
-                 marked: ["RIV"]
-               })
+               Gtfs.update_relief_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 nil,
+                 %{
+                   max_piece_minutes: 330,
+                   marked: ["RIV"]
+                 }
+               )
 
       # The limit is stored on the shared settings row, and only that column moved:
       # the seven settings the Block rules drawer owns keep their defaults.
@@ -278,10 +284,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
       # A later save with no ticks deletes the row rather than leaving it, and the
       # limit is still the one this save carries.
       assert {:ok, :ok} =
-               Gtfs.update_relief_settings(organization.id, version.id, nil, %{
-                 max_piece_minutes: 300,
-                 marked: []
-               })
+               Gtfs.update_relief_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 nil,
+                 %{
+                   max_piece_minutes: 300,
+                   marked: []
+                 }
+               )
 
       assert Repo.aggregate(ReliefPoint, :count) == 0
       assert [setting] = Repo.all(BlockingSetting)
@@ -298,22 +308,29 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
       # The Block rules drawer writes first, through its own facade. It answers the
       # stored row rather than `:ok`, which is why this case matches on the row.
       assert {:ok, %BlockingSetting{} = stored} =
-               Gtfs.update_blocking_settings(organization.id, version.id, %{
-                 "min_layover_minutes" => "8",
-                 "pull_out_buffer_minutes" => "4",
-                 "interlining" => "same_stop",
-                 "deadhead_speed_kmh" => "40",
-                 "deadhead_circuity" => "1.4"
-               })
+               Gtfs.update_blocking_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 %{
+                   "min_layover_minutes" => "8",
+                   "pull_out_buffer_minutes" => "4",
+                   "interlining" => "same_stop",
+                   "deadhead_speed_kmh" => "40",
+                   "deadhead_circuity" => "1.4"
+                 }
+               )
 
       assert stored.min_layover_minutes == 8
       assert stored.max_piece_minutes == nil
 
       assert {:ok, :ok} =
-               Gtfs.update_relief_settings(organization.id, version.id, nil, %{
-                 max_piece_minutes: 330,
-                 marked: ["RIV"]
-               })
+               Gtfs.update_relief_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 nil,
+                 %{
+                   max_piece_minutes: 330,
+                   marked: ["RIV"]
+                 }
+               )
 
       settings = Gtfs.get_blocking_settings(organization.id, version.id)
 
@@ -343,19 +360,27 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
       relief_point_fixture(organization.id, version.id, %{stop_id: "S9"})
 
       assert {:ok, :ok} =
-               Gtfs.update_relief_settings(organization.id, version.id, nil, %{
-                 max_piece_minutes: 330,
-                 marked: ["RIV"]
-               })
+               Gtfs.update_relief_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 nil,
+                 %{
+                   max_piece_minutes: 330,
+                   marked: ["RIV"]
+                 }
+               )
 
       assert Enum.map(Repo.all(ReliefPoint), & &1.stop_id) |> Enum.sort() == ["RIV", "S9"]
 
       # And the second save, which unticks RIV, still leaves the outside mark alone.
       assert {:ok, :ok} =
-               Gtfs.update_relief_settings(organization.id, version.id, nil, %{
-                 max_piece_minutes: 330,
-                 marked: []
-               })
+               Gtfs.update_relief_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 nil,
+                 %{
+                   max_piece_minutes: 330,
+                   marked: []
+                 }
+               )
 
       assert Enum.map(Repo.all(ReliefPoint), & &1.stop_id) == ["S9"]
     end
@@ -368,10 +393,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
       # "BAY_A" is a real stop, but the candidate it belongs to is its station, and
       # "NOPE" is nothing at all. Neither is stored; "RIV" is.
       assert {:ok, :ok} =
-               Gtfs.update_relief_settings(organization.id, version.id, nil, %{
-                 max_piece_minutes: 330,
-                 marked: ["RIV", "BAY_A", "NOPE"]
-               })
+               Gtfs.update_relief_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 nil,
+                 %{
+                   max_piece_minutes: 330,
+                   marked: ["RIV", "BAY_A", "NOPE"]
+                 }
+               )
 
       assert Enum.map(Repo.all(ReliefPoint), & &1.stop_id) == ["RIV"]
     end
@@ -383,10 +412,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
 
       for limit <- [59, 721, 0, -1, "nine"] do
         assert {:error, %Ecto.Changeset{} = changeset} =
-                 Gtfs.update_relief_settings(organization.id, version.id, nil, %{
-                   max_piece_minutes: limit,
-                   marked: ["RIV"]
-                 })
+                 Gtfs.update_relief_settings(
+                   GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                   nil,
+                   %{
+                     max_piece_minutes: limit,
+                     marked: ["RIV"]
+                   }
+                 )
 
         assert %{max_piece_minutes: [_message]} = errors_on(changeset)
 
@@ -398,10 +431,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
       # 60 and 720 are the ends of the accepted range, and a blank is "no limit".
       for limit <- [60, 720, nil, ""] do
         assert {:ok, :ok} =
-                 Gtfs.update_relief_settings(organization.id, version.id, nil, %{
-                   max_piece_minutes: limit,
-                   marked: ["RIV"]
-                 })
+                 Gtfs.update_relief_settings(
+                   GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                   nil,
+                   %{
+                     max_piece_minutes: limit,
+                     marked: ["RIV"]
+                   }
+                 )
 
         assert [setting] = Repo.all(BlockingSetting)
         assert setting.max_piece_minutes == if(limit in [nil, ""], do: nil, else: limit)
@@ -414,10 +451,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
       assert blank.context.max_piece_minutes == nil
 
       assert {:ok, :ok} =
-               Gtfs.update_relief_settings(organization.id, version.id, nil, %{
-                 max_piece_minutes: 720,
-                 marked: ["RIV"]
-               })
+               Gtfs.update_relief_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 nil,
+                 %{
+                   max_piece_minutes: 720,
+                   marked: ["RIV"]
+                 }
+               )
 
       {:ok, day} = Gtfs.load_blocking_day(organization.id, version.id, nil)
       assert day.context.max_piece_minutes == 720
@@ -430,24 +471,39 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
       planned_day(context)
 
       assert {:error, {:unknown_day_type, _day_types}} =
-               Gtfs.update_relief_settings(organization.id, version.id, "SAT", %{
-                 max_piece_minutes: 330,
-                 marked: ["RIV"]
-               })
+               Gtfs.update_relief_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 "SAT",
+                 %{
+                   max_piece_minutes: 330,
+                   marked: ["RIV"]
+                 }
+               )
 
       other_organization = organization_fixture()
       foreign_version = gtfs_version_fixture(other_organization.id)
       {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staging"})
 
-      assert Gtfs.update_relief_settings(organization.id, foreign_version.id, nil, %{
-               max_piece_minutes: 330,
-               marked: ["RIV"]
-             }) == {:error, :not_found}
+      assert Gtfs.update_relief_settings(
+               GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                 organization.id,
+                 foreign_version.id
+               ),
+               nil,
+               %{
+                 max_piece_minutes: 330,
+                 marked: ["RIV"]
+               }
+             ) == {:error, :not_found}
 
-      assert Gtfs.update_relief_settings(organization.id, staging.id, nil, %{
-               max_piece_minutes: 330,
-               marked: ["RIV"]
-             }) == {:error, :not_found}
+      assert Gtfs.update_relief_settings(
+               GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, staging.id),
+               nil,
+               %{
+                 max_piece_minutes: 330,
+                 marked: ["RIV"]
+               }
+             ) == {:error, :not_found}
 
       # The version of the other organization is untouched too.
       assert Repo.aggregate(BlockingSetting, :count) == 0
@@ -455,7 +511,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
     end
   end
 
-  describe "update_relief_settings/4 under a held blocking lock" do
+  describe "update_relief_settings/3 under a held blocking lock" do
     test "the writer waits for lock_blocking!/1 and succeeds after the release" do
       scope =
         unboxed(fn ->
@@ -526,8 +582,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
             send(parent, {:writer_pid, backend_pid})
 
             Blocking.update_relief_settings(
-              scope.organization_id,
-              scope.version_id,
+              GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                scope.organization_id,
+                scope.version_id
+              ),
               nil,
               %{max_piece_minutes: 330, marked: ["MS"]}
             )
@@ -551,6 +609,106 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
                Repo.aggregate(ReliefPoint, :count, organization_id: scope.organization_id)
              end) == 1
     end
+  end
+
+  test "a relief mark cannot commit after its endpoint stop is renamed" do
+    scope =
+      unboxed(fn ->
+        organization = organization_fixture()
+        version = gtfs_version_fixture(organization.id)
+        route = route_fixture(organization.id, version.id)
+        calendar_service_fixture(organization.id, version.id, %{service_id: "WK"})
+
+        source =
+          stop_with_coordinates_fixture(organization.id, version.id, %{
+            stop_id: "VC",
+            stop_name: "Valley College",
+            stop_lat: Decimal.new("40.0100"),
+            stop_lon: Decimal.new("-74.0")
+          })
+
+        stop_with_coordinates_fixture(organization.id, version.id, %{
+          stop_id: "MS",
+          stop_name: "Market Square",
+          stop_lat: Decimal.new("40.0300"),
+          stop_lon: Decimal.new("-74.0")
+        })
+
+        trip_fixture(organization.id, version.id, route.route_id, %{
+          trip_id: "a",
+          service_id: "WK",
+          block_id: "101"
+        })
+
+        for {sequence, stop_id, time} <- [{1, "VC", "09:00:00"}, {2, "MS", "09:30:00"}] do
+          stop_time_fixture(organization.id, version.id, "a", stop_id, %{
+            stop_sequence: sequence,
+            arrival_time: time,
+            departure_time: time
+          })
+        end
+
+        %{
+          organization_id: organization.id,
+          version_id: version.id,
+          source_id: source.id,
+          audit: GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id)
+        }
+      end)
+
+    on_exit(fn -> cleanup_committed_scope(scope) end)
+    parent = self()
+    supervisor = start_supervised!({Task.Supervisor, []})
+
+    holder =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        unboxed(fn ->
+          Repo.transaction(fn ->
+            Repo.one!(from(s in Stop, where: s.id == ^scope.source_id, lock: "FOR UPDATE"))
+            send(parent, :relief_stop_held)
+
+            receive do
+              :release -> :ok
+            after
+              @hold_timeout -> Repo.rollback(:timeout)
+            end
+
+            Repo.update_all(from(s in Stop, where: s.id == ^scope.source_id),
+              set: [stop_id: "VC_RENAMED"]
+            )
+          end)
+        end)
+      end)
+
+    assert_receive :relief_stop_held, @receive_timeout
+
+    writer =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        unboxed(fn ->
+          {:ok, %{rows: [[backend_pid]]}} = Repo.query("select pg_backend_pid()")
+          send(parent, {:relief_writer_pid, backend_pid})
+
+          Blocking.update_relief_settings(scope.audit, nil, %{
+            max_piece_minutes: 330,
+            marked: ["VC"]
+          })
+        end)
+      end)
+
+    assert_receive {:relief_writer_pid, writer_pid}, @receive_timeout
+    assert wait_until_locked(writer_pid)
+
+    send(holder.pid, :release)
+    assert {:ok, {_count, _}} = Task.await(holder, @task_timeout)
+    assert {:error, :not_found} = Task.await(writer, @task_timeout)
+
+    assert unboxed(fn ->
+             Repo.aggregate(ReliefPoint, :count, organization_id: scope.organization_id)
+           end) == 0
+
+    assert unboxed(fn ->
+             Repo.aggregate(BlockingSetting, :count, organization_id: scope.organization_id)
+           end) == 0
   end
 
   # The day the list cases read: 101 lays over inside Riverside Station once, 102
@@ -625,12 +783,25 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
   # goes with it.
   defp cleanup_committed_scope(scope) do
     unboxed(fn ->
+      actor_ids =
+        Repo.all(
+          from(m in UserOrgMembership,
+            where: m.organization_id == ^scope.organization_id,
+            select: m.user_id
+          )
+        )
+
+      Repo.delete_all(
+        from(m in UserOrgMembership, where: m.organization_id == ^scope.organization_id)
+      )
+
       Repo.delete_all(
         from(s in GtfsPlanner.Gtfs.Stop, where: s.organization_id == ^scope.organization_id)
       )
 
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^scope.organization_id))
       Repo.delete_all(from(o in Organization, where: o.id == ^scope.organization_id))
+      Repo.delete_all(from(u in User, where: u.id in ^actor_ids))
     end)
   end
 

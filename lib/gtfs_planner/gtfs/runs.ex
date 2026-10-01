@@ -20,6 +20,8 @@ defmodule GtfsPlanner.Gtfs.Runs do
 
   import Ecto.Query, warn: false
 
+  alias GtfsPlanner.Authorization
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.BlockingSetting
   alias GtfsPlanner.Gtfs.Runs.{Cutter, Day, Numbering, Plan}
@@ -305,16 +307,20 @@ defmodule GtfsPlanner.Gtfs.Runs do
   organization, version and day type key on every query, so a Weekday write
   cannot reach a Saturday row that happens to carry the same run ID.
   """
-  @spec apply_moves(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), [map()]) ::
+  @spec apply_moves(AuditContext.t(), String.t(), [map()]) ::
           {:ok,
            %{changed_trips: non_neg_integer(), new_run_id: String.t() | nil, undo: [Plan.move()]}}
           | {:error,
-             :not_found
+             :forbidden
+             | :not_found
              | :stale_moves
              | {:invalid_trips, [Ecto.UUID.t()]}
              | {:invalid_run_id, term()}}
-  def apply_moves(organization_id, gtfs_version_id, day_type_key, moves) do
+  def apply_moves(%AuditContext{} = audit, day_type_key, moves) do
     Repo.transaction(fn ->
+      Authorization.lock_editor!(audit)
+      organization_id = audit.organization_id
+      gtfs_version_id = audit.gtfs_version_id
       Versions.lock_for_input_write!(organization_id, gtfs_version_id)
       :ok = Blocking.lock_blocking!(gtfs_version_id)
 
@@ -523,10 +529,10 @@ defmodule GtfsPlanner.Gtfs.Runs do
   answers `:unknown_run` even when the new ID is also taken — there is nothing
   to rename, and "this run does not exist" is the more useful answer.
   """
-  @spec rename_run(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t(), String.t()) ::
+  @spec rename_run(AuditContext.t(), String.t(), String.t(), String.t()) ::
           {:ok, %{undo: [Plan.move()]}}
-          | {:error, :not_found | :unknown_run | Ecto.Changeset.t()}
-  def rename_run(organization_id, gtfs_version_id, day_type_key, old_id, new_id) do
+          | {:error, :forbidden | :not_found | :unknown_run | Ecto.Changeset.t()}
+  def rename_run(%AuditContext{} = audit, day_type_key, old_id, new_id) do
     case TripRun.change_run_id(%{run_id: new_id}) do
       changeset when not changeset.valid? ->
         # Before the transaction: a malformed ID is not a race, and refusing it
@@ -535,6 +541,10 @@ defmodule GtfsPlanner.Gtfs.Runs do
 
       changeset ->
         Repo.transaction(fn ->
+          Authorization.lock_editor!(audit)
+          organization_id = audit.organization_id
+          gtfs_version_id = audit.gtfs_version_id
+
           organization_id
           |> Versions.lock_for_input_write!(gtfs_version_id)
           |> refuse_unpublished!()
@@ -645,10 +655,14 @@ defmodule GtfsPlanner.Gtfs.Runs do
   finds nothing left and returns `{:ok, 0}`: removal is idempotent because it is
   defined by what is there, not by what happened to be there before.
   """
-  @spec remove_orphans(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
-          {:ok, non_neg_integer()} | {:error, :not_found | {:unknown_day_type, list()}}
-  def remove_orphans(organization_id, gtfs_version_id, day_type_key) do
+  @spec remove_orphans(AuditContext.t(), String.t()) ::
+          {:ok, non_neg_integer()}
+          | {:error, :forbidden | :not_found | {:unknown_day_type, list()}}
+  def remove_orphans(%AuditContext{} = audit, day_type_key) do
     Repo.transaction(fn ->
+      Authorization.lock_editor!(audit)
+      organization_id = audit.organization_id
+      gtfs_version_id = audit.gtfs_version_id
       Versions.lock_for_input_write!(organization_id, gtfs_version_id)
       :ok = Blocking.lock_blocking!(gtfs_version_id)
 
@@ -771,15 +785,19 @@ defmodule GtfsPlanner.Gtfs.Runs do
   becomes `:write_failed` and rolls the whole call back, so a half-applied plan
   cannot exist.
   """
-  @spec apply_run_plan(Ecto.UUID.t(), Ecto.UUID.t(), Plan.t()) ::
+  @spec apply_run_plan(AuditContext.t(), Plan.t()) ::
           {:ok, %{changed_trips: non_neg_integer(), undo: [Plan.move()]}}
           | {:error,
-             :not_found
+             :forbidden
+             | :not_found
              | :stale_plan
              | {:invalid_trips, [Ecto.UUID.t()]}
              | :write_failed}
-  def apply_run_plan(organization_id, gtfs_version_id, plan) do
+  def apply_run_plan(%AuditContext{} = audit, plan) do
     Repo.transaction(fn ->
+      Authorization.lock_editor!(audit)
+      organization_id = audit.organization_id
+      gtfs_version_id = audit.gtfs_version_id
       Versions.lock_for_input_write!(organization_id, gtfs_version_id)
       :ok = Blocking.lock_blocking!(gtfs_version_id)
 
@@ -1095,8 +1113,8 @@ defmodule GtfsPlanner.Gtfs.Runs do
   @doc """
   Stores the crew rules for one organization's published version.
 
-  The save runs in one transaction whose first statement is the scoped version row
-  `FOR SHARE` (`Versions.lock_for_input_write!/2`), so the rules a review loaded
+  The save runs in one transaction that locks the editor membership first, then the
+  scoped version row `FOR SHARE` (`Versions.lock_for_input_write!/2`), so the rules a review loaded
   cannot change under a calendar combination that owns the version, and this save
   waits behind such an owner in turn. It then takes `Blocking.lock_blocking!/1`, so
   a crew save serializes with every other planning-input writer and cannot slip
@@ -1110,20 +1128,23 @@ defmodule GtfsPlanner.Gtfs.Runs do
   another organization, and `{:error, changeset}` when a value is outside its range
   or blank, in which case nothing is written.
   """
-  @spec update_crew_settings(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
-          {:ok, crew()} | {:error, Ecto.Changeset.t() | :not_found}
-  def update_crew_settings(organization_id, gtfs_version_id, attrs) do
-    case Repo.transaction(fn -> write_crew_settings!(organization_id, gtfs_version_id, attrs) end) do
+  @spec update_crew_settings(AuditContext.t(), map()) ::
+          {:ok, crew()} | {:error, Ecto.Changeset.t() | :forbidden | :not_found}
+  def update_crew_settings(%AuditContext{} = audit, attrs) do
+    case Repo.transaction(fn -> write_crew_settings!(audit, attrs) end) do
       {:ok, result} -> result
       {:error, reason} -> {:error, reason}
     end
   end
 
-  # The version share lock is the first statement of the write transaction, before
+  # The editor membership lock is first; the version share lock follows, before
   # the published check and the upsert, and `lock_blocking!/1` follows it and
   # nothing else, in the blocking writers' order, so this writer joins the same serialization
   # point as the block writers instead of taking a second runs lock.
-  defp write_crew_settings!(organization_id, gtfs_version_id, attrs) do
+  defp write_crew_settings!(%AuditContext{} = audit, attrs) do
+    Authorization.lock_editor!(audit)
+    organization_id = audit.organization_id
+    gtfs_version_id = audit.gtfs_version_id
     version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)
 
     if version.publication_status == @published_status do

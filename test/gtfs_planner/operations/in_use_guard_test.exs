@@ -183,14 +183,17 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
       garage = garage_fixture(organization.id)
 
       {:ok, _setting} =
-        Blocking.update_settings(organization.id, version.id, %{
-          min_layover_minutes: 5,
-          pull_out_buffer_minutes: 0,
-          interlining: :any,
-          deadhead_speed_kmh: 30,
-          deadhead_circuity: Decimal.new("1.3"),
-          default_garage_id: garage.id
-        })
+        Blocking.update_settings(
+          GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+          %{
+            min_layover_minutes: 5,
+            pull_out_buffer_minutes: 0,
+            interlining: :any,
+            deadhead_speed_kmh: 30,
+            deadhead_circuity: Decimal.new("1.3"),
+            default_garage_id: garage.id
+          }
+        )
 
       assert {:ok, %Garage{}} = Operations.delete_garage(organization.id, garage.id)
 

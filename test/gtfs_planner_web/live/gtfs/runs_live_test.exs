@@ -30,6 +30,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLiveTest do
   import GtfsPlanner.RunsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.CatalogReadAdapterMock
   alias GtfsPlanner.Versions
 
@@ -284,6 +285,28 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLiveTest do
 
   describe "scoping and access" do
     setup :editor_setup
+
+    test "a mounted crew save reaches the transaction after editor revocation", context do
+      {conn, world} = signed_in(context)
+      {:ok, view, _html} = live(conn, "/gtfs/#{world.version.id}/runs")
+      view |> element("#runs-crew-rules-button") |> render_click()
+
+      before = Gtfs.get_crew_settings(world.organization.id, world.version.id)
+      membership = Accounts.get_user_org_membership(context.user.id, world.organization.id)
+      deactivate_membership_fixture(membership)
+
+      view
+      |> form("#crew-rules-form", crew: %{paid_break_max_minutes: "40"})
+      |> render_submit()
+
+      assert has_element?(
+               view,
+               "[data-role=toast-text]",
+               "You no longer have editor access to this organization."
+             )
+
+      assert Gtfs.get_crew_settings(world.organization.id, world.version.id) == before
+    end
 
     test "a member without GTFS editor access is redirected away from /runs", context do
       world = world(context)

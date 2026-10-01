@@ -32,9 +32,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
   use GtfsPlanner.DataCase, async: false
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.Accounts.{User, UserOrgMembership}
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.DeadheadTime
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
@@ -177,7 +179,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
       # An entered value for a pair the day does not drive is stored but listed
       # nowhere: the drawer lists the drives this day type has.
       assert {:ok, _stored} =
-               Gtfs.put_deadhead_time(organization.id, version.id, {"stop:S1", "stop:S3"}, 4)
+               Gtfs.put_deadhead_time(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 {"stop:S1", "stop:S3"},
+                 4
+               )
 
       assert {:ok, []} = Gtfs.list_deadhead_pairs(organization.id, version.id, nil)
       assert Repo.aggregate(DeadheadTime, :count) == 1
@@ -210,14 +216,22 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
                {:error, :not_found}
 
       assert Gtfs.put_deadhead_time(
-               organization.id,
-               foreign_version.id,
+               GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                 organization.id,
+                 foreign_version.id
+               ),
                {"stop:S1", "stop:S3"},
                4
              ) ==
                {:error, :not_found}
 
-      assert Gtfs.clear_deadhead_time(organization.id, foreign_version.id, {"stop:S1", "stop:S3"}) ==
+      assert Gtfs.clear_deadhead_time(
+               GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                 organization.id,
+                 foreign_version.id
+               ),
+               {"stop:S1", "stop:S3"}
+             ) ==
                {:error, :not_found}
 
       # A staging version of this organization is not found either, and none of
@@ -226,21 +240,29 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
 
       assert Gtfs.list_deadhead_pairs(organization.id, staging.id, nil) == {:error, :not_found}
 
-      assert Gtfs.put_deadhead_time(organization.id, staging.id, {"stop:S1", "stop:S3"}, 4) ==
+      assert Gtfs.put_deadhead_time(
+               GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, staging.id),
+               {"stop:S1", "stop:S3"},
+               4
+             ) ==
                {:error, :not_found}
 
       assert Repo.aggregate(DeadheadTime, :count) == 0
     end
   end
 
-  describe "put_deadhead_time/4" do
+  describe "put_deadhead_time/3" do
     test "stores one row and the list shows the entered value in its own direction", context do
       %{organization: organization, version: version} = context
 
       planned_day(context)
 
       assert {:ok, stored} =
-               Gtfs.put_deadhead_time(organization.id, version.id, {"stop:S2", "stop:S3"}, 9)
+               Gtfs.put_deadhead_time(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 {"stop:S2", "stop:S3"},
+                 9
+               )
 
       assert stored.minutes == 9
       assert stored.organization_id == organization.id
@@ -273,8 +295,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
 
       assert {:ok, _stored} =
                Gtfs.put_deadhead_time(
-                 organization.id,
-                 version.id,
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
                  {"garage:#{main.id}", "stop:S1"},
                  9
                )
@@ -301,10 +322,18 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
       %{organization: organization, version: version} = context
 
       assert {:ok, first} =
-               Gtfs.put_deadhead_time(organization.id, version.id, {"stop:S1", "stop:S3"}, 9)
+               Gtfs.put_deadhead_time(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 {"stop:S1", "stop:S3"},
+                 9
+               )
 
       assert {:ok, second} =
-               Gtfs.put_deadhead_time(organization.id, version.id, {"stop:S1", "stop:S3"}, 0)
+               Gtfs.put_deadhead_time(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 {"stop:S1", "stop:S3"},
+                 0
+               )
 
       assert Repo.aggregate(DeadheadTime, :count) == 1
       assert first.id == second.id
@@ -317,7 +346,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
       planned_day(context)
 
       assert {:ok, stored} =
-               Gtfs.put_deadhead_time(organization.id, version.id, {"stop:S2", "stop:S3"}, 0)
+               Gtfs.put_deadhead_time(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 {"stop:S2", "stop:S3"},
+                 0
+               )
 
       assert stored.minutes == 0
 
@@ -336,8 +369,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
       for minutes <- [601, 1000, -1, "nine", "", nil] do
         assert {:error, %Ecto.Changeset{} = changeset} =
                  Gtfs.put_deadhead_time(
-                   organization.id,
-                   version.id,
+                   GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
                    {"stop:S2", "stop:S3"},
                    minutes
                  )
@@ -348,7 +380,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
 
       # 600 is the largest accepted value, and it is stored.
       assert {:ok, stored} =
-               Gtfs.put_deadhead_time(organization.id, version.id, {"stop:S2", "stop:S3"}, 600)
+               Gtfs.put_deadhead_time(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 {"stop:S2", "stop:S3"},
+                 600
+               )
 
       assert stored.minutes == 600
       assert Repo.aggregate(DeadheadTime, :count) == 1
@@ -398,7 +434,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
       ]
 
       for {from_ref, to_ref} <- invalid do
-        assert Gtfs.put_deadhead_time(organization.id, version.id, {from_ref, to_ref}, 9) ==
+        assert Gtfs.put_deadhead_time(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 {from_ref, to_ref},
+                 9
+               ) ==
                  {:error, :invalid_ref}
       end
 
@@ -408,8 +448,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
       # refusals above are the ownership and the stored form, not the shape.
       assert {:ok, _stored} =
                Gtfs.put_deadhead_time(
-                 organization.id,
-                 version.id,
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
                  {"garage:#{main.id}", "stop:S1"},
                  9
                )
@@ -418,7 +457,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
     end
   end
 
-  describe "clear_deadhead_time/3" do
+  describe "clear_deadhead_time/2" do
     test "removes the row so the pair shows its estimate again, and only that direction",
          context do
       %{organization: organization, version: version, main: main} = context
@@ -426,14 +465,26 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
       planned_day(context)
 
       assert {:ok, _forward} =
-               Gtfs.put_deadhead_time(organization.id, version.id, {"stop:S2", "stop:S3"}, 9)
+               Gtfs.put_deadhead_time(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 {"stop:S2", "stop:S3"},
+                 9
+               )
 
       assert {:ok, _reverse} =
-               Gtfs.put_deadhead_time(organization.id, version.id, {"stop:S3", "stop:S2"}, 30)
+               Gtfs.put_deadhead_time(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 {"stop:S3", "stop:S2"},
+                 30
+               )
 
       assert Repo.aggregate(DeadheadTime, :count) == 2
 
-      assert :ok = Gtfs.clear_deadhead_time(organization.id, version.id, {"stop:S2", "stop:S3"})
+      assert :ok =
+               Gtfs.clear_deadhead_time(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 {"stop:S2", "stop:S3"}
+               )
 
       assert Repo.aggregate(DeadheadTime, :count) == 1
 
@@ -464,14 +515,20 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
 
       planned_day(context)
 
-      assert Gtfs.clear_deadhead_time(organization.id, version.id, {"stop:S2", "stop:S3"}) ==
+      assert Gtfs.clear_deadhead_time(
+               GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+               {"stop:S2", "stop:S3"}
+             ) ==
                {:error, :not_found}
 
       assert Repo.aggregate(DeadheadTime, :count) == 0
 
       # A ref that never decoded matches no row either, and is not found rather
       # than raised.
-      assert Gtfs.clear_deadhead_time(organization.id, version.id, {"bus:1", "stop:S1"}) ==
+      assert Gtfs.clear_deadhead_time(
+               GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+               {"bus:1", "stop:S1"}
+             ) ==
                {:error, :not_found}
     end
 
@@ -480,18 +537,29 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
       %{organization: organization, version: version} = context
 
       assert {:ok, _stored} =
-               Gtfs.put_deadhead_time(organization.id, version.id, {"stop:S1", "stop:S3"}, 9)
+               Gtfs.put_deadhead_time(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 {"stop:S1", "stop:S3"},
+                 9
+               )
 
-      assert :ok = Gtfs.clear_deadhead_time(organization.id, version.id, {"stop:S1", "stop:S3"})
+      assert :ok =
+               Gtfs.clear_deadhead_time(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+                 {"stop:S1", "stop:S3"}
+               )
 
-      assert Gtfs.clear_deadhead_time(organization.id, version.id, {"stop:S1", "stop:S3"}) ==
+      assert Gtfs.clear_deadhead_time(
+               GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id),
+               {"stop:S1", "stop:S3"}
+             ) ==
                {:error, :not_found}
 
       assert Repo.aggregate(DeadheadTime, :count) == 0
     end
   end
 
-  describe "put_deadhead_time/4 and clear_deadhead_time/3 under a held blocking lock" do
+  describe "put_deadhead_time/3 and clear_deadhead_time/2 under a held blocking lock" do
     test "both writers wait for lock_blocking!1 and succeed after the release" do
       scope =
         unboxed(fn ->
@@ -530,8 +598,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
             send(parent, {:writer_pid, backend_pid})
 
             Blocking.put_deadhead_time(
-              scope.organization_id,
-              scope.version_id,
+              GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                scope.organization_id,
+                scope.version_id
+              ),
               {"stop:S1", "stop:S3"},
               9
             )
@@ -556,8 +626,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
             send(parent, {:resetter_pid, backend_pid})
 
             Blocking.clear_deadhead_time(
-              scope.organization_id,
-              scope.version_id,
+              GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                scope.organization_id,
+                scope.version_id
+              ),
               {"stop:S1", "stop:S3"}
             )
           end)
@@ -573,6 +645,94 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
       assert unboxed(fn ->
                Repo.aggregate(DeadheadTime, :count, organization_id: scope.organization_id)
              end) == 0
+    end
+  end
+
+  describe "a stop changes while a deadhead save waits for its reference" do
+    for action <- [:rename, :delete] do
+      test "a concurrent #{action} makes the old natural stop reference invalid" do
+        scope =
+          unboxed(fn ->
+            organization = organization_fixture()
+            version = gtfs_version_fixture(organization.id)
+
+            source =
+              stop_with_coordinates_fixture(organization.id, version.id, %{
+                stop_id: "S1",
+                stop_name: "Riverside",
+                stop_lat: Decimal.new("40.0000"),
+                stop_lon: Decimal.new("-74.0")
+              })
+
+            stop_with_coordinates_fixture(organization.id, version.id, %{
+              stop_id: "S3",
+              stop_name: "Market Square",
+              stop_lat: Decimal.new("40.0300"),
+              stop_lon: Decimal.new("-74.0")
+            })
+
+            %{
+              organization_id: organization.id,
+              version_id: version.id,
+              source_id: source.id,
+              audit:
+                GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id)
+            }
+          end)
+
+        on_exit(fn -> cleanup_committed_scope(scope) end)
+        parent = self()
+        supervisor = start_supervised!({Task.Supervisor, []})
+
+        holder =
+          Task.Supervisor.async_nolink(supervisor, fn ->
+            unboxed(fn ->
+              Repo.transaction(fn ->
+                Repo.one!(from(s in Stop, where: s.id == ^scope.source_id, lock: "FOR UPDATE"))
+                send(parent, :stop_reference_held)
+
+                receive do
+                  :release -> :ok
+                after
+                  @hold_timeout -> Repo.rollback(:timeout)
+                end
+
+                case unquote(action) do
+                  :rename ->
+                    Repo.update_all(from(s in Stop, where: s.id == ^scope.source_id),
+                      set: [stop_id: "S1_RENAMED"]
+                    )
+
+                  :delete ->
+                    Repo.delete_all(from(s in Stop, where: s.id == ^scope.source_id))
+                end
+              end)
+            end)
+          end)
+
+        assert_receive :stop_reference_held, @receive_timeout
+
+        writer =
+          Task.Supervisor.async_nolink(supervisor, fn ->
+            unboxed(fn ->
+              {:ok, %{rows: [[backend_pid]]}} = Repo.query("select pg_backend_pid()")
+              send(parent, {:reference_writer_pid, backend_pid})
+
+              Gtfs.put_deadhead_time(scope.audit, {"stop:S1", "stop:S3"}, 9)
+            end)
+          end)
+
+        assert_receive {:reference_writer_pid, writer_pid}, @receive_timeout
+        assert wait_until_locked(writer_pid)
+
+        send(holder.pid, :release)
+        assert {:ok, {_count, _}} = Task.await(holder, @task_timeout)
+        assert {:error, :invalid_ref} = Task.await(writer, @task_timeout)
+
+        assert unboxed(fn ->
+                 Repo.aggregate(DeadheadTime, :count, organization_id: scope.organization_id)
+               end) == 0
+      end
     end
   end
 
@@ -680,12 +840,25 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
   # The version's stop rows cascade, so the whole scope goes with it.
   defp cleanup_committed_scope(scope) do
     unboxed(fn ->
+      actor_ids =
+        Repo.all(
+          from(m in UserOrgMembership,
+            where: m.organization_id == ^scope.organization_id,
+            select: m.user_id
+          )
+        )
+
+      Repo.delete_all(
+        from(m in UserOrgMembership, where: m.organization_id == ^scope.organization_id)
+      )
+
       Repo.delete_all(
         from(s in GtfsPlanner.Gtfs.Stop, where: s.organization_id == ^scope.organization_id)
       )
 
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^scope.organization_id))
       Repo.delete_all(from(o in Organization, where: o.id == ^scope.organization_id))
+      Repo.delete_all(from(u in User, where: u.id in ^actor_ids))
     end)
   end
 

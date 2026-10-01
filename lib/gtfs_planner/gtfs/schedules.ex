@@ -39,6 +39,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
   import Ecto.Query, warn: false
 
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
@@ -139,6 +140,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
           | :invalid_interval
           | :until_before_start
           | :too_many_trips
+          | :forbidden
           | :not_found
           | :calendar_not_found
           | :trip_id_conflict
@@ -159,6 +161,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
   @type update_error ::
           :invalid_input
+          | :forbidden
           | :not_found
           | :calendar_not_found
           | :invalid_time
@@ -175,7 +178,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
           timed_pattern_id: Ecto.UUID.t()
         }
 
-  @type delete_error :: :invalid_input | :not_found | :stale | :busy
+  @type delete_error :: :invalid_input | :forbidden | :not_found | :stale | :busy
   @type delete_result :: %{trips: non_neg_integer(), transfers: non_neg_integer()}
 
   @typedoc "One reviewed headsign change: `id` is the trip UUID, `trip_id` its
@@ -213,6 +216,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
           | :stale
           | {:refused, [TripChanges.consequence()]}
           | :fence_required
+          | :forbidden
           | :not_found
           | :calendar_not_found
           | :invalid_command
@@ -237,6 +241,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
   @type restore_error ::
           {:not_restorable, :changed | :transfer_names_created_trip, [Ecto.UUID.t()]}
+          | :forbidden
           | :not_found
           | :invalid_command
           | :trip_stop_times_mismatch
@@ -918,6 +923,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   def restore_trips(_route_id, _payload, _audit_context), do: {:error, :invalid_input}
 
   defp do_apply_trip_change(route_id, command, fence, audit_context) do
+    Authorization.lock_editor!(audit_context)
     organization_id = audit_context.organization_id
     version_id = audit_context.gtfs_version_id
 
@@ -956,6 +962,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   end
 
   defp do_restore_trips(route_id, payload, audit_context) do
+    Authorization.lock_editor!(audit_context)
     organization_id = audit_context.organization_id
     version_id = audit_context.gtfs_version_id
     command = {:restore, payload}
@@ -1855,6 +1862,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
           :stale_plan
           | :blocking_issues
           | :refused
+          | :forbidden
           | :not_found
           | :busy
           | ServiceMix.error()
@@ -2018,6 +2026,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   # and blocking checks all run before the first removal, and the removals
   # share the transaction with their audits.
   defp apply_paste_transaction(route_id, scope_params, input, fingerprint, audit_context) do
+    Authorization.lock_editor!(audit_context)
     organization_id = audit_context.organization_id
     version_id = audit_context.gtfs_version_id
 
@@ -3649,6 +3658,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   defp serialization_failure?(_error), do: false
 
   defp insert_trips!(route_id, starts, attrs, audit_context) do
+    Authorization.lock_editor!(audit_context)
     pattern_id = attr(attrs, :pattern_id)
     timed_pattern_id = attr(attrs, :timed_pattern_id)
     service_id = attr(attrs, :service_id)
@@ -3999,6 +4009,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   # -- Editing, duplication and deletion --------------------------------------
 
   defp update_trip_transaction(route_id, trip_id, attrs, expected_updated_at, audit_context) do
+    Authorization.lock_editor!(audit_context)
+
     case requested_start_secs(attrs) do
       {:ok, requested_start} ->
         do_update_trip(
@@ -4296,6 +4308,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   end
 
   defp duplicate_trip_transaction(route_id, trip_id, attrs, audit_context) do
+    Authorization.lock_editor!(audit_context)
+
     case GtfsTime.parse(attr(attrs, :start_time)) do
       {:ok, start_secs} -> do_duplicate_trip(route_id, trip_id, attrs, start_secs, audit_context)
       {:error, reason} -> Repo.rollback(reason)
@@ -4395,6 +4409,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   end
 
   defp delete_trips_transaction(route_id, service_id, trip_ids, audit_context) do
+    Authorization.lock_editor!(audit_context)
     organization_id = audit_context.organization_id
     version_id = audit_context.gtfs_version_id
     trip_uuids = Enum.uniq(trip_ids)

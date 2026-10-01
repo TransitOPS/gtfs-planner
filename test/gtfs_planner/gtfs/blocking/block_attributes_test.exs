@@ -264,9 +264,15 @@ defmodule GtfsPlanner.Gtfs.Blocking.BlockAttributesTest do
       scope: scope
     } do
       assert :ok =
-               Gtfs.update_route_operating_settings(scope.organization.id, scope.version.id, [
-                 %{"route_id" => "30", "required_vehicle_type_id" => scope.diesel.id}
-               ])
+               Gtfs.update_route_operating_settings(
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                   scope.organization.id,
+                   scope.version.id
+                 ),
+                 [
+                   %{"route_id" => "30", "required_vehicle_type_id" => scope.diesel.id}
+                 ]
+               )
 
       trip(scope, %{trip_id: "sc_1", service_id: "SCHOOL", block_id: "103"})
       school_key = day_type_key(scope, ["SCHOOL", "WKDY"])
@@ -322,8 +328,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.BlockAttributesTest do
       # the review and the confirmation; the context digest moves with it.
       assert {:ok, _pair} =
                Gtfs.put_deadhead_time(
-                 scope.organization.id,
-                 scope.version.id,
+                 GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+                   scope.organization.id,
+                   scope.version.id
+                 ),
                  {"garage:#{scope.yard.id}", "stop:S1"},
                  12
                )
@@ -484,15 +492,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.BlockAttributesTest do
             organization_id: organization.id,
             version_id: version.id,
             garage_id: garage(organization, "Main", "40.0400").id,
-            # An attribute save writes no change log, so the actor is never
-            # resolved; a bare UUID keeps this committed scope free of a user row.
-            audit: %AuditContext{
-              organization_id: organization.id,
-              gtfs_version_id: version.id,
-              station_stop_id: nil,
-              actor_id: Ecto.UUID.generate(),
-              actor_email: "lock-case@example.com"
-            }
+            audit: GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization.id, version.id)
           }
         end)
 
@@ -693,6 +693,20 @@ defmodule GtfsPlanner.Gtfs.Blocking.BlockAttributesTest do
   # itself, so they are deleted by their own key first.
   defp cleanup_committed_scope(scope) do
     unboxed(fn ->
+      actor_ids =
+        Repo.all(
+          from(m in GtfsPlanner.Accounts.UserOrgMembership,
+            where: m.organization_id == ^scope.organization_id,
+            select: m.user_id
+          )
+        )
+
+      Repo.delete_all(
+        from(m in GtfsPlanner.Accounts.UserOrgMembership,
+          where: m.organization_id == ^scope.organization_id
+        )
+      )
+
       Repo.delete_all(
         from(s in GtfsPlanner.Gtfs.Stop, where: s.organization_id == ^scope.organization_id)
       )
@@ -703,6 +717,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.BlockAttributesTest do
 
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^scope.organization_id))
       Repo.delete_all(from(o in Organization, where: o.id == ^scope.organization_id))
+      Repo.delete_all(from(u in GtfsPlanner.Accounts.User, where: u.id in ^actor_ids))
     end)
   end
 

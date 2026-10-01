@@ -586,7 +586,8 @@ defmodule GtfsPlanner.Gtfs do
   retry up to three attempts before `:busy` (R8).
   """
   @spec delete_general_transfers([{Ecto.UUID.t(), DateTime.t() | String.t()}], AuditContext.t()) ::
-          {:ok, pos_integer()} | {:error, :invalid_input | :forbidden | :not_found | :stale | :busy}
+          {:ok, pos_integer()}
+          | {:error, :invalid_input | :forbidden | :not_found | :stale | :busy}
   def delete_general_transfers(pairs, %AuditContext{} = audit) do
     Transfers.delete_general_many(pairs, audit)
   end
@@ -5787,8 +5788,7 @@ defmodule GtfsPlanner.Gtfs do
   reversed, so undoing is this same call and is refused by the same stale check.
   """
   @spec apply_run_moves(
-          Ecto.UUID.t(),
-          Ecto.UUID.t(),
+          AuditContext.t(),
           String.t(),
           [%{trip_id: Ecto.UUID.t(), from: String.t() | nil, to: String.t() | nil | :new}]
         ) ::
@@ -5799,12 +5799,13 @@ defmodule GtfsPlanner.Gtfs do
              undo: [GtfsPlanner.Gtfs.Runs.Plan.move()]
            }}
           | {:error,
-             :not_found
+             :forbidden
+             | :not_found
              | :stale_moves
              | {:invalid_trips, [Ecto.UUID.t()]}
              | {:invalid_run_id, term()}}
-  def apply_run_moves(organization_id, gtfs_version_id, day_type_key, moves) do
-    Runs.apply_moves(organization_id, gtfs_version_id, day_type_key, moves)
+  def apply_run_moves(%AuditContext{} = audit, day_type_key, moves) do
+    Runs.apply_moves(audit, day_type_key, moves)
   end
 
   @doc """
@@ -5829,14 +5830,11 @@ defmodule GtfsPlanner.Gtfs do
   that is not there answers `{:error, :unknown_run}` and a foreign or
   unpublished version `{:error, :not_found}`.
   """
-  @spec rename_run(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t(), String.t()) ::
+  @spec rename_run(AuditContext.t(), String.t(), String.t(), String.t()) ::
           {:ok, %{undo: [GtfsPlanner.Gtfs.Runs.Plan.move()]}}
-          | {:error,
-             :not_found
-             | :unknown_run
-             | Ecto.Changeset.t()}
-  def rename_run(organization_id, gtfs_version_id, day_type_key, old_id, new_id) do
-    Runs.rename_run(organization_id, gtfs_version_id, day_type_key, old_id, new_id)
+          | {:error, :forbidden | :not_found | :unknown_run | Ecto.Changeset.t()}
+  def rename_run(%AuditContext{} = audit, day_type_key, old_id, new_id) do
+    Runs.rename_run(audit, day_type_key, old_id, new_id)
   end
 
   @doc """
@@ -5848,11 +5846,11 @@ defmodule GtfsPlanner.Gtfs do
   organization's rows are never touched, and a day type with nothing to clean
   answers `{:ok, 0}`.
   """
-  @spec remove_run_orphans(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+  @spec remove_run_orphans(AuditContext.t(), String.t()) ::
           {:ok, non_neg_integer()}
-          | {:error, :not_found | {:unknown_day_type, list()}}
-  def remove_run_orphans(organization_id, gtfs_version_id, day_type_key) do
-    Runs.remove_orphans(organization_id, gtfs_version_id, day_type_key)
+          | {:error, :forbidden | :not_found | {:unknown_day_type, list()}}
+  def remove_run_orphans(%AuditContext{} = audit, day_type_key) do
+    Runs.remove_orphans(audit, day_type_key)
   end
 
   @doc """
@@ -5887,17 +5885,18 @@ defmodule GtfsPlanner.Gtfs do
   block attribute set cannot be applied to a day it was not computed for.
 
   The returned `undo` is the same list of moves reversed, so undoing is
-  `apply_run_moves/4` on it and is refused by the same per-trip rule.
+  `apply_run_moves/3` on it and is refused by the same per-trip rule.
   """
-  @spec apply_run_plan(Ecto.UUID.t(), Ecto.UUID.t(), GtfsPlanner.Gtfs.Runs.Plan.t()) ::
+  @spec apply_run_plan(AuditContext.t(), GtfsPlanner.Gtfs.Runs.Plan.t()) ::
           {:ok, %{changed_trips: non_neg_integer(), undo: [GtfsPlanner.Gtfs.Runs.Plan.move()]}}
           | {:error,
-             :not_found
+             :forbidden
+             | :not_found
              | :stale_plan
              | {:invalid_trips, [Ecto.UUID.t()]}
              | :write_failed}
-  def apply_run_plan(organization_id, gtfs_version_id, plan) do
-    Runs.apply_run_plan(organization_id, gtfs_version_id, plan)
+  def apply_run_plan(%AuditContext{} = audit, plan) do
+    Runs.apply_run_plan(audit, plan)
   end
 
   @doc """
@@ -6150,10 +6149,10 @@ defmodule GtfsPlanner.Gtfs do
   Returns `{:error, :not_found}` when the version is unpublished or belongs to
   another organization, and `{:error, changeset}` when a value is rejected.
   """
-  @spec update_blocking_settings(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
-          {:ok, BlockingSetting.t()} | {:error, Ecto.Changeset.t() | :not_found}
-  def update_blocking_settings(organization_id, gtfs_version_id, attrs) do
-    Blocking.update_settings(organization_id, gtfs_version_id, attrs)
+  @spec update_blocking_settings(AuditContext.t(), map()) ::
+          {:ok, BlockingSetting.t()} | {:error, Ecto.Changeset.t() | :forbidden | :not_found}
+  def update_blocking_settings(%AuditContext{} = audit, attrs) do
+    Blocking.update_settings(audit, attrs)
   end
 
   @doc """
@@ -6191,10 +6190,10 @@ defmodule GtfsPlanner.Gtfs do
   Returns `{:error, :not_found}` when the version is unpublished or belongs to
   another organization, and `{:error, changeset}` when a value is rejected.
   """
-  @spec update_crew_settings(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
-          {:ok, Runs.crew()} | {:error, Ecto.Changeset.t() | :not_found}
-  def update_crew_settings(organization_id, gtfs_version_id, attrs) do
-    Runs.update_crew_settings(organization_id, gtfs_version_id, attrs)
+  @spec update_crew_settings(AuditContext.t(), map()) ::
+          {:ok, Runs.crew()} | {:error, Ecto.Changeset.t() | :forbidden | :not_found}
+  def update_crew_settings(%AuditContext{} = audit, attrs) do
+    Runs.update_crew_settings(audit, attrs)
   end
 
   @doc """
@@ -6221,10 +6220,10 @@ defmodule GtfsPlanner.Gtfs do
   stores nothing. The save takes `Blocking.lock_blocking!/1`, and a staging or
   foreign version is `{:error, :not_found}`.
   """
-  @spec update_route_operating_settings(Ecto.UUID.t(), Ecto.UUID.t(), [map()]) ::
-          :ok | {:error, :not_found | {:invalid, [map()]}}
-  def update_route_operating_settings(organization_id, gtfs_version_id, entries) do
-    Blocking.update_route_operating_settings(organization_id, gtfs_version_id, entries)
+  @spec update_route_operating_settings(AuditContext.t(), [map()]) ::
+          :ok | {:error, :forbidden | :not_found | {:invalid, [map()]}}
+  def update_route_operating_settings(%AuditContext{} = audit, entries) do
+    Blocking.update_route_operating_settings(audit, entries)
   end
 
   @doc """
@@ -6258,15 +6257,14 @@ defmodule GtfsPlanner.Gtfs do
   foreign version is `{:error, :not_found}`.
   """
   @spec put_deadhead_time(
-          Ecto.UUID.t(),
-          Ecto.UUID.t(),
+          AuditContext.t(),
           {String.t(), String.t()},
           non_neg_integer()
         ) ::
           {:ok, DeadheadTime.t()}
-          | {:error, :not_found | :invalid_ref | Ecto.Changeset.t()}
-  def put_deadhead_time(organization_id, gtfs_version_id, {from_ref, to_ref}, minutes) do
-    Blocking.put_deadhead_time(organization_id, gtfs_version_id, {from_ref, to_ref}, minutes)
+          | {:error, :forbidden | :not_found | :invalid_ref | Ecto.Changeset.t()}
+  def put_deadhead_time(%AuditContext{} = audit, {from_ref, to_ref}, minutes) do
+    Blocking.put_deadhead_time(audit, {from_ref, to_ref}, minutes)
   end
 
   @doc """
@@ -6277,10 +6275,10 @@ defmodule GtfsPlanner.Gtfs do
   `{:error, :not_found}`, as is a staging or foreign version. The delete takes
   `Blocking.lock_blocking!/1`.
   """
-  @spec clear_deadhead_time(Ecto.UUID.t(), Ecto.UUID.t(), {String.t(), String.t()}) ::
-          :ok | {:error, :not_found}
-  def clear_deadhead_time(organization_id, gtfs_version_id, {from_ref, to_ref}) do
-    Blocking.clear_deadhead_time(organization_id, gtfs_version_id, {from_ref, to_ref})
+  @spec clear_deadhead_time(AuditContext.t(), {String.t(), String.t()}) ::
+          :ok | {:error, :forbidden | :not_found}
+  def clear_deadhead_time(%AuditContext{} = audit, {from_ref, to_ref}) do
+    Blocking.clear_deadhead_time(audit, {from_ref, to_ref})
   end
 
   @doc """
@@ -6316,18 +6314,18 @@ defmodule GtfsPlanner.Gtfs do
   `{:error, :not_found}`.
   """
   @spec update_relief_settings(
-          Ecto.UUID.t(),
-          Ecto.UUID.t(),
+          AuditContext.t(),
           String.t() | nil,
           map()
         ) ::
           {:ok, :ok}
           | {:error,
-             :not_found
+             :forbidden
+             | :not_found
              | {:unknown_day_type, [GtfsPlanner.Gtfs.Blocking.DayTypes.day_type()]}
              | Ecto.Changeset.t()}
-  def update_relief_settings(organization_id, gtfs_version_id, day_type_key, attrs) do
-    Blocking.update_relief_settings(organization_id, gtfs_version_id, day_type_key, attrs)
+  def update_relief_settings(%AuditContext{} = audit, day_type_key, attrs) do
+    Blocking.update_relief_settings(audit, day_type_key, attrs)
   end
 
   @doc """

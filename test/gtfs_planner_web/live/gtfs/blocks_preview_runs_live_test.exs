@@ -188,7 +188,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewRunsLiveTest do
         Gtfs.suggest_runs(context.organization.id, context.version.id, day_type.key, :replace_all)
 
       {:ok, _result} =
-        Gtfs.apply_run_plan(context.organization.id, context.version.id, plan)
+        Gtfs.apply_run_plan(
+          GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+            context.organization.id,
+            context.version.id
+          ),
+          plan
+        )
     end
 
     context
@@ -214,7 +220,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewRunsLiveTest do
     moves = [%{trip_id: context.trip.id, from: nil, to: :new}]
 
     {:ok, _result} =
-      Gtfs.apply_run_moves(context.organization.id, context.version.id, day_type_key, moves)
+      Gtfs.apply_run_moves(
+        GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+          context.organization.id,
+          context.version.id
+        ),
+        day_type_key,
+        moves
+      )
 
     context
   end

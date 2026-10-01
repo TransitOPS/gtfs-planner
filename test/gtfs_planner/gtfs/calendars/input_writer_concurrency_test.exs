@@ -947,16 +947,28 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
 
       {update_writer, update_backend} =
         start_writer(supervisor, fn ->
-          Gtfs.update_blocking_settings(scope.organization.id, scope.version.id, %{
-            min_layover_minutes: 9
-          })
+          Gtfs.update_blocking_settings(
+            GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+              scope.organization.id,
+              scope.version.id
+            ),
+            %{
+              min_layover_minutes: 9
+            }
+          )
         end)
 
       {insert_writer, insert_backend} =
         start_writer(supervisor, fn ->
-          Blocking.update_settings(scope.organization.id, first_row_version.id, %{
-            min_layover_minutes: 7
-          })
+          Blocking.update_settings(
+            GtfsPlanner.AccountsFixtures.editor_audit_fixture(
+              scope.organization.id,
+              first_row_version.id
+            ),
+            %{
+              min_layover_minutes: 7
+            }
+          )
         end)
 
       send(update_writer.pid, :go)
@@ -1338,6 +1350,15 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
 
   defp cleanup(organization_ids, user_ids \\ []) do
     unboxed(fn ->
+      actor_ids =
+        user_ids ++
+          Repo.all(
+            from(m in UserOrgMembership,
+              where: m.organization_id in ^organization_ids,
+              select: m.user_id
+            )
+          )
+
       Repo.delete_all(from(t in Transfer, where: t.organization_id in ^organization_ids))
       Repo.delete_all(from(p in Pathway, where: p.organization_id in ^organization_ids))
       Repo.delete_all(from(s in Stop, where: s.organization_id in ^organization_ids))
@@ -1346,9 +1367,15 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
       Repo.delete_all(from(sl in StopLevel, where: sl.organization_id in ^organization_ids))
       Repo.delete_all(from(l in Level, where: l.organization_id in ^organization_ids))
       Repo.delete_all(from(a in Agency, where: a.organization_id in ^organization_ids))
-      Repo.delete_all(from(m in UserOrgMembership, where: m.user_id in ^user_ids))
+
+      Repo.delete_all(
+        from(m in UserOrgMembership,
+          where: m.organization_id in ^organization_ids or m.user_id in ^actor_ids
+        )
+      )
+
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
-      Repo.delete_all(from(u in User, where: u.id in ^user_ids))
+      Repo.delete_all(from(u in User, where: u.id in ^actor_ids))
       Repo.delete_all(from(o in Organization, where: o.id in ^organization_ids))
 
       refute Repo.exists?(from(s in Stop, where: s.organization_id in ^organization_ids))
@@ -1357,7 +1384,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
       refute Repo.exists?(from(l in Level, where: l.organization_id in ^organization_ids))
       refute Repo.exists?(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
       refute Repo.exists?(from(o in Organization, where: o.id in ^organization_ids))
-      refute Repo.exists?(from(u in User, where: u.id in ^user_ids))
+      refute Repo.exists?(from(u in User, where: u.id in ^actor_ids))
       :ok
     end)
   end
@@ -1622,7 +1649,10 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
   # -- Blocking settings writer fixtures and observations --------------------
 
   defp save_layover(organization_id, gtfs_version_id, minutes) do
-    Blocking.update_settings(organization_id, gtfs_version_id, %{min_layover_minutes: minutes})
+    Blocking.update_settings(
+      GtfsPlanner.AccountsFixtures.editor_audit_fixture(organization_id, gtfs_version_id),
+      %{min_layover_minutes: minutes}
+    )
   end
 
   defp stored_layover(organization_id, gtfs_version_id) do
@@ -1786,6 +1816,15 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
     unboxed(fn ->
       organization_id = scope.organization.id
 
+      actor_ids =
+        [scope.actor.id] ++
+          Repo.all(
+            from(m in UserOrgMembership,
+              where: m.organization_id == ^organization_id,
+              select: m.user_id
+            )
+          )
+
       Repo.delete_all(from(l in ChangeLog, where: l.organization_id == ^organization_id))
       Repo.delete_all(from(st in StopTime, where: st.organization_id == ^organization_id))
       Repo.delete_all(from(t in Trip, where: t.organization_id == ^organization_id))
@@ -1814,12 +1853,12 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
 
       Repo.delete_all(
         from(m in UserOrgMembership,
-          where: m.organization_id == ^organization_id or m.user_id == ^scope.actor.id
+          where: m.organization_id == ^organization_id or m.user_id in ^actor_ids
         )
       )
 
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
-      Repo.delete_all(from(u in User, where: u.id == ^scope.actor.id))
+      Repo.delete_all(from(u in User, where: u.id in ^actor_ids))
       Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
 
       refute Repo.exists?(from(o in Organization, where: o.id == ^organization_id))

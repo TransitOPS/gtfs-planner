@@ -46,7 +46,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   alias GtfsPlannerWeb.Gtfs.ScheduleChangeComponents
   alias GtfsPlannerWeb.Gtfs.ScheduleComponents
 
-  on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+  on_mount({GtfsPlannerWeb.EnsureRole, :require_gtfs_access})
 
   @filter_keys ~w(service_id direction pattern stops custom)
   @drawer_fields ~w(pattern_id timed_pattern_id service_id start_time repeat every until
@@ -627,13 +627,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   defp submit_or_refuse(socket, nil), do: {:noreply, socket}
 
-  defp submit_or_refuse(socket, drawer) do
-    if editor_access?(socket) do
-      submit_drawer(socket, drawer)
-    else
-      {:noreply, unauthorized(socket, drawer)}
-    end
-  end
+  defp submit_or_refuse(socket, drawer), do: submit_drawer(socket, drawer)
 
   defp delete_or_refuse(socket) do
     dialog = socket.assigns.delete_dialog
@@ -641,9 +635,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     cond do
       dialog == nil ->
         socket
-
-      not editor_access?(socket) ->
-        dialog_problem(socket, dialog, :unauthorized)
 
       true ->
         # Every identifier is re-resolved against what the page currently shows,
@@ -968,14 +959,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # with the loaded row's `updated_at` as the fence (INV-2), then reload and
   # report the outcome. The reply carries no more than the client shows.
   defp commit_cell(socket, trip_id, position, text, mode_value) do
-    with true <- editor_access?(socket),
-         {:ok, mode} <- commit_mode(mode_value),
+    with {:ok, mode} <- commit_mode(mode_value),
          {:ok, context} <- cell_context(socket, trip_id, position),
          {:ok, %{secs: secs}} <-
            TimeEntry.parse(text, previous: context.previous, current: context.current) do
       apply_cell_change(socket, context, mode, secs)
     else
-      false -> {:error, socket, ScheduleComponents.error_message(:unauthorized)}
       :invalid_mode -> {:error, socket, ScheduleComponents.save_failure_copy()}
       :error -> {:error, socket, ScheduleComponents.error_message(:not_found)}
       {:error, reason} -> {:error, socket, ScheduleComponents.error_message(reason)}
@@ -987,11 +976,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # and a cell the page cannot resolve through the grid bar. A cell with no stored
   # time (blank or estimated) has nothing to clear, so nothing is written.
   defp clear_cell(socket, trip_id, position) do
-    with true <- editor_access?(socket),
-         {:ok, context} <- cell_context(socket, trip_id, position) do
+    with {:ok, context} <- cell_context(socket, trip_id, position) do
       if is_nil(context.current), do: socket, else: write_clear(socket, context)
     else
-      false -> warning_outcome(socket, ScheduleComponents.error_message(:unauthorized))
       :error -> warning_outcome(socket, ScheduleComponents.error_message(:not_found))
     end
   end
@@ -1317,9 +1304,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # come from the loaded rows (AC-11, AC-23, INV-2).
   defp nudge(socket, %{"minutes" => minutes} = params) do
     cond do
-      not editor_access?(socket) ->
-        warning_outcome(socket, ScheduleComponents.error_message(:unauthorized))
-
       not nudge_minutes?(minutes) ->
         socket
 
@@ -1408,11 +1392,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
         socket
 
       [entry | rest] ->
-        if editor_access?(socket) do
-          restore_entry(assign(socket, :undo_stack, rest), entry)
-        else
-          warning_outcome(socket, ScheduleComponents.error_message(:unauthorized))
-        end
+        restore_entry(assign(socket, :undo_stack, rest), entry)
     end
   end
 
@@ -2237,9 +2217,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     case socket.assigns.change do
       %{review: %{}} = change ->
         cond do
-          not editor_access?(socket) ->
-            refuse_unauthorized(socket, change)
-
           change.stale? ->
             socket
 
@@ -3476,12 +3453,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
            "The status could not be changed. The route is unchanged — try again."
          )}
     end
-  end
-
-  defp unauthorized(socket, drawer) do
-    socket
-    |> put_flash(:error, ScheduleComponents.error_message(:unauthorized))
-    |> assign(:drawer, %{drawer | problem: :unauthorized, errors: %{}})
   end
 
   defp drawer_problem(socket, drawer, reason) do

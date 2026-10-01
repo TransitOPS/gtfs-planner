@@ -116,6 +116,16 @@ case Accounts.register_first_admin(%{
     IO.puts("Browser seed: created editor #{editor.email} (id=#{editor.id})")
     export_actor = %{id: editor.id, email: editor.email}
 
+    seed_audit = fn version ->
+      %AuditContext{
+        organization_id: org.id,
+        gtfs_version_id: version.id,
+        actor_id: editor.id,
+        actor_email: editor.email,
+        station_stop_id: nil
+      }
+    end
+
     {:ok, partial_version} =
       Versions.create_gtfs_version(org.id, %{name: "Browser Partial Retry Version"})
 
@@ -6878,7 +6888,7 @@ case Accounts.register_first_admin(%{
     # Block rules: the default layover and driving-time settings, Main as the
     # default garage and the researched 330-minute operator-change limit.
     {:ok, _advanced_settings} =
-      GtfsPlanner.Gtfs.Blocking.update_settings(org.id, advanced_version.id, %{
+      GtfsPlanner.Gtfs.Blocking.update_settings(seed_audit.(advanced_version), %{
         min_layover_minutes: 5,
         max_block_minutes: nil,
         pull_out_buffer_minutes: 0,
@@ -7201,7 +7211,7 @@ case Accounts.register_first_admin(%{
     end
 
     {:ok, _runs_settings} =
-      GtfsPlanner.Gtfs.Blocking.update_settings(org.id, runs_version.id, %{
+      GtfsPlanner.Gtfs.Blocking.update_settings(seed_audit.(runs_version), %{
         min_layover_minutes: 5,
         max_block_minutes: nil,
         pull_out_buffer_minutes: 0,
@@ -7225,7 +7235,7 @@ case Accounts.register_first_admin(%{
     # accident. A 15-minute pull-out and a 5-minute relief are what put 103's
     # single piece at 398 minutes rather than at its trip times.
     {:ok, _runs_crew} =
-      GtfsPlanner.Gtfs.update_crew_settings(org.id, runs_version.id, %{
+      GtfsPlanner.Gtfs.update_crew_settings(seed_audit.(runs_version), %{
         report_pull_out_minutes: 15,
         report_relief_minutes: 5,
         sign_off_minutes: 5,
