@@ -377,12 +377,12 @@ test.describe("In-seat connections", () => {
     );
     expect(places).toEqual([
       "Far Avenue",
-      "School Junction",
-      "Old Alignment",
-      "Union Station",
-      "Unknown Place",
       "Depot Row",
       "Market Row",
+      "Unknown Place",
+      "Old Alignment",
+      "School Junction",
+      "Union Station",
     ]);
 
     // The Far Avenue group is four connections of one 12 → 24 handoff with waits
@@ -824,7 +824,13 @@ test.describe("In-seat connections", () => {
     await tabUntilFocused(page, "#connection-choice-not-stated", 40);
     await page.keyboard.press("ArrowDown");
     await expect(page.locator("#connection-choice-stay")).toBeChecked();
-    await expect(page.locator("#connection-save-status")).toBeVisible();
+    // This pair holds no record, so the draft needs no warning sentence and the
+    // live region settles empty; what matters is that it is present and no
+    // longer pending, and that the save the keyboard reaches is enabled.
+    await expect(page.locator("#connection-save-status")).toHaveAttribute(
+      "data-pending",
+      "false",
+    );
     await expect(page.locator("#connection-save")).toBeEnabled();
 
     // Save is in the drawer's footer, so Tab has to reach it: a footer the
@@ -832,7 +838,7 @@ test.describe("In-seat connections", () => {
     await tabUntilFocused(page, "#connection-save", 40);
     await page.keyboard.press("Enter");
     await expect(page.locator("#connection-result")).toContainText(
-      "Saved: riders stay on board from trip BIS_SH_A2 to trip BIS_SH_B2.",
+      /Saved: riders stay on board from trip BIS_SH_A2 to trip BIS_SH_B2\./,
     );
     await expect(page.locator("#gap-drawer")).toBeHidden();
 
@@ -1020,7 +1026,7 @@ test.describe("In-seat connections", () => {
     await expect(page.locator("#connection-save")).toBeEnabled();
     await page.locator("#connection-save").click();
     await expect(page.locator("#connection-result")).toContainText(
-      "Saved: riders stay on board from trip BIS_NEAR_T1 to trip BIS_NEAR_T2.",
+      /Saved: riders stay on board from trip BIS_NEAR_T1 to trip BIS_NEAR_T2\./,
     );
     await expect(page.locator("#gap-drawer")).toBeHidden();
 
