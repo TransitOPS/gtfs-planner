@@ -15,7 +15,8 @@ defmodule GtfsPlanner.Gtfs.Rosters.Checks do
 
   Days off are counted cyclically as well, so Sunday and Monday are one group of
   two and a 4x10 line with Friday to Sunday off qualifies. A line that works
-  every day has no group and still counts as ok: it has seven days off.
+  every day has no day off, so it has no group and does not qualify; a line that
+  works no day has all seven off and does.
 
   Weekly hours report the seconds over 40 for every line and warn only above the
   configured hour count, so built-in overtime (40 to 48 hours) is shown, not

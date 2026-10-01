@@ -162,6 +162,10 @@ defmodule GtfsPlanner.Gtfs.Rosters.ChecksTest do
       assert Checks.days_off([1, 2, 3, 4, 5, 6]) == %{groups: [[7]], ok?: false}
     end
 
+    test "reports no days off for a line that works every day" do
+      assert Checks.days_off([1, 2, 3, 4, 5, 6, 7]) == %{groups: [], ok?: false}
+    end
+
     test "ignores the order the working days arrive in" do
       assert Checks.days_off([5, 1, 2, 3, 4]) == Checks.days_off([1, 2, 3, 4, 5])
     end

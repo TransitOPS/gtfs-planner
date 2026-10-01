@@ -182,8 +182,9 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   The new line has no days: a day off is the absence of a `roster_line_days` row,
   so there is nothing to write for one and an "Add line" click costs one row. The
   number is the version's highest plus one, and 1 when the version has no line —
-  numbering follows the lines that exist, so deleting the last line leaves a gap
-  that is never reused within the version's life.
+  numbering follows the lines that exist, so deleting the highest-numbered line
+  frees its number for the next one, while deleting a lower line leaves a gap
+  that is not reused.
 
   The number is read inside the lock, alongside the insert that takes it, so two
   sessions adding a line at the same time get two different numbers rather than
