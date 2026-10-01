@@ -446,7 +446,11 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       non_current = Versions.get_published_gtfs_version_for_org!(organization.id, non_current_id)
       original_name = non_current.name
 
-      {:ok, renamed_other} = Versions.update_gtfs_version(non_current, %{name: "Renamed Other"})
+      editor = editor_fixture(organization)
+      scope = %{actor_id: editor.id, organization_id: organization.id}
+
+      {:ok, renamed_other} =
+        Versions.update_gtfs_version(scope, non_current.id, %{name: "Renamed Other"})
 
       send(view.pid, {:gtfs_version_renamed, renamed_other})
       _ = render(view)
@@ -481,7 +485,11 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       assigns_before = :sys.get_state(view.pid).socket.assigns
       current = assigns_before.current_gtfs_version
 
-      {:ok, renamed_current} = Versions.update_gtfs_version(current, %{name: "Renamed Current"})
+      editor = editor_fixture(organization)
+      scope = %{actor_id: editor.id, organization_id: organization.id}
+
+      {:ok, renamed_current} =
+        Versions.update_gtfs_version(scope, current.id, %{name: "Renamed Current"})
 
       send(view.pid, {:gtfs_version_renamed, renamed_current})
       _ = render(view)

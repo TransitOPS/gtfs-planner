@@ -437,7 +437,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRunsTest do
   # The version leaves the published set by its own field. `status` is not the
   # column: the export asks `publication_status`, so a version made "staging" in
   # the wrong field would still be published and the case would prove nothing.
-  # Through the lifecycle changeset, not through `update_gtfs_version/2`. That
+  # Through the lifecycle changeset, not through `update_gtfs_version/3`. That
   # function's changeset casts only the name, so passing `publication_status`
   # there returns `{:ok, version}` having changed nothing at all — a silent
   # success that left the version published and made this case prove nothing.

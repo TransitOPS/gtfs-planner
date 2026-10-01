@@ -303,7 +303,11 @@ defmodule GtfsPlannerWeb.AssignOrganizationTest do
       assert {:cont, socket} = AssignOrganization.on_mount(:optional, %{}, session, socket)
       assert socket.assigns.current_gtfs_version.id == newer.id
 
-      {:ok, renamed_current} = Versions.update_gtfs_version(newer, %{name: "Newer Renamed"})
+      scope = %{actor_id: user.id, organization_id: organization.id}
+
+      {:ok, renamed_current} =
+        Versions.update_gtfs_version(scope, newer.id, %{name: "Newer Renamed"})
+
       socket = invoke_rename_hook(socket, renamed_current)
 
       assert socket.assigns.current_gtfs_version.id == newer.id
@@ -311,7 +315,9 @@ defmodule GtfsPlannerWeb.AssignOrganizationTest do
       assert {newer.id, "Newer Renamed"} in socket.assigns.available_versions
       assert {older.id, "Older"} in socket.assigns.available_versions
 
-      {:ok, renamed_other} = Versions.update_gtfs_version(older, %{name: "Older Renamed"})
+      {:ok, renamed_other} =
+        Versions.update_gtfs_version(scope, older.id, %{name: "Older Renamed"})
+
       socket = invoke_rename_hook(socket, renamed_other)
 
       assert socket.assigns.current_gtfs_version.id == newer.id
@@ -338,7 +344,8 @@ defmodule GtfsPlannerWeb.AssignOrganizationTest do
 
       assert {:cont, socket} = AssignOrganization.on_mount(:default, %{}, session, socket)
 
-      {:ok, renamed} = Versions.update_gtfs_version(version, %{name: "Renamed"})
+      scope = %{actor_id: user.id, organization_id: organization.id}
+      {:ok, renamed} = Versions.update_gtfs_version(scope, version.id, %{name: "Renamed"})
       socket = invoke_rename_hook(socket, renamed)
 
       assert socket.assigns.current_gtfs_version.name == "Renamed"

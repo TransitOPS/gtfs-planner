@@ -223,6 +223,121 @@ defmodule GtfsPlanner.VersionsTest do
     end
   end
 
+  describe "update_gtfs_version/3" do
+    setup do
+      organization = organization_fixture()
+      editor = user_fixture()
+      membership = organization_membership_fixture(editor, organization)
+      {:ok, version} = Versions.create_gtfs_version(organization.id, %{name: "Original"})
+
+      %{
+        organization: organization,
+        editor: editor,
+        membership: membership,
+        version: version,
+        scope: %{actor_id: editor.id, organization_id: organization.id}
+      }
+    end
+
+    test "renames the version for a current editor", %{scope: scope, version: version} do
+      assert {:ok, %GtfsVersion{name: "Renamed"}} =
+               Versions.update_gtfs_version(scope, version.id, %{name: "Renamed"})
+
+      assert Repo.get!(GtfsVersion, version.id).name == "Renamed"
+    end
+
+    test "writes only the name, ignoring lifecycle fields in the attrs", %{
+      scope: scope,
+      version: version
+    } do
+      assert {:ok, _version} =
+               Versions.update_gtfs_version(scope, version.id, %{
+                 name: "Renamed",
+                 publication_status: @failed_status
+               })
+
+      assert Repo.get!(GtfsVersion, version.id).publication_status == @published_status
+    end
+
+    test "rejects an editor whose membership was deactivated after the page loaded", %{
+      scope: scope,
+      version: version,
+      membership: membership
+    } do
+      deactivate_membership_fixture(membership)
+
+      assert {:error, :forbidden} =
+               Versions.update_gtfs_version(scope, version.id, %{name: "Renamed"})
+
+      assert Repo.get!(GtfsVersion, version.id).name == "Original"
+    end
+
+    test "rejects a member who holds no editor role", %{
+      organization: organization,
+      version: version
+    } do
+      admin = user_fixture()
+      organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
+      scope = %{actor_id: admin.id, organization_id: organization.id}
+
+      assert {:error, :forbidden} =
+               Versions.update_gtfs_version(scope, version.id, %{name: "Renamed"})
+
+      assert Repo.get!(GtfsVersion, version.id).name == "Original"
+    end
+
+    test "rejects a scope with no actor", %{organization: organization, version: version} do
+      scope = %{actor_id: nil, organization_id: organization.id}
+
+      assert {:error, :forbidden} =
+               Versions.update_gtfs_version(scope, version.id, %{name: "Renamed"})
+
+      assert Repo.get!(GtfsVersion, version.id).name == "Original"
+    end
+
+    test "returns not found for another organization's version", %{scope: scope} do
+      other_organization = organization_fixture()
+      {:ok, foreign} = Versions.create_gtfs_version(other_organization.id, %{name: "Foreign"})
+
+      assert {:error, :not_found} =
+               Versions.update_gtfs_version(scope, foreign.id, %{name: "Renamed"})
+
+      assert Repo.get!(GtfsVersion, foreign.id).name == "Foreign"
+    end
+
+    test "rejects an editor of one organization who claims another organization", %{
+      editor: editor,
+      version: version
+    } do
+      other_organization = organization_fixture()
+      {:ok, foreign} = Versions.create_gtfs_version(other_organization.id, %{name: "Foreign"})
+      scope = %{actor_id: editor.id, organization_id: other_organization.id}
+
+      assert {:error, :forbidden} =
+               Versions.update_gtfs_version(scope, foreign.id, %{name: "Renamed"})
+
+      assert {:error, :forbidden} =
+               Versions.update_gtfs_version(scope, version.id, %{name: "Renamed"})
+
+      assert Repo.get!(GtfsVersion, foreign.id).name == "Foreign"
+      assert Repo.get!(GtfsVersion, version.id).name == "Original"
+    end
+
+    test "returns the changeset for a duplicate name and leaves the name unchanged", %{
+      scope: scope,
+      organization: organization,
+      version: version
+    } do
+      {:ok, _other} = Versions.create_gtfs_version(organization.id, %{name: "Taken"})
+
+      assert {:error, changeset} =
+               Versions.update_gtfs_version(scope, version.id, %{name: "Taken"})
+
+      assert %{name: ["A version with this name already exists"]} = errors_on(changeset)
+      assert Repo.get!(GtfsVersion, version.id).name == "Original"
+    end
+  end
+
   describe "lifecycle transitions" do
     test "claim_staging_gtfs_version/2 transitions staging -> importing exactly once" do
       organization = organization_fixture()
