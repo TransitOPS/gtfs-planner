@@ -8032,9 +8032,13 @@ defmodule GtfsPlanner.Gtfs do
   # be able to say which happened. `move` is provenance, not part of the
   # rollback snapshot, which is why it is allowed here and is absent from
   # `reversible_fields_for/1`.
+  # `replaced_by`, `delete_old` and `replaced` are a replace's provenance, for
+  # the same reason `move` is one: which stop took over, whether the old one was
+  # removed and what moved are not stop columns, and a history entry that cannot
+  # say them cannot explain a feed that changed.
   defp audited_attrs_for(type, attrs) when type in [:stop, "stop"] do
     Map.filter(attrs, fn {key, _value} ->
-      to_string(key) in (reversible_fields_for(:stop) ++ ~w(move))
+      to_string(key) in (reversible_fields_for(:stop) ++ ~w(move replaced_by delete_old replaced))
     end)
   end
 

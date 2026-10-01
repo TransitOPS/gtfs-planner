@@ -1444,6 +1444,303 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   end
 
   @doc """
+  Replaces the old stop with the new one across every reference (AC-19).
+
+  `options` carries `:fingerprint` — the one `replace_review/3` returned — and
+  `:delete_old`, which removes the old stop once its references have moved.
+  Every reference kind's own `replace` rule from `StopReferences.all/0` is
+  applied, so this function never names a table (CR-1) and a new reference kind
+  becomes replaceable by adding one entry to that list.
+
+  Answers `{:ok, %{new: Stop.t(), old: Stop.t() | nil, replaced: map()}}`,
+  where `replaced` reports each kind under its `report_key` as
+  `%{key:, rewritten:, dropped:}` — the same names the review used, so the
+  dialog and the result cannot disagree. Or one of
+
+    * `{:error, {:refused, reasons}}` — the same refusals the review reports,
+      re-derived inside the transaction rather than trusted from the caller.
+    * `{:error, :stale_review}` — the fingerprint no longer matches, so a
+      reference appeared or disappeared since the editor read the review.
+      Nothing is written.
+    * `{:error, :forbidden | :not_found | :busy | :failed_audit}` — as for
+      `create_stop/2`.
+
+  ## Order, and why a colliding row is deleted rather than skipped
+
+  A colliding row is deleted **before** the surviving rows are rewritten.
+  Updating first would put two rows on one unique key and raise inside the
+  transaction, so the whole replace would roll back on exactly the input the
+  review had already told the editor about — a review that promises a
+  successful apply and then refuses it.
+
+  The collision test is `collision?/4`, the review's own, so the two halves
+  cannot disagree about which rows collide. That carries step 18's two findings
+  with it verbatim: a `nil` in a key column becomes `is_nil/1`, and there is
+  **no** prefilter on the ref's own column, because a deadhead row stores
+  `stop:<id>` rather than the bare ID. The collision keys come from the
+  catalog's own `collision_key`, which is the authoritative list — including
+  `fare_leg_join_rules`, whose key the step's worked example left out.
+  """
+  @spec replace_stop(Ecto.UUID.t(), Ecto.UUID.t(), map(), AuditContext.t()) ::
+          {:ok, map()}
+          | {:error,
+             {:refused, [atom()]}
+             | :stale_review
+             | :forbidden
+             | :not_found
+             | :busy
+             | :failed_audit
+             | :invalid_input}
+  def replace_stop(old_uuid, new_uuid, options, %AuditContext{} = audit)
+      when is_binary(old_uuid) and is_binary(new_uuid) and is_map(options) do
+    run_command_transaction(fn -> commit_replace(old_uuid, new_uuid, options, audit) end)
+  end
+
+  def replace_stop(_old_uuid, _new_uuid, _options, _audit), do: {:error, :invalid_input}
+
+  defp commit_replace(old_uuid, new_uuid, options, audit) do
+    :ok = authorize_editor!(audit)
+    _version = lock_published_version!(audit)
+
+    old = lock_stop!(old_uuid, audit)
+    new = lock_stop!(new_uuid, audit)
+
+    case build_replace_review(old, new, audit) do
+      {:error, {:refused, reasons}} -> Repo.rollback({:refused, reasons})
+      {:ok, review} -> apply_replace_review(old, new, review, options, audit)
+    end
+  end
+
+  # The review is re-derived here rather than trusted from the caller: it is
+  # what proves the state still is the state that was reviewed, and the
+  # fingerprint compared against it is what says so. Both stops are already
+  # locked, so nothing can change under the answer between the two calls.
+  defp apply_replace_review(old, new, review, options, audit) do
+    counts = Enum.map(review.changes, &{&1.key, &1.count})
+    expected = replace_fingerprint(old, new, counts, audit)
+
+    if matches_fingerprint?(Map.get(options, :fingerprint), expected) do
+      replaced =
+        Enum.reduce(StopReferences.all(), %{}, fn ref, effects ->
+          apply_replace_ref(ref, old, new, effects)
+        end)
+
+      audit_replace(old, new, replaced, options, audit)
+
+      old = maybe_delete_old(old, options)
+
+      %{new: new, old: old, replaced: replaced}
+    else
+      Repo.rollback(:stale_review)
+    end
+  end
+
+  # `:delete_old` is the editor's own decision, not a rule: with it false the
+  # old stop stays in the feed and simply stops being served, which is what
+  # "keep it for now, merge it later" means. The audit entry is written before
+  # the delete, so a stop that was removed still has the record of why (INV-2).
+  defp maybe_delete_old(old, options) do
+    if Map.get(options, :delete_old, false) do
+      case Repo.delete(old) do
+        {:ok, deleted} -> deleted
+        {:error, %Ecto.Changeset{} = failed} -> Repo.rollback(failed)
+      end
+    else
+      old
+    end
+  end
+
+  # `:refuse` kinds were already refused by `build_replace_review/3`; a
+  # non-zero count here would mean the review and the apply disagree, which is
+  # the one thing this command must not do silently.
+  defp apply_replace_ref(%{replace: :refuse} = ref, old, _new, effects) do
+    if replace_count(ref, old) == 0 do
+      effects
+    else
+      Repo.rollback(:stale_review)
+    end
+  end
+
+  # `:drop` — the deleted stop's own translations. Every row goes and nothing
+  # takes its place.
+  defp apply_replace_ref(%{replace: :drop} = ref, old, _new, effects) do
+    {count, _rows} = Repo.delete_all(StopReferences.scope_query(ref, old))
+    put_effect(effects, ref, count, 0)
+  end
+
+  # `:rewrite` — one statement for the whole kind. Stop times and pattern
+  # occurrences are the kinds with thousands of rows, and neither can collide:
+  # no unique index of theirs carries the rewritten column.
+  defp apply_replace_ref(%{replace: :rewrite} = ref, old, new, effects) do
+    {count, _rows} =
+      Repo.update_all(StopReferences.scope_query(ref, old),
+        set: [{ref.column, replacement_value(ref, new)}]
+      )
+
+    put_effect(effects, ref, count, 0)
+  end
+
+  # `:rewrite_dedupe_array` — `flex_services.hub_stop_ids`. The element is
+  # replaced and the array deduped, so a service that already hubs the
+  # replacement does not end up naming it twice.
+  defp apply_replace_ref(%{replace: :rewrite_dedupe_array} = ref, old, new, effects) do
+    count =
+      Enum.reduce(replace_all_rows(ref, old), 0, fn row, count ->
+        if rewrite_hubs(ref, row, old, new), do: count + 1, else: count
+      end)
+
+    put_effect(effects, ref, count, 0)
+  end
+
+  # `:rewrite_keep_existing` — rewrite the row, unless the rewritten key lands
+  # on a row the replacement already has, in which case the replacement's row
+  # is kept and the old one deleted. The deletes run first, so the rewrite that
+  # follows cannot briefly put two rows on one unique key.
+  defp apply_replace_ref(%{replace: :rewrite_keep_existing} = ref, old, new, effects) do
+    rows = replace_all_rows(ref, old)
+    {colliding, surviving} = Enum.split_with(rows, &collision?(ref, &1, old, new))
+
+    dropped = delete_rows(colliding)
+
+    rewritten =
+      Enum.reduce(surviving, 0, fn row, count ->
+        update_row(ref, row, %{ref.column => rewritten_value(ref, ref.column, row, old, new)})
+        count + 1
+      end)
+
+    put_effect(effects, ref, rewritten + dropped, dropped)
+  end
+
+  # `:rekey_segments` — re-point both ends of a shared map-line section, and
+  # drop the row when it would collide or become `(new, new)`. A zero-length
+  # line draws as real service between a stop and itself, which is why the
+  # review drops it and the apply has to agree.
+  defp apply_replace_ref(%{replace: :rekey_segments} = ref, old, new, effects) do
+    {colliding, surviving} =
+      replace_all_rows(ref, old)
+      |> Enum.split_with(fn row ->
+        pair = rekeyed_segment(row, old, new)
+        rekeyed_self_pair?(pair, new) or collision?(ref, row, old, new)
+      end)
+
+    dropped = delete_rows(colliding)
+
+    rewritten =
+      Enum.reduce(surviving, 0, fn row, count ->
+        update_row(ref, row, rekeyed_segment(row, old, new))
+        count + 1
+      end)
+
+    put_effect(effects, ref, rewritten + dropped, dropped)
+  end
+
+  defp rewrite_hubs(%{column: column} = ref, row, old, new) do
+    stored = Map.fetch!(row, column)
+
+    hubs =
+      stored
+      |> Enum.map(fn stop_id -> if stop_id == old.stop_id, do: new.stop_id, else: stop_id end)
+      |> Enum.uniq()
+
+    if hubs == stored do
+      false
+    else
+      update_row(ref, row, %{column => hubs})
+      true
+    end
+  end
+
+  defp rekeyed_segment(row, old, new) do
+    %{
+      from_stop_id: rewritten_segment_end(nil, row.from_stop_id, old, new),
+      to_stop_id: rewritten_segment_end(nil, row.to_stop_id, old, new)
+    }
+  end
+
+  # The apply's own copy of the review's `(new, new)` rule, asked of the pair
+  # this replace actually writes rather than of the stored one.
+  defp rekeyed_self_pair?(pair, new) do
+    pair.from_stop_id == new.stop_id and pair.to_stop_id == new.stop_id
+  end
+
+  # A `via: :fk_uuid` entry names `stops.id`; every other entry names the GTFS ID.
+  # No `:rewrite` entry is currently `:fk_uuid`, but the value is read off the
+  # entry rather than assumed so a future one cannot write a stop UUID into a
+  # string column.
+  defp replacement_value(%{via: :fk_uuid}, new), do: new.id
+  defp replacement_value(_ref, new), do: new.stop_id
+
+  # The rows are loaded whole rather than through `replace_rows/2`'s display
+  # cap: the cap bounds what a dialog shows, and applying only the first 5,000
+  # would leave the rest of the feed naming a stop that was replaced. Only the
+  # kinds whose rewritten key can collide are loaded row by row; `:rewrite` is
+  # one statement whatever the count.
+  defp replace_all_rows(ref, old), do: Repo.all(StopReferences.scope_query(ref, old))
+
+  defp delete_rows([]), do: 0
+
+  defp delete_rows(rows) do
+    Enum.each(rows, fn row ->
+      case Repo.delete(row) do
+        {:ok, _deleted} -> :ok
+        {:error, %Ecto.Changeset{} = failed} -> Repo.rollback(failed)
+      end
+    end)
+
+    length(rows)
+  end
+
+  defp update_row(%{schema: schema}, row, changes) do
+    {1, _rows} =
+      schema
+      |> where([r], field(r, :id) == ^row.id)
+      |> Repo.update_all(set: Enum.map(changes, fn {column, value} -> {column, value} end))
+
+    :ok
+  end
+
+  # One entry per name the review used, and only for a kind that actually
+  # changed: a replace that touched nothing reports nothing rather than a list
+  # of zeros a dialog would have to filter before it could say anything.
+  # `transfers_from` and `transfers_to` are
+  # the same table and report as one `:transfers`, and their counts add — a
+  # dialog that said "1 transfer" for a row seen from both ends would be wrong.
+  defp put_effect(effects, _ref, 0, 0), do: effects
+
+  defp put_effect(effects, ref, rewritten, dropped) do
+    key = StopReferences.report_key(ref)
+
+    Map.update(
+      effects,
+      key,
+      %{key: key, rewritten: rewritten, dropped: dropped},
+      fn effect ->
+        %{
+          effect
+          | rewritten: effect.rewritten + rewritten,
+            dropped: effect.dropped + dropped
+        }
+      end
+    )
+  end
+
+  # What the history entry records: which stop took over, whether the old one
+  # was removed, and every kind that moved. The counts are the ones the editor
+  # agreed to, so the audit and the dialog say the same numbers.
+  defp audit_replace(old, new, replaced, options, audit) do
+    attrs = %{
+      "replaced_by" => new.stop_id,
+      "delete_old" => Map.get(options, :delete_old, false),
+      "replaced" =>
+        replaced
+        |> Enum.map(fn {key, effect} -> {key, effect.rewritten} end)
+        |> Map.new()
+    }
+
+    audit!(old, audit, "updated", attrs)
+  end
+
+  @doc """
   Creates a stop in a version, audited in the same transaction (AC-12).
 
   `attrs` is the editor's draft. A blank or absent `stop_id` is filled by the
