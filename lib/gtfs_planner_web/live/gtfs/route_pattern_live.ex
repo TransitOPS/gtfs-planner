@@ -3305,7 +3305,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         {:noreply,
          socket
          |> assign(:details_stale?, reason == :stale_review)
-         |> assign(:error_message, reasons_message(reason))}
+         |> assign(:error_message, reasons_message(reason))
+         |> mark_editor_refusal(reason)}
     end
   end
 
