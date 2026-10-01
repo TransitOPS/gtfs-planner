@@ -2499,3 +2499,631 @@ test.describe("alert editor assistant", () => {
     await captureInterviewReference(page, testInfo, "asst-in-form", "1440");
   });
 });
+
+// The cross-scenario keyboard journeys, as spec 30's step 29 lays them out:
+// the six situations an operator actually writes, each walked from `/alerts/new`
+// through the questions its own sequence puts in front of them, with the refresh
+// and second-tab recoveries beside them.
+//
+// Every answer here is made the way a keyboard user makes it: a card or a
+// button is focused and Enter is pressed, a search is typed into, a checkbox is
+// focused and Space is pressed. Nothing in this block calls `click()` on a
+// question, because a journey that only proves the pointer path cannot show
+// that the editor is operable without one. A native `<select>` is the one
+// control a keyboard drives through its own value rather than through keys
+// Playwright can synthesise per option, so it is set with `selectOption`.
+
+// The prototype state a journey's final review is compared against. The
+// reference file lives in the gitignored `.specs/` workspace, so a checkout
+// without it skips the reference capture rather than failing.
+async function captureJourneyReference(page, testInfo, state, width) {
+  if (!fs.existsSync(REFERENCE_PATH)) return;
+
+  await page.goto(`file://${REFERENCE_PATH}?state=${state}`);
+  await page.waitForLoadState("load");
+
+  await page.screenshot({
+    path: capturePath(testInfo, `journey-ref-${state}-${width}.png`),
+    fullPage: false,
+  });
+}
+
+// A new alert opened in the form mode whatever any earlier test stored as the
+// reader's default: an authoring journey that landed on the assistant's start
+// card would be testing the wrong surface (FH-28's own lesson).
+async function openJourneyAlert(page) {
+  const versionId = await editorVersionId(page);
+  await page.goto(`/gtfs/${versionId}/alerts/new?mode=form`);
+  await page.waitForSelector("#alert-question", { timeout: 15_000 });
+  await waitForEditorMounted(page);
+  return versionId;
+}
+
+// A card or a button is a real button, so Enter on the focused one is the
+// keyboard's own selection and stores exactly what a click stores.
+async function pressChoice(page, selector) {
+  const control = page.locator(selector);
+  await control.focus();
+  await expect(control).toBeFocused();
+  await page.keyboard.press("Enter");
+}
+
+// The route search is typed into and the result is chosen with the keyboard,
+// matching the label span rather than the button's own padded text: "Route 12"
+// and "Route 50" both contain "Route 1".
+async function chooseRoute(page, label) {
+  const search = page.locator("#alert-route-search");
+  await search.focus();
+  await expect(search).toBeFocused();
+  await search.pressSequentially(label);
+  await page.waitForSelector("#alert-route-options button", {
+    timeout: 15_000,
+  });
+  await pressChoice(
+    page,
+    "#alert-route-options button:has(span.font-semibold:text-is('" +
+      label +
+      "'))",
+  );
+  await expect(
+    page.locator(
+      "#alert-route-options button:has(span.font-semibold:text-is('" +
+        label +
+        "'))",
+    ),
+  ).toHaveAttribute("aria-pressed", "true");
+}
+
+// The agency's own today, read from the zone the timing card names and computed
+// in the browser rather than taken from the machine's clock, so the date this
+// journey types is the day the server is on (CR-7).
+async function agencyToday(page) {
+  const text = await page.locator("#alert-timing-zone").innerText();
+  const zone = text.trim().split(/\s+/).pop().replace(/\.$/, "");
+
+  return page.evaluate(
+    (timeZone) =>
+      new Intl.DateTimeFormat("en-CA", { timeZone }).format(new Date()),
+    zone,
+  );
+}
+
+// A date input is typed the way the segments take it rather than filled as one
+// value, because a date a keyboard cannot reach is a date a keyboard user
+// cannot choose.
+async function typeDate(page, selector, iso) {
+  const [year, month, day] = iso.split("-");
+  const field = page.locator(selector);
+  await field.focus();
+  await expect(field).toBeFocused();
+  await field.pressSequentially(`${month}${day}${year}`);
+  await expect(field).toHaveValue(iso);
+}
+
+// A current disruption's own answer: an estimate keeps the alert live, so it
+// asks when staff check back rather than when service recovers.
+async function answerCurrentTiming(page, startTime) {
+  await pressChoice(page, "#alert-timing-end-kind-estimated");
+  await expect(page.locator("#timing-check-in")).toBeVisible();
+  await page.locator("#timing-check-in").selectOption({ index: 2 });
+  await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+
+  await typeDate(page, "#timing-start-date", await agencyToday(page));
+  await page.locator("#timing-start-time").fill(startTime);
+  await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+
+  await pressChoice(page, "#alert-timing-continue");
+  await page.waitForSelector("#alert-reason", { timeout: 15_000 });
+}
+
+// The urgency, situation and mode questions every situation starts with, on the
+// seeded version's own three route types.
+async function startJourney(page, urgency, situation) {
+  await pressChoice(page, `#alert-urgency-${urgency}`);
+  await page.waitForURL(/step=situation/, { timeout: 15_000 });
+  await pressChoice(page, `#situation-${situation}`);
+
+  await page.waitForSelector("#mode-3", { timeout: 15_000 });
+  await pressChoice(page, "#mode-3");
+}
+
+// The place combobox: typed into, then the keyboard picks from the same list a
+// pointer would, and the identity is stored by the form's own change (R7).
+async function choosePlace(page) {
+  const search = page.locator("#place_stop_id_text_input");
+  await search.focus();
+  await expect(search).toBeFocused();
+  await search.pressSequentially("Newport Transit Center");
+  await page.waitForSelector("#alert-place-stop ul li div[data-idx]", {
+    timeout: 15_000,
+  });
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+}
+
+// A journey's final review, captured at both widths. The narrow viewport is
+// shorter than the card, so that capture is the whole page: a cropped one would
+// show the heading and nothing else.
+async function captureJourneyReview(page, testInfo, scenario) {
+  await expect(page.locator("#alert-review")).toBeVisible();
+  await expect(page.locator("#review-errors")).toHaveCount(0);
+  expect(await fitsViewport(page)).toBe(true);
+
+  await page.screenshot({
+    path: capturePath(testInfo, `journey-${scenario}-1440.png`),
+    fullPage: false,
+  });
+
+  await page.setViewportSize(NARROW);
+  expect(await fitsViewport(page)).toBe(true);
+  await page.screenshot({
+    path: capturePath(testInfo, `journey-${scenario}-320.png`),
+    fullPage: true,
+  });
+  await page.setViewportSize(DESKTOP);
+}
+
+// The alert's own identity, read from the URL the editor is on, so a row on the
+// list is matched by the row this journey wrote rather than by its wording.
+function alertIdFrom(page) {
+  return page.url().split("?")[0].split("/").pop();
+}
+
+test.describe("alert authoring journeys", () => {
+  // Each journey walks a whole situation's sequence from the first question to
+  // the review, and one of them walks it twice at two widths, so these carry
+  // more than a single question's budget.
+  test.describe.configure({ timeout: 240_000 });
+
+  test("an urgent Route 1 delay with a check-in completes and lists under Current @journey", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openJourneyAlert(page);
+
+    await startJourney(page, "now", "delay");
+
+    await page.waitForSelector("#alert-routes-continue", { timeout: 15_000 });
+    await chooseRoute(page, "Route 1");
+    await pressChoice(page, "#alert-routes-continue");
+
+    await page.waitForSelector("#direction-0", { timeout: 15_000 });
+    await pressChoice(page, "#direction-0");
+
+    await page.waitForSelector("#alert-timing", { timeout: 15_000 });
+    await answerCurrentTiming(page, "08:00");
+
+    // A cause is a self-contained answer, so choosing it is what carries the
+    // reader on to the message step, where the wording is generated.
+    await pressChoice(page, "#alert-cause-weather");
+    await page.waitForSelector("#alert-message", { timeout: 15_000 });
+    await expect(page.locator("#message-origin")).toContainText("Delays");
+
+    await pressChoice(page, "#alert-message-continue");
+    await page.waitForSelector("#alert-review", { timeout: 15_000 });
+
+    await expect(page.locator("#review-where")).toContainText("Route 1");
+    await expect(page.locator("#review-what")).toContainText("Delays");
+    // An estimate leaves the end open, so the review reads as open-ended
+    // rather than naming a recovery time nobody chose (AC-20).
+    await expect(page.locator("#review-when")).toContainText(
+      "until further notice",
+    );
+
+    const alertId = alertIdFrom(page);
+    await captureJourneyReview(page, testInfo, "delay");
+
+    // Saving finishes the draft and returns to the list, where an alert with no
+    // end date and a first date that has arrived is Current, not Upcoming.
+    await pressChoice(page, "#save-alert");
+    await page.waitForURL(/\/alerts$/, { timeout: 15_000 });
+    await expect(page.locator("#alerts-tab-current")).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(page.locator(`#alert-link-${alertId}`)).toBeVisible();
+
+    await captureJourneyReference(page, testInfo, "review-now", "1440");
+  });
+
+  test("a Route 1 detour past the shared stop takes Route 12 with it and completes @journey", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openJourneyAlert(page);
+
+    await startJourney(page, "now", "detour");
+
+    await page.waitForSelector("#alert-routes-continue", { timeout: 15_000 });
+    await chooseRoute(page, "Route 1");
+    await pressChoice(page, "#alert-routes-continue");
+
+    await page.waitForSelector("#alert-stops", { timeout: 15_000 });
+    await pressChoice(
+      page,
+      "#alert-stops-list button:has-text('Newport Transit Center')",
+    );
+    await pressChoice(page, "#alert-stops-continue");
+
+    // The stop Route 1 and Route 12 share is what raises the other-route
+    // question, and answering yes makes the pairs at that stop affected too
+    // (AC-18).
+    await page.waitForSelector("#alert-shared", { timeout: 15_000 });
+    await expect(page.locator("#alert-shared fieldset")).toContainText(
+      "Route 12 also stops at Newport Transit Center",
+    );
+    await pressChoice(page, "#alert-shared button[id$='-yes']");
+
+    await page.waitForSelector("#alert-boarding", { timeout: 15_000 });
+    const search = page.locator("#alternative_stop_id_text_input");
+    await search.focus();
+    await search.pressSequentially("N Coast");
+    await page.waitForSelector("#alert-boarding-stop ul li div[data-idx]", {
+      timeout: 15_000,
+    });
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#alternative_stop_id")).not.toHaveValue("");
+    await pressChoice(page, "#alert-alternative-continue");
+
+    await page.waitForSelector("#alert-timing", { timeout: 15_000 });
+    await answerCurrentTiming(page, "08:00");
+
+    await pressChoice(page, "#alert-cause-weather");
+    await page.waitForSelector("#alert-message", { timeout: 15_000 });
+    await pressChoice(page, "#alert-message-continue");
+    await page.waitForSelector("#alert-review", { timeout: 15_000 });
+
+    // The affected pairs are the routes the review reads, so Route 12 is named
+    // beside Route 1 without the reader having chosen it on the routes card.
+    await expect(page.locator("#review-where")).toContainText("Route 1");
+    await expect(page.locator("#review-where")).toContainText("Route 12");
+
+    await captureJourneyReview(page, testInfo, "detour");
+    await captureJourneyReference(page, testInfo, "review-now", "1440");
+  });
+
+  test("a moved stop completes once its place carries a written alternative @journey", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openJourneyAlert(page);
+
+    await startJourney(page, "now", "stop_moved");
+
+    // The place question names the stop, and Continue is what carries the
+    // reader on to the routes the place preselected (AC-18, INV-2).
+    await page.waitForSelector("#alert-place", { timeout: 15_000 });
+    await choosePlace(page);
+    await pressChoice(page, "#alert-place-continue");
+
+    await page.waitForSelector("#alert-routes-continue", { timeout: 15_000 });
+    await expect(page.locator("#alert-routes-count")).toContainText(
+      "2 routes selected",
+    );
+    await pressChoice(page, "#alert-routes-continue");
+
+    // A moved stop must say where riders go instead, so the question refuses to
+    // advance on nothing.
+    await page.waitForSelector("#alert-boarding", { timeout: 15_000 });
+    await pressChoice(page, "#alert-alternative-continue");
+    await expect(page.locator("#alert-alternative-error")).toContainText(
+      "Choose a stop to board at, or write directions instead.",
+    );
+
+    await pressChoice(page, "#write-directions");
+    await page.waitForSelector("#write-directions-field", { timeout: 15_000 });
+    const directions = page.locator("#write-directions-field");
+    await directions.focus();
+    await directions.pressSequentially(
+      "Board at the temporary stop on NE Main St.",
+    );
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+    await pressChoice(page, "#alert-alternative-continue");
+
+    await page.waitForSelector("#alert-timing", { timeout: 15_000 });
+    await answerCurrentTiming(page, "08:00");
+
+    await pressChoice(page, "#alert-cause-weather");
+    await page.waitForSelector("#alert-message", { timeout: 15_000 });
+    await pressChoice(page, "#alert-message-continue");
+    await page.waitForSelector("#alert-review", { timeout: 15_000 });
+
+    await expect(page.locator("#review-what")).toContainText("Stop moved");
+    await expect(page.locator("#review-errors")).toHaveCount(0);
+
+    await captureJourneyReview(page, testInfo, "stop-moved");
+    await captureJourneyReference(page, testInfo, "review-now", "1440");
+  });
+
+  test("a dated cancellation of two Route 1 departures completes without a timing question @journey", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openJourneyAlert(page);
+
+    await startJourney(page, "now", "cancelled_trips");
+
+    await page.waitForSelector("#alert-routes-continue", { timeout: 15_000 });
+    await chooseRoute(page, "Route 1");
+    await pressChoice(page, "#alert-routes-continue");
+
+    // A cancellation's period is the service dates of the departures it names,
+    // so this sequence has no timing question at all (AC-19, INV-2).
+    await expect(page.locator("#alert-step-timing")).toHaveCount(0);
+
+    await page.waitForSelector("#alert-departures", { timeout: 15_000 });
+    const first_date = await firstDepartureDate(page);
+    const second_date = await addDayAfter(page, first_date);
+
+    const first_list = page.locator(`#alert-departure-list-${first_date}`);
+    const second_list = page.locator(`#alert-departure-list-${second_date}`);
+
+    const first_box = first_list.locator("input[type='checkbox']").first();
+    await first_box.focus();
+    await expect(first_box).toBeFocused();
+    await page.keyboard.press("Space");
+    await expect(first_box).toBeChecked();
+
+    const second_box = second_list.locator("input[type='checkbox']").nth(1);
+    await second_box.focus();
+    await page.keyboard.press("Space");
+    await expect(second_box).toBeChecked();
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+
+    await pressChoice(page, "#alert-departures-continue");
+
+    await page.waitForSelector("#alert-reason", { timeout: 15_000 });
+    await pressChoice(page, "#alert-cause-weather");
+    await page.waitForSelector("#alert-message", { timeout: 15_000 });
+    await pressChoice(page, "#alert-message-continue");
+    await page.waitForSelector("#alert-review", { timeout: 15_000 });
+
+    await expect(page.locator("#review-what")).toContainText("No service");
+    await expect(page.locator("#review-where")).toContainText("Route 1");
+
+    await captureJourneyReview(page, testInfo, "cancellation");
+    await captureJourneyReference(page, testInfo, "review-now", "1440");
+  });
+
+  test("planned night work for two weeks loses one Friday and the review reads nine dates @journey", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openJourneyAlert(page);
+
+    await startJourney(page, "planned", "delay");
+
+    await page.waitForSelector("#alert-routes-continue", { timeout: 15_000 });
+    await chooseRoute(page, "Route 1");
+    await pressChoice(page, "#alert-routes-continue");
+
+    await page.waitForSelector("#direction-0", { timeout: 15_000 });
+    await pressChoice(page, "#direction-0");
+
+    await page.waitForSelector("#alert-timing", { timeout: 15_000 });
+    await pressChoice(page, "#alert-timing-pattern-weekly");
+    await typeDate(page, "#timing-first-date", "2026-10-05");
+    await page.locator("#timing-weeks").fill("2");
+
+    for (const day of [1, 2, 3, 4, 5]) {
+      await pressChoice(page, `#timing-weekday-${day}`);
+    }
+
+    // Until is at or before From, so each night ends the next morning.
+    await page.locator("#timing-day-start").fill("20:00");
+    await page.locator("#timing-day-end").fill("05:00");
+    await expect(page.locator("#alert-timing-count")).toContainText(
+      "10 days: Oct 5 to Oct 16",
+    );
+
+    await typeDate(page, "#timing-date", "2026-10-09");
+    await page.keyboard.press("Tab");
+    await expect(page.locator("#add-timing-date")).toBeFocused();
+    await page.keyboard.press("Enter");
+
+    // Nine nights are what the pattern now covers, listed one date at a time.
+    await expect(page.locator("#alert-timing-count")).toContainText(
+      "9 days: Oct 5 to Oct 16",
+    );
+    await expect(page.locator("#alert-timing-occurrences > li")).toHaveCount(9);
+    await expect(
+      page.locator("#alert-timing-occurrence-2026-10-09"),
+    ).toHaveCount(0);
+
+    await pressChoice(page, "#alert-timing-continue");
+    await page.waitForSelector("#alert-reason", { timeout: 15_000 });
+    await pressChoice(page, "#alert-cause-construction");
+    await page.waitForSelector("#alert-message", { timeout: 15_000 });
+    await pressChoice(page, "#alert-message-continue");
+    await page.waitForSelector("#alert-review", { timeout: 15_000 });
+
+    // The review reads the pattern and the exception in one sentence, which is
+    // what nine dates and one removal look like to a rider (AC-20).
+    await expect(page.locator("#review-when")).toContainText("Oct 5 to Oct 16");
+    await expect(page.locator("#review-when")).toContainText(
+      "except Fri Oct 9",
+    );
+
+    await captureJourneyReview(page, testInfo, "night-work");
+    await captureJourneyReference(page, testInfo, "review-planned", "1440");
+  });
+
+  test("an accessibility issue names the facility it closes and completes @journey", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openJourneyAlert(page);
+
+    await startJourney(page, "now", "accessibility");
+
+    await page.waitForSelector("#alert-place", { timeout: 15_000 });
+    await choosePlace(page);
+    await pressChoice(page, "#alert-place-continue");
+
+    await page.waitForSelector("#alert-routes-continue", { timeout: 15_000 });
+    await pressChoice(page, "#alert-routes-continue");
+
+    // An accessibility question adds the facility riders cannot use to the
+    // alternatives it already asks for (AC-18).
+    await page.waitForSelector("#alert-alternative", { timeout: 15_000 });
+    const facility = page.locator("#alert_scope_facility");
+    await facility.focus();
+    await facility.pressSequentially("North entrance ramp");
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+
+    await pressChoice(page, "#write-directions");
+    await page.waitForSelector("#write-directions-field", { timeout: 15_000 });
+    const directions = page.locator("#write-directions-field");
+    await directions.focus();
+    await directions.pressSequentially(
+      "Use the south entrance ramp, which is step-free.",
+    );
+    await pressChoice(page, "#alert-alternative-continue");
+
+    await page.waitForSelector("#alert-timing", { timeout: 15_000 });
+    await answerCurrentTiming(page, "08:00");
+
+    await pressChoice(page, "#alert-cause-weather");
+    await page.waitForSelector("#alert-message", { timeout: 15_000 });
+    await pressChoice(page, "#alert-message-continue");
+    await page.waitForSelector("#alert-review", { timeout: 15_000 });
+
+    // An accessibility issue stays an accessibility issue rather than becoming
+    // a closure (R9).
+    await expect(page.locator("#review-what")).toContainText(
+      "Accessibility issue",
+    );
+
+    await captureJourneyReview(page, testInfo, "accessibility");
+    await captureJourneyReference(page, testInfo, "review-now", "1440");
+  });
+
+  test("reloading during typing keeps the wording, and another tab's save says so @journey", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openJourneyAlert(page);
+
+    await startJourney(page, "now", "delay");
+
+    await page.waitForSelector("#alert-routes-continue", { timeout: 15_000 });
+    await chooseRoute(page, "Route 1");
+    await pressChoice(page, "#alert-routes-continue");
+    await page.waitForSelector("#direction-0", { timeout: 15_000 });
+    await pressChoice(page, "#direction-0");
+
+    await page.waitForSelector("#alert-timing", { timeout: 15_000 });
+    await answerCurrentTiming(page, "08:00");
+    await pressChoice(page, "#alert-cause-weather");
+    await page.waitForSelector("#alert-message", { timeout: 15_000 });
+
+    const url = page.url().split("?")[0];
+    const header = page.locator("#message-header");
+    await header.focus();
+    await header.pressSequentially("Route 1 delayed by a stalled truck");
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+
+    // A reload inside the browser's own recovery window is the same question
+    // with the same answer, because the draft is on the server (AC-16).
+    await page.waitForTimeout(2000);
+    await page.reload();
+    await waitForEditorMounted(page);
+    await expect(page.locator("#message-header")).toHaveValue(
+      "Route 1 delayed by a stalled truck",
+    );
+
+    // A second tab holding the same alert at the same revision saves first,
+    // which is the interleaving AC-16 describes.
+    const other = await page.context().newPage();
+    await other.goto(`${url}?mode=form&step=message`);
+    await other.waitForSelector("#message-header", { timeout: 15_000 });
+    const other_header = other.locator("#message-header");
+    await other_header.focus();
+    await other_header.pressSequentially("Saved in the other tab");
+    await expect(other.locator("#alert-save-status")).toHaveText("Saved");
+    await other.close();
+
+    await header.focus();
+    await header.pressSequentially("Typed in this tab");
+    await expect(page.locator("#alert-conflict")).toBeVisible();
+    await expect(page.locator("#alert-conflict")).toContainText(
+      "another tab or by another editor",
+    );
+    await expect(page.locator("#alert-save-status")).toHaveText("Not saved.");
+
+    // Load latest takes the other side of the conflict, and nothing else does.
+    await pressChoice(page, "#conflict-load-latest");
+    await expect(page.locator("#alert-conflict")).toHaveCount(0);
+    await expect(page.locator("#message-header")).toHaveValue(
+      "Saved in the other tab",
+    );
+
+    // The recovered draft is still a complete one, so the journey ends where
+    // every other journey ends.
+    await pressChoice(page, "#alert-message-continue");
+    await page.waitForSelector("#alert-review", { timeout: 15_000 });
+    await captureJourneyReview(page, testInfo, "conflict");
+    await captureJourneyReference(page, testInfo, "review-now", "1440");
+  });
+
+  test("no question on the way to a review overflows the narrow width @journey", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(NARROW);
+    await openJourneyAlert(page);
+
+    const assertFits = async () => expect(await fitsViewport(page)).toBe(true);
+
+    await assertFits();
+
+    await pressChoice(page, "#alert-urgency-now");
+    await page.waitForURL(/step=situation/, { timeout: 15_000 });
+    await assertFits();
+
+    await pressChoice(page, "#situation-stop_moved");
+    await page.waitForSelector("#alert-place", { timeout: 15_000 });
+    await assertFits();
+
+    await choosePlace(page);
+    await assertFits();
+
+    await pressChoice(page, "#alert-place-continue");
+    await page.waitForSelector("#alert-routes-continue", { timeout: 15_000 });
+    await assertFits();
+
+    await pressChoice(page, "#alert-routes-continue");
+    await page.waitForSelector("#alert-boarding", { timeout: 15_000 });
+    await assertFits();
+
+    await pressChoice(page, "#write-directions");
+    await page.waitForSelector("#write-directions-field", { timeout: 15_000 });
+    await assertFits();
+
+    const directions = page.locator("#write-directions-field");
+    await directions.focus();
+    await directions.pressSequentially("Board on NE Main St.");
+    await pressChoice(page, "#alert-alternative-continue");
+
+    await page.waitForSelector("#alert-timing", { timeout: 15_000 });
+    await assertFits();
+    await answerCurrentTiming(page, "08:00");
+    await assertFits();
+
+    await pressChoice(page, "#alert-cause-weather");
+    await page.waitForSelector("#alert-message", { timeout: 15_000 });
+    await assertFits();
+
+    await pressChoice(page, "#alert-message-continue");
+    await page.waitForSelector("#alert-review", { timeout: 15_000 });
+    await assertFits();
+
+    await page.screenshot({
+      path: capturePath(testInfo, "journey-narrow-review-320.png"),
+      fullPage: true,
+    });
+
+    expect(await fitsViewport(page)).toBe(true);
+  });
+});
