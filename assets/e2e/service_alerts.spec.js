@@ -2312,6 +2312,49 @@ test.describe("alert settings", () => {
 // (AC-28). The unavailable state that card also has to carry is a provider
 // failure, and the provider is scripted in step 28; until then this journey
 // observes the card itself at both widths.
+// The assistant interview's reference capture, for the same side-by-side
+// reading as the start card's.
+async function captureInterviewReference(page, testInfo, state, width) {
+  if (!fs.existsSync(REFERENCE_PATH)) return;
+
+  await page.goto(`file://${REFERENCE_PATH}?state=${state}`);
+  await page.waitForLoadState("load");
+
+  await page.screenshot({
+    path: capturePath(testInfo, `assistant-ref-${state}-${width}.png`),
+    fullPage: false,
+  });
+}
+
+// Drives the scripted Route 12 interview from the start card and returns the
+// saved alert's URL. The scripted provider (test/support/agents/
+// browser_open_router.ex) answers the turn with get_draft, search_routes and
+// propose_changes, and the editor applies the prepared change itself, so the
+// only thing this waits for is the applied result: the preview's own assistant
+// tag. The helper asserts the row is a real alert before returning.
+async function runRoute12Interview(page) {
+  const versionId = await editorVersionId(page);
+
+  await page.goto(`/gtfs/${versionId}/alerts/new?mode=assistant`);
+  await page.waitForSelector("#alert-assistant-start", { timeout: 15_000 });
+
+  await page.locator("#alert-assistant-example-1").click();
+  await expect(page.locator("#alert-assistant-note")).toHaveValue(/Route 12 is detouring/);
+  await page.locator("#alert-assistant-send").click();
+
+  await page.waitForURL(/\/alerts\/[0-9a-f-]+\?/, { timeout: 20_000 });
+
+  const url = page.url().split("?")[0];
+
+  // The turn settles asynchronously in the session process; the preview's own
+  // "Filled in by the assistant" tag is the signal that the prepared change
+  // was applied, and the save bar that it was saved rather than only proposed.
+  await expect(page.locator("#alert-preview-assistant")).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator("#alert-save-bar")).toContainText("Saved");
+
+  return url;
+}
+
 test.describe("alert editor assistant", () => {
   test.describe.configure({ timeout: 120_000 });
 
@@ -2380,5 +2423,79 @@ test.describe("alert editor assistant", () => {
     // Nothing was created: the note is still the reader's to change.
     await expect(page.locator("#alert-save-bar")).toContainText("No alert saved yet.");
     await expect(page).toHaveURL(/\/alerts\/new\?mode=assistant/);
+  });
+
+  test("the Route 12 interview fills the preview @assistant", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await runRoute12Interview(page);
+
+    // The rider preview reads the saved answers: the route the search returned
+    // and the current-alert timing sentence the proposal carried. A detour that
+    // names no skipped stop derives no effect of its own (R9), so the preview
+    // asserts the route and the timing rather than an effect chip.
+    await expect(page.locator("#alert-preview-where")).toContainText("Route 12");
+    await expect(page.locator("#alert-preview-when")).toContainText("until further notice");
+    await expect(page.locator("#alert-assistant-panel")).toBeVisible();
+    await expect(page.locator("#alert-assistant")).toBeVisible();
+
+    // The assistant's own last sentence, and nothing that claims a save or a
+    // publication: the prepared change is the editor's to apply.
+    await expect(page.locator("#agent-entries")).toContainText("I prepared a detour");
+    const conversation = await page.locator("#agent-entries").innerText();
+    expect(conversation).not.toMatch(/published|riders can see/i);
+
+    expect(await fitsViewport(page)).toBe(true);
+
+    for (const viewport of [DESKTOP, NARROW]) {
+      await page.setViewportSize(viewport);
+      await expect(page.locator("#alert-preview")).toBeVisible();
+      await expect(page.locator("#alert-preview-where")).toContainText("Route 12");
+
+      await page.screenshot({
+        path: capturePath(testInfo, `assistant-ready-${viewport.label}.png`),
+        fullPage: false,
+      });
+    }
+
+    await captureInterviewReference(page, testInfo, "asst-ready", "1440");
+  });
+
+  test("switching to the Guided form shows the prepared answers @assistant", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    const url = await runRoute12Interview(page);
+
+    // The mode control is the way out of assistant mode, and it keeps every
+    // answer: the same row, read by the form.
+    await page.locator('label[for="alert-mode-control-option-form"]').click();
+    await page.waitForURL(/mode=form/, { timeout: 15_000 });
+    await page.waitForSelector("#alert-question", { timeout: 15_000 });
+
+    await page.goto(`${url}?mode=form&step=situation`);
+    await page.waitForSelector("#situation-detour", { timeout: 15_000 });
+    await expect(page.locator("#situation-detour")).toHaveAttribute("aria-pressed", "true");
+
+    // The route question offers what a search returns, so the chosen route is
+    // visible after the same search a reader would type.
+    await page.goto(`${url}?mode=form&step=routes`);
+    await page.waitForSelector("#alert-route-search", { timeout: 15_000 });
+    await page.locator("#alert-route-search").pressSequentially("Route 1");
+    await page.waitForSelector("#alert-route-options button[aria-pressed='true']", {
+      timeout: 15_000,
+    });
+    await expect(
+      page.locator("#alert-route-options button[aria-pressed='true']"),
+    ).toContainText("Route 12");
+    await expect(page.locator("#alert-routes-count")).toContainText("1 route selected");
+
+    await page.screenshot({
+      path: capturePath(testInfo, "assistant-in-form-1440.png"),
+      fullPage: false,
+    });
+
+    await captureInterviewReference(page, testInfo, "asst-in-form", "1440");
   });
 });

@@ -10,7 +10,10 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
   It answers one deterministic scripted reply per request, choosing on the last
   message the turn loop sent and replying in OpenRouter's chat-completions
-  shape. The script is the Calendars skill's school-break example plus the A02
+  shape. Which script runs is read from the turn's own system message, so one
+  stand-in serves every pack the browser journeys drive.
+
+  The Calendars script is the Calendars skill's school-break example plus the A02
   and A19 service-answer questions of the `Browser Service Answers Version`
   (`test/support/browser_seed.exs`):
 
@@ -55,6 +58,25 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
     * the `prepare_calendar_extension` tool result gets the prepared-extension
       sentence;
     * anything else gets the helper's generic sentence.
+
+  The Alerts script is the alerts skill's Route 12 worked example, and it is
+  the one the editor's journey drives:
+
+    * a `"user"` message mentioning Route 12 gets a `get_draft` call, which is
+      the skill's "call `get_draft` first" rule;
+    * the `get_draft` result gets `search_routes` with `query: "12"`;
+    * the `search_routes` result gets `propose_changes` carrying the row id the
+      result itself returned for Route 12, a `now` urgency, a `detour`
+      situation and an `estimated` end. The identity is read out of the tool
+      result rather than invented, so a search that found nothing prepares
+      nothing and says so;
+    * the `propose_changes` result gets the prepared sentence, which says
+      "prepared" and never "saved" or "published";
+    * any other `"user"` message gets the interview's first question, and any
+      other tool result gets the alerts generic sentence.
+
+  The date in the prepared timing is the agency-local date the turn's own
+  system message states, read out of that message rather than from a clock.
   """
 
   @behaviour Plug
@@ -94,6 +116,17 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   # calendar's own end date, so the tool can only prepare it from that approval.
   @extension_days 200
 
+  # The alerts skill's own heading, and the sentences the alerts script answers
+  # with. The question is the skill's first interview step, the prepared
+  # sentence keeps to the skill's "say I prepared, never saved or published"
+  # rule, and the not-found sentence is what the skill asks for when a search
+  # did not return what the person meant.
+  @alerts_marker "Alerts helper"
+  @alerts_question "Now or planned: are riders affected right now, or on planned dates?"
+  @alerts_prepared "I prepared a detour on Route 12. Review the prepared answers in the editor and apply them when they look right."
+  @alerts_not_found "I could not find Route 12 in this service version. Which route did you mean?"
+  @alerts_generic "I can read this alert's routes, stops and departures and prepare answers for you to review."
+
   @impl Plug
   def init(opts), do: opts
 
@@ -112,6 +145,28 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   end
 
   defp reply(messages) do
+    if alerts?(messages) do
+      alerts_reply(messages)
+    else
+      calendars_reply(messages)
+    end
+  end
+
+  # The turn's system message is the pack's own skill body, so the script is
+  # chosen from what the turn says it can do rather than from the tools it
+  # carries, and a pack this stand-in does not script falls through to the
+  # Calendars script exactly as it did before the alerts one existed.
+  defp alerts?(messages) do
+    Enum.any?(messages, fn
+      %{"role" => "system", "content" => content} when is_binary(content) ->
+        String.contains?(content, @alerts_marker)
+
+      _other ->
+        false
+    end)
+  end
+
+  defp calendars_reply(messages) do
     case List.last(messages) do
       %{"role" => "user", "content" => content} when is_binary(content) ->
         user_reply(content)
@@ -286,6 +341,90 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       _message ->
         false
     end)
+  end
+
+  defp alerts_reply(messages) do
+    case List.last(messages) do
+      %{"role" => "user", "content" => content} when is_binary(content) ->
+        cond do
+          content =~ ~r/route\s*12/i -> tool_calls_reply("get_draft", %{})
+          true -> text_reply(@alerts_question)
+        end
+
+      %{"role" => "tool"} = tool_message ->
+        alerts_tool_reply(messages, tool_message)
+
+      _other ->
+        text_reply(@alerts_question)
+    end
+  end
+
+  defp alerts_tool_reply(messages, %{"tool_call_id" => tool_call_id} = tool_message) do
+    case answered_tool(messages, tool_call_id) do
+      "get_draft" ->
+        tool_calls_reply("search_routes", %{"query" => "12"})
+
+      "search_routes" ->
+        # The alerts skill forbids naming a route no tool returned, so the row
+        # id comes out of this turn's own search result and a result without
+        # Route 12 prepares nothing.
+        case route_12_id(tool_message) do
+          nil -> text_reply(@alerts_not_found)
+          route_id -> tool_calls_reply("propose_changes", change_arguments(messages, route_id))
+        end
+
+      "propose_changes" ->
+        text_reply(@alerts_prepared)
+
+      _other ->
+        text_reply(@alerts_generic)
+    end
+  end
+
+  defp route_12_id(%{"content" => content}) when is_binary(content) do
+    case Jason.decode(content) do
+      {:ok, %{"routes" => routes}} when is_list(routes) ->
+        Enum.find_value(routes, fn
+          %{"id" => id} = route when is_binary(id) ->
+            if route["route_id"] == "12" or route["short_name"] == "Route 12", do: id
+
+          _other ->
+            nil
+        end)
+
+      _other ->
+        nil
+    end
+  end
+
+  defp route_12_id(_other), do: nil
+
+  defp change_arguments(messages, route_id) do
+    %{
+      "urgency" => "now",
+      "situation" => "detour",
+      "scope" => %{"shape" => "routes", "route_ids" => [route_id]},
+      "timing" => %{"start_date" => today(messages), "end_kind" => "estimated"}
+    }
+  end
+
+  # The agency-local date the turn's system message states. Reading it out of
+  # that message keeps the script off any clock of its own; a request with no
+  # system message falls back to the UTC date the Calendars script already uses.
+  defp today(messages) do
+    with [_all, date | _rest] <-
+           Regex.run(~r/Today is (\d{4}-\d{2}-\d{2})/, system_content(messages)) do
+      date
+    else
+      _other -> Date.to_iso8601(Date.utc_today())
+    end
+  end
+
+  defp system_content(messages) do
+    Enum.find_value(messages, fn
+      %{"role" => "system", "content" => content} when is_binary(content) -> content
+      _other -> nil
+    end) || ""
   end
 
   # The turn loop answers a tool call with a `"tool"` message carrying the
