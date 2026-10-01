@@ -41,7 +41,9 @@ defmodule GtfsPlanner.Agents.Session do
   A session also re-checks its own resource identity (`Scope.authorized_context/1`)
   and the pack's optional `authorize_context/1` at admission, on delivery and on a
   prepared lookup, so a deleted route or version ends the conversation the same way
-  a revoked membership does, with the single `:unavailable` result (INV-1).
+  a revoked membership does, with the single `:unavailable` result (INV-1). The
+  server evidence a turn produced settles with its entry and is discarded with it,
+  so an answer outlives neither an authorization change nor its turn (INV-2).
   """
 
   use GenServer, restart: :temporary
@@ -79,6 +81,7 @@ defmodule GtfsPlanner.Agents.Session do
           text: String.t(),
           activity: [String.t()],
           prepared: Pack.prepared() | nil,
+          evidence: [Pack.evidence()],
           applied?: boolean(),
           status:
             :done
@@ -498,6 +501,7 @@ defmodule GtfsPlanner.Agents.Session do
       result.text,
       :done,
       result.prepared,
+      result.evidence,
       progress_of(result),
       "done",
       result.messages
@@ -506,7 +510,7 @@ defmodule GtfsPlanner.Agents.Session do
 
   defp failed_turn(state, reason, progress) do
     {status, text, outcome} = failure_outcome(reason)
-    settle_turn(state, text, status, nil, progress, outcome, nil)
+    settle_turn(state, text, status, nil, [], progress, outcome, nil)
   end
 
   defp failure_outcome(:step_limit), do: {:incomplete, @incomplete_text, "step_limit"}
@@ -526,6 +530,7 @@ defmodule GtfsPlanner.Agents.Session do
       @incomplete_text,
       :incomplete,
       nil,
+      [],
       interrupted_progress(state),
       "timeout",
       nil
@@ -534,7 +539,17 @@ defmodule GtfsPlanner.Agents.Session do
 
   defp stop_turn(state) do
     state = kill_task(state)
-    settle_turn(state, @stopped_text, :stopped, nil, interrupted_progress(state), "stopped", nil)
+
+    settle_turn(
+      state,
+      @stopped_text,
+      :stopped,
+      nil,
+      [],
+      interrupted_progress(state),
+      "stopped",
+      nil
+    )
   end
 
   defp crashed_turn(state) do
@@ -543,6 +558,7 @@ defmodule GtfsPlanner.Agents.Session do
       @unavailable_text,
       :failed,
       nil,
+      [],
       interrupted_progress(state),
       "crashed",
       nil
@@ -557,6 +573,7 @@ defmodule GtfsPlanner.Agents.Session do
       @unavailable_text,
       :failed,
       nil,
+      [],
       interrupted_progress(state),
       "killed",
       nil
@@ -565,8 +582,10 @@ defmodule GtfsPlanner.Agents.Session do
 
   # Settles the running turn exactly once: the person's message and either the
   # generated sequence or one synthetic terminal reply join the history, the
-  # entry records the outcome and no partial tool sequence survives (AC-27).
-  defp settle_turn(state, text, status, prepared, progress, outcome, generated) do
+  # entry records the outcome and no partial tool sequence survives (AC-27). An
+  # interrupted or failed turn keeps no evidence either: a server answer that
+  # never arrived whole must not reach the panel as a card (INV-2).
+  defp settle_turn(state, text, status, prepared, evidence, progress, outcome, generated) do
     turn = state.turn
 
     extra =
@@ -582,6 +601,7 @@ defmodule GtfsPlanner.Agents.Session do
         text: text,
         activity: progress.activity,
         prepared: prepared,
+        evidence: evidence,
         status: status
       })
       |> put_retry_source(turn)
@@ -635,6 +655,7 @@ defmodule GtfsPlanner.Agents.Session do
               text: text,
               activity: progress.activity,
               prepared: nil,
+              evidence: [],
               status: status
             })
             |> put_retry_source(turn)
@@ -822,6 +843,7 @@ defmodule GtfsPlanner.Agents.Session do
       text: text,
       activity: [],
       prepared: nil,
+      evidence: [],
       applied?: false,
       status: status
     }

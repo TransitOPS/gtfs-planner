@@ -8,7 +8,10 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   one SHA-256 catalog fingerprint, so a caller that has not read every page cannot
   mistake a bounded result for complete discovery: a later page whose catalog
   changed is refused with a restart-discovery error. `get_calendar` explains each
-  date of a bounded range. `prepare_date_change` validates dates and targets,
+  date of a bounded range and returns the server evidence for that answer: the
+  exact count of dates that run, the window evaluated, the content digest, the
+  scope it was read under and a typed reference the panel resolves into the
+  calendar page. `prepare_date_change` validates dates and targets,
   resolves names and fingerprints from one catalog read, and runs the existing
   `GtfsPlanner.Gtfs.review_calendar_change/3`, so it returns the command the
   Calendars list can open in its *Change service on a date* review and writes
@@ -36,6 +39,7 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   ]
 
   @changed_catalog "Calendars changed. Start the search again."
+  @source_ref "gtfs_calendars"
 
   @skill_path Path.expand("../../../../priv/agents/packs/calendars/SKILL.md", __DIR__)
   @external_resource @skill_path
@@ -262,7 +266,68 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   # same message.
   defp read_calendar(service_id, scope, from, to) do
     with {:ok, targets} <- load_targets([service_id], scope) do
-      {:ok, calendar_result(Map.fetch!(targets, service_id), service_id, from, to)}
+      summary = Map.fetch!(targets, service_id)
+      result = calendar_result(summary, service_id, from, to)
+
+      {:ok, result, evidence(summary, result, scope, from, to)}
+    end
+  end
+
+  # The evidence is built from the same catalog summary the result describes, so
+  # the card's count cannot disagree with the rows the model read, and the digest
+  # covers the exact payload that was returned (INV-2). Nothing here is invented:
+  # `source_revision` stays nil until a real native revision exists.
+  defp evidence(summary, result, scope, from, to) do
+    label = name(summary, result["service_id"])
+    running = Enum.count(result["dates"], & &1["runs"])
+
+    %{
+      kind: "calendar_dates",
+      title: label,
+      total: running,
+      total_label: "dates run",
+      completeness: :complete,
+      completeness_reason: nil,
+      facts: [
+        %{label: "Dates evaluated", value: Integer.to_string(length(result["dates"]))},
+        %{label: "Dates that run", value: Integer.to_string(running)},
+        %{label: "Weekly days", value: days_label(summary.calendar)},
+        %{
+          label: "Window",
+          value: Date.to_iso8601(from) <> " to " <> Date.to_iso8601(to)
+        }
+      ],
+      source_ref: @source_ref,
+      digest: digest(result),
+      source_revision: nil,
+      scope: %{
+        organization_id: scope.organization_id,
+        gtfs_version_id: scope.gtfs_version_id,
+        identity: identity_label(scope)
+      },
+      exclusions: [],
+      resources: [%{kind: "calendar", id: result["service_id"], label: label}]
+    }
+  end
+
+  defp digest(result) do
+    result
+    |> Jason.encode!()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp identity_label(scope) do
+    case Scope.identity(scope) do
+      {kind, id} -> "#{kind}:#{id}"
+      nil -> nil
+    end
+  end
+
+  defp days_label(calendar) do
+    case days(calendar) do
+      [] -> "None recorded"
+      labels -> Enum.join(labels, ", ")
     end
   end
 

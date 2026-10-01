@@ -36,7 +36,29 @@ defmodule GtfsPlanner.Agents.DispatchTest.ProbePack do
           "properties" => %{
             "query" => %{"type" => "string", "maxLength" => 100},
             "offset" => %{"type" => "integer", "minimum" => 0},
-            "window" => %{"type" => "object"},
+            "window" => %{
+              "type" => "object",
+              "properties" => %{
+                "mode" => %{"type" => "string", "maxLength" => 10},
+                "count" => %{"type" => "integer", "minimum" => 1, "maximum" => 5},
+                "exact" => %{"type" => "boolean"}
+              },
+              "required" => ["mode"],
+              "additionalProperties" => false
+            },
+            "stops" => %{
+              "type" => "array",
+              "items" => %{
+                "type" => "object",
+                "properties" => %{
+                  "stop_id" => %{"type" => "string"},
+                  "sequence" => %{"type" => "integer", "minimum" => 1, "maximum" => 20}
+                },
+                "required" => ["stop_id"],
+                "additionalProperties" => false
+              },
+              "maxItems" => 2
+            },
             "dates" => %{
               "type" => "array",
               "items" => %{"type" => "string"},
@@ -80,6 +102,28 @@ defmodule GtfsPlanner.Agents.DispatchTest.ProbePack do
           "required" => [],
           "additionalProperties" => false
         }
+      },
+      %{
+        name: "evidenced",
+        description: "Returns server evidence beside its result.",
+        activity: "Evidenced a read",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{"bytes" => %{"type" => "integer", "minimum" => 0}},
+          "required" => ["bytes"],
+          "additionalProperties" => false
+        }
+      },
+      %{
+        name: "evidenced_prepare",
+        description: "Returns a prepared change that carries its own evidence.",
+        activity: "Prepared evidence",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{"bytes" => %{"type" => "integer", "minimum" => 0}},
+          "required" => ["bytes"],
+          "additionalProperties" => false
+        }
       }
     ]
   end
@@ -111,8 +155,93 @@ defmodule GtfsPlanner.Agents.DispatchTest.ProbePack do
     {:error, "Nothing to see here."}
   end
 
+  def call("evidenced", %{"bytes" => bytes}, %Scope{}) do
+    notify("evidenced")
+    {:ok, %{"count" => bytes}, evidence(bytes)}
+  end
+
+  def call("evidenced_prepare", %{"bytes" => bytes}, %Scope{}) do
+    notify("evidenced_prepare")
+
+    prepared = %{
+      summary: %{title: "Probe change", detail: "1 date", lines: ["Probe · 1 date"]},
+      command: {:probe_change, bytes},
+      evidence: [evidence(bytes)]
+    }
+
+    {:prepared, prepared, %{"count" => bytes}}
+  end
+
+  # A digest-sized string, so a test can put the evidence either side of the
+  # shared byte limit without inventing a second bound.
+  defp evidence(bytes) do
+    %{
+      kind: "probe",
+      title: "Probe",
+      total: bytes,
+      total_label: "rows",
+      completeness: :complete,
+      completeness_reason: nil,
+      facts: [],
+      source_ref: "probe_source",
+      digest: String.duplicate("a", bytes),
+      source_revision: nil,
+      scope: %{organization_id: nil, gtfs_version_id: nil, identity: nil},
+      exclusions: [],
+      resources: [%{kind: "probe", id: "probe-1", label: "Probe one"}]
+    }
+  end
+
   # `Dispatch.call/4` runs in the test process, so `self/0` is the test's mailbox.
   defp notify(name), do: send(self(), {:probe_pack_called, name})
+end
+
+defmodule GtfsPlanner.Agents.DispatchTest.UnsupportedPack do
+  @moduledoc """
+  Test-only pack declaring schema constraints outside the fence's subset.
+
+  A pack is code-owned, so a keyword the fence does not implement is a defect to
+  raise about: enforcing only part of `pattern` would let the model exceed it.
+  """
+
+  @behaviour GtfsPlanner.Agents.Pack
+
+  alias GtfsPlanner.Agents.Scope
+
+  @impl true
+  def id, do: "unsupported"
+
+  @impl true
+  def title, do: "Unsupported helper"
+
+  @impl true
+  def intro, do: "Declares an unsupported constraint."
+
+  @impl true
+  def examples, do: ["Probe the fence"]
+
+  @impl true
+  def skill, do: "Declares an unsupported constraint."
+
+  @impl true
+  def tools do
+    [
+      %{
+        name: "patterned",
+        description: "Declares a pattern the fence does not implement.",
+        activity: "Probed a pattern",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{"code" => %{"type" => "string", "pattern" => "^[A-Z]+$"}},
+          "required" => ["code"],
+          "additionalProperties" => false
+        }
+      }
+    ]
+  end
+
+  @impl true
+  def call("patterned", _args, %Scope{}), do: {:ok, %{}}
 end
 
 defmodule GtfsPlanner.Agents.DispatchTest do
@@ -123,6 +252,7 @@ defmodule GtfsPlanner.Agents.DispatchTest do
 
   alias GtfsPlanner.Agents.Dispatch
   alias GtfsPlanner.Agents.DispatchTest.ProbePack
+  alias GtfsPlanner.Agents.DispatchTest.UnsupportedPack
   alias GtfsPlanner.Agents.EchoPack
   alias GtfsPlanner.Agents.Scope
 
@@ -411,6 +541,117 @@ defmodule GtfsPlanner.Agents.DispatchTest do
 
       assert_received {:probe_pack_called, "probe"}
     end
+
+    test "validates a nested object against its own declared keys and bounds" do
+      scope = active_scope()
+
+      assert Dispatch.call(ProbePack, scope, "probe", ~s|{"query":"ok","window":{"mode":1}}|) ==
+               {:tool_error, "Argument window.mode must be a string."}
+
+      assert Dispatch.call(ProbePack, scope, "probe", ~s|{"query":"ok","window":{"mode":null}}|) ==
+               {:tool_error, "Argument window.mode must not be null."}
+
+      assert Dispatch.call(ProbePack, scope, "probe", ~s|{"query":"ok","window":{"count":2}}|) ==
+               {:tool_error, "Missing required argument: window.mode"}
+
+      assert Dispatch.call(
+               ProbePack,
+               scope,
+               "probe",
+               ~s|{"query":"ok","window":{"mode":"ok","organization_id":"org"}}|
+             ) == {:tool_error, "Unexpected argument: window.organization_id"}
+
+      assert Dispatch.call(
+               ProbePack,
+               scope,
+               "probe",
+               ~s|{"query":"ok","window":{"mode":"ok","exact":"yes"}}|
+             ) == {:tool_error, "Argument window.exact must be true or false."}
+
+      refute_received {:probe_pack_called, _}
+    end
+
+    test "enforces nested integer and string limits at the nesting depth" do
+      scope = active_scope()
+
+      assert Dispatch.call(
+               ProbePack,
+               scope,
+               "probe",
+               ~s|{"query":"ok","window":{"mode":"ok","count":6}}|
+             ) == {:tool_error, "Argument window.count must be at most 5."}
+
+      assert Dispatch.call(
+               ProbePack,
+               scope,
+               "probe",
+               ~s|{"query":"ok","window":{"mode":"ok","count":0}}|
+             ) == {:tool_error, "Argument window.count must be at least 1."}
+
+      assert Dispatch.call(
+               ProbePack,
+               scope,
+               "probe",
+               ~s|{"query":"ok","window":{"mode":"abcdefghijk"}}|
+             ) == {:tool_error, "Argument window.mode must be at most 10 characters."}
+
+      refute_received {:probe_pack_called, _}
+    end
+
+    test "validates array items against their own object schema" do
+      scope = active_scope()
+
+      assert Dispatch.call(
+               ProbePack,
+               scope,
+               "probe",
+               ~s|{"query":"ok","stops":[{"stop_id":"a","sequence":21}]}|
+             ) == {:tool_error, "Argument stops[0].sequence must be at most 20."}
+
+      assert Dispatch.call(ProbePack, scope, "probe", ~s|{"query":"ok","stops":[{"sequence":1}]}|) ==
+               {:tool_error, "Missing required argument: stops[0].stop_id"}
+
+      assert Dispatch.call(
+               ProbePack,
+               scope,
+               "probe",
+               ~s|{"query":"ok","stops":[{"stop_id":"a","user_id":"user"}]}|
+             ) == {:tool_error, "Unexpected argument: stops[0].user_id"}
+
+      assert Dispatch.call(
+               ProbePack,
+               scope,
+               "probe",
+               ~s|{"query":"ok","stops":[{"stop_id":"a"},{"stop_id":"b"},{"stop_id":"c"}]}|
+             ) == {:tool_error, "Argument stops must have 2 or fewer items."}
+
+      refute_received {:probe_pack_called, _}
+    end
+
+    test "accepts nested arguments exactly at their declared bounds" do
+      scope = active_scope()
+
+      arguments =
+        Jason.encode!(%{
+          "query" => "ok",
+          "window" => %{"mode" => "abcdefghij", "count" => 5, "exact" => true},
+          "stops" => [
+            %{"stop_id" => "a", "sequence" => 1},
+            %{"stop_id" => "b", "sequence" => 20}
+          ]
+        })
+
+      assert {:ok, _result} = Dispatch.call(ProbePack, scope, "probe", arguments)
+      assert_received {:probe_pack_called, "probe"}
+    end
+
+    test "raises on a declared constraint the fence does not implement" do
+      scope = active_scope()
+
+      assert_raise ArgumentError, ~r/unsupported JSON Schema keyword pattern/, fn ->
+        Dispatch.call(UnsupportedPack, scope, "patterned", ~s|{"code":"ABC"}|)
+      end
+    end
   end
 
   describe "byte limits" do
@@ -461,6 +702,53 @@ defmodule GtfsPlanner.Agents.DispatchTest do
 
       assert Dispatch.call(ProbePack, scope, "sized", ~s|{"bytes":#{@result_cap - overhead + 1}}|) ==
                {:tool_error, "Too much data for one result. Narrow the request."}
+    end
+  end
+
+  describe "server evidence" do
+    test "returns the pack's evidence beside its result" do
+      scope = active_scope()
+
+      assert {:ok, %{"count" => 3}, evidence} =
+               Dispatch.call(ProbePack, scope, "evidenced", ~s|{"bytes":3}|)
+
+      assert evidence.kind == "probe"
+      assert evidence.total == 3
+      assert evidence.source_ref == "probe_source"
+      assert evidence.resources == [%{kind: "probe", id: "probe-1", label: "Probe one"}]
+
+      assert_received {:probe_pack_called, "evidenced"}
+    end
+
+    test "refuses a result and evidence over the byte limit together and without truncating" do
+      scope = active_scope()
+
+      assert Dispatch.call(ProbePack, scope, "evidenced", ~s|{"bytes":#{@result_cap}}|) ==
+               {:tool_error, "Too much data for one result. Narrow the request."}
+
+      # The pack ran, so the refusal is the fence's byte accounting and not a
+      # failure to reach the tool at all.
+      assert_received {:probe_pack_called, "evidenced"}
+    end
+
+    test "lifts a prepared result's own evidence into the same transport" do
+      scope = active_scope()
+
+      assert {:prepared, %{summary: %{title: "Probe change"}, command: {:probe_change, 4}}, %{},
+              [evidence]} =
+               Dispatch.call(ProbePack, scope, "evidenced_prepare", ~s|{"bytes":4}|)
+
+      assert evidence.total == 4
+      assert_received {:probe_pack_called, "evidenced_prepare"}
+    end
+
+    test "accepts the old two-element result form unchanged" do
+      scope = active_scope()
+
+      assert {:ok, %{"query" => "ok"}} =
+               Dispatch.call(ProbePack, scope, "probe", ~s|{"query":"ok"}|)
+
+      assert_received {:probe_pack_called, "probe"}
     end
   end
 

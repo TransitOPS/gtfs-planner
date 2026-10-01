@@ -28,6 +28,16 @@ defmodule GtfsPlannerWeb.AgentPanel do
   Focus is a client concern with a server trigger: `agent:focus` events must be
   handled by a hook on a wrapper that survives the conditional panel, because the
   closing panel cannot own its own post-removal handler.
+
+  ## Evidence links
+
+  Server evidence may name typed resources. This module, not the component and
+  never the model, decides what those names mean: an allowlisted kind resolves to
+  one application path built from this panel's own version, and anything else
+  resolves to no link at all, which the card states rather than hides (AC-4).
+  Evidence read under another organization, version or resource identity than
+  this panel now holds is dropped whole, so no foreign answer can reach the
+  screen even as an unlinked card (AC-2).
   """
 
   import Phoenix.Component, only: [assign: 3, to_form: 2]
@@ -55,6 +65,14 @@ defmodule GtfsPlannerWeb.AgentPanel do
   @busy_notice "The helper is still working on your last request."
   @capacity_notice "The helper is busy. Try again shortly."
   @too_long_error "Keep messages under 2,000 characters."
+
+  # The only resource kinds this panel may turn into a link. A kind absent here
+  # renders as plain text, which keeps a new pack's reference from becoming a
+  # path this panel has not reviewed.
+  @evidence_links %{
+    "calendar" => :calendar_show,
+    "calendars_index" => :calendars_index
+  }
 
   @doc """
   Adds the panel's assigns, its entries stream and its two hooks to `socket`.
@@ -233,7 +251,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
       {:entry, entry} ->
         {:halt,
          socket
-         |> stream_insert(@entries, entry)
+         |> stream_insert(@entries, resolve_entry_evidence(entry, socket))
          |> assign(:agent_entries_empty?, false)}
 
       {:status, status} ->
@@ -275,6 +293,80 @@ defmodule GtfsPlannerWeb.AgentPanel do
   # host consumes its async work through `handle_async/3`, not raw downs.
   defp handle_info({:DOWN, _ref, :process, _pid, _reason}, socket), do: {:halt, socket}
   defp handle_info(_message, socket), do: {:cont, socket}
+
+  ## Evidence resolution
+
+  # Entries arrive from the session, which authorized the turn that produced
+  # them. The panel re-checks the evidence against its own current context before
+  # it becomes a card: an answer read under a scope this panel no longer holds is
+  # dropped, not merely unlinked (AC-2, AC-4).
+  defp resolve_entry_evidence(%{evidence: evidence} = entry, socket) when is_list(evidence) do
+    resolved =
+      evidence
+      |> Enum.map(&resolve_evidence(&1, socket))
+      |> Enum.reject(&is_nil/1)
+
+    Map.put(entry, :evidence, resolved)
+  end
+
+  defp resolve_entry_evidence(entry, _socket), do: entry
+
+  defp resolve_evidence(%{scope: scope} = evidence, socket) do
+    if scoped_here?(scope, socket) do
+      Map.update!(evidence, :resources, fn resources ->
+        Enum.map(resources, &resolve_resource(&1, socket))
+      end)
+    else
+      nil
+    end
+  end
+
+  defp resolve_evidence(_evidence, _socket), do: nil
+
+  defp scoped_here?(
+         %{organization_id: organization_id, gtfs_version_id: version_id, identity: identity},
+         socket
+       ) do
+    organization_id == socket.assigns.current_organization.id and
+      version_id == socket.assigns.current_gtfs_version.id and
+      identity == identity_label(socket.assigns.agent_context)
+  end
+
+  defp scoped_here?(_scope, _socket), do: false
+
+  defp identity_label(%{identity: {kind, id}}), do: "#{kind}:#{id}"
+  defp identity_label(_context), do: nil
+
+  defp resolve_resource(%{kind: kind, id: id} = resource, socket) do
+    Map.put(resource, :link, evidence_link(kind, id, socket))
+  end
+
+  defp resolve_resource(resource, _socket), do: Map.put(resource, :link, nil)
+
+  defp evidence_link(kind, id, socket) do
+    with route when not is_nil(route) <- Map.get(@evidence_links, kind),
+         resolved when is_binary(resolved) <- resolve_path(route, id, socket) do
+      resolved
+    else
+      _other -> nil
+    end
+  end
+
+  defp resolve_path(:calendar_show, id, socket) when is_binary(id), do: calendar_path(socket, id)
+  defp resolve_path(:calendars_index, _id, socket), do: calendars_path(socket)
+  defp resolve_path(_kind, _id, _socket), do: nil
+
+  # The paths are built the way the calendar components build them: the version
+  # comes from this panel's own assigns and the service ID is percent-encoded, so
+  # an imported ID can never escape the query parameter.
+  defp calendar_path(socket, service_id) do
+    calendar_base(socket) <> "/show?service_id=" <> URI.encode_www_form(service_id)
+  end
+
+  defp calendars_path(socket), do: calendar_base(socket)
+
+  defp calendar_base(socket),
+    do: "/gtfs/" <> socket.assigns.current_gtfs_version.id <> "/calendars"
 
   ## Session bookkeeping
 
@@ -339,7 +431,9 @@ defmodule GtfsPlannerWeb.AgentPanel do
     |> assign(:agent_status, snapshot.status)
     |> assign(:agent_entries_empty?, snapshot.entries == [])
     |> assign(:agent_notice, nil)
-    |> stream(@entries, snapshot.entries, reset: true)
+    |> stream(@entries, Enum.map(snapshot.entries, &resolve_entry_evidence(&1, socket)),
+      reset: true
+    )
   end
 
   defp reset_conversation(socket, conversation_id) do

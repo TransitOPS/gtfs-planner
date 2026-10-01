@@ -282,7 +282,27 @@ defmodule GtfsPlannerWeb.AgentComponents do
             Retry request
           </.button>
         </.callout>
-        <p :if={is_nil(@callout_kind) and @entry.text != ""} class="whitespace-pre-line">
+
+        <.agent_evidence_card
+          :for={{evidence, index} <- Enum.with_index(@entry.evidence, 1)}
+          id={"agent-evidence-#{@entry.id}-#{index}"}
+          evidence={evidence}
+        />
+
+        <p
+          :if={is_nil(@callout_kind) and @entry.text != ""}
+          id={prose_id(@entry)}
+          class={[
+            "whitespace-pre-line",
+            @entry.evidence != [] && "mt-3.5 text-base-content/80"
+          ]}
+        >
+          <span
+            :if={@entry.evidence != []}
+            class="mb-0.5 block text-xs font-bold text-base-content/60"
+          >
+            Model reply
+          </span>
           {@entry.text}
         </p>
 
@@ -337,6 +357,115 @@ defmodule GtfsPlannerWeb.AgentComponents do
     """
   end
 
+  @doc """
+  Renders one server evidence card: the authoritative count, the server facts,
+  completeness, the source it was read from and its resolved resource links.
+
+  `evidence` is the panel's resolved value. Nothing here is built from model
+  text, and a resource the panel did not link renders as plain text beside a
+  visible reason rather than as a link that looks trustworthy (AC-4).
+  """
+  attr :id, :string, required: true, doc: "the card's DOM id"
+  attr :evidence, :map, required: true, doc: "one resolved server evidence payload"
+
+  def agent_evidence_card(assigns) do
+    assigns =
+      assigns
+      |> assign(:facts, Map.get(assigns.evidence, :facts, []))
+      |> assign(:resources, Map.get(assigns.evidence, :resources, []))
+      |> assign(:exclusions, Map.get(assigns.evidence, :exclusions, []))
+      |> assign(:complete?, assigns.evidence.completeness == :complete)
+
+    ~H"""
+    <section
+      id={@id}
+      data-evidence-kind={@evidence.kind}
+      data-evidence-completeness={Atom.to_string(@evidence.completeness)}
+      class="mt-4 overflow-hidden rounded-box border border-base-300"
+    >
+      <div class="bg-base-200 px-3.5 py-3">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span class="text-xs font-bold text-base-content/70">Server result</span>
+          <span class={["badge badge-sm", if(@complete?, do: "badge-info", else: "badge-warning")]}>
+            {if @complete?, do: "Complete", else: "Incomplete"}
+          </span>
+        </div>
+        <h3 class="mt-1.5 text-sm font-semibold">{@evidence.title}</h3>
+        <p class="mt-1 text-base font-semibold">
+          {number(@evidence.total)} {@evidence.total_label}
+        </p>
+        <p
+          :if={not @complete? and @evidence.completeness_reason}
+          class="mt-1 text-xs text-base-content/70"
+        >
+          {@evidence.completeness_reason}
+        </p>
+      </div>
+
+      <dl
+        :if={@facts != []}
+        class="grid grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-1.5 px-3.5 py-3 text-xs"
+      >
+        <%= for fact <- @facts do %>
+          <dt class="text-base-content/70">{fact.label}</dt>
+          <dd class="font-semibold">{fact.value}</dd>
+        <% end %>
+      </dl>
+
+      <ul :if={@resources != []} class="border-t border-base-300 px-3.5 py-2 text-xs">
+        <li
+          :for={resource <- @resources}
+          class="grid grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-0.5 py-2 text-xs"
+        >
+          <span class="text-base-content/70">{resource_kind(resource)}</span>
+          <.link
+            :if={resource[:link]}
+            navigate={resource[:link]}
+            class="link min-h-11 py-1 font-semibold underline"
+          >
+            {Map.get(resource, :label) || resource.id}
+          </.link>
+          <span :if={is_nil(resource[:link])} class="font-semibold">
+            {Map.get(resource, :label) || resource.id}
+          </span>
+          <span :if={is_nil(resource[:link])} class="col-start-2 text-base-content/60">
+            no link for this reference
+          </span>
+        </li>
+      </ul>
+
+      <ul
+        :if={@exclusions != []}
+        class="border-t border-base-300 px-3.5 py-2 text-xs text-base-content/70"
+      >
+        <li :for={exclusion <- @exclusions} class="py-0.5">Excluded · {exclusion}</li>
+      </ul>
+
+      <p class="border-t border-base-300 px-3.5 py-2 text-xs text-base-content/60">
+        Source · {@evidence.source_ref} · digest {short_digest(@evidence.digest)}{revision(
+          @evidence.source_revision
+        )}
+      </p>
+    </section>
+    """
+  end
+
+  defp number(value) when is_integer(value), do: Integer.to_string(value)
+  defp number(value), do: to_string(value)
+
+  # The kind is a code-owned label, so it is shown as a word rather than a raw
+  # schema token, without this module naming any pack's resource kinds.
+  defp resource_kind(%{kind: kind}) when is_binary(kind), do: String.capitalize(kind)
+  defp resource_kind(_resource), do: "resource"
+
+  defp short_digest(digest) when is_binary(digest), do: binary_part(digest, 0, 12)
+  defp short_digest(_digest), do: "unavailable"
+
+  defp revision(nil), do: ""
+  defp revision(revision), do: " · revision " <> revision
+
+  defp prose_id(entry), do: "agent-prose-#{entry.id}"
+
   # Copy for the conversation status. The panel announces the same words a
   # reader sees, so the working, ended, forbidden, unavailable and exhausted
   # states are visible and audible from one place (AC-2, AC-4, AC-12, AC-18).
@@ -345,7 +474,7 @@ defmodule GtfsPlannerWeb.AgentComponents do
   defp status_text(:forbidden), do: "Your access changed. The helper stopped."
 
   defp status_text(:unavailable),
-    do: "This route or calendar is no longer available. The helper stopped."
+    do: "This route or service version is no longer available. The helper stopped."
 
   defp status_text(:limit), do: "This conversation reached its limit. Start a new conversation."
 

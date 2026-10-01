@@ -16,12 +16,17 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       out-of-scope sentence;
     * a `"user"` message mentioning school gets a `list_calendars` call with
       `query: "school"`;
+    * a `"user"` message asking about dates gets a `get_calendar` call for the
+      next Monday through Sunday of the seeded `SCHOOL_WD` calendar;
     * the `list_calendars` tool result gets a `prepare_date_change` call that
       stops `SCHOOL_EX` and `SCHOOL_WD` on the next Monday and Tuesday after
       `Date.utc_today()`; the seeded `Browser Helper Version`
       (`test/support/browser_seed.exs`) resolves the same UTC date, so both
       dates are real service dates;
     * the `prepare_date_change` tool result gets the prepared-change sentence;
+    * the `get_calendar` tool result gets a sentence that contradicts the
+      server's own count on purpose, so the browser journey proves the card and
+      not the prose is the answer;
     * anything else gets the helper's generic sentence.
   """
 
@@ -36,6 +41,10 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   @out_of_scope "That isn't available in Calendars. I can answer questions about calendars and prepare service date changes. To ask for a new ability, contact the TransitOPS team."
   @generic "I can answer questions about calendars and prepare date changes."
   @prepared "I prepared the change. Review it before applying."
+  # Deliberately wrong: the seeded School weekdays calendar runs five of the
+  # seven dates the stand-in asks about, so the card and this sentence disagree
+  # and the journey can show which one the panel treats as the answer.
+  @contradicted_count "Three of those dates run service."
 
   @impl Plug
   def init(opts), do: opts
@@ -64,6 +73,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   defp user_reply(content) do
     cond do
       content =~ ~r/route/i -> text_reply(@out_of_scope)
+      content =~ ~r/dates|week/i -> tool_calls_reply("get_calendar", get_calendar_arguments())
       content =~ ~r/school/i -> tool_calls_reply("list_calendars", %{"query" => "school"})
       true -> text_reply(@generic)
     end
@@ -73,6 +83,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
     case answered_tool(messages, tool_call_id) do
       "list_calendars" -> tool_calls_reply("prepare_date_change", prepare_arguments())
       "prepare_date_change" -> text_reply(@prepared)
+      "get_calendar" -> text_reply(@contradicted_count)
       _other -> text_reply(@generic)
     end
   end
@@ -97,6 +108,18 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
   # Next Monday strictly after today, then the Tuesday after it: the seed's
   # Monday-Friday calendars run on both dates.
+  # The next Monday through the Sunday after it: the seeded School weekdays
+  # calendar runs Monday through Friday, so the server answer is five of seven.
+  defp get_calendar_arguments do
+    monday = Date.add(Date.utc_today(), 8 - Date.day_of_week(Date.utc_today()))
+
+    %{
+      "service_id" => "SCHOOL_WD",
+      "from" => Date.to_iso8601(monday),
+      "to" => Date.to_iso8601(Date.add(monday, 6))
+    }
+  end
+
   defp prepare_arguments do
     monday = Date.add(Date.utc_today(), 8 - Date.day_of_week(Date.utc_today()))
 

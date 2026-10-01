@@ -210,6 +210,83 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsHelperLiveTest do
     end
   end
 
+  describe "server evidence on the panel" do
+    test "renders the server count, source and scoped link above contradicting prose", context do
+      {view, pid} = open_helper(context)
+
+      expect_reply(1, tool_calls_reply([{"call_1", "get_calendar", @get_calendar_arguments}]))
+      expect_reply(1, text_reply("Three dates run service."))
+
+      submit(view, @first_message)
+      assert await_settled(pid).status == :done
+
+      assert has_element?(view, "#agent-entry-2 [data-evidence-kind='calendar_dates']")
+      assert has_element?(view, "#agent-entry-2 [data-evidence-completeness='complete']")
+
+      card = view |> element("#agent-evidence-2-1") |> render()
+      assert card =~ "Server result"
+      assert card =~ "School weekdays"
+      # The server count is two: Monday and Tuesday of the seeded calendar.
+      assert card =~ "2 dates run"
+      assert card =~ "gtfs_calendars"
+
+      assert card =~
+               "/gtfs/#{context.version.id}/calendars/show?service_id=SCHOOL_WD"
+
+      # The model's sentence contradicts the card and stays marked as prose.
+      prose = view |> element("#agent-prose-2") |> render()
+      assert prose =~ "Three dates run service."
+      assert prose =~ "Model reply"
+
+      # A model-created link or receipt would be another anchor in the transcript.
+      fragment = view |> element("#agent-entries") |> render() |> LazyHTML.from_fragment()
+      assert query_count(fragment, "a") == 1
+      refute render(view) =~ "Applied"
+    end
+
+    test "evidence for another scope and an unlisted reference produce no link", context do
+      {view, pid} = open_helper(context)
+
+      here = %{
+        organization_id: context.organization.id,
+        gtfs_version_id: context.version.id,
+        identity: "version:#{context.version.id}"
+      }
+
+      send(
+        view.pid,
+        {:agent_event, pid,
+         {:entry, entry_with_evidence(50, "Foreign answer", here, "calendar", "SCHOOL_WD")}}
+      )
+
+      refute has_element?(view, "[data-evidence-kind]")
+      assert has_element?(view, "#agent-entry-50", "Foreign answer")
+
+      send(
+        view.pid,
+        {:agent_event, pid,
+         {:entry, entry_with_evidence(51, "Unlisted reference", here, "route", "R-1")}}
+      )
+
+      card = view |> element("#agent-evidence-51-1") |> render()
+      assert card =~ "no link for this reference"
+      assert query_count(LazyHTML.from_fragment(card), "a") == 0
+    end
+
+    test "the old Calendar tool calls keep working without a card", context do
+      {view, pid} = open_helper(context)
+
+      expect_reply(1, tool_calls_reply([{"call_1", "list_calendars", "{}"}]))
+      expect_reply(1, text_reply("Two calendars match."))
+
+      submit(view, @first_message)
+      assert await_settled(pid).status == :done
+
+      refute has_element?(view, "[data-evidence-kind]")
+      assert has_element?(view, "#agent-prose-2", "Two calendars match.")
+    end
+  end
+
   describe "membership changes mid-conversation" do
     test "a deactivated membership between two tool calls ends the conversation", context do
       {view, pid} = open_helper(context)
@@ -378,6 +455,38 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsHelperLiveTest do
   end
 
   defp session_pid(view), do: :sys.get_state(view.pid).socket.assigns.agent_session
+
+  # An assistant entry carrying one evidence card, delivered on the panel's own
+  # session event. `evidence_scope` is the scope the evidence claims to be read
+  # under.
+  defp entry_with_evidence(id, text, evidence_scope, kind, resource_id) do
+    %{
+      id: id,
+      role: :assistant,
+      text: text,
+      activity: [],
+      prepared: nil,
+      evidence: [
+        %{
+          kind: "calendar_dates",
+          title: "School weekdays",
+          total: 9,
+          total_label: "dates run",
+          completeness: :complete,
+          completeness_reason: nil,
+          facts: [],
+          source_ref: "gtfs_calendars",
+          digest: String.duplicate("b", 64),
+          source_revision: nil,
+          scope: evidence_scope,
+          exclusions: [],
+          resources: [%{kind: kind, id: resource_id, label: "School weekdays"}]
+        }
+      ],
+      applied?: false,
+      status: :done
+    }
+  end
 
   # The working placeholder arrives before the settled entry.
   defp await_settled(pid) do

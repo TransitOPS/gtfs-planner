@@ -126,6 +126,58 @@ test.describe("drawer review", () => {
   });
 });
 
+test.describe("server evidence card", () => {
+  for (const viewport of VIEWPORTS) {
+    test(`shows the server count above contradicting prose at ${viewport.width}x${viewport.height}`, async ({
+      page,
+    }, testInfo) => {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await openCalendars(page);
+
+      await page.locator("#agent-helper-open").click();
+      await expect(page.locator("#agent-panel")).toBeVisible();
+
+      // Helper sessions live in the server process, so start a fresh one.
+      await page.locator("#agent-new-conversation").click();
+
+      await page.locator("#agent-composer-input").fill("Which dates run next week?");
+      await page.locator("#agent-send").click();
+
+      // The scripted stand-in answers "Three of those dates run service." after
+      // reading the calendar; the server card carries the real count.
+      const card = page.locator("#agent-evidence-2-1");
+      await expect(card).toBeVisible({ timeout: 30_000 });
+      await expect(card).toContainText("Server result");
+      await expect(card).toContainText("5 dates run");
+      await expect(card).toContainText("Complete");
+      await expect(card).toContainText("gtfs_calendars");
+
+      // Exactly one link, and it is the panel's own scoped calendar path.
+      const links = card.locator("a");
+      await expect(links).toHaveCount(1);
+      await expect(links).toHaveAttribute(
+        "href",
+        /\/gtfs\/[0-9a-f-]+\/calendars\/show\?service_id=SCHOOL_WD/,
+      );
+
+      const prose = page.locator("#agent-prose-2");
+      await expect(prose).toContainText("Model reply");
+      await expect(prose).toContainText("Three of those dates run service.");
+      await expect(page.locator("#agent-entries")).toContainText("Three of those dates run service.");
+
+      const fitsViewport = await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      );
+      expect(fitsViewport).toBe(true);
+
+      await page.screenshot({
+        path: testInfo.outputPath(`evidence-card-${viewport.label}.png`),
+        animations: "disabled",
+      });
+    });
+  }
+});
+
 test.describe("helper journey", () => {
   test("prepares a change, applies it through the drawer and declines out-of-scope asks", async ({
     page,
