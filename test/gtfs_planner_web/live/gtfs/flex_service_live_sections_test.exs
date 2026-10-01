@@ -645,7 +645,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLiveSectionsTest do
 
       attrs ->
         {:ok, saved} =
-          Flex.save_service(ctx.organization.id, ctx.version.id, service, attrs, [])
+          Flex.save_service(flex_audit_fixture(ctx.organization.id, ctx.version.id), service, attrs, [])
 
         saved
     end

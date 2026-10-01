@@ -344,15 +344,14 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerFlexTest do
     })
 
     {:ok, service} =
-      Flex.create_service(organization.id, version.id, %{
+      Flex.create_service(flex_audit_fixture(organization.id, version.id), %{
         name: "Only Feed Shuttle",
         kind: :area
       })
 
     assert {:ok, _service} =
              Flex.save_service(
-               organization.id,
-               version.id,
+               flex_audit_fixture(organization.id, version.id),
                service,
                %{
                  phone: "(541) 555-0142",

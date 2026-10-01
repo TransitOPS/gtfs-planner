@@ -363,8 +363,7 @@ defmodule GtfsPlanner.Gtfs.Flex.ExportTest do
 
       assert {:ok, _service} =
                Flex.save_service(
-                 context.organization_id,
-                 context.gtfs_version_id,
+                 flex_audit_fixture(context.organization_id, context.gtfs_version_id),
                  loaded,
                  %{include_registered: false},
                  area_inputs(loaded)
@@ -387,8 +386,7 @@ defmodule GtfsPlanner.Gtfs.Flex.ExportTest do
 
       assert {:ok, _service} =
                Flex.set_active(
-                 context.organization_id,
-                 context.gtfs_version_id,
+                 flex_audit_fixture(context.organization_id, context.gtfs_version_id),
                  feed.services.registered.id,
                  false
                )
@@ -536,15 +534,14 @@ defmodule GtfsPlanner.Gtfs.Flex.ExportTest do
       })
 
       {:ok, service} =
-        Flex.create_service(context.organization_id, context.gtfs_version_id, %{
+        Flex.create_service(flex_audit_fixture(context.organization_id, context.gtfs_version_id), %{
           name: "Only Feed Shuttle",
           kind: :area
         })
 
       assert {:ok, _service} =
                Flex.save_service(
-                 context.organization_id,
-                 context.gtfs_version_id,
+                 flex_audit_fixture(context.organization_id, context.gtfs_version_id),
                  service,
                  %{
                    phone: "(541) 555-0142",
@@ -574,7 +571,7 @@ defmodule GtfsPlanner.Gtfs.Flex.ExportTest do
 
       for index <- 1..3 do
         {:ok, service} =
-          Flex.create_service(context.organization_id, context.gtfs_version_id, %{
+          Flex.create_service(flex_audit_fixture(context.organization_id, context.gtfs_version_id), %{
             name: "Hold #{index} Shuttle",
             kind: :area
           })
@@ -583,8 +580,7 @@ defmodule GtfsPlanner.Gtfs.Flex.ExportTest do
         # is absent from the flex zip.
         assert {:ok, _service} =
                  Flex.save_service(
-                   context.organization_id,
-                   context.gtfs_version_id,
+                   flex_audit_fixture(context.organization_id, context.gtfs_version_id),
                    service,
                    %{
                      phone: "(541) 555-0142",
@@ -623,7 +619,7 @@ defmodule GtfsPlanner.Gtfs.Flex.ExportTest do
       })
 
       {:ok, service} =
-        Flex.create_service(context.organization_id, context.gtfs_version_id, %{
+        Flex.create_service(flex_audit_fixture(context.organization_id, context.gtfs_version_id), %{
           name: "Frequent Flex",
           kind: :area
         })
@@ -642,8 +638,7 @@ defmodule GtfsPlanner.Gtfs.Flex.ExportTest do
 
       assert {:ok, _service} =
                Flex.save_service(
-                 context.organization_id,
-                 context.gtfs_version_id,
+                 flex_audit_fixture(context.organization_id, context.gtfs_version_id),
                  service,
                  %{
                    hours: hours,
@@ -838,7 +833,10 @@ defmodule GtfsPlanner.Gtfs.Flex.ExportTest do
 
     Enum.each(services, fn service ->
       assert :ok =
-               Flex.delete_service(context.organization_id, context.gtfs_version_id, service.id)
+               Flex.delete_service(
+                 flex_audit_fixture(context.organization_id, context.gtfs_version_id),
+                 service.id
+               )
     end)
   end
 
@@ -859,15 +857,14 @@ defmodule GtfsPlanner.Gtfs.Flex.ExportTest do
   # have: its first readiness error names the missing calendar.
   defp broken_service(context) do
     {:ok, service} =
-      Flex.create_service(context.organization_id, context.gtfs_version_id, %{
+      Flex.create_service(flex_audit_fixture(context.organization_id, context.gtfs_version_id), %{
         name: "Broken Shuttle",
         kind: :area
       })
 
     assert {:ok, _service} =
              Flex.save_service(
-               context.organization_id,
-               context.gtfs_version_id,
+               flex_audit_fixture(context.organization_id, context.gtfs_version_id),
                service,
                %{
                  phone: "(541) 555-0142",
@@ -880,15 +877,14 @@ defmodule GtfsPlanner.Gtfs.Flex.ExportTest do
 
   defp distance_service(context, name, route_ids) do
     {:ok, service} =
-      Flex.create_service(context.organization_id, context.gtfs_version_id, %{
+      Flex.create_service(flex_audit_fixture(context.organization_id, context.gtfs_version_id), %{
         name: name,
         kind: :area
       })
 
     assert {:ok, _service} =
              Flex.save_service(
-               context.organization_id,
-               context.gtfs_version_id,
+               flex_audit_fixture(context.organization_id, context.gtfs_version_id),
                service,
                %{
                  phone: "(541) 555-0142",

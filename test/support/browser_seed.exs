@@ -39,6 +39,7 @@ alias GtfsPlanner.AdvancedBlockingFixtures
 alias GtfsPlanner.Gtfs
 alias GtfsPlanner.Gtfs.Agency
 alias GtfsPlanner.Gtfs.AlignmentSegment
+alias GtfsPlanner.Gtfs.AuditContext
 alias GtfsPlanner.Gtfs.Calendar
 alias GtfsPlanner.Gtfs.CalendarAttribute
 alias GtfsPlanner.Gtfs.ChangeLog
@@ -3577,8 +3578,8 @@ case Accounts.register_first_admin(%{
     #     Heights–Toledo Junction stretch, ¾ mile (1200 m), wording set, one
     #     same-day booking rule, on the weekday and Saturday calendars.
     #
-    # The two services are written through the production `Flex.create_service/3`
-    # and `Flex.save_service/5`, so the seed stores exactly what the service page
+    # The two services are written through the production `Flex.create_service/2`
+    # and `Flex.save_service/4`, so the seed stores exactly what the service page
     # would, geometry normalisation included. The area polygon is the Census
     # place boundary for Newport from the prototype's
     # `.specs/22-gtfs-flex/evidence/prototype-src/basemap/census/place-Newport.geojson`,
@@ -3593,6 +3594,13 @@ case Accounts.register_first_admin(%{
     # diagram version stays the organization's default version.
     {:ok, flex_version} =
       Versions.create_gtfs_version(org.id, %{name: "Browser Flex Version"})
+
+    flex_audit = %AuditContext{
+      organization_id: org.id,
+      gtfs_version_id: flex_version.id,
+      actor_id: editor.id,
+      actor_email: editor.email
+    }
 
     flex_seed_at = ~U[2026-09-01 00:00:00.000000Z]
     flex_today = Gtfs.DisplayClock.today(org.id, flex_version.id).date
@@ -4292,12 +4300,11 @@ case Accounts.register_first_admin(%{
     }
 
     {:ok, flex_area_service} =
-      Flex.create_service(org.id, flex_version.id, %{name: "Newport Dial-a-Ride", kind: :area})
+      Flex.create_service(flex_audit, %{name: "Newport Dial-a-Ride", kind: :area})
 
     {:ok, _flex_area_saved} =
       Flex.save_service(
-        org.id,
-        flex_version.id,
+        flex_audit,
         flex_area_service,
         %{
           phone: "(541) 555-0142",
@@ -4314,7 +4321,7 @@ case Accounts.register_first_admin(%{
       )
 
     {:ok, flex_detour_service} =
-      Flex.create_service(org.id, flex_version.id, %{
+      Flex.create_service(flex_audit, %{
         name: "Valley Line detours",
         kind: :detour,
         route_id: "20"
@@ -4322,8 +4329,7 @@ case Accounts.register_first_admin(%{
 
     {:ok, _flex_detour_saved} =
       Flex.save_service(
-        org.id,
-        flex_version.id,
+        flex_audit,
         flex_detour_service,
         %{
           phone: "(541) 555-0142",

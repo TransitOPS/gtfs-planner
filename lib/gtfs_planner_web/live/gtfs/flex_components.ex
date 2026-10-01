@@ -613,7 +613,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
 
   The select offers the organization's other published versions that hold a flex
   service, and the copy itself goes through the confirmation dialog, which names
-  the source version and only then calls `Flex.copy_from_version/4`. A source
+  the source version and only then calls `Flex.copy_from_version/2`. A source
   that loses its last service between this page's load and the confirmation
   still copies nothing; the page reports that rather than leaving an
   unexplained empty list.

@@ -6,7 +6,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLiveTest do
   hours editor and the booking choices, the rider and booking previews that
   follow the draft, and the map card. An edit marks the page dirty and the save
   bar words it in rider terms before anything is stored; Save persists the whole
-  page through `Flex.save_service/5` and clears the draft, a changeset refusal
+  page through `Flex.save_service/4` and clears the draft, a changeset refusal
   keeps the draft and lists every problem with a link to its control.
 
   The conflict is judged with two sessions on one service (R10, FH-23): the
@@ -127,15 +127,14 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLiveTest do
       # One area renders no area select on the hours rows, so the row's area is
       # never in a change payload; the draft and the save must keep it.
       {:ok, service} =
-        Flex.create_service(ctx.organization.id, ctx.version.id, %{
+        Flex.create_service(flex_audit_fixture(ctx.organization.id, ctx.version.id), %{
           name: "One Area Flex",
           kind: :area
         })
 
       {:ok, service} =
         Flex.save_service(
-          ctx.organization.id,
-          ctx.version.id,
+          flex_audit_fixture(ctx.organization.id, ctx.version.id),
           service,
           %{
             phone: "(541) 555-0142",
@@ -338,6 +337,24 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLiveTest do
       assert attribute_of(doc(view), "#flex-service-page", "data-dirty") == "false"
       refute has_element?(view, "#save-bar")
       assert stored.key == service.key and stored.hub_stop_ids == service.hub_stop_ids
+    end
+
+    test "a revoked editor keeps the unsaved page after Save is refused", ctx do
+      service = single_window_service(ctx)
+      {:ok, view, _html} = live(ctx.conn, service_path(ctx.version, service))
+
+      loaded(view)
+      membership = Accounts.get_user_org_membership(ctx.user.id, ctx.organization.id)
+      deactivate_membership_fixture(membership)
+
+      view
+      |> element("#flex-service-form")
+      |> render_submit(%{"service" => hours_params(service, end: "17:00")})
+
+      assert has_element?(view, "#flex-service-save-error", "You no longer have permission")
+      assert attribute_of(doc(view), "#flex-service-page", "data-dirty") == "true"
+      assert value_of(doc(view), "#service_hours_0_end") == "17:00"
+      assert stored(ctx, service).hours == service.hours
     end
 
     test "a save with an invalid phone lists the problem and stores nothing", ctx do
@@ -655,15 +672,14 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLiveTest do
   # rider-terms lines are asserted against a single calendar.
   defp single_window_service(ctx) do
     {:ok, service} =
-      Flex.create_service(ctx.organization.id, ctx.version.id, %{
+      Flex.create_service(flex_audit_fixture(ctx.organization.id, ctx.version.id), %{
         name: "Weekday Dial-a-Ride",
         kind: :area
       })
 
     {:ok, service} =
       Flex.save_service(
-        ctx.organization.id,
-        ctx.version.id,
+        flex_audit_fixture(ctx.organization.id, ctx.version.id),
         service,
         %{
           phone: "(541) 555-0142",

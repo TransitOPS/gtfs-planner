@@ -12,7 +12,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   ones, exactly as the calendar editor's draft compares its params to its
   baseline.
 
-  Save calls `Flex.save_service/5` once with every field this page owns;
+  Save calls `Flex.save_service/4` once with every field this page owns;
   fields the page does not render (step 23's where, riders, exports and status)
   keep their stored values. A changeset refusal keeps the draft and lists every
   problem in `#flex-service-error-summary` with a link to its control, and a
@@ -43,6 +43,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
   alias GtfsPlanner.Boundaries
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.ExportDefaults
@@ -61,6 +62,9 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   alias GtfsPlannerWeb.Layouts
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+
+  @permission_error "You no longer have permission to change this flex service. " <>
+                      "Ask an organization administrator to restore your access."
 
   # The booking rule's fields, in the order a save writes them; the page's own
   # attrs map is built from the draft's struct, so a field this page does not
@@ -868,10 +872,9 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
 
   @impl true
   def handle_event("confirm_delete", _params, socket) do
-    organization_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
 
-    case Flex.delete_service(organization_id, version_id, socket.assigns.service_id) do
+    case Flex.delete_service(audit_context(socket), socket.assigns.service_id) do
       :ok ->
         {:noreply,
          socket
@@ -890,6 +893,12 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
          socket
          |> assign(:status_action, nil)
          |> save_error("This version can’t be changed right now. Reload the page and try again.")}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> assign(:status_action, nil)
+         |> save_error(@permission_error)}
     end
   end
 
@@ -1627,8 +1636,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   # the stored one again.
   defp set_active(socket, active) do
     case Flex.set_active(
-           socket.assigns.current_organization.id,
-           socket.assigns.current_gtfs_version.id,
+           audit_context(socket),
            socket.assigns.service_id,
            active
          ) do
@@ -1644,6 +1652,9 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
 
       {:error, :version_unavailable} ->
         {:error, "This version can’t be changed right now. Reload the page and try again."}
+
+      {:error, :forbidden} ->
+        {:error, @permission_error}
     end
   end
 
@@ -1741,12 +1752,8 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   # --- saving ------------------------------------------------------------------
 
   defp write_page(socket, loaded) do
-    organization_id = socket.assigns.current_organization.id
-    version_id = socket.assigns.current_gtfs_version.id
-
     case Flex.save_service(
-           organization_id,
-           version_id,
+           audit_context(socket),
            loaded,
            page_attrs(socket.assigns.draft),
            area_inputs(socket)
@@ -1765,6 +1772,9 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
           socket,
           "This version can’t be changed right now. Reload the page and try again."
         )
+
+      {:error, :forbidden} ->
+        save_error(socket, "Your edits are still on this page. " <> @permission_error)
 
       {:error, {:invalid_area, key, reason}} ->
         save_error(socket, "The area “#{key}” could not be saved: #{area_reason(reason)}.")
@@ -1855,7 +1865,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     |> assign(:save_error, message)
   end
 
-  # The page's own fields as `Flex.save_service/5` reads them, with string keys
+  # The page's own fields as `Flex.save_service/4` reads them, with string keys
   # so the changeset's own `used_input?/2` reports each field the editor
   # answered. The placeholder main rule an unanswered service carries is not a
   # field an editor filled in, so it is not written.
@@ -2935,6 +2945,15 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
       {area.key, area.name, area.source, area.census_geoid, area.census_layer,
        area.census_vintage, area.route_ids, area.distance_m, Map.get(geojson, geojson_key(area))}
     end)
+  end
+
+  defp audit_context(socket) do
+    %AuditContext{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      actor_id: socket.assigns.current_user.id,
+      actor_email: socket.assigns.current_user.email
+    }
   end
 
   defp service_path(socket) do

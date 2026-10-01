@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.Flex.ExportDetoursTest do
   use GtfsPlanner.DataCase, async: true
 
+  import GtfsPlanner.FlexFixtures, only: [flex_audit_fixture: 2]
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -400,7 +401,7 @@ defmodule GtfsPlanner.Gtfs.Flex.ExportDetoursTest do
       trip_fixture(organization.id, version.id, "20", %{trip_id: "20-0812"})
 
       {:ok, service} =
-        Flex.create_service(organization.id, version.id, %{
+        Flex.create_service(flex_audit_fixture(organization.id, version.id), %{
           name: "Valley Line detours",
           kind: :detour,
           route_id: "20"
@@ -433,20 +434,20 @@ defmodule GtfsPlanner.Gtfs.Flex.ExportDetoursTest do
       trip_fixture(organization.id, other_version.id, "20", %{trip_id: "20-9999"})
 
       {:ok, _route_20} =
-        Flex.create_service(organization.id, version.id, %{
+        Flex.create_service(flex_audit_fixture(organization.id, version.id), %{
           name: "Valley Line detours",
           kind: :detour,
           route_id: "20"
         })
 
       {:ok, route_1} =
-        Flex.create_service(organization.id, version.id, %{
+        Flex.create_service(flex_audit_fixture(organization.id, version.id), %{
           name: "Route 1 detours",
           kind: :detour,
           route_id: "1"
         })
 
-      {:ok, _inactive} = Flex.set_active(organization.id, version.id, route_1.id, false)
+      {:ok, _inactive} = Flex.set_active(flex_audit_fixture(organization.id, version.id), route_1.id, false)
 
       mapper = Export.sequence_mapper(organization.id, version.id)
 
@@ -468,7 +469,7 @@ defmodule GtfsPlanner.Gtfs.Flex.ExportDetoursTest do
       trip_fixture(organization.id, version.id, "20", %{trip_id: "20-0712"})
 
       {:ok, _area} =
-        Flex.create_service(organization.id, version.id, %{
+        Flex.create_service(flex_audit_fixture(organization.id, version.id), %{
           name: "Newport Dial-a-Ride",
           kind: :area
         })
