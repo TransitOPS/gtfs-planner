@@ -1080,7 +1080,7 @@ case Accounts.register_first_admin(%{
     # on them are the production rules' own verdicts rather than seeded labels,
     # and the label child is linked through the same run.
     {:ok, shapes_route} =
-      Gtfs.create_route(%{
+      GtfsFixtures.insert_route(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: "BROWSER_SHAPES",
@@ -1113,7 +1113,7 @@ case Accounts.register_first_admin(%{
         {lat, lon} = Enum.at(shapes_coordinates, index - 1)
 
         {:ok, stop} =
-          Gtfs.create_stop(%{
+          GtfsFixtures.insert_stop(%{
             stop_id: "BROWSER_SHAPES_STOP_#{index}",
             stop_name: "US 101 Stop #{index}",
             location_type: 0,
@@ -1129,7 +1129,7 @@ case Accounts.register_first_admin(%{
     # A station with no platform: the one trip served only from here cannot
     # become a pattern stop, which is the `unusable_stops` case.
     {:ok, _shapes_station} =
-      Gtfs.create_stop(%{
+      GtfsFixtures.insert_stop(%{
         stop_id: "BROWSER_SHAPES_STATION",
         stop_name: "US 101 Transit Center",
         location_type: 1,
@@ -1283,7 +1283,7 @@ case Accounts.register_first_admin(%{
     # middle, so the imported-line card shows the far stops the fit reports
     # rather than a clean line.
     {:ok, imported_route} =
-      Gtfs.create_route(%{
+      GtfsFixtures.insert_route(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
         route_id: "BROWSER_IMPORTED",
@@ -1299,7 +1299,7 @@ case Accounts.register_first_admin(%{
         {lat, lon} = Enum.at(imported_coordinates, index - 1)
 
         {:ok, stop} =
-          Gtfs.create_stop(%{
+          GtfsFixtures.insert_stop(%{
             stop_id: "BROWSER_IMPORTED_STOP_#{index}",
             stop_name: "Import Stop #{index}",
             location_type: 0,
@@ -8254,7 +8254,7 @@ case Accounts.register_first_admin(%{
     # The one place the map cannot draw, created without coordinates exactly as
     # the unlocated-route fixtures above do.
     {:ok, _bis_nocoord} =
-      Gtfs.create_stop(%{
+      GtfsFixtures.insert_stop(%{
         organization_id: org.id,
         gtfs_version_id: in_seat_version.id,
         stop_id: "BIS_NOCOORD",
@@ -8271,7 +8271,7 @@ case Accounts.register_first_admin(%{
             {"BIS_R57", "57", "In-seat University"}
           ] do
         {:ok, _route} =
-          Gtfs.create_route(%{
+          GtfsFixtures.insert_route(%{
             organization_id: org.id,
             gtfs_version_id: in_seat_version.id,
             route_id: route_id,
