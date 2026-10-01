@@ -4,12 +4,14 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   domain results so a helper session can explain a day without holding a handle
   on host assigns.
 
-  This module owns `block_day/2` and `run_day/1`: the block-day projection of one
-  `GtfsPlanner.Gtfs.Blocking.load_day/3` result and the run-day projection of one
-  `GtfsPlanner.Gtfs.Runs.load_runs/3` result. The day is loaded by its host
-  (`BlocksLive` and `RunsLive` through the catalog read adapter) and this module
-  reads no repository, starts no solver and writes no row. The completed-plan,
-  snapshot-admission and paging functions arrive in the steps that own them.
+  This module owns `block_day/2`, `run_day/1`, `plan/2`, `with_plan/3`,
+  `context/2` and `page/4`: the block-day projection of one
+  `GtfsPlanner.Gtfs.Blocking.load_day/3` result, the run-day projection of one
+  `GtfsPlanner.Gtfs.Runs.load_runs/3` result, the completed-plan projection of
+  one native plan, the admission of a projected payload as an immutable source
+  snapshot and the bounded paging of a frozen payload. The day is loaded by its
+  host (`BlocksLive` and `RunsLive` through the catalog read adapter) and this
+  module reads no repository, starts no solver and writes no row.
 
   `block_day/2` returns `{:ok, payload}` with a string-key JSON map, or
   `{:error, :unavailable}`. It refuses a day the load could not select - a day
@@ -61,11 +63,62 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   `outside_scope` exclusion beside its own totals. A frequency-based or
   unplottable trip is always an explicit exclusion, because no check sequences
   it into a block.
+
+  ## Completed plans, admission and paging
+
+  `plan/2` copies the *current, completed* native plan of either section and
+  nothing else: its before and after figures, its move counts, its leftovers,
+  its preview warnings and its own fingerprint, under a server-generated
+  `plan_ref`. The native write command, the actor and every row id stay out.
+  `with_plan/3` is what a host calls to attach that copy to a projected payload,
+  because `source_digest` is the digest of the payload's own content: a plan
+  attached after the digest was taken would sit inside a snapshot the digest no
+  longer describes. `plan_ref` is derived from the section, the day key and the
+  plan's own fingerprint, so two plans of one day are two receipts, a replaced
+  plan resolves to neither, and the native fingerprint is carried beside the ref
+  as a fact about the plan rather than as the session's chronology.
+
+  `context/2` is the only place this module admits anything. It builds
+  `GtfsPlanner.Agents.Scope.context/1` for the caller's identity and hands the
+  payload to `Scope.with_source_snapshot/2` under the kind `operations_blocks` or
+  `operations_runs`, so the shared owner measures the 65,536-byte cap over the
+  *whole* resource context and there is no second measurement here to disagree
+  with it. A refused payload is refused whole: there is no truncated summary.
+
+  `page/4` serves one bounded page of a frozen payload - at most 50 issue
+  instances, sorted by severity, code, the issue's own ref and its canonical
+  detail, and never more than 32 KiB once encoded including the envelope the
+  pack wraps it in. A page smaller than the limit is permitted when the byte
+  budget needs it; a single row that cannot fit is refused rather than truncated.
+  A cursor is a plain JSON object of the payload's digest, the collection, the
+  normalized filters and an offset, with no server-side store behind it, so a
+  cursor from another snapshot, another filter set or an offset the filtered
+  total does not allow is `:unavailable` exactly as a malformed one is. Nothing
+  here re-reads the day: a page is historical evidence labelled by its digest,
+  and only the native handoff re-checks the current loaded inputs.
   """
+
+  alias GtfsPlanner.Agents.Scope
 
   @schema_version 1
   @section_blocks "blocks"
   @section_runs "runs"
+
+  # The snapshot kinds the shared owner stores an operations payload under. They
+  # are this package's own words for the source, so a panel reading the snapshot
+  # back can tell an operations day from any other admitted source.
+  @snapshot_kind_blocks "operations_blocks"
+  @snapshot_kind_runs "operations_runs"
+
+  # Paging bounds. 50 issue instances is the page's own limit; the 32 KiB budget
+  # covers the encoded page *and* the pack envelope wrapped around it, which is
+  # why a page may be smaller than the limit but never a partial row.
+  @page_limit 50
+  @max_page_bytes 32_768
+
+  # The collections a frozen payload can page. A collection this module does not
+  # name is not served rather than guessed at.
+  @collection_issues "issues"
 
   # Refs are namespaced by the package and the section, so a session holding both
   # a block and a run payload cannot resolve one section's ref in the other.
@@ -157,6 +210,55 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
     travel_unknown: [:from, :to],
     uncovered_work: [:trips, :secs]
   }
+
+  # What `Blocking.Plan.build/1` returns, so a hand-assembled map - or a pending,
+  # failed or superseded plan a host still holds - is refused rather than
+  # half-projected.
+  @block_plan_keys [
+    :mode,
+    :day_type_key,
+    :moves,
+    :new_blocks,
+    :attribute_rows,
+    :review,
+    :before,
+    :after,
+    :leftovers,
+    :fingerprint
+  ]
+
+  # What `Runs.Plan.build/1` returns. `preview` is a `Runs.Day.derive/4` result,
+  # which is where the warnings a plan would leave behind are already derived.
+  @runs_plan_keys [
+    :day_type_key,
+    :scope,
+    :moves,
+    :changed_run_ids,
+    :new_run_ids,
+    :before,
+    :after,
+    :preview,
+    :fingerprint
+  ]
+
+  # The plan figures each section publishes, allowlisted. The runs section's
+  # `before` and `after` are `Runs.Day.derive/4`'s own stats maps, so the plan
+  # copy reads exactly the keys the day copy reads and invents no second figure.
+  @block_figure_keys [:vehicles, :platform_secs, :drive_secs, :problems]
+  @runs_figure_keys [
+    :runs,
+    :by_type,
+    :paid_secs,
+    :vehicle_secs,
+    :uncovered,
+    :problems,
+    :straight_share,
+    :vehicle_share
+  ]
+
+  # A leftover is a trip the generator could not place and the reason it could
+  # not, plus the block it was held in. The trip itself is named by its GTFS id
+  # and a session receipt, never by its row.
 
   @typedoc "The selection the host displays, as technical block and trip IDs."
   @type selection :: %{
@@ -971,4 +1073,615 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
 
   defp context_ref({:garage, id}) when is_binary(id), do: "garage:" <> id
   defp context_ref(_other), do: :unknown
+
+  # --- completed plan -----------------------------------------------------
+
+  @doc """
+  Projects one current, completed native plan into an immutable copy.
+
+  `kind` is `:blocks` for a `GtfsPlanner.Gtfs.Blocking.Plan` and `:runs` for a
+  `GtfsPlanner.Gtfs.Runs.Plan`; `native_plan` is the plan the host's own
+  successful, current job returned. The copy carries the server-generated
+  `plan_ref`, the `native_fingerprint` the apply path rechecks, the plan's mode
+  or scope, its before and after figures, its move counts, its leftovers and the
+  preview warnings it would add. It carries no native write command, no actor,
+  no row id and no operator text (`C-3`).
+
+  Anything else is `{:error, :unavailable}`: a value that is not that section's
+  plan shape - which is what a missing, still-pending, failed or superseded plan
+  looks like to this function - and a plan whose `day_type_key` is not a string.
+  A replaced plan is not refused here, because this function is pure and cannot
+  know what replaced it; it is refused at the boundary, where the host compares
+  the copy's `plan_ref` with the plan the panel holds and re-reads the current
+  day before opening the native drawer.
+
+  The refs inside the copy are derived from the section, the day key and the
+  plan's own fingerprint, so two plans of one day type are two receipts and a
+  snapshot can only resolve the plan it actually carries.
+  """
+  @spec plan(:blocks | :runs, map()) :: {:ok, map()} | {:error, :unavailable}
+  def plan(kind, native_plan) when kind in [:blocks, :runs] and is_map(native_plan) do
+    with {:ok, day_key} <- plan_day_key(native_plan),
+         {:ok, body} <- plan_body(kind, native_plan, day_key) do
+      {:ok, Map.merge(body, plan_identity(kind, day_key, native_plan))}
+    else
+      _unavailable -> {:error, :unavailable}
+    end
+  end
+
+  def plan(_kind, _native_plan), do: {:error, :unavailable}
+
+  # A plan's day key is the key the generator ran against. Both plan shapes carry
+  # it, and a payload's own `day_key` is what it is checked against when the copy
+  # is attached.
+  defp plan_day_key(native_plan) do
+    case Map.get(native_plan, :day_type_key) do
+      key when is_binary(key) and key != "" -> {:ok, key}
+      _none -> :error
+    end
+  end
+
+  defp plan_identity(kind, day_key, native_plan) do
+    fingerprint = native_plan.fingerprint
+
+    %{
+      "plan_ref" => ref(key_digest(day_key, section(kind)), "plan", fingerprint),
+      "section" => section(kind),
+      "day_key" => day_key,
+      "native_fingerprint" => fingerprint
+    }
+  end
+
+  defp section(:blocks), do: @section_blocks
+  defp section(:runs), do: @section_runs
+
+  defp plan_body(:blocks, native_plan, day_key), do: block_plan_body(native_plan, day_key)
+  defp plan_body(:runs, native_plan, _day_key), do: runs_plan_body(native_plan)
+
+  # --- block plan ---------------------------------------------------------
+
+  defp block_plan_body(native_plan, day_key) do
+    if Enum.all?(@block_plan_keys, &Map.has_key?(native_plan, &1)) and
+         is_binary(native_plan.fingerprint) do
+      with {:ok, mode} <- block_mode(native_plan.mode),
+           {:ok, before_figures} <- block_figures(Map.fetch!(native_plan, :before)),
+           {:ok, after_figures} <- block_figures(Map.fetch!(native_plan, :after)),
+           {:ok, leftovers} <- block_leftovers(native_plan.leftovers, day_key),
+           {:ok, warnings} <- block_warnings(native_plan.review) do
+        {:ok,
+         %{
+           "mode" => mode,
+           "before" => before_figures,
+           "after" => after_figures,
+           "move_count" => length(native_plan.moves),
+           "new_block_count" => length(native_plan.new_blocks),
+           "leftovers" => leftovers,
+           "warnings" => warnings
+         }}
+      else
+        _unavailable -> :error
+      end
+    else
+      :error
+    end
+  end
+
+  # `Generator.mode()` is an atom or `{:selected, ids}`. The selected ids are
+  # technical block IDs the payload already names, so they are copied; any other
+  # shape is refused rather than stringified.
+  defp block_mode(:unassigned_only), do: {:ok, "unassigned_only"}
+  defp block_mode(:replace_all), do: {:ok, "replace_all"}
+
+  defp block_mode({:selected, ids}) when is_list(ids) do
+    if Enum.all?(ids, &is_binary/1) do
+      {:ok, %{"mode" => "selected", "selected_block_ids" => ids}}
+    else
+      :error
+    end
+  end
+
+  defp block_mode(_mode), do: :error
+
+  defp block_figures(figures) when is_map(figures) do
+    if Enum.all?(@block_figure_keys, &Map.has_key?(figures, &1)) do
+      {:ok, Map.new(figures, fn {key, value} -> {Atom.to_string(key), value} end)}
+    else
+      :error
+    end
+  end
+
+  defp block_figures(_figures), do: :error
+
+  # A leftover is a trip the generator could not place. The trip is named by its
+  # own technical GTFS id and a receipt, never by its row, and a leftover whose
+  # trip the copy cannot name refuses the projection like any other unresolvable
+  # row.
+  defp block_leftovers(leftovers, day_key) when is_list(leftovers) do
+    key_digest = key_digest(day_key, @section_blocks)
+
+    collect(leftovers, fn leftover ->
+      with true <- is_map(leftover),
+           trip when is_map(trip) <- Map.get(leftover, :trip),
+           trip_id when is_binary(trip_id) <- Map.get(trip, :trip_id),
+           reason when is_atom(reason) <- Map.get(leftover, :reason),
+           block_id when is_nil(block_id) or is_binary(block_id) <- Map.get(leftover, :block_id) do
+        {:ok,
+         %{
+           "trip_ref" => ref(key_digest, "trip", trip_id),
+           "trip_id" => trip_id,
+           "reason" => Atom.to_string(reason),
+           "block_ref" => block_id && ref(key_digest, "block", block_id)
+         }}
+      else
+        _unavailable -> :error
+      end
+    end)
+  end
+
+  defp block_leftovers(_leftovers, _day_key), do: :error
+
+  # What the plan would add, copied from `Blocking.Review`'s own added findings:
+  # the codes, severities and blocks, and nothing else. A finding's trip ids are
+  # database rows and the copy has no day to resolve them against, so a warning
+  # here names the block only - which is what `compare_*_proposal` needs to say
+  # that a plan stops being clean.
+  defp block_warnings(review) when is_map(review) do
+    case Map.get(review, :effects) do
+      effects when is_list(effects) ->
+        effects
+        |> Enum.flat_map(&Map.get(&1, :added, []))
+        |> collect(&block_warning/1)
+
+      _other ->
+        :error
+    end
+  end
+
+  defp block_warnings(_review), do: :error
+
+  defp block_warning(finding) do
+    with code when is_atom(code) <- Map.get(finding, :code),
+         severity when is_map_key(@severity_rank, severity) <- Map.get(finding, :severity) do
+      {:ok,
+       %{
+         "code" => Atom.to_string(code),
+         "severity" => Atom.to_string(severity),
+         "severity_rank" => @severity_rank[severity],
+         "block_id" => Map.get(finding, :block_id)
+       }}
+    else
+      _unavailable -> :error
+    end
+  end
+
+  # --- runs plan ----------------------------------------------------------
+
+  defp runs_plan_body(native_plan) do
+    if Enum.all?(@runs_plan_keys, &Map.has_key?(native_plan, &1)) and
+         is_binary(native_plan.fingerprint) and is_atom(native_plan.scope) and
+         is_map(native_plan.preview) do
+      with {:ok, before_figures} <- runs_plan_figures(Map.fetch!(native_plan, :before)),
+           {:ok, after_figures} <- runs_plan_figures(Map.fetch!(native_plan, :after)),
+           {:ok, warnings} <- runs_warnings(Map.get(native_plan.preview, :findings)) do
+        {:ok,
+         %{
+           "mode" => Atom.to_string(native_plan.scope),
+           "before" => before_figures,
+           "after" => after_figures,
+           "move_count" => length(native_plan.moves),
+           "changed_run_count" => length(native_plan.changed_run_ids),
+           "new_run_count" => length(native_plan.new_run_ids),
+           # `Runs.Plan` has no leftovers: the work no run covers is already
+           # carried as the day's own labelled uncovered count in the figures
+           # above, and copying it here a second time would read as a second
+           # count of the same work.
+           "leftovers" => [],
+           "warnings" => warnings
+         }}
+      else
+        _unavailable -> :error
+      end
+    else
+      :error
+    end
+  end
+
+  # The plan's `before` and `after` are `Runs.Day.derive/4`'s own stats maps, so
+  # the copy reads the same keys the run-day copy reads and derives no second
+  # figure from them.
+  defp runs_plan_figures(stats) when is_map(stats) do
+    if Enum.all?(@runs_figure_keys, &Map.has_key?(stats, &1)) do
+      {:ok, Map.new(stats, &{Atom.to_string(elem(&1, 0)), json_safe(elem(&1, 1))})}
+    else
+      :error
+    end
+  end
+
+  defp runs_plan_figures(_stats), do: :error
+
+  # The warnings the preview day would carry, copied per code exactly as
+  # `run_issue/3` copies the day's own: the code, the severity and the technical
+  # runs and block it names, never its rows.
+  defp runs_warnings(findings) when is_list(findings) do
+    collect(findings, &runs_warning/1)
+  end
+
+  defp runs_warnings(_findings), do: :error
+
+  defp runs_warning(finding) do
+    with code when is_atom(code) <- Map.get(finding, :code),
+         severity when is_map_key(@severity_rank, severity) <- Map.get(finding, :severity),
+         detail when is_map(detail) <- Map.get(finding, :detail),
+         block_id when is_nil(block_id) or is_binary(block_id) <- Map.get(finding, :block_id),
+         run_ids when is_list(run_ids) <- Map.get(finding, :run_ids),
+         true <- Enum.all?(run_ids, &is_binary/1) do
+      {:ok,
+       %{
+         "code" => Atom.to_string(code),
+         "severity" => Atom.to_string(severity),
+         "severity_rank" => @severity_rank[severity],
+         "run_ids" => run_ids,
+         "block_id" => block_id,
+         "detail" => json_safe(Map.take(detail, Map.get(@run_detail_keys, code, [])))
+       }}
+    else
+      _unavailable -> :error
+    end
+  end
+
+  # --- plan attachment ----------------------------------------------------
+
+  @doc """
+  Attaches a completed plan's copy to a projected payload.
+
+  `payload` is a `block_day/2` or `run_day/1` result, `kind` the section the plan
+  belongs to and `native_plan` the plan the host's current successful job
+  returned. The returned payload carries the plan under `"plan"` and a
+  `source_digest` recomputed over the content *with* the plan in it, because the
+  digest is what a cursor, a pack read and the session key are bound to: a
+  payload whose digest predates its plan would let two different plans answer
+  under one digest.
+
+  The result is `{:error, :unavailable}` for a payload that is not a projection,
+  a section that does not match the payload's own, or a plan `plan/2` refuses -
+  which is how a missing, pending, failed or superseded plan never reaches a
+  snapshot at all.
+  """
+  @spec with_plan(map(), :blocks | :runs, map()) :: {:ok, map()} | {:error, :unavailable}
+  def with_plan(payload, kind, native_plan) when is_map(payload) and kind in [:blocks, :runs] do
+    with {:ok, day_key} <- payload_day_key(payload, kind),
+         {:ok, copied} <- plan(kind, native_plan) do
+      content =
+        payload
+        |> Map.drop(["source_digest", "day_ref"])
+        |> Map.put("plan", copied)
+
+      {:ok, Map.merge(content, identity(day_key, content, section(kind)))}
+    else
+      _unavailable -> {:error, :unavailable}
+    end
+  end
+
+  def with_plan(_payload, _kind, _native_plan), do: {:error, :unavailable}
+
+  defp payload_day_key(payload, kind) do
+    with true <- Map.get(payload, "schema_version") == @schema_version,
+         true <- Map.get(payload, "section") == section(kind),
+         day_key when is_binary(day_key) and day_key != "" <- Map.get(payload, "day_key"),
+         digest when is_binary(digest) and digest != "" <- Map.get(payload, "source_digest") do
+      {:ok, day_key}
+    else
+      _unavailable -> :error
+    end
+  end
+
+  # --- snapshot admission -------------------------------------------------
+
+  @doc """
+  Admits a projected payload as this conversation's immutable source snapshot.
+
+  `identity` is the scope's own resource identity and `payload` a `block_day/2`,
+  `run_day/1` or `with_plan/3` result. The kind is this module's own - the
+  payload's `section` decides between `operations_blocks` and `operations_runs`,
+  because the kind is what a later read tells the admitted source apart by, and
+  a caller that could name it could admit a day's evidence under another's kind.
+
+  The result is `{:ok, resource_context}` with the snapshot attached, or the
+  shared owner's own `{:error, :invalid_snapshot}` for a payload that is not
+  JSON-safe, carries no recognized section, or is accompanied by an identity that
+  is not a version or route, and `{:error, :too_large}` when the *whole* resource
+  context exceeds 65,536 bytes. A refused payload is refused whole: there is no
+  truncated summary to admit in its place.
+  """
+  @spec context(Scope.identity(), map()) ::
+          {:ok, Scope.resource_context()} | {:error, :invalid_snapshot | :too_large}
+  def context(identity, payload) when is_map(payload) do
+    with {:ok, kind} <- snapshot_kind(payload) do
+      Scope.with_source_snapshot(Scope.context(identity), %{kind: kind, payload: payload})
+    else
+      :error -> {:error, :invalid_snapshot}
+    end
+  end
+
+  def context(_identity, _payload), do: {:error, :invalid_snapshot}
+
+  defp snapshot_kind(%{"section" => @section_blocks}), do: {:ok, @snapshot_kind_blocks}
+  defp snapshot_kind(%{"section" => @section_runs}), do: {:ok, @snapshot_kind_runs}
+  defp snapshot_kind(_payload), do: :error
+
+  # --- bounded frozen paging ----------------------------------------------
+
+  @typedoc "The filters a page narrows by: an optional code, severity and run refs."
+  @type page_filters :: %{optional(String.t()) => String.t() | [String.t()] | nil}
+
+  @typedoc "A page's position: the digest, collection, normalized filters and offset."
+  @type page_cursor :: %{
+          required(:digest) => String.t(),
+          required(:collection) => String.t(),
+          required(:filters) => map(),
+          required(:offset) => non_neg_integer()
+        }
+
+  @doc """
+  Serves one bounded page of a frozen payload.
+
+  `payload` is an admitted payload map, `collection` the collection to page,
+  `filters` the narrowing to apply and `cursor` the previous page's cursor or
+  `nil` for the first. The result is
+  `{:ok, %{rows: rows, total: total, next_cursor: cursor | nil, digest: digest}}`.
+
+  The page is served from the payload alone: nothing here re-reads the day, so
+  every page of one snapshot is the same historical evidence under the same
+  `digest`, whatever the host has done since. Only the issues collection is
+  served, at most 50 rows, sorted by severity, code, the issue's own ref and its
+  canonical detail - a total order, so a row cannot move between pages. A page
+  smaller than 50 is permitted when the encoded rows would exceed 32 KiB; a
+  single row that cannot fit is `{:error, :unavailable}` rather than a truncated
+  one, and `total` and `next_cursor` survive that narrowing.
+
+  `filters` narrows by an optional `code` the snapshot actually carries, an
+  optional `severity`, and optional `run_refs` - at most 100 distinct refs, each
+  of which must resolve to a run in *this* payload, so a ref outside the frozen
+  scope or another snapshot's ref narrows nothing and is refused instead. Any
+  other filter key is refused rather than ignored.
+
+  A cursor must carry exactly the four fields above and match this payload's
+  digest, this collection and these normalized filters, with a non-negative
+  integer offset no greater than the filtered total. There is no store behind a
+  cursor, so a mismatched, malformed or out-of-range one is
+  `{:error, :unavailable}` exactly like a missing one.
+  """
+  @spec page(map(), String.t(), page_filters(), page_cursor() | nil) ::
+          {:ok, map()} | {:error, :unavailable}
+  def page(payload, collection, filters, cursor)
+      when is_map(payload) and is_binary(collection) and is_map(filters) do
+    with {:ok, issues} <- page_issues(payload, collection),
+         {:ok, normalized} <- normalize_filters(filters, payload, issues),
+         {:ok, rows} <- filtered_issues(issues, normalized),
+         {:ok, offset} <- read_offset(cursor, payload, collection, normalized, length(rows)) do
+      serve(rows, offset, payload, collection, normalized)
+    else
+      _unavailable -> {:error, :unavailable}
+    end
+  end
+
+  def page(_payload, _collection, _filters, _cursor), do: {:error, :unavailable}
+
+  defp page_issues(payload, @collection_issues) do
+    with true <- Map.get(payload, "schema_version") == @schema_version,
+         true <- is_binary(Map.get(payload, "source_digest")),
+         true <- Map.get(payload, "source_digest") != "",
+         issues when is_list(issues) <- Map.get(payload, "issues") do
+      {:ok, issues}
+    else
+      _unavailable -> :error
+    end
+  end
+
+  defp page_issues(_payload, _collection), do: :error
+
+  # Filters are normalized to the keys this snapshot can act on, so a cursor
+  # carries the same map the next call rebuilds. A filter naming a code the
+  # snapshot does not carry is refused: an unknown code is a stale read, not an
+  # empty result.
+  defp normalize_filters(filters, payload, issues) do
+    if Map.keys(filters) -- ["code", "severity", "run_refs"] == [] do
+      with {:ok, code} <- normalize_code(Map.get(filters, "code"), issues),
+           {:ok, severity} <- normalize_severity(Map.get(filters, "severity")),
+           {:ok, run_refs} <- normalize_run_refs(Map.get(filters, "run_refs"), payload) do
+        {:ok,
+         %{
+           "code" => code,
+           "severity" => severity,
+           "run_refs" => run_refs
+         }}
+      else
+        :error -> :error
+      end
+    else
+      :error
+    end
+  end
+
+  defp normalize_code(nil, _issues), do: {:ok, nil}
+
+  defp normalize_code(code, issues) when is_binary(code) do
+    if Enum.any?(issues, &(&1["code"] == code)), do: {:ok, code}, else: :error
+  end
+
+  defp normalize_code(_code, _issues), do: :error
+
+  defp normalize_severity(nil), do: {:ok, nil}
+
+  defp normalize_severity(severity) when is_atom(severity),
+    do: normalize_severity(Atom.to_string(severity))
+
+  defp normalize_severity(severity) when is_binary(severity) do
+    if Enum.any?(@severity_rank, fn {ranked, _rank} -> severity == Atom.to_string(ranked) end),
+      do: {:ok, severity},
+      else: :error
+  end
+
+  defp normalize_severity(_severity), do: :error
+
+  defp normalize_run_refs(nil, _payload), do: {:ok, []}
+
+  defp normalize_run_refs(run_refs, payload) when is_list(run_refs) do
+    known = payload_run_refs(payload)
+
+    if length(run_refs) <= 100 and Enum.all?(run_refs, &is_binary/1) and
+         MapSet.size(MapSet.new(run_refs)) == length(run_refs) and
+         Enum.all?(run_refs, &MapSet.member?(known, &1)) do
+      {:ok, Enum.sort(run_refs)}
+    else
+      :error
+    end
+  end
+
+  defp normalize_run_refs(_run_refs, _payload), do: :error
+
+  # The run refs this snapshot actually holds. A blocks payload holds none, so
+  # any run ref offered against one resolves to nothing and is refused.
+  defp payload_run_refs(payload) do
+    payload
+    |> Map.get("entities")
+    |> case do
+      %{"runs" => runs} when is_list(runs) ->
+        MapSet.new(runs, & &1["run_ref"])
+
+      _other ->
+        MapSet.new()
+    end
+  end
+
+  defp filtered_issues(issues, filters) do
+    rows =
+      Enum.filter(issues, fn issue ->
+        matches_code?(issue, filters["code"]) and
+          matches_severity?(issue, filters["severity"]) and
+          matches_run_refs?(issue, filters["run_refs"])
+      end)
+
+    {:ok, Enum.sort_by(rows, &issue_sort_key/1)}
+  end
+
+  defp matches_code?(_issue, nil), do: true
+  defp matches_code?(issue, code), do: issue["code"] == code
+
+  defp matches_severity?(_issue, nil), do: true
+  defp matches_severity?(issue, severity), do: issue["severity"] == severity
+
+  # A run ref narrows to the issues that name the run. An issue naming no run -
+  # a garage shortfall, an orphan count - is not this run's, so it drops out.
+  defp matches_run_refs?(_issue, []), do: true
+
+  defp matches_run_refs?(issue, run_refs) do
+    named = Map.get(issue, "run_refs", [])
+
+    Enum.any?(run_refs, &(&1 in named))
+  end
+
+  # The total order a page is served in: severity, then code, then the issue's
+  # own ref, then its canonical detail. Every component is deterministic, so two
+  # pages of one snapshot cannot disagree about which row comes next.
+  defp issue_sort_key(issue) do
+    {Map.get(issue, "severity_rank", 3), issue["code"], issue["issue_ref"],
+     :erlang.term_to_binary(issue["detail"], [:deterministic])}
+  end
+
+  # The first page has no cursor; every later one must match this snapshot, this
+  # collection, these filters and land inside the filtered total.
+  defp read_offset(nil, _payload, _collection, _filters, _total), do: {:ok, 0}
+
+  defp read_offset(cursor, payload, collection, filters, total) when is_map(cursor) do
+    with true <- Enum.sort(Map.keys(cursor)) == ["collection", "digest", "filters", "offset"],
+         true <- Map.get(cursor, "digest") == payload["source_digest"],
+         true <- Map.get(cursor, "collection") == collection,
+         true <- Map.get(cursor, "filters") == filters,
+         offset when is_integer(offset) and offset >= 0 and offset <= total <-
+           Map.get(cursor, "offset") do
+      {:ok, offset}
+    else
+      _unavailable -> :error
+    end
+  end
+
+  defp read_offset(_cursor, _payload, _collection, _filters, _total), do: :error
+
+  # Up to the limit, then narrowed until the encoded rows and the envelope they
+  # travel in fit the byte budget. The measured value is the whole result map, so
+  # the cursor and the totals are inside the budget too - a pack that wraps this
+  # page in its own evidence has the remainder of the same ceiling to spend.
+  defp serve(rows, offset, payload, collection, filters) do
+    total = length(rows)
+    limit = Enum.slice(rows, offset, offset + @page_limit)
+
+    case fit_rows(limit, offset, total, payload, collection, filters) do
+      {:ok, page_rows} ->
+        next_offset = offset + length(page_rows)
+        next_cursor = next_cursor(next_offset, total, payload, collection, filters)
+
+        {:ok, result(page_rows, total, next_cursor, payload)}
+
+      :error ->
+        {:error, :unavailable}
+    end
+  end
+
+  # One row over the budget on its own is refused: a partial issue is a finding
+  # the reader cannot act on, and silently dropping it would under-report.
+  defp fit_rows([], _offset, _total, _payload, _collection, _filters), do: {:ok, []}
+
+  defp fit_rows(rows, offset, total, payload, collection, filters) do
+    case page_bytes(rows, offset, total, payload, collection, filters) do
+      :too_large when length(rows) > 1 ->
+        fit_rows(
+          Enum.slice(rows, 0, length(rows) - 1),
+          offset,
+          total,
+          payload,
+          collection,
+          filters
+        )
+
+      :too_large ->
+        :error
+
+      :ok ->
+        {:ok, rows}
+    end
+  end
+
+  defp next_cursor(next_offset, total, _payload, _collection, _filters) when next_offset >= total,
+    do: nil
+
+  defp next_cursor(next_offset, _total, payload, collection, filters) do
+    %{
+      "digest" => payload["source_digest"],
+      "collection" => collection,
+      "filters" => filters,
+      "offset" => next_offset
+    }
+  end
+
+  defp page_bytes(rows, offset, total, payload, collection, filters) do
+    served = offset + length(rows)
+
+    %{
+      rows: rows,
+      total: total,
+      next_cursor: next_cursor(served, total, payload, collection, filters),
+      digest: payload["source_digest"]
+    }
+    |> Jason.encode!()
+    |> byte_size()
+    |> case do
+      bytes when bytes > @max_page_bytes -> :too_large
+      _fits -> :ok
+    end
+  end
+
+  defp result(rows, total, next_cursor, payload) do
+    %{rows: rows, total: total, next_cursor: next_cursor, digest: payload["source_digest"]}
+  end
 end
