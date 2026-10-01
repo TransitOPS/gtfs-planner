@@ -25,6 +25,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
   alias GtfsPlanner.Gtfs.StopReferences
+  alias Phoenix.HTML.Form
 
   @doc """
   The page header: the title, the List | Map switch, the version's stop count
@@ -1617,6 +1618,17 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
                      the two that only change which panel is showing. --%>
                 <div class="my-1 border-t border-subtle"></div>
                 <button
+                  :if={station_offerable?(@stop)}
+                  id="stops-map-edit-station"
+                  type="button"
+                  phx-click="start_make_station"
+                  class="flex min-h-11 w-full flex-col justify-center rounded-control px-3 py-2 text-left text-sm text-strong hover:bg-canvas"
+                >
+                  Make this a station…<span class="text-[13px] text-muted">
+                    Groups it with bays under one name. Its ID stays.
+                  </span>
+                </button>
+                <button
                   id="stops-map-edit-replace"
                   type="button"
                   phx-click="start_replace"
@@ -2845,6 +2857,167 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
   end
 
   @doc """
+  The make-station panel: what a station is for, and the two things it needs.
+
+  A station is a name riders look for with bays under it, so the panel leads
+  with that and then says the thing that makes the operation safe: the stop
+  keeps its ID, so every trip, transfer and fare zone that names it keeps
+  naming it. The station name is a suggestion until the editor edits it — the
+  landmark is a starting point, not the answer.
+  """
+  attr :id, :string, required: true
+  attr :stop, :map, required: true
+  attr :form, :any, required: true
+  attr :usage, :any, default: nil
+  attr :landmark, :any, default: nil
+  attr :loading?, :boolean, default: false
+  attr :errors, :map, default: %{}
+  attr :refusal, :string, default: nil
+  attr :saving?, :boolean, default: false
+
+  def station_panel(assigns) do
+    ~H"""
+    <aside
+      id={@id}
+      aria-label="Make this stop a station"
+      phx-hook="FormErrorFocus"
+      class="flex min-h-0 flex-col border-t border-subtle bg-white lg:border-l lg:border-t-0"
+    >
+      <div class="min-h-0 flex-1 overflow-y-auto">
+        <div class="px-5 py-5">
+          <h2
+            id="stops-map-station-heading"
+            tabindex="-1"
+            autofocus
+            class="font-display text-[22px] font-semibold text-strong"
+          >
+            Make {@stop.name} a station
+          </h2>
+          <p class="m-0 mt-1 text-sm text-muted">Stop · ID {@stop.stop_id}</p>
+
+          <div :if={@loading?} id="stops-map-station-loading" role="status" class="mt-5">
+            <.message kind="info" title="Looking for a landmark">
+              Finding the place riders know this corner by&hellip;
+            </.message>
+          </div>
+
+          <p id="stops-map-station-why" class="m-0 mt-5 text-[15px] text-strong">
+            A station groups bays under one name that riders look for, like Newport Transit Center.
+          </p>
+          <p id="stops-map-station-keeps" class="m-0 mt-2 text-sm">
+            This stop becomes the station&rsquo;s first bay. It keeps ID {@stop.stop_id} and its sign
+            number, so its {station_trips_text(@usage)} stay as they are.
+          </p>
+
+          <div :if={@refusal} id="stops-map-station-refused" class="mt-5">
+            <.message
+              kind="warning"
+              role="status"
+              title="This stop is already part of a station"
+              id="stops-map-station-refused-message"
+            >
+              {@refusal}
+            </.message>
+          </div>
+
+          <div :if={@errors != %{}} id="stops-map-station-errors" class="mt-5">
+            <.message
+              kind="error"
+              title="Fix this to create the station"
+              id="stops-map-station-errors-message"
+            >
+              <ul class="m-0 list-disc pl-5">
+                <li :for={{field, message} <- station_error_rows(@errors)}>
+                  <a
+                    href={"#stops-map-station-#{field}"}
+                    class="font-semibold text-error-fg underline"
+                  >
+                    {message}
+                  </a>
+                </li>
+              </ul>
+            </.message>
+          </div>
+
+          <.form
+            :if={is_nil(@refusal)}
+            for={@form}
+            id="stops-map-station-form"
+            phx-change="station_field"
+            phx-submit="create_station"
+          >
+            <div class="mt-6 grid gap-5">
+              <div>
+                <label for="stops-map-station-name" class="block text-sm font-semibold text-strong">
+                  Station name
+                </label>
+                <.input
+                  field={@form[:station_name]}
+                  id="stops-map-station-name"
+                  type="text"
+                  autocomplete="off"
+                  class={text_input_class(Map.has_key?(@errors, "station_name"))}
+                />
+                <p
+                  :if={@landmark}
+                  id="stops-map-station-landmark"
+                  class="m-0 mt-1 text-[13px] text-muted"
+                >
+                  Suggested from the nearest landmark, {@landmark}.
+                </p>
+                <p :if={is_nil(@landmark)} class="m-0 mt-1 text-[13px] text-muted">
+                  Use the name riders look for.
+                </p>
+              </div>
+
+              <div>
+                <label for="stops-map-station-bay" class="block text-sm font-semibold text-strong">
+                  This stop&rsquo;s bay
+                </label>
+                <.input
+                  field={@form[:platform_code]}
+                  id="stops-map-station-bay"
+                  type="text"
+                  autocomplete="off"
+                  class="h-11 w-full max-w-[120px] rounded-control border border-control px-3 font-mono text-[15px]"
+                />
+                <p id="stops-map-station-bay-note" class="m-0 mt-1 text-[13px] text-muted">
+                  Its name becomes {bay_name_preview(@form)}. Add the other bays on the station page.
+                </p>
+              </div>
+            </div>
+          </.form>
+        </div>
+      </div>
+
+      <div class="border-t border-subtle px-5 py-4">
+        <div class="flex flex-wrap items-center gap-3">
+          <button
+            id="stops-map-station-cancel"
+            type="button"
+            phx-click="back_to_edit"
+            disabled={@saving?}
+            class="inline-flex min-h-11 items-center rounded-control border border-control bg-white px-4 text-sm font-semibold text-strong hover:bg-canvas disabled:opacity-70"
+          >
+            Cancel
+          </button>
+          <.button
+            :if={is_nil(@refusal)}
+            id="stops-map-station-go"
+            type="submit"
+            form="stops-map-station-form"
+            disabled={@saving?}
+            class="ml-auto min-h-11"
+          >
+            {if @saving?, do: "Creating…", else: "Create station"}
+          </.button>
+        </div>
+      </div>
+    </aside>
+    """
+  end
+
+  @doc """
   The replace panel: which stop to keep, what moving everything to it changes,
   and the one button that does it.
 
@@ -3259,8 +3432,29 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
     "Station · ID #{stop.stop_id} · #{stop.bay_count} #{pluralize(stop.bay_count, "bay")}"
   end
 
+  defp edit_subtitle(%{parent_station: parent} = stop) when is_binary(parent) and parent != "" do
+    "Bay · ID #{stop.stop_id} · #{stationable_parent_name(stop)}"
+  end
+
   defp edit_subtitle(%{routes: []} = stop), do: "Stop · ID #{stop.stop_id} · Not served"
   defp edit_subtitle(stop), do: "Stop · ID #{stop.stop_id}"
+
+  # A bay names its station, because that is the name a rider looks for and the
+  # only one the panel can read from the stop itself.
+  defp stationable_parent_name(%{parent_name: name}) when is_binary(name) and name != "", do: name
+  defp stationable_parent_name(stop), do: stop.parent_station
+
+  # A stop that is already a bay, or already a station, is not offered the
+  # operation: the command refuses it and the panel would open to say so.
+  defp station_offerable?(stop) do
+    stop.location_type == 0 and is_nil(stop.parent_station) and station_reachable?(stop)
+  end
+
+  # A stop the map cannot place is a stop with no coordinates, and a station
+  # made beside it would be placed nowhere.
+  defp station_reachable?(%{point: {lat, lon}}), do: is_number(lat) and is_number(lon)
+
+  defp station_reachable?(_stop), do: false
 
   defp pluralize(1, word), do: word
   defp pluralize(_count, word), do: word <> "s"
@@ -3315,6 +3509,47 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
 
   # The summary lists errors in the order the fields appear on the form, so the
   # first link is the first field the reader reaches going down the panel.
+  # What the operation keeps working, in the units an editor thinks in: the
+  # trips that already call here, read from the usage the panel already holds.
+  defp station_trips_text(%{blocking: blocking}) do
+    case Enum.find(blocking, &(&1.key == :route_pattern_stops)) do
+      %{details: details} when details != [] ->
+        trips = details |> Enum.map(& &1.weekday_trips) |> Enum.sum()
+
+        served = count_word(trips, "weekday trip", "weekday trips")
+
+        if trips == 0,
+          do: "transfer rule and fare zone",
+          else: "#{served}, transfer rule and fare zone"
+
+      _unused ->
+        "transfer rule and fare zone"
+    end
+  end
+
+  defp station_trips_text(_usage), do: "transfer rule and fare zone"
+
+  # The name the bay will carry, written out from the two fields as they are
+  # typed, because that is the change the command makes besides the parent.
+  defp bay_name_preview(form) do
+    name = Form.input_value(form, :station_name)
+    bay = Form.input_value(form, :platform_code)
+
+    ~s("#{name}, Bay #{bay}")
+  end
+
+  # The station form has its own two fields, so it names them rather than
+  # borrowing the add panel's list: a message about a field that is not on this
+  # form would send the editor looking for an input that is not there.
+  defp station_error_rows(errors) do
+    Enum.flat_map(~w(station_name platform_code), fn field ->
+      case Map.fetch(errors, field) do
+        {:ok, {_short, message}} -> [{field, message}]
+        :error -> []
+      end
+    end)
+  end
+
   defp summary_errors(errors) do
     Enum.flat_map(~w(location name desc stop_id lat lon), fn field ->
       case Map.fetch(errors, field) do

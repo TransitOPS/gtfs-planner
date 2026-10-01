@@ -1686,6 +1686,61 @@ test("replacing a stop @replace", async ({ page }, testInfo) => {
   await captureReference(page, testInfo, "replace", "review", "replace-ref-");
 });
 
+test("making a stop a station @station", async ({ page }, testInfo) => {
+  test.setTimeout(300_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+
+  await page.goto(`/gtfs/${versionId}/stops/map?stop=1433`);
+  await waitForLiveView(page);
+  await waitForMapReady(page);
+
+  await page.locator("#stops-map-edit-more").click();
+  await page.locator("#stops-map-edit-station").click();
+
+  await expect(page.locator("#stops-map-station-panel")).toBeAttached();
+  await expect(page.locator("#stops-map-station-heading")).toHaveText(
+    "Make US 101 & SE 1st St a station",
+  );
+
+  // The name the editor has to agree with or change, never to supply from
+  // nothing, and the reason they can agree to it: the stop keeps its ID.
+  await expect(page.locator("#stops-map-station-bay")).toHaveValue("A");
+  await expect(page.locator("#stops-map-station-keeps")).toContainText(
+    "keeps ID 1433",
+  );
+
+  // The seed's amenity is 42 m from the point, so it is suggested and it
+  // pre-fills the field the editor has not typed in — and the
+  // suggestion says it came from a landmark, so an editor can see it is one and
+  // not the answer. The name field itself keeps the stop's own name until the
+  // editor takes the suggestion: a suggestion that silently overwrites what was
+  // typed would be an edit nobody made.
+  await expect(page.locator("#stops-map-station-landmark")).toContainText(
+    "Suggested from the nearest landmark",
+  );
+  await expect(page.locator("#stops-map-station-landmark")).toContainText(
+    "Cedar Valley Transit Center",
+  );
+  await expect(page.locator("#stops-map-station-name")).toHaveValue(
+    "Cedar Valley Transit Center",
+  );
+
+  // The panel is the journey's subject; the write it makes is proven in ExUnit,
+  // which reads the station and the bay back out of the rows.
+  await captureBoth(page, testInfo, "panel", "station-panel-");
+  await captureReference(
+    page,
+    testInfo,
+    "make-station",
+    "panel",
+    "station-ref-",
+  );
+});
+
 // A pointer drag on the pin. The hook reports one move per gesture, on pointer
 // up, so the drag is a down, a move and a release — never a click.
 async function dragPinBy(page, dx, dy) {

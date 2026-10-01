@@ -58,6 +58,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       move_review_panel: 1,
       delete_panel: 1,
       replace_panel: 1,
+      station_panel: 1,
       map_stage: 1,
       page_header: 1,
       search_field: 1,
@@ -105,6 +106,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # many it shows. A replace is a question about the same place, so the radius
   # is the one a rider would call the same place; the count is the prototype's
   # and keeps the list inside one screen at 390 px.
+  @landmark_metres 90.0
   @replace_candidate_metres 260.0
   @replace_candidate_limit 4
 
@@ -192,6 +194,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     |> assign_move_state()
     |> assign_delete_state()
     |> assign_replace_state()
+    |> assign_station_state()
     |> assign(:discard_action, nil)
     |> assign_edit_draft(empty_edit_draft())
   end
@@ -207,6 +210,21 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     |> assign(:delete_loading?, false)
     |> assign(:delete_saving?, false)
     |> assign(:delete_outcome, :none)
+  end
+
+  # Everything the make-station panel owns. The form is a `to_form/2` over the
+  # two fields the command casts, so a value the browser invents beyond them
+  # cannot reach it (INV-5).
+  defp assign_station_state(socket) do
+    socket
+    |> assign(:station_draft, nil)
+    |> assign(:station_form, nil)
+    |> assign(:station_errors, %{})
+    |> assign(:station_landmark, nil)
+    |> assign(:station_refusal, nil)
+    |> assign(:station_loading?, false)
+    |> assign(:station_saving?, false)
+    |> assign(:station_refusal, nil)
   end
 
   # Everything the replace panel owns. The chosen stop is a GTFS ID because that
@@ -677,6 +695,55 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
   # A refusal is not a failure: the panel shows the words and offers nothing to
   # press, because the command would refuse the same choice again.
+  def handle_async({:landmark, token}, {:ok, {:ok, places}}, socket) do
+    if socket.assigns.place_token == token do
+      socket =
+        socket
+        |> assign(:station_loading?, false)
+        |> put_station_landmark(places)
+
+      {:noreply, socket}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_async({:landmark, _token}, _result, socket) do
+    # A landmark is a convenience. When the lookup fails the field keeps the
+    # stop's own name, which is always a usable starting point.
+    {:noreply, assign(socket, :station_loading?, false)}
+  end
+
+  def handle_async(:station_create, {:ok, {:ok, %{station: station, stop: bay}}}, socket) do
+    socket =
+      socket
+      |> assign_station_state()
+      |> put_flash(:info, "#{station.stop_name} is a station, and #{bay.stop_name} is its bay.")
+      |> then(fn closed -> open_edit(closed, bay.stop_id) end)
+      |> assign(:selected_stop_id, bay.stop_id)
+      |> start_load()
+
+    {:noreply, socket}
+  end
+
+  def handle_async(:station_create, {:ok, {:error, reason}}, socket) do
+    # The refusals say which part of the feed already answered the question,
+    # and the panel stays open with the draft so a refusal costs no typing.
+    {:noreply,
+     socket
+     |> assign(:station_saving?, false)
+     |> assign(:station_refusal, station_refusal_text(reason))}
+  end
+
+  def handle_async(:station_create, _result, socket) do
+    {:noreply,
+     socket
+     |> assign(:station_saving?, false)
+     |> assign(:station_refusal, "The station could not be created. Nothing was changed.")}
+  end
+
+  # A stop the feed has already answered for is refused as the panel opens: the
+  # form is not shown, because there is nothing to type.
   def handle_async(:replace_review, {:ok, {:ok, review}}, socket) do
     {:noreply,
      socket
@@ -820,6 +887,139 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     end
   end
 
+  # The panel opens on the editor's own stop, a station name it can already
+  # read (the stop's name), and a bay letter of A. The landmark lookup runs
+  # beside it: it can replace the name with something riders know the corner
+  # by, but it is a suggestion, so an empty answer leaves the field usable.
+  defp start_make_station_panel(socket) do
+    case socket.assigns.edit_stop do
+      nil ->
+        socket
+
+      stop ->
+        socket =
+          socket
+          |> assign(:panel, :station)
+          |> assign(:station_draft, station_draft(stop))
+          |> assign(:station_form, to_form(station_draft(stop), as: :station))
+          |> assign(:station_saving?, false)
+          |> assign(:station_refusal, nil)
+          |> assign(:station_landmark, nil)
+
+        maybe_start_landmark(socket, stop)
+    end
+  end
+
+  # A stop that is already a bay, or already a station, is refused by the
+  # command itself and the panel says so as it opens rather than after a press:
+  # the editor has asked for something the feed already says.
+  defp stationable?(stop) do
+    is_nil(stop.parent_station) and stop.location_type == 0
+  end
+
+  defp station_draft(stop) do
+    %{"station_name" => stop.name, "platform_code" => "A"}
+  end
+
+  defp maybe_start_landmark(socket, %{point: {lat, lon}})
+       when is_number(lat) and is_number(lon) do
+    token = socket.assigns.place_token + 1
+
+    socket
+    |> assign(:place_token, token)
+    |> assign(:station_loading?, true)
+    |> start_async({:landmark, token}, fn ->
+      Geocoding.reverse(lat, lon, amenities: true, only: :amenity)
+    end)
+  end
+
+  defp maybe_start_landmark(socket, _stop), do: assign(socket, :station_loading?, false)
+
+  # The posted form is merged over the draft field by field, so a field the
+  # browser did not send keeps the value it had. A field it did send wins even
+  # when it is empty: clearing the name is an edit, and a merge that treated a
+  # blank as "unchanged" would make the field impossible to clear.
+  @station_fields ["station_name", "platform_code"]
+
+  defp station_draft_merge(draft, params) do
+    Enum.reduce(@station_fields, draft, fn field, acc ->
+      case Map.fetch(params, field) do
+        {:ok, value} -> Map.put(acc, field, value)
+        :error -> acc
+      end
+    end)
+  end
+
+  defp change_station_field(socket, params) do
+    draft = station_draft_merge(socket.assigns.station_draft || %{}, params)
+
+    assign(socket,
+      station_draft: draft,
+      station_form: to_form(draft, as: :station),
+      station_refusal: nil
+    )
+  end
+
+  # The write is the command's own transaction (INV-2): the station and the bay
+  # that names it are written together, or neither is.
+  defp start_make_station(socket, params) do
+    draft = station_draft_merge(socket.assigns.station_draft || %{}, params)
+    errors = station_errors(socket.assigns, draft)
+
+    case {socket.assigns.edit_stop, errors} do
+      # The draft is checked against the form's own fields before the stop is
+      # looked at, so a blank name is refused in the panel whether or not the
+      # stop is one this command could write.
+      {_, %{"station_name" => _} = field_errors} ->
+        station_refused(socket, draft, field_errors)
+
+      {nil, _no_errors} ->
+        socket
+
+      {stop, _} ->
+        audit = audit_context(socket.assigns)
+
+        socket =
+          socket
+          |> assign(:station_draft, draft)
+          |> assign(:station_form, to_form(draft, as: :station))
+          |> assign(:station_errors, %{})
+          |> assign(:station_saving?, true)
+          |> assign(:station_refusal, nil)
+
+        start_async(socket, :station_create, fn ->
+          StopEditing.make_station(stop.uuid, draft, audit)
+        end)
+    end
+  end
+
+  defp station_refused(socket, draft, errors) do
+    assign(socket,
+      station_draft: draft,
+      station_form: to_form(draft, as: :station),
+      station_errors: errors
+    )
+  end
+
+  defp station_errors(assigns, draft) do
+    name = draft["station_name"] |> to_string() |> String.trim()
+
+    case stationable?(assigns.edit_stop) do
+      false ->
+        %{
+          "station_name" =>
+            {"This stop is already part of a station.", "This stop is already part of a station."}
+        }
+
+      true ->
+        if name == "" do
+          %{"station_name" => {"is required", "Enter the name riders look for the station by."}}
+        else
+          %{}
+        end
+    end
+  end
+
   defp replace_candidates(%{model: model}, stop_id) when is_map(model) do
     case stop_point(model, stop_id) do
       nil ->
@@ -911,6 +1111,64 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     end
   end
 
+  # The first place within the radius is the name to start from; further ones
+  # are the editor's to type. A station named after a landmark a block away is a
+  # worse starting point than the stop's own name.
+  defp put_station_landmark(socket, places) when is_list(places) do
+    case Enum.find(places, &(is_number(&1.distance_m) and &1.distance_m <= @landmark_metres)) do
+      nil ->
+        assign(socket, :station_landmark, nil)
+
+      place ->
+        socket
+        |> assign(:station_landmark, place.name)
+        |> prefill_station_name(socket.assigns.edit_stop, place.name)
+    end
+  end
+
+  defp put_station_landmark(socket, _places), do: assign(socket, :station_landmark, nil)
+
+  # The suggestion lands in the field the editor has not typed in. A name they
+  # have already written is theirs, and a landmark that overwrote it would be an
+  # edit nobody made.
+  defp prefill_station_name(socket, %{name: name}, landmark) do
+    case socket.assigns.station_draft do
+      %{"station_name" => ^name} = draft ->
+        draft = Map.put(draft, "station_name", landmark)
+
+        socket
+        |> assign(:station_draft, draft)
+        |> assign(:station_form, to_form(draft, as: :station))
+
+      _typed ->
+        socket
+    end
+  end
+
+  defp prefill_station_name(socket, _stop, _landmark), do: socket
+
+  defp station_refusal_for(%{station_refusal: refusal}) when is_binary(refusal), do: refusal
+
+  defp station_refusal_for(%{edit_stop: stop}) when is_map(stop) do
+    if stationable?(stop), do: nil, else: station_refusal_text(child_or_children(stop))
+  end
+
+  defp station_refusal_for(_assigns), do: nil
+
+  defp child_or_children(%{parent_station: parent}) when is_binary(parent) and parent != "",
+    do: :child
+
+  defp child_or_children(_stop), do: :has_children
+
+  defp station_refusal_text(:child),
+    do: "This stop is already a bay of a station, and a bay cannot become a station."
+
+  defp station_refusal_text(:has_children),
+    do: "This stop already has bays, so it is a station already."
+
+  defp station_refusal_text(_reason),
+    do: "The station could not be created. Nothing was changed."
+
   defp replaced_message(nil, _new), do: "The references were moved."
 
   defp replaced_message(old, new), do: "What used #{old.name} now uses #{new.stop_name}."
@@ -998,6 +1256,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   defp guard_edit(socket, {:replace}),
     do: socket |> assign_replace_state() |> start_replace()
 
+  defp guard_edit(socket, {:station}),
+    do: socket |> assign_station_state() |> start_make_station_panel()
+
   defp guard_edit(socket, _action), do: socket
 
   defp close_edit(socket) do
@@ -1011,6 +1272,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     |> assign(:edit_conflict, nil)
     |> assign(:edit_usage, nil)
     |> assign_edit_state()
+    |> assign_station_state()
   end
 
   # --- saving ---------------------------------------------------------------
@@ -1344,6 +1606,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
      |> assign(:move_outcome, :none)
      |> assign_delete_state()
      |> assign_replace_state()
+     |> assign_station_state()
      |> push_map_mode()}
   end
 
@@ -1377,6 +1640,20 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   def handle_event("apply_replace", _params, socket) do
     {:noreply, start_replace_apply(socket)}
   end
+
+  def handle_event("start_make_station", _params, socket) do
+    {:noreply, guard_edit(socket, {:station})}
+  end
+
+  def handle_event("station_field", %{"station" => params}, socket),
+    do: {:noreply, change_station_field(socket, params)}
+
+  def handle_event("station_field", _params, socket), do: {:noreply, socket}
+
+  def handle_event("create_station", %{"station" => params}, socket),
+    do: {:noreply, start_make_station(socket, params)}
+
+  def handle_event("create_station", _params, socket), do: {:noreply, socket}
 
   def handle_event("save_move", _params, socket) do
     {:noreply, start_apply_move(socket)}
@@ -1804,6 +2081,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       {:ok, stop} ->
         socket
         |> assign_edit_stop(stop)
+        |> load_parent_name(stop)
         |> start_edit_usage(stop)
         |> push_map_mode()
         |> push_focus(stop_point(socket.assigns.model, stop.stop_id))
@@ -1898,6 +2176,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       desc: stop.stop_desc,
       location_type: stop.location_type,
       parent_station: stop.parent_station,
+      parent_name: parent_station_name(model, stop.parent_station),
+      point: stop_point(model, stop.stop_id),
       zone_id: stop.zone_id,
       level_id: stop.level_id,
       href: ~p"/gtfs/#{assigns.current_gtfs_version.id}/stops/#{stop.stop_id}",
@@ -1906,6 +2186,46 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       bay_count: length(bays)
     }
   end
+
+  # A bay's subtitle names its station, and the model read that loaded the page
+  # does not have a station written after it. One read for the one row the
+  # subtitle would otherwise have to fall back to naming by ID.
+  defp load_parent_name(socket, %{parent_station: parent})
+       when is_binary(parent) and parent != "" do
+    case socket.assigns.edit_stop do
+      %{parent_name: name} when is_binary(name) -> socket
+      _missing -> put_parent_name(socket, parent)
+    end
+  end
+
+  defp load_parent_name(socket, _stop), do: socket
+
+  defp put_parent_name(socket, parent) do
+    case StopsMap.load_stop(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           parent
+         ) do
+      {:ok, station} ->
+        assign(
+          socket,
+          :edit_stop,
+          Map.put(socket.assigns.edit_stop, :parent_name, station.stop_name)
+        )
+
+      _unavailable ->
+        socket
+    end
+  end
+
+  defp parent_station_name(model, parent) when is_binary(parent) and parent != "" do
+    case Enum.find(model.stops, &(&1.stop_id == parent)) do
+      nil -> nil
+      station -> station.name
+    end
+  end
+
+  defp parent_station_name(_model, _parent), do: nil
 
   defp bays_of(model, %{location_type: 1} = stop) do
     model.stops
@@ -2910,60 +3230,74 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
                 <% end %>
               <% end %>
             <% else %>
-              <%= if @panel == :created do %>
-                <.created_panel
-                  id="stops-map-created-panel"
-                  stop={@created_stop}
-                  version_name={@current_gtfs_version.name}
+              <%= if @panel == :station do %>
+                <.station_panel
+                  id="stops-map-station-panel"
+                  stop={@edit_stop}
+                  form={@station_form}
+                  usage={@edit_usage}
+                  landmark={@station_landmark}
+                  loading?={@station_loading?}
+                  errors={@station_errors}
+                  refusal={station_refusal_for(assigns)}
+                  saving?={@station_saving?}
                 />
               <% else %>
-                <.browse_panel
-                  id="stops-map-panel"
-                  title={panel_title(assigns)}
-                  subtitle={panel_subtitle(assigns)}
-                >
-                  <div class="px-5">
-                    <.search_field
-                      id="stops-map-search"
-                      form={@search_form}
-                      label="Find a stop, street or place"
-                      placeholder="Name, stop ID or cross street"
-                    />
-                  </div>
-
-                  <%= if @stops_state == :loading do %>
-                    <div id="stops-map-panel-loading" role="status">
-                      <span class="sr-only">Loading stops&hellip;</span>
-                      <.browse_panel_loading id="stops-map-skeleton" />
+                <%= if @panel == :created do %>
+                  <.created_panel
+                    id="stops-map-created-panel"
+                    stop={@created_stop}
+                    version_name={@current_gtfs_version.name}
+                  />
+                <% else %>
+                  <.browse_panel
+                    id="stops-map-panel"
+                    title={panel_title(assigns)}
+                    subtitle={panel_subtitle(assigns)}
+                  >
+                    <div class="px-5">
+                      <.search_field
+                        id="stops-map-search"
+                        form={@search_form}
+                        label="Find a stop, street or place"
+                        placeholder="Name, stop ID or cross street"
+                      />
                     </div>
-                  <% else %>
-                    <%= if @model == nil or @model.stops == [] do %>
-                      <.first_use_panel id="stops-map-first-use" version={@current_gtfs_version} />
+
+                    <%= if @stops_state == :loading do %>
+                      <div id="stops-map-panel-loading" role="status">
+                        <span class="sr-only">Loading stops&hellip;</span>
+                        <.browse_panel_loading id="stops-map-skeleton" />
+                      </div>
                     <% else %>
-                      <%!-- A search replaces the list rather than sitting above it:
+                      <%= if @model == nil or @model.stops == [] do %>
+                        <.first_use_panel id="stops-map-first-use" version={@current_gtfs_version} />
+                      <% else %>
+                        <%!-- A search replaces the list rather than sitting above it:
                         forty rows under a result set is a page an editor has to
                         scroll past to see what they searched for. --%>
-                      <%= if @search_query == "" do %>
-                        <%= if panel_checks(assigns) != [] do %>
-                          <.checks_disclosure
-                            id="stops-map-checks"
-                            checks={panel_checks(assigns)}
-                            open?={@checks_open}
+                        <%= if @search_query == "" do %>
+                          <%= if panel_checks(assigns) != [] do %>
+                            <.checks_disclosure
+                              id="stops-map-checks"
+                              checks={panel_checks(assigns)}
+                              open?={@checks_open}
+                            />
+                          <% end %>
+                          <.stop_list id="stops-map-list" stops={panel_rows(assigns)} />
+                        <% else %>
+                          <.search_results
+                            id="stops-map-search-results"
+                            query={@search_query}
+                            stops={@search_stops}
+                            places={@search_places}
+                            unavailable?={@search_unavailable?}
                           />
                         <% end %>
-                        <.stop_list id="stops-map-list" stops={panel_rows(assigns)} />
-                      <% else %>
-                        <.search_results
-                          id="stops-map-search-results"
-                          query={@search_query}
-                          stops={@search_stops}
-                          places={@search_places}
-                          unavailable?={@search_unavailable?}
-                        />
                       <% end %>
                     <% end %>
-                  <% end %>
-                </.browse_panel>
+                  </.browse_panel>
+                <% end %>
               <% end %>
             <% end %>
           <% end %>

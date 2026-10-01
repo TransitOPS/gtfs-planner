@@ -96,6 +96,11 @@ defmodule GtfsPlanner.Geocoding.Geoapify do
   stands on; `:amenities` is a second request for the candidates the stop editor
   offers alongside it, not a replacement.
 
+  `only: :amenity` asks for the amenities alone, with no street request behind
+  it. A station is a place riders look for rather than a kerb, so its name is
+  the landmark's and never the street's; asking for both and picking one would
+  be a rule in the caller that the adapter already knows the difference for.
+
   The API key is read per call and never returned in an error term: a 500 or a
   transport failure is reported by status or as `:network_error`, so a key that
   has reached an error tuple or a log line is a leak.
@@ -107,10 +112,18 @@ defmodule GtfsPlanner.Geocoding.Geoapify do
     if is_nil(api_key) do
       {:error, :api_key_missing}
     else
-      with {:ok, streets} <- reverse_pass(lat, lon, "street", api_key, opts),
+      with {:ok, streets} <- maybe_reverse_streets(lat, lon, api_key, opts),
            {:ok, amenities} <- maybe_reverse_amenities(lat, lon, api_key, opts) do
         {:ok, streets ++ amenities}
       end
+    end
+  end
+
+  defp maybe_reverse_streets(lat, lon, api_key, opts) do
+    if Keyword.get(opts, :only) == :amenity do
+      {:ok, []}
+    else
+      reverse_pass(lat, lon, "street", api_key, opts)
     end
   end
 

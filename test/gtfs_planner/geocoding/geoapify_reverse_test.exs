@@ -178,6 +178,31 @@ defmodule GtfsPlanner.Geocoding.GeoapifyReverseTest do
     end
   end
 
+  describe "only: :amenity" do
+    # One request, not two: the street pass is skipped rather than run and
+    # discarded, because a request the caller will not use is a key's worth of
+    # quota spent on nothing. `Req.Test.expect/3` with a count of one fails the
+    # test if a second request arrives, which is how that is checked.
+    test "asks for the amenities and never for the streets" do
+      Req.Test.expect(@owner, fn conn ->
+        assert conn.query_params["type"] == "amenity"
+
+        Req.Test.json(conn, amenity_feature())
+      end)
+
+      assert {:ok, [amenity]} = Geoapify.reverse(@lat, @lon, amenities: true, only: :amenity)
+      assert amenity.name == "Cleo's Marina"
+    end
+
+    test "without :amenities the amenity pass is not made at all" do
+      Req.Test.expect(@owner, fn conn ->
+        Req.Test.json(conn, amenity_feature())
+      end)
+
+      assert {:ok, []} = Geoapify.reverse(@lat, @lon, only: :amenity)
+    end
+  end
+
   describe "failures" do
     test "a 500 is an api_error carrying the status" do
       Req.Test.stub(@owner, fn conn ->
