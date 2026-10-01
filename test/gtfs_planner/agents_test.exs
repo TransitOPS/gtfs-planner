@@ -32,6 +32,7 @@ defmodule GtfsPlanner.AgentsTest do
   alias GtfsPlanner.Agents.Packs.Calendars
   alias GtfsPlanner.Agents.Packs.Connections
   alias GtfsPlanner.Agents.Packs.DatedChanges
+  alias GtfsPlanner.Agents.Packs.FlexPolicy
   alias GtfsPlanner.Agents.Packs.InSeat
   alias GtfsPlanner.Agents.Packs.Runs
   alias GtfsPlanner.Agents.Packs.ServiceQueries
@@ -65,6 +66,7 @@ defmodule GtfsPlanner.AgentsTest do
                "connections" => Connections,
                "dated_changes" => DatedChanges,
                "feed_quality" => GtfsPlanner.Agents.Packs.FeedQuality,
+               "flex_policy" => FlexPolicy,
                "in_seat" => InSeat,
                "runs" => Runs,
                "service_queries" => ServiceQueries,
