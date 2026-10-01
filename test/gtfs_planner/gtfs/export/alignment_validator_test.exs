@@ -57,12 +57,14 @@ defmodule GtfsPlanner.Gtfs.Export.AlignmentValidatorTest do
     version = gtfs_version_fixture(organization.id)
     seed_feed(organization.id, version.id)
 
+    actor = editor_fixture(organization)
+
     audit = %AuditContext{
       organization_id: organization.id,
       gtfs_version_id: version.id,
       station_stop_id: nil,
-      actor_id: Ecto.UUID.generate(),
-      actor_email: "align-validator@example.com"
+      actor_id: actor.id,
+      actor_email: actor.email
     }
 
     draw_loop!(organization, version, audit)

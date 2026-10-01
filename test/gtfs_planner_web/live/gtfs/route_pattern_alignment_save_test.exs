@@ -83,12 +83,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentSaveTest do
   end
 
   defp audit(organization, version) do
+    actor = editor_fixture(organization)
+
     %AuditContext{
       organization_id: organization.id,
       gtfs_version_id: version.id,
       station_stop_id: nil,
-      actor_id: Ecto.UUID.generate(),
-      actor_email: "align-save@example.com"
+      actor_id: actor.id,
+      actor_email: actor.email
     }
   end
 
@@ -581,7 +583,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentSaveTest do
       refute save_open?(view)
     end
 
-    test "a revoked editor is halted and writes nothing", %{
+    test "a revoked editor cannot directly save an alignment draft", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -601,6 +603,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentSaveTest do
       render_hook(view, "alignment_save_requested", save_params(draft))
 
       assert has_element?(view, "#pattern-editor-revoked")
+      assert has_element?(view, "#alignment-save-notice", "Your draft is still here")
       assert segments_count(organization, version) == 0
     end
   end

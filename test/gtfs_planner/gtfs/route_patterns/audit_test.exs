@@ -19,7 +19,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
     route = route_fixture(organization.id, version.id)
-    actor = user_fixture()
+    actor = editor_fixture(organization)
 
     audit = %AuditContext{
       organization_id: organization.id,
@@ -71,10 +71,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
            }).valid?
   end
 
-  test "an invalid actor-bound audit prevents the pattern mutation from committing", context do
+  test "an invalid actor is forbidden before the pattern mutation", context do
     bad_audit = %{context.audit | actor_id: nil}
 
-    assert {:error, %Ecto.Changeset{}} =
+    assert {:error, :forbidden} =
              Gtfs.create_pattern(context.route.route_id, attrs(context.stops), bad_audit)
 
     refute Repo.exists?(

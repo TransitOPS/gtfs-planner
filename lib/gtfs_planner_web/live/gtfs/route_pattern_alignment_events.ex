@@ -1936,6 +1936,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
       {:error, :stale_review} -> save_notice(assign_applying(socket, false), :stale_review)
       {:error, {:blocked, blockers}} -> handle_apply_blocked(socket, draft, blockers)
       {:error, :busy} -> save_notice(assign_applying(socket, false), :busy)
+      {:error, :forbidden} ->
+        socket
+        |> assign_applying(false)
+        |> Component.assign(:editor_revoked?, true)
+        |> save_notice(
+          {:error,
+           "You no longer have editor access to this organization. Your draft is still here."}
+        )
       {:error, _reason} -> save_notice(assign_applying(socket, false), :save_error)
     end
   end

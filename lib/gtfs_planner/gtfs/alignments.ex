@@ -26,6 +26,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
   import Ecto.Query
 
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.Alignments.Draft
   alias GtfsPlanner.Gtfs.Alignments.Materializer
   alias GtfsPlanner.Gtfs.AlignmentSegment
@@ -2325,6 +2326,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
           {:ok, review()}
           | {:error,
              :not_found
+             | :forbidden
              | :stale_stops
              | :invalid_input
              | {:conflict, [section()]}
@@ -2948,6 +2950,8 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   defp apply_retryable?(_), do: false
 
   defp apply_transaction(pattern_id, draft_params, choices, fingerprint, audit_context) do
+    Authorization.lock_editor!(audit_context)
+
     case compute_review(pattern_id, draft_params, audit_context) do
       {:error, reason} ->
         Repo.rollback(reason)

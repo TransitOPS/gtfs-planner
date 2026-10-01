@@ -24,7 +24,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.MutationsTest do
 
     version = gtfs_version_fixture(organization.id)
     route = route_fixture(organization.id, version.id)
-    actor = user_fixture()
+    actor = editor_fixture(organization)
 
     %{
       organization: organization,

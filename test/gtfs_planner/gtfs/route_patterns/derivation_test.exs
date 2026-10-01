@@ -35,7 +35,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
       })
 
     version = gtfs_version_fixture(organization.id)
-    actor = user_fixture()
+    actor = editor_fixture(organization)
 
     %{
       organization: organization,

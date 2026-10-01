@@ -1704,8 +1704,11 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   `operation_id` and all written trip UUIDs. Returns the written changes in
   input order.
 
-  Call only inside the caller's transaction that holds the published route lock
-  (the lock `RoutePatterns.lock_published_route!/2` takes). The function opens
+  Call only inside an editor transaction that already locked current membership,
+  the published route and pattern. The production callers are
+  `RoutePatterns.write_selection!/2` and `undo_headsign_write!/3`, reached from
+  its early-authorized public writers. This transaction guard and the audit
+  context are not permission checks. The function opens
   no transaction of its own: every rollback, including an audit failure, rolls
   back the caller's transaction, so the trip writes and their audit rows commit
   together or not at all.
@@ -1713,6 +1716,9 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   @spec write_trip_headsigns!([change()], Ecto.UUID.t(), AuditContext.t()) :: [change()]
   def write_trip_headsigns!(changes, operation_id, %AuditContext{} = audit_context)
       when is_list(changes) and is_binary(operation_id) do
+    unless Repo.in_transaction?(),
+      do: raise(ArgumentError, "write_trip_headsigns! requires an authorized transaction")
+
     organization_id = audit_context.organization_id
     version_id = audit_context.gtfs_version_id
     changes = Enum.uniq_by(changes, & &1.id)
@@ -1969,7 +1975,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
   Writes share one `operation_id`. Removals go through `remove_locked_trips!/3`
   with one `'deleted'` audit per removed trip; pending timings are created via
-  `RoutePatterns.create_pasted_timing!/5` before the `:change` trips that
+  `RoutePatterns.create_pasted_timing!/6` before the `:change` trips that
   reference them, and each changed trip keeps its `trip_id` while its times
   are rematerialized (or its stop times re-inserted when its stop count
   differs) with one `'updated'` audit carrying the before/after
@@ -2589,7 +2595,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
   # GTFS reads an absent pickup/drop as 0; normalize nil here so the add
   # path never stores nil next to the 0s RowResolver keys and
-  # `create_pasted_timing!/5` stores (coordinator note on e8e2cefe).
+  # `create_pasted_timing!/6` stores (coordinator note on e8e2cefe).
   defp normalize_paste_timing_rows(rows) do
     Enum.map(rows, fn row when is_map(row) ->
       pickup = attr(row, :pickup_type)

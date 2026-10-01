@@ -14,6 +14,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.ExportRoundTripTest do
   use ExUnit.Case
 
   import Ecto.Query
+  import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -246,12 +247,14 @@ defmodule GtfsPlanner.Gtfs.Alignments.ExportRoundTripTest do
       stop_time_fixture(org.id, version.id, trip_id, "E", %{stop_sequence: 2})
     end
 
+    actor = editor_fixture(org)
+
     audit = %AuditContext{
       organization_id: org.id,
       gtfs_version_id: version.id,
       station_stop_id: nil,
-      actor_id: Ecto.UUID.generate(),
-      actor_email: "align-export@example.com"
+      actor_id: actor.id,
+      actor_email: actor.email
     }
 
     loop_pattern = Repo.reload!(loop_pattern)

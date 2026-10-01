@@ -24,6 +24,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
   import Ecto.Query
 
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
@@ -86,10 +87,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   A route-local failure is non-fatal: its bounded reason is persisted on the
   route row and the remaining routes continue. Trips whose `route_id` has no
   route row are classified custom in a separate scoped pass instead of creating a
-  fictional route.
+  fictional route. Editor-provenance batch writes use the same reviewed
+  transaction boundary as a single-route derivation.
   """
   @spec derive_version(Ecto.UUID.t(), Ecto.UUID.t(), provenance()) ::
-          {:ok, version_summary()}
+          {:ok, version_summary()} | {:error, atom() | term()}
   def derive_version(organization_id, version_id, provenance) do
     provenance = normalize_provenance!(provenance)
 
@@ -111,28 +113,71 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
         &(&1 not in existing)
       )
 
-    missing_custom = classify_missing_routes(organization_id, version_id, missing_routes)
+    missing_result =
+      if missing_routes == [] do
+        {:ok, 0}
+      else
+        run_batch_write(
+          fn -> classify_missing_routes(organization_id, version_id, missing_routes) end,
+          organization_id,
+          version_id,
+          provenance
+        )
+      end
 
-    {summaries, failed_routes} =
-      present_routes
-      |> Enum.sort()
-      |> Enum.reduce({[], []}, fn route_id, {summaries, failed} ->
-        case derive_route(organization_id, version_id, route_id, provenance) do
-          {:ok, summary} ->
-            {[summary | summaries], failed}
+    with {:ok, missing_custom} <- missing_result,
+         {:ok, {summaries, failed_routes}} <-
+           derive_present_routes(organization_id, version_id, provenance, present_routes) do
+      summary =
+        Enum.reduce(summaries, zero_summary(missing_custom), fn summary, acc ->
+          Map.merge(acc, summary, fn _key, left, right -> left + right end)
+        end)
 
-          {:error, reason} ->
-            persist_route_error!(organization_id, version_id, route_id, reason)
-            {summaries, [route_id | failed]}
-        end
-      end)
+      {:ok, Map.put(summary, :routes_failed, length(failed_routes))}
+    end
+  end
 
-    summary =
-      Enum.reduce(summaries, zero_summary(missing_custom), fn summary, acc ->
-        Map.merge(acc, summary, fn _key, left, right -> left + right end)
-      end)
+  defp derive_present_routes(organization_id, version_id, provenance, present_routes) do
+    present_routes
+    |> Enum.sort()
+    |> Enum.reduce_while({:ok, {[], []}}, fn route_id, {:ok, {summaries, failed}} ->
+      case derive_route(organization_id, version_id, route_id, provenance) do
+        {:ok, summary} ->
+          {:cont, {:ok, {[summary | summaries], failed}}}
 
-    {:ok, Map.put(summary, :routes_failed, length(failed_routes))}
+        {:error, :forbidden} when elem(provenance, 0) == :editor ->
+          {:halt, {:error, :forbidden}}
+
+        {:error, reason} ->
+          case run_batch_write(
+                 fn -> persist_route_error!(organization_id, version_id, route_id, reason) end,
+                 organization_id,
+                 version_id,
+                 provenance
+               ) do
+            {:ok, :ok} -> {:cont, {:ok, {summaries, [route_id | failed]}}}
+            {:error, write_reason} -> {:halt, {:error, write_reason}}
+          end
+      end
+    end)
+  end
+
+  # The importer owns its version. Editor batch writes get a fresh membership
+  # lock and audit scope check at the start of each reviewed retry attempt.
+  # Per-route derivation retains its own independent transaction and check.
+  defp run_batch_write(write, _organization_id, _version_id, {:import, _}), do: {:ok, write.()}
+
+  defp run_batch_write(write, organization_id, version_id, {:editor, audit_context}) do
+    run_editor_transaction(fn ->
+      Authorization.lock_editor!(audit_context)
+
+      unless audit_context.organization_id == organization_id and
+               audit_context.gtfs_version_id == version_id do
+        Repo.rollback(:not_found)
+      end
+
+      write.()
+    end)
   end
 
   @doc """
@@ -983,6 +1028,19 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   # --- one route -------------------------------------------------------------
 
   defp derive_route_transaction(organization_id, version_id, route_id, provenance) do
+    case provenance do
+      {:editor, audit_context} ->
+        Authorization.lock_editor!(audit_context)
+
+        unless audit_context.organization_id == organization_id and
+                 audit_context.gtfs_version_id == version_id do
+          Repo.rollback(:not_found)
+        end
+
+      {:import, _} ->
+        :ok
+    end
+
     route = lock_route!(organization_id, version_id, route_id, provenance)
     derive_locked_route(route, provenance, %{})
   end

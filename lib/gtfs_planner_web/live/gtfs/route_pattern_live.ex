@@ -44,25 +44,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
-  # Mount-time access is not enough: these events can write pattern/timing data,
-  # so each one re-checks the actor's current organization membership at the
-  # server mutation boundary.
-  @editor_write_events ~w(
-    build_patterns save_details apply_details_review create_pattern
-    save_stops update_review_value acknowledge_review_timing refresh_review
-    retry_review apply_stop_review save_timing apply_timing_review
-    refresh_timing_review retry_timing_review confirm_timing_dialog
-    confirm_delete_timing copy_pattern confirm_delete_pattern
-    undo_headsign apply_headsign_reset
-    alignment_save_requested confirm_alignment_save alignment_conflict_keep_local
-    alignment_generate_paths alignment_confirm_generate alignment_cancel_generation
-    alignment_follow_streets confirm_bulk_generation reactivate_route
-    grouping_submit link_confirm remove_label
+  # These events stage a review or start external routing without reaching a
+  # write transaction. Fresh permission here keeps a revoked socket from
+  # starting new UI work; every actual write authorizes in its own transaction.
+  @editor_ui_events ~w(
+    save_stops update_review_value acknowledge_review_timing refresh_review retry_review
+    refresh_timing_review retry_timing_review alignment_generate_paths
+    alignment_confirm_generate alignment_follow_streets confirm_bulk_generation
   )
 
   @grouping_review "group"
 
   @detail_fields ~w(name direction_id headsign time_desc typicality sort_order)
+  @forbidden_message "You no longer have editor access to this organization. Your edits are still here."
   @creation_defaults %{
     "name" => "",
     "direction_id" => "0",
@@ -217,12 +211,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:label_remove, nil)
      |> assign(:label_focus_id, nil)
      |> stream(:patterns, [])
-     |> attach_hook(:editor_write_gate, :handle_event, &editor_write_gate/3)}
+     |> attach_hook(:editor_ui_gate, :handle_event, &editor_ui_gate/3)}
   end
 
-  defp editor_write_gate(event, _params, socket) do
-    if event in @editor_write_events and not editor_access?(socket) do
-      {:halt, revoke_editor_access(socket)}
+  defp editor_ui_gate(event, _params, socket) do
+    if event in @editor_ui_events and not editor_access?(socket) do
+      {:halt, assign(socket, :editor_revoked?, true)}
     else
       {:cont, socket}
     end
@@ -253,38 +247,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       _without ->
         :error
     end
-  end
-
-  # A lost role or membership renders unavailable editing and closes every open
-  # confirmation, so nothing is committed through a connection that was opened
-  # while the actor still had access.
-  defp revoke_editor_access(socket) do
-    socket
-    |> assign(:editor_revoked?, true)
-    |> assign(:applying?, false)
-    |> assign(:review, nil)
-    |> assign(:timing_dialog, nil)
-    |> assign(:timing_delete_dialog, nil)
-    |> assign(:pattern_delete_dialog, nil)
-    |> assign(:blocked_dialog, nil)
-    |> assign(:impact_dialog, nil)
-    |> assign(:status_message, nil)
-    |> assign(:headsign_undo, nil)
-    |> assign(:alignment_pending, nil)
-    |> assign(:alignment_save_notice, nil)
-    |> assign(:alignment_forced_local, [])
-    |> assign(:alignment_import_card, nil)
-    |> assign(:file_fit, nil)
-    |> assign(:alignment_generate_dialog, nil)
-    |> assign(:alignment_generate_notice, nil)
-    |> assign(:alignment_generation, nil)
-    |> assign(:map_line_file, nil)
-    |> assign(:bulk_dialog, nil)
-    |> assign(:alignment_bulk, nil)
-    |> assign(:alignment_follow, nil)
-    |> cancel_async(:alignment_generation)
-    |> cancel_async(:alignment_follow)
-    |> cancel_async(:alignment_bulk)
   end
 
   @impl true
@@ -415,7 +377,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
          |> assign(:build_state, :failed)
          |> assign(:build_error, build_error_message(reason))
          |> assign(:build_summary, nil)
-         |> load_screen()}
+         |> load_screen()
+         |> mark_editor_refusal(reason)}
     end
   end
 
@@ -1485,7 +1448,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   # Fill-panel problem buttons name the stop input to fix; the
   # FormErrorFocus hook owns the page region and focuses it. This only
-  # pushes a client event, so it stays outside `@editor_write_events`.
+  # pushes a client event without a database write.
   @impl true
   def handle_event("focus_form_error", %{"id" => id}, socket) when is_binary(id) do
     {:noreply,
@@ -1852,8 +1815,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
       {:error, :forbidden} ->
         {:noreply,
-         put_flash(
-           socket,
+         socket
+         |> mark_editor_refusal(:forbidden)
+         |> put_flash(
            :error,
            "You no longer have editor access to this organization. The route's status is unchanged."
          )}
@@ -2237,8 +2201,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                   </:action>
                 </.message>
               </div>
-            <% @editor_revoked? -> %>
-              <div id="pattern-editor-revoked" class="mt-4">
+            <% @load_state == :ready -> %>
+              <div :if={@editor_revoked?} id="pattern-editor-revoked" class="mt-4">
                 <.message kind="error" title="Editing is no longer available">
                   Your editing access to this organization was removed, so this page can no
                   longer change patterns, timings or stops. Ask an administrator to restore the
@@ -2255,7 +2219,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                   </:action>
                 </.message>
               </div>
-            <% @load_state == :ready -> %>
               <%= if @pattern || @live_action == :new do %>
                 <RoutePatternComponents.pattern_detail_header
                   creating={@live_action == :new}
@@ -3307,7 +3270,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         {:noreply,
          socket
          |> assign(:details_stale?, reason == :stale_review)
-         |> assign(:error_message, reasons_message(reason))}
+         |> assign(:error_message, reasons_message(reason))
+         |> mark_editor_refusal(reason)}
     end
   end
 
@@ -3560,6 +3524,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
       {:error, {:stale, _changed}} ->
         assign(socket, :headsign_review, %{review | state: :stale})
+
+      {:error, :forbidden} ->
+        socket
+        |> assign(:headsign_review, %{review | state: :failed})
+        |> mark_editor_refusal(:forbidden)
 
       {:error, _reason} ->
         assign(socket, :headsign_review, %{review | state: :failed})
@@ -3986,6 +3955,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:details_form, details_form(params, errors))
     |> assign(:error_message, message)
     |> assign(:task, if(reason == :at_least_two_stops, do: :stops, else: :details))
+    |> mark_editor_refusal(reason)
     |> push_event("focus_form_error", %{form_id: "pattern-details-form", fallback_id: nil})
   end
 
@@ -4564,6 +4534,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       review
       | error: %{message: reasons_message(reason), action: :retry}
     })
+    |> mark_editor_refusal(reason)
   end
 
   # --- timings ---------------------------------------------------------------
@@ -5256,6 +5227,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       | error: %{message: reasons_message(reason), action: :retry},
         busy: false
     })
+    |> mark_editor_refusal(reason)
   end
 
   # The timing review's submitted attrs, from either operation form (the
@@ -5328,7 +5300,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
              |> saved(timing_dialog_saved_message(dialog), timing_dialog_scope(dialog, socket))}
 
           {:error, reason} ->
-            {:noreply, assign(socket, :timing_dialog, %{dialog | error: reasons_message(reason)})}
+            {:noreply,
+             socket
+             |> assign(:timing_dialog, %{dialog | error: reasons_message(reason)})
+             |> mark_editor_refusal(reason)}
         end
 
       {:error, reason} ->
@@ -6040,7 +6015,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   defp reject_editor(socket, message, field_id) do
-    socket = assign(socket, :error_message, message)
+    socket =
+      socket
+      |> assign(:error_message, message)
+      |> mark_editor_refusal(if(message == @forbidden_message, do: :forbidden, else: nil))
 
     if field_id do
       {:noreply, push_event(socket, "focus_scoped_target", %{id: field_id})}
@@ -6080,6 +6058,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp impact_title(_dialog), do: "Update trips?"
 
   defp build_error_message(:not_found), do: "This route is no longer available."
+  defp build_error_message(:forbidden), do: @forbidden_message
 
   defp build_error_message(reason),
     do: "Building patterns failed (#{bounded_reason(reason)}). No trips were changed."
@@ -6089,6 +6068,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp bounded_reason(_reason), do: "unexpected_error"
 
   defp reasons_message(:not_found), do: "That pattern is no longer available."
+
+  defp reasons_message(:forbidden),
+    do: @forbidden_message
+
+  defp mark_editor_refusal(socket, :forbidden), do: assign(socket, :editor_revoked?, true)
+  defp mark_editor_refusal(socket, _reason), do: socket
 
   defp reasons_message(:stale_review),
     do: "This pattern changed since the page loaded. Reload the pattern and try again."

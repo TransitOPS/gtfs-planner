@@ -70,6 +70,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
             email: "route-pattern-concurrency-#{System.system_time(:nanosecond)}@example.com"
           })
 
+        organization_membership_fixture(actor, organization)
+
         audit = %AuditContext{
           organization_id: organization.id,
           gtfs_version_id: version.id,
@@ -603,6 +605,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
     actor =
       user_fixture(%{email: "route-pattern-create-serializable-#{stamp}@example.com"})
 
+    organization_membership_fixture(actor, organization)
+
     stops = [
       stop_fixture(organization.id, version.id),
       stop_fixture(organization.id, version.id)
@@ -787,7 +791,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
         Versions.create_staging_gtfs_version(organization.id, %{name: "Staging #{unique}"})
 
       route = route_fixture(organization.id, version.id)
-      actor = user_fixture()
+      actor = editor_fixture(organization)
 
       audit = %AuditContext{
         organization_id: organization.id,
