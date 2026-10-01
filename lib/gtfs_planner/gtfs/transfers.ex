@@ -642,7 +642,8 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   `:busy` (R8).
   """
   @spec delete_general_many([{Ecto.UUID.t(), DateTime.t() | String.t()}], AuditContext.t()) ::
-          {:ok, pos_integer()} | {:error, :invalid_input | :forbidden | :not_found | :stale | :busy}
+          {:ok, pos_integer()}
+          | {:error, :invalid_input | :forbidden | :not_found | :stale | :busy}
   def delete_general_many(pairs, %AuditContext{} = audit) do
     case delete_targets(pairs) do
       {:ok, targets} -> run_write(fn -> delete_general_many_transaction(targets, audit) end)
@@ -665,12 +666,30 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   defp load_stops(_organization_id, _gtfs_version_id, []), do: []
 
   defp load_stops(organization_id, gtfs_version_id, stop_ids) do
+    organization_id
+    |> stops_with_children(gtfs_version_id, stop_ids)
+    |> Repo.all()
+  end
+
+  # The same rows, held `FOR SHARE` for a write's validation. A write runs at
+  # serializable isolation, so its snapshot predates any wait on the version lock.
+  # A stop renamed during that wait fails this read with a serialization error and
+  # `run_write/2` retries on a fresh snapshot, which no longer finds the old ID.
+  defp lock_stops(_organization_id, _gtfs_version_id, []), do: []
+
+  defp lock_stops(organization_id, gtfs_version_id, stop_ids) do
+    organization_id
+    |> stops_with_children(gtfs_version_id, stop_ids)
+    |> lock("FOR SHARE")
+    |> Repo.all()
+  end
+
+  defp stops_with_children(organization_id, gtfs_version_id, stop_ids) do
     from(s in Stop,
       where:
         s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
           (s.stop_id in ^stop_ids or s.parent_station in ^stop_ids)
     )
-    |> Repo.all()
   end
 
   defp load_stop_index(organization_id, gtfs_version_id, transfers) do
@@ -2135,7 +2154,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   defp reference_stops(changeset, organization_id, gtfs_version_id) do
     changeset
     |> reference_ids([:from_stop_id, :to_stop_id])
-    |> then(&load_stops(organization_id, gtfs_version_id, &1))
+    |> then(&lock_stops(organization_id, gtfs_version_id, &1))
     |> Map.new(&{&1.stop_id, &1})
   end
 
