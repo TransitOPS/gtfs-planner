@@ -327,6 +327,72 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternMapLineUploadTest do
     {route, pattern}
   end
 
+  # Step 30 / EV-29: the fit the hook reports for the file line. The hook
+  # measures the line against the model's visits and pushes the result; the
+  # editor never sends it, so a forged or misshapen push must leave the
+  # reported fit alone instead of describing a line nobody picked.
+  describe "the hook's fit of the file line" do
+    test "a reported fit is kept for the review panel", ctx do
+      {route, pattern} = drawn_pattern(ctx)
+      view = open_panel(ctx, route, pattern)
+
+      render_hook(view, "alignment_fit_result", fit_params())
+
+      assert :sys.get_state(view.pid).socket.assigns.file_fit == %{
+               direction: "same",
+               reaches_start: true,
+               reaches_end: false,
+               far: [%{position: 3, stop_id: "FL1_C", distance_m: 145.25}],
+               within: 3,
+               visit_count: 4,
+               length_m: 812.4
+             }
+    end
+
+    test "a forged fit leaves the reported fit alone", ctx do
+      {route, pattern} = drawn_pattern(ctx)
+      view = open_panel(ctx, route, pattern)
+      render_hook(view, "alignment_fit_result", fit_params())
+      before = :sys.get_state(view.pid).socket.assigns.file_fit
+
+      # A direction the geometry never reports, and counts that do not add
+      # up to the visits, are both refused.
+      render_hook(view, "alignment_fit_result", %{fit_params() | "direction" => "sideways"})
+      assert :sys.get_state(view.pid).socket.assigns.file_fit == before
+
+      render_hook(
+        view,
+        "alignment_fit_result",
+        Map.put(fit_params(), "visit_count", 99)
+      )
+
+      assert :sys.get_state(view.pid).socket.assigns.file_fit == before
+      # The editor's page is still there.
+      assert has_element?(view, "#file-import-panel")
+    end
+
+    test "a forged fit before any real one reports nothing", ctx do
+      {route, pattern} = drawn_pattern(ctx)
+      view = open_panel(ctx, route, pattern)
+
+      render_hook(view, "alignment_fit_result", %{"direction" => "same"})
+
+      assert is_nil(:sys.get_state(view.pid).socket.assigns.file_fit)
+    end
+  end
+
+  defp fit_params do
+    %{
+      "direction" => "same",
+      "reaches_start" => true,
+      "reaches_end" => false,
+      "far" => [%{"position" => 3, "stop_id" => "FL1_C", "distance_m" => 145.25}],
+      "within" => 3,
+      "visit_count" => 4,
+      "length_m" => 812.4
+    }
+  end
+
   defp open_panel(%{conn: conn, version: version}, route, pattern) do
     path =
       "/gtfs/#{version.id}/routes/#{route.route_id}/patterns/#{pattern.route_pattern_id}?task=alignment"

@@ -48,6 +48,15 @@
  *   with `convertImportedShape` into one dirty `set` draft per section,
  *   flags uncertain sections for review, and draws imported shapes as grey
  *   read-only reference polylines while the pattern still exports them.
+ * - `alignment:file_line` (step 30) previews the line picked from a path
+ *   file in the `import-review` style (white casing, cyan line, direction
+ *   arrows, rings on far stops), measures it with `fitSummary` against the
+ *   current visits and pushes `alignment_fit_result`;
+ *   `alignment:reverse_file_line` re-reports the reversed line,
+ *   `alignment:file_draft` drafts it like an imported shape with null visit
+ *   distances (never while the fit says "reversed"), and
+ *   `alignment:clear_file_line` removes the preview. A preview alone never
+ *   marks a section dirty.
  * - `alignment:suggestions` (step 32) applies server-routed legs as dirty
  *   `set` drafts with a review flag, one undo entry per section; stop
  *   anchors stay fixed, failures push nothing.
@@ -65,9 +74,11 @@
 
 import {
   convertImportedShape,
+  fitSummary,
   fromLatLng,
   nearestEdgeIndex,
   pointsInBounds,
+  reverseLine,
   simplifyInterior,
   toLatLng,
 } from "./alignment_geometry";
@@ -85,6 +96,17 @@ const TILE_ATTRIBUTION =
 // Imported whole shapes (step 29) draw as a neutral reference while the
 // pattern still exports them: read-only, never selectable, beneath drafts.
 const IMPORTED_COLOR = "#6b7280";
+// The file line being checked (step 30) draws above the pattern in the
+// prototype's `import-review` style: a white casing, a cyan line and cyan
+// direction arrows, with a red ring where the line runs too far from a stop.
+// It is a preview only — it never drafts and never becomes selectable.
+const FILE_LINE_COLOR = "#0e7490";
+const FILE_ARROW_COLOR = "#155e75";
+const FILE_LINE_WEIGHT = 4.5;
+const FILE_LINE_CASING = 8;
+const FILE_ARROW_SIZE = 16;
+const FILE_ARROW_MAX = 4;
+const FILE_FAR_RING = 9;
 const MARKER_ICON_SIZE = 30;
 const HANDLE_ICON_SIZE = 44;
 const HANDLE_ICON_ANCHOR = HANDLE_ICON_SIZE / 2;
@@ -100,6 +122,26 @@ function hasCoords(visit) {
     Number.isFinite(visit.lat) &&
     Number.isFinite(visit.lon)
   );
+}
+
+// A [lon, lat] chain is drawable when it is at least two points long and
+// every point carries two finite coordinates (INV-1). An imported distance
+// as a third element passes through untouched.
+function normalizeLinePoints(points) {
+  if (!Array.isArray(points) || points.length < 2) return null;
+  const normalized = [];
+  for (const point of points) {
+    if (
+      !Array.isArray(point) ||
+      point.length < 2 ||
+      !Number.isFinite(point[0]) ||
+      !Number.isFinite(point[1])
+    ) {
+      return null;
+    }
+    normalized.push(point);
+  }
+  return normalized;
 }
 
 function pointsEqual(a, b) {
@@ -131,6 +173,9 @@ const PatternAlignment = {
     this._hideLabels = false;
     this._sectionLayers = new Map();
     this._importedLayers = [];
+    this._fileLinePoints = null;
+    this._fileFit = null;
+    this._fileLayers = [];
     this._flagged = new Set();
     this._stopMarkers = [];
     this._bounds = null;
@@ -246,6 +291,15 @@ const PatternAlignment = {
     this.handleEvent("alignment:convert", (payload) =>
       this._convertImported(payload),
     );
+    // Step 30 file import: the server pushes the chosen file line; the hook
+    // previews it with direction arrows, reports the fit against the current
+    // visits and drafts nothing until `alignment:file_draft` (CR-9).
+    this.handleEvent("alignment:file_line", (payload) => this._fileLine(payload));
+    this.handleEvent("alignment:reverse_file_line", () =>
+      this._reverseFileLine(),
+    );
+    this.handleEvent("alignment:file_draft", () => this._draftFileLine());
+    this.handleEvent("alignment:clear_file_line", () => this._clearFileLine());
     // Step 32 street generation: the server pushes routed legs as
     // interior points per section; the hook applies them as dirty `set`
     // drafts with a review flag (CR-9: drafts only, Save stays the commit).
@@ -304,6 +358,9 @@ const PatternAlignment = {
     this._tileLayer = null;
     this._sectionLayers = new Map();
     this._importedLayers = [];
+    this._fileLinePoints = null;
+    this._fileFit = null;
+    this._fileLayers = [];
     this._flagged = new Set();
     this._stopMarkers = [];
     this._handles = [];
@@ -628,6 +685,7 @@ const PatternAlignment = {
   _clearOverlays() {
     if (!this._map) return;
     this._clearImported();
+    this._clearFileLine();
     for (const { line, halo } of this._sectionLayers.values()) {
       if (halo) this._map.removeLayer(halo);
       this._map.removeLayer(line);
@@ -691,6 +749,14 @@ const PatternAlignment = {
       (shape) => shape.shape_id === shapeId,
     );
     if (!entry) return;
+    return this._draftImportedLine(entry.points || [], entry.visit_distances);
+  },
+
+  // The shared half of `alignment:convert` and `alignment:file_draft`:
+  // split one imported/file line into a dirty `set` draft per section.
+  // Returns true when drafts were recorded.
+  _draftImportedLine(shapePoints, visitDistances) {
+    if (!this._model) return false;
     const visits = (this._model.visits || []).map((visit) => [
       visit.lon,
       visit.lat,
@@ -699,13 +765,15 @@ const PatternAlignment = {
     try {
       result = convertImportedShape({
         visits,
-        shapePoints: entry.points || [],
-        visitDistances: entry.visit_distances,
+        shapePoints,
+        visitDistances,
       });
     } catch (_) {
-      return;
+      return false;
     }
-    if (!result || !Array.isArray(result.sections)) return;
+    if (!result || !Array.isArray(result.sections)) return false;
+    // The reference/preview geometry is now the editable drafts, so both
+    // reference layers go; only a successful split removes them.
     this._clearImported();
     this._flagged = new Set();
     const sections = this._model.sections || [];
@@ -724,6 +792,180 @@ const PatternAlignment = {
     if (first !== null) this._select(first, true);
     if (this._editableSection(this._selected)) this._setMode("edit");
     this.pushDraftState();
+    return true;
+  },
+
+  // --- File line preview (step 30) ---------------------------------------
+  //
+  // `alignment:file_line` previews the line the user picked from a path
+  // file: a non-interactive cyan line with direction arrows over the
+  // pattern, plus a ring on every stop the line runs too far from. The fit
+  // is measured with `fitSummary` against the model's current visits and
+  // reported to the server as `alignment_fit_result`; the hook drafts
+  // nothing and marks nothing dirty until `alignment:file_draft` (CR-9).
+
+  _fileLine(payload) {
+    if (this._destroyed || !this._map || !window.L) return;
+    const points = normalizeLinePoints(payload ? payload.points : null);
+    if (!points) return;
+    this._fileLinePoints = points;
+    this._renderFileLine();
+  },
+
+  // Reversing previews the other way round, so the fit is measured again
+  // and reported: "reversed" becomes "same" and the arrows flip.
+  _reverseFileLine() {
+    if (this._destroyed || !this._map) return;
+    if (!this._fileLinePoints) return;
+    this._fileLinePoints = reverseLine(this._fileLinePoints);
+    this._renderFileLine();
+  },
+
+  // "Create editable draft": the file line drafts exactly like an imported
+  // shape, with null visit distances because a path file carries none. A
+  // reversed line is refused here as well as in the panel — drafting it
+  // would run every section against the opposite run — while an "unknown"
+  // direction (both end visits project to the same place, a loop or a
+  // straight run) cannot say and is never blocked.
+  _draftFileLine() {
+    if (this._destroyed || !this._map) return;
+    if (!this._model || !this._model.editable) return;
+    if (!this._fileLinePoints) return;
+    if (this._fileFit && this._fileFit.direction === "reversed") return;
+    if (!this._draftImportedLine(this._fileLinePoints, null)) return;
+    this._clearFileLine();
+  },
+
+  _clearFileLine() {
+    if (this._map) {
+      for (const layer of this._fileLayers) this._map.removeLayer(layer);
+    }
+    this._fileLayers = [];
+    this._fileLinePoints = null;
+    this._fileFit = null;
+  },
+
+  // Measure, draw and report, in that order: the far-stop rings need the
+  // fit, and the fit is what the panel renders from.
+  _renderFileLine() {
+    if (!this._map || !window.L) return;
+    const L = window.L;
+    const points = this._fileLinePoints;
+    for (const layer of this._fileLayers) this._map.removeLayer(layer);
+    this._fileLayers = [];
+    if (!points || points.length < 2) return;
+
+    const fit = fitSummary({
+      visits: this._model ? this._model.visits || [] : [],
+      points,
+    });
+    this._fileFit = fit;
+
+    const latlngs = points.map(([lon, lat]) => [lat, lon]);
+    // The white casing keeps the preview legible over the pattern, as in
+    // the prototype. The preview is not selectable or editable.
+    this._fileLayers.push(
+      L.polyline(latlngs, {
+        color: "#ffffff",
+        weight: FILE_LINE_CASING,
+        opacity: 0.9,
+        interactive: false,
+      }).addTo(this._map),
+      L.polyline(latlngs, {
+        color: FILE_LINE_COLOR,
+        weight: FILE_LINE_WEIGHT,
+        interactive: false,
+      }).addTo(this._map),
+    );
+    for (const arrow of this._fileArrows(points)) this._fileLayers.push(arrow);
+    for (const far of fit.far) {
+      const at = this._nearestOnLine(points, far.position);
+      if (!at) continue;
+      this._fileLayers.push(
+        L.circleMarker(toLatLng(at), {
+          radius: FILE_FAR_RING,
+          color: MISSING_COLOR,
+          weight: 3,
+          fill: false,
+          interactive: false,
+        }).addTo(this._map),
+      );
+    }
+
+    this.pushEvent("alignment_fit_result", {
+      direction: fit.direction,
+      reaches_start: fit.reachesStart,
+      reaches_end: fit.reachesEnd,
+      far: fit.far.map((entry) => ({
+        position: entry.position,
+        stop_id: entry.stopId,
+        distance_m: entry.distanceM,
+      })),
+      within: fit.within,
+      visit_count: fit.visitCount,
+      length_m: fit.lengthM,
+    });
+  },
+
+  // One arrow per step, capped so a dense file stays readable, each placed
+  // on a segment's midpoint and turned to that segment's on-screen bearing,
+  // so an arrow never lands on top of a stop pin.
+  _fileArrows(points) {
+    const L = window.L;
+    const arrows = [];
+    const step = Math.max(1, Math.ceil((points.length - 1) / FILE_ARROW_MAX));
+    for (let i = 0; i + step <= points.length - 1; i += step) {
+      const from = points[i];
+      const to = points[i + step];
+      const a = this._map.latLngToContainerPoint(toLatLng(from));
+      const b = this._map.latLngToContainerPoint(toLatLng(to));
+      if (a.x === b.x && a.y === b.y) continue;
+      // Container y grows downward, so a screen bearing clockwise from north
+      // is atan2(dx, -dy); the triangle points up until this turns it.
+      const angle = (Math.atan2(b.x - a.x, a.y - b.y) * 180) / Math.PI;
+      arrows.push(
+        L.marker(toLatLng([(from[0] + to[0]) / 2, (from[1] + to[1]) / 2]), {
+          interactive: false,
+          keyboard: false,
+          // The stop pins share the marker pane, so the arrows take a high
+          // z-index: the direction of the line is the whole point of the
+          // preview and must not hide under a stop.
+          zIndexOffset: 1000,
+          icon: L.divIcon({
+            className: "pa-div-icon",
+            iconSize: [FILE_ARROW_SIZE, FILE_ARROW_SIZE],
+            iconAnchor: [FILE_ARROW_SIZE / 2, FILE_ARROW_SIZE / 2],
+            html: `<span class="pa-file-arrow" style="transform:rotate(${angle}deg)"></span>`,
+          }),
+        }).addTo(this._map),
+      );
+    }
+    return arrows;
+  },
+
+  // Where the line runs nearest a stop, for the far-stop ring. This is
+  // placement only — `fitSummary` owns every reported measurement — so a
+  // plain planar projection in degrees is enough here.
+  _nearestOnLine(points, position) {
+    const visit = (this._model ? this._model.visits || [] : []).find(
+      (entry) => entry.position === position,
+    );
+    if (!hasCoords(visit)) return null;
+    let best = null;
+    for (let i = 1; i < points.length; i++) {
+      const [ax, ay] = points[i - 1];
+      const [bx, by] = points[i];
+      const dx = bx - ax;
+      const dy = by - ay;
+      const lengthSq = dx * dx + dy * dy;
+      let t = lengthSq === 0 ? 0 : ((visit.lon - ax) * dx + (visit.lat - ay) * dy) / lengthSq;
+      t = Math.max(0, Math.min(1, t));
+      const at = [ax + t * dx, ay + t * dy];
+      const distance =
+        (at[0] - visit.lon) ** 2 + (at[1] - visit.lat) ** 2;
+      if (!best || distance < best.distance) best = { at, distance };
+    }
+    return best ? best.at : null;
   },
 
   // Applies server-routed suggestions (step 32) as dirty `set` drafts.

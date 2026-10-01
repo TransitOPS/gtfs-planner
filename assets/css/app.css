@@ -3494,6 +3494,17 @@ dialog[role="alertdialog"][open] > div > div {
   display: none;
 }
 
+/* Direction arrows on the file line being checked (step 30). The triangle
+   points up and the hook rotates it to the on-screen bearing. */
+#alignment-map-root .pa-file-arrow {
+  display: block;
+  width: 16px;
+  height: 16px;
+  background: #155e75;
+  clip-path: polygon(50% 0%, 100% 100%, 50% 74%, 0% 100%);
+  filter: drop-shadow(0 0 1px rgb(255 255 255 / 0.9));
+}
+
 @media (max-width: 650px) {
   #alignment-map-root .pa-stage {
     min-height: 270px;
