@@ -113,7 +113,7 @@ One row per journey, named by the actor's goal. Actor names follow the roles in
 | ID | Goal (actor's words) | Actor | Trigger | Terminal outcome | Status |
 |---|---|---|---|---|---|
 | JRNY-001 | Import a GTFS feed | organization editor | Lands on the home page with no published version yet, or opens Import from the GTFS area | The imported files are published as a new version the organization can edit | documented — `docs/journeys/JRNY-001-import-a-gtfs-feed.md` |
-| JRNY-002 | Edit a route's timetable | organization editor | Opens a route's Schedules, or a trip in it | The route's exported stop times match the editor's change | registered |
+| JRNY-002 | Edit a route's timetable | organization editor | Opens a route's Schedules, or a trip in it | The route's exported stop times match the editor's change | documented — `docs/journeys/JRNY-002-edit-a-routes-timetable.md` |
 | JRNY-003 | Export and download a validated feed | organization editor | Opens the GTFS area's Export tab and runs an export | A validated export run's ZIP is downloaded | registered |
 | JRNY-004 | Sign in to GTFS Planner | signed-out visitor | Follows a link to the sign-in page or types the application's address | An authenticated session on the dashboard | registered |
 | JRNY-005 | Reset a forgotten password | signed-out visitor | Opens the reset link in the password-reset email | A new password is saved and a sign-in is offered | registered |
@@ -176,7 +176,7 @@ One row per journey, named by the actor's goal. Actor names follow the roles in
 | ID | Repos touched | Entry point (repo:route) | E2E lane | Document |
 |---|---|---|---|---|
 | JRNY-001 | gtfs-planner | gtfs-planner:`/` then `/gtfs/:version/import` (SCRN-034) | mapped in section 5 | None yet |
-| JRNY-002 | gtfs-planner | gtfs-planner:`/gtfs/:version/routes/:route_id/schedules` (SCRN-019) | mapped in section 5 | None yet |
+| JRNY-002 | gtfs-planner | gtfs-planner:`/gtfs/:version/routes/:route_id/schedules` (SCRN-019) | mapped in section 5 | `docs/journeys/JRNY-002-edit-a-routes-timetable.md` |
 | JRNY-003 | gtfs-planner | gtfs-planner:`/gtfs/:version/export` (SCRN-035) | mapped in section 5 | None yet |
 | JRNY-004 | gtfs-planner | gtfs-planner:`/users/log_in` (SCRN-002) | mapped in section 5 | None yet |
 | JRNY-005 | gtfs-planner | gtfs-planner:`/users/reset_password/:token` (SCRN-004) | mapped in section 5 | None yet |
@@ -615,7 +615,7 @@ finding 7 and ranked in section 9.
 | E2E spec files internal-lane | 9 of 47 |
 | Navigation destinations owned | 29 |
 | Navigation destinations unowned | 4 — listed below |
-| Journeys documented (page exists) | 1 of 58 — `docs/journeys/JRNY-001-import-a-gtfs-feed.md`; the other pilot pages land in the steps after it |
+| Journeys documented (page exists) | 2 of 58 — `docs/journeys/JRNY-001-import-a-gtfs-feed.md`, `docs/journeys/JRNY-002-edit-a-routes-timetable.md`; the other pilot pages land in the steps after them |
 
 **Navigation destination reconciliation.** A destination is owned when a registered journey
 starts or passes through it. The primary bar in `lib/gtfs_planner_web/components/navigation.ex`
@@ -810,6 +810,7 @@ as proof.
 
 | Date | Version | Change | Author |
 |---|---|---|---|
+| 2026-10-01 | 4 | `JRNY-002` documented at `docs/journeys/JRNY-002-edit-a-routes-timetable.md` with both pilot scenarios; its row now reads `documented` and the coverage count reads 2 of 58 | spec step 38 |
 | 2026-10-01 | 3 | `JRNY-001` documented at `docs/journeys/JRNY-001-import-a-gtfs-feed.md`; its row now reads `documented` and the coverage count reads 1 of 58 | spec step 37 |
 | 2026-10-01 | 2 | Reconciled the registry with the E2E suite and the shipped navigation: all 47 `assets/e2e/*.spec.js` files mapped to a journey row or an internal lane, 29 navigation destinations owned and 4 unowned with their source files, 8 findings and a 59-row documentation queue covering all 58 journeys | spec step 34 |
 | 2026-10-01 | 1 | Initial registry: 268 seeds merged, split and dispositioned into 58 journeys with the three pilots issued first, 14 seams and the external parties table | spec step 33 |
