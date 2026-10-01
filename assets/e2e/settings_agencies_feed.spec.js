@@ -139,8 +139,11 @@ const IMPORT_FINDINGS_CAPTURE_DIR =
 
 // The version whose import page the findings block opens. The upload publishes a
 // new, uniquely named version of its own, so no seeded version is mutated
-// (CR-10).
-const IMPORT_VERSION = "Browser E2E Version";
+// (CR-10). The Import page opens on Station changes when the version's latest
+// change run is unfinished, which the pathway evolutions journeys leave on
+// Browser E2E Version on purpose, so the block opens a version no change run
+// belongs to.
+const IMPORT_VERSION = "Browser Feed Details Version";
 
 // ── shared helpers ─────────────────────────────────────────────────────────
 
@@ -1661,7 +1664,7 @@ test.describe("@routes-onboarding", () => {
 
 //
 // Declared last: it imports a feed of its own into a new uniquely named version
-// on the Browser E2E Version's import page, so it reads and writes no seeded
+// from the Browser Feed Details Version's import page, so it reads and writes no seeded
 // version's agencies or routes (CR-10). It needs the `bin/test-browser` seed for
 // the seeded login and version panel, not for the import itself.
 //
