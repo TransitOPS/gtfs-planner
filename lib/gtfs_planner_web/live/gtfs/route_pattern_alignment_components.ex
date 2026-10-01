@@ -68,6 +68,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
 
   attr :file_import, :map, default: nil, doc: "the open path-file import panel, or nil"
 
+  attr :file_fit, :map,
+    default: nil,
+    doc: "the hook's reported fit, or nil before the hook answers"
+
   attr :map_line_upload, Phoenix.LiveView.UploadConfig,
     required: true,
     doc: "the path-file upload"
@@ -394,11 +398,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
           class="order-2 flex min-h-0 min-w-0 flex-col overflow-y-auto border-subtle max-lg:border-t lg:order-1 lg:border-r"
         >
           <.file_import_panel
-            :if={@file_import != nil}
+            :if={@file_import != nil or @file_fit != nil}
             upload={@map_line_upload}
             file={@file_import}
+            fit={@file_fit}
+            visits={@visits_by_position}
           />
-          <div :if={@file_import == nil} class="flex min-h-0 flex-1 flex-col">
+          <div :if={@file_import == nil and @file_fit == nil} class="flex min-h-0 flex-1 flex-col">
             <div class="sticky top-0 z-10 border-b border-subtle bg-white px-4 pb-3 pt-4">
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <h2 id="alignment-title" class="text-base font-bold text-strong">
@@ -1130,13 +1136,20 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
 
   attr :upload, Phoenix.LiveView.UploadConfig, required: true
   attr :file, :map, default: nil, doc: "%{step: :choose | :pick | :error, name, size} or nil"
+  attr :fit, :map, default: nil, doc: "the hook's reported fit, or nil before the hook answers"
+  attr :visits, :map, default: %{}, doc: "visits by position, for the names the review uses"
 
   def file_import_panel(assigns) do
-    step = assigns.file && assigns.file.step
+    # A reported fit puts the panel on its third step: the line has been
+    # chosen and the hook has measured it, so what the panel shows is the
+    # review of that answer rather than another chooser.
+    review? = not is_nil(assigns.fit)
+    step = if review?, do: :review, else: assigns.file && assigns.file.step
 
     assigns =
       assigns
       |> assign(:step, step)
+      |> assign(:review?, review?)
       |> assign(:lines, Map.get(assigns.file || %{}, :lines) || [])
       |> assign(:reading?, upload_reading?(assigns.upload))
       |> assign(:ready?, upload_ready?(assigns.upload))
@@ -1153,7 +1166,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
         >
           <.icon name="hero-arrow-left" class="size-4" /> Map line
         </button>
-        <h2 id="file-import-title" class="mt-1 text-base font-bold text-strong">
+        <h2
+          id="file-import-title"
+          tabindex="-1"
+          class="mt-1 text-base font-bold text-strong focus-visible:outline-none"
+        >
           Import a path file
         </h2>
         <p :if={@step == :choose} class="mt-1 text-[13px] text-muted">
@@ -1186,18 +1203,21 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
       </div>
 
       <div class="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <%!-- A reported fit is the whole of the panel's body: there is
+          nothing left to choose, only what the hook found to review. --%>
+        <.fit_review :if={@review?} fit={@fit} visits={@visits} />
         <%!-- The chooser is only useful before a file is read: the prototype's
           `import-pick` shows the file and the choice, not another dropzone. --%>
         <.form
-          :if={@step != :pick}
+          :if={not @review? and @step != :pick}
           for={%{}}
           id="map-line-upload-form"
           phx-change="alignment_file_validate"
           phx-submit="alignment_file_consume"
         >
           <%!-- A file that has been read does not need a second dropzone: the
-            chooser collapses to a button so the file's lines or its message
-            are what the panel shows. --%>
+          chooser collapses to a button so the file's lines or its message
+          are what the panel shows. --%>
           <.upload_field
             id="map-line-file-upload"
             upload={@upload}
@@ -1253,7 +1273,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
           {file_import_error_body(reason)}
         </.message>
 
-        <form :if={@step == :pick} id="file-line-form" phx-change="alignment_file_choose" class="mt-4">
+        <form
+          :if={@step == :pick}
+          id="file-line-form"
+          phx-change="alignment_file_choose"
+          class="mt-4"
+        >
           <fieldset>
             <legend class="text-sm font-bold text-strong">
               Which line is this pattern&rsquo;s path?
@@ -1285,20 +1310,66 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
       </div>
 
       <div class="border-t border-subtle bg-white px-4 py-3">
-        <p class="text-[13px] text-muted">
-          Nothing is saved until you save the map line.
-        </p>
-        <button
-          :if={@step == :pick}
-          type="button"
-          id="file-import-restart"
-          phx-click="alignment_open_file_import"
-          class="btn btn-outline mt-2 min-h-11 w-full"
-        >
-          Choose another file
-        </button>
+        <%= if @review? do %>
+          <%!-- AC-24: a line that runs the other way cannot be drafted, and
+            the reason sits beside the button that is disabled because of it. --%>
+          <p id="fit-footer-note" class="text-[13px] text-muted">
+            <span :if={@fit.direction == "reversed"} class="font-semibold text-error-fg">
+              Reverse the line to continue. It runs the other way from this pattern.
+            </span>
+            <span :if={@fit.direction != "reversed"}>
+              Nothing is saved until you save the map line.
+            </span>
+          </p>
+          <div class="mt-2 grid gap-2">
+            <button
+              type="button"
+              id="file-import-restart"
+              phx-click="alignment_open_file_import"
+              class="btn btn-outline min-h-11"
+            >
+              Choose another file
+            </button>
+            <button
+              type="button"
+              id="fit-create-draft"
+              phx-click="alignment_create_file_draft"
+              disabled={@fit.direction == "reversed"}
+              title={if @fit.direction == "reversed", do: "Reverse the line first", else: nil}
+              class="btn btn-primary min-h-11"
+            >
+              Create editable draft
+            </button>
+          </div>
+        <% else %>
+          <p class="text-[13px] text-muted">
+            Nothing is saved until you save the map line.
+          </p>
+          <button
+            :if={@step == :pick}
+            type="button"
+            id="file-import-restart"
+            phx-click="alignment_open_file_import"
+            class="btn btn-outline mt-2 min-h-11 w-full"
+          >
+            Choose another file
+          </button>
+        <% end %>
       </div>
     </div>
+
+    <%!-- The hook's fit arrives without a click of the editor's own, so the
+      panel's headline takes focus when it lands (a colocated hook, no inline
+      script). --%>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".FileImportFocus">
+      export default {
+        mounted() {
+          this.handleEvent("alignment:file_fit", () => {
+            this.el.querySelector("#file-import-title")?.focus()
+          })
+        }
+      }
+    </script>
     """
   end
 
@@ -1375,8 +1446,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
 
   defp file_import_size(_file), do: ""
 
-  # The step markers follow the file's own state: the pick is step two, and a
-  # file problem stays on step one because nothing has been chosen yet.
+  # The step markers follow the panel's own state: the pick is step two, the
+  # fit review step three, and a file problem stays on step one because
+  # nothing has been chosen yet.
+  defp file_import_step_index(:review), do: 2
   defp file_import_step_index(:pick), do: 1
   defp file_import_step_index(_step), do: 0
 
@@ -1393,7 +1466,158 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
 
   defp upload_ready?(_upload), do: false
 
-  defp upload_ready?(_upload), do: false
+  # --- fit review (step 31) ----------------------------------------------
+  #
+  # The hook's own measurement of the file line against this pattern's stops,
+  # in the prototype's `import-review`, `import-review-reversed`,
+  # `import-short` and `import-good` states (AC-24). Nothing here is measured
+  # again: every number is the one the hook reported, and the only work this
+  # side does is naming the stops those numbers are about (rule 11, INV-5).
+  # Findings come in the reference's order — direction, then the ends, then
+  # the stops more than 100 m (330 ft) from the line.
+  attr :fit, :map, required: true, doc: "the hook's reported fit (`@file_fit`)"
+  attr :visits, :map, default: %{}, doc: "visits by position, for the names the findings use"
+
+  def fit_review(assigns) do
+    fit = assigns.fit
+
+    assigns =
+      assigns
+      |> assign(:first_stop, stop_name(assigns.visits, first_position(assigns.visits)))
+      |> assign(:last_stop, stop_name(assigns.visits, last_position(assigns.visits)))
+      |> assign(:far, Enum.map(fit.far, &far_finding(&1, assigns.visits)))
+      |> assign(:blocked?, fit.direction == "reversed")
+
+    ~H"""
+    <div id="file-fit-review" class="mt-1">
+      <div class="flex flex-wrap items-end justify-between gap-x-4 gap-y-1">
+        <p id="file-fit-headline" tabindex="-1" class="focus-visible:outline-none">
+          <strong class="font-display text-[26px] font-semibold tabular-nums text-strong">
+            {@fit.within} of {@fit.visit_count}
+          </strong>
+          <span class="text-sm text-default">stops within 330 ft</span>
+        </p>
+        <p id="file-fit-length" class="text-[13px] tabular-nums text-muted">
+          {file_line_length(@fit)}
+        </p>
+      </div>
+
+      <div class="mt-3 grid gap-2">
+        <%!-- The three directions get three different answers. "unknown" is
+          the loop case: both end visits land in the same place on the line,
+          so there is no direction to report and nothing to block. --%>
+        <.message
+          :if={@blocked?}
+          id="fit-direction-reversed"
+          kind="error"
+          title="This line runs the other way"
+        >
+          This pattern runs from {@first_stop} to {@last_stop}. This line&rsquo;s stops are in the
+          opposite order, so its sections would be measured against the wrong end.
+          <:action>
+            <button
+              type="button"
+              id="fit-reverse"
+              phx-click="alignment_reverse_file_line"
+              class="btn btn-outline min-h-11"
+            >
+              <.icon name="hero-arrows-right-left" class="size-4" /> Reverse line
+            </button>
+          </:action>
+        </.message>
+
+        <.message
+          :if={@fit.direction == "unknown"}
+          id="fit-direction-unknown"
+          kind="info"
+          title="This line runs the same way at both ends"
+        >
+          Both of this pattern&rsquo;s end stops land in the same place on it, so the fit cannot
+          say which way it runs. Check the arrows on the map before you draft it.
+        </.message>
+
+        <.message
+          :if={not @fit.reaches_start}
+          id="fit-start"
+          kind="warning"
+          title={"The line starts after " <> @first_stop}
+        >
+          It doesn&rsquo;t reach this pattern&rsquo;s first stop, so that section comes in without a
+          path.
+        </.message>
+
+        <.message
+          :if={not @fit.reaches_end}
+          id="fit-end"
+          kind="warning"
+          title={"The line ends before " <> @last_stop}
+        >
+          It stops short of this pattern&rsquo;s last stop, so that section comes in without a path.
+        </.message>
+
+        <.message
+          :if={@far == [] and @fit.reaches_start and @fit.reaches_end}
+          id="fit-ok"
+          kind="success"
+          title="Every stop is on the line"
+        >
+          All {@fit.visit_count} stops are within 330 ft of it, and it runs from {@first_stop} to {@last_stop}.
+        </.message>
+
+        <.message
+          :if={@far != []}
+          id="fit-far"
+          kind="warning"
+          title={fit_far_title(@far)}
+        >
+          These stops are more than 330 ft from the line:
+          <ul class="mt-1 grid list-disc pl-5">
+            <li :for={stop <- @far} id={stop.id}>{stop.name}, {stop.distance} from the line</li>
+          </ul>
+        </.message>
+      </div>
+    </div>
+    """
+  end
+
+  defp fit_far_title([first]), do: "#{first.name} is #{first.distance} from the line"
+  defp fit_far_title(far), do: "#{length(far)} stops are more than 330 ft from the line"
+
+  defp far_finding(far, visits) do
+    %{
+      id: "fit-far-#{far.position}",
+      name: stop_name(visits, far.position),
+      distance: fit_distance_ft(far.distance_m)
+    }
+  end
+
+  # A far stop the model carries no name for is named by its position in the
+  # pattern, which is what the section list calls it too.
+  defp stop_name(visits, position) when is_map(visits) and is_integer(position) do
+    case Map.get(visits, position) do
+      %{name: name} when is_binary(name) and name != "" -> name
+      _other -> "Stop #{position}"
+    end
+  end
+
+  defp stop_name(_visits, _position), do: "this pattern's last stop"
+
+  defp first_position(visits) when map_size(visits) == 0, do: nil
+  defp first_position(visits), do: visits |> Map.keys() |> Enum.min()
+
+  defp last_position(visits) when map_size(visits) == 0, do: nil
+  defp last_position(visits), do: visits |> Map.keys() |> Enum.max()
+
+  # The hook measures in metres (INV-1). 100 m is the one threshold the fit
+  # and the conversion share; this is where it becomes the 330 ft the review
+  # reads in.
+  @fit_feet_per_meter 3.28084
+
+  defp fit_distance_ft(distance_m) when is_number(distance_m) do
+    "#{round(distance_m * @fit_feet_per_meter / 10) * 10} ft"
+  end
+
+  defp fit_distance_ft(_distance_m), do: "more than 330 ft"
 
   # --- import dialog (imported shapes) ------------------------------------
 
