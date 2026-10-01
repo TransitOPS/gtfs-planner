@@ -44,9 +44,13 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeApplyLockOrderTest do
 
   setup do
     supervisor = start_supervised!({Task.Supervisor, name: __MODULE__.TaskSupervisor})
-    scope = unboxed(&seed_scope/0)
-    on_exit(fn -> unboxed(fn -> cleanup(scope) end) end)
-    %{scope: scope, supervisor: supervisor}
+
+    # Cleanup is registered as soon as the organization exists, so a failure while seeding the
+    # rest of the scope still deletes what was committed.
+    organization = unboxed(&organization_fixture/0)
+    on_exit(fn -> unboxed(fn -> cleanup(organization.id) end) end)
+
+    %{scope: unboxed(fn -> seed_scope(organization) end), supervisor: supervisor}
   end
 
   test "an apply that starts behind a run-first version holder waits on the run without deadlock",
@@ -228,11 +232,10 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeApplyLockOrderTest do
   end
 
   # One organization with an editor-owned run in the applying state and two approved decisions.
-  defp seed_scope do
-    organization = organization_fixture()
+  defp seed_scope(organization) do
     version = gtfs_version_fixture(organization.id)
-    actor = editor_fixture(organization)
-    admin = system_admin_fixture(organization)
+    actor = member!(organization, ["pathways_studio_editor"])
+    admin = member!(organization, ["administrator"])
     decisions = [level_decision("L2", 2.0), level_decision("L3", 3.0)]
 
     {:ok, run} =
@@ -307,14 +310,27 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeApplyLockOrderTest do
     }
   end
 
-  # Runs and decisions cascade from the version and organization rows.
-  defp cleanup(scope) do
-    org_id = scope.organization.id
+  # Emails never reuse a number from an earlier run, so committed rows left by other tests in
+  # the same database cannot make a fixture user collide.
+  defp member!(organization, roles) do
+    user = user_fixture(%{email: "apply-lock-#{Ecto.UUID.generate()}@example.test"})
+    organization_membership_fixture(user, organization, roles)
+    user
+  end
+
+  # Runs and decisions cascade from the version and organization rows. Users are found through
+  # their memberships, which only this organization's fixtures create.
+  defp cleanup(org_id) do
+    user_ids =
+      Repo.all(
+        from(m in UserOrgMembership, where: m.organization_id == ^org_id, select: m.user_id)
+      )
+
     Repo.delete_all(from(row in ChangeLog, where: row.organization_id == ^org_id))
     Repo.delete_all(from(row in Level, where: row.organization_id == ^org_id))
     Repo.delete_all(from(row in UserOrgMembership, where: row.organization_id == ^org_id))
     Repo.delete_all(from(row in GtfsVersion, where: row.organization_id == ^org_id))
     Repo.delete_all(from(row in Organization, where: row.id == ^org_id))
-    Repo.delete_all(from(row in User, where: row.id in ^[scope.actor.id, scope.admin.id]))
+    Repo.delete_all(from(row in User, where: row.id in ^user_ids))
   end
 end

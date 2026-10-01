@@ -60,8 +60,8 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeApplyAuthorizationTest do
     %{
       organization: organization,
       version: gtfs_version_fixture(organization.id),
-      actor: editor_fixture(organization),
-      admin: system_admin_fixture(organization)
+      actor: member!(organization, ["pathways_studio_editor"]),
+      admin: member!(organization, ["administrator"])
     }
   end
 
@@ -167,7 +167,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeApplyAuthorizationTest do
     organization: organization,
     version: version
   } do
-    outsider = editor_fixture(organization_fixture())
+    outsider = member!(organization_fixture(), ["pathways_studio_editor"])
     run = review_run!(organization, version, outsider, [level_decision("L2", 2.0)])
     {:ok, claimed, generation, token} = ChangeRuns.claim(organization.id, run.id, :apply)
 
@@ -183,6 +183,14 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeApplyAuthorizationTest do
 
     refute Gtfs.get_level_by_level_id(organization.id, version.id, "L2")
     assert change_log_count(organization) == 0
+  end
+
+  # Emails never reuse a number from an earlier run, so committed rows left by other tests in
+  # the same database cannot make a fixture user collide.
+  defp member!(organization, roles) do
+    user = user_fixture(%{email: "apply-auth-#{Ecto.UUID.generate()}@example.test"})
+    organization_membership_fixture(user, organization, roles)
+    user
   end
 
   defp review_run!(organization, version, actor, decisions) do

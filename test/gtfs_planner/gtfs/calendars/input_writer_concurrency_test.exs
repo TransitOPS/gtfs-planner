@@ -504,7 +504,8 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
 
       send(writer.pid, :go)
       assert_blocked_by(backend, holder_backend)
-      assert stop_ids(scope) == Enum.sort([station.stop_id, "STOP_TO_DELETE"])
+      # The database collation orders mixed-case IDs differently from Elixir, so sort both sides.
+      assert Enum.sort(stop_ids(scope)) == Enum.sort([station.stop_id, "STOP_TO_DELETE"])
 
       send(holder.pid, :release)
       assert Task.await(holder, @collect_timeout) == {:error, :released}
@@ -704,11 +705,6 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
       end)
 
       audit = bulk_audit(scope, station.stop_id)
-
-      unboxed(fn ->
-        organization_membership_fixture(%User{id: audit.actor_id}, scope.organization)
-      end)
-
       on_exit(fn -> cleanup([], [audit.actor_id]) end)
 
       # The exact renamed ID comes from the real preview rather than from a naming convention
@@ -1409,7 +1405,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
       service = "svc_#{unique}"
       calendar_fixture(organization.id, version.id, %{service_id: service})
 
-      actor = user_fixture()
+      actor = unique_editor(organization)
 
       audit = %AuditContext{
         organization_id: organization.id,
@@ -1601,11 +1597,16 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
     }
   end
 
+  # Committed identities never reuse a number from an earlier run of the suite, so rows another
+  # test left behind cannot collide with this one. Call inside `unboxed/1`.
+  defp unique_editor(organization) do
+    user = user_fixture(%{email: "input-writer-#{Ecto.UUID.generate()}@example.test"})
+    organization_membership_fixture(user, organization)
+    user
+  end
+
   defp bulk_audit(scope, station_stop_id) do
-    actor =
-      unboxed(fn ->
-        editor_fixture(scope.organization)
-      end)
+    actor = unboxed(fn -> unique_editor(scope.organization) end)
 
     %AuditContext{
       organization_id: scope.organization.id,
@@ -1732,7 +1733,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
   # belongs to a real editor because applying reauthorizes the run's actor.
   defp seed_import_run(scope, decisions) do
     unboxed(fn ->
-      editor = editor_fixture(scope.organization)
+      editor = unique_editor(scope.organization)
       actor = %{id: editor.id, email: editor.email}
 
       {:ok, run} =

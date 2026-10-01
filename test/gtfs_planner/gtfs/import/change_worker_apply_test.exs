@@ -827,7 +827,8 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
 
   # Applying reauthorizes the run's actor, so the run belongs to a real active editor.
   defp review_run!(organization_id, version_id, decisions) do
-    editor = editor_fixture(%{id: organization_id})
+    editor = user_fixture(%{email: "apply-editor-#{Ecto.UUID.generate()}@example.test"})
+    organization_membership_fixture(editor, %{id: organization_id})
     actor = %{id: editor.id, email: editor.email}
     {:ok, run} = ChangeRuns.create_pending_compute(organization_id, version_id, actor, [])
     {:ok, _computing, generation, token} = ChangeRuns.claim(organization_id, run.id, :compute)
