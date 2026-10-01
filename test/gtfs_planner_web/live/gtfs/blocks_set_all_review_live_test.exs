@@ -226,7 +226,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSetAllReviewLiveTest do
     view
     |> render()
     |> LazyHTML.from_fragment()
-    |> LazyHTML.filter(selector)
+    |> LazyHTML.query(selector)
     |> Enum.flat_map(&LazyHTML.attribute(&1, name))
   end
 
@@ -237,9 +237,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSetAllReviewLiveTest do
   # One count card's own number: the card whose id the label's words make, read
   # as text so a case asserts the value rather than the markup around it.
   defp count_card(view, id, value) do
-    card = view |> render() |> LazyHTML.from_fragment() |> LazyHTML.filter("##{id}")
+    card =
+      view
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("#set-all-review-count-#{id}")
 
-    assert length(card) == 1
+    assert Enum.count(card) == 1
     assert LazyHTML.text(card) =~ to_string(value)
   end
 

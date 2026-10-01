@@ -170,13 +170,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSetAllSaveLiveTest do
   # A record that no longer matches its pair: `InSeat.state/2` reports the pair as
   # needing review, so the derivation carries `review?` and R9 offers no Undo for
   # a pair whose only record was that one.
+  # A record naming stops the trips no longer serve, so `InSeat.state/2` reads it
+  # as `{:stale, :stops_changed}`: a record that needs review, which R9 excludes
+  # from Undo. A record with nil stops carries nothing to compare and reads as
+  # `:matches` instead.
   defp stale_record(context, pair) do
     transfer_fixture(context.organization.id, context.version.id, %{
       transfer_type: 4,
       from_trip_id: pair.from.trip_id,
       to_trip_id: pair.to.trip_id,
-      from_stop_id: nil,
-      to_stop_id: nil
+      from_stop_id: "STOPPED-#{System.unique_integer([:positive])}",
+      to_stop_id: "STOPPED-#{System.unique_integer([:positive])}"
     })
   end
 
@@ -282,6 +286,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSetAllSaveLiveTest do
     render_async(view)
   end
 
+  defp doc(view), do: view |> render() |> LazyHTML.from_fragment()
+
   defp pair_transfers(context, pair) do
     Transfer
     |> where([t], t.gtfs_version_id == ^context.version.id)
@@ -295,6 +301,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSetAllSaveLiveTest do
   # for one that refuses. A reader who has to see `:busy` cannot get it from the
   # real adapter without deadlocking a live database, and the retry loop that
   # turns it into `:busy` is the package's own.
+  # The whole error struct, severity included: `retryable?/1` reads the code and
+  # the logger formats the severity, so a partial one is neither retryable nor
+  # printable.
+  defp postgrex_deadlock do
+    %Postgrex.Error{
+      postgres: %{code: :deadlock_detected, message: "deadlock detected", severity: "ERROR"}
+    }
+  end
+
   defp use_busy_transaction_module do
     previous = Application.fetch_env(:gtfs_planner, :reviewed_apply_transaction)
 
@@ -311,7 +326,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSetAllSaveLiveTest do
 
     # Three refused attempts exhaust the bounded retry and answer `:busy` (R4).
     expect(ReviewedApplyTransactionMock, :run, 3, fn _transaction ->
-      raise Postgrex.Error, postgres: %{code: :deadlock_detected, message: "deadlock detected"}
+      raise postgrex_deadlock()
     end)
   end
 
@@ -322,12 +337,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSetAllSaveLiveTest do
 
       view = open_review(context, group, "reboard")
 
-      # Three pairs are actionable for an explicit setting: two with no record
-      # and one already carrying a record the write replaces. The refused pair
-      # has no box, so it is never part of the write.
-      assert has_element?(view, "#set-all-review-included", "3 of 3 included")
+      # Four pairs are actionable for an explicit setting: two with no record
+      # and the stay and the stale one already carrying a record the write
+      # replaces. The refused pair has no box, so it is never part of the write.
+      assert has_element?(view, "#set-all-review-included", "4 of 4 included")
 
-      [changed | _rest] = connections_of(group, "N")
+      [changed, other | _rest] = connections_of(group, "N")
       pair = pair_from(context, changed)
 
       # Another editor replaces one included pair's record after the review read
@@ -345,7 +360,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSetAllSaveLiveTest do
       assert has_element?(
                view,
                "[data-role='bulk-result']",
-               "Saved 2 connections: riders must re-board. 1 skipped:"
+               "Saved 3 connections: riders must re-board. 2 skipped:"
              )
 
       assert has_element?(
@@ -359,7 +374,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSetAllSaveLiveTest do
       assert transfer.transfer_type == 4
 
       # Every other included pair carries the setting that was reviewed.
-      [other | _rest] = connections_of(group, "N")
       assert [transfer] = pair_transfers(context, pair_from(context, other))
       assert transfer.transfer_type == 5
 
@@ -499,13 +513,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSetAllSaveLiveTest do
       # The stale pair's only record needs review, so R9 allows no Undo for it.
       [stale | _rest] = connections_of(group, "T")
       stale_pair = pair_from(context, stale)
-      stale_row = stale_record(context, stale_pair)
-      assert stale_row.id
+      assert [stale_row] = pair_transfers(context, stale_pair)
+      assert stale_row.transfer_type == 4
 
       save_review(view)
 
       # The save replaced it, so the pair is saved — but it is unrestorable.
-      assert has_element?(view, "[data-role='bulk-result']", "Saved 3 connections")
+      assert has_element?(view, "[data-role='bulk-result']", "Saved 4 connections")
 
       assert has_element?(
                view,
@@ -515,7 +529,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSetAllSaveLiveTest do
 
       view |> element("#bulk-undo") |> render_click()
 
-      assert has_element?(view, "[data-role='bulk-result']", "Restored 2 connections.")
+      assert has_element?(view, "[data-role='bulk-result']", "Restored 3 connections.")
 
       # The unrestorable pair keeps the row the save wrote: Undo may not recreate
       # or restore a record R9 excludes (FH-9).
@@ -577,15 +591,18 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSetAllSaveLiveTest do
 
       assert html =~ @permission_message
 
-      for connection <- connections_of(group, "N") ++ connections_of(group, "S") do
-        pair = pair_from(context, connection)
-        assert [transfer] = pair_transfers(context, pair)
-        assert transfer.transfer_type in [4]
+      for connection <- connections_of(group, "N") do
+        assert pair_transfers(context, pair_from(context, connection)) == []
+      end
+
+      for connection <- connections_of(group, "S") do
+        assert [transfer] = pair_transfers(context, pair_from(context, connection))
+        assert transfer.transfer_type == 4
       end
 
       # The review is still open: the refusal wrote nothing and took nothing away.
       assert has_element?(view, "#set-all-review")
-      assert has_element?(view, "#set-all-review-save", "Save 3 connections")
+      assert has_element?(view, "#set-all-review-save", "Save 4 connections")
     end
 
     test "a busy write keeps the review open and says nothing changed", context do
@@ -608,7 +625,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSetAllSaveLiveTest do
 
       # Nothing was written and the review still holds every included row, so a
       # retry is one click rather than a rebuilt review.
-      assert has_element?(view, "#set-all-review-included", "3 of 3 included")
+      assert has_element?(view, "#set-all-review-included", "4 of 4 included")
       refute has_element?(view, "[data-role='bulk-result']")
 
       for connection <- connections_of(group, "N") do
