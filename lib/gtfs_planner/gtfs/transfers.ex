@@ -675,11 +675,13 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   # serializable isolation, so its snapshot predates any wait on the version lock.
   # A stop renamed during that wait fails this read with a serialization error and
   # `run_write/2` retries on a fresh snapshot, which no longer finds the old ID.
+  # Rows lock in UUID order, the lock order every entity writer follows.
   defp lock_stops(_organization_id, _gtfs_version_id, []), do: []
 
   defp lock_stops(organization_id, gtfs_version_id, stop_ids) do
     organization_id
     |> stops_with_children(gtfs_version_id, stop_ids)
+    |> order_by([s], asc: s.id)
     |> lock("FOR SHARE")
     |> Repo.all()
   end
