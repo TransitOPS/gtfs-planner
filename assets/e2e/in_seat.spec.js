@@ -838,7 +838,10 @@ test.describe("In-seat connections", () => {
     await tabUntilFocused(page, "#connection-save", 40);
     await page.keyboard.press("Enter");
     await expect(page.locator("#connection-result")).toContainText(
-      /Saved: riders stay on board from trip BIS_SH_A2 to trip BIS_SH_B2\./,
+      // The spec's own sentence is "Saved: {setting} from trip {a} to {b}." —
+      // only the first trip carries the word, so this reads the page's words
+      // and tolerates the template's whitespace inside the element.
+      /Saved: riders stay on board from trip BIS_SH_A2 to BIS_SH_B2\./,
     );
     await expect(page.locator("#gap-drawer")).toBeHidden();
 
@@ -861,12 +864,20 @@ test.describe("In-seat connections", () => {
 
     const review = page.locator("#set-all-review");
     await expect(review).toBeVisible();
-    await expect(page.locator("#set-all-review-count-adds")).toHaveText("2");
-    await expect(page.locator("#set-all-review-count-can-t-be-set")).toHaveText(
-      "1",
-    );
+    // Each count is a <div> holding its label and its number, so the number
+    // lives in the <dd> the definition list renders inside it.
+    await expect(
+      page.locator("#set-all-review-count-adds dd"),
+    ).toHaveText("2");
+    await expect(
+      // The count's id is slugged from its own label, so the apostrophe in
+      // "Can't be set" is dropped rather than hyphenated.
+      page.locator("#set-all-review-count-cant-be-set dd"),
+    ).toHaveText("1");
+    // The footer's total is the group's actionable rows: the refused pair has
+    // no include box, so it is not one of the connections the count is about.
     await expect(page.locator("#set-all-review-included")).toHaveText(
-      "2 of 3 included",
+      "2 of 2 included",
     );
     await expect(
       page.locator("#set-all-review-table tr[data-result='skip']"),
@@ -891,9 +902,15 @@ test.describe("In-seat connections", () => {
     await expect(bulkResult).toContainText(
       "Saved 2 connections: riders stay on board. 1 skipped:",
     );
-    await expect(
-      page.locator(`#bulk-result-skip-${SHARED_PAIR}`),
-    ).toContainText("BIS_SH_X runs next on this vehicle");
+    // The skipped line reads "Block {b}, {clock} ({a} → {b}): {reason}", and the
+    // page's own id for that line is slugged from all of that, so the line is
+    // addressed by its role and read for both the pair and the rule's reason.
+    const skipLine = page.locator(
+      "#bulk-result-skipped [data-role='bulk-result-skip']",
+    );
+    await expect(skipLine).toHaveCount(1);
+    await expect(skipLine).toContainText(`${SHARED_PAIR}`);
+    await expect(skipLine).toContainText("BIS_SH_X runs next on this vehicle");
     // Read while it is on the page: Dismiss takes it away.
     const bulkResultText = await bulkResult.innerText();
 
@@ -965,7 +982,7 @@ test.describe("In-seat connections", () => {
       save: "Tab into the drawer footer, then Enter",
       undo: "Enter on the result's Undo",
       setAll: "Space on a Set-all radio, then Enter on Review",
-      review: { adds: 2, skipped: 1, included: "2 of 3" },
+      review: { adds: 2, skipped: 1, included: "2 of 2" },
       bulkResult: bulkResultText,
       checks: {
         entries: CHECKS_ENTRIES,
