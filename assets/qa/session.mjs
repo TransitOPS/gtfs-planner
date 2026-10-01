@@ -71,6 +71,13 @@ export function replaysRoot(primary) {
   return join(primary, ".specs", "ux-qa", "replays");
 }
 
+// `<primary>/.specs/ux-qa/reference-trails` holds the authored positive control
+// of each scenario (rule R17). It sits beside `replaysRoot` so the launcher's
+// `selfcheck` and whatever writes a trail later cannot disagree about the path.
+export function referenceTrailsRoot(primary) {
+  return join(primary, ".specs", "ux-qa", "reference-trails");
+}
+
 // `JRNY-001-import.json`: a trail is named by its scenario ID with the slash
 // replaced, the same shape a run directory name takes.
 export function trailFileName(scenarioId) {
