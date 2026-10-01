@@ -178,6 +178,61 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSchemaTest do
     end
   end
 
+  describe "ownership constraints" do
+    test "a day cannot sit under a line of another version" do
+      org = organization_fixture()
+      version = gtfs_version_fixture(org.id)
+      other = gtfs_version_fixture(org.id)
+      line = insert_line(org.id, version.id, 1)
+
+      assert_raise Ecto.ConstraintError, ~r/roster_line_days_roster_lines_owner_fkey/, fn ->
+        insert_day(%{line | gtfs_version_id: other.id}, 1, @run_id)
+      end
+    end
+
+    test "a day cannot sit under a line of another organization" do
+      org = organization_fixture()
+      version = gtfs_version_fixture(org.id)
+      other_org = organization_fixture()
+      other_version = gtfs_version_fixture(other_org.id)
+      line = insert_line(org.id, version.id, 1)
+
+      # The organization and version agree with each other, so only the link to
+      # the line is wrong.
+      assert_raise Ecto.ConstraintError, ~r/roster_line_days_roster_lines_owner_fkey/, fn ->
+        insert_day(
+          %{line | organization_id: other_org.id, gtfs_version_id: other_version.id},
+          1,
+          @run_id
+        )
+      end
+    end
+
+    test "a line cannot hold an operator of another organization" do
+      org = organization_fixture()
+      version = gtfs_version_fixture(org.id)
+      foreign = insert_operator(organization_fixture().id, "E4101")
+
+      assert_raise Ecto.ConstraintError, ~r/roster_lines_operator_id_owner_fkey/, fn ->
+        insert_line(org.id, version.id, 1, foreign.id)
+      end
+    end
+
+    test "deleting an operator empties the line's operator and keeps its organization" do
+      org = organization_fixture()
+      version = gtfs_version_fixture(org.id)
+      operator = insert_operator(org.id, "E4101")
+      line = insert_line(org.id, version.id, 1, operator.id)
+
+      Repo.delete!(operator)
+
+      assert %RosterLine{operator_id: nil, organization_id: organization_id} =
+               Repo.get!(RosterLine, line.id)
+
+      assert organization_id == org.id
+    end
+  end
+
   describe "roster_line_days validation and constraints" do
     test "rejects a weekday outside 1 to 7" do
       org = organization_fixture()

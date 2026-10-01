@@ -34,6 +34,8 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
     {"flex_areas→flex_services", "flex_areas", "flex_service_id", "flex_services"},
     {"journal_entries.station_id→stops", "journal_entries", "station_id", "stops"},
     {"trip_runs.trip_id→trips", "trip_runs", "trip_id", "trips"},
+    {"roster_line_days.roster_line_id→roster_lines", "roster_line_days", "roster_line_id",
+     "roster_lines"},
     {"station_editing_statuses.station_id→stops", "station_editing_statuses", "station_id",
      "stops"}
   ]
@@ -49,7 +51,8 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
     {"blocking_settings.default_garage_id→garages", "blocking_settings", "default_garage_id",
      "garages"},
     {"vehicles.garage_id→garages", "vehicles", "garage_id", "garages"},
-    {"vehicles.vehicle_type_id→vehicle_types", "vehicles", "vehicle_type_id", "vehicle_types"}
+    {"vehicles.vehicle_type_id→vehicle_types", "vehicles", "vehicle_type_id", "vehicle_types"},
+    {"roster_lines.operator_id→operators", "roster_lines", "operator_id", "operators"}
   ]
 
   @doc "Lists the tables whose rows must belong to their named GTFS version."
