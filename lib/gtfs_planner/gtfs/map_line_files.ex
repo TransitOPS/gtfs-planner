@@ -8,6 +8,10 @@ defmodule GtfsPlanner.Gtfs.MapLineFiles do
   offers none. Every file problem is a plain atom so the upload panel can give
   each one its own message (AC-22).
 
+  `encode/2` is its counterpart for a download: `GtfsPlanner.Gtfs.Alignments.line_file/4`
+  owns the pieces and stops, and `encode/2` writes them as a GeoJSON
+  `FeatureCollection` or a plain `kml` document (AC-27).
+
   The XML formats (`.kml`, `.kmz`, `.gpx`) are read with a SAX pass that
   disallows entities and external entities, so an entity-expanding document is
   rejected as unreadable instead of expanding, and a `.kmz` is inflated in
@@ -86,6 +90,178 @@ defmodule GtfsPlanner.Gtfs.MapLineFiles do
   end
 
   defp read(_extension, _bytes), do: {:error, :unsupported}
+
+  # --- Downloaded map lines --------------------------------------------
+  #
+  # `encode/2` is the single door for a downloaded map line, the counterpart of
+  # `parse/2`: `Alignments.line_file/4` owns the pieces and stops, and only the
+  # document shapes are here.
+
+  @doc """
+  Encodes an `Alignments.line_file/4` model as a downloadable document.
+
+  Answers `{:ok, document}` — GeoJSON is one `FeatureCollection` holding each
+  pattern's line (a `LineString` of one piece, a `MultiLineString` of several,
+  never a line drawn across a gap) and a `Point` per stop; KML is a plain `kml`
+  document with one `Folder` per pattern, a `Placemark` per line piece and a
+  `Placemark` per stop, with every name XML escaped. Coordinates are written
+  in `[lon, lat]` order (INV-1). An unknown format answers
+  `{:error, :unsupported}`.
+  """
+  @spec encode(:geojson | :kml, map()) :: {:ok, binary()} | {:error, :unsupported}
+  def encode(:geojson, file), do: {:ok, Jason.encode!(geojson(file))}
+  def encode(:kml, file), do: {:ok, IO.iodata_to_binary(kml(file))}
+  def encode(_format, _file), do: {:error, :unsupported}
+
+  defp geojson(%{name: route, patterns: patterns}) do
+    %{
+      "type" => "FeatureCollection",
+      "features" => Enum.flat_map(patterns, &geojson_pattern(route, &1))
+    }
+  end
+
+  defp geojson_pattern(route, pattern) do
+    line =
+      case pattern.pieces do
+        [piece] ->
+          geometry(%{"type" => "LineString", "coordinates" => piece}, pattern, route)
+
+        pieces when pieces != [] ->
+          geometry(%{"type" => "MultiLineString", "coordinates" => pieces}, pattern, route)
+
+        [] ->
+          nil
+      end
+
+    Enum.reject([line | Enum.map(pattern.stops, &geojson_stop(&1, pattern))], &is_nil/1)
+  end
+
+  defp geometry(geometry, pattern, route) do
+    %{
+      "type" => "Feature",
+      "geometry" => geometry,
+      "properties" => %{
+        "name" => pattern.name,
+        "route" => route,
+        "route_pattern_id" => pattern.route_pattern_id,
+        "direction" => pattern.direction
+      }
+    }
+  end
+
+  defp geojson_stop(stop, pattern) do
+    if located?(stop) do
+      %{
+        "type" => "Feature",
+        "geometry" => %{"type" => "Point", "coordinates" => [stop.lon, stop.lat]},
+        "properties" => %{
+          "name" => stop.name,
+          "stop_id" => stop.stop_id,
+          "position" => stop.position,
+          "route_pattern_id" => pattern.route_pattern_id
+        }
+      }
+    end
+  end
+
+  # A visit without coordinates is already a blocked section (R5); it has no
+  # point to place in a downloaded file.
+  defp located?(%{lon: lon, lat: lat}), do: is_number(lon) and is_number(lat)
+
+  defp kml(%{name: route_name, patterns: patterns}) do
+    [
+      ~s(<?xml version="1.0" encoding="UTF-8"?>\n),
+      ~s(<kml xmlns="http://www.opengis.net/kml/2.2">\n),
+      "  <Document>\n",
+      element(4, "name", route_name),
+      Enum.map(patterns, &kml_folder/1),
+      "  </Document>\n",
+      "</kml>\n"
+    ]
+  end
+
+  defp kml_folder(pattern) do
+    [
+      "    <Folder>\n",
+      element(6, "name", pattern.name),
+      piece_placemarks(pattern),
+      Enum.flat_map(pattern.stops, &kml_stop_placemark/1),
+      "    </Folder>\n"
+    ]
+  end
+
+  defp piece_placemarks(pattern) do
+    case pattern.pieces do
+      [piece] ->
+        [line_placemark(pattern.name, piece)]
+
+      pieces ->
+        total = length(pieces)
+
+        pieces
+        |> Enum.with_index(1)
+        |> Enum.map(fn {piece, index} ->
+          line_placemark("#{pattern.name} (#{index}/#{total})", piece)
+        end)
+    end
+  end
+
+  defp line_placemark(name, piece) do
+    [
+      "      <Placemark>\n",
+      element(8, "name", name),
+      "        <LineString>\n",
+      "          <tessellate>1</tessellate>\n",
+      "          <coordinates>",
+      coordinates(piece),
+      "</coordinates>\n",
+      "        </LineString>\n",
+      "      </Placemark>\n"
+    ]
+  end
+
+  defp kml_stop_placemark(stop) do
+    if located?(stop) do
+      [
+        "      <Placemark>\n",
+        element(8, "name", stop.name),
+        "        <Point>\n",
+        "          <coordinates>",
+        coordinates([[stop.lon, stop.lat]]),
+        "</coordinates>\n",
+        "        </Point>\n",
+        "      </Placemark>\n"
+      ]
+    else
+      []
+    end
+  end
+
+  defp element(indent, name, text) do
+    [String.duplicate(" ", indent), "<", name, ">", escape_xml(text), "</", name, ">\n"]
+  end
+
+  defp coordinates(piece) do
+    Enum.map_join(piece, " ", fn [lon, lat] ->
+      [format_float(lon), ",", format_float(lat)]
+    end)
+  end
+
+  defp format_float(value) when is_integer(value), do: Integer.to_string(value)
+  defp format_float(value) when is_float(value), do: Float.to_string(value)
+
+  # Every text node is escaped, so a stop or route name with `&`, `<` or `"`
+  # cannot break the document.
+  defp escape_xml(text) when is_binary(text) do
+    text
+    |> String.replace("&", "&amp;")
+    |> String.replace("<", "&lt;")
+    |> String.replace(">", "&gt;")
+    |> String.replace("\"", "&quot;")
+    |> String.replace("'", "&apos;")
+  end
+
+  defp escape_xml(nil), do: ""
 
   # --- KML, KMZ and GPX -------------------------------------------------
   #
