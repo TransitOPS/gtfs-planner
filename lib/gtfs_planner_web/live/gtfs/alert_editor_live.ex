@@ -1433,10 +1433,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # Every timing answer goes through the one writer, like every other answer
   # (INV-1). A `nil` alert is the new-alert frame, which writes nothing before
   # the first answer (AC-15).
+  # The timing answer is an embed, so its fields travel under the embed's own
+  # name: `cast_embed(:timing)` reads `params["timing"]`, and a flat
+  # `%{"end_kind" => ...}` is an unknown key that `cast/3` drops without a word.
+  # Every timing answer therefore arrives here flat and leaves nested.
   defp write_timing(socket, attrs) do
     case socket.assigns.alert do
       nil -> {:noreply, socket}
-      alert -> save(socket, alert, attrs)
+      alert -> save(socket, alert, %{"timing" => attrs})
     end
   end
 
