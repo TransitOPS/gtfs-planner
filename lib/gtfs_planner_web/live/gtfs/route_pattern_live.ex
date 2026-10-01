@@ -2216,7 +2216,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
               <span
                 :if={@label_focus_id}
                 id="label-focus"
-                phx-mounted={JS.focus(to: "##{@label_focus_id}")}
+                phx-mounted={JS.focus(to: id_selector(@label_focus_id))}
                 class="hidden"
               />
             <% @load_state == :loading -> %>
@@ -2718,6 +2718,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   defp missing_key_for(:missing, key), do: key
   defp missing_key_for(_state, _detail), do: nil
+
+  # Pattern ids are free text from the feed (`10.1`, `A:1`), so the focus target
+  # is matched by its quoted id attribute rather than as a `#id` selector.
+  defp id_selector(id),
+    do: ~s([id="#{String.replace(id, ~r/["\\]/, "\\\\\\0")}"])
 
   defp grouping_lists_path(socket),
     do:
@@ -4368,10 +4373,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
               name: stop_name(socket.assigns.stops, occurrence.stop_id),
               arrival:
                 values["arrival"] ||
-                  raw_review_offset(row[:arrival_offset], shift),
+                  review_input_offset(row[:arrival_offset], shift),
               departure:
                 values["departure"] ||
-                  raw_review_offset(row[:departure_offset], shift),
+                  review_input_offset(row[:departure_offset], shift),
               estimated?:
                 values == %{} and
                   Enum.any?(estimates, &(&1[:key] == occurrence.key))
@@ -4409,6 +4414,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   defp raw_review_offset(value, shift) when is_integer(value), do: offset_input(value + shift)
   defp raw_review_offset(_value, _shift), do: "—"
+
+  # An added stop's time is an input, so a blank one stays empty for typing
+  # rather than carrying the dash the read-only rows show.
+  defp review_input_offset(value, shift) when is_integer(value), do: offset_input(value + shift)
+  defp review_input_offset(_value, _shift), do: ""
 
   defp shift_label(shifts, timing_id) when is_list(shifts) do
     case Enum.find(shifts, &(Map.get(&1, :timing_id) == timing_id)) do
