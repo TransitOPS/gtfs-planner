@@ -564,7 +564,7 @@ defmodule GtfsPlanner.Gtfs do
           Ecto.UUID.t(),
           DateTime.t() | String.t() | nil,
           AuditContext.t()
-        ) :: {:ok, Transfer.t()} | {:error, :not_found | :stale | :busy}
+        ) :: {:ok, Transfer.t()} | {:error, :forbidden | :not_found | :stale | :busy}
   def delete_general_transfer(id, expected_updated_at, %AuditContext{} = audit) do
     Transfers.delete_general(id, expected_updated_at, audit)
   end
@@ -586,7 +586,7 @@ defmodule GtfsPlanner.Gtfs do
   retry up to three attempts before `:busy` (R8).
   """
   @spec delete_general_transfers([{Ecto.UUID.t(), DateTime.t() | String.t()}], AuditContext.t()) ::
-          {:ok, pos_integer()} | {:error, :invalid_input | :not_found | :stale | :busy}
+          {:ok, pos_integer()} | {:error, :invalid_input | :forbidden | :not_found | :stale | :busy}
   def delete_general_transfers(pairs, %AuditContext{} = audit) do
     Transfers.delete_general_many(pairs, audit)
   end

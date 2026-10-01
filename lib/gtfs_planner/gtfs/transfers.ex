@@ -73,6 +73,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   import Ecto.Changeset
   import Ecto.Query, warn: false
 
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
@@ -85,6 +86,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   alias GtfsPlanner.Gtfs.Transfers.Overlaps
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions
 
   @general_types [0, 1, 2, 3]
   @in_seat_types [4, 5]
@@ -527,7 +529,12 @@ defmodule GtfsPlanner.Gtfs.Transfers do
 
   @typedoc "A failed transfer write."
   @type write_error ::
-          Ecto.Changeset.t() | {:duplicate, collision() | nil} | :not_found | :stale | :busy
+          Ecto.Changeset.t()
+          | {:duplicate, collision() | nil}
+          | :forbidden
+          | :not_found
+          | :stale
+          | :busy
 
   @doc """
   Creates one general (types 0–3) transfer rule for the audit context's version.
@@ -607,7 +614,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   failures and deadlocks retry up to three attempts before `:busy` (R8).
   """
   @spec delete_general(Ecto.UUID.t(), DateTime.t() | String.t() | nil, AuditContext.t()) ::
-          {:ok, Transfer.t()} | {:error, :not_found | :stale | :busy}
+          {:ok, Transfer.t()} | {:error, :forbidden | :not_found | :stale | :busy}
   def delete_general(id, expected_updated_at, %AuditContext{} = audit) do
     run_write(fn -> delete_general_transaction(id, expected_updated_at, audit) end)
   end
@@ -635,7 +642,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   `:busy` (R8).
   """
   @spec delete_general_many([{Ecto.UUID.t(), DateTime.t() | String.t()}], AuditContext.t()) ::
-          {:ok, pos_integer()} | {:error, :invalid_input | :not_found | :stale | :busy}
+          {:ok, pos_integer()} | {:error, :invalid_input | :forbidden | :not_found | :stale | :busy}
   def delete_general_many(pairs, %AuditContext{} = audit) do
     case delete_targets(pairs) do
       {:ok, targets} -> run_write(fn -> delete_general_many_transaction(targets, audit) end)
@@ -1741,6 +1748,9 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   defp retryable?(_error), do: false
 
   defp create_general_transaction(attrs, audit) do
+    Authorization.lock_editor!(audit)
+    Versions.lock_for_input_write!(audit.organization_id, audit.gtfs_version_id)
+
     %Transfer{organization_id: audit.organization_id, gtfs_version_id: audit.gtfs_version_id}
     |> Transfer.editor_changeset(attrs)
     |> validate_references(audit.organization_id, audit.gtfs_version_id)
@@ -1796,6 +1806,9 @@ defmodule GtfsPlanner.Gtfs.Transfers do
     do: Repo.all(scoped_general_ids(audit.organization_id, audit.gtfs_version_id, transfer_ids))
 
   defp update_general_transaction(id, attrs, expected_updated_at, audit) do
+    Authorization.lock_editor!(audit)
+    Versions.lock_for_input_write!(audit.organization_id, audit.gtfs_version_id)
+
     case load_general(audit, id) do
       {:ok, transfer} ->
         if stale?(transfer, expected_updated_at),
@@ -1859,6 +1872,9 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   end
 
   defp delete_general_transaction(id, expected_updated_at, audit) do
+    Authorization.lock_editor!(audit)
+    Versions.lock_for_input_write!(audit.organization_id, audit.gtfs_version_id)
+
     case load_general(audit, id) do
       {:ok, transfer} ->
         if stale?(transfer, expected_updated_at),
@@ -1903,6 +1919,9 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   end
 
   defp delete_general_many_transaction(targets, audit) do
+    Authorization.lock_editor!(audit)
+    Versions.lock_for_input_write!(audit.organization_id, audit.gtfs_version_id)
+
     case cast_targets(targets) do
       {:ok, canonical} ->
         ids = Map.keys(canonical)
