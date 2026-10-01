@@ -19,6 +19,8 @@ defmodule GtfsPlanner.Accounts do
   alias GtfsPlanner.Accounts.UserNotifier
   alias GtfsPlanner.Organizations.Organization
 
+  @first_admin_setup_lock "accounts:first_admin_setup"
+
   ## Database getters
 
   @doc """
@@ -860,6 +862,10 @@ defmodule GtfsPlanner.Accounts do
   with administrator role, and confirms the user account. All operations occur
   atomically within a single transaction.
 
+  The transaction first takes an advisory lock, then checks that no user exists.
+  Concurrent setups queue on the lock, and the one that waits sees the winner's
+  committed user and returns `{:error, :already_set_up}` without writing.
+
   ## Examples
 
       iex> register_first_admin(%{email: "admin@example.com", password: "password123", password_confirmation: "password123", organization_name: "My Org", organization_alias: "my-org"})
@@ -869,7 +875,8 @@ defmodule GtfsPlanner.Accounts do
       {:error, %Ecto.Changeset{}}
 
   """
-  @spec register_first_admin(map()) :: {:ok, User.t()} | {:error, Ecto.Changeset.t()}
+  @spec register_first_admin(map()) ::
+          {:ok, User.t()} | {:error, :already_set_up} | {:error, Ecto.Changeset.t()}
   def register_first_admin(attrs) do
     changeset = FirstAdminForm.changeset(attrs)
 
@@ -877,6 +884,7 @@ defmodule GtfsPlanner.Accounts do
       registration = FirstAdminForm.registration_attrs(changeset)
 
       Ecto.Multi.new()
+      |> Ecto.Multi.run(:setup_open, fn _repo, _changes -> ensure_setup_open() end)
       |> Ecto.Multi.insert(:user, User.registration_changeset(%User{}, registration.user))
       |> Ecto.Multi.insert(
         :org,
@@ -900,6 +908,9 @@ defmodule GtfsPlanner.Accounts do
         {:ok, %{confirm_user: user}} ->
           {:ok, user}
 
+        {:error, :setup_open, :already_set_up, _changes} ->
+          {:error, :already_set_up}
+
         {:error, op, reason, _} ->
           {:error,
            FirstAdminForm.from_transaction_error(changeset, op, reason)
@@ -908,6 +919,14 @@ defmodule GtfsPlanner.Accounts do
     else
       {:error, %{changeset | action: :insert}}
     end
+  end
+
+  # Setups queue on one advisory lock. The count is read after the lock is held,
+  # so a setup that committed while this one waited is counted.
+  defp ensure_setup_open do
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [@first_admin_setup_lock])
+
+    if count_users() == 0, do: {:ok, :open}, else: {:error, :already_set_up}
   end
 
   ## User Organization Memberships

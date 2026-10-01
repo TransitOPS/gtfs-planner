@@ -1610,6 +1610,26 @@ defmodule GtfsPlanner.AccountsTest do
       assert membership.roles == ["administrator"]
     end
 
+    test "returns :already_set_up and writes nothing once a user exists" do
+      user_fixture()
+      email = unique_user_email()
+      org_alias = unique_organization_alias()
+      org_count = Repo.aggregate(Organization, :count, :id)
+
+      assert {:error, :already_set_up} =
+               Accounts.register_first_admin(%{
+                 email: email,
+                 password: valid_user_password(),
+                 password_confirmation: valid_user_password(),
+                 organization_name: valid_organization_name(),
+                 organization_alias: org_alias
+               })
+
+      refute Accounts.get_user_by_email(email)
+      refute Repo.get_by(Organization, alias: org_alias)
+      assert Repo.aggregate(Organization, :count, :id) == org_count
+    end
+
     test "real duplicate organization alias constraint maps to :organization_alias and rolls back writes" do
       alias_val = "dup-#{System.unique_integer([:positive])}"
 

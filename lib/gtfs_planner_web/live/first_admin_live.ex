@@ -255,6 +255,12 @@ defmodule GtfsPlannerWeb.FirstAdminLive do
          |> put_flash(:info, "Administrator account created. Log in to continue.")
          |> redirect(to: ~p"/users/log_in")}
 
+      {:error, :already_set_up} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Setup is already complete. Log in with the administrator account.")
+         |> redirect(to: ~p"/users/log_in")}
+
       {:error, changeset} ->
         # Read the errors before the passwords are dropped: a failed submit has
         # no used-field state, so they come from the changeset directly, and the
