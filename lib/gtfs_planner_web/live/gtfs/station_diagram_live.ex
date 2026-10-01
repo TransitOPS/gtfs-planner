@@ -3950,14 +3950,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
         :edit ->
           case socket.assigns.active_level do
-            %Gtfs.Level{id: id} ->
+            %Gtfs.Level{id: id} = level ->
               attrs = %{
                 level_id: params["level_id"],
                 level_name: params["level_name"],
                 level_index: parse_int(params["level_index"])
               }
 
-              Stations.update_level(audit, id, attrs, parse_int(params["lock_version"]))
+              # Saving the values the level already has writes nothing and records no history.
+              if Gtfs.Level.editor_changeset(level, attrs).changes == %{},
+                do: {:ok, level},
+                else: Stations.update_level(audit, id, attrs, parse_int(params["lock_version"]))
 
             _ ->
               {:error, :not_found}
