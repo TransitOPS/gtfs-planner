@@ -99,7 +99,11 @@ async function waitForLiveView(page) {
 
 // The drawer slides in over 300ms. Capturing before the panel settles
 // photographs a partially transformed panel, so the wait requires the panel's
-// right edge to sit on the viewport edge and its animation to have finished.
+// right edge to sit on its dialog's right edge and its animation to have
+// finished. The modal dialog fills the viewport less the width the root's
+// `scrollbar-gutter: stable` reserves, which is 15px when the browser draws
+// classic scrollbars and 0 when it draws overlay ones, so `innerWidth` is not
+// the edge the panel settles on.
 async function settleDrawer(page, id) {
   const panel = page.locator(`#${id}`);
   await panel.waitFor({ state: "visible" });
@@ -109,8 +113,8 @@ async function settleDrawer(page, id) {
       if (!element) return false;
 
       const rect = element.getBoundingClientRect();
-      const settled =
-        Math.abs(rect.right - window.innerWidth) <= 2 && rect.left < window.innerWidth;
+      const edge = element.closest("dialog").getBoundingClientRect().right;
+      const settled = Math.abs(rect.right - edge) <= 2 && rect.left < edge;
       const stillMoving = element
         .getAnimations()
         .some((animation) => animation.playState === "running");
