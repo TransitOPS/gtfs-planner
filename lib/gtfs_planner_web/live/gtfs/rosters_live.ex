@@ -96,6 +96,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     save_operator
     confirm_delete_operator
     apply_operator_import
+    save_settings
   )
 
   # A role revoked while the page is open is not an error the reader caused and
@@ -130,6 +131,17 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   # The import view's own message, so the refusal the context hands back is
   # moved to rather than scrolled past.
   @operator_import_error_id "rosters-import-error"
+
+  # The settings form and its summary: the form the save pushes focus into, and
+  # the panel that lists the failures when a field error has no control to land
+  # on. Both are this drawer's own addresses.
+  @settings_form_id "rosters-settings-form"
+  @settings_errors_id "rosters-settings-errors"
+
+  # The version went unpublished between the settings drawer opening and the
+  # save. The drawer keeps its entries and says this, because the entries are
+  # the planner's work and the version's state is not a reason to retype them.
+  @settings_not_found "That version is no longer published, so nothing was saved."
 
   # The import review with nothing in it: the drawer stays open with no file
   # chosen, and every path into it — opening, cancelling, a new file, a refused
@@ -171,6 +183,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
      # agree.
      |> assign(:load_state, :loading)
      |> assign(:roster, nil)
+     |> assign(:day_types, [])
      |> assign(:operators_count, 0)
      # The URL's three params start at their defaults, which are also the
      # values `rosters_path/3` leaves out of a patch: `/rosters` and
@@ -226,6 +239,10 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
      # returned a message, or a review. It is event state like the others, and
      # the upload that fills it is declared once here.
      |> assign(:operator_import, nil)
+     # The roster settings drawer: the base week, the two checks and the fixed
+     # days-off rule. Event state like every other surface on this page, and
+     # built by the events that change it rather than inside `render/1`.
+     |> assign(:settings, nil)
      |> allow_upload(:operators_file,
        accept: ~w(.csv .txt),
        max_entries: 1,
@@ -373,6 +390,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
       {:ok, view} ->
         socket
         |> assign(:roster, view.roster)
+        # The version's day types with their dates, which the composition used to
+        # resolve the base week and which the settings drawer offers as the
+        # choices for each weekday. Reading them off the same composition is what
+        # keeps a weekday's select and the week the grid shows from being two
+        # different calendars (INV-15).
+        |> assign(:day_types, view.day_types)
         # The organization's operator list is not part of the roster
         # composition (a line's own operator is), so this count is the one
         # figure the scope bar needs that the composition does not answer.
@@ -1158,10 +1181,208 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
 
   def handle_event("save_pick", _params, socket), do: {:noreply, socket}
 
+  # Roster settings. Opening and validating are reads of state this socket
+  # already holds — the loaded roster's own rules and its day types — so neither
+  # re-checks the membership and neither is in `@write_events`. `save_settings`
+  # is a write and is.
+  #
+  # The settings the form edits are `roster.rules`: the same three values the
+  # composition already read for the grid, the count strip and the scope bar, so
+  # the drawer cannot open on a different set of rules than the page is showing
+  # (INV-15). They are *not* re-read through `get_roster_settings/2` here: that
+  # would be a second answer to a question the composition has answered.
+  def handle_event("open_settings", _params, socket) do
+    {:noreply, open_settings(socket)}
+  end
+
+  def handle_event("close_settings", _params, socket) do
+    {:noreply, assign(socket, :settings, nil)}
+  end
+
+  # Blur is the moment the page believes a number is finished, so the error for
+  # it is drawn from the blur that left it and not before. The rules are the
+  # writer's own changeset run with the `:validate` action, so the page invents
+  # no validation of its own.
+  def handle_event("validate_settings", %{"settings" => params} = payload, socket) do
+    case socket.assigns.settings do
+      nil ->
+        {:noreply, socket}
+
+      form_state ->
+        changeset =
+          form_state.base
+          |> settings_changeset(params, :validate)
+          |> only_touched_errors(form_state.touched |> touch(settings_target(payload["_target"])))
+
+        {:noreply, put_settings(socket, form_state, changeset, form_state.failures)}
+    end
+  end
+
+  def handle_event("validate_settings", _params, socket), do: {:noreply, socket}
+
+  # The submit is the one moment every field is finished, so every error is drawn
+  # and the first invalid control takes focus. A refused save keeps the drawer
+  # open with what was typed: a refusal that closes the drawer reads as the page
+  # having lost the planner's work.
+  def handle_event("save_settings", %{"settings" => params}, socket) do
+    case socket.assigns.settings do
+      nil ->
+        {:noreply, socket}
+
+      form_state ->
+        changeset = settings_changeset(form_state.base, params, :update)
+
+        if changeset.valid? do
+          write_settings(socket, form_state, params)
+        else
+          {:noreply,
+           socket
+           |> put_settings(form_state, changeset, settings_failures(changeset))
+           |> push_event("focus_form_error", %{
+             form_id: @settings_form_id,
+             fallback_id: @settings_errors_id
+           })}
+        end
+    end
+  end
+
+  def handle_event("save_settings", _params, socket), do: {:noreply, socket}
+
   # Any other event is ignored. This clause is last among the `handle_event`
   # clauses on purpose: a catch-all placed earlier would shadow the real
   # handlers above it.
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  # A base-week select is addressed as `["settings", "roster_day_types", "1"]`,
+  # and the error the writer puts on it is on `:roster_day_types` — one field,
+  # however many weekdays it names. Blurring any of the seven therefore counts
+  # as touching that one field, or the message would vanish the moment a planner
+  # picked a different day type, before they had read it.
+  defp settings_target(target) when is_list(target) do
+    if "roster_day_types" in target, do: ["roster_day_types"], else: target
+  end
+
+  defp settings_target(target), do: target
+
+  # The write. Both arguments come from the socket, never from the submitted
+  # params (domain rule 17): a submitted organization is not a thing this form
+  # can say.
+  #
+  # On success the roster is re-read and the drawer closes, exactly as the Runs
+  # crew-rules drawer does after its save: the rules feed every derived run and
+  # the base week feeds every slot, so the scope bar, the count strip and the
+  # grid all have to show the new values rather than the ones this socket
+  # remembers. The toast is the prototype's sentence, and the base-week change
+  # is already visible in the grid as "Base week changed" on the slots it
+  # invalidates — that marking is the composition's, not this page's.
+  defp write_settings(socket, form_state, params) do
+    %{current_organization: organization, current_gtfs_version: version} = socket.assigns
+
+    case Gtfs.update_roster_settings(organization.id, version.id, params) do
+      {:ok, _settings} ->
+        {:noreply,
+         socket
+         |> assign(:settings, nil)
+         |> load_roster()
+         |> put_toast("Roster settings saved. Every line was checked again.", :done)
+         |> push_event("focus_scoped_target", %{id: "rosters-settings-button"})}
+
+      # The version went unpublished between the drawer opening and the save.
+      # The writer refuses the write, so the drawer says why and keeps the
+      # entries: the planner typed them and nothing about the version's state
+      # makes them worth retyping.
+      {:error, :not_found} ->
+        {:noreply,
+         put_settings(
+           socket,
+           form_state,
+           settings_changeset(form_state.base, params, :update),
+           []
+         )
+         |> put_settings_notice(@settings_not_found)}
+
+      # A changeset error the client-side pass did not reach — a value the
+      # domain casts differently, or a day type a calendar change has made
+      # unusable. Its field errors are shown under their own inputs, the entries
+      # are kept, and the writer's action is restored, because a form built from
+      # a changeset with no action shows none of its errors.
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply,
+         socket
+         |> put_settings(
+           form_state,
+           Map.put(changeset, :action, :update),
+           settings_failures(changeset)
+         )
+         |> push_event("focus_form_error", %{
+           form_id: @settings_form_id,
+           fallback_id: @settings_errors_id
+         })}
+    end
+  end
+
+  # The form opens on the roster this socket is showing, so the drawer's numbers
+  # and selects are the ones the grid and the scope bar are already using. Every
+  # other surface this page can be in is closed first, for the operators drawer's
+  # reason: two drawers at once is two sets of pending input.
+  defp open_settings(socket) do
+    case socket.assigns.roster do
+      nil ->
+        socket
+
+      roster ->
+        form_state = %{base: roster.rules, touched: MapSet.new(), failures: []}
+
+        socket
+        |> assign(:slot, nil)
+        |> assign(:add_to_line, nil)
+        |> assign(:line, nil)
+        |> assign(:pick, nil)
+        |> assign(:delete_operator, nil)
+        |> close_operators()
+        |> put_settings(form_state, settings_changeset(roster.rules, %{}, :validate), [])
+    end
+  end
+
+  defp put_settings(socket, form_state, changeset, failures) do
+    assign(
+      socket,
+      :settings,
+      Map.merge(form_state, %{form: to_form(changeset, as: :settings), failures: failures})
+    )
+  end
+
+  defp put_settings_notice(socket, notice) do
+    assign(socket, :settings, Map.put(socket.assigns.settings, :notice, notice))
+  end
+
+  # The writer's own changeset, run with the action that decides what is drawn.
+  # `:validate` never writes and `:update` only reaches the writer when the same
+  # changeset says it is valid, so there is one set of rules on the page and in
+  # the write (domain rule 13).
+  defp settings_changeset(base, params, action),
+    do: Gtfs.change_roster_settings(base, params) |> Map.put(:action, action)
+
+  # The submit's failures, one link per field, in field order. The base week is
+  # one entry whatever it holds, because the writer reports one message at a time
+  # and the sentence names the weekday to change.
+  defp settings_failures(changeset) do
+    changeset.errors
+    |> Enum.map(fn {field, {message, _opts}} ->
+      %{href: "##{settings_field_id(field)}", msg: "#{settings_label(field)}: #{message}"}
+    end)
+    |> Enum.sort_by(& &1.href)
+  end
+
+  defp settings_field_id(:min_rest_minutes), do: "rosters-settings-rest"
+  defp settings_field_id(:weekly_hours_warn_above), do: "rosters-settings-warn"
+  defp settings_field_id(:roster_day_types), do: "rosters-settings-base-week"
+  defp settings_field_id(field), do: "settings_#{field}"
+
+  defp settings_label(:min_rest_minutes), do: "Minimum rest"
+  defp settings_label(:weekly_hours_warn_above), do: "Warn above weekly hours"
+  defp settings_label(:roster_day_types), do: "Base week"
+  defp settings_label(field), do: to_string(field)
 
   # The write. On success the roster is re-read and the row closes, so the
   # Operator column and the open-work count are the composition's own words and
@@ -2345,6 +2566,16 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
           open
           import_state={@operator_import}
           upload={@uploads.operators_file}
+        />
+
+        <RostersComponents.settings_drawer
+          :if={@settings}
+          open
+          form={@settings.form}
+          day_types={@day_types}
+          base_week={@roster.base_week}
+          failures={@settings.failures}
+          notice={@settings[:notice]}
         />
 
         <RosterOperatorsComponents.operator_form

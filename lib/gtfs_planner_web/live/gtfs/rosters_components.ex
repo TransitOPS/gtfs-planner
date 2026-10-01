@@ -90,12 +90,21 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   use GtfsPlannerWeb, :html
 
   import GtfsPlannerWeb.PlannerComponents,
-    only: [drawer_footer: 1, drawer_scroll: 1, first_use: 1, message: 1, sort_header: 1]
+    only: [
+      drawer_footer: 1,
+      drawer_scroll: 1,
+      first_use: 1,
+      form_error_summary: 1,
+      form_section: 1,
+      message: 1,
+      sort_header: 1
+    ]
 
   alias GtfsPlanner.Gtfs.Rosters.Candidates
   alias GtfsPlanner.Gtfs.Rosters.Checks
   alias GtfsPlannerWeb.CoreComponents
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
+  alias Phoenix.HTML.Form
 
   @weekdays ~w(Mon Tue Wed Thu Fri Sat Sun)
 
@@ -2826,4 +2835,302 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   """
   def plural_run_days(1), do: "1 run-day returns"
   def plural_run_days(count), do: "#{count} run-days return"
+
+  @doc """
+  The roster settings drawer: the base week, the two checks, and the fixed days-off
+  rule, as the prototype's `settings` and `settings-error` states draw them.
+
+  ## What each weekday's select offers
+
+  One select per weekday, offering the day types that actually run on that
+  weekday with the number of dates each has there — "Weekdays + school days ·
+  143 Mondays". A day type with no date on that weekday is not offered at all:
+  the writer refuses it, so offering it would draw a control whose every option
+  is a mistake. A weekday no day type dates has no select and says so, because
+  that is a fact about the version's calendars rather than a choice the planner
+  has not made yet.
+
+  The default the page is *using* — the one `Rosters.BaseWeek` resolved, which
+  is what the grid and the scope bar already say — is marked "(most dates)" when
+  it came from a fallback rather than from a stored choice. A weekday whose
+  stored choice could not be used says which day type it fell back to and which
+  key was lost, so a fallback is never silent (INV-6).
+
+  ## The errors are the writer's
+
+  Both number fields run `Gtfs.change_roster_settings/2`'s changeset and nothing
+  else, exactly as the operator form does: the page invents no rule, and a
+  refusal from `update_roster_settings/3` is drawn with the action restored so
+  its errors are not dropped. A base-week refusal is one error on
+  `:roster_day_types` however many weekdays it names, so it is drawn once — on
+  the notice and in the summary — rather than marked on seven selects.
+
+  ## The days-off rule is text, not a field
+
+  It is a fixed rule with no setting (AC-15), so it is drawn as the rule reads
+  rather than as a disabled control: a disabled input suggests a setting that
+  exists somewhere.
+  """
+  attr :open, :boolean, default: true
+  attr :form, Phoenix.HTML.Form, required: true
+  attr :day_types, :list, required: true
+  attr :base_week, :map, required: true
+  attr :failures, :list, default: []
+  attr :notice, :string, default: nil
+  attr :pending?, :boolean, default: false
+  attr :on_close, :string, default: "close_settings"
+
+  def settings_drawer(assigns) do
+    ~H"""
+    <.drawer
+      id="rosters-settings-drawer"
+      chrome="planner"
+      open={@open}
+      pending={@pending?}
+      on_close={@on_close}
+      class="max-w-[min(100vw,52rem)]"
+      title="Roster settings"
+      return_focus_id="rosters-settings-button"
+    >
+      <:lede>
+        <span id="rosters-settings-lede">This version · every line</span>
+      </:lede>
+
+      <%!-- The `FormErrorFocus` hook the save pushes to lives inside this drawer,
+      not on the page: the hook only focuses a target it already owns, and this
+      form is not inside the page region. --%>
+      <div
+        id="rosters-settings-form-content"
+        phx-hook="FormErrorFocus"
+        class="flex min-h-0 flex-1 flex-col"
+      >
+        <.form
+          for={@form}
+          id="rosters-settings-form"
+          novalidate
+          phx-change="validate_settings"
+          phx-submit="save_settings"
+          class="flex min-h-0 flex-1 flex-col"
+        >
+          <.drawer_scroll>
+            <.form_error_summary
+              id="rosters-settings-errors"
+              title="Fix these to save the settings"
+              failures={@failures}
+              class=""
+            />
+
+            <.message
+              :if={@notice}
+              id="rosters-settings-notice"
+              kind="error"
+              title="Nothing was saved."
+            >
+              {@notice}
+            </.message>
+
+            <.form_section title="Base week" first?>
+              <p id="rosters-settings-base-help" class="text-[13px] text-muted">
+                Each weekday’s lines take their runs from one day type. Dates that run other
+                service get no assignments in the export.
+              </p>
+
+              <div
+                id="rosters-settings-base-week"
+                tabindex="-1"
+                class="grid grid-cols-[110px_1fr] items-center gap-x-3 gap-y-2"
+              >
+                <div :for={weekday <- base_weekdays(@day_types, @base_week)} class="contents">
+                  <label
+                    id={"rosters-settings-base-label-#{weekday}"}
+                    for={"rosters-settings-base-#{weekday}"}
+                    class="text-sm font-semibold text-strong"
+                  >
+                    {weekday_name(weekday)}
+                  </label>
+
+                  <.input
+                    id={"rosters-settings-base-#{weekday}"}
+                    type="select"
+                    name={"settings[roster_day_types][#{weekday}]"}
+                    aria-labelledby={"rosters-settings-base-label-#{weekday}"}
+                    value={base_choice(@form, @day_types, @base_week, weekday)}
+                    options={
+                      base_options(@day_types, weekday) |> mark_default(Map.get(@base_week, weekday))
+                    }
+                    class="select select-lg"
+                  />
+                </div>
+              </div>
+
+              <p
+                :for={weekday <- weekdays_without_base(@base_week)}
+                id={"rosters-settings-base-none-#{weekday}"}
+                class="text-[13px] text-muted"
+              >
+                No day type runs on {weekday_name(weekday)}.
+              </p>
+
+              <.message
+                :if={missing_base?(@base_week)}
+                id="rosters-settings-base-missing"
+                kind="warning"
+                title="A saved day type is no longer usable."
+              >
+                {missing_base_sentence(@base_week)}
+              </.message>
+            </.form_section>
+
+            <.form_section title="Checks">
+              <.input
+                field={@form[:min_rest_minutes]}
+                id="rosters-settings-rest"
+                type="number"
+                label="Minimum rest (minutes)"
+                help="From one day’s sign-off to the next day’s sign-on, Sunday → Monday included. Create Mon–Fri line and Set Mon–Fri never break it; a single day only warns. 480–720; 600 is 10 hours."
+                min={480}
+                max={720}
+                step={1}
+                inputmode="numeric"
+                class="input input-lg w-28"
+                phx-debounce="blur"
+                phx-blur="validate_settings"
+              />
+
+              <.input
+                field={@form[:weekly_hours_warn_above]}
+                id="rosters-settings-warn"
+                type="number"
+                label="Warn above weekly hours"
+                help="Paid hours a week. Hours over 40 are always shown; they are not a warning on their own. 40–60."
+                min={40}
+                max={60}
+                step={1}
+                inputmode="numeric"
+                class="input input-lg w-28"
+                phx-debounce="blur"
+                phx-blur="validate_settings"
+              />
+
+              <div id="rosters-settings-days-off" class="grid gap-1">
+                <p class="text-[13px] font-semibold text-strong">Days off</p>
+                <p class="text-sm">
+                  At least two days off in a row each week, counting Sunday → Monday. Shown as a
+                  warning.
+                </p>
+                <p class="text-[13px] text-muted">
+                  Fixed. Relief lines built from leftover days stay possible.
+                </p>
+              </div>
+            </.form_section>
+          </.drawer_scroll>
+
+          <.drawer_footer>
+            <.button
+              id="rosters-settings-cancel"
+              type="button"
+              variant="secondary"
+              class="min-h-11"
+              phx-click={@on_close}
+            >
+              Cancel
+            </.button>
+            <.button
+              id="rosters-settings-save"
+              type="submit"
+              class="min-h-11"
+              phx-disable-with="Saving…"
+            >
+              Save settings
+            </.button>
+          </.drawer_footer>
+        </.form>
+      </div>
+    </.drawer>
+    """
+  end
+
+  # The day types this weekday can work, with the dates each has on it. A day
+  # type with no date on the weekday is left out rather than offered and then
+  # refused, and a weekday nothing dates has no options at all.
+  defp base_options(day_types, weekday) do
+    for day_type <- day_types,
+        count = dates_on(day_type, weekday),
+        count > 0 do
+      {"#{day_type.label} · #{count} #{weekday_name(weekday)}s", day_type.key}
+    end
+  end
+
+  # The default the page is *using* is marked "(most dates)" when it came from
+  # a fallback rather than from a stored choice. A stored choice that happens to
+  # be the most dates is a choice, not a default, and labelling it one would
+  # tell the reader their own setting is the page's guess.
+  defp mark_default(options, %{day_type: %{key: key}, chosen?: false}) do
+    Enum.map(options, fn
+      {label, ^key} -> {label <> " (most dates)", key}
+      other -> other
+    end)
+  end
+
+  defp mark_default(options, _chosen_or_absent), do: options
+
+  defp dates_on(day_type, weekday),
+    do: Enum.count(day_type.dates, &(Date.day_of_week(&1) == weekday))
+
+  # What a weekday's select shows: the choice this form is holding when that
+  # choice is still one of the options on offer — so a refused save or a live
+  # validation keeps the planner's own selection — and otherwise the day type
+  # the page is already working that weekday with, so the drawer opens on the
+  # week the grid shows rather than on a blank. A weekday no day type dates has
+  # no select at all, and the notice below the grid says so.
+  defp base_choice(form, day_types, base_week, weekday) do
+    offered = Enum.map(base_options(day_types, weekday), &elem(&1, 1))
+    submitted = Map.get(stored_choices(form), Integer.to_string(weekday))
+
+    if submitted in offered, do: submitted, else: base_week_key(base_week, weekday)
+  end
+
+  defp base_week_key(base_week, weekday), do: get_in(base_week, [weekday, :day_type, :key])
+
+  # The submitted choices, read back off the form rather than off the socket, so
+  # a refused save or a live validation leaves the selects showing what the
+  # planner typed rather than what was stored.
+  defp stored_choices(form) do
+    case Form.input_value(form, :roster_day_types) do
+      choices when is_map(choices) -> choices
+      _not_a_map -> %{}
+    end
+  end
+
+  # The base week is not marked invalid per select, and that is deliberate. The
+  # writer reports a bad choice as one error on `:roster_day_types` however many
+  # weekdays it names, so there is no single control that message belongs to and
+  # a per-select mark would be an invention. The notice below the grid says which
+  # day type is in use and which key was lost, and a refused save's focus lands
+  # on the summary — the same arrangement the Runs crew-rules drawer uses for the
+  # same reason.
+  # The weekdays that have a select at all: those whose options are non-empty,
+  # which is every weekday some day type dates. A version with no calendars has
+  # none, and an empty grid would be a worse answer than the sentence below it.
+  defp base_weekdays(day_types, base_week) do
+    Enum.filter(1..7, &(base_options(day_types, &1) != [] and base_week_key(base_week, &1)))
+  end
+
+  defp weekdays_without_base(base_week),
+    do: for(weekday <- 1..7, is_nil(Map.get(base_week, weekday)[:day_type]), do: weekday)
+
+  defp missing_base?(base_week),
+    do: Enum.any?(1..7, &(Map.get(base_week, &1)[:missing_choice] not in [nil]))
+
+  # Which day type a lost choice fell back to, and the key that was lost. Both
+  # halves are `BaseWeek`'s own answer, so the sentence names the week the page
+  # is actually using rather than a second guess at it.
+  defp missing_base_sentence(base_week) do
+    base_week
+    |> Enum.filter(fn {_weekday, base} -> base[:missing_choice] not in [nil] end)
+    |> Enum.sort_by(fn {weekday, _base} -> weekday end)
+    |> Enum.map_join(" ", fn {weekday, base} ->
+      "#{weekday_name(weekday)} now uses #{base.day_type.label}, not #{base.missing_choice}."
+    end)
+  end
 end
