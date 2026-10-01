@@ -31,8 +31,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   import GtfsPlannerWeb.RouteWorkspace, only: [route_header: 1]
 
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
+
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.UserOrgMembership
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.GtfsTime
@@ -42,6 +45,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   alias GtfsPlanner.Gtfs.Schedules.Summary
   alias GtfsPlanner.Gtfs.Schedules.TimeEntry
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.ScheduleChangeComponents
   alias GtfsPlannerWeb.Gtfs.ScheduleComponents
@@ -113,7 +117,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
      |> assign(:calendar_form, to_form(%{"service_id" => nil}))
      |> assign(:pattern_form, to_form(%{"pattern" => "all"}))
      |> stream_configure(:sections, dom_id: &"section-#{&1.pattern.route_pattern_id}")
-     |> stream(:sections, [])}
+     |> stream(:sections, [])
+     |> AgentPanel.mount("service_queries")}
   end
 
   @impl true
@@ -138,10 +143,25 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       |> report_cleared_selection(cleared_selection?)
 
     if connected?(socket) do
-      {:noreply, load_schedule(socket, params)}
+      {:noreply, socket |> load_schedule(params) |> bind_agent_context()}
     else
-      {:noreply, assign(socket, :load_state, :loading)}
+      {:noreply, socket |> assign(:load_state, :loading) |> bind_agent_context()}
     end
+  end
+
+  # The helper conversation belongs to the route this page is showing, so the
+  # context is replaced from ordinary parameter handling (INV-1). Navigating from
+  # one route to another detaches the prior session and clears this panel's
+  # transcript; a page whose route did not load falls back to the whole-version
+  # context, which the Schedule pack refuses with the one unavailable result.
+  defp bind_agent_context(socket) do
+    identity =
+      case socket.assigns[:route] do
+        %GtfsPlanner.Gtfs.Route{} = route -> {:route, route.id}
+        _other -> {:version, socket.assigns.current_gtfs_version.id}
+      end
+
+    AgentPanel.set_context(socket, Scope.context(identity))
   end
 
   # The selection is page state, so a parameter change clears it. Only a change
@@ -4528,174 +4548,245 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
           <% end %>
         </p>
 
-        <%= cond do %>
-          <% @load_state == :loading and is_nil(@payload) -> %>
-            <ScheduleComponents.loading_skeleton />
-          <% true -> %>
-            <ScheduleComponents.scope_bar
-              :if={@payload && scope_visible?(@payload)}
-              calendar_form={@calendar_form}
-              calendars={@payload.calendars}
-              filters={@filters}
-              direction_labels={@payload.direction_labels}
-              calendars_path={"/gtfs/#{@current_gtfs_version.id}/calendars"}
-              paste_path={paste_path(@current_gtfs_version.id, @route_id, @filters)}
-              can_add?={@can_add?}
-              add_reason={@add_reason}
-              add_primary?={
-                add_primary?(@can_add?, @sections_empty?, @filters, @selected_count) and
-                  not ScheduleChangeComponents.change_strip?(@change)
-              }
-            />
+        <div
+          id="route-schedules-helper-focus"
+          phx-hook=".RouteSchedulesHelperFocus"
+          class={
+            [
+              # The panel leads at phone width, where it is stacked above the
+              # schedule the "Open helper" button belongs to; `lg:grid` drops the
+              # flex ordering so source order puts the schedule left again.
+              "flex flex-col lg:grid lg:gap-6",
+              @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"
+            ]
+          }
+        >
+          <div class="min-w-0">
+            <div id="route-schedules-helper-actions" class="flex justify-end">
+              <.button
+                :if={@route}
+                id="agent-helper-open"
+                type="button"
+                phx-click="agent_open"
+                aria-expanded={to_string(@agent_open?)}
+                aria-controls="agent-panel"
+                variant="quiet"
+                class="-mt-2 min-h-11"
+              >
+                Open helper
+              </.button>
+            </div>
 
-            <ScheduleComponents.connectivity_notice />
+            <%= cond do %>
+              <% @load_state == :loading and is_nil(@payload) -> %>
+                <ScheduleComponents.loading_skeleton />
+              <% true -> %>
+                <ScheduleComponents.scope_bar
+                  :if={@payload && scope_visible?(@payload)}
+                  calendar_form={@calendar_form}
+                  calendars={@payload.calendars}
+                  filters={@filters}
+                  direction_labels={@payload.direction_labels}
+                  calendars_path={"/gtfs/#{@current_gtfs_version.id}/calendars"}
+                  paste_path={paste_path(@current_gtfs_version.id, @route_id, @filters)}
+                  can_add?={@can_add?}
+                  add_reason={@add_reason}
+                  add_primary?={
+                    add_primary?(@can_add?, @sections_empty?, @filters, @selected_count) and
+                      not ScheduleChangeComponents.change_strip?(@change)
+                  }
+                />
 
-            <ScheduleComponents.unavailable_notice
-              :if={@load_state == :unavailable}
-              stale?={@payload != nil}
-            />
+                <ScheduleComponents.connectivity_notice />
 
-            <div :if={@payload}>
-              <ScheduleComponents.unlinked_trips
-                :if={@payload.unlinked_trip_count > 0}
-                count={@payload.unlinked_trip_count}
-                patterns_path={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns"}
-              />
+                <ScheduleComponents.unavailable_notice
+                  :if={@load_state == :unavailable}
+                  stale?={@payload != nil}
+                />
 
-              <ScheduleComponents.block_notice :if={@block_notice} notice={@block_notice} />
-
-              <%= cond do %>
-                <% @payload.calendars == [] -> %>
-                  <ScheduleComponents.no_calendars new_calendar_path={"/gtfs/#{@current_gtfs_version.id}/calendars/new"} />
-                <% @payload.patterns == [] -> %>
-                  <ScheduleComponents.no_patterns
-                    route={@payload.route}
-                    new_pattern_path={
-                      ~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns/new"
-                    }
-                  />
-                <% @sections_empty? -> %>
-                  <ScheduleComponents.filter_bar
-                    :if={@filters.pattern != :all or @custom_filter?}
-                    pattern_form={@pattern_form}
-                    patterns={@payload.patterns}
-                    filters={@filters}
-                    row_count={@rows_in_view}
-                    custom_count={@custom_count}
-                    custom_filter?={@custom_filter?}
-                    calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
-                    direction_label={direction_label(@payload)}
-                  />
-                  <ScheduleComponents.custom_empty
-                    :if={@custom_filter?}
-                    calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
-                    direction_label={direction_label(@payload)}
-                  />
-                  <ScheduleComponents.no_trips
-                    :if={not @custom_filter?}
-                    route={@payload.route}
-                    calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
-                    direction_label={direction_label(@payload)}
-                    pattern_name={pattern_name(@payload)}
-                    any_trips?={@any_trips?}
-                    can_add?={@can_add?}
-                    timing_path={timing_path(@payload.patterns, @current_gtfs_version.id, @route_id)}
-                  />
-                <% true -> %>
-                  <ScheduleComponents.planning_summary
-                    summary={@payload.summary}
-                    route={@payload.route}
-                    calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
-                    direction_label={direction_label(@payload)}
-                    vehicle_change={@vehicle_change}
+                <div :if={@payload}>
+                  <ScheduleComponents.unlinked_trips
+                    :if={@payload.unlinked_trip_count > 0}
+                    count={@payload.unlinked_trip_count}
+                    patterns_path={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns"}
                   />
 
-                  <ScheduleComponents.filter_bar
-                    pattern_form={@pattern_form}
-                    patterns={@payload.patterns}
-                    filters={@filters}
-                    row_count={@rows_in_view}
-                    custom_count={@custom_count}
-                    custom_filter?={@custom_filter?}
-                    calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
-                    direction_label={direction_label(@payload)}
-                  />
+                  <ScheduleComponents.block_notice :if={@block_notice} notice={@block_notice} />
 
-                  <div
-                    id="schedules-grid"
-                    phx-hook="TimetableGrid"
-                    data-grid-revision={@grid_revision}
-                  >
-                    <div id="schedules-sections" phx-update="stream" class="mt-3 space-y-6">
-                      <div :for={{dom_id, section} <- @streams.sections} id={dom_id}>
-                        <ScheduleComponents.section
-                          section={section}
-                          selected_ids={@selected_ids}
-                          calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
-                          export_defaults_path={"/gtfs/#{@current_gtfs_version.id}/settings/export-defaults"}
-                        />
+                  <%= cond do %>
+                    <% @payload.calendars == [] -> %>
+                      <ScheduleComponents.no_calendars new_calendar_path={"/gtfs/#{@current_gtfs_version.id}/calendars/new"} />
+                    <% @payload.patterns == [] -> %>
+                      <ScheduleComponents.no_patterns
+                        route={@payload.route}
+                        new_pattern_path={
+                          ~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns/new"
+                        }
+                      />
+                    <% @sections_empty? -> %>
+                      <ScheduleComponents.filter_bar
+                        :if={@filters.pattern != :all or @custom_filter?}
+                        pattern_form={@pattern_form}
+                        patterns={@payload.patterns}
+                        filters={@filters}
+                        row_count={@rows_in_view}
+                        custom_count={@custom_count}
+                        custom_filter?={@custom_filter?}
+                        calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
+                        direction_label={direction_label(@payload)}
+                      />
+                      <ScheduleComponents.custom_empty
+                        :if={@custom_filter?}
+                        calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
+                        direction_label={direction_label(@payload)}
+                      />
+                      <ScheduleComponents.no_trips
+                        :if={not @custom_filter?}
+                        route={@payload.route}
+                        calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
+                        direction_label={direction_label(@payload)}
+                        pattern_name={pattern_name(@payload)}
+                        any_trips?={@any_trips?}
+                        can_add?={@can_add?}
+                        timing_path={
+                          timing_path(@payload.patterns, @current_gtfs_version.id, @route_id)
+                        }
+                      />
+                    <% true -> %>
+                      <ScheduleComponents.planning_summary
+                        summary={@payload.summary}
+                        route={@payload.route}
+                        calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
+                        direction_label={direction_label(@payload)}
+                        vehicle_change={@vehicle_change}
+                      />
+
+                      <ScheduleComponents.filter_bar
+                        pattern_form={@pattern_form}
+                        patterns={@payload.patterns}
+                        filters={@filters}
+                        row_count={@rows_in_view}
+                        custom_count={@custom_count}
+                        custom_filter?={@custom_filter?}
+                        calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
+                        direction_label={direction_label(@payload)}
+                      />
+
+                      <div
+                        id="schedules-grid"
+                        phx-hook="TimetableGrid"
+                        data-grid-revision={@grid_revision}
+                      >
+                        <div id="schedules-sections" phx-update="stream" class="mt-3 space-y-6">
+                          <div :for={{dom_id, section} <- @streams.sections} id={dom_id}>
+                            <ScheduleComponents.section
+                              section={section}
+                              selected_ids={@selected_ids}
+                              calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
+                              export_defaults_path={"/gtfs/#{@current_gtfs_version.id}/settings/export-defaults"}
+                            />
+                          </div>
+                        </div>
+                        <div id="cell-editor" phx-update="ignore"></div>
                       </div>
-                    </div>
-                    <div id="cell-editor" phx-update="ignore"></div>
-                  </div>
 
-                  <% strip = change_strip_view(assigns) %>
-                  <ScheduleChangeComponents.grid_bar
-                    selected_count={@selected_count}
-                    outcome={@outcome}
-                    undo_stack={@undo_stack}
+                      <% strip = change_strip_view(assigns) %>
+                      <ScheduleChangeComponents.grid_bar
+                        selected_count={@selected_count}
+                        outcome={@outcome}
+                        undo_stack={@undo_stack}
+                        change={@change}
+                        strip={strip}
+                        version_name={@current_gtfs_version.name}
+                      />
+                  <% end %>
+
+                  <ScheduleComponents.trip_drawer
+                    drawer={@drawer}
+                    patterns={@payload.patterns}
+                    calendars={@payload.calendars}
+                    blocks_path={"/gtfs/#{@current_gtfs_version.id}/blocks"}
+                    patterns_path={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns"}
+                    version_name={@current_gtfs_version.name}
+                    sections={@sections_list}
+                  />
+
+                  <% change_drawer = change_drawer_view(assigns) %>
+                  <ScheduleChangeComponents.change_review_drawer
+                    :if={change_drawer}
                     change={@change}
-                    strip={strip}
+                    drawer={change_drawer}
                     version_name={@current_gtfs_version.name}
                   />
-              <% end %>
 
-              <ScheduleComponents.trip_drawer
-                drawer={@drawer}
-                patterns={@payload.patterns}
-                calendars={@payload.calendars}
-                blocks_path={"/gtfs/#{@current_gtfs_version.id}/blocks"}
-                patterns_path={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns"}
-                version_name={@current_gtfs_version.name}
-                sections={@sections_list}
-              />
+                  <% change_paste = change_paste_view(assigns) %>
+                  <ScheduleChangeComponents.paste_dialog
+                    :if={change_paste}
+                    change={@change}
+                    paste={change_paste}
+                    version_name={@current_gtfs_version.name}
+                  />
 
-              <% change_drawer = change_drawer_view(assigns) %>
-              <ScheduleChangeComponents.change_review_drawer
-                :if={change_drawer}
-                change={@change}
-                drawer={change_drawer}
-                version_name={@current_gtfs_version.name}
-              />
+                  <% convert_dialog = convert_dialog_view(assigns) %>
+                  <ScheduleChangeComponents.convert_dialog
+                    :if={convert_dialog}
+                    change={@change}
+                    convert={convert_dialog}
+                  />
 
-              <% change_paste = change_paste_view(assigns) %>
-              <ScheduleChangeComponents.paste_dialog
-                :if={change_paste}
-                change={@change}
-                paste={change_paste}
-                version_name={@current_gtfs_version.name}
-              />
+                  <ScheduleComponents.delete_dialog
+                    dialog={@delete_dialog}
+                    version_name={@current_gtfs_version.name}
+                  />
 
-              <% convert_dialog = convert_dialog_view(assigns) %>
-              <ScheduleChangeComponents.convert_dialog
-                :if={convert_dialog}
-                change={@change}
-                convert={convert_dialog}
-              />
+                  <ScheduleChangeComponents.shortcut_sheet
+                    open={@shortcuts_open?}
+                    return_focus_id={@shortcuts_return_focus_id}
+                  />
+                </div>
+            <% end %>
+          </div>
 
-              <ScheduleComponents.delete_dialog
-                dialog={@delete_dialog}
-                version_name={@current_gtfs_version.name}
-              />
+          <div
+            :if={@agent_open?}
+            class="order-first mb-5 min-w-0 lg:order-last lg:mb-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
+          >
+            <.agent_panel
+              id="agent-panel"
+              title={@agent_title}
+              intro={@agent_intro}
+              examples={@agent_examples}
+              scope_line={helper_scope_line(assigns)}
+              status={@agent_status}
+              entries={@streams.agent_entries}
+              form={@agent_form}
+              notice={@agent_notice}
+              entries_empty?={@agent_entries_empty?}
+              composer_hint="Answers only. Nothing on this page changes."
+            />
+          </div>
+        </div>
 
-              <ScheduleChangeComponents.shortcut_sheet
-                open={@shortcuts_open?}
-                return_focus_id={@shortcuts_return_focus_id}
-              />
-            </div>
-        <% end %>
+        <%!--
+        The panel's focus listener belongs to the wrapper above, which survives both the panel and
+        the schedule's own drawers. This hook only moves focus; it never decides focus for the
+        server. --%>
+        <script :type={Phoenix.LiveView.ColocatedHook} name=".RouteSchedulesHelperFocus">
+          export default {
+            mounted() {
+              this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+            }
+          }
+        </script>
       </div>
     </Layouts.app>
     """
   end
+
+  # The panel names the route it is bound to, from the loaded route rather than
+  # from the URL, so the line always agrees with the schedule below it.
+  defp helper_scope_line(%{route: nil}), do: "Route · no route loaded"
+
+  defp helper_scope_line(%{route: route} = assigns),
+    do: "Route #{route.route_id} · #{assigns.current_gtfs_version.name}"
 end

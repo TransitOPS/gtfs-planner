@@ -38,6 +38,10 @@ defmodule GtfsPlannerWeb.AgentPanel do
   Evidence read under another organization, version or resource identity than
   this panel now holds is dropped whole, so no foreign answer can reach the
   screen even as an unlinked card (AC-2).
+
+  A route reference resolves to that route's own Schedules page, which is the
+  page the Schedule helper is bound to; it is the same page the panel already
+  shows, so following it never leaves the scope this panel holds.
   """
 
   import Phoenix.Component, only: [assign: 3, to_form: 2]
@@ -71,7 +75,8 @@ defmodule GtfsPlannerWeb.AgentPanel do
   # path this panel has not reviewed.
   @evidence_links %{
     "calendar" => :calendar_show,
-    "calendars_index" => :calendars_index
+    "calendars_index" => :calendars_index,
+    "route" => :route_schedules
   }
 
   @doc """
@@ -354,6 +359,10 @@ defmodule GtfsPlannerWeb.AgentPanel do
 
   defp resolve_path(:calendar_show, id, socket) when is_binary(id), do: calendar_path(socket, id)
   defp resolve_path(:calendars_index, _id, socket), do: calendars_path(socket)
+
+  defp resolve_path(:route_schedules, id, socket) when is_binary(id),
+    do: route_schedules_path(socket, id)
+
   defp resolve_path(_kind, _id, _socket), do: nil
 
   # The paths are built the way the calendar components build them: the version
@@ -364,6 +373,16 @@ defmodule GtfsPlannerWeb.AgentPanel do
   end
 
   defp calendars_path(socket), do: calendar_base(socket)
+
+  # A route reference is the route's own Schedules page in this version, built the
+  # way the route components build it: the version comes from this panel's own
+  # assigns and the route ID is percent-encoded, so an imported ID cannot escape
+  # the path.
+  defp route_schedules_path(socket, route_id) do
+    version_id = socket.assigns.current_gtfs_version.id
+
+    "/gtfs/" <> version_id <> "/routes/" <> URI.encode_www_form(route_id) <> "/schedules"
+  end
 
   defp calendar_base(socket),
     do: "/gtfs/" <> socket.assigns.current_gtfs_version.id <> "/calendars"

@@ -75,6 +75,10 @@ defmodule GtfsPlannerWeb.AgentComponents do
   attr :notice, :string, default: nil, doc: "a panel-level refusal or advisory"
   attr :entries_empty?, :boolean, required: true, doc: "true before the conversation has an entry"
 
+  attr :composer_hint, :string,
+    default: "Review changes before applying.",
+    doc: "the rule the composer repeats when it can send; a read-only helper passes its own"
+
   def agent_panel(assigns) do
     ~H"""
     <aside
@@ -171,7 +175,7 @@ defmodule GtfsPlannerWeb.AgentComponents do
         />
         <div class="flex flex-wrap items-center justify-between gap-3">
           <small id="agent-composer-hint" class="text-xs text-base-content/70">
-            {composer_hint(@status)}
+            {composer_hint(@status, @composer_hint)}
           </small>
           <div class="flex items-center gap-2">
             <.button
@@ -484,14 +488,17 @@ defmodule GtfsPlannerWeb.AgentComponents do
   defp status_text(_idle), do: nil
 
   # The hint explains a composer that cannot send; otherwise it repeats the
-  # one review rule that applies to every request.
-  defp composer_hint(:ended), do: "This conversation ended. Start a new conversation."
-  defp composer_hint(:limit), do: "This conversation reached its limit. Start a new conversation."
+  # one rule that applies to every request. A helper that only reads passes its
+  # own rule, because the default names a review step it never offers.
+  defp composer_hint(:ended, _hint), do: "This conversation ended. Start a new conversation."
 
-  defp composer_hint(:allowance_exhausted),
+  defp composer_hint(:limit, _hint),
+    do: "This conversation reached its limit. Start a new conversation."
+
+  defp composer_hint(:allowance_exhausted, _hint),
     do: "Try a new conversation after 00:00 UTC."
 
-  defp composer_hint(_status), do: "Review changes before applying."
+  defp composer_hint(_status, hint), do: hint
 
   defp send_disabled?(status),
     do: status in [:working, :ended, :forbidden, :unavailable, :limit, :allowance_exhausted]

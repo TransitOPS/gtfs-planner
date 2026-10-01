@@ -23,10 +23,12 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Calendar
+  alias GtfsPlanner.Gtfs.ServiceQueries
 
   @list_limit 50
   @range_limit_days 62
   @date_limit 366
+  @source_ref_service "gtfs_service_queries"
 
   @weekdays [
     {"Mon", :monday},
@@ -107,6 +109,52 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
         }
       },
       %{
+        name: "summarize_calendar_coverage",
+        description:
+          "Report whether named routes keep recorded service on each of the given dates, using every calendar that runs them. Use service_id to see which other calendars still run a route on a date this calendar does not. At most #{ServiceQueries.coverage_limits().dates} dates and #{ServiceQueries.coverage_limits().routes} routes.",
+        activity: "Checked calendar coverage",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{
+            "service_id" => %{"type" => "string", "maxLength" => 200},
+            "dates" => %{
+              "type" => "array",
+              "items" => %{"type" => "string"},
+              "minItems" => 1,
+              "maxItems" => ServiceQueries.coverage_limits().dates
+            },
+            "route_ids" => %{
+              "type" => "array",
+              "items" => %{"type" => "string", "maxLength" => 200},
+              "minItems" => 1,
+              "maxItems" => ServiceQueries.coverage_limits().routes
+            }
+          },
+          "required" => ["service_id", "dates", "route_ids"],
+          "additionalProperties" => false
+        }
+      },
+      %{
+        name: "get_calendar_usage",
+        description:
+          "Report, for the routes that use this calendar, which of the given dates keep recorded service through this calendar and which keep it only through another one. Use this before asking whether a calendar can end; it never proposes a change.",
+        activity: "Checked calendar usage",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{
+            "service_id" => %{"type" => "string", "maxLength" => 200},
+            "dates" => %{
+              "type" => "array",
+              "items" => %{"type" => "string"},
+              "minItems" => 1,
+              "maxItems" => ServiceQueries.coverage_limits().dates
+            }
+          },
+          "required" => ["service_id", "dates"],
+          "additionalProperties" => false
+        }
+      },
+      %{
         name: "prepare_date_change",
         description:
           "Prepare a change that stops or runs service on specific dates for review. It saves nothing.",
@@ -134,6 +182,11 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   def call("list_calendars", args, %Scope{} = scope), do: list_calendars(args, scope)
 
   def call("get_calendar", args, %Scope{} = scope), do: get_calendar(args, scope)
+
+  def call("summarize_calendar_coverage", args, %Scope{} = scope),
+    do: summarize_calendar_coverage(args, scope)
+
+  def call("get_calendar_usage", args, %Scope{} = scope), do: get_calendar_usage(args, scope)
 
   def call("prepare_date_change", args, %Scope{} = scope), do: prepare_date_change(args, scope)
 
@@ -323,6 +376,185 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
       nil -> nil
     end
   end
+
+  # -- coverage reads ---------------------------------------------------------
+
+  # The two coverage reads answer the calendar-side questions with the same
+  # domain query the Schedule pack uses, so one route/date rule governs both and
+  # neither can report a calendar name in place of date evaluation. The
+  # Calendar page binds the whole version, so the routes are named explicitly and
+  # resolved in scope; a route outside this organization and version is refused
+  # rather than described.
+  defp summarize_calendar_coverage(args, scope) do
+    with {:ok, service_id} <- coverage_service_id(args["service_id"]),
+         {:ok, dates} <- coverage_dates(args["dates"]),
+         {:ok, route_ids} <- coverage_route_ids(args["route_ids"]) do
+      read_coverage(scope, service_id, dates, route_ids, "calendar_coverage", fn _answer ->
+        [
+          %{label: "Calendar under review", value: service_id},
+          %{label: "Routes evaluated", value: Integer.to_string(length(route_ids))},
+          %{label: "Dates evaluated", value: Integer.to_string(length(dates))}
+        ]
+      end)
+    end
+  end
+
+  # The usage read names the routes the calendar itself is used by, so the person
+  # cannot silently widen the question past the routes that would actually be
+  # affected. That list is server-derived from the calendar's own trips.
+  defp get_calendar_usage(args, scope) do
+    with {:ok, service_id} <- coverage_service_id(args["service_id"]),
+         {:ok, dates} <- coverage_dates(args["dates"]),
+         {:ok, route_ids} <- usage_route_ids(service_id, scope) do
+      read_coverage(scope, service_id, dates, route_ids, "calendar_usage", fn _answer ->
+        [
+          %{label: "Calendar under review", value: service_id},
+          %{label: "Routes using this calendar", value: Integer.to_string(length(route_ids))},
+          %{label: "Dates evaluated", value: Integer.to_string(length(dates))}
+        ]
+      end)
+    end
+  end
+
+  defp usage_route_ids(service_id, scope) do
+    case Gtfs.calendar_usage(scope.organization_id, scope.gtfs_version_id, service_id) do
+      {:ok, usage} ->
+        usage.route_ids |> Enum.sort() |> check_route_limit()
+
+      {:error, :not_found} ->
+        {:error, unknown_target_message(service_id)}
+    end
+  end
+
+  defp check_route_limit(route_ids) do
+    if length(route_ids) > ServiceQueries.coverage_limits().routes do
+      {:error,
+       "This calendar is used by more routes than one answer can cover. Name the routes to check."}
+    else
+      {:ok, route_ids}
+    end
+  end
+
+  defp read_coverage(scope, service_id, dates, route_ids, kind, facts) do
+    query_scope = %{
+      organization_id: scope.organization_id,
+      gtfs_version_id: scope.gtfs_version_id,
+      route_id: nil
+    }
+
+    selection = %{dates: dates, route_ids: route_ids, service_id: service_id}
+
+    case ServiceQueries.coverage(query_scope, selection) do
+      {:ok, answer} ->
+        {:ok, coverage_result(answer, dates),
+         coverage_evidence(answer, scope, kind, facts.(answer))}
+
+      {:error, reason} ->
+        {:error, coverage_error(reason)}
+    end
+  end
+
+  defp coverage_result(answer, dates) do
+    %{
+      "dates" => Enum.map(dates, &Date.to_iso8601/1),
+      "records" =>
+        Enum.map(answer.records, fn record ->
+          %{
+            "route_id" => record.route_id,
+            "date" => Date.to_iso8601(record.date),
+            "recorded_service" => record.recorded_service?,
+            "listed_trip_templates" => record.listed_trip_templates,
+            "frequency_templates" => record.frequency_templates,
+            "missing_time_templates" => record.missing_time_templates,
+            "service_ids" => record.service_ids,
+            "alternate_service_ids" => record.alternate_service_ids,
+            "route_state" => Atom.to_string(record.route_state),
+            "absence_reason" => record.absence_reason && Atom.to_string(record.absence_reason)
+          }
+        end),
+      "total" => answer.total,
+      "completeness" => Atom.to_string(answer.completeness),
+      "disclosures" => Enum.map(answer.disclosures, &%{"reason" => Atom.to_string(&1.reason)})
+    }
+  end
+
+  defp coverage_evidence(answer, scope, kind, facts) do
+    %{
+      kind: kind,
+      title: coverage_title(kind, facts),
+      total: answer.total,
+      total_label: "route and date records",
+      completeness: answer.completeness,
+      completeness_reason: coverage_reason(answer),
+      facts: facts,
+      source_ref: @source_ref_service,
+      digest: answer.digest,
+      source_revision: nil,
+      scope: %{
+        organization_id: scope.organization_id,
+        gtfs_version_id: scope.gtfs_version_id,
+        identity: identity_label(scope)
+      },
+      exclusions: [],
+      resources: coverage_resources(answer)
+    }
+  end
+
+  defp coverage_title("calendar_usage", facts),
+    do: "Service on #{fact(facts, "Dates evaluated")} dates"
+
+  defp coverage_title(_kind, facts),
+    do: "#{fact(facts, "Routes evaluated")} routes over #{fact(facts, "Dates evaluated")} dates"
+
+  defp fact(facts, label) do
+    case Enum.find(facts, &(&1.label == label)) do
+      %{value: value} -> value
+      nil -> "the requested"
+    end
+  end
+
+  defp coverage_reason(%{completeness: :complete}), do: nil
+
+  defp coverage_reason(answer) do
+    Enum.map_join(answer.disclosures, " ", & &1.detail)
+  end
+
+  # Each route the answer covers is a typed reference the panel may resolve, and
+  # nothing else is: no model-authored name becomes a reference here.
+  defp coverage_resources(answer) do
+    answer.records
+    |> Enum.map(fn record -> %{kind: "route", id: record.route_id, label: record.route_id} end)
+    |> Enum.uniq_by(& &1.id)
+  end
+
+  defp coverage_service_id(value) when is_binary(value) and value != "", do: {:ok, value}
+  defp coverage_service_id(_value), do: {:error, "A service_id is required."}
+
+  defp coverage_dates(values) when is_list(values) and values != [] do
+    parse_dates(values)
+  end
+
+  defp coverage_dates(_values), do: {:error, "Provide at least one date."}
+
+  defp coverage_route_ids(values) when is_list(values) and values != [] do
+    if Enum.all?(values, &(is_binary(&1) and &1 != "")) do
+      {:ok, values |> Enum.uniq() |> Enum.sort()}
+    else
+      {:error, "route_ids must be a list of route IDs from this service version."}
+    end
+  end
+
+  defp coverage_route_ids(_values), do: {:error, "Name at least one route to check."}
+
+  defp coverage_error(:not_found), do: "A named route is not in this service version."
+  defp coverage_error(:too_many_dates), do: "Ask about fewer dates at a time."
+  defp coverage_error(:too_many_routes), do: "Ask about fewer routes at a time."
+  defp coverage_error(:invalid_selection), do: "That question cannot be answered as asked."
+
+  defp coverage_error({:unreadable_calendar, service_id}),
+    do: "Calendar #{service_id} could not be read, so no complete answer is available."
+
+  defp coverage_error(_reason), do: "That question could not be answered."
 
   defp days_label(calendar) do
     case days(calendar) do

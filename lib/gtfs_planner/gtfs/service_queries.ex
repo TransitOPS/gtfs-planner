@@ -177,6 +177,33 @@ defmodule GtfsPlanner.Gtfs.ServiceQueries do
           digest: String.t()
         }
 
+  @typedoc "One stop the bound route boards at, with every occurrence that answers it."
+  @type occurrence_candidate :: %{
+          stop_id: String.t(),
+          stop_name: String.t() | nil,
+          stop_sequences: [non_neg_integer()],
+          trip_count: non_neg_integer(),
+          ambiguous?: boolean()
+        }
+
+  @typedoc "The answer of `occurrences/2`."
+  @type occurrences_result :: %{
+          scope: scope(),
+          route: %{
+            id: Ecto.UUID.t(),
+            route_id: String.t(),
+            state: :active | :inactive,
+            agency_id: String.t() | nil
+          },
+          service_date: Date.t(),
+          direction_id: 0 | 1 | nil,
+          occurrences: [occurrence_candidate()],
+          active_service_ids: [String.t()],
+          total: non_neg_integer(),
+          completeness: :complete,
+          digest: String.t()
+        }
+
   @typedoc "Why a route/date pair has no undetermined-or-active recorded service."
   @type absence_reason ::
           :inactive_route | :no_recorded_trips | :no_active_trip | :unreadable_calendar
@@ -261,6 +288,33 @@ defmodule GtfsPlanner.Gtfs.ServiceQueries do
   """
   @spec coverage_limits() :: %{dates: pos_integer(), routes: pos_integer()}
   def coverage_limits, do: %{dates: @max_dates, routes: @max_routes}
+
+  @doc """
+  Returns the scoped boarding occurrences a departure question may name.
+
+  `selection` is `%{service_date: Date.t(), direction_id: 0 | 1 | nil}`. One
+  entry is returned per stop the route's active trips call at, carrying every
+  `stop_sequence` that answers it, so a loop's second visit is a separate
+  occurrence rather than a hidden choice. `ambiguous?` is true when a stop has
+  more than one sequence, which is the case a caller must resolve before it asks
+  for departures; nothing here picks a sequence for it.
+
+  The candidates are derived from the active trips of the same service-date
+  evaluation `departures/2` uses, read inside the same snapshot, so a candidate
+  list and a departures answer can never describe different database states.
+  """
+  @spec occurrences(scope(), map()) :: {:ok, occurrences_result()} | {:error, error()}
+  def occurrences(scope, selection) when is_map(scope) and is_map(selection) do
+    with {:ok, organization_id, gtfs_version_id} <- scoped_ids(scope),
+         {:ok, route_id} <- bound_route_id(scope),
+         {:ok, occurrence_selection} <- occurrence_selection(selection) do
+      in_snapshot(fn ->
+        occurrence_answer(organization_id, gtfs_version_id, route_id, occurrence_selection)
+      end)
+    end
+  end
+
+  def occurrences(_scope, _selection), do: {:error, :invalid_selection}
 
   @doc """
   Returns the listed departures, translated frequency windows and unknown-time
@@ -414,6 +468,78 @@ defmodule GtfsPlanner.Gtfs.ServiceQueries do
         selection
       )
     end
+  end
+
+  defp occurrence_selection(selection) do
+    service_date = Map.get(selection, :service_date)
+    direction_id = Map.get(selection, :direction_id)
+
+    if match?(%Date{}, service_date) and valid_direction?(direction_id) do
+      {:ok, %{service_date: service_date, direction_id: direction_id}}
+    else
+      {:error, :invalid_selection}
+    end
+  end
+
+  defp occurrence_answer(organization_id, gtfs_version_id, route_id, selection) do
+    with {:ok, route} <- scoped_route(organization_id, gtfs_version_id, route_id),
+         {:ok, active_trips, active_service_ids} <-
+           active_trips(organization_id, gtfs_version_id, route, selection),
+         {:ok, stop_times, _frequencies} <-
+           scoped_occurrence_rows(organization_id, gtfs_version_id, active_trips) do
+      scope = %{
+        organization_id: organization_id,
+        gtfs_version_id: gtfs_version_id,
+        route_id: route.id
+      }
+
+      candidates =
+        occurrence_candidates(organization_id, gtfs_version_id, active_trips, stop_times)
+
+      {:ok,
+       %{
+         scope: scope,
+         route: route_summary(route),
+         service_date: selection.service_date,
+         direction_id: selection.direction_id,
+         occurrences: candidates,
+         active_service_ids: active_service_ids,
+         total: length(candidates),
+         completeness: :complete,
+         digest:
+           digest(%{
+             scope: scope,
+             selection: selection,
+             occurrences: candidates,
+             service_ids: active_service_ids
+           })
+       }}
+    end
+  end
+
+  # Sequences come from the active trips only, so a stop the route serves on
+  # another date is not offered as a candidate for this one. The sequences are
+  # the sorted distinct values, which is exactly what `resolve_occurrence/2`
+  # compares against.
+  defp occurrence_candidates(organization_id, gtfs_version_id, active_trips, stop_times) do
+    active_trip_ids = MapSet.new(active_trips, & &1.trip_id)
+
+    stop_times
+    |> Enum.filter(&MapSet.member?(active_trip_ids, &1.trip_id))
+    |> Enum.group_by(& &1.stop_id, &{&1.trip_id, &1.stop_sequence})
+    |> Enum.map(fn {stop_id, rows} ->
+      sequences = rows |> Enum.map(&elem(&1, 1)) |> Enum.uniq() |> Enum.sort()
+      trips = rows |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+
+      %{
+        stop_id: stop_id,
+        stop_name: scoped_stop_name(organization_id, gtfs_version_id, stop_id),
+        stop_sequences: sequences,
+        trip_count: length(trips),
+        ambiguous?: length(sequences) > 1
+      }
+    end)
+    |> Enum.sort_by(& &1.stop_id)
   end
 
   defp departure_selection(selection) do

@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   @moduledoc """
-  Test-only OpenRouter stand-in for the Calendar helper's browser journeys.
+  Test-only OpenRouter stand-in for the helper browser journeys.
 
   `config/test.exs` selects it only while `BROWSER_E2E` is `true`, because a
   Playwright journey drives the helper in a real browser, where no `Req.Test`
@@ -27,6 +27,14 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
     * the `get_calendar` tool result gets a sentence that contradicts the
       server's own count on purpose, so the browser journey proves the card and
       not the prose is the answer;
+    * a `"user"` message asking about departures gets a `query_departures` call
+      for the route's own first stop after 05:00 on the next date the seeded
+      `CAL_DAILY` calendar runs, so the Schedule journey reads a real page's own
+      trip;
+    * a `"user"` message asking which stops a route boards at gets a
+      `list_boarding_occurrences` call for that date;
+    * the `query_departures` and `list_boarding_occurrences` tool results get a
+      Schedule sentence, one of which contradicts the server's count on purpose;
     * anything else gets the helper's generic sentence.
   """
 
@@ -45,6 +53,8 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   # seven dates the stand-in asks about, so the card and this sentence disagree
   # and the journey can show which one the panel treats as the answer.
   @contradicted_count "Three of those dates run service."
+  @schedule_departures "Three trips leave the first stop after 5:00am."
+  @schedule_occurrences "This route boards at three stops."
 
   @impl Plug
   def init(opts), do: opts
@@ -72,10 +82,25 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
   defp user_reply(content) do
     cond do
-      content =~ ~r/route/i -> text_reply(@out_of_scope)
-      content =~ ~r/dates|week/i -> tool_calls_reply("get_calendar", get_calendar_arguments())
-      content =~ ~r/school/i -> tool_calls_reply("list_calendars", %{"query" => "school"})
-      true -> text_reply(@generic)
+      content =~ ~r/depart|leaves? |after \d/i ->
+        tool_calls_reply("query_departures", departure_arguments())
+
+      content =~ ~r/board|stops? does/i ->
+        tool_calls_reply("list_boarding_occurrences", %{
+          "service_date" => Date.to_iso8601(next_service_date())
+        })
+
+      content =~ ~r/route/i ->
+        text_reply(@out_of_scope)
+
+      content =~ ~r/dates|week/i ->
+        tool_calls_reply("get_calendar", get_calendar_arguments())
+
+      content =~ ~r/school/i ->
+        tool_calls_reply("list_calendars", %{"query" => "school"})
+
+      true ->
+        text_reply(@generic)
     end
   end
 
@@ -84,6 +109,8 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       "list_calendars" -> tool_calls_reply("prepare_date_change", prepare_arguments())
       "prepare_date_change" -> text_reply(@prepared)
       "get_calendar" -> text_reply(@contradicted_count)
+      "query_departures" -> text_reply(@schedule_departures)
+      "list_boarding_occurrences" -> text_reply(@schedule_occurrences)
       _other -> text_reply(@generic)
     end
   end
@@ -119,6 +146,23 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       "to" => Date.to_iso8601(Date.add(monday, 6))
     }
   end
+
+  # The next date strictly after today: the seeded `CAL_DAILY` calendar runs
+  # every day, so the schedule routes' trips are active on it whatever day the
+  # journey runs. The first stop of the seeded Schedules patterns is `BSS_1` at
+  # sequence 1, and 05:00 is before every seeded departure, so the answer is the
+  # page's own trips rather than an empty read.
+  defp departure_arguments do
+    %{
+      "service_date" => Date.to_iso8601(next_service_date()),
+      "stop_id" => "BSS_1",
+      "stop_sequence" => 1,
+      "after" => "05:00",
+      "include_after_midnight" => false
+    }
+  end
+
+  defp next_service_date, do: Date.add(Date.utc_today(), 1)
 
   defp prepare_arguments do
     monday = Date.add(Date.utc_today(), 8 - Date.day_of_week(Date.utc_today()))

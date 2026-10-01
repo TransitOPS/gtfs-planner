@@ -545,6 +545,146 @@ test.describe("Schedules editing journeys", () => {
 });
 
 /**
+ * The Schedule helper journeys for the Schedules tab.
+ *
+ * They cover the panel's presence, its route binding and its evidence card at
+ * the two viewports the brief names. The seeded route comes from
+ * `test/support/browser_seed.exs`: `BROWSER_SCHEDULES_READY` carries every trip
+ * state on `CAL_DAILY`, whose first stop is `BSS_1` at sequence 1.
+ */
+test.describe("Schedule helper journeys", () => {
+  const HELPER_VIEWPORTS = [
+    { label: "1440x1000", width: 1440, height: 1000 },
+    { label: "390x844", width: 390, height: 844 },
+  ];
+
+  for (const viewport of HELPER_VIEWPORTS) {
+    test(`opens beside the schedule and answers with server evidence at ${viewport.label}`, async ({
+      page,
+    }, testInfo) => {
+      test.setTimeout(90_000);
+
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+      await logIn(page);
+      const versionId = await versionIdFor(page, "Browser E2E Version");
+      await page.goto(schedulesPath(versionId, READY_ROUTE));
+      await expect(page.locator("#planning-summary")).toBeVisible();
+
+      // The panel is closed and the page's own schedule controls are untouched.
+      await expect(page.locator("#agent-panel")).toHaveCount(0);
+      await expect(page.locator("#agent-helper-open")).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      );
+      await expect(page.locator("#schedules-add-trips")).toBeVisible();
+
+      await page.locator("#agent-helper-open").click();
+
+      await expect(page.locator("#agent-panel")).toBeVisible();
+      await expect(page.locator("#agent-panel")).toContainText(
+        `BROWSER_SCHEDULES_READY · `,
+      );
+      await expect(page.locator("#agent-composer-input")).toBeFocused();
+
+      // Sessions live in the server process and persist between tests, so the
+      // journey starts a fresh conversation.
+      await page.locator("#agent-new-conversation").click();
+
+      await page
+        .locator("#agent-composer-input")
+        .fill("What leaves the first stop after 5:00am?");
+      await page.locator("#agent-send").click();
+
+      // The scripted stand-in reads the real query; the card carries the
+      // server's count and the prose deliberately disagrees with it.
+      const card = page.locator("#agent-evidence-2-1");
+      await expect(card).toBeVisible({ timeout: 30_000 });
+      await expect(card).toContainText("Server result");
+      await expect(card).toContainText("departures");
+      await expect(card).toContainText("Complete");
+      await expect(card).toContainText("gtfs_service_queries");
+
+      // Exactly one link, and it is this route's own Schedules page.
+      const links = card.locator("a");
+      await expect(links).toHaveCount(1);
+      await expect(links).toHaveAttribute(
+        "href",
+        new RegExp(
+          `${schedulesPath(versionId, READY_ROUTE).replaceAll("/", "\\/")}$`,
+        ),
+      );
+
+      const prose = page.locator("#agent-prose-2");
+      await expect(prose).toContainText("Model reply");
+      await expect(prose).toContainText(
+        "Three trips leave the first stop after 5:00am.",
+      );
+
+      // The page behind the panel is still the same schedule, still editable.
+      await expect(page.locator("#trip-BROWSER_SCHED_T1-start")).toHaveText(
+        "06:00",
+      );
+      await expect(page.locator("#schedules-add-trips")).toBeEnabled();
+
+      const fitsViewport = await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      );
+      expect(fitsViewport).toBe(true);
+
+      await page.screenshot({
+        path: testInfo.outputPath(`helper-evidence-${viewport.label}.png`),
+        animations: "disabled",
+      });
+    });
+  }
+
+  test("a route switch replaces the conversation with this route's own", async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(schedulesPath(versionId, READY_ROUTE));
+    await page.locator("#agent-helper-open").click();
+    await page.locator("#agent-new-conversation").click();
+    await page
+      .locator("#agent-composer-input")
+      .fill("Which stops does this route board at?");
+    await page.locator("#agent-send").click();
+
+    await expect(
+      page.locator("[data-evidence-kind='boarding_occurrences']"),
+    ).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.locator("#agent-panel")).toContainText("Model reply");
+
+    // Navigating to another route's Schedules page opens a panel bound to that
+    // route, with no trace of the first route's answer.
+    await page.goto(schedulesPath(versionId, WIDE_ROUTE));
+    await page.locator("#agent-helper-open").click();
+    await expect(page.locator("#agent-panel")).toContainText(
+      `BROWSER_SCHEDULES_WIDE · `,
+    );
+    await expect(page.locator("#agent-entries")).not.toContainText(
+      "Model reply",
+    );
+    await expect(page.locator("[data-evidence-kind]")).toHaveCount(0);
+
+    await page.locator("#agent-panel-close").click();
+    await expect(page.locator("#agent-panel")).toHaveCount(0);
+    await expect(page.locator("#agent-helper-open")).toBeFocused();
+
+    await capture(page, "step-004-helper-route-switch");
+  });
+});
+
+/**
  * The allocated trip ids (route-direction-service-HHMM) whose Start cell shows
  * this departure in the rendered tables, so the seeded trips are never included.
  */

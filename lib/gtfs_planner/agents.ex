@@ -34,7 +34,10 @@ defmodule GtfsPlanner.Agents do
   @session_supervisor GtfsPlanner.Agents.SessionSupervisor
   @call_timeout 5_000
 
-  @packs %{"calendars" => GtfsPlanner.Agents.Packs.Calendars}
+  @packs %{
+    "calendars" => GtfsPlanner.Agents.Packs.Calendars,
+    "service_queries" => GtfsPlanner.Agents.Packs.ServiceQueries
+  }
 
   @doc "Every shipped capability pack, keyed by `Pack.id/0`."
   @spec packs() :: %{optional(String.t()) => module()}

@@ -52,12 +52,16 @@ defmodule GtfsPlanner.Agents.Packs.CalendarsReadTest do
       assert Enum.map(Calendars.tools(), & &1.name) == [
                "list_calendars",
                "get_calendar",
+               "summarize_calendar_coverage",
+               "get_calendar_usage",
                "prepare_date_change"
              ]
 
       assert Enum.map(Calendars.tools(), & &1.activity) == [
                "Looked up calendars",
                "Checked a calendar's dates",
+               "Checked calendar coverage",
+               "Checked calendar usage",
                "Prepared a date change"
              ]
 
