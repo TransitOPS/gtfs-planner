@@ -19,9 +19,11 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportControllerTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs.Export.ArtifactStorage
   alias GtfsPlanner.Gtfs.Export.Run
+  alias GtfsPlanner.Gtfs.Export.Runner
   alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.BlockingJobWorker
   alias GtfsPlanner.Versions
 
   @actor %{id: Ecto.UUID.generate(), email: "exporter@example.com"}
@@ -910,6 +912,39 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportControllerTest do
 
       assert %{"data" => %{"state" => "failed", "failure_code" => "no_data"}} =
                json_response(shown, 200)
+    end
+
+    @tag export_gate: :errors
+    test "a start while another export holds the runner slot returns 503 and closes the run as busy",
+         %{organization: organization, version: version, user: user} do
+      other_version = gtfs_version_fixture(organization.id)
+
+      {:ok, held} =
+        ExportRuns.create_pending(organization.id, other_version.id, @actor, :pathways)
+
+      previous_owner = Application.fetch_env(:gtfs_planner, :blocking_job_worker_owner)
+      Application.put_env(:gtfs_planner, :blocking_job_worker_owner, self())
+
+      on_exit(fn ->
+        case previous_owner do
+          {:ok, owner} -> Application.put_env(:gtfs_planner, :blocking_job_worker_owner, owner)
+          :error -> Application.delete_env(:gtfs_planner, :blocking_job_worker_owner)
+        end
+      end)
+
+      {:ok, _runner} = Runner.start_build(organization.id, held.id, BlockingJobWorker)
+      assert_receive {:blocking_job_worker_started, :build, worker}
+      on_exit(fn -> send(worker, :finish) end)
+
+      response = build_conn() |> api_conn(user, organization) |> post(create_path(version.id))
+
+      assert %{"error" => %{"code" => "export_unavailable", "message" => @service_message}} =
+               json_response(response, 503)
+
+      assert get_resp_header(response, "location") == []
+
+      assert [%Run{state: :failed, failure_code: "busy"}] =
+               version_runs(organization.id, version.id) |> Enum.map(&Repo.get!(Run, &1))
     end
   end
 

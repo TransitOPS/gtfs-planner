@@ -72,6 +72,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 15_000
     end
 
+    # The runner supervisor admits one import, so the next start needs this one gone.
+    GtfsPlanner.Support.RunnerSlots.await_idle()
     await_import_settled(view, 100)
   end
 

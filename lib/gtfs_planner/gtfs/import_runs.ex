@@ -168,6 +168,56 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
     {:ok, Repo.get!(Run, run.id), Repo.get!(GtfsVersion, version.id)}
   end
 
+  @doc """
+  Closes a pending run whose runner was refused because the supervisor was at
+  capacity (`Runner.start_import/4` returned `{:error, :busy}`).
+
+  The run must still be `pending` under `lease_token`, which proves no runner
+  claimed it. It becomes `failed` with reason `busy`. Its staging version holds
+  no imported rows, so the same transaction deletes it and the version name can
+  be used again; a failed version would keep the name and block the retry.
+
+  A run that was claimed, closed or re-leased in the meantime returns
+  `{:error, :invalid_transition}` and nothing changes. This is a system closure:
+  it does not reauthorize the actor, so a refusal still closes the run after the
+  actor's access is revoked.
+  """
+  @spec fail_unstarted(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, Run.t()} | {:error, :not_found | :invalid_transition}
+  def fail_unstarted(organization_id, run_id, lease_token) do
+    transaction(fn ->
+      run = lock_run(organization_id, run_id)
+
+      case guard_lease(run, ~w(pending), lease_token) do
+        :ok -> close_unstarted(organization_id, run)
+        :not_found -> {:error, :not_found}
+        _stale -> {:error, :invalid_transition}
+      end
+    end)
+  end
+
+  defp close_unstarted(organization_id, run) do
+    from(v in GtfsVersion,
+      where:
+        v.id == ^run.gtfs_version_id and v.organization_id == ^organization_id and
+          v.publication_status == "staging"
+    )
+    |> Repo.delete_all()
+
+    {:ok, _} =
+      run
+      |> Run.system_changeset(%{
+        state: "failed",
+        lease_token: nil,
+        lease_expires_at: nil,
+        finished_at: DateTime.utc_now(),
+        reason_code: "busy"
+      })
+      |> Repo.update()
+
+    {:ok, Repo.get!(Run, run.id)}
+  end
+
   # --- lease claim / renew --------------------------------------------------
 
   @doc """
@@ -836,7 +886,9 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
   Returns the runs visible to the recovery UI for an organization, ordered
   deterministically by `updated_at DESC, id`. This includes both the active
   (pending/running/cleaning) and the recoverable terminal-but-unpublished states
-  so the LiveView can render every in-flight and recoverable card.
+  so the LiveView can render every in-flight and recoverable card. A run closed
+  by `fail_unstarted/3` is not listed: it started nothing and left nothing to
+  recover.
   """
   @spec list_recoverable(Ecto.UUID.t()) :: [Run.t()]
   def list_recoverable(organization_id) do
@@ -845,6 +897,7 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
     from(r in Run,
       where: r.organization_id == ^organization_id,
       where: r.state in ^display_states,
+      where: r.state != "failed" or coalesce(r.reason_code, "") != "busy",
       order_by: [desc: r.updated_at, desc: r.id]
     )
     |> Repo.all()

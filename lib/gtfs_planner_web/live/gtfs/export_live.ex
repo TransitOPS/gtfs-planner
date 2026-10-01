@@ -38,6 +38,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   # onto the atoms `ExportRuns` accepts.
   @export_type_params ~w(full pathways operations)
 
+  @export_busy_message "Another export is running. Try again when it finishes."
+
   @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     user_roles = socket.assigns[:user_roles] || []
@@ -177,6 +179,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       {:error, :invalid_transition} ->
         {:noreply, refresh_export_run(socket)}
 
+      {:error, :busy} ->
+        {:noreply, export_busy(socket)}
+
       {:error, :artifact_storage_unavailable} ->
         {:noreply,
          socket
@@ -221,9 +226,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     with %{id: run_id} <- socket.assigns.export_run,
          {:ok, run} <- ExportRuns.retry(organization_id, run_id),
          :ok <- subscribe_export_run(run),
-         {:ok, _pid} <- ExportRunner.start_build(organization_id, run.id) do
+         :ok <- ExportRunner.ensure_started(organization_id, run) do
       {:noreply, assign(socket, :export_run, run)}
     else
+      {:error, :busy} ->
+        {:noreply, export_busy(socket)}
+
       _ ->
         {:noreply,
          socket
@@ -611,6 +619,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     do: Operations.tods_file_inventory(organization_id)
 
   defp tods_inventory(_organization_id, _export_type), do: []
+
+  # The runner supervisor is full. The run that never started is already closed,
+  # so the page goes back to the export it was showing and says why.
+  defp export_busy(socket) do
+    socket
+    |> refresh_export_run()
+    |> assign(:export_notice, @export_busy_message)
+  end
 
   defp refresh_export_run(socket) do
     organization_id = socket.assigns.current_organization.id

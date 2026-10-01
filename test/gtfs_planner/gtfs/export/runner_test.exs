@@ -128,7 +128,7 @@ defmodule GtfsPlanner.Gtfs.Export.RunnerTest do
     version = gtfs_version_fixture(organization.id)
     {:ok, run} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
     assert {:ok, runner} = Runner.start_build(organization.id, run.id, WaitingWorker)
-    assert {:error, :claim_failed} = Runner.start_build(organization.id, run.id, WaitingWorker)
+    assert {:error, :busy} = Runner.start_build(organization.id, run.id, WaitingWorker)
 
     assert {:ok, _} = ExportRuns.request_cancel(organization.id, run.id)
     worker = :sys.get_state(runner).task_pid

@@ -35,6 +35,7 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
   alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Import.{Failure}
   alias GtfsPlanner.Gtfs.ImportRuns
+  alias GtfsPlanner.RunnerAdmission
 
   @default_heartbeat_ms 60_000
 
@@ -54,13 +55,16 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
   using the supplied preparation `lease_token`, consuming `files`.
 
   The runner claims the import (pending -> running) itself in `init/1`. Returns
-  the `DynamicSupervisor.on_start_child/0` result. On a claim failure the child
-  stops without overwriting newer durable state.
+  the `DynamicSupervisor.on_start_child/0` result, or `{:error, :busy}` when the
+  supervisor is at its `:runner_limits` cap; a busy start has claimed nothing, so
+  the run is still pending and the caller closes it with
+  `ImportRuns.fail_unstarted/3`. On a claim failure the child stops without
+  overwriting newer durable state.
   """
   @spec start_import(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), [map()]) ::
-          DynamicSupervisor.on_start_child()
+          DynamicSupervisor.on_start_child() | {:error, :busy}
   def start_import(organization_id, run_id, lease_token, files) do
-    DynamicSupervisor.start_child(
+    RunnerAdmission.start_child(
       runner_supervisor(),
       {__MODULE__,
        init_arg(:import, organization_id, run_id, lease_token: lease_token, files: files)}
@@ -73,13 +77,14 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
 
   The runner claims the cleanup (recoverable -> cleaning) itself in `init/1`,
   snapshotting the actor and receiving the cleanup lease token. Returns the
-  `DynamicSupervisor.on_start_child/0` result. On a claim failure the child
-  stops without overwriting newer durable state.
+  `DynamicSupervisor.on_start_child/0` result, or `{:error, :busy}` at the
+  supervisor's cap, in which case the run is still recoverable and unchanged. On
+  a claim failure the child stops without overwriting newer durable state.
   """
   @spec start_cleanup(Ecto.UUID.t(), Ecto.UUID.t(), ImportRuns.actor()) ::
-          DynamicSupervisor.on_start_child()
+          DynamicSupervisor.on_start_child() | {:error, :busy}
   def start_cleanup(organization_id, run_id, actor) do
-    DynamicSupervisor.start_child(
+    RunnerAdmission.start_child(
       runner_supervisor(),
       {__MODULE__, init_arg(:cleanup, organization_id, run_id, actor: actor)}
     )

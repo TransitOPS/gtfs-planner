@@ -245,6 +245,50 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     update_closed_run(run, attrs)
   end
 
+  @doc """
+  Closes a pending run whose runner was refused because the supervisor was at
+  capacity (`ChangeRunner.start_compute/4` or `start_apply/4` returned
+  `{:error, :busy}`).
+
+  `generation` is the run's `lease_generation` when the caller started it. A
+  `pending_compute` or `pending_apply` run still at that generation was never
+  claimed; it becomes `failed` with `failure_code` `busy`. A run that was claimed,
+  closed or cancelled in the meantime returns `{:error, :invalid_transition}` and
+  nothing changes. The staged files and any decisions stay, so `retry/3` can run
+  the review again. This is a system closure and does not reauthorize the actor.
+  """
+  @spec fail_unstarted(Ecto.UUID.t(), Ecto.UUID.t(), non_neg_integer()) ::
+          {:ok, ChangeRun.t()} | {:error, :not_found | :invalid_transition}
+  def fail_unstarted(organization_id, run_id, generation) do
+    transaction_with_broadcast(fn ->
+      case lock_run(organization_id, run_id) do
+        nil -> {{:error, :not_found}, []}
+        run -> close_unstarted(run, generation)
+      end
+    end)
+  end
+
+  defp close_unstarted(
+         %ChangeRun{state: state, lease_generation: generation, cancel_requested_at: nil} = run,
+         generation
+       )
+       when state in [:pending_compute, :pending_apply] do
+    now = DateTime.utc_now()
+
+    attrs = %{
+      state: :failed,
+      phase: :cleanup,
+      failure_code: "busy",
+      started_at: run.started_at || now,
+      finished_at: now
+    }
+
+    {:ok, failed} = Repo.update(ChangeRun.system_changeset(run, attrs))
+    {{:ok, failed}, [run.id]}
+  end
+
+  defp close_unstarted(_run, _generation), do: {{:error, :invalid_transition}, []}
+
   @spec set_decision_status(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), :approved | :rejected) ::
           {:ok, ChangeDecision.t()} | {:error, term()}
   def set_decision_status(organization_id, run_id, decision_id, status)

@@ -70,6 +70,16 @@ config :gtfs_planner, GtfsPlanner.Repo, parameters: [timezone: "UTC"]
 # fails with `snapshot_timeout`.
 config :gtfs_planner, export_snapshot_timeout_ms: 600_000
 
+# Most jobs each runner supervisor may run at once. Starting a job at the limit
+# returns `{:error, :busy}` and the caller closes the run that never started.
+# Tests use the same values, so admission behaves as it does in production.
+config :gtfs_planner, :runner_limits,
+  import: 1,
+  change: 1,
+  export: 1,
+  validation: 1,
+  reachability: 1
+
 # Configure the endpoint
 config :gtfs_planner, GtfsPlannerWeb.Endpoint,
   url: [host: "localhost"],
