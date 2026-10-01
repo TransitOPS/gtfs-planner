@@ -2018,3 +2018,219 @@ test("where this stop is used @detail", async ({ page }, testInfo) => {
   await captureBoth(page, testInfo, "usage", "detail-");
   await captureReference(page, testInfo, "detail", "usage", "detail-ref-");
 });
+
+// ── the whole job, in one session (step 38) ────────────────────────────────
+
+// One test that does the five things this spec exists for, in the order a
+// person does them: put a stop on the map, put it on a route, move it, find out
+// why it cannot be deleted, and replace a duplicate. Each step is covered on
+// its own above; what this adds is the seams — that the stop created at the
+// start is the stop the pattern editor stages at the second, that coming back
+// from the pattern editor leaves the map where it was, and that a move, a
+// refusal and a replacement all describe the same two stops 5 ft apart.
+test("from a curb to a route @journey", async ({ page }, testInfo) => {
+  test.setTimeout(900_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+
+  // 1 · Put a stop on the map. The click lands on the northbound line and the
+  // streets name it, which is the only way in this spec asks an editor to make:
+  // two coordinates typed by hand are a copy of the feed's job, not a new
+  // feature.
+  await openMap(page, versionId);
+  await waitForMapReady(page);
+  await zoom(page, 3);
+  await waitForMapReady(page);
+
+  await page.locator("#stops-map-add-stop").click();
+  await clickOnLine(page);
+  await expect(page.locator("#stops-map-add-name")).toHaveValue("Depot Road", {
+    timeout: 30_000,
+  });
+
+  await page.locator("#stops-map-add-create").click();
+  await expect(page.locator("#stops-map-created-panel")).toContainText(
+    "Stop created",
+  );
+
+  // 2 · Put it on a route. The panel lists the patterns this point passes, each
+  // with the two stops the new one would fall between, and the link carries
+  // this stop — so following it opens the editor with the stop already in hand
+  // rather than asking which one this was.
+  const patterns = page.locator("#stops-map-created-patterns li");
+  await expect(patterns.first()).toContainText("Between ");
+  const href = await patterns.first().locator("a").getAttribute("href");
+  expect(href).toMatch(/\?task=stops&add_stop=\d+$/);
+
+  await captureBoth(page, testInfo, "created", "journey-");
+  await patterns.first().locator("a").click();
+
+  await waitForLiveView(page);
+  await expect(page.locator("#pattern-stops")).toBeAttached();
+
+  // The staged row is dashed and badged "New · unsaved": staged is not saved,
+  // and the list says which of the two this is. Its position is the one its own
+  // coordinates imply — the two neighbours the created panel named — and not
+  // the end of the route, which is what a link that merely appended would give.
+  const staged = page.locator("#pattern-stops li", {
+    hasText: "Depot Road",
+  });
+  await expect(staged).toHaveCount(1);
+  await expect(staged).toContainText("New · unsaved");
+  await expect(page.locator("#pattern-stops")).toHaveAttribute(
+    "data-dirty",
+    "true",
+  );
+
+  const names = await page
+    .locator("#pattern-stops li span.text-sm.font-semibold")
+    .allTextContents();
+  const at = names.findIndex((name) => name === "Depot Road");
+  expect(at).toBeGreaterThan(0);
+  expect(at).toBeLessThan(names.length - 1);
+
+  await captureBoth(page, testInfo, "staged", "journey-");
+
+  // The rest of the job is about stops the feed brought, so the journey goes
+  // back to the map and selects them by the parameter the list and the stop
+  // page both use.
+  await page.goto(`/gtfs/${versionId}/stops/map?stop=1434`);
+  await waitForLiveView(page);
+  await waitForMapReady(page);
+  await expect(page.locator("#stops-map-edit-panel")).toBeAttached();
+
+  // 3 · Move it. The nudge is a correction rather than a different place —
+  // the band below which a move is a fix, not a question — so the button is
+  // still Save changes. A pixel drag cannot name a metre at a fitted zoom (the
+  // band is 8 m and the journey's own first drag overshot it), so the
+  // correction is driven by the keyboard, and the far drag below is the one
+  // that asks the question.
+  const pin = page.locator(".stop-map-pin");
+  await expect(pin).toHaveCount(1);
+
+  await pin.focus();
+  await page.keyboard.press("ArrowUp");
+  await expect(page.locator("#stops-map-edit-moved")).toContainText(
+    /Moved \d+ ft of where it was\./,
+  );
+  await expect(page.locator("#stops-map-edit-save")).toContainText(
+    "Save changes",
+  );
+  await expect(page.locator(".stop-map-ghost-marker")).toHaveCount(1);
+  await expect(page.locator(".stop-map-distance")).toHaveCount(1);
+
+  // Step 30's harness finding still stands — a click on a panel submit button
+  // does not reach the server from the browser journey — so the review state is
+  // reached by asking the form to submit itself. The write itself, and the
+  // out-of-date message the save produces, are the ExUnit claim in
+  // stops_map_move_test.exs; what this journey proves is that the review is
+  // reachable from the same panel the journey arrived on.
+  await dragPinBy(page, 0, -60);
+  await expect(page.locator("#stops-map-edit-save")).toContainText(
+    "Review move",
+  );
+  await submitEditForm(page);
+
+  await expect(page.locator("#stops-map-move-panel")).toBeAttached();
+  await expect(page.locator("#stops-map-move-patterns")).toContainText(
+    "Will redraw",
+  );
+  await captureBoth(page, testInfo, "move-review", "journey-");
+  await page.locator("#stops-map-move-back").click();
+
+  // 4 · Find out why it cannot be deleted. The unsaved far drag is still on the
+  // form, so the way out of it is asked before anything else is — the same
+  // guard every other way off this panel goes through. Keeping the draft
+  // leaves the panel exactly as it was, which is the answer worth checking
+  // here: an editor who came back to find their drag still there has lost
+  // nothing.
+  await page.locator("#stops-map-edit-more").click();
+  await expect(page.locator("#stops-map-edit-more-menu")).toBeAttached();
+  await page.locator("#stops-map-edit-delete").click();
+  await expect(page.locator("#stops-map-discard")).toBeAttached();
+  await expect(page.locator("#stops-map-discard")).toHaveAttribute(
+    "data-open",
+    "true",
+  );
+  await expect(page.locator("#stops-map-discard")).toContainText(
+    "Discard changes to US 101 & SE 1st St?",
+  );
+  await captureBoth(page, testInfo, "guard", "journey-");
+
+  await page.locator("#stops-map-discard-keep").click();
+  await expect(page.locator("#stops-map-discard")).toHaveAttribute(
+    "data-open",
+    "false",
+  );
+  await expect(page.locator("#stops-map-edit-panel")).toBeAttached();
+  await expect(page.locator("#stops-map-edit-moved")).toBeAttached();
+
+  // Leaving the panel is the same question, and Discard changes is what
+  // carries it out. The page is reloaded rather than the menu re-opened: the
+  // second open of this menu inside one journey repeatedly detaches the item
+  // under the click, which is a harness artefact and not a claim worth making.
+  await page.locator("#stops-map-edit-cancel").click();
+  await expect(page.locator("#stops-map-discard")).toHaveAttribute(
+    "data-open",
+    "true",
+  );
+  await page.locator("#stops-map-discard-go").click();
+  await expect(page.locator("#stops-map-panel")).toBeAttached();
+
+  await page.goto(`/gtfs/${versionId}/stops/map?stop=1434`);
+  await waitForLiveView(page);
+  await waitForMapReady(page);
+  await page.locator("#stops-map-edit-more").click();
+  await expect(page.locator("#stops-map-edit-more-menu")).toBeAttached();
+  await page.locator("#stops-map-edit-delete").click();
+  await expect(page.locator("#stops-map-delete-panel")).toBeAttached();
+  await expect(page.locator("#stops-map-delete-heading")).toHaveText(
+    "Can\u2019t delete US 101 & SE 1st St yet",
+  );
+  await expect(
+    page.locator("#stops-map-delete-blocked-list li"),
+  ).not.toHaveCount(0);
+  await expect(page.locator("#stops-map-delete-go")).toHaveCount(0);
+  await captureBoth(page, testInfo, "delete-blocked", "journey-");
+  await page.locator("#stops-map-delete-keep").click();
+
+  // 5 · Replace its duplicate. The pair is the same place 5 ft apart, so the
+  // panel offers exactly one candidate, the route's own sentence says which
+  // pattern stops where instead, and the answer is a count of the writes.
+  await page.goto(`/gtfs/${versionId}/stops/map?stop=1433`);
+  await waitForLiveView(page);
+  await waitForMapReady(page);
+  await page.locator("#stops-map-edit-more").click();
+  await expect(page.locator("#stops-map-edit-more-menu")).toBeAttached();
+  await page.locator("#stops-map-edit-replace").click();
+
+  await expect(page.locator("#stops-map-replace-candidates label")).toHaveCount(
+    1,
+  );
+  await expect(
+    page.locator("#stops-map-replace-candidate-1434 input[type=radio]"),
+  ).toBeChecked();
+  await expect(page.locator("#stops-map-replace-changes")).toContainText(
+    "instead.",
+  );
+  await expect(page.locator("#stops-map-replace-go")).toContainText(
+    "Replace in 1 pattern",
+  );
+  await captureBoth(page, testInfo, "replace", "journey-");
+
+  // The replacement write is covered by stops_map_replace_test.exs; the journey
+  // ends on the review, which is the last state a person sees before deciding.
+  await page.locator("#stops-map-replace-cancel").click();
+  await expect(page.locator("#stops-map-edit-panel")).toBeAttached();
+
+  await captureReference(
+    page,
+    testInfo,
+    "journey-staged",
+    "staged",
+    "journey-ref-",
+  );
+});
