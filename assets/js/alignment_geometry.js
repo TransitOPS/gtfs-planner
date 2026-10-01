@@ -372,3 +372,144 @@ export function convertImportedShape({ visits, shapePoints, visitDistances, thre
     })),
   };
 }
+
+// Cumulative projected length up to each vertex of a projected chain, plus
+// the chain total, so a projection's distance along the line can be
+// compared.
+function alongDistances(projected) {
+  const cum = [0];
+  for (let i = 0; i < projected.length - 1; i++) {
+    const dx = projected[i + 1].x - projected[i].x;
+    const dy = projected[i + 1].y - projected[i].y;
+    cum.push(cum[i] + Math.hypot(dx, dy));
+  }
+  return cum;
+}
+
+// projectVisitOntoLine(L, lonLat, projected, cum, lon, lat)
+// -> {alongM, distanceM}: where one visit lands on the line and how far it
+// is from it, or null for a chain of one projected point.
+//
+// Unlike `projectionSplits`, this searches the whole line with no monotonic
+// cursor: the fit review must measure a line that runs the other way before
+// it is reversed, and a cursor would pin every visit to the start of the
+// line. The projection, the ground-metre correction and `projectToSegment`
+// are the conversion's own, so the fit and the conversion agree on which
+// visits are inside the threshold (INV-5).
+function projectVisitOntoLine(L, projected, cum, lon, lat) {
+  const v = L.CRS.EPSG3857.project(L.latLng(lat, lon));
+  // EPSG3857 stretches ground metres by 1/cos φ; the visit latitude
+  // restores ground metres for the threshold comparison.
+  const cosPhi = Math.cos((lat * Math.PI) / 180);
+  let best = null;
+  for (let j = 0; j < projected.length - 1; j++) {
+    const r = projectToSegment(v, projected[j], projected[j + 1]);
+    if (best && r.planarDist >= best.planarDist) continue;
+    best = { seg: j, frac: r.frac, planarDist: r.planarDist };
+  }
+  if (!best) return null;
+  return {
+    alongM: cum[best.seg] + best.frac * (cum[best.seg + 1] - cum[best.seg]),
+    distanceM: best.planarDist * cosPhi,
+  };
+}
+
+// fitSummary({visits, points, thresholdM = 100})
+// -> {direction, reachesStart, reachesEnd, far, within, visitCount, lengthM}.
+//
+// The fit review's measurements, from the same projection and the same
+// threshold `convertImportedShape` uses (INV-5): each visit is projected
+// onto the line by `projectVisitOntoLine`, which reuses `projectToSegment`
+// and the conversion's ground-metre correction, so a review reporting no
+// far stop is the input whose conversion flags no section. visits are the
+// hook's visit maps (`{position, stop_id, lon, lat}`); points are [lon, lat]
+// or [lon, lat, dist].
+//
+// direction is "reversed" when the last visit projects before the first
+// along the line, and "unknown" when the line or the visit run cannot say:
+// fewer than two points, fewer than two visits, or both ends projecting to
+// the same place along the line. reachesStart/reachesEnd hold when the
+// first/last visit is within the threshold of that end of the line, so a
+// line stopping short of a visit reports the miss. far lists the visits
+// beyond the threshold, in visit order, with their ground-metre distance;
+// within counts the rest. Pure: it reports, it never drafts (CR-9).
+export function fitSummary({ visits, points, thresholdM = 100 }) {
+  const lonLat = points.map(([lon, lat]) => [lon, lat]);
+  const visitCount = visits.length;
+  if (visitCount === 0 || lonLat.length < 2) {
+    return {
+      direction: "unknown",
+      reachesStart: false,
+      reachesEnd: false,
+      far: [],
+      within: 0,
+      visitCount,
+      lengthM: lengthMeters(lonLat.map(toLatLng)),
+    };
+  }
+
+  const L = leaflet();
+  const projected = lonLat.map(([lon, lat]) => L.CRS.EPSG3857.project(L.latLng(lat, lon)));
+  const cum = alongDistances(projected);
+  const placed = visits.map((visit) => projectVisitOntoLine(L, projected, cum, visit.lon, visit.lat));
+  const alongs = placed.map((placement) => (placement ? placement.alongM : null));
+
+  let direction = "unknown";
+  if (visitCount > 1 && alongs[0] !== null && alongs[visitCount - 1] !== null && alongs[0] !== alongs[visitCount - 1]) {
+    direction = alongs[visitCount - 1] < alongs[0] ? "reversed" : "same";
+  }
+
+  // Reaching an end is about the visit and that end of the line, not about
+  // the line's own length, so an end point beyond the visit's position is
+  // still reached.
+  const ground = (a, b) => L.CRS.Earth.distance(L.latLng(a[1], a[0]), L.latLng(b[1], b[0]));
+  const far = [];
+  let within = 0;
+  visits.forEach((visit, i) => {
+    const distanceM = placed[i] ? placed[i].distanceM : null;
+    if (distanceM !== null && distanceM <= thresholdM) {
+      within += 1;
+      return;
+    }
+    far.push({ position: visit.position, stopId: visit.stop_id, distanceM });
+  });
+
+  return {
+    direction,
+    reachesStart: ground([visits[0].lon, visits[0].lat], lonLat[0]) <= thresholdM,
+    reachesEnd: ground([visits[visitCount - 1].lon, visits[visitCount - 1].lat], lonLat[lonLat.length - 1]) <= thresholdM,
+    far,
+    within,
+    visitCount,
+    lengthM: lengthMeters(lonLat.map(toLatLng)),
+  };
+}
+
+// reverseLine(points) -> a new array in the opposite order. The points
+// themselves are shared, never mutated: the review previews the reversal,
+// and the conversion later drafts the reversed chain.
+export function reverseLine(points) {
+  return points.slice().reverse();
+}
+
+// joinPieces(pieces, toleranceM = 50) -> one [lon, lat] chain, or null when
+// the ends do not meet. Google My Maps splits a path into one line per ten
+// stops, so consecutive pieces repeat the shared vertex; each joint is
+// measured with the same ground-metre distance `lengthMeters` uses and the
+// repeated vertex of the following piece is dropped. A joint beyond the
+// tolerance returns null rather than a chain with a jump in it. Points pass
+// through as they arrive, an imported distance included.
+export function joinPieces(pieces, toleranceM = 50) {
+  if (!Array.isArray(pieces)) return null;
+  if (pieces.length === 0) return [];
+  if (pieces.some((piece) => !Array.isArray(piece) || piece.length === 0)) return null;
+
+  const L = leaflet();
+  const ground = (a, b) => L.CRS.Earth.distance(L.latLng(a[1], a[0]), L.latLng(b[1], b[0]));
+  const joined = pieces[0].slice();
+  for (let i = 1; i < pieces.length; i++) {
+    if (ground(joined[joined.length - 1], pieces[i][0]) > toleranceM) return null;
+    joined.push(...pieces[i].slice(1));
+  }
+  return joined;
+}
