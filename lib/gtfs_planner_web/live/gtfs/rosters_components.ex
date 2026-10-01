@@ -73,8 +73,11 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
 
   use GtfsPlannerWeb, :html
 
-  import GtfsPlannerWeb.PlannerComponents, only: [first_use: 1, message: 1, sort_header: 1]
+  import GtfsPlannerWeb.PlannerComponents,
+    only: [drawer_footer: 1, drawer_scroll: 1, first_use: 1, message: 1, sort_header: 1]
 
+  alias GtfsPlanner.Gtfs.Rosters.Candidates
+  alias GtfsPlanner.Gtfs.Rosters.Checks
   alias GtfsPlannerWeb.CoreComponents
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
 
@@ -1431,4 +1434,443 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
     </.first_use>
     """
   end
+
+  @doc """
+  A builder's refusal as the one sentence a planner reads.
+
+  This is `Rosters.Candidates`' answer written out, and it is written **here**
+  because the page is where a planner reads it: the same sentence appears under
+  the disabled group action and beside the error a refused write leaves in the
+  drawer, so the two cannot describe the same refusal differently (INV-15, and
+  the "Builder availability has one owner" criterion).
+
+  `context` carries the facts a refusal names but does not carry: the `run_id`
+  the planner chose, the `weekday` whose group was asked for, the `line_number`
+  and the version's `min_rest_minutes`. Refusals that need none of them are
+  written without them.
+  """
+  @spec refusal_text(Candidates.refusal(), %{
+          required(:run_id) => String.t() | nil,
+          required(:weekday) => 1..7 | nil,
+          required(:line_number) => pos_integer() | nil,
+          required(:min_rest_minutes) => integer()
+        }) :: String.t()
+  def refusal_text({:unknown_run, run_id}, _context) do
+    "Run #{run_id} is not one of this day’s runs."
+  end
+
+  def refusal_text(:single_day_group, _context) do
+    "That day is the only weekday its day type runs, so there is no group to set."
+  end
+
+  def refusal_text({:run_held, weekday, line_number}, %{run_id: run_id}) do
+    "Run #{run_id} is in line #{line_number} on #{short_weekday_name(weekday)}."
+  end
+
+  def refusal_text({:day_filled, weekday, other_run_id}, %{line_number: number}) do
+    "Line #{number} already works run #{other_run_id} on #{short_weekday_name(weekday)}. " <>
+      "Clear it first, or set days one at a time."
+  end
+
+  def refusal_text(
+        {:short_rest, from, to, rest_secs, run_id},
+        %{weekday: weekday, min_rest_minutes: min_rest_minutes}
+      ) do
+    "#{short_weekday_name(from)} → #{short_weekday_name(to)} would leave " <>
+      "#{rest_hours(rest_secs)} of rest after run #{run_id}; minimum " <>
+      "#{rest_hours(min_rest_minutes * @seconds_per_minute)}." <>
+      if(weekday, do: " Set #{weekday_name(weekday)} alone to keep it as a warning.", else: "")
+  end
+
+  def refusal_text({:no_base, weekday}, _context) do
+    "#{weekday_name(weekday)} has no base day type, so no run can be set there."
+  end
+
+  def refusal_text(:not_found, _context), do: "That line is no longer on this version."
+
+  defp weekday_name(weekday), do: Enum.at(@weekday_names, weekday - 1)
+
+  defp short_weekday_name(weekday), do: Enum.at(@weekdays, weekday - 1)
+
+  @doc """
+  One short rest as the sentence the confirmation toast carries.
+
+  The same words `refusal_text/2` writes for `{:short_rest, …}`, without the
+  "would leave" a refusal needs: after a write the rest is not a forecast, it is
+  what the week the planner just built leaves.
+  """
+  @spec short_rest_sentence(Checks.short_rest(), integer()) :: String.t()
+  def short_rest_sentence(%{from: from, to: to, rest_secs: rest_secs}, min_rest_minutes) do
+    "#{short_weekday_name(from)} → #{short_weekday_name(to)}: " <>
+      "#{rest_hours(rest_secs)} of rest after the run; minimum " <>
+      "#{rest_hours(min_rest_minutes * @seconds_per_minute)}."
+  end
+
+  @doc """
+  The slot drawer: choose the run one weekday of one line works.
+
+  Everything in it is an answer somebody else computed. The week strip and the
+  stale note are the composition's own slots (`Rosters.Roster.build/1`), the
+  candidate rows are `Rosters.Candidates.slot_candidates/3` in that function's
+  order, and whether the group action is available is
+  `Candidates.group_availability/4` — the same computation the writer runs under
+  the lock, so a button that is enabled writes and one that is off cannot
+  (INV-15).
+
+  ## Why the disabled reason is drawn, not withheld
+
+  An action a planner cannot take is still on screen, with the sentence saying
+  why underneath it, because a control that vanishes leaves the planner looking
+  for it. The sentence is `refusal_text/2` over the same refusal the writer
+  would return, so it names the thing to fix first rather than the first thing
+  a function happened to test.
+
+  ## The footer is three actions in three places
+
+  `Clear day` at the opposite edge (it is destructive to the day, and the two
+  Set actions are not), then the group's secondary action and the day's primary.
+  `phx-disable-with` puts a write into its pending state, so a second click
+  during the round trip cannot send it twice.
+  """
+  attr :open, :boolean, required: true
+  attr :line, :map, required: true
+  attr :weekday, :integer, required: true
+  attr :current, :map, default: nil, doc: "the slot as it stands, which may be stale"
+  attr :group, :map, default: nil, doc: "the weekday's group: weekdays and label"
+  attr :candidates, :list, required: true
+  attr :selected_run_id, :string, default: nil
+  attr :group_state, :any, default: nil, doc: "`Candidates.group_availability/4`"
+  attr :pending?, :boolean, default: false
+  attr :refusal, :string, default: nil
+  attr :min_rest_minutes, :integer, required: true
+  attr :on_close, :string, default: "close_slot"
+
+  def slot_drawer(assigns) do
+    assigns =
+      assigns
+      |> assign(:day_name, weekday_name(assigns.weekday))
+      |> assign(:stale, stale_reason(assigns.current))
+      |> assign(:group_label, group_label(assigns))
+
+    ~H"""
+    <.drawer
+      id="rosters-slot-drawer"
+      chrome="planner"
+      open={@open}
+      pending={@pending?}
+      on_close={@on_close}
+      class="max-w-[min(100vw,52rem)]"
+      title={"Line #{@line.line_number} · #{@day_name}"}
+      return_focus_id={"slot-#{@line.line_number}-#{@weekday}"}
+    >
+      <:lede>
+        <span id="rosters-slot-lede">
+          {(@line.operator && @line.operator.display_name) || "Open line"} · {plural_days(
+            map_size(@line.slots)
+          )} · {@line.paid_secs |> hours_minutes()} paid a week
+        </span>
+      </:lede>
+
+      <.drawer_scroll>
+        <.message
+          :if={@stale}
+          id="rosters-slot-stale"
+          kind="warning"
+          title={slot_stale_title(@current)}
+          class="border-l-4 border-warning-line"
+        >
+          {stale_note(@current, @stale, @group_label, @day_name)}
+        </.message>
+
+        <div
+          id="rosters-slot-week"
+          class="rosters-week-strip"
+          role="group"
+          aria-label={"Line #{@line.line_number} this week"}
+        >
+          <div
+            :for={weekday <- 1..7}
+            class={[
+              "rosters-week-day",
+              slot_state(@line, weekday) == "work" && "rosters-week-work",
+              slot_state(@line, weekday) == "stale" && "rosters-week-stale",
+              weekday == @weekday && "rosters-week-here"
+            ]}
+            aria-current={weekday == @weekday && "true"}
+          >
+            <b aria-hidden="true">{short_day(weekday)}</b>
+            <span class="sr-only">{weekday_name(weekday)}</span>
+            <span>{slot_run(@line, weekday)}</span>
+            <span :if={slot_times(@line, weekday)} class="rosters-week-times">
+              {slot_times(@line, weekday)}
+            </span>
+          </div>
+        </div>
+
+        <fieldset :if={@candidates != []} id="rosters-slot-candidates" class="min-w-0">
+          <legend class="text-base font-bold text-strong">Run for {@day_name}</legend>
+          <p class="mt-1 text-[13px] text-muted">
+            {@day_name} uses {@group_label} runs. Open runs whose sign-on is closest to this line’s
+            other days come first. Minimum rest is {minutes(@min_rest_minutes)}.
+          </p>
+
+          <div class="mt-3 overflow-x-auto rounded-card border border-subtle">
+            <table class="w-full border-separate border-spacing-0 text-sm">
+              <caption class="sr-only">
+                Runs {@day_name} can take, with the rest each leaves either side
+              </caption>
+              <thead>
+                <tr class="bg-canvas text-left text-[13px] text-muted">
+                  <th scope="col" class="px-2 py-2 font-semibold">Run</th>
+                  <th scope="col" class="px-2 py-2 font-semibold">Type</th>
+                  <th scope="col" class="px-2 py-2 font-semibold">Sign-on</th>
+                  <th scope="col" class="px-2 py-2 font-semibold">Sign-off</th>
+                  <th scope="col" class="px-2 py-2 text-right font-semibold">Paid</th>
+                  <th scope="col" class="px-2 py-2 font-semibold">Rest before</th>
+                  <th scope="col" class="px-2 py-2 font-semibold">Rest after</th>
+                </tr>
+              </thead>
+              <tbody id="rosters-slot-rows">
+                <tr
+                  :for={candidate <- @candidates}
+                  id={"rosters-slot-row-#{candidate.run_id}"}
+                  class="rosters-pick-row"
+                  data-selected={to_string(candidate.run_id == @selected_run_id)}
+                >
+                  <td class="px-2 py-1">
+                    <label class="flex min-h-11 cursor-pointer items-center gap-2.5">
+                      <input
+                        type="radio"
+                        id={"rosters-slot-run-#{candidate.run_id}"}
+                        name="rosters-slot-run"
+                        value={candidate.run_id}
+                        checked={candidate.run_id == @selected_run_id}
+                        phx-click="choose_candidate"
+                        phx-value-run={candidate.run_id}
+                        class="size-5 accent-action"
+                      />
+                      <span class="font-bold text-strong">{candidate.run_id}</span>
+                      <span
+                        :if={current_run?(@current, candidate.run_id)}
+                        class="text-[13px] text-muted"
+                      >
+                        current
+                      </span>
+                    </label>
+                  </td>
+                  <td class="px-2 py-1 text-muted">{run_type_words(candidate.run)}</td>
+                  <td class="px-2 py-1 tabular-nums">
+                    {slot_time(candidate.run.work.sign_on_secs)}
+                  </td>
+                  <td class="px-2 py-1 tabular-nums">
+                    {run_off_time(candidate.run.work.sign_off_secs)}
+                  </td>
+                  <td class="px-2 py-1 text-right tabular-nums">
+                    {hours_minutes(candidate.run.work.paid_secs)}
+                  </td>
+                  <td class="px-2 py-1 tabular-nums">
+                    <.rest_cell
+                      candidate={candidate}
+                      side={:before}
+                      min_rest_minutes={@min_rest_minutes}
+                    />
+                  </td>
+                  <td class="px-2 py-1 tabular-nums">
+                    <.rest_cell
+                      candidate={candidate}
+                      side={:after}
+                      min_rest_minutes={@min_rest_minutes}
+                    />
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </fieldset>
+
+        <.message
+          :if={@candidates == []}
+          id="rosters-slot-full"
+          kind="neutral"
+          title={"Every #{@day_name} run is in a line."}
+        >
+          Clear this day in another line to free a run, or leave this day off.
+        </.message>
+
+        <.message
+          :if={@refusal}
+          id="rosters-slot-refusal"
+          kind="error"
+          title="Nothing was saved."
+        >
+          {@refusal}
+        </.message>
+      </.drawer_scroll>
+
+      <.drawer_footer>
+        <.button
+          :if={@current}
+          type="button"
+          id="rosters-clear-day"
+          variant="secondary"
+          class="mr-auto min-h-11"
+          phx-click="clear_day"
+          phx-disable-with="Clearing…"
+          disabled={@pending?}
+        >
+          Clear day
+        </.button>
+
+        <p
+          :if={group_action?(@group, @candidates)}
+          id="rosters-group-reason"
+          class="basis-full text-right text-[13px] text-muted empty:hidden"
+          aria-live="polite"
+        >
+          {group_reason(@group_state, @selected_run_id, @weekday, @line, @min_rest_minutes)}
+        </p>
+
+        <.button
+          :if={group_action?(@group, @candidates)}
+          type="button"
+          id="rosters-set-group"
+          variant="secondary"
+          class="min-h-11"
+          phx-click="set_group"
+          phx-disable-with="Saving…"
+          disabled={@pending? or not group_available?(@group_state)}
+          aria-describedby={if group_available?(@group_state), do: nil, else: "rosters-group-reason"}
+        >
+          Set {@group_label} to run {@selected_run_id}
+        </.button>
+
+        <.button
+          :if={@candidates != []}
+          type="button"
+          id="rosters-set-day"
+          class="min-h-11"
+          phx-click="set_day"
+          phx-disable-with="Saving…"
+          disabled={@pending? or is_nil(@selected_run_id)}
+        >
+          Set {@day_name} to run {@selected_run_id}
+        </.button>
+      </.drawer_footer>
+    </.drawer>
+    """
+  end
+
+  # The group action belongs to a group of two or more weekdays and to a drawer
+  # with something to set. A single-day group has no rule behind it, so
+  # `Candidates` refuses it and the page does not offer a button whose only
+  # possible answer is a refusal.
+  defp group_action?(group, candidates) do
+    candidates != [] and not is_nil(group) and length(group.weekdays) > 1
+  end
+
+  defp group_available?(:ok), do: true
+  defp group_available?(_state), do: false
+
+  defp group_reason(:ok, _run_id, _weekday, _line, _min), do: nil
+
+  defp group_reason({:error, refusal}, run_id, weekday, line, min_rest_minutes) do
+    refusal_text(refusal, %{
+      run_id: run_id,
+      weekday: weekday,
+      line_number: line.line_number,
+      min_rest_minutes: min_rest_minutes
+    })
+  end
+
+  defp group_reason(nil, _run_id, _weekday, _line, _min), do: nil
+
+  defp group_label(%{group: %{label: label}}), do: label
+  defp group_label(_assigns), do: ""
+
+  defp current_run?(nil, _run_id), do: false
+  defp current_run?(%{run_id: run_id}, run_id), do: true
+  defp current_run?(_current, _run_id), do: false
+
+  # The rest a candidate would leave on one side. A day off is a muted em dash:
+  # there is no neighbour, so there is nothing to be short of. A side under the
+  # minimum is measured *and* marked, because the triangle is what a reader
+  # scanning the column is looking for, and the words behind it are what a screen
+  # reader needs — the mark alone would be a shape with no fact.
+  #
+  # The threshold is the version's own `rules.min_rest_minutes`, read from the
+  # roster and compared here per **side**, because `Candidates`' `short?` is a
+  # property of the pair and this column has one cell per side. The availability
+  # decisions themselves stay with `Candidates`; this only says which of the two
+  # numbers is the low one.
+  attr :candidate, :map, required: true
+  attr :side, :atom, required: true, values: [:before, :after]
+  attr :min_rest_minutes, :integer, required: true
+
+  def rest_cell(assigns) do
+    assigns =
+      assigns
+      |> Map.merge(%{
+        secs: Map.get(assigns.candidate, rest_key(assigns.side))
+      })
+
+    assigns = Map.put(assigns, :short?, short_rest?(assigns))
+
+    ~H"""
+    <span :if={is_nil(@secs)} class="text-muted">—</span>
+    <span :if={@secs} class={@short? && "rosters-rest-short"}>
+      <span :if={@short?} aria-hidden="true">△ </span>{rest_hours(@secs)}<span
+        :if={@short?}
+        class="sr-only"
+      > (under the minimum)</span>
+    </span>
+    """
+  end
+
+  defp short_rest?(%{secs: nil}), do: false
+
+  defp short_rest?(%{secs: secs, min_rest_minutes: min_rest_minutes}) do
+    secs < min_rest_minutes * @seconds_per_minute
+  end
+
+  defp rest_key(:before), do: :rest_before_secs
+  defp rest_key(:after), do: :rest_after_secs
+
+  # A run's sign-off on the same service-day clock the grid uses, so a run that
+  # ends after midnight reads as the next morning rather than as before it
+  # started.
+  defp run_off_time(sign_off_secs) do
+    slot_time(if sign_off_secs < 0, do: sign_off_secs + @seconds_per_day, else: sign_off_secs)
+  end
+
+  defp run_type_words(%{work: %{type: :one_piece}}), do: "One piece"
+  defp run_type_words(%{work: %{type: :straight}}), do: "Straight"
+  defp run_type_words(%{work: %{type: :split}}), do: "Split"
+  defp run_type_words(_run), do: "—"
+
+  defp stale_reason(nil), do: nil
+  defp stale_reason(%{state: {:stale, reason}}), do: reason
+  defp stale_reason(_slot), do: nil
+
+  defp slot_stale_title(%{run_id: run_id}), do: "Run #{run_id} is stale."
+
+  # The three stale reasons, each with the next move. The run's own times are
+  # named when it still has any, because "the run changed" is a difference the
+  # planner can only act on if they can see both ends of it.
+  defp stale_note(%{run_id: run_id} = slot, :run_changed, _group_label, day_name) do
+    "#{stale_sentence(slot, :run_changed)} Set #{day_name} to run #{run_id} to keep it with the " <>
+      "new times, or choose another run."
+  end
+
+  defp stale_note(_slot, :run_removed, group_label, day_name) do
+    "The run no longer exists. Choose another #{group_label} run for #{day_name}, or clear the day." <>
+      " Until then the export skips this day."
+  end
+
+  defp stale_note(_slot, :base_changed, group_label, day_name) do
+    "The base week changed for that day. Choose a #{group_label} run for #{day_name}, or clear " <>
+      "the day. Until then the export skips this day."
+  end
+
+  defp plural_days(1), do: "1 working day"
+  defp plural_days(count), do: "#{count} working days"
 end

@@ -58,6 +58,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   use GtfsPlannerWeb, :live_view
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Rosters.Candidates
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.EnsureRole
@@ -70,12 +71,24 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   # membership before each write. Step 30 gives `add_line` its write; it is
   # named here from the start so the head's control and the guard that covers it
   # are introduced together.
-  @write_events ~w(add_line)
+  #
+  # The slot drawer's three actions are writes and are listed with it. Opening
+  # the drawer and choosing a candidate are reads of the roster already on the
+  # socket, so they re-check no membership.
+  @write_events ~w(add_line set_day set_group clear_day)
 
   # A role revoked while the page is open is not an error the reader caused and
   # is not a validation problem, so it is a refusal said once, in the page's own
   # toast rather than in a field.
   @editor_access_lost "You no longer have editor access to this organization."
+
+  # The write the editor guard refused, so the drawer's own refusal is the one
+  # sentence the reader is told rather than a silent nothing.
+  @write_refused "Nothing was saved."
+
+  # The full weekday name. The grid's own module has the same list for the same
+  # reason: the confirmation toast names the day a planner just changed.
+  @weekday_names ~w(Monday Tuesday Wednesday Thursday Friday Saturday Sunday)
 
   # The version went unpublished between the session hook and this read. The
   # reader has no roster to look at, and the hook's own answer is the one to give.
@@ -112,6 +125,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
      # first paint: a `role="status"` region present with no text announces
      # nothing and still occupies the fixed box at the foot of the viewport.
      |> assign(:toast, nil)
+     |> assign(:slot, nil)
      |> stream(:roster_lines, [], dom_id: &roster_line_dom_id/1)
      |> attach_hook(:editor_access, :handle_event, &require_editor/3)}
   end
@@ -429,10 +443,261 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     {:noreply, assign(socket, :toast, nil)}
   end
 
+  # ── The slot drawer ────────────────────────────────────────────────────────
+  #
+  # Opening a slot and choosing a candidate are reads of the roster this socket
+  # already holds, so neither re-reads the membership and neither is in
+  # `@write_events`. The three writes below are.
+  #
+  # The drawer's whole data is built when an event changes it, not inside
+  # `render/1`. Assigning inside `render/1` invalidates the change tracker for
+  # the whole template, and a `LiveStream` re-rendered that way loses its rows —
+  # so the drawer's data is `Candidates`' answer over the roster this socket
+  # already holds, kept on `:slot` and read by `RostersComponents.slot_drawer/1`
+  # (INV-15). Every event that changes the drawer goes through `open_slot/4`,
+  # which is the one place that builds it.
+  def handle_event("open_slot", %{"line" => line_id, "weekday" => weekday}, socket) do
+    with {:ok, weekday} <- slot_weekday(weekday),
+         {:ok, slot} <- open_slot(socket, line_id, weekday, nil) do
+      {:noreply, assign(socket, :slot, slot)}
+    else
+      :error -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("choose_candidate", %{"run" => run_id}, socket) do
+    case socket.assigns.slot do
+      %{line_id: line_id, weekday: weekday} ->
+        case open_slot(socket, line_id, weekday, run_id) do
+          # A run this drawer does not offer is not a choice, so the selection
+          # stays where it was rather than naming a run no action can take.
+          {:ok, slot} -> {:noreply, assign(socket, :slot, slot)}
+          :error -> {:noreply, socket}
+        end
+
+      nil ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("close_slot", _params, socket) do
+    {:noreply, assign(socket, :slot, nil)}
+  end
+
+  # The three writes. Each one reloads the roster on success — the drawer closes
+  # and the grid redraws from the composition, so the short rests a manual edit
+  # is allowed to leave are the grid's own findings rather than a sentence this
+  # page keeps — and on a refusal keeps the drawer open with the reason drawn in
+  # it, because a refusal that closes the drawer reads as the page having lost
+  # the planner's work.
+  def handle_event("set_day", _params, socket) do
+    with %{line_id: line_id, weekday: weekday, run_id: run_id} <- writable_slot(socket),
+         {:ok, result} <-
+           Gtfs.set_roster_slot(
+             socket.assigns.current_organization.id,
+             socket.assigns.current_gtfs_version.id,
+             line_id,
+             weekday,
+             run_id
+           ) do
+      {:noreply,
+       saved(socket, result.short_rests, "Set #{weekday_name(weekday)} to run #{run_id}.")}
+    else
+      {:error, reason} -> {:noreply, refuse(socket, reason)}
+      _no_slot -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("set_group", _params, socket) do
+    with %{line_id: line_id, weekday: weekday, run_id: run_id} <- writable_slot(socket),
+         {:ok, _result} <-
+           Gtfs.set_roster_weekday_group(
+             socket.assigns.current_organization.id,
+             socket.assigns.current_gtfs_version.id,
+             line_id,
+             weekday,
+             run_id
+           ) do
+      {:noreply, saved(socket, [], "Set #{group_label(socket, weekday)} to run #{run_id}.")}
+    else
+      {:error, reason} -> {:noreply, refuse(socket, reason)}
+      _no_slot -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("clear_day", _params, socket) do
+    with %{line_id: line_id, weekday: weekday} <- writable_slot(socket),
+         {:ok, _result} <-
+           Gtfs.clear_roster_slot(
+             socket.assigns.current_organization.id,
+             socket.assigns.current_gtfs_version.id,
+             line_id,
+             weekday
+           ) do
+      {:noreply, saved(socket, [], "Cleared #{weekday_name(weekday)}.")}
+    else
+      {:error, reason} -> {:noreply, refuse(socket, reason)}
+      _no_slot -> {:noreply, socket}
+    end
+  end
+
   # Any other event is ignored. This clause is last among the `handle_event`
   # clauses on purpose: a catch-all placed earlier would shadow the real
   # handlers above it.
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  # The weekday arrives from a `phx-value-weekday` attribute, so it is cast
+  # rather than compared: a hand-built event naming "9" or "monday" is not a
+  # weekday, and `in 1..7` would answer the wrong question about a string.
+  defp slot_weekday(weekday) when weekday in 1..7, do: {:ok, weekday}
+
+  defp slot_weekday(weekday) when is_binary(weekday) do
+    case Integer.parse(weekday) do
+      {day, ""} when day in 1..7 -> {:ok, day}
+      _not_a_weekday -> :error
+    end
+  end
+
+  defp slot_weekday(_weekday), do: :error
+
+  # A write while another one is in flight, or one with nothing chosen, is not a
+  # write. `run_id` is `nil` on a day with no candidates, where the Set actions
+  # are not drawn at all.
+  defp writable_slot(socket) do
+    case socket.assigns.slot do
+      %{pending?: false, run_id: run_id} = slot when not is_nil(run_id) -> slot
+      _no_writable_slot -> nil
+    end
+  end
+
+  # The roster re-read and the drawer close. `short_rests` is the writer's own
+  # answer about the week the write leaves, and a manual per-day edit is allowed
+  # to leave short rest where a builder never would, so the toast says so: the
+  # grid carries the warning on the day, and the toast names it here.
+  defp saved(socket, short_rests, text) do
+    socket = socket |> assign(:slot, nil) |> load_roster()
+
+    if short_rests == [] do
+      put_toast(socket, text, :done)
+    else
+      [first | _rest] = short_rests
+
+      put_toast(
+        socket,
+        text <>
+          " " <>
+          rest_sentence(first, socket.assigns.roster.rules.min_rest_minutes),
+        :refused
+      )
+    end
+  end
+
+  # A refusal keeps the drawer and puts the reason where the planner is already
+  # looking. The sentence is `RostersComponents.refusal_text/2` over the same
+  # refusal the writer returned, so the reason on screen and the reason the
+  # writer gave are one string.
+  defp refuse(socket, reason) do
+    text =
+      case reason do
+        :not_found -> @write_refused
+        refusal -> RostersComponents.refusal_text(refusal, refusal_context(socket))
+      end
+
+    %{line_id: line_id, weekday: weekday} = socket.assigns.slot
+    {:ok, slot} = open_slot(socket, line_id, weekday, socket.assigns.slot.run_id)
+
+    assign(socket, :slot, %{slot | refusal: text})
+  end
+
+  defp refusal_context(socket) do
+    slot = socket.assigns.slot
+    line = Enum.find(socket.assigns.roster.lines, &(&1.id == slot.line_id))
+
+    %{
+      run_id: slot.run_id,
+      weekday: slot.weekday,
+      line_number: line && line.line_number,
+      min_rest_minutes: socket.assigns.roster.rules.min_rest_minutes
+    }
+  end
+
+  defp rest_sentence(short_rest, min_rest_minutes) do
+    RostersComponents.short_rest_sentence(short_rest, min_rest_minutes)
+  end
+
+  defp weekday_name(weekday), do: Enum.at(@weekday_names, weekday - 1)
+
+  # The group's own label, so the confirmation says the same "Mon–Fri" the
+  # button it answers is named after.
+  defp group_label(socket, weekday) do
+    case Enum.find(socket.assigns.roster.groups, &(weekday in &1.weekdays)) do
+      %{label: label} -> label
+      _no_group -> weekday_name(weekday)
+    end
+  end
+
+  # The drawer's data for one line and weekday: the composition's own line and
+  # slot, `Rosters.Candidates`' candidates in its order, and its answer on
+  # whether the group's action is available. A line this version's roster does
+  # not hold, a weekday outside the week, and a run the drawer does not offer
+  # are all `:error` rather than a drawer describing work that is not there.
+  #
+  # `run_id` `nil` means "the drawer opens on the day's own run, or the first
+  # candidate" — what a click without a choice should select.
+  defp open_slot(socket, line_id, weekday, run_id) do
+    case socket.assigns.roster do
+      nil ->
+        :error
+
+      roster ->
+        with line when not is_nil(line) <- Enum.find(roster.lines, &(&1.id == line_id)),
+             true <- weekday in 1..7 do
+          view = Candidates.slot_candidates(roster, line_id, weekday)
+          run_id = offered_run(view, run_id)
+
+          {:ok,
+           slot_data(line, weekday, run_id, view, group_state(roster, line_id, weekday, run_id))}
+        else
+          _unknown -> :error
+        end
+    end
+  end
+
+  defp slot_data(line, weekday, run_id, view, group_state) do
+    %{
+      line_id: line.id,
+      weekday: weekday,
+      line: line,
+      current: view.current,
+      group: view.group,
+      candidates: view.candidates,
+      run_id: run_id,
+      group_state: group_state,
+      pending?: false,
+      refusal: nil
+    }
+  end
+
+  # The run a drawer selects: the one named, when this day's candidates offer
+  # it, and otherwise the day's own run or its first candidate.
+  defp offered_run(view, run_id) do
+    if run_id in Enum.map(view.candidates, & &1.run_id), do: run_id, else: default_run(view)
+  end
+
+  defp group_state(_roster, _line_id, _weekday, nil), do: nil
+
+  defp group_state(roster, line_id, weekday, run_id) do
+    Candidates.group_availability(roster, line_id, weekday, run_id)
+  end
+
+  # The day's current run leads, as the prototype leads it; otherwise the first
+  # candidate in `Candidates`' own order.
+  defp default_run(%{current: %{run_id: run_id}, candidates: candidates}) do
+    if run_id in Enum.map(candidates, & &1.run_id), do: run_id
+  end
+
+  defp default_run(%{candidates: [candidate | _rest]}), do: candidate.run_id
+  defp default_run(_view), do: nil
 
   defp toggle_dir(:asc), do: :desc
   defp toggle_dir(_dir), do: :asc
@@ -545,6 +810,21 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
           />
         </div>
       </div>
+
+      <RostersComponents.slot_drawer
+        :if={@slot}
+        open
+        line={@slot.line}
+        weekday={@slot.weekday}
+        current={@slot.current}
+        group={@slot.group}
+        candidates={@slot.candidates}
+        selected_run_id={@slot.run_id}
+        group_state={@slot.group_state}
+        pending?={@slot.pending?}
+        refusal={@slot.refusal}
+        min_rest_minutes={@roster.rules.min_rest_minutes}
+      />
     </Layouts.app>
     """
   end

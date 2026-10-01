@@ -1272,6 +1272,76 @@ body {
 #rosters-page .rosters-pick-link:hover { color: var(--color-action-hover); }
 #rosters-page .rosters-pick-link:disabled { color: var(--color-control); cursor: not-allowed; }
 
+/* ── The slot drawer's week strip and candidate rows ─────────────────────────
+   The strip is the prototype's: seven cells at one fraction each, so a planner
+   sees the whole week at the width of the drawer rather than seven 94px columns
+   they have to scroll. The day's own cell carries the focus ring instead of a
+   fill, because the ring is the one mark a keyboard reader sees. */
+#rosters-slot-drawer .rosters-week-strip {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+
+#rosters-slot-drawer .rosters-week-day {
+  min-width: 0;
+  border: 1px solid var(--color-subtle);
+  border-radius: var(--radius-control);
+  padding: 6px;
+  font-size: 13px;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+}
+
+#rosters-slot-drawer .rosters-week-day b {
+  display: block;
+  color: var(--color-strong);
+}
+
+/* The day the drawer was opened for is outlined, so the strip answers "which day
+   am I changing" without reading the title. */
+#rosters-slot-drawer .rosters-week-here {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 1px;
+  border-color: transparent;
+}
+
+#rosters-slot-drawer .rosters-week-work {
+  background: var(--color-soft);
+  color: var(--color-cyan-800);
+  border-color: transparent;
+}
+
+#rosters-slot-drawer .rosters-week-stale {
+  background: var(--color-warning-bg);
+  color: var(--color-warning-fg);
+  border-color: var(--color-warning-line);
+}
+
+#rosters-slot-drawer .rosters-week-times {
+  display: block;
+  color: inherit;
+  opacity: 0.8;
+}
+
+/* A chosen candidate is tinted rather than bolded, so the row still reads as a
+   table row. Hover and selection share the row so a pointer and a keyboard
+   never disagree about which row is being pointed at. */
+#rosters-slot-drawer .rosters-pick-row:hover > td { background: var(--color-canvas); }
+
+#rosters-slot-drawer .rosters-pick-row[data-selected='true'] > td {
+  background: var(--color-selection);
+}
+
+#rosters-slot-drawer .rosters-pick-row[data-selected='true']:hover > td {
+  background: var(--color-selection);
+}
+
+#rosters-slot-drawer .rosters-rest-short {
+  font-weight: 600;
+  color: var(--color-warning-fg);
+}
+
 /* ── The Runs duty chart ─────────────────────────────────────────────────────
    The same table idea as the Blocks timeline, with the day's own numbers: seven
    fact columns to Blocks' six, and 44px rows because a run is a person. The
