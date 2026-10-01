@@ -2543,8 +2543,16 @@ async function openJourneyAlert(page) {
 // keyboard's own selection and stores exactly what a click stores.
 async function pressChoice(page, selector) {
   const control = page.locator(selector);
-  await control.focus();
-  await expect(control).toBeFocused();
+  await expect(control).toBeVisible();
+
+  // A question is often replaced by the patch that draws it, and a node that
+  // is replaced after it was focused loses the focus with it, so the focus is
+  // retried until the button the reader is aiming at is the one that holds it.
+  await expect(async () => {
+    await control.focus();
+    await expect(control).toBeFocused();
+  }).toPass({ timeout: 15_000 });
+
   await page.keyboard.press("Enter");
 }
 
@@ -2600,17 +2608,38 @@ async function typeDate(page, selector, iso) {
   await expect(field).toHaveValue(iso);
 }
 
+// A write is finished when the row's own revision has moved, not when the
+// status line says `Saved`: the status still reads `Saved` from the write
+// before it, so waiting on it lets the next write go out against a revision
+// the row has already left behind, and the editor answers with a conflict
+// against the reader's own earlier answer (AC-16, R6).
+async function settledWrite(page, write) {
+  const revision = page.locator("input[name='alert[revision]']");
+  const before = await revision.inputValue();
+
+  await write();
+
+  await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+  await expect(revision).not.toHaveValue(before);
+  await expect(page.locator("#alert-conflict")).toHaveCount(0);
+}
+
 // A current disruption's own answer: an estimate keeps the alert live, so it
 // asks when staff check back rather than when service recovers.
 async function answerCurrentTiming(page, startTime) {
   await pressChoice(page, "#alert-timing-end-kind-estimated");
   await expect(page.locator("#timing-check-in")).toBeVisible();
-  await page.locator("#timing-check-in").selectOption({ index: 2 });
-  await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+  await settledWrite(page, () =>
+    page.locator("#timing-check-in").selectOption({ index: 2 }),
+  );
 
-  await typeDate(page, "#timing-start-date", await agencyToday(page));
-  await page.locator("#timing-start-time").fill(startTime);
-  await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+  const today = await agencyToday(page);
+  await settledWrite(page, () =>
+    typeDate(page, "#timing-start-date", today),
+  );
+  await settledWrite(page, () =>
+    page.locator("#timing-start-time").fill(startTime),
+  );
 
   await pressChoice(page, "#alert-timing-continue");
   await page.waitForSelector("#alert-reason", { timeout: 15_000 });
@@ -2814,12 +2843,13 @@ test.describe("alert authoring journeys", () => {
 
     await pressChoice(page, "#write-directions");
     await page.waitForSelector("#write-directions-field", { timeout: 15_000 });
-    const directions = page.locator("#write-directions-field");
-    await directions.focus();
-    await directions.pressSequentially(
-      "Board at the temporary stop on NE Main St.",
-    );
-    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+    await settledWrite(page, async () => {
+      const directions = page.locator("#write-directions-field");
+      await directions.focus();
+      await directions.pressSequentially(
+        "Board at the temporary stop on NE Main St.",
+      );
+    });
     await pressChoice(page, "#alert-alternative-continue");
 
     await page.waitForSelector("#alert-timing", { timeout: 15_000 });
@@ -2968,18 +2998,21 @@ test.describe("alert authoring journeys", () => {
     // An accessibility question adds the facility riders cannot use to the
     // alternatives it already asks for (AC-18).
     await page.waitForSelector("#alert-alternative", { timeout: 15_000 });
-    const facility = page.locator("#alert_scope_facility");
-    await facility.focus();
-    await facility.pressSequentially("North entrance ramp");
-    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+    await settledWrite(page, async () => {
+      const facility = page.locator("#alert_scope_facility");
+      await facility.focus();
+      await facility.pressSequentially("North entrance ramp");
+    });
 
     await pressChoice(page, "#write-directions");
     await page.waitForSelector("#write-directions-field", { timeout: 15_000 });
-    const directions = page.locator("#write-directions-field");
-    await directions.focus();
-    await directions.pressSequentially(
-      "Use the south entrance ramp, which is step-free.",
-    );
+    await settledWrite(page, async () => {
+      const directions = page.locator("#write-directions-field");
+      await directions.focus();
+      await directions.pressSequentially(
+        "Use the south entrance ramp, which is step-free.",
+      );
+    });
     await pressChoice(page, "#alert-alternative-continue");
 
     await page.waitForSelector("#alert-timing", { timeout: 15_000 });
@@ -3021,9 +3054,10 @@ test.describe("alert authoring journeys", () => {
 
     const url = page.url().split("?")[0];
     const header = page.locator("#message-header");
-    await header.focus();
-    await header.pressSequentially("Route 1 delayed by a stalled truck");
-    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+    await settledWrite(page, async () => {
+      await header.focus();
+      await header.pressSequentially("Route 1 delayed by a stalled truck");
+    });
 
     // A reload inside the browser's own recovery window is the same question
     // with the same answer, because the draft is on the server (AC-16).
@@ -3040,9 +3074,10 @@ test.describe("alert authoring journeys", () => {
     await other.goto(`${url}?mode=form&step=message`);
     await other.waitForSelector("#message-header", { timeout: 15_000 });
     const other_header = other.locator("#message-header");
-    await other_header.focus();
-    await other_header.pressSequentially("Saved in the other tab");
-    await expect(other.locator("#alert-save-status")).toHaveText("Saved");
+    await settledWrite(other, async () => {
+      await other_header.focus();
+      await other_header.pressSequentially("Saved in the other tab");
+    });
     await other.close();
 
     await header.focus();
