@@ -9,8 +9,11 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
        owning the importing version. `Publication.run/4` receives that claimed
        `%Run{}` plus its execution lease token.
     2. Import only into the run's exact target version id via
-       `Import.import_files/4`. The run is the only write destination; there is
-       no fallback version.
+       `Import.import_files/5`. The run is the only write destination; there is
+       no fallback version. The run's id and lease token travel with the import as
+       its `:fence`, so every write transaction first verifies that the run is
+       still `running` under this token with an unexpired lease; a superseded
+       worker commits nothing further (`{:error, :lease_lost}`).
     3. Import result handling closes the run exclusively through `ImportRuns`:
        - publishable result -> `ImportRuns.publish_import/4`
        - non-publishable result or import error -> `ImportRuns.fail_import/4`
@@ -18,13 +21,12 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
        - run actor no longer an active editor (`{:error, :forbidden}` from
          `publish_import/4`) -> `record_publication_failure/5` with reason code
          `"forbidden"`; the version stays `importing`
-    4. A lost or renewed-away lease during closure yields a non-publishable
-       closure error and never retries inserts.
+    4. A lost or renewed-away lease, during the import or at closure, yields a
+       non-publishable closure error and never retries inserts.
 
   `Publication` never calls generic version claim/publish/fail functions
   directly; `ImportRuns` is the sole owner of every coupled run + version
-  transition. It threads the claimed run id into the import so route-pattern
-  derivation records import provenance.
+  transition.
   """
 
   alias GtfsPlanner.Gtfs.Import
@@ -49,7 +51,9 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
     version_id = run.gtfs_version_id
 
     # 1. Import only into the claimed version id. Never a fallback id.
-    case Import.import_files(organization_id, version_id, files, topic, import_run_id: run_id) do
+    case Import.import_files(organization_id, version_id, files, topic,
+           fence: {run_id, lease_token}
+         ) do
       {:ok, %Result{} = result} ->
         Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, topic, {:import_phase, :publication})
 
@@ -66,6 +70,12 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
             {:import_not_publishable, result}
           )
         end
+
+      {:error, :lease_lost} ->
+        # A fenced write found the run handed over. The stale token cannot close
+        # the run either, so nothing further is written.
+        emit_failure(run, organization_id, run_id, version_id, @importing_status, :lease_lost)
+        {:error, read_version(organization_id, version_id), :lease_lost}
 
       {:error, %Failure{} = failure} ->
         # Import error: close the run failed, never publish. The import

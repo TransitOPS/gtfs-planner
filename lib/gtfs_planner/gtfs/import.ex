@@ -46,6 +46,7 @@ defmodule GtfsPlanner.Gtfs.Import do
   alias GtfsPlanner.Gtfs.Import.ParseError
   alias GtfsPlanner.Gtfs.Import.Result
   alias GtfsPlanner.Gtfs.Import.RowParser
+  alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Gtfs.PathwayEvolutions
@@ -154,7 +155,10 @@ defmodule GtfsPlanner.Gtfs.Import do
     - `gtfs_version_id` - UUID of the GTFS version to associate records with
     - `files` - List of `%{filename: string, content: binary}` maps
     - `topic` - (optional) PubSub topic for progress updates. If not provided, one will be generated.
-    - `opts` - (optional) `:import_run_id`, the claimed run that owns this import, recorded as the derivation provenance
+    - `opts` - (optional) `:fence`, `{run_id, lease_token}` of the claimed run that owns this
+      import. Every write transaction (phase 1, each phase 2 batch, each derivation write and
+      the extension transaction) first verifies, under a run-row share lock, that the run is
+      `running` under that token with an unexpired lease (INV-4). Without it nothing is verified.
 
   ## Returns
 
@@ -167,6 +171,8 @@ defmodule GtfsPlanner.Gtfs.Import do
     - `{:error, %Import.Failure{}}` on failure, carrying the phase, outcome,
       durable committed counts, count certainty, sanitized file/row, and a fixed
       reason code
+    - `{:error, :lease_lost}` when a fenced write found the run handed over; that
+      transaction wrote nothing and no later write is attempted
 
   ## Examples
 
@@ -178,6 +184,7 @@ defmodule GtfsPlanner.Gtfs.Import do
     # Generate a stable progress topic before work begins so the supervised
     # runner can durably attribute an unexpected worker exit to the active phase.
     topic = topic || "import:#{:erlang.unique_integer()}"
+    fence = fence_callback(organization_id, Keyword.get(opts, :fence))
     broadcast_phase(topic, :phase_1)
 
     # Expand any uploaded .zip archives into individual file entries
@@ -186,83 +193,111 @@ defmodule GtfsPlanner.Gtfs.Import do
     # Categorize files by filename (case-insensitive)
     {categorized, unrecognized_files, extensions} = categorize_files(files)
 
-    # Phase 1: Import core files in a single transaction for atomicity.
+    with {:ok, counts} <-
+           import_phase_1(categorized, organization_id, gtfs_version_id, topic, fence),
+         {:ok, counts} <-
+           import_phase_2(categorized, counts, organization_id, gtfs_version_id, topic, fence),
+         counts = fill_standard_counts(counts),
+         {:ok, counts} <-
+           maybe_derive_patterns(counts, organization_id, gtfs_version_id, topic, fence),
+         _ = broadcast_phase(topic, :extensions),
+         {:ok, extensions_status, counts} <-
+           import_extensions_phase(organization_id, gtfs_version_id, extensions, counts, fence) do
+      {:ok,
+       %Result{
+         counts: counts,
+         unrecognized_files: unrecognized_files,
+         topic: topic,
+         archive_warnings: archive_warnings,
+         extensions: extensions_status
+       }}
+    end
+  end
+
+  # `fence: {run_id, lease_token}` names the claimed run that owns this import. A
+  # fenced write transaction calls the callback as its first statement; it locks the
+  # run `FOR SHARE` and rolls the transaction back with `:lease_lost` unless the run is
+  # still `running` under the token with an unexpired lease, so a superseded worker
+  # commits nothing (INV-4). Without a fence, as for direct callers, nothing is checked.
+  defp fence_callback(_organization_id, nil), do: nil
+
+  defp fence_callback(organization_id, {run_id, lease_token}) do
+    fn -> ImportRuns.assert_owner!(organization_id, run_id, lease_token, ~w(running)) end
+  end
+
+  # Phase 1 imports the core files in a single transaction for atomicity, so its
+  # counts only become durable after that transaction commits: a Phase 1 failure
+  # means every standard count is zero. One fence check at its start covers the
+  # non-transactional `insert_batched` calls inside it.
+  defp import_phase_1(categorized, organization_id, gtfs_version_id, topic, fence) do
     result =
       Repo.transaction(fn ->
-        Enum.reduce_while(@phase_1_specs, %{}, fn {key, _filename, schema, parser_fun, _phase},
-                                                  counts ->
-          case process_file_category(
+        if fence, do: fence.()
+        import_phase_1_files(categorized, organization_id, gtfs_version_id, topic)
+      end)
+
+    case result do
+      {:ok, counts} -> {:ok, counts}
+      {:error, reason} -> failure(reason, :phase_1, %{})
+    end
+  end
+
+  # Runs inside the phase 1 transaction: the first rejected file rolls it back.
+  defp import_phase_1_files(categorized, organization_id, gtfs_version_id, topic) do
+    Enum.reduce_while(@phase_1_specs, %{}, fn {key, _filename, schema, parser_fun, _phase},
+                                              counts ->
+      case process_file_category(
+             categorized[key] || [],
+             organization_id,
+             gtfs_version_id,
+             topic,
+             key,
+             schema,
+             parser_fun
+           ) do
+        {:ok, count} -> {:cont, Map.put(counts, key, count)}
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp import_phase_2(categorized, counts, organization_id, gtfs_version_id, topic, fence) do
+    broadcast_phase(topic, :phase_2)
+
+    result =
+      Enum.reduce_while(@phase_2_specs, {:ok, counts}, fn
+        {key, _filename, schema, parser_fun, _phase}, {:ok, acc_counts} ->
+          case process_phase_2_category(
                  categorized[key] || [],
                  organization_id,
                  gtfs_version_id,
                  topic,
-                 key,
                  schema,
-                 parser_fun
+                 parser_fun,
+                 fence
                ) do
-            {:ok, count} -> {:cont, Map.put(counts, key, count)}
-            {:error, reason} -> Repo.rollback(reason)
+            {:ok, count} ->
+              {:cont, {:ok, Map.put(acc_counts, key, count)}}
+
+            {:error, reason, committed} ->
+              # Report all earlier committed counts plus this file's durable
+              # committed-batch count.
+              {:halt, {:error, reason, Map.put(acc_counts, key, committed)}}
           end
-        end)
       end)
 
-    # Check if Phase 1 succeeded. Phase 1 runs in a single outer transaction, so
-    # its counts only become durable after that transaction commits: a Phase 1
-    # failure means every standard count is zero.
     case result do
-      {:ok, counts} ->
-        broadcast_phase(topic, :phase_2)
-
-        phase_2_result =
-          Enum.reduce_while(@phase_2_specs, {:ok, counts}, fn
-            {key, _filename, schema, parser_fun, _phase}, {:ok, acc_counts} ->
-              case process_phase_2_category(
-                     categorized[key] || [],
-                     organization_id,
-                     gtfs_version_id,
-                     topic,
-                     schema,
-                     parser_fun
-                   ) do
-                {:ok, count} ->
-                  {:cont, {:ok, Map.put(acc_counts, key, count)}}
-
-                {:error, reason, committed} ->
-                  # Report all earlier committed counts plus this file's durable
-                  # committed-batch count.
-                  {:halt, {:error, reason, Map.put(acc_counts, key, committed)}}
-              end
-          end)
-
-        case phase_2_result do
-          {:ok, counts} ->
-            counts = fill_standard_counts(counts)
-            counts = maybe_derive_patterns(counts, organization_id, gtfs_version_id, topic, opts)
-            broadcast_phase(topic, :extensions)
-
-            case import_extensions_phase(organization_id, gtfs_version_id, extensions, counts) do
-              {:ok, extensions_status, counts} ->
-                {:ok,
-                 %Result{
-                   counts: counts,
-                   unrecognized_files: unrecognized_files,
-                   topic: topic,
-                   archive_warnings: archive_warnings,
-                   extensions: extensions_status
-                 }}
-
-              {:error, reason, committed} ->
-                {:error, build_failure(reason, :extensions, committed)}
-            end
-
-          {:error, reason, committed} ->
-            {:error, build_failure(reason, :phase_2, committed)}
-        end
-
-      {:error, reason} ->
-        {:error, build_failure(reason, :phase_1, %{})}
+      {:ok, counts} -> {:ok, counts}
+      {:error, reason, committed} -> failure(reason, :phase_2, committed)
     end
   end
+
+  # The error result for a failed phase. A lost fence is not a reportable failure: the
+  # run was handed over, so nothing can close it and the caller only needs to stop.
+  defp failure(:lease_lost, _phase, _committed_counts), do: {:error, :lease_lost}
+
+  defp failure(reason, phase, committed_counts),
+    do: {:error, build_failure(reason, phase, committed_counts)}
 
   # Builds a truthful, sanitized failure. Missing standard counts are filled with
   # zero so the durable count map is always complete and bounded. The outcome is
@@ -299,34 +334,39 @@ defmodule GtfsPlanner.Gtfs.Import do
   # Derivation runs after Phase 2 and before extension completion, inside the
   # importer's existing exact-target ownership. An expected route-local failure is
   # non-fatal: the route keeps its bounded error and pending trips for retry. A
-  # database failure raises rather than being reported as a clean result.
+  # database failure raises rather than being reported as a clean result. A lost
+  # fence stops derivation with `{:error, :lease_lost}`.
   #
   # A feed without imported trips cannot have anything to derive, so the phase is
   # skipped entirely instead of issuing avoidable database work before
   # publication.
-  defp maybe_derive_patterns(counts, organization_id, gtfs_version_id, topic, opts) do
+  defp maybe_derive_patterns(counts, organization_id, gtfs_version_id, topic, fence) do
     if Map.get(counts, :trips, 0) > 0 do
       broadcast_phase(topic, :derivation)
-      Map.merge(counts, run_derivation(organization_id, gtfs_version_id, opts))
+
+      with {:ok, summary} <- run_derivation(organization_id, gtfs_version_id, fence) do
+        {:ok, Map.merge(counts, summary)}
+      end
     else
-      counts
+      {:ok, counts}
     end
   end
 
-  defp run_derivation(organization_id, gtfs_version_id, opts) do
-    import_run_id = Keyword.get(opts, :import_run_id)
+  defp run_derivation(organization_id, gtfs_version_id, fence) do
+    case Derivation.derive_version(organization_id, gtfs_version_id, {:import, fence}) do
+      {:ok, summary} ->
+        if summary.routes_failed > 0 do
+          Logger.warning(
+            "Route pattern derivation failed for #{summary.routes_failed} route(s) in version " <>
+              "#{gtfs_version_id}; retry metadata is persisted on those routes"
+          )
+        end
 
-    {:ok, summary} =
-      Derivation.derive_version(organization_id, gtfs_version_id, {:import, import_run_id})
+        {:ok, Map.take(summary, @derivation_count_keys)}
 
-    if summary.routes_failed > 0 do
-      Logger.warning(
-        "Route pattern derivation failed for #{summary.routes_failed} route(s) in version " <>
-          "#{gtfs_version_id}; retry metadata is persisted on those routes"
-      )
+      {:error, :lease_lost} = lost ->
+        lost
     end
-
-    Map.take(summary, @derivation_count_keys)
   end
 
   # Processes phase 2 files with batch-level transactions.
@@ -339,7 +379,8 @@ defmodule GtfsPlanner.Gtfs.Import do
          gtfs_version_id,
          topic,
          schema,
-         row_to_attrs_fn
+         row_to_attrs_fn,
+         fence
        ) do
     insert = fn file, parsed ->
       BatchProcessor.insert_batched_with_transactions(
@@ -347,7 +388,9 @@ defmodule GtfsPlanner.Gtfs.Import do
         schema,
         parsed.events,
         row_to_attrs_fn,
-        batch_options(file, parsed, organization_id, gtfs_version_id, topic)
+        file
+        |> batch_options(parsed, organization_id, gtfs_version_id, topic)
+        |> Keyword.put(:fence, fence)
       )
     end
 
@@ -1058,19 +1101,20 @@ defmodule GtfsPlanner.Gtfs.Import do
   # returned unchanged. On extension failure the standard counts stay durable and
   # any committed extension counts are threaded back so the overall failure can
   # report exact durable truth (AC-3).
-  defp import_extensions_phase(_organization_id, _gtfs_version_id, extensions, counts)
+  defp import_extensions_phase(_organization_id, _gtfs_version_id, extensions, counts, _fence)
        when not is_map_key(extensions, :json) do
     {:ok, :not_present, counts}
   end
 
-  defp import_extensions_phase(organization_id, gtfs_version_id, extensions, counts) do
+  defp import_extensions_phase(organization_id, gtfs_version_id, extensions, counts, fence) do
     image_files = Map.get(extensions, :images, %{})
 
     case Extensions.Import.import_extensions(
            organization_id,
            gtfs_version_id,
            extensions.json,
-           image_files
+           image_files,
+           fence: fence
          ) do
       {:ok, ext_counts} ->
         {:ok, :complete, Map.merge(counts, ext_counts)}
@@ -1078,12 +1122,12 @@ defmodule GtfsPlanner.Gtfs.Import do
       # Decode/reference/DB-transaction failure: no extension writes are durable,
       # but the standard counts already committed remain.
       {:error, reason} ->
-        {:error, reason, counts}
+        failure(reason, :extensions, counts)
 
       # Image restoration failed after the extension DB transaction committed:
       # merge the durable extension counts into the standard counts.
       {:error, reason, ext_committed} ->
-        {:error, reason, Map.merge(counts, ext_committed)}
+        failure(reason, :extensions, Map.merge(counts, ext_committed))
     end
   end
 

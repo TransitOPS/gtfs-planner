@@ -24,7 +24,10 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
     - `gtfs_version_id` - UUID of the GTFS version
     - `manifest_json` - raw JSON binary of `_pathways_extensions.json`
     - `image_files_by_zip_path` - map of `%{zip_path => binary}`
-    - `opts` - reserved for future use
+    - `opts` - `:fence`, an optional zero-arity callback run as the first statement of the
+      database transaction. It calls `Repo.rollback/1` when the caller no longer owns the
+      work, so nothing is written and the call returns `{:error, reason}` (INV-4). Image
+      files are written after that transaction commits and are not fenced.
 
   ## Returns
 
@@ -44,7 +47,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
         gtfs_version_id,
         manifest_json,
         image_files_by_zip_path,
-        _opts \\ []
+        opts \\ []
       ) do
     with {:ok, manifest} <- Manifest.decode(manifest_json),
          lookups <- build_lookups(organization_id, gtfs_version_id),
@@ -54,7 +57,8 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
         gtfs_version_id,
         manifest,
         lookups,
-        image_files_by_zip_path
+        image_files_by_zip_path,
+        Keyword.get(opts, :fence)
       )
     end
   end
@@ -145,12 +149,15 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
          gtfs_version_id,
          manifest,
          lookups,
-         image_files_by_zip_path
+         image_files_by_zip_path,
+         fence
        ) do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     result =
       Repo.transaction(fn ->
+        if fence, do: fence.()
+
         coord_count = update_stop_coordinates(manifest.stop_diagram_coordinates, lookups)
 
         sl_count =
