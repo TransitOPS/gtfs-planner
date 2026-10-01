@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 
 import { evaluateImport } from "../../qa/checks/import-feed.mjs";
 import { evaluateChangeTimes } from "../../qa/checks/timetable-change-times.mjs";
+import { evaluateAddTrip } from "../../qa/checks/timetable-add-trip.mjs";
 import {
   assertVersionId,
   compareSignatures,
@@ -537,6 +538,101 @@ test("a baseline that does not hold the 1:00 p.m. trip throws instead of judging
 
   try {
     evaluateChangeTimes({ baseline: { signatures: [MORNING] }, actual: [MORNING] });
+  } catch (error) {
+    raised = error;
+  }
+
+  expect(raised?.message).toMatch(/the baseline holds no/);
+  // Exit code 2 is the harness's "could not be judged", not a failing run.
+  expect(raised?.exitCode).toBe(2);
+});
+
+// The add-trip check expects the baseline plus one new trip, so the added
+// trip below is written out from the same fixture times: 17:00 at the airport
+// and 18:00 in the valley, the 1:00 p.m. trip's run time.
+
+const ADDED = "AAMV|WE|0|[(BEATTY_AIRPORT,61200,61200),(AMV,64800,64800)]";
+
+function addedTrip(actual) {
+  return evaluateAddTrip({ baseline: TIMETABLE, actual });
+}
+
+test("adding the one 5:00 p.m. trip passes the check", () => {
+  const result = addedTrip([MORNING, OUTBOUND, EARLY, EVENING, ADDED]);
+
+  expect(result.pass).toBe(true);
+  expect(result.observations).toEqual([
+    "only AAMV WE 0 was added at 61200 and 64800",
+  ]);
+});
+
+test("the untouched timetable fails, because no trip was added", () => {
+  const result = addedTrip([...TIMETABLE.signatures]);
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toEqual([`missing: ${ADDED}`]);
+});
+
+test("two copies of the added trip fail, because a duplicate is a difference", () => {
+  const result = addedTrip([MORNING, OUTBOUND, EARLY, EVENING, ADDED, ADDED]);
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toEqual([`unexpected: ${ADDED}`]);
+});
+
+test("a trip added at 5:05 p.m. fails, because the start time is the goal's", () => {
+  const fiveMinutesLate = "AAMV|WE|0|[(BEATTY_AIRPORT,61500,61500),(AMV,65100,65100)]";
+
+  const result = addedTrip([MORNING, OUTBOUND, EARLY, EVENING, fiveMinutesLate]);
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toEqual([
+    `missing: ${ADDED}`,
+    `unexpected: ${fiveMinutesLate}`,
+  ]);
+});
+
+test("a trip added on the weekday service fails, because the service is the goal's", () => {
+  const weekday = "AAMV|FULLW|0|[(BEATTY_AIRPORT,61200,61200),(AMV,64800,64800)]";
+
+  const result = addedTrip([MORNING, OUTBOUND, EARLY, EVENING, weekday]);
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toEqual([
+    `missing: ${ADDED}`,
+    `unexpected: ${weekday}`,
+  ]);
+});
+
+test("a trip added in direction 1 fails, because the direction is the goal's", () => {
+  const inbound = "AAMV|WE|1|[(BEATTY_AIRPORT,61200,61200),(AMV,64800,64800)]";
+
+  const result = addedTrip([MORNING, OUTBOUND, EARLY, EVENING, inbound]);
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toEqual([
+    `missing: ${ADDED}`,
+    `unexpected: ${inbound}`,
+  ]);
+});
+
+test("a changed existing trip alongside the added trip fails", () => {
+  const morningMoved = "AAMV|WE|0|[(BEATTY_AIRPORT,31500,31500),(AMV,35100,35100)]";
+
+  const result = addedTrip([morningMoved, OUTBOUND, EARLY, EVENING, ADDED]);
+
+  expect(result.pass).toBe(false);
+  expect(result.observations).toEqual([
+    `missing: ${MORNING}`,
+    `unexpected: ${morningMoved}`,
+  ]);
+});
+
+test("a baseline that does not hold the 1:00 p.m. trip throws instead of judging", () => {
+  let raised = null;
+
+  try {
+    evaluateAddTrip({ baseline: { signatures: [MORNING] }, actual: [MORNING, ADDED] });
   } catch (error) {
     raised = error;
   }
