@@ -1709,3 +1709,164 @@ test.describe("alert reason", () => {
     await captureReasonReference(page, testInfo, "form-details", "320");
   });
 });
+
+// The message step, as spec 30's step 21 renders it: the organization's scripts
+// with the alert's own situation first, the generated text, the wording review
+// callout and the advisory checks (AC-22). Nothing here looks for a publication
+// state or action (R2, CR-1).
+
+// The prototype state this step is compared against.
+async function captureMessageReference(page, testInfo, state, width) {
+  if (!fs.existsSync(REFERENCE_PATH)) return;
+
+  await page.goto(`file://${REFERENCE_PATH}?state=${state}`);
+  await page.waitForLoadState("load");
+
+  await page.screenshot({
+    path: capturePath(testInfo, `message-ref-${state}-${width}.png`),
+    fullPage: false,
+  });
+}
+
+// A delay is the shortest sequence that reaches the message step: urgency,
+// situation, mode, routes, direction, timing, reason - so this journey walks
+// the editor's own flow and answers the reason question rather than opening a
+// URL with an alert that never existed.
+async function openMessage(page) {
+  await openReason(page);
+
+  // A cause is a self-contained answer, so this is the click that carries the
+  // reader on to the message step.
+  await page.locator("#alert-cause-weather").click();
+  await page.waitForSelector("#alert-message", { timeout: 15_000 });
+}
+
+test.describe("alert message", () => {
+  test.describe.configure({ timeout: 120_000 });
+
+  test("the scripts for this situation are offered first and one fills the text @message", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openMessage(page);
+
+    // Arriving with wording of nobody's own generates what a script would
+    // produce, so the reader starts from a sentence.
+    await expect(page.locator("#message-origin")).toContainText("Delays");
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+    expect(await page.locator("#message-header").inputValue()).toContain("Route 1");
+
+    await page.locator("#browse-scripts").click();
+    await expect(page.locator("#message-scripts")).toBeVisible();
+    await expect(page.locator("#message-scripts-matching")).toContainText(
+      "Scripts for delays",
+    );
+
+    // Match the name span, not the button's text: the button wraps the name in
+    // whitespace and carries the fill-ins beside it.
+    const matching = page.locator("#message-scripts-list li button");
+    await expect(matching).toHaveCount(1);
+    await expect(
+      matching.filter({ has: page.locator("span.font-bold", { hasText: "Delays" }) }),
+    ).toHaveCount(1);
+
+    // The organization's own detour script is one of the other scripts, not one
+    // of the matches, because this alert is about a delay.
+    await expect(
+      page
+        .locator("#message-scripts-other-list li button")
+        .filter({ has: page.locator("span.font-bold", { hasText: "Route detour" }) }),
+    ).toHaveCount(1);
+
+    await page.screenshot({
+      path: capturePath(testInfo, "message-scripts-1440.png"),
+      fullPage: false,
+    });
+    await captureMessageReference(page, testInfo, "form-scripts", "1440");
+
+    await matching.first().click();
+    await expect(page.locator("#message-scripts")).toHaveCount(0);
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+    expect(await page.locator("#message-header").inputValue()).toContain("Route 1");
+  });
+
+  test("edited wording is kept and a later answer asks about it @message", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openMessage(page);
+
+    // A header longer than the advisory limit is advised about and still saves.
+    const long =
+      "Route 1 detour overnight while Highway 101 is repaved near the depot";
+    await page.locator("#message-header").fill(long);
+    await expect(page.locator("#message-header")).toHaveValue(long);
+    await expect(page.locator("#message-check-short")).toContainText(
+      "Apps may cut it off after about 60",
+    );
+    await waitForSave(page);
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+
+    await page.screenshot({
+      path: capturePath(testInfo, "message-advisory-1440.png"),
+      fullPage: false,
+    });
+    await captureMessageReference(page, testInfo, "form-message", "1440");
+
+    // The answers change under the wording: the time the alert applies moves,
+    // which changes the fact the text was generated from.
+    await page.goto(page.url().replace(/step=[a-z_]+/, "step=timing"));
+    await page.waitForSelector("#timing-start-time", { timeout: 15_000 });
+    await page.locator("#timing-start-time").fill("09:00");
+    await waitForSave(page);
+
+    await page.goto(page.url().replace(/step=[a-z_]+/, "step=message"));
+    await page.waitForSelector("#review-wording", { timeout: 15_000 });
+
+    // The wording is still the operator's: the callout reports, it does not
+    // rewrite.
+    await expect(page.locator("#message-header")).toHaveValue(long);
+
+    await page.screenshot({
+      path: capturePath(testInfo, "message-review-1440.png"),
+      fullPage: false,
+    });
+
+    // Taking the generated text is the action that replaces it.
+    await page.locator("#use-generated-text").click();
+    await expect(page.locator("#review-wording")).toHaveCount(0);
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+    expect(await page.locator("#message-header").inputValue()).not.toBe(long);
+  });
+
+  test("a script can be chosen by keyboard at the narrow width @message", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(NARROW);
+    await openMessage(page);
+
+    await page.locator("#browse-scripts").click();
+    await expect(page.locator("#message-scripts")).toBeVisible();
+    expect(await fitsViewport(page)).toBe(true);
+
+    // A script is a button, so Enter on the focused one is the keyboard's own
+    // selection - the same text a click fills.
+    const script = page.locator("#message-scripts-list li button").first();
+    await script.focus();
+    await expect(script).toBeFocused();
+    await page.keyboard.press("Enter");
+
+    await expect(page.locator("#message-scripts")).toHaveCount(0);
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+    expect(await page.locator("#message-header").inputValue()).toContain("Route 1");
+    expect(await fitsViewport(page)).toBe(true);
+
+    // The narrow viewport is shorter than the card, so this capture is the whole
+    // page: a cropped one would show the heading and no checks.
+    await page.screenshot({
+      path: capturePath(testInfo, "message-wording-320.png"),
+      fullPage: true,
+    });
+    await captureMessageReference(page, testInfo, "form-message", "320");
+  });
+});

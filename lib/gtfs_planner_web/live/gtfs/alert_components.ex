@@ -2134,44 +2134,299 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   end
 
   @doc """
-  The rider message fields: the two pieces of text an alert is made of.
+  The message step: the wording a rider reads, and the advice beside it (AC-22).
 
-  Both inputs carry `phx-debounce="450"`, so typing saves 450 ms after the last
-  keystroke rather than on every character (AC-16), and both are named under
+  It is two states of one card, the way the prototype's message step is. With
+  nothing worded yet it offers the organization's scripts, the ones for this
+  alert's own situation first, each showing the fill-ins its header will take; the
+  rest sit behind a disclosure rather than in a long list. Once there is wording
+  it shows the text, where that wording came from, the checks beside it and the
+  organization's own guidelines.
+
+  **Review wording** is a warning callout, not a rewrite: the answers changed
+  after this text was edited, so the text stays exactly as it was written and the
+  callout offers the two ways forward - take the generated text again, or say the
+  wording has been checked against the current answers. Nothing here ever
+  overwrites the operator's words without an action (AC-22, FH-22).
+
+  The checks are advisory in the same sense: they are reported, and the row saves
+  whatever the header and description say whether or not they pass, because
+  `Alerts.save_draft/4` reads none of them.
+
+  The three inputs carry `phx-debounce="450"`, so typing saves 450 ms after the
+  last keystroke rather than on every character (AC-16), and are named under
   `alert[message]` so `Alerts.save_draft/4` casts them through the message
-  embed's own changeset. The values they render are the form's own, which is
-  what keeps a typed value on screen when a save is refused: the editor rebuilds
-  that form from the refused changeset, not from the row, so an input shows what
-  was typed rather than what the database still holds.
-
-  A refused save's field error is rendered beside the field, never in place of
-  it, so the reader can fix one word without retyping the sentence.
+  embed's own changeset. The values they render are the form's own, which keeps a
+  typed value on screen when a save is refused: the editor rebuilds that form
+  from the refused changeset, not from the row. A refused save's field error is
+  rendered beside the field, never in place of it, so the reader can fix one word
+  without retyping the sentence.
   """
+  attr :alert, :any, required: true, doc: "the loaded alert, or `nil` before the first answer"
   attr :form, :any, required: true, doc: "the `to_form/2` assign for this alert"
 
-  def message_fields(assigns) do
+  attr :scripts, :map,
+    required: true,
+    doc: "`%{matching: [script_option], other: [script_option]}`, prepared by the editor"
+
+  attr :browsing?, :boolean, required: true, doc: "the script chooser is what the card shows"
+  attr :script_name, :string, default: nil, doc: "the script the stored wording came from"
+
+  attr :review?, :boolean,
+    default: false,
+    doc: "`Message.review_wording?/2` says the text needs a second look"
+
+  attr :checks, :list,
+    default: [],
+    doc: "`Message.checks/2` over the stored answer and the current facts"
+
+  attr :guidelines, :string, default: "", doc: "the organization's writing guidelines"
+
+  def message_question(assigns) do
     ~H"""
-    <div id="alert-message-fields" class="grid gap-4">
-      <.inputs_for :let={f} field={@form[:message]}>
-        <.input
-          field={f[:header]}
-          type="text"
-          label="Short message"
-          maxlength="120"
-          phx-debounce="450"
-          help="One line naming the effect and the place."
-        />
-        <.input
-          field={f[:description]}
-          type="textarea"
-          label="Full message"
-          rows="5"
-          phx-debounce="450"
-          help="Add the cause, the time and what to do instead."
-        />
-      </.inputs_for>
+    <div id="alert-message" class="grid gap-4">
+      <div :if={@browsing?} id="message-scripts" class="grid gap-3">
+        <p class="text-sm text-default">
+          Scripts are your organization's tested wording. Your answers fill in the
+          <span class="rounded-badge bg-soft px-1 text-[12px] font-semibold text-cyan-800">
+            highlighted
+          </span>
+          parts.
+        </p>
+
+        <p id="message-scripts-matching" class="text-sm font-[650] text-strong">
+          Scripts for {situation_phrase(@alert)}
+        </p>
+        <.script_list id="message-scripts-list" scripts={@scripts.matching} first={0} />
+
+        <details :if={@scripts.other != []} id="message-scripts-other" class="group">
+          <summary class="flex min-h-11 cursor-pointer list-none items-center justify-between text-sm font-[650] text-strong [&::-webkit-details-marker]:hidden">
+            Other scripts ({length(@scripts.other)})
+            <.icon
+              name="hero-chevron-down"
+              class="size-4 text-muted transition-transform group-open:rotate-180"
+            />
+          </summary>
+          <div class="grid gap-2 pb-3">
+            <.script_list
+              id="message-scripts-other-list"
+              scripts={@scripts.other}
+              first={length(@scripts.matching)}
+            />
+          </div>
+        </details>
+
+        <div class="flex flex-wrap items-center gap-2 border-t border-subtle pt-4">
+          <span class="text-sm text-muted">Or</span>
+          <.button id="write-message" type="button" variant="quiet" phx-click="write_own_message">
+            Write it yourself
+          </.button>
+        </div>
+      </div>
+
+      <div :if={not @browsing?} id="message-wording" class="grid gap-4">
+        <.callout
+          :if={@review?}
+          id="review-wording"
+          kind="warning"
+          title="The answers changed after this message was edited"
+          class="rounded-card"
+        >
+          <p id="review-wording-body">
+            Check the routes, stops and times against the current answers. Your wording stays as
+            you wrote it until you replace it.
+          </p>
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <.button
+              id="use-generated-text"
+              type="button"
+              variant="primary"
+              phx-click="use_generated_text"
+            >
+              <.icon name="hero-arrow-path" class="size-4" /> Use generated text
+            </.button>
+            <.button
+              id="confirm-wording"
+              type="button"
+              variant="secondary"
+              phx-click="confirm_wording"
+            >
+              <.icon name="hero-check" class="size-4" /> I checked the message
+            </.button>
+          </div>
+        </.callout>
+
+        <div class="flex flex-wrap items-center gap-2">
+          <p id="message-origin" class="text-[13px] text-muted">
+            <%= if @script_name do %>
+              From script: <span class="font-[650] text-strong">{@script_name}</span>
+            <% else %>
+              Custom wording. Later answer changes will ask you to check this text.
+            <% end %>
+          </p>
+          <div class="ml-auto flex flex-wrap gap-1">
+            <.button
+              id="use-generated-text-inline"
+              type="button"
+              variant="quiet"
+              phx-click="use_generated_text"
+            >
+              Use generated text
+            </.button>
+            <.button id="browse-scripts" type="button" variant="quiet" phx-click="browse_scripts">
+              Browse scripts
+            </.button>
+          </div>
+        </div>
+
+        <.inputs_for :let={f} field={@form[:message]}>
+          <.input
+            field={f[:header]}
+            id="message-header"
+            type="text"
+            label="Short message"
+            maxlength="120"
+            phx-debounce="450"
+            help="The headline apps show first. Some cut it off after one line."
+          />
+          <.input
+            field={f[:description]}
+            id="message-description"
+            type="textarea"
+            label="Details"
+            rows="5"
+            phx-debounce="450"
+            help="When, where, why, and what to do instead."
+          />
+          <.input
+            field={f[:url]}
+            id="message-url"
+            type="url"
+            label="More information"
+            phx-debounce="450"
+            help="Optional. A web address riders can read for the full story."
+          />
+        </.inputs_for>
+
+        <div id="message-guidelines" class="rounded-card bg-canvas px-4 py-3">
+          <p class="text-sm font-bold text-strong">Your writing guidelines</p>
+          <ul id="message-checks" class="mt-1.5 grid gap-1">
+            <li
+              :for={check <- @checks}
+              id={"message-check-#{check.key}"}
+              class={[
+                "flex items-start gap-2 text-sm",
+                check.ok? && "text-default",
+                not check.ok? && "font-semibold text-warning-fg"
+              ]}
+            >
+              <.icon
+                name={if check.ok?, do: "hero-check", else: "hero-exclamation-triangle"}
+                class={["size-4 mt-0.5 shrink-0", check.ok? && "text-success-fg"]}
+              />
+              <span>{check.text}</span>
+            </li>
+          </ul>
+
+          <details :if={@guidelines != ""} id="message-guidelines-text" class="group mt-1">
+            <summary class="flex min-h-11 cursor-pointer list-none items-center justify-between text-[13px] font-[650] text-action [&::-webkit-details-marker]:hidden">
+              Read your organization's guidelines
+              <.icon
+                name="hero-chevron-down"
+                class="size-4 transition-transform group-open:rotate-180"
+              />
+            </summary>
+            <p id="message-guidelines-body" class="pb-2 text-[13px] leading-6 text-default">
+              {@guidelines}
+            </p>
+          </details>
+        </div>
+      </div>
     </div>
     """
+  end
+
+  # One script list: a button per script carrying its own key, so the value the
+  # reader chose is the script's own identity rather than a position in a list
+  # that can be re-ordered. The header is shown with its fill-ins marked, which
+  # is what tells a reader whether this script fits the alert they are writing.
+  attr :id, :string, required: true
+  attr :scripts, :list, required: true
+  attr :first, :integer, required: true, doc: "the id offset, so each list's ids stay unique"
+
+  defp script_list(assigns) do
+    ~H"""
+    <ul id={@id} class="grid gap-2">
+      <li :for={{script, offset} <- Enum.with_index(@scripts)}>
+        <button
+          type="button"
+          id={"message-script-#{@first + offset}"}
+          phx-click="choose_script"
+          phx-value-key={script.key}
+          class="flex w-full min-h-11 flex-col items-start gap-1 rounded-card border border-control bg-white px-4 py-3 text-left hover:border-action hover:bg-selection"
+        >
+          <span class="flex w-full items-center gap-2">
+            <span class="text-sm font-bold text-strong">{script.name}</span>
+            <span class="ml-auto text-[12px] text-muted">{script_origin(script)}</span>
+          </span>
+          <span class="text-sm text-default">
+            <.fill_in_chips template={script.header_template} />
+          </span>
+        </button>
+      </li>
+    </ul>
+    """
+  end
+
+  # A script's header with each `[fill-in]` marked, the way the prototype marks
+  # them: the words that are fixed and the words this alert's answers supply.
+  attr :template, :string, default: nil
+
+  defp fill_in_chips(assigns) do
+    ~H"""
+    <%= for part <- fill_in_parts(@template) do %>
+      <%= case part do %>
+        <% {:fill, name} -> %>
+          <span class="rounded-badge bg-soft px-1 text-[12px] font-semibold text-cyan-800">
+            {name}
+          </span>
+        <% {:text, text} -> %>
+          {text}
+      <% end %>
+    <% end %>
+    """
+  end
+
+  @fill_token ~r/\[([a-z ]+)\]/
+
+  # One pass, so a fill-in inside a template's own text is never split twice.
+  # The vocabulary is `GtfsPlanner.Alerts.Message`'s; this only marks what that
+  # module will replace, and marks nothing the row cannot fill.
+  defp fill_in_parts(nil), do: []
+
+  defp fill_in_parts(template) when is_binary(template) do
+    @fill_token
+    |> Regex.split(template, include_captures: true)
+    |> Enum.map(fn
+      "[" <> _rest = token ->
+        case Regex.run(@fill_token, token) do
+          [_matched, name] -> {:fill, name}
+          _not_a_fill_in -> {:text, token}
+        end
+
+      text ->
+        {:text, text}
+    end)
+  end
+
+  defp script_origin(%{built_in?: true}), do: "Built-in"
+  defp script_origin(_script), do: "Your organization"
+
+  defp situation_phrase(alert) do
+    case situation_label(alert && alert.situation) do
+      nil -> "this alert"
+      label -> label |> String.downcase()
+    end
   end
 
   @doc """

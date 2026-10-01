@@ -89,6 +89,23 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   route the alert names, so a hand-made event attaches nothing (R1, CR-4). The
   writes go through `Alerts.save_draft/4` like every other answer (INV-1).
 
+  ## Message wording, and the callout that never rewrites it
+
+  The message step is the one card with two states. With nothing worded it
+  offers this organization's scripts - the ones for the alert's own situation
+  first - and arriving there generates the text a script would produce, so the
+  reader starts from something rather than from an empty form. Editing the text
+  marks it `customized` and keeps the digest it was generated from, and a later
+  answer that changes a fact makes that digest differ from the current facts:
+  that difference is **Review wording** (AC-22, FH-22).
+
+  The callout replaces nothing. The wording stays as it was written, and the two
+  actions are the only ways it changes: **Use generated text** writes the
+  regenerated text, and **I checked the message** records the acknowledgement by
+  moving the stored digest to the current facts - so the next answer change asks
+  again rather than being answered once and for all. The checks beside the text
+  are advisory: they are reported, and `Alerts.save_draft/4` reads none of them.
+
   ## What this frame does not do
 
   It carries no publication state and no publication action: saving an alert
@@ -111,7 +128,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       direction_question: 1,
       mode_control: 1,
       mode_question: 1,
-      message_fields: 1,
+      message_question: 1,
       place_question: 1,
       progress: 1,
       question_card: 1,
@@ -133,6 +150,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   alias GtfsPlanner.Alerts.Alert
   alias GtfsPlanner.Alerts.Completion
   alias GtfsPlanner.Alerts.Listing
+  alias GtfsPlanner.Alerts.Message
+  alias GtfsPlanner.Alerts.MessageAnswer
   alias GtfsPlanner.Alerts.Recurrence
   alias GtfsPlanner.Alerts.TimingAnswer
   alias GtfsPlanner.Gtfs.AuditContext
@@ -265,6 +284,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
      |> assign(:timing_error, nil)
      |> assign(:check_in_options, [])
      |> assign(:notice_value, nil)
+     |> assign(:browse_scripts?, true)
+     |> assign(:message_scripts, %{matching: [], other: []})
+     |> assign(:message_checks, [])
+     |> assign(:message_review?, false)
+     |> assign(:message_script_name, nil)
+     |> assign(:message_guidelines, "")
      |> assign(:form, draft_form(%Alert{}))}
   end
 
@@ -522,6 +547,22 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       end
 
     autosave_alert(socket, params)
+  end
+
+  # A change to the message's own fields is the operator's wording rather than a
+  # script's, so it is stored as `customized` and keeps the digest it was
+  # generated from. Keeping that digest is the whole of FH-22: a later answer
+  # change makes it differ from the current facts, which is what raises
+  # **Review wording** instead of quietly overwriting the text a rider would
+  # have read.
+  def handle_event("autosave", %{"alert" => %{"message" => _message}} = all, socket) do
+    case socket.assigns.alert do
+      nil ->
+        {:noreply, socket}
+
+      alert ->
+        save(socket, alert, as_customized(all))
+    end
   end
 
   def handle_event("autosave", %{"alert" => params} = all, socket) when is_map(params) do
@@ -1033,6 +1074,81 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
       alert ->
         {:noreply, advance_without_writing(socket, alert, :reason)}
+    end
+  end
+
+  # The message step's own events (AC-22). The text is several fields rather than
+  # one choice, so each of these writes what it changed and nothing carries the
+  # reader on: Continue is the explicit action that moves to the review.
+  #
+  # Choosing a script fills the header and description from the alert's own
+  # facts and stores the digest it was generated from, which is what a later
+  # answer change is measured against. The key is resolved through the same
+  # `Alerts.list_scripts/1` this card rendered, so an event naming a script the
+  # reader was never offered stores nothing (the fail-closed shape
+  # `choose_cause/3` uses).
+  def handle_event("choose_script", %{"key" => key}, socket) when is_binary(key) do
+    with alert when not is_nil(alert) <- socket.assigns.alert,
+         script when not is_nil(script) <- find_script(socket, key) do
+      generate_message(socket, alert, script)
+    else
+      _no_alert_or_no_such_script -> {:noreply, socket}
+    end
+  end
+
+  # **Use generated text** is the one action that replaces wording, and it is
+  # always an action: the text a script produces is written from the current
+  # facts and the row is no longer marked customized, so the review callout has
+  # nothing left to report.
+  def handle_event("use_generated_text", _params, socket) do
+    case socket.assigns.alert do
+      nil ->
+        {:noreply, socket}
+
+      alert ->
+        case stored_script(socket, alert) do
+          nil -> {:noreply, socket}
+          script -> generate_message(socket, alert, script)
+        end
+    end
+  end
+
+  # "I checked the message" records that the wording was read against the
+  # answers as they stand now: the stored digest moves to the current facts and
+  # the text is not touched. A later answer change produces a different digest
+  # and asks again, so acknowledgement is per change rather than permanent.
+  def handle_event("confirm_wording", _params, socket) do
+    case socket.assigns.alert do
+      nil ->
+        {:noreply, socket}
+
+      alert ->
+        digest = alert |> message_facts(socket) |> Message.digest()
+
+        save(socket, alert, %{"message" => %{"fact_digest" => digest}})
+    end
+  end
+
+  # Showing the chooser is this editor's own view state, not an answer: nothing
+  # is written and the wording already stored stays exactly as it is, so
+  # looking at the scripts cannot lose a sentence somebody wrote.
+  def handle_event("browse_scripts", _params, socket),
+    do: {:noreply, assign(socket, :browse_scripts?, true)}
+
+  def handle_event("write_own_message", _params, socket),
+    do: {:noreply, assign(socket, :browse_scripts?, false)}
+
+  # The message is several fields, each already saved by its own change, so
+  # Continue only carries the reader on. Nothing is refused here: the wording
+  # checks are advisory, and a header over the advisory limit still saves
+  # (AC-22).
+  def handle_event("continue_message", _params, socket) do
+    case socket.assigns.alert do
+      nil ->
+        {:noreply, socket}
+
+      alert ->
+        {:noreply, advance_without_writing(socket, alert, :message)}
     end
   end
 
@@ -1577,6 +1693,189 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp stop_hint(%{platform_code: code}) when is_binary(code) and code != "", do: code
   defp stop_hint(_stop), do: nil
 
+  # -- Message -------------------------------------------------------------
+
+  # The message step's own prepares, read when the editor is on that step and
+  # reset when it is not: the scripts this organization can word from, the
+  # advisory checks over the stored answer and the current facts, and the
+  # guidelines. Every read goes through the audit context, so all of them are
+  # the alert's own organization's (CR-2, CR-4).
+  defp prepare_message_question(socket, nil), do: reset_message_question(socket)
+
+  defp prepare_message_question(socket, alert) do
+    if socket.assigns.step == :message do
+      audit = audit_context(socket)
+      labels = message_labels(socket, alert)
+      scripts = Alerts.list_scripts(audit)
+      message = message_of(alert)
+
+      socket
+      |> assign(:message_scripts, script_groups(scripts, alert))
+      |> assign(:message_checks, Message.checks(message, Message.facts(alert, labels)))
+      |> assign(:message_review?, Message.review_wording?(alert, labels))
+      |> assign(:message_script_name, script_name(scripts, message.script_key))
+      |> assign(:message_guidelines, Alerts.get_guidelines(audit).text)
+    else
+      reset_message_question(socket)
+    end
+  end
+
+  # Every assign the message question reads exists whether or not the editor is
+  # on it, so a template can never raise for an assign only this step's own
+  # arrival would have set.
+  defp reset_message_question(socket) do
+    socket
+    |> assign(:message_scripts, %{matching: [], other: []})
+    |> assign(:message_checks, [])
+    |> assign(:message_review?, false)
+    |> assign(:message_script_name, nil)
+    |> assign(:message_guidelines, "")
+  end
+
+  # Arriving at the message step with wording that is not the operator's own
+  # generates the text a script would produce, so the reader starts from
+  # something rather than from an empty card. Wording somebody wrote is never
+  # regenerated behind their back, and the generation is one revision-checked
+  # write like any other answer (AC-22, INV-1).
+  defp enter_message_step(socket, alert, step) do
+    if step == :message and needs_generated_message?(alert) do
+      case generated_alert(socket, alert) do
+        {:ok, saved} -> {saved, assign(socket, :browse_scripts?, false)}
+        :refused -> {alert, assign(socket, :browse_scripts?, true)}
+      end
+    else
+      {alert, assign(socket, :browse_scripts?, browsing_scripts?(socket, alert))}
+    end
+  end
+
+  defp generated_alert(socket, alert) do
+    case stored_script(socket, alert) do
+      nil -> :refused
+      script -> store_message(socket, alert, script)
+    end
+  end
+
+  # The generated text, stored. This is the only place in the editor that writes
+  # `MessageAnswer.fact_digest`, and it writes the digest of the facts the text
+  # was generated from, which is what a later answer change is measured against.
+  defp store_message(socket, alert, script) do
+    attrs = message_attrs(alert, script, message_labels(socket, alert))
+
+    case Alerts.save_draft(audit_context(socket), alert.id, alert.revision, attrs) do
+      {:ok, saved} -> {:ok, saved}
+      {:error, _reason} -> :refused
+    end
+  end
+
+  defp message_attrs(alert, script, labels) do
+    generated = Message.generate(alert, script, labels)
+
+    %{
+      "message" => %{
+        "header" => generated.header,
+        "description" => generated.description,
+        "script_key" => script.key,
+        "customized" => false,
+        "fact_digest" => generated.fact_digest
+      }
+    }
+  end
+
+  # Choosing a script and regenerating are the same write: the current facts
+  # fill the templates and the wording is no longer marked customized, so the
+  # review callout has nothing left to report.
+  defp generate_message(socket, alert, script) do
+    case save(socket, alert, message_attrs(alert, script, message_labels(socket, alert))) do
+      {:noreply, socket} -> {:noreply, assign(socket, :browse_scripts?, false)}
+      other -> other
+    end
+  end
+
+  # The script the stored wording came from, or the one this alert's own
+  # situation would be worded from. Either way it is a script this organization
+  # was offered, never a template that reached the row by another route.
+  defp stored_script(socket, alert) do
+    scripts = Alerts.list_scripts(audit_context(socket))
+
+    Enum.find(scripts, &(&1.key == message_of(alert).script_key)) ||
+      default_script(scripts, alert)
+  end
+
+  defp default_script(scripts, alert) do
+    Enum.find(scripts, &(&1.situation == alert.situation)) || List.first(scripts)
+  end
+
+  defp find_script(socket, key) do
+    Enum.find(Alerts.list_scripts(audit_context(socket)), &(&1.key == key))
+  end
+
+  # The scripts for the alert's own situation, then the rest: AC-22 asks for the
+  # matches first, and the list order itself is `Alerts.list_scripts/1`'s (the
+  # organization's by position, then the built-ins).
+  defp script_groups(scripts, alert) do
+    {matching, other} = Enum.split_with(scripts, &(&1.situation == alert.situation))
+
+    %{matching: matching, other: other}
+  end
+
+  defp script_name(_scripts, nil), do: nil
+
+  defp script_name(scripts, key) do
+    case Enum.find(scripts, &(&1.key == key)) do
+      nil -> nil
+      script -> script.name
+    end
+  end
+
+  # The labels the fill-ins are filled from: the alert's own routes, stops and
+  # trips, plus the direction its scope answer names in a rider's words, because
+  # that name lives on the route's trips rather than on the alert.
+  defp message_labels(socket, alert) do
+    audit = audit_context(socket)
+    labels = Alerts.labels_for(audit, alert)
+
+    case scope(alert).direction_id do
+      nil ->
+        labels
+
+      direction_id ->
+        served = Alerts.route_directions(audit, scope(alert).route_ids || [])
+
+        case Enum.find(served, &(&1.direction_id == direction_id)) do
+          nil -> labels
+          %{label: label} -> Map.put(labels, :direction, "to #{label}")
+        end
+    end
+  end
+
+  defp message_facts(alert, socket), do: Message.facts(alert, message_labels(socket, alert))
+
+  defp message_of(%Alert{message: nil}), do: %MessageAnswer{}
+  defp message_of(%Alert{message: message}), do: message
+
+  # Wording that is neither stored nor the operator's own is generated on
+  # arrival; wording the operator wrote is left alone (FH-22).
+  defp needs_generated_message?(nil), do: false
+
+  defp needs_generated_message?(%Alert{} = alert) do
+    is_nil(alert.message) or
+      (message_of(alert).customized != true and blank_text?(message_of(alert).header))
+  end
+
+  defp browsing_scripts?(_socket, nil), do: true
+
+  defp browsing_scripts?(socket, alert) do
+    socket.assigns.browse_scripts? == true or blank_text?(message_of(alert).header)
+  end
+
+  defp blank_text?(nil), do: true
+  defp blank_text?(text) when is_binary(text), do: String.trim(text) == ""
+  defp blank_text?(_other), do: false
+
+  defp as_customized(%{"alert" => %{"message" => message}} = params) do
+    put_in(params, ["alert", "message"], Map.put(message, "customized", true))
+  end
+
   # -- Autosave ------------------------------------------------------------
 
   defp save(socket, alert, params) do
@@ -1772,6 +2071,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     flags = editor_flags(socket, alert)
     keys = steps_for(alert, flags)
     step = step_from(params, keys, socket)
+    {alert, socket} = enter_message_step(socket, alert, step)
     prepared = prepare_steps(keys, step, flags, socket)
 
     socket
@@ -1812,6 +2112,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> assign(:shared_routes, shared_route_options(socket, alert))
     |> prepare_departure_question()
     |> prepare_timing_question(alert)
+    |> prepare_message_question(alert)
   end
 
   # The prototype's skipped-stop list is the chosen route's own stops, in the
@@ -2269,6 +2570,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp question_hint(:reason),
     do: "Choose the reason. Describe it in your own words if it is another one."
 
+  defp question_hint(:message),
+    do: "Add a headline and details, replace any fill-ins, and check text marked for review."
+
   defp question_hint(_step), do: "Choose an option to move on. You can go back at any time."
 
   # The questions this step renders. Everything else in the sequence belongs to a
@@ -2520,9 +2824,16 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
                   <.reason_question :if={@step == :reason} alert={@alert} form={@form} />
 
-                  <.message_fields
+                  <.message_question
                     :if={@step == :message}
+                    alert={@alert}
                     form={@form}
+                    scripts={@message_scripts}
+                    browsing?={@browse_scripts?}
+                    script_name={@message_script_name}
+                    review?={@message_review?}
+                    checks={@message_checks}
+                    guidelines={@message_guidelines}
                   />
 
                   <p :if={placeholder_step?(@step)} class="text-sm text-muted">
@@ -2604,6 +2915,22 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
                       variant="primary"
                       class="ml-auto"
                       phx-click="continue_timing"
+                    >
+                      Continue
+                    </.button>
+
+                    <%!-- The message is several fields, each already saved by
+                         its own change, so Continue only carries the reader on.
+                         Nothing is refused: the wording checks are advisory and
+                         a header over the advisory limit still saves
+                         (AC-22). --%>
+                    <.button
+                      :if={@step == :message}
+                      id="alert-message-continue"
+                      type="button"
+                      variant="primary"
+                      class="ml-auto"
+                      phx-click="continue_message"
                     >
                       Continue
                     </.button>
