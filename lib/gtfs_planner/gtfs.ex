@@ -27,6 +27,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.DeadheadTime
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.FareAttribute
+  alias GtfsPlanner.Gtfs.Fares
   alias GtfsPlanner.Gtfs.FareLegJoinRule
   alias GtfsPlanner.Gtfs.FareLegRule
   alias GtfsPlanner.Gtfs.FareMedia
@@ -1055,6 +1056,29 @@ defmodule GtfsPlanner.Gtfs do
           {:ok, CatalogReadAdapter.fare_workspace()} | CatalogReadAdapter.unavailable()
   def load_fare_workspace(organization_id, gtfs_version_id, opts) do
     catalog_read_adapter().load_fare_workspace(organization_id, gtfs_version_id, opts)
+  end
+
+  @doc """
+  Loads the fare editor's whole read model through the configured catalog read
+  adapter.
+
+  The load carries everything the Prices, Where fares apply, Transfers and
+  Checks tabs render, so they read one snapshot and cannot disagree: `managed?`
+  and `older_format`, the fare grid with each rider's price and each payment
+  method's differing price, the rider categories and payment methods, the route
+  groups with their routes, one zone matrix per zone-priced group with its gap
+  cells, the fare time periods, the from × to transfer matrix, the read-only leg
+  join rules, the latest `fare_version` history and — for a version that is not
+  managed — its stored rows.
+
+  A lost database connection is reported once as `{:error, :unavailable}` so the
+  page can offer its reload action instead of presenting an empty workspace as
+  the version's data.
+  """
+  @spec load_fare_editor(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+          {:ok, Fares.Workspace.t()} | CatalogReadAdapter.unavailable()
+  def load_fare_editor(organization_id, gtfs_version_id, opts) do
+    catalog_read_adapter().load_fare_editor(organization_id, gtfs_version_id, opts)
   end
 
   @doc """
