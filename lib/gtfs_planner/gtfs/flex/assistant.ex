@@ -20,6 +20,12 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
   is loaded for always comes from the successfully loaded native page, never
   from a tool argument or model output.
 
+  `prepare/2` turns a proposed policy into a candidate against the current
+  saved service, and `preview/2` computes the comparison of any candidate with
+  that saved service. Both are pure with respect to persistence: the candidate
+  is an in-memory `%FlexService{}` that only the native page's explicit Save may
+  ever persist (AC-4–AC-6; CL-2). See "Preparing a candidate" below.
+
   ## Authority and refusals
 
     * The organization and version come from the scope and are never cast from a
@@ -55,6 +61,44 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
   computed checks. Area geometry, the version's full facts and every other
   service's records are in the workspace for the server's own use and are never
   in the view.
+
+  ## Preparing a candidate
+
+  `prepare/2` accepts one allowlisted, string-keyed map and nothing else:
+
+      %{"scope" => "all_supported" | "hours_only",
+        "hours" => [%{"area_key" =>, "service_id" =>, "start" =>, "end" =>}],
+        "booking_rules" => [%{"service_id" =>, "when" =>, "minutes" =>, "days" =>,
+                              "by" =>, "business_days" =>,
+                              "office_service_id" =>, "max_days" =>}],
+        "unsupported" => [statement]}
+
+  At least one of the two arrays is required, each holds at most 100 rows, and
+  each is a *complete replacement*: the array enumerates the final state of that
+  embedded array, unchanged rows included, and a row that drops out is a removal
+  the native review has to confirm. An omitted array is retained exactly as
+  saved, and is never read as a deletion.
+
+  Every row goes through the native row changesets and the whole patch through
+  `FlexService.changeset/2`, and every referenced identity is checked against
+  the scoped version before it is cast: an area key the service does not have and
+  a calendar the version does not hold are refusals, not warnings. Nothing else
+  is cast — no name, no phone number, no eligibility, no geometry — so an
+  unaddressable statement, an unknown key and a contradiction all refuse instead
+  of producing a plausible but wrong policy.
+
+  The answer carries the exact saved and candidate rows with their ordinals and
+  changed fields, the service fields nothing touched, the native
+  `Checks.run/3`, `RiderText` and `Export.plan/5` results for both sides, the
+  accepted source and context digests, and the workspace's saved dependency
+  fingerprint, so a later guarded save can prove the baseline it reviewed
+  against (AC-10). `unsupported` is the caller's explicit list of source
+  statements this slice cannot represent. Under `"all_supported"` any such
+  statement blocks preparation: a complete supported policy carries none. Under
+  `"hours_only"` the booking rules are kept exactly as saved, the booking_rules
+  array is refused, and the statements become visible exclusions — so a
+  discretionary "same-day if the dispatcher permits" is reported as excluded
+  prose and never as a guaranteed `same_day` rule (AC-6).
   """
 
   import Ecto.Query, warn: false
@@ -67,9 +111,13 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
   alias GtfsPlanner.Gtfs.Flex
   alias GtfsPlanner.Gtfs.Flex.Assistant.Snapshot
   alias GtfsPlanner.Gtfs.Flex.Checks
+  alias GtfsPlanner.Gtfs.Flex.Export
+  alias GtfsPlanner.Gtfs.Flex.Export.Areas
   alias GtfsPlanner.Gtfs.Flex.Geometry
   alias GtfsPlanner.Gtfs.Flex.RiderText
   alias GtfsPlanner.Gtfs.FlexArea
+  alias GtfsPlanner.Gtfs.FlexBookingRule
+  alias GtfsPlanner.Gtfs.FlexHours
   alias GtfsPlanner.Gtfs.FlexService
   alias GtfsPlanner.Repo
 
@@ -80,6 +128,47 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
   @snapshot_kind "flex_policy"
 
   @source_ref "gtfs_flex_policy_workspace"
+
+  # `prepare/2`'s whole allowlist. Anything else in the input is refused, so a
+  # proposal can never name a service, a calendar of another version or a field
+  # the native page does not own.
+  @input_fields ~w(hours booking_rules scope unsupported)
+  @prepare_scopes ~w(all_supported hours_only)
+  @hours_fields ~w(area_key service_id start end)
+  @rule_fields ~w(service_id when minutes days by business_days office_service_id max_days)
+  @max_rows 100
+  @max_unsupported 20
+  @max_statement_chars 500
+
+  # The service's own scalar policy fields: the ones a preparation can leave
+  # alone and the review reports as untouched. The two embedded arrays and the
+  # areas are compared separately.
+  @policy_fields [
+    :name,
+    :kind,
+    :active,
+    :agency_id,
+    :riders,
+    :eligibility,
+    :include_registered,
+    :phone,
+    :phone_hours,
+    :booking_url,
+    :info_url,
+    :note,
+    :hub_stop_ids,
+    :route_id,
+    :distance_m,
+    :wording,
+    :measure,
+    :first_stop_id,
+    :last_stop_id,
+    :dropoffs,
+    :ada_only,
+    :band_start,
+    :band_end,
+    :calendar_service_ids
+  ]
 
   @typedoc """
   The exact saved inputs one workspace froze.
@@ -119,6 +208,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
           required(:calendars) => map(),
           required(:calendar_rows) => %{optional(String.t()) => calendar_row()},
           required(:facts) => Checks.facts(),
+          required(:others) => [FlexService.t()],
           required(:checks) => [Checks.check()],
           required(:check_status) => map(),
           required(:wording) => map(),
@@ -213,6 +303,664 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
 
   @typedoc "One refusal or incompleteness reason from `workspace/2`."
   @type workspace_error :: :forbidden | :unavailable | {:incomplete, term()}
+
+  @typedoc """
+  One embedded array compared row by row against the saved rows.
+
+  The rows are the saved ordinals: `changed` and `unchanged` are ordinals the
+  candidate kept at that position, `added` and `removed` the positions only one
+  side has. Because the arrays are complete replacements, a row the candidate
+  omits appears here as a removal for the native review rather than disappearing
+  (AC-4).
+  """
+  @type comparison :: %{
+          required(:saved) => [map()],
+          required(:candidate) => [map()],
+          required(:changed) => [
+            %{ordinal: non_neg_integer(), fields: [String.t()], before: map(), after: map()}
+          ],
+          required(:unchanged) => [non_neg_integer()],
+          required(:added) => [%{ordinal: non_neg_integer(), row: map()}],
+          required(:removed) => [%{ordinal: non_neg_integer(), row: map()}]
+        }
+
+  @typedoc """
+  The native comparison of one candidate with the saved service, computed
+  without touching persistence (AC-5).
+  """
+  @type preview :: %{
+          required(:service_id) => Ecto.UUID.t(),
+          required(:saved_lock_version) => integer(),
+          required(:candidate) => FlexService.t(),
+          required(:checks) => map(),
+          required(:rider_text) => map(),
+          required(:export) => map(),
+          required(:hours) => comparison(),
+          required(:booking_rules) => comparison(),
+          required(:unchanged_fields) => [atom()],
+          required(:changed_fields) => [atom()],
+          required(:areas_changed?) => boolean(),
+          required(:warnings) => [String.t()],
+          required(:exclusions) => [String.t()]
+        }
+
+  @typedoc """
+  One prepared candidate: the preview plus the exact patch that produced it, the
+  prepare scope, the source statements it could not represent, and the digests
+  that bind it to the accepted source, the conversation context and the saved
+  dependency fingerprint a later guarded save re-reads (AC-4, AC-10).
+  """
+  @type prepared :: %{
+          required(:service_id) => Ecto.UUID.t(),
+          required(:service_key) => String.t() | nil,
+          required(:saved_lock_version) => integer(),
+          required(:candidate) => FlexService.t(),
+          required(:checks) => map(),
+          required(:rider_text) => map(),
+          required(:export) => map(),
+          required(:hours) => comparison(),
+          required(:booking_rules) => comparison(),
+          required(:unchanged_fields) => [atom()],
+          required(:changed_fields) => [atom()],
+          required(:areas_changed?) => boolean(),
+          required(:warnings) => [String.t()],
+          required(:exclusions) => [String.t()],
+          required(:prepare_scope) => :all_supported | :hours_only,
+          required(:replaced) => [:hours | :booking_rules],
+          required(:unsupported) => [String.t()],
+          required(:patch) => map(),
+          required(:source_digest) => String.t() | nil,
+          required(:context_digest) => String.t(),
+          required(:saved_fingerprint) => String.t()
+        }
+
+  @typedoc "One refusal from `prepare/2` or `preview/2`."
+  @type prepare_error :: workspace_error() | {:invalid_input, term()} | {:unsupported, term()}
+
+  # --- preparation ------------------------------------------------------------
+
+  @doc """
+  Prepares a supported policy candidate for the service this scope's accepted
+  source names.
+
+  The scope is authorized and the workspace is read first, so the comparison is
+  always against the current saved service and the answer carries the
+  fingerprint of the dependencies it was built from. `input` is the allowlisted
+  string-keyed map the moduledoc describes; anything else refuses.
+
+  Returns `{:ok, prepared}` or `{:error, reason}`. Nothing here writes: the
+  candidate is an in-memory struct, and no audit or job row is created for a
+  read, a refusal or an answer.
+  """
+  @spec prepare(Scope.t(), map()) :: {:ok, prepared()} | {:error, prepare_error()}
+  def prepare(%Scope{} = scope, input) when is_map(input) do
+    with {:ok, workspace, _evidence} <- workspace(scope) do
+      build_prepared(workspace, scope, input)
+    end
+  end
+
+  def prepare(%Scope{}, _input), do: {:error, {:invalid_input, :not_a_map}}
+
+  @doc """
+  The native comparison of one candidate with the workspace's saved service.
+
+  This is the shared draft-preview computation: the native readiness checks,
+  the generated rider wording, the rider's own "what changed" lines, the export
+  plan and the `booking_rules.txt` columns one candidate produces, and the
+  row-by-row saved/candidate comparison. `candidate` must be a struct of the
+  workspace's own service in its own organization and version, so a foreign
+  struct never reaches the checks; any other struct is refused. It writes
+  nothing.
+  """
+  @spec preview(workspace(), FlexService.t()) :: {:ok, preview()} | {:error, prepare_error()}
+  def preview(
+        %{dependencies: %{service: %FlexService{} = saved}} = workspace,
+        %FlexService{} = candidate
+      ) do
+    with :ok <- check_candidate(saved, candidate) do
+      build_preview(workspace, candidate)
+    end
+  end
+
+  defp build_prepared(workspace, scope, input) do
+    with :ok <- check_input_fields(input),
+         {:ok, prepare_scope} <- check_prepare_scope(input),
+         {:ok, unsupported} <- check_unsupported(input),
+         :ok <- check_replacements(input),
+         :ok <- check_prepare_mode(prepare_scope, input, unsupported),
+         {:ok, patch} <- build_patch(workspace, input),
+         {:ok, candidate} <- apply_patch(workspace, patch) do
+      case preview(workspace, candidate) do
+        {:ok, preview} ->
+          {:ok, prepared(workspace, scope, prepare_scope, unsupported, patch, preview)}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  defp prepared(workspace, scope, prepare_scope, unsupported, patch, preview) do
+    saved = workspace.dependencies.service
+
+    preview
+    |> Map.put(:service_key, saved.key)
+    |> Map.put(:prepare_scope, prepare_scope)
+    |> Map.put(:replaced, replaced_arrays(patch))
+    |> Map.put(:unsupported, unsupported)
+    |> Map.put(:patch, patch)
+    |> Map.put(:exclusions, exclusions(prepare_scope, unsupported, patch, saved))
+    |> Map.put(:source_digest, source_digest(scope))
+    |> Map.put(:context_digest, Scope.context_digest(scope))
+    |> Map.put(:saved_fingerprint, workspace.fingerprint)
+  end
+
+  # What this candidate deliberately does not do. The unsupported statements are
+  # quoted back so the editor reads the prose that was left out beside the rows
+  # that were kept, and a retained array is named as retained rather than
+  # silently absent from the patch.
+  defp exclusions(_prepare_scope, unsupported, patch, %FlexService{} = saved) do
+    statements =
+      Enum.map(unsupported, &"Left out of this candidate, kept for the native editor: #{&1}")
+
+    retained =
+      if Map.has_key?(patch, "booking_rules") do
+        []
+      else
+        [
+          "The saved booking policy is untouched: all #{length(saved.booking_rules)} " <>
+            "booking rule(s) stay exactly as they are."
+        ]
+      end
+
+    statements ++
+      retained ++
+      [
+        "Every other saved field, including contacts, eligibility, drop-off policy and area geometry, is untouched."
+      ]
+  end
+
+  defp replaced_arrays(patch) do
+    Enum.filter([:hours, :booking_rules], &Map.has_key?(patch, Atom.to_string(&1)))
+  end
+
+  # The digest the server computed for the accepted source envelope, or nil when
+  # this scope froze no source. It is the snapshot's own digest, never one the
+  # caller supplies.
+  defp source_digest(%Scope{} = scope) do
+    case Scope.source_snapshot(scope) do
+      %{digest: digest} when is_binary(digest) -> digest
+      _other -> nil
+    end
+  end
+
+  # --- the input --------------------------------------------------------------
+
+  defp check_input_fields(input) do
+    Enum.reduce_while(input, :ok, fn {key, _value}, :ok ->
+      if is_binary(key) and key in @input_fields do
+        {:cont, :ok}
+      else
+        {:halt, {:error, {:invalid_input, {:unknown_key, key}}}}
+      end
+    end)
+  end
+
+  defp check_prepare_scope(input) do
+    case Map.get(input, "scope") do
+      scope when is_binary(scope) and scope in @prepare_scopes ->
+        {:ok, String.to_existing_atom(scope)}
+
+      _other ->
+        {:error, {:invalid_input, :scope}}
+    end
+  end
+
+  # The source statements this slice cannot represent. Each is bounded, so a
+  # source document is never smuggled in as one entry.
+  defp check_unsupported(input) do
+    case Map.get(input, "unsupported", []) do
+      statements when is_list(statements) and length(statements) <= @max_unsupported ->
+        statements
+        |> Enum.with_index()
+        |> Enum.reduce_while({:ok, []}, fn
+          {statement, _index}, {:ok, acc} when is_binary(statement) ->
+            statement = String.trim(statement)
+
+            if statement != "" and String.length(statement) <= @max_statement_chars do
+              {:cont, {:ok, acc ++ [statement]}}
+            else
+              {:halt, {:error, {:invalid_input, {:unsupported_statement, statement}}}}
+            end
+
+          {statement, index}, _acc ->
+            {:halt, {:error, {:invalid_input, {:unsupported_statement, index, statement}}}}
+        end)
+
+      _other ->
+        {:error, {:invalid_input, :unsupported}}
+    end
+  end
+
+  # At least one complete replacement array is required, and an omitted array is
+  # never read as a deletion. An empty array would be exactly such a deletion
+  # over every row at once, and this slice has no source-backed removal channel,
+  # so it is refused here rather than confirmed by a later review (AC-4).
+  defp check_replacements(input) do
+    Enum.reduce_while([:hours, :booking_rules], :ok, fn field, :ok ->
+      case Map.get(input, Atom.to_string(field)) do
+        nil ->
+          {:cont, :ok}
+
+        rows when is_list(rows) and rows != [] and length(rows) <= @max_rows ->
+          {:cont, :ok}
+
+        _other ->
+          {:halt, {:error, {:invalid_input, {field, :replacement}}}}
+      end
+    end)
+    |> require_one_replacement(input)
+  end
+
+  defp require_one_replacement(:ok, input) do
+    if Map.has_key?(input, "hours") or Map.has_key?(input, "booking_rules") do
+      :ok
+    else
+      {:error, {:invalid_input, :no_replacement}}
+    end
+  end
+
+  defp require_one_replacement(error, _input), do: error
+
+  defp check_prepare_mode(:all_supported, _input, []), do: :ok
+
+  defp check_prepare_mode(:all_supported, _input, unsupported) do
+    {:error, {:unsupported, {:source_statements, unsupported}}}
+  end
+
+  # An explicit hours-only preparation keeps every booking rule, so a proposed
+  # booking array contradicts the scope the editor chose rather than being
+  # quietly ignored.
+  defp check_prepare_mode(:hours_only, input, _unsupported) do
+    if Map.has_key?(input, "booking_rules") do
+      {:error, {:unsupported, :booking_rules_in_hours_only}}
+    else
+      :ok
+    end
+  end
+
+  # --- the patch --------------------------------------------------------------
+
+  defp build_patch(workspace, input) do
+    with {:ok, hours} <- hours_rows(workspace, Map.get(input, "hours")),
+         {:ok, rules} <- rule_rows(workspace, Map.get(input, "booking_rules")) do
+      patch =
+        %{}
+        |> put_replacement("hours", hours)
+        |> put_replacement("booking_rules", rules)
+
+      {:ok, patch}
+    end
+  end
+
+  defp put_replacement(patch, _field, nil), do: patch
+  defp put_replacement(patch, field, rows), do: Map.put(patch, field, rows)
+
+  defp hours_rows(_workspace, nil), do: {:ok, nil}
+
+  defp hours_rows(workspace, rows) do
+    rows
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {row, index}, {:ok, acc} ->
+      case hours_row(workspace, row, index) do
+        {:ok, attrs} -> {:cont, {:ok, acc ++ [attrs]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp hours_row(workspace, row, index) do
+    with :ok <- check_row(:hours, row, index, @hours_fields),
+         {:ok, attrs} <- row_attrs(row, @hours_fields),
+         :ok <- check_area_key(workspace, attrs),
+         :ok <- check_calendar(workspace, attrs, "service_id"),
+         {:ok, cast} <- cast_row(FlexHours, @hours_fields, attrs, :hours, index) do
+      {:ok, cast}
+    end
+  end
+
+  defp rule_rows(_workspace, nil), do: {:ok, nil}
+
+  defp rule_rows(workspace, rows) do
+    rows
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {row, index}, {:ok, acc} ->
+      case rule_row(workspace, row, index) do
+        {:ok, attrs} -> {:cont, {:ok, acc ++ [attrs]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp rule_row(workspace, row, index) do
+    with :ok <- check_row(:booking_rules, row, index, @rule_fields),
+         {:ok, attrs} <- row_attrs(row, @rule_fields),
+         :ok <- check_calendar(workspace, attrs, "service_id"),
+         :ok <- check_calendar(workspace, attrs, "office_service_id"),
+         {:ok, cast} <- cast_row(FlexBookingRule, @rule_fields, attrs, :booking_rules, index) do
+      {:ok, cast}
+    end
+  end
+
+  defp check_row(field, row, index, allowed) do
+    cond do
+      not is_map(row) ->
+        {:error, {:invalid_input, {field, index, :not_a_map}}}
+
+      Enum.any?(row, fn {key, _value} -> not (is_binary(key) and key in allowed) end) ->
+        {:error, {:invalid_input, {field, index, :unknown_field}}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp row_attrs(row, allowed) do
+    Enum.reduce(allowed, %{}, fn key, acc ->
+      case Map.fetch(row, key) do
+        {:ok, value} -> Map.put(acc, key, value)
+        :error -> acc
+      end
+    end)
+    |> then(&{:ok, &1})
+  end
+
+  # An hours row's area is one of this service's own areas. A key the service
+  # does not have is refused, so no policy is proposed against an area the page
+  # cannot show.
+  defp check_area_key(workspace, attrs) do
+    case Map.get(attrs, "area_key") do
+      key when is_binary(key) and key != "" ->
+        if key in Enum.map(workspace.dependencies.areas, & &1.key) do
+          :ok
+        else
+          {:error, {:invalid_input, {:unknown_area, key}}}
+        end
+
+      _other ->
+        :ok
+    end
+  end
+
+  # A calendar is one this version actually holds. `facts.service_ids` is the
+  # version's complete calendar set, so a calendar of another version or a
+  # guessed id is refused rather than exported as an unknown service.
+  defp check_calendar(workspace, attrs, field) do
+    case Map.get(attrs, field) do
+      value when is_binary(value) and value != "" ->
+        if MapSet.member?(workspace.facts.service_ids, value) do
+          :ok
+        else
+          {:error, {:invalid_input, {:unknown_calendar, field, value}}}
+        end
+
+      _other ->
+        :ok
+    end
+  end
+
+  # Each row is cast by its own native changeset, so the values that reach the
+  # candidate are the values the native page would store, and a row the native
+  # schema refuses is refused here with its own messages.
+  defp cast_row(module, fields, attrs, field, index) do
+    changeset = module.changeset(struct(module), attrs)
+
+    if changeset.valid? do
+      {:ok, changeset |> Ecto.Changeset.apply_changes() |> applied_attrs(fields)}
+    else
+      {:error, {:invalid_input, {:"invalid_#{field}", index, messages(changeset)}}}
+    end
+  end
+
+  # The applied row as the same string-keyed map the native form submits, so the
+  # patch is exactly what `Flex.save_service/4` reads and stays JSON-encodable:
+  # an enum value travels as its own name, never as an atom.
+  defp applied_attrs(row, fields) do
+    row
+    |> Map.from_struct()
+    |> Map.take(Enum.map(fields, &String.to_existing_atom/1))
+    |> Map.new(fn {key, value} -> {Atom.to_string(key), json_value(value)} end)
+  end
+
+  defp json_value(value) when is_atom(value) and not is_boolean(value) and not is_nil(value),
+    do: Atom.to_string(value)
+
+  defp json_value(value), do: value
+
+  defp apply_patch(workspace, patch) do
+    changeset = FlexService.changeset(workspace.dependencies.service, patch)
+
+    if changeset.valid? do
+      {:ok, Ecto.Changeset.apply_changes(changeset)}
+    else
+      {:error, {:invalid_input, {:invalid_changeset, messages(changeset)}}}
+    end
+  end
+
+  # The complete service changeset is applied to an in-memory struct and never
+  # inserted: an assistant candidate is a struct, not a row, and the only writer
+  # of this table is the native page's explicit Save (CR-1).
+  defp messages(changeset) do
+    changeset
+    |> Ecto.Changeset.traverse_errors(& &1)
+    |> flatten_errors([])
+  end
+
+  defp flatten_errors(errors, path) when is_map(errors) do
+    Enum.flat_map(errors, fn {field, messages} ->
+      flatten_errors(List.wrap(messages), path ++ [to_string(field)])
+    end)
+  end
+
+  defp flatten_errors(messages, path) when is_list(messages) do
+    Enum.map(messages, &"#{Enum.join(path, ".")} #{error_message(&1)}")
+  end
+
+  # A validation message with its interpolation values, read the way the native
+  # form reads it, so a refusal quotes the same sentence the editor would see.
+  defp error_message({message, options}) when is_binary(message) and is_list(options) do
+    Regex.replace(~r"%\{(\w+)\}", message, fn _whole, key ->
+      case Keyword.fetch(options, String.to_existing_atom(key)) do
+        {:ok, value} -> to_string(value)
+        :error -> ""
+      end
+    end)
+  end
+
+  defp error_message(message) when is_binary(message), do: message
+
+  # --- the comparison ---------------------------------------------------------
+
+  defp check_candidate(%FlexService{} = saved, %FlexService{} = candidate) do
+    if candidate.id == saved.id and candidate.organization_id == saved.organization_id and
+         candidate.gtfs_version_id == saved.gtfs_version_id do
+      :ok
+    else
+      {:error, {:invalid_input, :foreign_candidate}}
+    end
+  end
+
+  defp build_preview(workspace, %FlexService{} = candidate) do
+    saved = workspace.dependencies.service
+
+    candidate_checks = Checks.run(candidate, workspace.facts, workspace.others)
+    introduced = introduced_checks(workspace.checks, candidate_checks)
+    new_errors = Enum.filter(introduced, &(&1.level == :error))
+
+    case new_errors do
+      [] ->
+        {:ok,
+         %{
+           service_id: workspace.service_id,
+           saved_lock_version: saved.lock_version,
+           candidate: candidate,
+           checks: %{
+             saved: workspace.checks,
+             candidate: candidate_checks,
+             introduced: introduced,
+             saved_status: workspace.check_status,
+             status: Checks.status(candidate, candidate_checks)
+           },
+           rider_text: %{
+             saved: workspace.wording,
+             candidate: wording(candidate, workspace.calendars),
+             changes: RiderText.changes(saved, candidate, workspace.calendars)
+           },
+           export: %{
+             saved: export_projection(workspace, saved),
+             candidate: export_projection(workspace, candidate)
+           },
+           hours: compare_rows(hours_views(saved.hours), hours_views(candidate.hours)),
+           booking_rules:
+             compare_rows(rule_views(saved.booking_rules), rule_views(candidate.booking_rules)),
+           unchanged_fields: unchanged_fields(saved, candidate),
+           changed_fields: changed_fields(saved, candidate),
+           areas_changed?: saved.areas != candidate.areas,
+           warnings: preview_warnings(introduced, workspace.checks),
+           exclusions: []
+         }}
+
+      _new_errors ->
+        # Native readiness is the authority on whether the proposed policy is
+        # contradictory, so a candidate that introduces a readiness error is
+        # refused rather than reviewed as if it were sound.
+        {:error, {:unsupported, {:contradictory_policy, Enum.map(new_errors, & &1.text)}}}
+    end
+  end
+
+  # The findings the candidate introduces: a check the saved service did not
+  # have, whatever it says. The ones it already had are not this preparation's
+  # to fix, and they are reported as warnings instead.
+  defp introduced_checks(saved_checks, candidate_checks) do
+    saved = MapSet.new(saved_checks, &{&1.level, &1.section, &1.field, &1.text})
+
+    Enum.reject(
+      candidate_checks,
+      &MapSet.member?(saved, {&1.level, &1.section, &1.field, &1.text})
+    )
+  end
+
+  # Rows are compared by the saved ordinal, because an embedded row has no id of
+  # its own. A row that sits at its saved ordinal with every field equal is
+  # unchanged, even when the candidate enumerated it again. Walking the ordinals
+  # in order keeps both sides in the page's own order, so a row only one side
+  # has leaves a hole rather than shifting the rows after it.
+  defp compare_rows(saved_rows, candidate_rows) do
+    saved = saved_rows |> Enum.with_index() |> Map.new(fn {row, index} -> {index, row} end)
+
+    candidate =
+      candidate_rows |> Enum.with_index() |> Map.new(fn {row, index} -> {index, row} end)
+
+    ordinals = saved |> Map.keys() |> Kernel.++(Map.keys(candidate)) |> Enum.uniq() |> Enum.sort()
+
+    Enum.reduce(
+      ordinals,
+      %{saved: [], candidate: [], changed: [], unchanged: [], added: [], removed: []},
+      fn
+        ordinal, acc ->
+          case {Map.fetch(saved, ordinal), Map.fetch(candidate, ordinal)} do
+            {{:ok, before}, {:ok, after_}} ->
+              fields = changed_row_fields(before, after_)
+
+              acc
+              |> Map.update!(:saved, &(&1 ++ [before]))
+              |> Map.update!(:candidate, &(&1 ++ [after_]))
+              |> append_comparison(
+                if fields == [] do
+                  {:unchanged, ordinal}
+                else
+                  {:changed, %{ordinal: ordinal, fields: fields, before: before, after: after_}}
+                end
+              )
+
+            {:error, {:ok, after_}} ->
+              acc
+              |> Map.update!(:candidate, &(&1 ++ [after_]))
+              |> Map.update!(:added, &(&1 ++ [%{ordinal: ordinal, row: after_}]))
+
+            {{:ok, before}, :error} ->
+              acc
+              |> Map.update!(:saved, &(&1 ++ [before]))
+              |> Map.update!(:removed, &(&1 ++ [%{ordinal: ordinal, row: before}]))
+          end
+      end
+    )
+  end
+
+  defp append_comparison(acc, {:unchanged, ordinal}),
+    do: Map.update!(acc, :unchanged, &(&1 ++ [ordinal]))
+
+  defp append_comparison(acc, {:changed, change}),
+    do: Map.update!(acc, :changed, &(&1 ++ [change]))
+
+  defp changed_row_fields(before, after_) do
+    before
+    |> Map.keys()
+    |> Enum.filter(&(Map.get(before, &1) != Map.get(after_, &1)))
+    |> Enum.sort()
+  end
+
+  defp unchanged_fields(saved, candidate) do
+    Enum.filter(@policy_fields, &(Map.get(saved, &1) == Map.get(candidate, &1)))
+  end
+
+  defp changed_fields(saved, candidate) do
+    Enum.reject(@policy_fields, &(Map.get(saved, &1) == Map.get(candidate, &1)))
+  end
+
+  defp preview_warnings(introduced, saved_checks) do
+    suggestions =
+      for %{level: :warning, text: text} <- introduced, do: "New readiness suggestion: #{text}"
+
+    carried = Enum.count(saved_checks, &(&1.level == :error))
+
+    suggestions ++
+      if carried > 0 do
+        [
+          "The saved service already has #{carried} readiness problem(s); this candidate leaves them as they are."
+        ]
+      else
+        []
+      end
+  end
+
+  # --- the native export projection -------------------------------------------
+
+  # The export's own plan over the candidate, with the `booking_rules.txt`
+  # columns R7's fields produce, so the review can show which booking fields a
+  # proposal actually changes. The plan is the same one the service page's export
+  # drawer lists, and the area inputs are the workspace's own stored geometry.
+  defp export_projection(workspace, %FlexService{} = service) do
+    organization_id = workspace.organization_id
+    version_id = workspace.gtfs_version_id
+
+    plan =
+      Export.plan(organization_id, version_id, service, area_inputs(workspace, service), [])
+
+    %{
+      headline: plan.headline,
+      counts: plan.counts,
+      warnings: plan.warnings,
+      rows: Enum.filter(plan.rows, &(&1.file == "booking_rules.txt")),
+      booking_rule_fields: Areas.booking_rule_rows(service, workspace.calendars)
+    }
+  end
+
+  defp area_inputs(workspace, %FlexService{} = service) do
+    Enum.map(service.areas, fn area ->
+      %{area: area, geojson: Map.get(workspace.dependencies.geojson, area.id)}
+    end)
+  end
 
   # --- snapshot boundary ------------------------------------------------------
 
@@ -385,6 +1133,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
       calendars: calendars,
       calendar_rows: dependencies.calendar_rows,
       facts: facts,
+      others: others,
       checks: checks,
       check_status: Checks.status(service, checks),
       wording: wording(service, calendars),
@@ -504,6 +1253,10 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
       "end" => row.end
     }
   end
+
+  defp hours_views(rows), do: Enum.map(rows, &hours_view/1)
+
+  defp rule_views(rows), do: Enum.map(rows, &rule_view/1)
 
   defp rule_view(rule) do
     %{
