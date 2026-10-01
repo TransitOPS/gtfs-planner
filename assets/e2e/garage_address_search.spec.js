@@ -26,6 +26,12 @@ for (const label of ["desktop", "320px"]) {
     await page.locator("#add-garage, #add-garage-empty").click();
     await expect(page.locator("#garage-drawer-overlay")).toHaveAttribute("data-open", "true");
     const address = page.locator("#garage-address input[type='text']");
+    // Focusing the input pushes a focus event whose reply sets the input's text
+    // to the component's last known text. Typing before that reply lands is
+    // overwritten, so the case lets the round trip finish first, as a person's
+    // first keystroke does.
+    await address.focus();
+    await expect(address).not.toHaveClass(/phx-focus-loading/);
     // The browser geocoding adapter holds this query until zz-release runs.
     await address.fill("zz-slow");
     await expect(page.locator("#garage-address-search-status")).toHaveText("Searching addresses…");
