@@ -44,7 +44,6 @@ defmodule GtfsPlanner.Gtfs.StopEditingDeleteTest do
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Translation
-  alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
 
@@ -286,6 +285,18 @@ defmodule GtfsPlanner.Gtfs.StopEditingDeleteTest do
       # stop was.
       assert entry.snapshot["stop_name"] == "Main St"
       assert entry.actor_id == fixture.actor.id
+
+      # The delete is irreversible in-app, so the counts the editor confirmed
+      # are the only record of what went with the stop. `seed_descriptive/1`
+      # wrote one transfer out of 1434, one translation of 1434 and one
+      # deadhead row leaving 1434, and that is all this stop had.
+      assert entry.changed_fields == %{
+               "removed" => %{
+                 "deadhead_from" => 1,
+                 "transfers" => 1,
+                 "translations" => 1
+               }
+             }
     end
   end
 

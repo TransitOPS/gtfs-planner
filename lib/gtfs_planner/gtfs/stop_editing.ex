@@ -36,8 +36,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
 
   import Ecto.Query
 
-  alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.UserOrgMembership
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.AlignmentSegment
@@ -54,8 +53,6 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion
-
-  @editor_role "pathways_studio_editor"
 
   # How many times the create closure is rerun for a transient serialization
   # failure, a deadlock, or a generated ID taken by a concurrent insert. Three is
@@ -133,7 +130,10 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   def update_stop(_stop_uuid, _attrs, _loaded_updated_at, _audit), do: {:error, :invalid_input}
 
   defp apply_stop_update(stop_uuid, attrs, loaded_updated_at, audit) do
-    :ok = authorize_editor!(audit)
+    # Active organization editors only (AC-12), rechecked inside the transaction
+    # so a denied actor writes nothing. The membership row is locked before the
+    # version and the stop, which is what a concurrent deactivation waits on.
+    Authorization.lock_editor!(audit)
     _version = lock_published_version!(audit)
 
     stop = lock_stop!(stop_uuid, audit)
@@ -315,7 +315,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
           {:ok, map()} | {:error, atom()}
   def move_review(stop_uuid, point, %AuditContext{} = audit)
       when is_binary(stop_uuid) and is_tuple(point) do
-    if authorize_editor?(audit) do
+    if Authorization.authorize_editor(audit) == :ok do
       case scoped_stop(stop_uuid, audit) do
         {:ok, stop} -> {:ok, build_review(stop, new_point(point), audit)}
         {:error, reason} -> {:error, reason}
@@ -721,7 +721,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   # The transaction body, in the order the steps are named in: authorize,
   # lock, re-check, decide, write, redraw.
   defp commit_move(stop_uuid, attrs, options, audit) do
-    :ok = authorize_editor!(audit)
+    Authorization.lock_editor!(audit)
     _version = lock_published_version!(audit)
 
     stop = lock_stop!(stop_uuid, audit)
@@ -893,7 +893,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   @spec delete_review(Ecto.UUID.t(), AuditContext.t()) ::
           {:ok, map()} | {:error, atom()}
   def delete_review(stop_uuid, %AuditContext{} = audit) when is_binary(stop_uuid) do
-    if authorize_editor?(audit) do
+    if Authorization.authorize_editor(audit) == :ok do
       case scoped_stop(stop_uuid, audit) do
         {:ok, stop} -> {:ok, build_delete_review(stop, audit)}
         {:error, reason} -> {:error, reason}
@@ -975,7 +975,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   def delete_stop(_stop_uuid, _fingerprint, _audit), do: {:error, :invalid_input}
 
   defp commit_delete(stop_uuid, fingerprint, audit) do
-    :ok = authorize_editor!(audit)
+    Authorization.lock_editor!(audit)
     _version = lock_published_version!(audit)
 
     stop = lock_stop!(stop_uuid, audit)
@@ -988,10 +988,12 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
     end
   end
 
-  # The rows go before the stop, and the audit entry last, so a stop is never
-  # absent while rows still name it — which is what a cascade would do and
-  # what makes a cascade unreviewable. `INV-2`: the audit is written in the
-  # same transaction, so a deleted stop with no history entry rolls back.
+  # The descriptive rows go before the stop, and the audit entry is written
+  # before the stop row, in the same transaction, so a deleted stop always has
+  # the record of what went with it — and never has one while rows still name it,
+  # which is what a cascade would do and what makes a cascade unreviewable.
+  # `INV-2`: the audit is written in the same transaction, so a deleted stop with
+  # no history entry rolls back.
   defp apply_delete(stop, usage, fingerprint, audit) do
     if matches_fingerprint?(fingerprint, delete_fingerprint(stop, usage, audit)) do
       removed = Enum.reduce(usage.descriptive, %{}, &delete_descriptive_item(&1, &2, stop))
@@ -1090,7 +1092,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
           | {:error, {:refused, [atom()]} | :forbidden | :not_found | :invalid_input}
   def replace_review(old_uuid, new_uuid, %AuditContext{} = audit)
       when is_binary(old_uuid) and is_binary(new_uuid) do
-    if authorize_editor?(audit) do
+    if Authorization.authorize_editor(audit) == :ok do
       with {:ok, old} <- scoped_stop(old_uuid, audit),
            {:ok, new} <- scoped_stop(new_uuid, audit) do
         build_replace_review(old, new, audit)
@@ -1500,7 +1502,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   def replace_stop(_old_uuid, _new_uuid, _options, _audit), do: {:error, :invalid_input}
 
   defp commit_replace(old_uuid, new_uuid, options, audit) do
-    :ok = authorize_editor!(audit)
+    Authorization.lock_editor!(audit)
     _version = lock_published_version!(audit)
 
     old = lock_stop!(old_uuid, audit)
@@ -1787,7 +1789,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   def make_station(_stop_uuid, _attrs, _audit), do: {:error, :invalid_input}
 
   defp commit_make_station(stop_uuid, attrs, audit) do
-    :ok = authorize_editor!(audit)
+    Authorization.lock_editor!(audit)
     _version = lock_published_version!(audit)
 
     stop = lock_stop!(stop_uuid, audit)
@@ -1933,7 +1935,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   # The transaction body: authorize and lock before reading or writing anything,
   # so allocation and the scope check both see committed state.
   defp insert_stop(attrs, audit) do
-    :ok = authorize_editor!(audit)
+    Authorization.lock_editor!(audit)
     _version = lock_published_version!(audit)
 
     scoped = scoped_attrs(attrs, audit)
@@ -2064,31 +2066,6 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
     |> Enum.map(& &1.garage_id)
     |> Enum.reject(&(is_nil(&1) or &1 == ""))
   end
-
-  # Active organization editors only (AC-12), rechecked inside the transaction so
-  # a denied actor writes nothing. Copied from `Routes.authorize_editor!/1` so
-  # both command modules answer "is this actor allowed" identically.
-  defp authorize_editor!(%AuditContext{} = audit) do
-    if authorize_editor?(audit), do: :ok, else: Repo.rollback(:forbidden)
-  end
-
-  # The question the command helpers ask, without the rollback. `move_review/3`
-  # is read-only and must not roll back a transaction it never opened, so it
-  # asks rather than asserts.
-  defp authorize_editor?(%AuditContext{} = audit) do
-    with true <- uuid?(audit.actor_id),
-         true <- uuid?(audit.organization_id),
-         %UserOrgMembership{} = membership <-
-           Accounts.get_user_org_membership(audit.actor_id, audit.organization_id),
-         true <- is_nil(membership.deactivated_at) do
-      editor_role?(membership.roles)
-    else
-      _other -> false
-    end
-  end
-
-  defp editor_role?(roles) when is_list(roles), do: @editor_role in roles
-  defp editor_role?(_roles), do: false
 
   # Published scope only. The create command locks the version row FOR UPDATE
   # before any read so ID allocation sees committed state.

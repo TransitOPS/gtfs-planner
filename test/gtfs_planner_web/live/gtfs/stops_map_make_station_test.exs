@@ -1,4 +1,4 @@
-defmodule GtfsPlannerWeb.Gtfs.StopsMapStationTest do
+defmodule GtfsPlannerWeb.Gtfs.StopsMapMakeStationTest do
   @moduledoc """
   Merge evidence (EV-34) for the make-station panel.
 
@@ -14,7 +14,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapStationTest do
   stop is its bay, which is a claim about tables.
 
   The focused command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_sa28 ELIXIR_ERL_OPTIONS="+S 4" mix test test/gtfs_planner_web/live/gtfs/stops_map_station_test.exs`.
+  `MIX_ENV=test MIX_TEST_PARTITION=_sa28 ELIXIR_ERL_OPTIONS="+S 4" mix test test/gtfs_planner_web/live/gtfs/stops_map_make_station_test.exs`.
   """
   use GtfsPlannerWeb.ConnCase, async: false
 

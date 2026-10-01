@@ -16,7 +16,6 @@ defmodule GtfsPlanner.Gtfs.StopEditingMakeStationTest do
 
   import Ecto.Query
   import GtfsPlanner.AccountsFixtures
-  import GtfsPlanner.AdvancedBlockingFixtures
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -30,7 +29,6 @@ defmodule GtfsPlanner.Gtfs.StopEditingMakeStationTest do
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopEditing
   alias GtfsPlanner.Gtfs.StopTime
-  alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
 

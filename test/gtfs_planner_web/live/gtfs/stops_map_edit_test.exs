@@ -500,10 +500,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapEditTest do
       stop_lon: Decimal.from_float(-124.05321)
     })
 
-    # `Gtfs.create_stop/1` casts through `Stop.changeset/2`, which deliberately
-    # does not cast the sign number, so the fixture writes that one column the
-    # way the importer does — otherwise the panel's sign-number field would be
-    # empty in every test that is not about the sign number.
+    # `GtfsFixtures.insert_stop/1` casts through `Stop.changeset/2`, which
+    # deliberately does not cast the sign number, so the fixture writes that one
+    # column the way the importer does — otherwise the panel's sign-number field
+    # would be empty in every test that is not about the sign number.
     served
     |> Ecto.Changeset.change(%{stop_code: "1434", zone_id: "NL"})
     |> Repo.update!()

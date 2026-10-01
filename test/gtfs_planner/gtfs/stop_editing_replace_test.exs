@@ -39,7 +39,6 @@ defmodule GtfsPlanner.Gtfs.StopEditingReplaceTest do
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Translation
-  alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations.WalkabilityTest

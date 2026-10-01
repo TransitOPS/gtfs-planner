@@ -11014,13 +11014,6 @@ case Accounts.register_first_admin(%{
       |> Enum.min()
     end
 
-    stops_map_occurrence_count =
-      Enum.sum(
-        Enum.map(stops_map_patterns, fn {_p, _r, _d, _h, _n, _s, stops} ->
-          length(stops)
-        end)
-      )
-
     {stops_map_occurrence_count, nil} =
       Repo.insert_all(
         RoutePatternStop,

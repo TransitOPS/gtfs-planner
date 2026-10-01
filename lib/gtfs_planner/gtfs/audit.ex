@@ -662,6 +662,19 @@ defmodule GtfsPlanner.Gtfs.Audit do
     end
   end
 
+  # A stop deletion is the one irreversible write in this module, so what went
+  # with the stop belongs in the log the same way a column diff does. `:stop` is
+  # not a structured audit type, so without this clause the counts a caller
+  # passes are dropped and the entry records only the pre-delete snapshot. A
+  # caller that passes no counts keeps the historical `nil` shape.
+  defp build_changed_fields(entity_type, "deleted", _snapshot, attrs)
+       when entity_type in [:stop, "stop"] do
+    case Map.get(attrs, "removed", Map.get(attrs, :removed)) do
+      nil -> nil
+      removed -> %{"removed" => stringify_map_keys(removed)}
+    end
+  end
+
   defp build_changed_fields(entity_type, "rolled_back", snapshot, attrs)
        when entity_type in [:stop, "stop"] and not is_nil(snapshot),
        do: build_changed_fields(entity_type, "updated", snapshot, attrs)
