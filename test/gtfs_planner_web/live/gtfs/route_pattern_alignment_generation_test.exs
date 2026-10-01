@@ -383,7 +383,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentGenerationTest do
 
       leg = [[-74.006, 40.7128], [-74.0055, 40.7133], [-74.005, 40.7138]]
 
+      test_pid = self()
+
       Req.Test.stub(@routing_owner, fn conn ->
+        # The test supersedes the flight only once it is sleeping here, so
+        # the kill never lands mid-query on the shared sandbox connection.
+        send(test_pid, :generation_routing_started)
         Process.sleep(600)
 
         Plug.Conn.send_resp(
@@ -397,6 +402,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentGenerationTest do
 
       view |> element("#alignment-generate-section") |> render_click()
       assert has_element?(view, "#alignment-generating", "Finding a street path…")
+      assert_receive :generation_routing_started, 10_000
 
       view |> element("#alignment-cancel-generation") |> render_click()
       refute has_element?(view, "#alignment-generating")
@@ -420,7 +426,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentGenerationTest do
 
       leg = [[-74.006, 40.7128], [-74.0055, 40.7133], [-74.005, 40.7138]]
 
+      test_pid = self()
+
       Req.Test.stub(@routing_owner, fn conn ->
+        # The test supersedes the flight only once it is sleeping here, so
+        # the kill never lands mid-query on the shared sandbox connection.
+        send(test_pid, :generation_routing_started)
         Process.sleep(600)
 
         Plug.Conn.send_resp(
@@ -434,6 +445,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentGenerationTest do
 
       view |> element("#alignment-generate-section") |> render_click()
       assert has_element?(view, "#alignment-generating", "Finding a street path…")
+      assert_receive :generation_routing_started, 10_000
 
       render_patch(view, pattern_path(version, route, second_pattern))
       assert has_element?(view, "#alignment-title", "Path between stops")
