@@ -153,6 +153,32 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.GroupingTest do
              {:suggested, 0, {:same_endpoints, @pattern_a}}
   end
 
+  test "a reversed short turn is not within the opposite direction's pattern" do
+    reversed = Enum.reverse(@short_stops)
+    [group] = Grouping.group([vector(1, stop_ids: reversed)])
+
+    outbound = pattern(@pattern_a, direction_id: 0, linked_trip_count: 38)
+
+    inbound =
+      pattern(@pattern_copy, direction_id: 1, stop_ids: Enum.reverse(@full_stops))
+
+    assert Grouping.suggest_direction(group, [group], [outbound, inbound]) ==
+             {:suggested, 1, {:within, @pattern_copy}}
+  end
+
+  test "a label child stands in when its owner does not answer the group" do
+    child_stops = Enum.take(@full_stops, 11)
+    [group] = Grouping.group([vector(1, stop_ids: child_stops)])
+
+    owner = pattern(@pattern_a, stop_ids: Enum.reverse(@full_stops))
+
+    child =
+      pattern(@pattern_copy, stop_ids: child_stops, label_pattern_id: @pattern_a)
+
+    assert Grouping.suggest_direction(group, [group], [child, owner]) ==
+             {:suggested, 0, {:same_endpoints, @pattern_copy}}
+  end
+
   describe "timing_name/2" do
     test "names a timing after its one service, adding a number when taken" do
       assert Grouping.timing_name(["Summer weekday supplement"], MapSet.new()) ==
