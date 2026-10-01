@@ -2212,15 +2212,21 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   @doc """
-  Renders the read-only trip drawer: the trip's identity, its stored times and
+  Renders the trip drawer: the trip's identity, its stored times and
   block, every service day it runs in with the all-dates scope sentence, its own
   findings and every type 4/5 record naming it.
 
   The service-day links patch `day` and `trip`, so one link follows the trip to
-  another day's page with the drawer open again. The record list is
-  read-only and holds every record that names the trip, including one whose pair
-  has no hosting gap. A repeating trip carries the repeat text and
-  one with missing times its warning; neither can be plotted.
+  another day's page with the drawer open again. The record list holds every
+  record that names the trip, including one whose pair has no hosting gap. A
+  repeating trip carries the repeat text and one with missing times its warning;
+  neither can be plotted.
+
+  A record whose state is stale is broken — no block reaches it — so it offers
+  “Remove transfer record”, and the shared `confirm_dialog` names the pair and
+  the setting it deletes before anything is removed. Every other record is
+  printed as left untouched, because an unconfirmed or matching record may be
+  valid GTFS. The removal itself is the LiveView's write; the drawer only asks.
 
   A trip opened from the block drawer keeps that block in the URL and prints
   “Back to block <id>”, which returns to the block drawer.
@@ -2238,12 +2244,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :assign_form, :any, default: nil
   attr :destination_options, :list, default: []
   attr :destination_total, :integer, default: 0
+  attr :remove_record, :map, default: nil
+  attr :remove_pending, :boolean, default: false
 
   def trip_drawer(assigns) do
     assigns =
       assigns
       |> assign(:total_dates, Enum.sum(Enum.map(assigns.day_types, & &1.date_count)))
       |> assign(:title, trip_title(assigns.trip))
+      |> assign(:remove_copy, remove_record_copy(assigns.remove_record))
 
     ~H"""
     <.drawer
@@ -2360,6 +2369,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           <div class="space-y-3">
             <div
               :for={entry <- @in_seat}
+              id={transfer_entry_id(entry.row.id)}
               data-role="trip-transfer"
               data-transfer-type={entry.row.transfer_type}
               class="border-l-4 border-subtle pl-3"
@@ -2374,6 +2384,24 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               <p class="text-sm">Trip {entry.row.from_trip_id} → {entry.row.to_trip_id}</p>
               <p data-role="trip-transfer-state" class="text-[13px] text-muted">
                 {in_seat_state_text(entry.state)}
+              </p>
+
+              <%!-- Only a stale record is broken, so only a stale record offers its
+              own removal; a matching or unconfirmed one may be valid GTFS and is
+              printed as left untouched. --%>
+              <.button
+                :if={stale_entry?(entry.state)}
+                id={remove_record_button_id(entry.row.id)}
+                type="button"
+                variant="danger"
+                class="mt-2 min-h-11"
+                phx-click="request_remove_record"
+                phx-value-id={entry.row.id}
+              >
+                Remove transfer record
+              </.button>
+              <p :if={not stale_entry?(entry.state)} class="mt-1 text-[13px] text-muted">
+                Left untouched: the record may be valid GTFS.
               </p>
             </div>
           </div>
@@ -2438,6 +2466,26 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         </div>
       </.drawer_scroll>
     </.drawer>
+
+    <%!-- The removal question. It is the shared `confirm_dialog` rather than a
+    drawer of its own: a record the editor may still want is a question, not a
+    page. It names the pair and the setting it deletes, and cancelling leaves the
+    record exactly as it was. --%>
+    <.confirm_dialog
+      id="remove-record-dialog"
+      chrome="planner"
+      open={not is_nil(@remove_record)}
+      title={@remove_copy.title}
+      confirm_label="Remove record"
+      pending_label="Removing…"
+      pending={@remove_pending}
+      on_confirm="confirm_remove_record"
+      on_cancel="cancel_remove_record"
+      described_by="remove-record-dialog-body"
+      return_focus_id={@remove_copy.return_focus_id}
+    >
+      <p>{@remove_copy.body}</p>
+    </.confirm_dialog>
     """
   end
 
@@ -8794,6 +8842,37 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp transfer_state_label(:matches), do: "Matches block"
   defp transfer_state_label({:stale, _reason}), do: "Needs review"
   defp transfer_state_label({:unconfirmed, _reason}), do: "Can't confirm"
+
+  # A stale record is the only one no block can reach, so it is the only one
+  # that offers its own removal (AC-21).
+  defp stale_entry?({:stale, _reason}), do: true
+  defp stale_entry?(_state), do: false
+
+  # Each listed record's row is its own id, so the removal button and the dialog
+  # that returns focus to it address one record rather than the list.
+  defp transfer_entry_id(id), do: "trip-transfer-" <> id
+
+  defp remove_record_button_id(id), do: "remove-record-" <> id
+
+  # The removal question's copy, built from the record the editor asked about.
+  # The dialog is always rendered, so a nil record has to read as an empty
+  # question rather than raise.
+  defp remove_record_copy(nil), do: %{title: "", body: "", return_focus_id: nil}
+
+  defp remove_record_copy(entry) do
+    row = entry.row
+
+    %{
+      title: "Remove the record for trip #{row.from_trip_id} → #{row.to_trip_id}?",
+      body:
+        "Deletes one in-seat transfer record (#{remove_record_setting(row.transfer_type)}). " <>
+          "Trips and blocks don't change. The deletion is audited.",
+      return_focus_id: remove_record_button_id(row.id)
+    }
+  end
+
+  defp remove_record_setting(4), do: "riders stay on board"
+  defp remove_record_setting(_type), do: "riders must get off and board again"
 
   defp frequency_title(%{headway_secs: secs}), do: "Repeats every #{div(secs, 60)} min."
 
