@@ -31,7 +31,6 @@ defmodule GtfsPlanner.Gtfs.Calendars.ImportExportTest do
     CalendarDate,
     ChangeLog,
     Export,
-    Import,
     Route,
     RoutePattern,
     RoutePatternStop,
@@ -51,6 +50,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.ImportExportTest do
   alias GtfsPlanner.Accounts.User
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Organizations.Organization
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlanner.Versions.GtfsVersion
 
   describe "RowParser calendar attribute validations" do
@@ -241,7 +241,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.ImportExportTest do
 
       # 1. Import files into version_a
       assert {:ok, result} =
-               unboxed(fn -> Import.import_files(org.id, version_a.id, files_to_import) end)
+               unboxed(fn -> StagedImport.import_files(org.id, version_a.id, files_to_import) end)
 
       assert result.counts[:calendar_attributes] == 5
       assert result.counts[:calendars] == 3
@@ -287,7 +287,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.ImportExportTest do
         end)
 
       assert {:ok, reimport_result} =
-               unboxed(fn -> Import.import_files(org.id, version_b.id, reimport_files) end)
+               unboxed(fn -> StagedImport.import_files(org.id, version_b.id, reimport_files) end)
 
       assert reimport_result.counts[:calendar_attributes] == 5
 

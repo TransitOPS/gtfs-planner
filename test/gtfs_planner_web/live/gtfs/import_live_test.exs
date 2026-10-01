@@ -10,7 +10,17 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.Import.{ChangeRun, ChangeRuns, Failure, Recovery, Result, Run}
+
+  alias GtfsPlanner.Gtfs.Import.{
+    ChangeRun,
+    ChangeRuns,
+    Failure,
+    Recovery,
+    Result,
+    Run,
+    SourceStorage
+  }
+
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
@@ -659,30 +669,19 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
     end
   end
 
-  describe "post-create consumption failure" do
+  describe "post-create staging failure" do
     setup :editor_context
 
+    # A zero root budget makes `SourceStorage.stage/4` refuse every upload.
     setup do
-      previous = Application.get_env(:gtfs_planner, :import_file_reader)
-
-      Application.put_env(
-        :gtfs_planner,
-        :import_file_reader,
-        GtfsPlanner.Support.ImportFileReaderErrorStub
-      )
-
-      on_exit(fn ->
-        if previous do
-          Application.put_env(:gtfs_planner, :import_file_reader, previous)
-        else
-          Application.delete_env(:gtfs_planner, :import_file_reader)
-        end
-      end)
+      previous = Application.get_env(:gtfs_planner, :gtfs_task_artifacts_max_total_bytes)
+      Application.put_env(:gtfs_planner, :gtfs_task_artifacts_max_total_bytes, 0)
+      on_exit(fn -> restore_application_env(:gtfs_task_artifacts_max_total_bytes, previous) end)
 
       :ok
     end
 
-    test "a read error fails the exact staging target and starts no task", %{
+    test "a staging error fails the exact staging target and starts no task", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -709,10 +708,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert run.reason_code == "unknown_error"
       assert is_nil(run.lease_token)
 
-      # No task started and no rows written to any version.
+      # No task started, no rows written to any version, and nothing staged.
       assert Task.Supervisor.children(GtfsPlanner.TaskSupervisor) == []
       refute Gtfs.get_level_by_level_id(organization.id, route_version.id, "L1")
       refute Gtfs.get_level_by_level_id(organization.id, target.id, "L1")
+
+      {:ok, run_dir} = SourceStorage.run_dir(organization.id, run.id)
+      refute File.exists?(run_dir)
 
       assert has_element?(view, "#gtfs-import-result", "“Consume Fail” wasn’t imported.")
       assert html =~ "Nothing was published"

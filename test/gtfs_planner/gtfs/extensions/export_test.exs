@@ -3,9 +3,9 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
 
   alias GtfsPlanner.Gtfs.Extensions.Export
   alias GtfsPlanner.Gtfs.Export, as: GtfsExport
-  alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Extensions.Manifest
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Support.StagedImport
 
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -139,7 +139,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
         %{filename: "_pathways_extensions.json", content: old_manifest}
       ]
 
-      assert {:ok, result} = Import.import_files(org_id, version_id, files)
+      assert {:ok, result} = StagedImport.import_files(org_id, version_id, files)
       assert result.counts.extensions_route_flags == 1
 
       route = Gtfs.get_route_by_route_id(org_id, version_id, "Red")

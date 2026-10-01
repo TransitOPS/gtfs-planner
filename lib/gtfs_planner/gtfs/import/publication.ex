@@ -9,7 +9,9 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
        owning the importing version. `Publication.run/4` receives that claimed
        `%Run{}` plus its execution lease token.
     2. Import only into the run's exact target version id via
-       `Import.import_files/5`. The run is the only write destination; there is
+       `Import.import_files/5`, reading the staged source files (descriptors from
+       `SourceStorage.stage/4`) from disk and expanding archives under the run's
+       `expanded/` directory. The run is the only write destination; there is
        no fallback version. The run's id and lease token travel with the import as
        its `:fence`, so every write transaction first verifies that the run is
        still `running` under this token with an unexpired lease; a superseded
@@ -32,6 +34,7 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
   alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Import.{Result, Failure}
   alias GtfsPlanner.Gtfs.Import.Run
+  alias GtfsPlanner.Gtfs.Import.SourceStorage
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Versions.GtfsVersion
 
@@ -42,6 +45,13 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
   @telemetry_event [:gtfs_planner, :import_publication, :transition]
   @importing_status "importing"
 
+  @doc """
+  Imports the staged `files` into the run's version and closes the run.
+
+  `files` are the `%{filename, path}` descriptors returned by `SourceStorage.stage/4`.
+  This function leaves the run's source directory in place; the runner removes it
+  after the worker exits.
+  """
   @spec run(Run.t(), Ecto.UUID.t(), [map()], String.t()) ::
           {:ok, GtfsVersion.t(), Result.t()}
           | {:error, GtfsVersion.t() | nil, term()}
@@ -50,9 +60,12 @@ defmodule GtfsPlanner.Gtfs.Import.Publication do
     run_id = run.id
     version_id = run.gtfs_version_id
 
+    {:ok, run_dir} = SourceStorage.run_dir(organization_id, run_id)
+
     # 1. Import only into the claimed version id. Never a fallback id.
     case Import.import_files(organization_id, version_id, files, topic,
-           fence: {run_id, lease_token}
+           fence: {run_id, lease_token},
+           expand_dir: Path.join(run_dir, "expanded")
          ) do
       {:ok, %Result{} = result} ->
         Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, topic, {:import_phase, :publication})

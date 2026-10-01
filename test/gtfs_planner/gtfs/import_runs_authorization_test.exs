@@ -15,6 +15,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsAuthorizationTest do
   alias GtfsPlanner.Gtfs.Import.{ChangeRun, ChangeRuns, Failure, Publication, Result, Run}
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
@@ -96,7 +97,12 @@ defmodule GtfsPlanner.Gtfs.ImportRunsAuthorizationTest do
 
       assert {:error, %GtfsVersion{publication_status: "importing"},
               {:publication_failed, :forbidden}} =
-               Publication.run(run, token, files, "import:authorization-revoked")
+               Publication.run(
+                 run,
+                 token,
+                 StagedImport.stage(files),
+                 "import:authorization-revoked"
+               )
 
       refute Versions.published_gtfs_version_for_org?(organization.id, run.gtfs_version_id)
 
@@ -120,7 +126,12 @@ defmodule GtfsPlanner.Gtfs.ImportRunsAuthorizationTest do
       files = [%{filename: "levels.txt", content: @levels_content}]
 
       assert {:error, _version, {:publication_failed, :forbidden}} =
-               Publication.run(run, token, files, "import:authorization-successor")
+               Publication.run(
+                 run,
+                 token,
+                 StagedImport.stage(files),
+                 "import:authorization-successor"
+               )
 
       assert {:ok, %Run{state: "published"}, %GtfsVersion{publication_status: "published"}} =
                ImportRuns.retry_publication(organization.id, run.id, successor.actor)
@@ -136,7 +147,12 @@ defmodule GtfsPlanner.Gtfs.ImportRunsAuthorizationTest do
       files = [%{filename: "levels.txt", content: @levels_content}]
 
       assert {:ok, %GtfsVersion{publication_status: "published"}, _result} =
-               Publication.run(run, token, files, "import:authorization-active")
+               Publication.run(
+                 run,
+                 token,
+                 StagedImport.stage(files),
+                 "import:authorization-active"
+               )
 
       assert Repo.get!(Run, run.id).state == "published"
     end

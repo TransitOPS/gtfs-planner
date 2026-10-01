@@ -18,10 +18,10 @@ defmodule GtfsPlanner.Gtfs.Calendars.CoverageTest do
   alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.ChangeLog
-  alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Import.RowParser
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.StagedImport
 
   @today ~D[2026-06-15]
 
@@ -460,14 +460,14 @@ defmodule GtfsPlanner.Gtfs.Calendars.CoverageTest do
   end
 
   defp import_calendars(context, calendar_csv, attributes_csv) do
-    Import.import_files(context.organization.id, context.version.id, [
+    StagedImport.import_files(context.organization.id, context.version.id, [
       %{filename: "calendar.txt", content: calendar_csv},
       %{filename: "calendar_attributes.txt", content: attributes_csv}
     ])
   end
 
   defp import_calendars(context, calendar_csv, dates_csv, attributes_csv) do
-    Import.import_files(context.organization.id, context.version.id, [
+    StagedImport.import_files(context.organization.id, context.version.id, [
       %{filename: "calendar.txt", content: calendar_csv},
       %{filename: "calendar_dates.txt", content: dates_csv},
       %{filename: "calendar_attributes.txt", content: attributes_csv}

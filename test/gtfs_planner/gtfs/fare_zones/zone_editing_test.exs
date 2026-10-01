@@ -25,12 +25,12 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
   alias GtfsPlanner.Gtfs.FareZone
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareZones
-  alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Import.CsvParser
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.AccountsFixtures
   alias GtfsPlanner.OrganizationsFixtures
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlanner.Versions.GtfsVersion
   alias GtfsPlanner.VersionsFixtures
 
@@ -152,7 +152,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
     organization: organization,
     version: version
   } do
-    assert {:ok, result} = Import.import_files(organization.id, version.id, import_files())
+    assert {:ok, result} = StagedImport.import_files(organization.id, version.id, import_files())
     assert result.counts[:stops] == 3
     assert result.counts[:fare_rules] == 2
 

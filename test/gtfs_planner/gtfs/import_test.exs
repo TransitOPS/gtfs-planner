@@ -2,6 +2,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
   use GtfsPlanner.DataCase, async: false
 
   alias GtfsPlanner.Gtfs.Import
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlannerWeb.Gtfs.ImportLive
 
   import GtfsPlanner.GtfsFixtures
@@ -64,7 +65,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       ]
 
       assert {:ok, result} =
-               Import.import_files(organization.id, gtfs_version.id, files)
+               StagedImport.import_files(organization.id, gtfs_version.id, files)
 
       counts = result.counts
       assert counts.routes == 0
@@ -103,7 +104,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
 
       files = [%{filename: "stops.txt", content: stops_content}]
 
-      assert {:ok, _result} = Import.import_files(organization.id, gtfs_version.id, files)
+      assert {:ok, _result} = StagedImport.import_files(organization.id, gtfs_version.id, files)
 
       stops = Gtfs.list_stops(organization.id, gtfs_version.id)
       zone_by_stop_id = Map.new(stops, &{&1.stop_id, &1.zone_id})
@@ -124,7 +125,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
 
       files = [%{filename: "stops.txt", content: stops_content}]
 
-      assert {:ok, _result} = Import.import_files(organization.id, gtfs_version.id, files)
+      assert {:ok, _result} = StagedImport.import_files(organization.id, gtfs_version.id, files)
 
       stored_by_stop_id =
         organization.id
@@ -175,7 +176,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       ]
 
       assert {:ok, result} =
-               Import.import_files(organization.id, gtfs_version.id, files)
+               StagedImport.import_files(organization.id, gtfs_version.id, files)
 
       # Verify pathways were created
       pathways = Gtfs.list_pathways(organization.id, gtfs_version.id)
@@ -225,7 +226,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       # outer transaction, so the failure rolls everything back: all standard
       # counts are zero and the outcome is a certain :failed (AC-2).
       assert {:error, %Import.Failure{} = failure} =
-               Import.import_files(organization.id, gtfs_version.id, files)
+               StagedImport.import_files(organization.id, gtfs_version.id, files)
 
       assert failure.outcome == :failed
       assert failure.phase == :phase_1
@@ -270,7 +271,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       ]
 
       assert {:ok, result} =
-               Import.import_files(organization.id, gtfs_version.id, files)
+               StagedImport.import_files(organization.id, gtfs_version.id, files)
 
       assert result.counts.pathways == 1
 
@@ -309,7 +310,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       ]
 
       assert {:ok, result} =
-               Import.import_files(organization.id, gtfs_version.id, files)
+               StagedImport.import_files(organization.id, gtfs_version.id, files)
 
       assert result.counts.pathways == 1
 
@@ -335,7 +336,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       ]
 
       assert {:ok, result} =
-               Import.import_files(organization.id, gtfs_version.id, files)
+               StagedImport.import_files(organization.id, gtfs_version.id, files)
 
       assert result.counts.agencies == 1
 
@@ -366,7 +367,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       ]
 
       assert {:ok, result} =
-               Import.import_files(organization.id, gtfs_version.id, files)
+               StagedImport.import_files(organization.id, gtfs_version.id, files)
 
       assert result.counts.shapes == 1
 
@@ -387,7 +388,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       gtfs_version: gtfs_version
     } do
       assert {:ok, result} =
-               Import.import_files(organization.id, gtfs_version.id, [])
+               StagedImport.import_files(organization.id, gtfs_version.id, [])
 
       counts = result.counts
       assert MapSet.new(Map.keys(counts)) == MapSet.new(Import.supported_count_keys())
@@ -422,7 +423,8 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         %{filename: "pathways.txt", content: pathways_content}
       ]
 
-      assert {:error, _reason} = Import.import_files(organization.id, gtfs_version.id, files)
+      assert {:error, _reason} =
+               StagedImport.import_files(organization.id, gtfs_version.id, files)
 
       # Verify no pathways, stops, or levels were created (transaction rolled back)
       assert Gtfs.list_pathways(organization.id, gtfs_version.id) == []
@@ -458,7 +460,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       ]
 
       assert {:error, %Import.Failure{} = failure} =
-               Import.import_files(organization.id, gtfs_version.id, files)
+               StagedImport.import_files(organization.id, gtfs_version.id, files)
 
       assert failure.outcome == :failed
       assert failure.phase == :phase_1
@@ -490,7 +492,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       # Phase 1 (levels) commits durably before the Phase 2 shapes header fails,
       # so the outcome is :partial and the sanitized file names the failing file.
       assert {:error, %Import.Failure{} = failure} =
-               Import.import_files(organization.id, gtfs_version.id, files)
+               StagedImport.import_files(organization.id, gtfs_version.id, files)
 
       assert failure.outcome == :partial
       assert failure.phase == :phase_2
@@ -611,7 +613,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       files = [%{filename: "gtfs.zip", content: zip_binary}]
 
       assert {:ok, result} =
-               Import.import_files(organization.id, gtfs_version.id, files)
+               StagedImport.import_files(organization.id, gtfs_version.id, files)
 
       assert result.counts.levels == 1
       assert result.counts.stops == 1
@@ -640,7 +642,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
 
       # Should not error - extensions with no references are logged and skipped
       assert {:ok, result} =
-               Import.import_files(organization.id, gtfs_version.id, files)
+               StagedImport.import_files(organization.id, gtfs_version.id, files)
 
       assert result.counts.levels == 1
       # Extensions files should not appear in unrecognized
@@ -700,7 +702,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       files = [%{filename: "gtfs.zip", content: zip_binary}]
 
       assert {:ok, result} =
-               Import.import_files(organization.id, gtfs_version.id, files)
+               StagedImport.import_files(organization.id, gtfs_version.id, files)
 
       assert result.counts.levels == 1
       assert result.counts.stops == 1
@@ -778,7 +780,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       files = [%{filename: "gtfs.zip", content: zip_binary}]
 
       assert {:ok, result} =
-               Import.import_files(organization.id, gtfs_version.id, files)
+               StagedImport.import_files(organization.id, gtfs_version.id, files)
 
       assert result.counts.levels == 1
       assert result.counts.stops == 1
@@ -818,7 +820,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       files = [%{filename: "bad.zip", content: "not a real zip"}]
 
       assert {:ok, result} =
-               Import.import_files(organization.id, gtfs_version.id, files)
+               StagedImport.import_files(organization.id, gtfs_version.id, files)
 
       assert result.unrecognized_files == []
       assert [%{filename: "bad.zip", reason: :unzip_failed}] = result.archive_warnings
@@ -1078,7 +1080,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         })
 
       assert {:ok, result} =
-               Import.import_files(organization.id, gtfs_version.id, [
+               StagedImport.import_files(organization.id, gtfs_version.id, [
                  %{filename: "gtfs.zip", content: zip_binary}
                ])
 
@@ -1096,7 +1098,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       zip_binary = full_feed_with_extensions(manifest, %{}, omit_image: true)
 
       assert {:error, %Import.Failure{} = failure} =
-               Import.import_files(organization.id, gtfs_version.id, [
+               StagedImport.import_files(organization.id, gtfs_version.id, [
                  %{filename: "gtfs.zip", content: zip_binary}
                ])
 
@@ -1172,7 +1174,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
         )
 
       assert {:error, %Import.Failure{} = failure} =
-               Import.import_files(organization.id, gtfs_version.id, [
+               StagedImport.import_files(organization.id, gtfs_version.id, [
                  %{filename: "gtfs.zip", content: zip_binary}
                ])
 
@@ -1200,7 +1202,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       zip_binary = full_feed_with_extensions(manifest, %{})
 
       assert {:error, %Import.Failure{} = failure} =
-               Import.import_files(organization.id, gtfs_version.id, [
+               StagedImport.import_files(organization.id, gtfs_version.id, [
                  %{filename: "gtfs.zip", content: zip_binary}
                ])
 
@@ -1252,7 +1254,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       ]
 
       assert {:error, %Import.Failure{} = failure} =
-               Import.import_files(organization.id, gtfs_version.id, files)
+               StagedImport.import_files(organization.id, gtfs_version.id, files)
 
       assert failure.outcome == :partial
       assert failure.phase == :phase_2
@@ -1289,7 +1291,7 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       files = [%{filename: "levels.txt", content: levels_content}]
 
       assert {:error, %Import.Failure{} = failure} =
-               Import.import_files(organization.id, gtfs_version.id, files)
+               StagedImport.import_files(organization.id, gtfs_version.id, files)
 
       assert failure.outcome == :failed
       assert failure.phase == :phase_1

@@ -18,6 +18,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveBusyTest do
   alias GtfsPlanner.Gtfs.Import.{ChangeRun, ChangeRunner, ChangeRuns}
   alias GtfsPlanner.Gtfs.Import.Run
   alias GtfsPlanner.Gtfs.Import.Runner
+  alias GtfsPlanner.Gtfs.Import.SourceStorage
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Support.{BlockingImportWorker, BlockingJobWorker, RunnerSlots}
@@ -87,6 +88,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveBusyTest do
       assert %Run{state: "failed", reason_code: "busy"} = run
       assert Repo.get(GtfsVersion, run.gtfs_version_id) == nil
       refute has_element?(view, "#import-run-#{run.id}")
+
+      {:ok, run_dir} = SourceStorage.run_dir(organization.id, run.id)
+      refute File.exists?(run_dir)
     end
 
     test "starts with the same file and name once the first import has finished", %{

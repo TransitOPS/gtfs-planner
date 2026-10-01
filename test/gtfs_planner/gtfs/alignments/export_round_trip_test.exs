@@ -27,7 +27,6 @@ defmodule GtfsPlanner.Gtfs.Alignments.ExportRoundTripTest do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Export
-  alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
@@ -39,6 +38,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.ExportRoundTripTest do
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlanner.Versions.GtfsVersion
 
   @loop_points %{
@@ -118,7 +118,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.ExportRoundTripTest do
     version_b = new_version(org)
 
     assert {:ok, _result} =
-             unboxed(fn -> Import.import_files(org.id, version_b.id, import_files) end)
+             unboxed(fn -> StagedImport.import_files(org.id, version_b.id, import_files) end)
 
     comparison =
       unboxed(fn ->

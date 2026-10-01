@@ -42,6 +42,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchFencingTest do
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Organizations.Organization
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlanner.Versions.GtfsVersion
 
   @expired ~U[2000-01-01 00:00:00.000000Z]
@@ -81,7 +82,8 @@ defmodule GtfsPlanner.Gtfs.Import.BatchFencingTest do
         feed_files(:with_trips) ++
           [%{filename: "_pathways_extensions.json", content: coordinate_manifest()}]
 
-      assert {:ok, published, result} = Publication.run(run, token, files, @topic)
+      assert {:ok, published, result} =
+               Publication.run(run, token, StagedImport.stage(files), @topic)
 
       assert published.id == run.gtfs_version_id
       assert published.publication_status == "published"
@@ -106,7 +108,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchFencingTest do
       assert run_id == run.id
 
       assert {:error, %GtfsVersion{id: version_id}, :lease_lost} =
-               Publication.run(run, token, feed_files(:with_trips), @topic)
+               Publication.run(run, token, StagedImport.stage(feed_files(:with_trips)), @topic)
 
       assert version_id == run.gtfs_version_id
 
@@ -122,6 +124,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchFencingTest do
       scope = committed_run()
       on_exit(fn -> delete_committed_scope(scope) end)
       handler_id = "batch-fencing-#{Ecto.UUID.generate()}"
+      files = StagedImport.stage(two_batch_files())
 
       worker =
         Task.async(fn ->
@@ -129,7 +132,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchFencingTest do
             :go -> :ok
           end
 
-          unboxed(fn -> Publication.run(scope.run, scope.token, two_batch_files(), @topic) end)
+          unboxed(fn -> Publication.run(scope.run, scope.token, files, @topic) end)
         end)
 
       :ok =
@@ -222,7 +225,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchFencingTest do
       hand_over_after_stop_times_insert(run)
 
       assert {:error, %GtfsVersion{}, :lease_lost} =
-               Publication.run(run, token, feed_files(:with_trips), @topic)
+               Publication.run(run, token, StagedImport.stage(feed_files(:with_trips)), @topic)
 
       assert row_counts(organization.id, run.gtfs_version_id).stop_times == 2
 
@@ -242,7 +245,8 @@ defmodule GtfsPlanner.Gtfs.Import.BatchFencingTest do
       files =
         Enum.reject(feed_files(:with_trips), &(&1.filename == "routes.txt"))
 
-      assert {:error, %GtfsVersion{}, :lease_lost} = Publication.run(run, token, files, @topic)
+      assert {:error, %GtfsVersion{}, :lease_lost} =
+               Publication.run(run, token, StagedImport.stage(files), @topic)
 
       assert %Trip{pattern_derivation_state: "pending"} =
                Repo.get_by!(Trip, organization_id: organization.id, trip_id: "T1")
@@ -259,7 +263,8 @@ defmodule GtfsPlanner.Gtfs.Import.BatchFencingTest do
         feed_files(:without_trips) ++
           [%{filename: "_pathways_extensions.json", content: coordinate_manifest()}]
 
-      assert {:error, %GtfsVersion{}, :lease_lost} = Publication.run(run, token, files, @topic)
+      assert {:error, %GtfsVersion{}, :lease_lost} =
+               Publication.run(run, token, StagedImport.stage(files), @topic)
 
       assert row_counts(organization.id, run.gtfs_version_id).stop_times == 2
 

@@ -18,6 +18,7 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
@@ -461,7 +462,9 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
         %{filename: "levels.txt", content: "level_id,level_index,level_name\nL1,0.0,Ground"}
       ]
 
-      {:ok, runner_pid} = Runner.start_import(org.id, new_run.id, new_run.lease_token, files)
+      {:ok, runner_pid} =
+        Runner.start_import(org.id, new_run.id, new_run.lease_token, StagedImport.stage(files))
+
       Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), runner_pid)
 
       # Wait for the runner task to finish (monitor it; no sleeps).

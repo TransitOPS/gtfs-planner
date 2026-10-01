@@ -29,7 +29,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     ChangeRun,
     ChangeRunner,
     ChangeRuns,
-    ParseError
+    ParseError,
+    SourceStorage
   }
 
   alias GtfsPlanner.Gtfs.Import.Run
@@ -56,6 +57,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   @permission_error "You no longer have permission to import GTFS data. " <>
                       "Ask an organization administrator to restore your access."
+
+  # Upload limits for a feed import. A staged upload set may total every file at its
+  # limit, so the per-run storage budget is their product; the artifact root's own
+  # capacity limit still applies.
+  @max_upload_entries 50
+  @max_upload_file_bytes 200_000_000
+  @max_import_run_bytes @max_upload_entries * @max_upload_file_bytes
 
   @import_busy_message "Another import is running. Try again when it finishes."
   @change_busy_message "Another change review is running. Try again when it finishes."
@@ -127,8 +135,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      |> assign(:user_roles, user_roles)
      |> allow_upload(:gtfs_files,
        accept: ~w(.txt .csv .zip),
-       max_entries: 50,
-       max_file_size: 200_000_000
+       max_entries: @max_upload_entries,
+       max_file_size: @max_upload_file_bytes
      )
      |> allow_upload(:diff_files,
        accept: ~w(.txt .csv .zip),
@@ -2608,10 +2616,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp run_count(_run, _key), do: 0
 
   # Create exactly one staging target + pending run, subscribe to its stable
-  # topic, consume the uploads into memory, and hand the run + lease token to a
-  # supervised Runner that claims and executes the import. The route/current
-  # version is never a write destination, and no task reference is owned by the
-  # socket: the Runner is durable and survives disconnect (AC-6).
+  # topic, stage the uploads into the run's private directory on disk, and hand the
+  # run, lease token and file descriptors to a supervised Runner that claims and
+  # executes the import. The route/current version is never a write destination,
+  # and no task reference is owned by the socket: the Runner is durable and
+  # survives disconnect (AC-6). The run exists before any file is staged, so the
+  # orphan sweep never sees a staged directory without its run.
   defp create_and_start_import(socket, _form_data, version_name) do
     organization_id = socket.assigns.current_organization.id
     actor = %{id: socket.assigns.current_user.id, email: socket.assigns.current_user.email}
@@ -2648,44 +2658,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         # broadcast is missed.
         Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ImportRuns.topic(run.id))
 
-        case read_import_files(socket) do
-          {:ok, uploaded_files} ->
-            # Hand the pending run + lease token to the supervised runner. The
-            # runner re-claims in init and executes publication through
-            # ImportRuns, broadcasting {:import_run_changed, run.id} on closure.
-            case Runner.start_import(organization_id, run.id, run.lease_token, uploaded_files) do
-              {:error, :busy} ->
-                # The runner supervisor is full. The uploads are still in the
-                # form, so the same Import click works once the other import
-                # finishes.
-                _ = ImportRuns.fail_unstarted(organization_id, run.id, run.lease_token)
-                Phoenix.PubSub.unsubscribe(GtfsPlanner.PubSub, ImportRuns.topic(run.id))
-
-                {:noreply,
-                 socket
-                 |> assign(
-                   :form,
-                   to_form(%{"version_name" => version_name}, as: :gtfs_import_form)
-                 )
-                 |> put_flash(:error, @import_busy_message)}
-
-              _started ->
-                drop_import_files(socket)
-
-                {:noreply,
-                 socket
-                 |> assign(:import_target, target)
-                 |> assign(:importing, true)
-                 |> assign(:import_result, nil)
-                 |> assign(:import_agency_health, nil)
-                 |> assign(:import_left_out, [])
-                 |> assign(:published_version, nil)
-                 |> assign(:import_progress, nil)}
-            end
+        case stage_import_files(socket, organization_id, run.id) do
+          {:ok, staged_files} ->
+            start_staged_import(socket, run, target, version_name, staged_files)
 
           {:error, reason} ->
-            # Post-create consumption/read error: fail the exact pending target,
-            # start no runner, and render target-specific feedback.
+            # Post-create staging error: fail the exact pending target, start no
+            # runner, and render target-specific feedback. `stage/4` has already
+            # removed anything it wrote.
             drop_import_files(socket)
             failed = fail_target_best_effort(run, target)
 
@@ -2699,34 +2679,57 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     end
   end
 
-  # Read upload entries through the configured production file adapter (`File`
-  # by default) and leave them in the upload, so a start that is refused keeps
-  # the chosen files in the form. `drop_import_files/1` removes them once the
-  # import no longer needs them. Reads use `read/1`, never `read!/1`, so a read
-  # failure is a value we can act on rather than a raise.
-  defp read_import_files(socket) do
-    reader = import_file_reader()
+  # Hands the pending run + lease token and the staged file descriptors to the
+  # supervised runner. The runner re-claims in init and executes publication
+  # through ImportRuns, broadcasting {:import_run_changed, run.id} on closure.
+  defp start_staged_import(socket, run, target, version_name, staged_files) do
+    organization_id = socket.assigns.current_organization.id
 
-    results =
+    case Runner.start_import(organization_id, run.id, run.lease_token, staged_files) do
+      {:error, :busy} ->
+        # The runner supervisor is full. The uploads are still in the form, so the
+        # same Import click works once the other import finishes. The staged copies
+        # are of no further use.
+        _ = ImportRuns.fail_unstarted(organization_id, run.id, run.lease_token)
+        _ = SourceStorage.remove(organization_id, run.id)
+        Phoenix.PubSub.unsubscribe(GtfsPlanner.PubSub, ImportRuns.topic(run.id))
+
+        {:noreply,
+         socket
+         |> assign(:form, to_form(%{"version_name" => version_name}, as: :gtfs_import_form))
+         |> put_flash(:error, @import_busy_message)}
+
+      _started ->
+        drop_import_files(socket)
+
+        {:noreply,
+         socket
+         |> assign(:import_target, target)
+         |> assign(:importing, true)
+         |> assign(:import_result, nil)
+         |> assign(:import_agency_health, nil)
+         |> assign(:import_left_out, [])
+         |> assign(:published_version, nil)
+         |> assign(:import_progress, nil)}
+    end
+  end
+
+  # Copies the uploads from their temporary paths into the run's private directory
+  # without reading them into memory, and leaves the entries in the upload so a
+  # start that is refused keeps the chosen files in the form. `drop_import_files/1`
+  # removes them once the import no longer needs them. Staging takes the whole set
+  # in one call so the size budgets and the all-or-nothing cleanup cover it.
+  defp stage_import_files(socket, organization_id, run_id) do
+    uploads =
       consume_uploaded_entries(socket, :gtfs_files, fn %{path: path}, entry ->
-        case reader.read(path) do
-          {:ok, content} -> {:postpone, {:ok, %{filename: entry.client_name, content: content}}}
-          {:error, reason} -> {:postpone, {:error, reason}}
-        end
+        {:postpone, %{path: path, filename: entry.client_name}}
       end)
 
-    case Enum.find(results, &match?({:error, _}, &1)) do
-      {:error, reason} -> {:error, reason}
-      nil -> {:ok, for({:ok, file} <- results, do: file)}
-    end
+    SourceStorage.stage(organization_id, run_id, uploads, max_run_bytes: @max_import_run_bytes)
   end
 
   defp drop_import_files(socket) do
     consume_uploaded_entries(socket, :gtfs_files, fn _meta, _entry -> {:ok, nil} end)
-  end
-
-  defp import_file_reader do
-    Application.get_env(:gtfs_planner, :import_file_reader, File)
   end
 
   # Best-effort conditional closure of a still-unpublished target. A published
@@ -2970,6 +2973,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     unterminated_quote: "a quoted value isn’t closed",
     malformed_quote: "a quoted value is malformed",
     forbidden_control_character: "it contains an invalid line break or tab",
+    record_too_long: "a row is longer than 1,048,576 bytes",
     archive_unreadable: "the zip couldn’t be opened",
     archive_too_large: "the zip is too large once unpacked",
     nested_archive: "the zip contains another zip",

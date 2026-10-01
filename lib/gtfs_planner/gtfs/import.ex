@@ -2,7 +2,7 @@ defmodule GtfsPlanner.Gtfs.Import do
   @moduledoc """
   Context module for importing GTFS data files.
 
-  Handles parsing and importing GTFS data from uploaded CSV files including:
+  Handles parsing and importing GTFS data from staged CSV files including:
   - `routes.txt` - Transit routes
   - `calendar.txt` - Service periods
   - `calendar_dates.txt` - Service exceptions
@@ -19,17 +19,19 @@ defmodule GtfsPlanner.Gtfs.Import do
   foreign key constraints.
 
   Uses batch processing to avoid Erlang atom table exhaustion and memory
-  issues with large files.
+  issues with large files. Files are never held in memory as a whole: callers pass
+  descriptors of files on disk (see `GtfsPlanner.Gtfs.Import.SourceStorage`) and
+  each file is streamed from its path.
 
   ## Usage
 
       files = [
-        %{filename: "routes.txt", content: binary_content},
-        %{filename: "stops.txt", content: binary_content},
-        %{filename: "pathways.txt", content: binary_content}
+        %{filename: "routes.txt", path: "/path/to/routes.source"},
+        %{filename: "stops.txt", path: "/path/to/stops.source"},
+        %{filename: "pathways.txt", path: "/path/to/pathways.source"}
       ]
 
-      case Import.import_files(org_id, version_id, files) do
+      case Import.import_files(org_id, version_id, files, nil, expand_dir: expand_dir) do
         {:ok, %Import.Result{} = result} ->
           # Import successful, topic can be used to subscribe to progress
         {:error, %Import.Failure{} = failure} ->
@@ -153,12 +155,18 @@ defmodule GtfsPlanner.Gtfs.Import do
 
     - `organization_id` - UUID of the organization
     - `gtfs_version_id` - UUID of the GTFS version to associate records with
-    - `files` - List of `%{filename: string, content: binary}` maps
+    - `files` - List of `%{filename: string, path: Path.t()}` descriptors. `filename` is the
+      uploaded name and decides the file's category; `path` is the file to read, which must
+      stay in place until the import returns because each file is streamed in two passes.
     - `topic` - (optional) PubSub topic for progress updates. If not provided, one will be generated.
-    - `opts` - (optional) `:fence`, `{run_id, lease_token}` of the claimed run that owns this
-      import. Every write transaction (phase 1, each phase 2 batch, each derivation write and
-      the extension transaction) first verifies, under a run-row share lock, that the run is
-      `running` under that token with an unexpired lease (INV-4). Without it nothing is verified.
+    - `opts`
+      - `:expand_dir` (required) - a directory dedicated to this import, where `.zip`
+        descriptors are expanded one subdirectory per archive. Its extracted files are
+        read in place and are not removed here; the caller owns the directory.
+      - `:fence` - `{run_id, lease_token}` of the claimed run that owns this
+        import. Every write transaction (phase 1, each phase 2 batch, each derivation write and
+        the extension transaction) first verifies, under a run-row share lock, that the run is
+        `running` under that token with an unexpired lease (INV-4). Without it nothing is verified.
 
   ## Returns
 
@@ -176,8 +184,8 @@ defmodule GtfsPlanner.Gtfs.Import do
 
   ## Examples
 
-      iex> files = [%{filename: "routes.txt", content: "route_id,route_type\\nR1,3"}]
-      iex> import_files(org_id, version_id, files)
+      iex> files = [%{filename: "routes.txt", path: "/tmp/run/source/routes.source"}]
+      iex> import_files(org_id, version_id, files, nil, expand_dir: "/tmp/run/expanded")
       {:ok, %Import.Result{counts: %{routes: 1, stops: 0, ...}, unrecognized_files: [], topic: "import:123456", archive_warnings: [], extensions: :not_present}}
   """
   def import_files(organization_id, gtfs_version_id, files, topic \\ nil, opts \\ []) do
@@ -187,8 +195,9 @@ defmodule GtfsPlanner.Gtfs.Import do
     fence = fence_callback(organization_id, Keyword.get(opts, :fence))
     broadcast_phase(topic, :phase_1)
 
-    # Expand any uploaded .zip archives into individual file entries
-    {files, archive_warnings} = expand_archives(files)
+    # Expand any staged .zip archives into the import's private directory; members
+    # stay on disk and are streamed from there.
+    {files, archive_warnings} = expand_staged_archives(files, Keyword.fetch!(opts, :expand_dir))
 
     # Categorize files by filename (case-insensitive)
     {categorized, unrecognized_files, extensions} = categorize_files(files)
@@ -407,7 +416,7 @@ defmodule GtfsPlanner.Gtfs.Import do
   end
 
   defp process_phase_2_file(file, insert) do
-    case CsvParser.stream(file.filename, file.content) do
+    case CsvParser.stream_file(file.filename, file.path) do
       {:ok, parsed} ->
         case insert.(file, parsed) do
           {:ok, inserted} -> {:ok, inserted}
@@ -490,9 +499,10 @@ defmodule GtfsPlanner.Gtfs.Import do
     process_category_files(files, insert)
   end
 
-  # Each file is parsed once; the parsed stream is immutable and re-enumerable, so
-  # the validation pass and the insertion pass observe the identical events. A
-  # file-level parse failure (header, quoting, encoding) passes through unchanged.
+  # Each file is opened once to validate it; the event stream re-reads the staged
+  # file on every enumeration, so the validation pass and the insertion pass observe
+  # the identical events. A file-level parse failure (header, quoting, encoding)
+  # passes through unchanged.
   defp parse_evolution_files(files) do
     files
     |> Enum.reduce_while({:ok, []}, &accumulate_parsed_file/2)
@@ -503,7 +513,7 @@ defmodule GtfsPlanner.Gtfs.Import do
   end
 
   defp accumulate_parsed_file(file, {:ok, acc}) do
-    case CsvParser.stream(file.filename, file.content) do
+    case CsvParser.stream_file(file.filename, file.path) do
       {:ok, parsed} -> {:cont, {:ok, [{file, parsed} | acc]}}
       {:error, reason} -> {:halt, {:error, reason}}
     end
@@ -643,7 +653,7 @@ defmodule GtfsPlanner.Gtfs.Import do
   end
 
   defp process_category_file(file, count, insert) do
-    with {:ok, parsed} <- CsvParser.stream(file.filename, file.content),
+    with {:ok, parsed} <- CsvParser.stream_file(file.filename, file.path),
          {:ok, inserted} <- insert.(file, parsed) do
       {:cont, count + inserted}
     else
@@ -667,7 +677,8 @@ defmodule GtfsPlanner.Gtfs.Import do
 
   # Categorizes files by filename into file type buckets.
   # Returns {categorized, unrecognized, extensions} where extensions is a map
-  # with optional :json and :images keys for _pathways_extensions data.
+  # with optional :json (manifest path) and :images (`%{zip_path => path}`) keys
+  # for _pathways_extensions data.
   defp categorize_files(files) do
     initial_categorized = Map.new(@file_count_keys, fn key -> {key, []} end)
     initial_acc = {initial_categorized, [], %{}}
@@ -687,12 +698,12 @@ defmodule GtfsPlanner.Gtfs.Import do
             {Map.update!(acc, key, &[normalized_file | &1]), unrecognized_acc, ext_acc}
 
           basename == "_pathways_extensions.json" ->
-            {acc, unrecognized_acc, Map.put(ext_acc, :json, file.content)}
+            {acc, unrecognized_acc, Map.put(ext_acc, :json, file.path)}
 
           is_binary(extract_extensions_image_zip_path(normalized_filename)) ->
             image_zip_path = extract_extensions_image_zip_path(normalized_filename)
             images = Map.get(ext_acc, :images, %{})
-            images = Map.put(images, image_zip_path, file.content)
+            images = Map.put(images, image_zip_path, file.path)
             {acc, unrecognized_acc, Map.put(ext_acc, :images, images)}
 
           true ->
@@ -775,9 +786,10 @@ defmodule GtfsPlanner.Gtfs.Import do
   Expands in-memory `.zip` uploads into `%{filename, content}` entries.
 
   An adapter over `expand_staged_archives/2` for callers that still hold file
-  contents (change review, and `import_files/5` until it takes staged files). Each
-  archive is written to a private temporary directory, expanded there, read back and
-  removed. Non-zip entries pass through unchanged.
+  contents (change review). Each archive is written to a private temporary
+  directory, expanded there, read back and removed. Non-zip entries pass through
+  unchanged. Full imports do not use it: they expand staged files in the run's
+  directory through `expand_staged_archives/2`.
 
   Returns `{expanded_files, archive_warnings}` where `archive_warnings` is a list
   of `%{filename: String.t(), reason: atom(), detail: String.t()}` maps describing
@@ -1168,18 +1180,22 @@ defmodule GtfsPlanner.Gtfs.Import do
   defp import_extensions_phase(organization_id, gtfs_version_id, extensions, counts, fence) do
     image_files = Map.get(extensions, :images, %{})
 
-    case Extensions.Import.import_extensions(
-           organization_id,
-           gtfs_version_id,
-           extensions.json,
-           image_files,
-           fence: fence
-         ) do
-      {:ok, ext_counts} ->
-        {:ok, :complete, Map.merge(counts, ext_counts)}
-
-      # Decode/reference/DB-transaction failure: no extension writes are durable,
-      # but the standard counts already committed remain.
+    # The manifest is read here, in the worker, and the images are read one at a time
+    # when each is restored, so no staged file travels in a message or process state.
+    with {:ok, manifest_json} <- File.read(extensions.json),
+         {:ok, ext_counts} <-
+           Extensions.Import.import_extensions(
+             organization_id,
+             gtfs_version_id,
+             manifest_json,
+             image_files,
+             fence: fence
+           ) do
+      {:ok, :complete, Map.merge(counts, ext_counts)}
+    else
+      # Unreadable manifest, or decode/reference/DB-transaction failure: no
+      # extension writes are durable, but the standard counts already committed
+      # remain.
       {:error, reason} ->
         failure(reason, :extensions, counts)
 

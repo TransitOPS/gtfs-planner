@@ -36,13 +36,13 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ExportTest do
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Export.Snapshot
-  alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Import.CsvParser
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlanner.Versions.GtfsVersion
 
   @closure_header "pathway_id,service_id,start_time,end_time,is_closed,direction\n"
@@ -174,7 +174,9 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ExportTest do
         end)
 
       assert {:ok, result} =
-               unboxed(fn -> Import.import_files(organization.id, version_b.id, import_files) end)
+               unboxed(fn ->
+                 StagedImport.import_files(organization.id, version_b.id, import_files)
+               end)
 
       assert result.counts.pathway_evolutions == 2
 

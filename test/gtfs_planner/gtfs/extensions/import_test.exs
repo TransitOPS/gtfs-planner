@@ -358,9 +358,10 @@ defmodule GtfsPlanner.Gtfs.Extensions.ImportTest do
 
       json = Manifest.encode(manifest)
 
-      images = %{
-        "_pathways_extensions/diagrams/station_main/floor.png" => "fake png"
-      }
+      images =
+        stage_images(%{
+          "_pathways_extensions/diagrams/station_main/floor.png" => "fake png"
+        })
 
       assert {:ok, counts} = Import.import_extensions(org_id, version_id, json, images)
       assert counts.extensions_images == 1
@@ -411,16 +412,18 @@ defmodule GtfsPlanner.Gtfs.Extensions.ImportTest do
         )
       end
 
-      images = %{
-        "_pathways_extensions/diagrams/station_main/floor.png" => "version-one-bytes"
-      }
+      images =
+        stage_images(%{
+          "_pathways_extensions/diagrams/station_main/floor.png" => "version-one-bytes"
+        })
 
       assert {:ok, _} =
                Import.import_extensions(org_id, version_id, build_manifest.(version_id), images)
 
-      images_b = %{
-        "_pathways_extensions/diagrams/station_main/floor.png" => "version-two-bytes"
-      }
+      images_b =
+        stage_images(%{
+          "_pathways_extensions/diagrams/station_main/floor.png" => "version-two-bytes"
+        })
 
       assert {:ok, _} =
                Import.import_extensions(
@@ -525,9 +528,10 @@ defmodule GtfsPlanner.Gtfs.Extensions.ImportTest do
           ]
         )
 
-      images = %{
-        "_pathways_extensions/diagrams/station_main/../escape.png" => "fake png"
-      }
+      images =
+        stage_images(%{
+          "_pathways_extensions/diagrams/station_main/../escape.png" => "fake png"
+        })
 
       assert {:error, {:image_restore_failed, {:write_failed, _zip_path, :unsafe_path}},
               committed} =
@@ -541,5 +545,23 @@ defmodule GtfsPlanner.Gtfs.Extensions.ImportTest do
       uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
       refute File.exists?(Path.join([uploads_path, "diagrams", org_id, "escape.png"]))
     end
+  end
+
+  # An import reads each image from the staged file extracted from its archive, so the
+  # fixtures write each binary to a private file and pass the paths.
+  defp stage_images(images) do
+    directory =
+      Path.join(System.tmp_dir!(), "ext_import_images_#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(directory)
+    on_exit(fn -> File.rm_rf!(directory) end)
+
+    images
+    |> Enum.with_index()
+    |> Map.new(fn {{zip_path, binary}, index} ->
+      path = Path.join(directory, "#{index}.png")
+      File.write!(path, binary)
+      {zip_path, path}
+    end)
   end
 end

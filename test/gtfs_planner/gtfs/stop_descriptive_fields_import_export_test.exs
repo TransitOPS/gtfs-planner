@@ -12,8 +12,8 @@ defmodule GtfsPlanner.Gtfs.StopDescriptiveFieldsImportExportTest do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Export
-  alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Import.CsvParser
+  alias GtfsPlanner.Support.StagedImport
 
   @stops_header "stop_id,stop_code,stop_name,tts_stop_name,stop_desc,stop_lat,stop_lon," <>
                   "zone_id,stop_url,location_type,parent_station,stop_timezone," <>
@@ -59,7 +59,7 @@ defmodule GtfsPlanner.Gtfs.StopDescriptiveFieldsImportExportTest do
 
   test "import, full export and re-import keep every stop_code, tts_stop_name, stop_url and stop_timezone",
        %{organization: organization, version: version} do
-    assert {:ok, result} = Import.import_files(organization.id, version.id, input_files())
+    assert {:ok, result} = StagedImport.import_files(organization.id, version.id, input_files())
     assert result.counts[:stops] == 5
 
     assert stored(organization.id, version.id) == @expected_stored
@@ -75,7 +75,7 @@ defmodule GtfsPlanner.Gtfs.StopDescriptiveFieldsImportExportTest do
     second_version = GtfsPlanner.VersionsFixtures.gtfs_version_fixture(organization.id)
 
     assert {:ok, reimport_result} =
-             Import.import_files(organization.id, second_version.id, [
+             StagedImport.import_files(organization.id, second_version.id, [
                %{filename: "stops.txt", content: stops_text}
              ])
 
@@ -87,7 +87,7 @@ defmodule GtfsPlanner.Gtfs.StopDescriptiveFieldsImportExportTest do
     organization: organization,
     version: version
   } do
-    assert {:ok, _result} = Import.import_files(organization.id, version.id, input_files())
+    assert {:ok, _result} = StagedImport.import_files(organization.id, version.id, input_files())
 
     assert {:ok, zip} = Export.export_to_zip(organization.id, version.id, :pathways)
     stops_text = zip |> unzip() |> entry!("stops.txt")

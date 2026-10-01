@@ -3,6 +3,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.{Export, Import}
+  alias GtfsPlanner.Support.StagedImport
 
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -96,7 +97,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
         end)
 
       assert {:ok, import_result} =
-               Import.import_files(org_b.id, version_b.id, import_files)
+               StagedImport.import_files(org_b.id, version_b.id, import_files)
 
       counts = import_result.counts
 
@@ -160,7 +161,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
         %{filename: "stops.txt", content: stops_content}
       ]
 
-      assert {:ok, import_result} = Import.import_files(org.id, version.id, files)
+      assert {:ok, import_result} = StagedImport.import_files(org.id, version.id, files)
 
       counts = import_result.counts
       assert counts.levels == 1

@@ -15,7 +15,6 @@ defmodule GtfsPlanner.Gtfs.Stations.RenameTest do
     Export,
     FareLegJoinRule,
     FlexService,
-    Import,
     Pathway,
     ReliefPoint,
     Shape,
@@ -29,6 +28,7 @@ defmodule GtfsPlanner.Gtfs.Stations.RenameTest do
   }
 
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlanner.Validations.WalkabilityTest
 
   setup do
@@ -266,7 +266,7 @@ defmodule GtfsPlanner.Gtfs.Stations.RenameTest do
     imported_version = gtfs_version_fixture(scope.organization.id)
 
     assert {:ok, _} =
-             Import.import_files(scope.organization.id, imported_version.id, import_files)
+             StagedImport.import_files(scope.organization.id, imported_version.id, import_files)
 
     assert pathway_pairs(scope.organization.id, scope.version.id) ==
              pathway_pairs(scope.organization.id, imported_version.id)

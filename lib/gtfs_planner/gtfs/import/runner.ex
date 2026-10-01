@@ -12,7 +12,8 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
     * renews the database lease on a configurable timer;
     * terminates the linked worker and broadcasts the change when the lease is lost;
     * persists an unexpected closure as `interrupted`/`cleanup_failed` and
-      broadcasts `{:import_run_changed, run_id}` only after the durable write.
+      broadcasts `{:import_run_changed, run_id}` only after the durable write;
+    * removes an import's staged source directory when it stops, whatever the outcome.
 
   The child is `restart: :temporary`: replaying non-idempotent source writes is
   unsafe, so a dead runner is never auto-restarted (AC-7). PostgreSQL remains
@@ -22,7 +23,10 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
 
     * import worker — default `GtfsPlanner.Gtfs.Import.Publication`.
       Invoked as `worker.run(run, lease_token, files, topic)` and returns
-      `{:ok, version, result}` or `{:error, version, reason}`. It closes the
+      `{:ok, version, result}` or `{:error, version, reason}`. `files` are the
+      `%{filename, path}` descriptors of the run's staged source files
+      (`GtfsPlanner.Gtfs.Import.SourceStorage`), never file contents, so the child
+      spec, the task closure and the runner state stay small. The worker closes the
       run exclusively through `ImportRuns`.
     * cleanup worker — default `GtfsPlanner.Gtfs.Import.Recovery` (created in
       step 7). Invoked as `worker.run(organization_id, run_id, lease_token)`
@@ -33,7 +37,7 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
   use GenServer, restart: :temporary
 
   alias GtfsPlanner.Gtfs.Import
-  alias GtfsPlanner.Gtfs.Import.{Failure}
+  alias GtfsPlanner.Gtfs.Import.{Failure, SourceStorage}
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.RunnerAdmission
 
@@ -52,14 +56,17 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
 
   @doc """
   Starts a supervised runner that claims and executes an import for `run_id`
-  using the supplied preparation `lease_token`, consuming `files`.
+  using the supplied preparation `lease_token`, importing the staged `files`
+  (descriptors from `SourceStorage.stage/4`).
 
   The runner claims the import (pending -> running) itself in `init/1`. Returns
   the `DynamicSupervisor.on_start_child/0` result, or `{:error, :busy}` when the
   supervisor is at its `:runner_limits` cap; a busy start has claimed nothing, so
   the run is still pending and the caller closes it with
-  `ImportRuns.fail_unstarted/3`. On a claim failure the child stops without
-  overwriting newer durable state.
+  `ImportRuns.fail_unstarted/3` and removes the staged files with
+  `SourceStorage.remove/3`. Once started, the runner removes them itself when it
+  stops. On a claim failure the child stops without overwriting newer durable
+  state.
   """
   @spec start_import(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), [map()]) ::
           DynamicSupervisor.on_start_child() | {:error, :busy}
@@ -189,6 +196,7 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
   @impl true
   def terminate(_reason, state) do
     cancel_timer(state)
+    remove_source(state)
     :ok
   end
 
@@ -239,6 +247,16 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
 
   defp cancel_timer(%{timer: timer}) when is_reference(timer), do: Process.cancel_timer(timer)
   defp cancel_timer(_state), do: :ok
+
+  # The staged files serve only this run's worker, which has exited or been killed by the
+  # time the runner stops, so publish, failure, lease loss and shutdown all release them.
+  # A failed removal is left to the orphan sweep in `TaskArtifactMaintenance`.
+  defp remove_source(%{kind: :import, organization_id: organization_id, run_id: run_id}) do
+    _ = SourceStorage.remove(organization_id, run_id)
+    :ok
+  end
+
+  defp remove_source(_state), do: :ok
 
   # --- internal: abnormal exit closure --------------------------------------
 

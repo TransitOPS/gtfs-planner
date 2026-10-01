@@ -21,8 +21,8 @@ defmodule GtfsPlanner.Gtfs.FareZoneImportExportTest do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Export
-  alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Import.CsvParser
+  alias GtfsPlanner.Support.StagedImport
 
   @stops_header "stop_id,stop_name,stop_desc,stop_lat,stop_lon,zone_id," <>
                   "location_type,parent_station,wheelchair_boarding,platform_code,level_id"
@@ -128,7 +128,7 @@ defmodule GtfsPlanner.Gtfs.FareZoneImportExportTest do
     organization: organization,
     version: version
   } do
-    assert {:ok, result} = Import.import_files(organization.id, version.id, input_files())
+    assert {:ok, result} = StagedImport.import_files(organization.id, version.id, input_files())
     assert result.counts[:stops] == 6
     assert result.counts[:fare_rules] == 4
 
@@ -161,7 +161,7 @@ defmodule GtfsPlanner.Gtfs.FareZoneImportExportTest do
     ]
 
     assert {:ok, reimport_result} =
-             Import.import_files(organization.id, second_version.id, reimport_files)
+             StagedImport.import_files(organization.id, second_version.id, reimport_files)
 
     assert reimport_result.counts[:stops] == 6
     assert reimport_result.counts[:fare_rules] == 4
@@ -176,7 +176,7 @@ defmodule GtfsPlanner.Gtfs.FareZoneImportExportTest do
     organization: organization,
     version: version
   } do
-    assert {:ok, _result} = Import.import_files(organization.id, version.id, input_files())
+    assert {:ok, _result} = StagedImport.import_files(organization.id, version.id, input_files())
 
     assert {:ok, zip} = Export.export_to_zip(organization.id, version.id, :pathways)
     entries = unzip(zip)

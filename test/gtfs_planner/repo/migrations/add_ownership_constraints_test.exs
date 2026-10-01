@@ -13,6 +13,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
   alias GtfsPlanner.Integrity.OwnershipAudit
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.Organization
+  alias GtfsPlanner.Support.StagedImport
   alias GtfsPlanner.Versions.GtfsVersion
 
   import GtfsPlanner.GtfsFixtures
@@ -562,7 +563,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
     assert Enum.sort(Map.keys(feed)) == Enum.sort(Import.supported_filenames())
 
     files = Enum.map(feed, fn {filename, content} -> %{filename: filename, content: content} end)
-    assert {:ok, result} = Import.import_files(org.id, version.id, files)
+    assert {:ok, result} = StagedImport.import_files(org.id, version.id, files)
 
     garage = garage_fixture(org.id)
     vehicle_type = vehicle_type_fixture(org.id)
