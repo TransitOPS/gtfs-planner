@@ -45,7 +45,8 @@ defmodule GtfsPlanner.Agents do
   @packs %{
     "alerts" => GtfsPlanner.Agents.Packs.Alerts,
     "calendars" => GtfsPlanner.Agents.Packs.Calendars,
-    "service_queries" => GtfsPlanner.Agents.Packs.ServiceQueries
+    "service_queries" => GtfsPlanner.Agents.Packs.ServiceQueries,
+    "timetables" => GtfsPlanner.Agents.Packs.Timetables
   }
 
   @doc "Every shipped capability pack, keyed by `Pack.id/0`."

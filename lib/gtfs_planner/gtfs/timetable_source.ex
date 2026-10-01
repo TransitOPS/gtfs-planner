@@ -1334,6 +1334,15 @@ defmodule GtfsPlanner.Gtfs.TimetableSource do
       "notes" => source.notes,
       "accepted?" => source.accepted?,
       "digest" => source.digest,
+      # The copied table travels with the reviewed facts, because the native
+      # batch is projected from this same text: a helper that could not see the
+      # cells would prepare a draft the editor never reviewed. The digest
+      # already binds the text, and the whole context stays under the same
+      # 65,536-byte ceiling, so a paste too large to attach is refused whole
+      # rather than trimmed.
+      "text" => source.raw_text,
+      "layout" => to_string(source.layout),
+      "header?" => source.header?,
       "interval" => %{
         "first_date" => Date.to_iso8601(first),
         "last_date" => Date.to_iso8601(last),
