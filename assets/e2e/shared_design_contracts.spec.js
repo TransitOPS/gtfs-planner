@@ -285,7 +285,14 @@ test.describe("Routes list responsive behavior", () => {
     await page.setViewportSize({ width: 320, height: 568 });
     await loginAsEditor(page);
     const versionId = await getSeededVersionId(page);
-    await navigateToGtfsPage(page, versionId, "routes", "#routes-list li");
+    // The list pages at 50 routes, so the search puts the long route on the page
+    // however many routes the seed holds.
+    await navigateToGtfsPage(
+      page,
+      versionId,
+      `routes?search=${encodeURIComponent("Express Route 1")}`,
+      "#routes-list li",
+    );
 
     // The seeded route's short name is a sentence. The badge wraps inside a
     // capped width, so the route name keeps room and the chevron stays on screen.
