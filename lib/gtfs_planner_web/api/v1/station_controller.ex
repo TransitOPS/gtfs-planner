@@ -212,14 +212,14 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
 
   defp serialize_floorplan(_stop_level, _org_id, _version_id, _station_stop_id), do: nil
 
-  # Floorplan images are served as static files under /uploads (see UploadsPlug),
-  # not via an /api/v1 endpoint. `DiagramStorage.public_url_path/4` is the single
-  # resolver: it prefers the versioned file (URL carries the version id) and falls
-  # back to the legacy historical URL only when a referenced historical file has not
-  # yet been backfilled. The version is already gated as published in `bundle/2`.
+  # Floorplan images are served under /uploads, not via an /api/v1 endpoint.
+  # DiagramStorage resolves a relative path; this web caller adds the configured
+  # endpoint base URL. It prefers a versioned path and falls back to a referenced
+  # historical path only when its file has not yet been copied. The version is
+  # already gated as published in `bundle/2`.
   defp floorplan_url(org_id, version_id, station_stop_id, filename) do
-    case DiagramStorage.public_url_path(org_id, version_id, station_stop_id, filename) do
-      {:ok, url} -> url
+    case DiagramStorage.public_path(org_id, version_id, station_stop_id, filename) do
+      {:ok, path} -> GtfsPlannerWeb.Endpoint.url() <> path
       {:error, _reason} -> nil
     end
   end

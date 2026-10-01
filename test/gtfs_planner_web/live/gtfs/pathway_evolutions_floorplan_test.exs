@@ -31,7 +31,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsFloorplanTest do
     parent_station: nil
   }
 
-  # A real (if tiny) raster, so `DiagramStorage.public_url_path/4` resolves the
+  # A real (if tiny) raster, so `DiagramStorage.public_path/4` resolves the
   # published file exactly as it does for an uploaded station floorplan.
   @floorplan_png Base.decode64!(
                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLqXQAAAABJRU5ErkJggg=="
@@ -349,9 +349,13 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsFloorplanTest do
       assert attributes.selected_id == ""
       assert attributes.closed_ids == []
 
-      # The published file the resolver found, not a path built here.
-      assert attributes.image_url =~ "/uploads/diagrams/"
-      assert attributes.image_url =~ "floorplan_l1.png"
+      # Source-derived pre-change value: Phoenix builds this endpoint base from
+      # the configured host and HTTP port (4002); storage added this relative path.
+      expected_image_url =
+        "http://localhost:4002/uploads/diagrams/#{organization.id}/#{version.id}/" <>
+          "FLOORPLAN_STATION/floorplan_l1.png"
+
+      assert attributes.image_url == expected_image_url
       assert has_element?(view, "#closure-floorplan-image[src='#{attributes.image_url}']")
 
       # Every plotted stop of the Concourse with its stored coordinate. Street

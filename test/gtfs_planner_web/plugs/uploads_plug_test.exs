@@ -616,13 +616,21 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
       File.mkdir_p!(legacy_dir)
       File.write!(Path.join(legacy_dir, "plan.png"), "only legacy bytes")
 
-      # No versioned copy exists yet, so public_url_path resolves to the legacy url.
-      assert {:ok, url} =
-               DiagramStorage.public_url_path(org.id, version.id, station.stop_id, "plan.png")
+      # No versioned copy exists yet, so public_path resolves to the legacy path.
+      assert {:ok, path} =
+               DiagramStorage.public_path(org.id, version.id, station.stop_id, "plan.png")
 
-      refute url =~ version.id
+      refute path =~ version.id
 
-      conn = conn(:get, url) |> UploadsPlug.call([])
+      url = GtfsPlannerWeb.Endpoint.url() <> path
+
+      expected_url =
+        "http://localhost:4002/uploads/diagrams/#{org.id}/" <>
+          "#{PathSafety.stop_storage_dir(station.stop_id)}/plan.png"
+
+      assert url == expected_url
+
+      conn = conn(:get, URI.parse(url).path) |> UploadsPlug.call([])
       assert conn.halted
       assert conn.status == 200
       assert conn.resp_body == "only legacy bytes"

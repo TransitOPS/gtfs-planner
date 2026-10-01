@@ -81,7 +81,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
     Repo.insert!(struct!(JournalEntry, Map.merge(defaults, attrs)))
   end
 
-  # Writes a versioned diagram file so `DiagramStorage.public_url_path/4` (used by
+  # Writes a versioned diagram file so `DiagramStorage.public_path/4` (used by
   # the controller) resolves to the versioned URL. Files are written under the
   # configured (shared, per-run) uploads root at unique org/version dirs and cleaned
   # up after the test.
@@ -595,11 +595,13 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
       assert floorplan["center_lon"] == -75.1632
       assert floorplan["scale_mpp"] == 0.05
       assert floorplan["rotation_deg"] == 12.5
-      assert is_binary(floorplan["url"])
-      assert String.contains?(floorplan["url"], "/uploads/diagrams/")
-      # The public production URL includes the selected GTFS version ID.
-      assert String.contains?(floorplan["url"], version.id)
-      assert String.contains?(floorplan["url"], "busway_plan.png")
+      # Source-derived pre-change value: Phoenix builds Endpoint.url/0 from the
+      # configured host and HTTP port (4002), and DiagramStorage added this path.
+      expected_floorplan_url =
+        "http://localhost:4002/uploads/diagrams/#{org.id}/#{version.id}/" <>
+          "#{PathSafety.stop_storage_dir(station.stop_id)}/busway_plan.png"
+
+      assert floorplan["url"] == expected_floorplan_url
     end
 
     test "does not expose a legacy floorplan referenced only by another published version", %{

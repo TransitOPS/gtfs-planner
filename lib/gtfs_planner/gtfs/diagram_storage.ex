@@ -278,16 +278,18 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
   end
 
   @doc """
-  Returns a public URL for a diagram file. Prefers the versioned file and falls back to
-  the legacy historical URL only when a referenced historical file has not yet been copied.
+  Returns the public relative path for a diagram file. Prefers the versioned file and falls
+  back to the legacy historical path only when a referenced historical file has not yet
+  been copied. The web layer owns the endpoint's absolute URL.
   """
-  @spec public_url_path(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t()) ::
+  @spec public_path(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t()) ::
           {:ok, String.t()} | {:error, term()}
-  def public_url_path(organization_id, gtfs_version_id, station_stop_id, filename) do
+  def public_path(organization_id, gtfs_version_id, station_stop_id, filename) do
     case published_path(organization_id, gtfs_version_id, station_stop_id, filename) do
       {:ok, _path} ->
         {:ok,
-         "#{endpoint_url()}/uploads/diagrams/#{organization_id}/#{gtfs_version_id}/#{encoded_station_dir(station_stop_id)}/#{URI.encode(filename, &URI.char_unreserved?/1)}"}
+         "/uploads/diagrams/#{organization_id}/#{gtfs_version_id}/" <>
+           "#{encoded_station_dir(station_stop_id)}/#{URI.encode(filename, &URI.char_unreserved?/1)}"}
 
       {:error, :not_found} ->
         case referenced_legacy_path(
@@ -297,7 +299,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
                filename
              ) do
           {:ok, _legacy_path} ->
-            {:ok, legacy_url(organization_id, station_stop_id, filename)}
+            {:ok, legacy_path(organization_id, station_stop_id, filename)}
 
           {:error, reason} ->
             {:error, reason}
@@ -673,8 +675,9 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
     station_stop_id |> PathSafety.stop_storage_dir() |> URI.encode(&URI.char_unreserved?/1)
   end
 
-  defp legacy_url(organization_id, station_stop_id, filename) do
-    "#{endpoint_url()}/uploads/diagrams/#{organization_id}/#{encoded_station_dir(station_stop_id)}/#{URI.encode(filename, &URI.char_unreserved?/1)}"
+  defp legacy_path(organization_id, station_stop_id, filename) do
+    "/uploads/diagrams/#{organization_id}/#{encoded_station_dir(station_stop_id)}/" <>
+      URI.encode(filename, &URI.char_unreserved?/1)
   end
 
   @doc """
@@ -726,10 +729,6 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
 
         {:error, reason}
     end
-  end
-
-  defp endpoint_url do
-    GtfsPlannerWeb.Endpoint.url()
   end
 
   defp referenced_legacy_path(organization_id, gtfs_version_id, station_stop_id, filename) do

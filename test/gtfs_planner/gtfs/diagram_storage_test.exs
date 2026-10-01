@@ -556,62 +556,69 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
     end
   end
 
-  describe "published_path/4 and public_url_path/4" do
-    test "returns the versioned path/url and falls back only to an existing referenced legacy file",
+  describe "published_path/4 and public_path/4" do
+    test "returns the versioned path and falls back only to an existing referenced legacy file",
          %{organization: org, version: version, station: station, level: level} do
       # Seed a legacy file for this station.
       legacy_dir = Path.join([uploads_root(org.id), PathSafety.stop_storage_dir(station.stop_id)])
       File.mkdir_p!(legacy_dir)
-      legacy_path = Path.join(legacy_dir, "plan.png")
-      File.write!(legacy_path, @legacy_bytes)
+      legacy_file_path = Path.join(legacy_dir, "plan floor.png")
+      File.write!(legacy_file_path, @legacy_bytes)
 
       {:ok, _} =
         Gtfs.create_stop_level(%{
           stop_id: station.id,
           level_id: level.id,
-          diagram_filename: "plan.png",
+          diagram_filename: "plan floor.png",
           organization_id: org.id,
           gtfs_version_id: version.id
         })
 
-      # No versioned file yet -> published_path fails, public_url_path falls back to legacy.
+      # No versioned file yet -> published_path fails, public_path falls back to legacy.
       assert {:error, :not_found} =
-               DiagramStorage.published_path(org.id, version.id, station.stop_id, "plan.png")
+               DiagramStorage.published_path(org.id, version.id, station.stop_id, "plan floor.png")
 
-      assert {:ok, legacy_url} =
-               DiagramStorage.public_url_path(org.id, version.id, station.stop_id, "plan.png")
+      assert {:ok, legacy_path} =
+               DiagramStorage.public_path(org.id, version.id, station.stop_id, "plan floor.png")
 
-      assert legacy_url =~
-               "/uploads/diagrams/#{org.id}/#{PathSafety.stop_storage_dir(station.stop_id)}/plan.png"
+      expected_legacy_path =
+        "/uploads/diagrams/#{org.id}/#{PathSafety.stop_storage_dir(station.stop_id)}/" <>
+          "plan%20floor.png"
 
-      refute legacy_url =~ version.id
+      assert legacy_path == expected_legacy_path
 
-      # After a versioned write, public_url_path prefers the versioned file.
+      refute legacy_path =~ version.id
+
+      # After a versioned write, public_path prefers the versioned file.
       assert :ok =
                DiagramStorage.store_import_image(
                  org.id,
                  version.id,
                  station.stop_id,
-                 "plan.png",
+                 "plan floor.png",
                  @import_bytes_a
                )
 
       assert {:ok, versioned_path} =
-               DiagramStorage.published_path(org.id, version.id, station.stop_id, "plan.png")
+               DiagramStorage.published_path(org.id, version.id, station.stop_id, "plan floor.png")
 
       assert versioned_path =~ "/diagrams/#{org.id}/#{version.id}/"
       assert File.read!(versioned_path) == @import_bytes_a
 
-      assert {:ok, versioned_url} =
-               DiagramStorage.public_url_path(org.id, version.id, station.stop_id, "plan.png")
+      assert {:ok, versioned_url_path} =
+               DiagramStorage.public_path(org.id, version.id, station.stop_id, "plan floor.png")
 
-      assert versioned_url =~ "/uploads/diagrams/#{org.id}/#{version.id}/"
-      # The versioned URL is NOT the legacy shape (organization immediately followed by station).
-      refute versioned_url =~
-               "/uploads/diagrams/#{org.id}/#{PathSafety.stop_storage_dir(station.stop_id)}/plan.png"
+      expected_versioned_path =
+        "/uploads/diagrams/#{org.id}/#{version.id}/" <>
+          "#{PathSafety.stop_storage_dir(station.stop_id)}/plan%20floor.png"
+
+      assert versioned_url_path == expected_versioned_path
+      # The versioned path is NOT the legacy shape (organization immediately followed by station).
+      refute versioned_url_path =~
+               "/uploads/diagrams/#{org.id}/#{PathSafety.stop_storage_dir(station.stop_id)}/plan%20floor.png"
 
       # Legacy source is preserved.
-      assert File.read!(legacy_path) == @legacy_bytes
+      assert File.read!(legacy_file_path) == @legacy_bytes
     end
 
     test "does not expose an unreferenced legacy file to another published version",
@@ -621,7 +628,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
       File.write!(Path.join(legacy_dir, "retired.png"), @legacy_bytes)
 
       assert {:error, :not_found} =
-               DiagramStorage.public_url_path(
+               DiagramStorage.public_path(
                  org.id,
                  version.id,
                  station.stop_id,
@@ -637,14 +644,14 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
                )
     end
 
-    test "rejects unsafe components for path and url resolution",
+    test "rejects unsafe components for path resolution",
          %{organization: org, version: version} do
       # A slash in the filename escapes the station directory and is rejected.
       assert {:error, :unsafe_path} =
                DiagramStorage.published_path(org.id, version.id, "station/1", "a/../plan.png")
 
       assert {:error, :unsafe_path} =
-               DiagramStorage.public_url_path(org.id, version.id, "station/1", "../plan.png")
+               DiagramStorage.public_path(org.id, version.id, "station/1", "../plan.png")
     end
   end
 
