@@ -59,6 +59,10 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
   @source_ref "gtfs_station_assistant"
 
   @max_rows 100
+  # The only status and live fingerprint state a captured confirmation can record:
+  # it approves pending, unmodified, fingerprint-matched decisions and nothing else.
+  @confirmed_status "pending"
+  @confirmed_fingerprint_state "match"
   @import_narrowing_guidance "This answer is too large for one response. Ask for a narrower page of the run."
 
   # One measurement may change exactly one field of one pathway, and only this
@@ -262,6 +266,76 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
     StationAnswer.digest(digest)
   end
 
+  @doc """
+  The digest a captured confirmation recorded for `decision`, recomputed from the
+  persisted decision at apply time.
+
+  A confirmation only ever captures a decision that is `:pending`, unmodified by
+  hand and fingerprint-matched, so `status` and `fingerprint_state` are pinned to
+  the values any capture necessarily had: apply legitimately moves the first and
+  the second is what `current_fingerprint` already protects. Every other field is
+  the decision's own persisted value, so a decision whose identity, current or
+  uploaded values, changed fields, dependencies, stored fingerprint or hand-edit
+  flag moved after the confirmation no longer recomputes to the recorded digest.
+  """
+  @spec confirmed_digest(ChangeDecision.t()) :: String.t()
+  def confirmed_digest(%ChangeDecision{} = decision) do
+    %{
+      "decision_id" => decision.decision_id,
+      "entity_type" => to_string(decision.entity_type),
+      "natural_key" => decision.natural_key,
+      "action" => to_string(decision.action),
+      "status" => @confirmed_status,
+      "current_values" => decision.current_values || %{},
+      "uploaded_values" => decision.uploaded_values || %{},
+      "changed_fields" => decision.changed_fields || [],
+      "dependency_keys" => decision.dependency_keys || [],
+      "current_fingerprint" => decision.current_fingerprint,
+      "user_edited" => decision.user_edited == true,
+      "fingerprint_state" => @confirmed_fingerprint_state
+    }
+    |> decision_digest()
+  end
+
+  @doc """
+  Whether `decision` is wholly attributable to the station `station_id` names.
+
+  The same projection rule the confirmation used, over the same scoped read, so an
+  apply cannot accept a decision the confirmation itself would have excluded. A
+  station outside this organization or version, or a station row that is not a
+  top-level station, is no attribution at all.
+  """
+  @spec station_attribution(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          Ecto.UUID.t() | String.t() | nil,
+          ChangeDecision.t()
+        ) :: boolean()
+  def station_attribution(
+        organization_id,
+        gtfs_version_id,
+        station_id,
+        %ChangeDecision{} = decision
+      ) do
+    with {:ok, station_id} <- Ecto.UUID.cast(station_id),
+         %Stop{} = station <- scoped_station(organization_id, gtfs_version_id, station_id) do
+      world =
+        station_world(
+          %{
+            organization_id: organization_id,
+            gtfs_version_id: gtfs_version_id,
+            station_id: station.id,
+            station_stop_id: station.stop_id
+          },
+          [decision]
+        )
+
+      station_attributed?(decision, world, station.stop_id)
+    else
+      _other -> false
+    end
+  end
+
   # One repeatable-read transaction per answer. A writer between two of this
   # module's reads is invisible to every part of the answer.
   defp read_isolated(fun) do
@@ -357,6 +431,15 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
          world: station_world(selection, decisions)
        }}
     end
+  end
+
+  defp scoped_station(organization_id, gtfs_version_id, station_id) do
+    from(s in Stop,
+      where:
+        s.id == ^station_id and s.organization_id == ^organization_id and
+          s.gtfs_version_id == ^gtfs_version_id and s.location_type == 1
+    )
+    |> Repo.one()
   end
 
   defp scoped_run(selection) do

@@ -1566,6 +1566,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
          :ok <- invoke_step(opts, :before_fingerprint),
          {:ok, current} <- current_entity(run, decision),
          :ok <- fingerprint_matches?(decision, current),
+         :ok <- reviewed_binding_current?(run, decision),
          :ok <- dependencies_satisfied?(run, decision),
          :ok <- no_dependents?(run, decision),
          :ok <- invoke_step(opts, :before_mutation),
@@ -1579,6 +1580,52 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
       {{:ok, applied}, [run.id]}
     else
       {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  # A decision a native confirmation captured provenance for is applied only
+  # against the values, source, station and frozen observation that confirmation
+  # recorded. The check reads the locked run's own manifest and the locked
+  # decision, so it sees the same rows every later step of this transaction sees,
+  # and it runs before any entity, audit or status write: a stale binding rolls
+  # the transaction back with the ordinary failure path and the recorded evidence
+  # stays exactly as it was.
+  #
+  # The captured snapshot digest is checked for presence and shape rather than
+  # recomputed: the server-frozen snapshot is not persisted with the entry, and
+  # the metadata explicitly records an immutable captured observation rather than
+  # claiming current journal freshness (CR-3). The existing `current_fingerprint`
+  # comparison continues to own live database drift.
+  defp reviewed_binding_current?(run, decision) do
+    case latest_reviewed_entry(run, decision.decision_id) do
+      nil -> :ok
+      entry -> binding_current?(run, decision, entry)
+    end
+  end
+
+  # The last entry recorded for this decision is the one that binds the current
+  # approval. An entry for another decision never speaks for this one.
+  defp latest_reviewed_entry(run, decision_id) do
+    run.source_manifest
+    |> reviewed_manifest()
+    |> reviewed_entries()
+    |> Enum.reverse()
+    |> Enum.find(&(&1["decision_id"] == decision_id))
+  end
+
+  defp binding_current?(run, decision, entry) do
+    if entry["decision_digest"] == ChangeRunReview.confirmed_digest(decision) and
+         entry["source_digest"] == ChangeRunReview.base_source_digest(run) and
+         digest?(entry["snapshot_digest"]) and
+         ChangeRunReview.station_attribution(
+           run.organization_id,
+           run.gtfs_version_id,
+           entry["station_id"],
+           decision
+         ) do
+      :ok
+    else
+      {:error, :stale_reviewed_evidence}
     end
   end
 
@@ -1836,6 +1883,10 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
   defp failure_code(reason) when is_binary(reason), do: String.slice(reason, 0, 128)
   defp failure_code(_reason), do: "apply_failed"
   defp failure_status(:drifted), do: :stale
+  # A captured binding that no longer describes this decision is stale for the
+  # same reason a drifted record is: what would be applied is not what was
+  # reviewed. It is a separate code so a host can say which one happened.
+  defp failure_status(:stale_reviewed_evidence), do: :stale
   defp failure_status(_reason), do: :failed
 
   defp invoke_step(opts, step) do

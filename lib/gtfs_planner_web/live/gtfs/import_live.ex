@@ -2859,6 +2859,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp decision_failure_reason(%{apply_failure_code: "drifted"}),
     do: "Changed since the review was computed"
 
+  defp decision_failure_reason(%{apply_failure_code: "stale_reviewed_evidence"}),
+    do: "No longer matches the accepted observation it was reviewed with"
+
   defp decision_failure_reason(%{apply_failure_code: "dependencies_unmet"}),
     do: "Depends on a change that was not applied"
 
