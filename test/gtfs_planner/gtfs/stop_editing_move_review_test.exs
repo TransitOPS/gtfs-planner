@@ -28,9 +28,9 @@ defmodule GtfsPlanner.Gtfs.StopEditingMoveReviewTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.User
-  alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.AlignmentSegment

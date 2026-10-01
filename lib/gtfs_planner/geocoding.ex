@@ -50,8 +50,7 @@ defmodule GtfsPlanner.Geocoding do
   """
   @spec autocomplete(String.t(), keyword()) :: {:ok, [Result.t()]} | {:error, atom() | tuple()}
   def autocomplete(text, opts \\ []) do
-    Application.get_env(:gtfs_planner, :geocoding_service)
-    |> apply(:autocomplete, [text, opts])
+    service().autocomplete(text, opts)
   end
 
   @doc """
@@ -64,7 +63,10 @@ defmodule GtfsPlanner.Geocoding do
   @spec reverse(float(), float(), keyword()) ::
           {:ok, [GtfsPlanner.Geocoding.Place.t()]} | {:error, atom() | tuple()}
   def reverse(lat, lon, opts \\ []) do
-    Application.get_env(:gtfs_planner, :geocoding_service)
-    |> apply(:reverse, [lat, lon, opts])
+    service().reverse(lat, lon, opts)
   end
+
+  # The configured adapter is a module, so its functions are called directly
+  # rather than through `apply/3`.
+  defp service, do: Application.get_env(:gtfs_planner, :geocoding_service)
 end
