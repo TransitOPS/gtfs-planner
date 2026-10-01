@@ -60,8 +60,10 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Rosters.Candidates
   alias GtfsPlanner.Operations
+  alias GtfsPlanner.Operations.Operator
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.EnsureRole
+  alias GtfsPlannerWeb.Gtfs.RosterOperatorsComponents
   alias GtfsPlannerWeb.Gtfs.RostersComponents
   alias Plug.Conn.Query
 
@@ -88,6 +90,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     add_to_new_line
     confirm_delete_line
     save_pick
+    save_operator
   )
 
   # A role revoked while the page is open is not an error the reader caused and
@@ -104,6 +107,14 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   # organization by the writer, so this sentence says what the page can know and
   # nothing about another tenant's operator.
   @operator_not_offered "That operator is not on this organization's list. Choose another operator."
+
+  # The operators drawer's two addresses a push names: the form the submit is
+  # about, and the panel that lists the failures when the form has no invalid
+  # field to focus. The list heading is the drawer's own `<h2>`, which the drawer
+  # chrome gives a stable id and a `tabindex`.
+  @operator_form_id "rosters-operator-form"
+  @operator_form_error_id "rosters-operator-form-errors"
+  @operators_title_id "rosters-operators-drawer-title"
 
   # The full weekday name. The grid's own module has the same list for the same
   # reason: the confirmation toast names the day a planner just changed.
@@ -171,6 +182,14 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
      # Built by the events that change it, like the drawers, for the same
      # reason.
      |> assign(:pick, nil)
+     # The operators drawer, in whichever of its two views it is. `:operators` is
+     # the list the drawer is showing — `Operations.list_operators/1` in its own
+     # order, plus the line each one holds in *this* version — and
+     # `:operator_form` is the add/edit form, which replaces the list inside the
+     # same drawer rather than opening another surface. Both are built by the
+     # events that change them, for the slot drawer's reason.
+     |> assign(:operators, nil)
+     |> assign(:operator_form, nil)
      |> stream(:roster_lines, [], dom_id: &roster_row_dom_id/1)
      |> attach_hook(:editor_access, :handle_event, &require_editor/3)}
   end
@@ -831,6 +850,119 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     end
   end
 
+  # ── The operators drawer ───────────────────────────────────────────────────
+  #
+  # Operators are the one roster input the organization owns across every
+  # version, so this drawer is not version-scoped; only its Line column is, and
+  # that column is read off the roster this socket already holds rather than
+  # re-derived (INV-15).
+  #
+  # Opening the drawer, choosing an operator to edit, validating and cancelling
+  # are all reads of state this socket already holds, so none of them re-checks
+  # the membership and none is in `@write_events`. `save_operator` is.
+  #
+  # The whole drawer's data is built by the events that change it, never inside
+  # `render/1`, for the slot drawer's reason: an assign made during a render
+  # costs the page its streamed rows.
+  def handle_event("open_operators", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:slot, nil)
+     |> assign(:add_to_line, nil)
+     |> assign(:line, nil)
+     |> assign(:pick, nil)
+     |> assign(:operator_form, nil)
+     |> put_operators(load_operators(socket))}
+  end
+
+  def handle_event("close_operators", _params, socket) do
+    {:noreply, close_operators(socket)}
+  end
+
+  def handle_event("new_operator", _params, socket) do
+    {:noreply, open_operator_form(socket, nil, %{})}
+  end
+
+  # An operator this drawer is not showing is not a choice, so the click is
+  # ignored rather than opening a form for an operator this page never offered.
+  # The submitted id is also cast and looked up inside the caller's
+  # organization by the writer (the "Scoped identities" criterion), so this check
+  # is a convenience rather than the boundary.
+  def handle_event("edit_operator", %{"id" => operator_id}, socket) do
+    case drawn_operator(socket, operator_id) do
+      nil ->
+        {:noreply, socket}
+
+      operator ->
+        {:noreply, open_operator_form(socket, operator, operator_params(operator))}
+    end
+  end
+
+  # Blur is the moment the page believes a field is finished, so the error for a
+  # field is drawn from the blur that left it and not before: a reader halfway
+  # through an employee ID is not told the employee ID is wrong while typing it.
+  # The rules are the writer's own changeset run with the `:validate` action, so
+  # the page invents no validation of its own.
+  def handle_event("validate_operator", %{"operator" => params} = payload, socket) do
+    case socket.assigns.operator_form do
+      nil ->
+        {:noreply, socket}
+
+      form_state ->
+        changeset =
+          form_state.base
+          |> operator_changeset(params, :validate)
+          |> only_touched_errors(form_state.touched |> touch(payload["_target"]))
+
+        {:noreply, put_operator_form(socket, form_state, changeset, form_state.failures)}
+    end
+  end
+
+  def handle_event("validate_operator", _params, socket), do: {:noreply, socket}
+
+  # A write with no form open is not a write, and neither is one whose operator
+  # this socket no longer holds: the form carries the id it was opened for, so a
+  # hand-built event cannot reach another operator than the one on screen.
+  def handle_event("save_operator", %{"operator" => params}, socket) do
+    case writable_operator(socket, socket.assigns.operator_form) do
+      nil ->
+        {:noreply, socket}
+
+      form_state ->
+        changeset = operator_changeset(form_state.base, params, operator_action(form_state))
+
+        if changeset.valid? do
+          write_operator(socket, form_state, params)
+        else
+          # The submit is the one moment every field is finished, so every error
+          # is drawn and the first invalid field takes focus: a refusal that only
+          # marked the fields the editor happened to blur leaves them guessing.
+          {:noreply,
+           socket
+           |> put_operator_form(form_state, changeset, operator_failures(changeset))
+           |> push_event("focus_form_error", %{
+             form_id: @operator_form_id,
+             fallback_id: @operator_form_error_id
+           })}
+        end
+    end
+  end
+
+  def handle_event("save_operator", _params, socket), do: {:noreply, socket}
+
+  def handle_event("cancel_operator", _params, socket) do
+    case socket.assigns.operator_form do
+      nil ->
+        {:noreply, socket}
+
+      _form ->
+        {:noreply,
+         socket
+         |> assign(:operator_form, nil)
+         |> put_operators(load_operators(socket))}
+    end
+  end
+
   # ── The pick row ──────────────────────────────────────────────────────────
   #
   # The pick is a record of what a bid agreed, not a proposal the page decides
@@ -1071,6 +1203,266 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
 
   defp pick_line_number(socket, number),
     do: Enum.find(socket.assigns.roster.lines, &(&1.line_number == number))
+
+  # ── The operators drawer ───────────────────────────────────────────────────
+  #
+  # The list is `Operations.list_operators/1` in that function's own order — the
+  # single order every operator list in the app reads (domain rule 11, AC-4) — and
+  # the lines map is this version's own lines, read off the composition the
+  # socket already holds rather than re-derived (INV-15).
+  defp load_operators(socket) do
+    operators = Operations.list_operators(socket.assigns.current_organization.id)
+
+    %{
+      operators: operators,
+      lines: operator_lines(socket.assigns.roster, operators)
+    }
+  end
+
+  # The Line column is about *this version's* week, so an operator is mapped to
+  # a line only when that line is in the roster on screen. Two lines cannot hold
+  # one operator here (the pick writer refuses it), so the map cannot disagree
+  # with itself.
+  defp operator_lines(%{lines: lines}, operators) do
+    known = MapSet.new(operators, & &1.id)
+
+    for %{operator: %{id: operator_id}, line_number: number} <- lines,
+        MapSet.member?(known, operator_id),
+        into: %{},
+        do: {operator_id, number}
+  end
+
+  defp operator_lines(_no_roster, _operators), do: %{}
+
+  defp put_operators(socket, %{operators: operators} = list) do
+    socket |> assign(:operators, list) |> assign(:operators_count, length(operators))
+  end
+
+  defp close_operators(socket) do
+    socket
+    |> assign(:operators, nil)
+    |> assign(:operator_form, nil)
+  end
+
+  defp drawn_operator(%{assigns: %{operators: %{operators: operators}}}, operator_id) do
+    Enum.find(operators, &(to_string(&1.id) == to_string(operator_id)))
+  end
+
+  defp drawn_operator(_no_drawer, _operator_id), do: nil
+
+  # The form opens on the operator's own values, so editing a name never asks
+  # the editor to retype it. A new form opens on a blank `%Operator{}`: the
+  # changeset is the writer's, and a blank one is what an empty form is.
+  defp open_operator_form(socket, operator, params) do
+    base = operator || %Operator{}
+
+    form_state = %{
+      base: base,
+      editing_id: operator && operator.id,
+      name: operator && operator.display_name,
+      line_number: operator_line_number(socket, operator),
+      touched: MapSet.new(),
+      failures: []
+    }
+
+    socket
+    |> close_operator_form()
+    |> assign(:operator_form, form_state)
+    |> put_operator_form(form_state, operator_changeset(base, params, :validate), [])
+  end
+
+  defp close_operator_form(socket), do: assign(socket, :operator_form, nil)
+
+  # The drawer's whole form data, rebuilt by the event that changes it. The
+  # line an operator holds is re-read from the roster on every open rather than
+  # carried on the form, because a pick recorded elsewhere while the drawer was
+  # open would otherwise name a line this form no longer describes.
+  defp put_operator_form(socket, form_state, changeset, failures) do
+    form_state =
+      form_state
+      |> Map.put(:form, to_form(changeset, as: :operator))
+      |> Map.put(:failures, failures)
+
+    assign(socket, :operator_form, form_state)
+  end
+
+  defp operator_line_number(_socket, nil), do: nil
+
+  defp operator_line_number(%{assigns: %{operators: %{lines: lines}}}, operator),
+    do: Map.get(lines, operator.id)
+
+  # The writer's own changeset, run with the action that decides what is drawn.
+  # `:validate` never writes and `:insert`/`:update` only reach the writer when
+  # the same changeset says it is valid, so there is one set of rules on the page
+  # and in the write (the "One owner for roster storage" criterion, domain rule
+  # 13).
+  defp operator_changeset(base, params, action),
+    do: Operator.changeset(base, normalize_operator_params(params)) |> Map.put(:action, action)
+
+  # A blank seniority is an absent one, not zero. `Operator`'s changeset casts
+  # `seniority_number` as an integer, and an empty text input submits `""`, which
+  # is not one — so the blank is dropped here rather than in the writer, whose
+  # contract takes a map from an import as well as from this form.
+  defp normalize_operator_params(%{"seniority_number" => ""} = params),
+    do: Map.delete(params, "seniority_number")
+
+  defp normalize_operator_params(params), do: params
+
+  # A write with no form open is not a write, and neither is one whose operator
+  # this socket no longer holds: the form carries the id it was opened for, and
+  # the writer casts it inside the caller's organization, so a hand-built event
+  # cannot reach another tenant's operator.
+  defp writable_operator(socket, %{editing_id: id} = form_state)
+       when not is_nil(id) do
+    if drawn_operator(socket, id), do: form_state
+  end
+
+  defp writable_operator(_socket, %{editing_id: nil} = form_state), do: form_state
+
+  defp writable_operator(_socket, _no_form), do: nil
+
+  defp operator_action(%{editing_id: nil}), do: :insert
+  defp operator_action(_editing), do: :update
+
+  # The blur that leaves a field is the moment the page believes it is finished,
+  # so the field is added to the touched set here and the error for it drawn
+  # afterwards. `_target` is the form event's own field path, so the field that
+  # was left is the one that becomes finished.
+  defp touch(touched, nil), do: touched
+  defp touch(touched, target) when is_list(target), do: touch(touched, List.last(target))
+  defp touch(touched, field) when is_binary(field), do: MapSet.put(touched, to_string(field))
+
+  defp touch(touched, _target), do: touched
+
+  # Errors are drawn for a field only once that field has been blurred. The
+  # changeset still carries them all — it is the writer's and it is not edited —
+  # so only what the form shows is narrowed.
+  defp only_touched_errors(changeset, touched) do
+    %{changeset | errors: Enum.filter(changeset.errors, &(to_string(elem(&1, 0)) in touched))}
+  end
+
+  # The submit's failures, one link per field, in field order. The sentence is
+  # the writer's own message with the field's label in front of it, which is what
+  # makes a link and its target read as the same problem.
+  defp operator_failures(changeset) do
+    changeset.errors
+    |> Enum.map(fn {field, {message, _opts}} ->
+      %{href: "##{operator_field_id(field)}", msg: "#{label_for(field)}: #{message}"}
+    end)
+    |> Enum.sort_by(& &1.href)
+  end
+
+  # The input's own id. `to_form(changeset, as: :operator)` names the form
+  # `operator`, so its fields are `operator_employee_id` and so on — the same ids
+  # a summary link has to point at for the link to be the control it names.
+  defp operator_field_id(field), do: "operator_#{field}"
+
+  defp label_for(:employee_id), do: "Employee ID"
+  defp label_for(:display_name), do: "Display name"
+  defp label_for(:seniority_number), do: "Seniority number"
+  defp label_for(field), do: to_string(field)
+
+  # The write. Both writers take the organization and the acting user from the
+  # socket, never from the submitted params (domain rule 17): a submitted
+  # organization is not a thing this form can say. The actor is `%{id: …}`
+  # because that is the only field `Operations` reads.
+  defp write_operator(socket, form_state, params) do
+    result =
+      case form_state.editing_id do
+        nil ->
+          Operations.create_operator(
+            socket.assigns.current_organization.id,
+            operator_actor(socket),
+            params
+          )
+
+        operator_id ->
+          Operations.update_operator(
+            socket.assigns.current_organization.id,
+            operator_actor(socket),
+            operator_id,
+            params
+          )
+      end
+
+    case result do
+      {:ok, operator} ->
+        # The list is re-read after the write, so the row on screen and the row
+        # in the database are the same row and the order on screen is the
+        # organization's order rather than this page's memory of what it just
+        # did. Focus goes to the list heading because the form is gone and the
+        # control that opened it may be too — a new operator is a row that was
+        # not there when the editor last looked.
+        {:noreply,
+         socket
+         |> close_operator_form()
+         |> put_operators(load_operators(socket))
+         |> put_toast(
+           "#{operator.display_name} #{if form_state.editing_id, do: "saved", else: "added"}.",
+           :done
+         )
+         |> push_event("focus_scoped_target", %{id: @operators_title_id})}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        # A refused write — a duplicate employee ID names the operator who holds
+        # it — keeps the form with what the editor typed, because a refusal that
+        # closes the form reads as the page having lost their work. The refusal
+        # is the writer's own sentence, and it is drawn for every field it
+        # names: a refusal is not live validation, so nothing is held back
+        # waiting for a blur. The writer's changeset carries no action, and a
+        # form built from a changeset with no action shows none of its errors, so
+        # the action the submit had is put back before it is drawn.
+        {:noreply,
+         socket
+         |> put_operator_form(
+           form_state,
+           Map.put(changeset, :action, operator_action(form_state)),
+           operator_failures(changeset)
+         )
+         |> touch_failed_fields(changeset)
+         |> push_event("focus_form_error", %{
+           form_id: @operator_form_id,
+           fallback_id: @operator_form_error_id
+         })}
+
+      {:error, :not_found} ->
+        # The operator went while the form was open. A form for an operator that
+        # is not there is a lie, so the form closes and the list is re-read; the
+        # fact is the page's own toast because there is no field left to own it.
+        {:noreply,
+         socket
+         |> close_operator_form()
+         |> put_operators(load_operators(socket))
+         |> put_toast("That operator is no longer on this organization's list.", :refused)}
+    end
+  end
+
+  # The refusal is the writer's own sentence under the field it names. The form's
+  # changesets already carry it, so this only marks the failed fields as
+  # finished: a refusal must not be drawn for a field the editor never left, and
+  # must be drawn for every field it did.
+  defp touch_failed_fields(socket, changeset) do
+    form_state = socket.assigns.operator_form
+
+    assign(
+      socket,
+      :operator_form,
+      %{form_state | touched: all_operator_fields(changeset)}
+    )
+  end
+
+  defp all_operator_fields(changeset),
+    do: MapSet.new(changeset.errors, fn {field, _error} -> to_string(field) end)
+
+  defp operator_actor(socket), do: %{id: socket.assigns.current_user.id}
+
+  defp operator_params(operator) do
+    %{
+      "employee_id" => operator.employee_id,
+      "display_name" => operator.display_name,
+      "seniority_number" => operator.seniority_number
+    }
+  end
 
   defp delete_line(socket, line_id) do
     case Gtfs.delete_roster_line(
@@ -1641,6 +2033,29 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
           roster={@roster}
           locked?={@load_state == :unavailable}
           refusal={@open_work_refusal}
+        />
+
+        <%!-- The operators drawer is inside the page region rather than beside it,
+        the way `FlexLive`'s create drawer is. The design system scopes
+        `.form-error-summary` under `.ds-page`, so a drawer's own refused submit
+        is styled by the same rules as the page's only because the drawer is
+        inside that region. --%>
+        <RosterOperatorsComponents.operators_drawer
+          :if={@operators && is_nil(@operator_form)}
+          open
+          operators={@operators.operators}
+          lines={@operators.lines}
+          on_close="close_operators"
+        />
+
+        <RosterOperatorsComponents.operator_form
+          :if={@operator_form}
+          open
+          form={@operator_form.form}
+          editing={not is_nil(@operator_form.editing_id)}
+          name={@operator_form.name}
+          line_number={@operator_form.line_number}
+          failures={@operator_form.failures}
         />
       </div>
 

@@ -156,7 +156,10 @@ defmodule GtfsPlanner.Operations.OperatorImportTest do
           "E4101,,12\n" <>
           "E4101,Ada Nowak,13\n"
 
-      preview = classify(content, MapSet.new())
+      # The ID is one the organization already holds, so the first row is an
+      # update and the third is the repeat of it. The middle row is skipped for
+      # its own reason and must not become the row the repeat is blamed on.
+      preview = classify(content, MapSet.new(["E4101"]))
 
       assert preview.skipped == [
                %{row: 3, id: "E4101", reason: "Display name is blank."},

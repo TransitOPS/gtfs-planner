@@ -51,7 +51,10 @@ defmodule GtfsPlanner.Operations.OperatorsTest do
     test "keeps blank seniority behind the highest number" do
       organization = organization_fixture()
 
-      create_operator(organization.id, attrs("E4900", "Yusuf Demir"))
+      # The fixture is the point of the case: one operator at the top of the
+      # allowed range and one with no number at all, so "blanks last" is a claim
+      # about an order and not about an empty table.
+      create_operator(organization.id, attrs("E4900", "Yusuf Demir", 99_999))
       create_operator(organization.id, attrs("E4010", "Zoe Marchetti"))
 
       assert listing(organization.id) == [

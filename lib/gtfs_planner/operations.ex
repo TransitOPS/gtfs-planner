@@ -1848,6 +1848,11 @@ defmodule GtfsPlanner.Operations do
   # index leaves a failed transaction behind, and this refusal is one scoped read
   # that never fails. The index still rejects a concurrent insert that claimed
   # the ID between the read and the write; that write keeps Ecto's own message.
+  #
+  # The sentence names the ID as well as the holder, because the editor is
+  # looking at a form and the ID they typed is what tells them *which* of their
+  # own entries collided. "is already used by Aurelia Nowak." alone leaves them
+  # to work out what it is about.
   defp refuse_employee_id(changeset, organization_id, operator_id) do
     employee_id = Ecto.Changeset.get_field(changeset, :employee_id)
 
@@ -1861,7 +1866,7 @@ defmodule GtfsPlanner.Operations do
          Ecto.Changeset.add_error(
            changeset,
            :employee_id,
-           "is already used by #{holder.display_name}."
+           "#{employee_id} is already used by #{holder.display_name}."
          )},
       else: {:ok, changeset}
   end
