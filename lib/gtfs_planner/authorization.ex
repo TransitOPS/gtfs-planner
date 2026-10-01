@@ -3,8 +3,15 @@ defmodule GtfsPlanner.Authorization do
   Current membership checks for interactive writes.
 
   A write transaction takes the actor's membership share lock before any version
-  or entity lock. Membership changes take the organization update lock before
+  or entity lock. Membership changes take the organization row lock before
   locking membership rows; they do not lock versions or run rows.
+
+  The organization lock is `FOR NO KEY UPDATE`. It still excludes other membership
+  commands and organization deletion, but it does not conflict with the `FOR KEY
+  SHARE` lock that every foreign-key insert into an organization-scoped table takes
+  on the organization row. With `FOR UPDATE`, a membership command waiting for a
+  writer's membership share lock held the organization row against that writer's next
+  insert, and the pair deadlocked.
   """
 
   import Ecto.Query
@@ -71,7 +78,8 @@ defmodule GtfsPlanner.Authorization do
   def lock_member_admin!(_, _), do: Repo.rollback(:forbidden)
 
   @doc """
-  Locks the organization and returns the actor's current member-admin permission.
+  Locks the organization (`FOR NO KEY UPDATE`) and returns the actor's current
+  member-admin permission.
 
   Call only inside a transaction. Returns `{:error, reason}` without rolling
   back so the result can be composed inside `Ecto.Multi.run/3`.
@@ -81,7 +89,11 @@ defmodule GtfsPlanner.Authorization do
   def lock_member_admin(%User{id: actor_id}, organization_id) do
     with {:ok, organization_id} <- Ecto.UUID.cast(organization_id),
          %Organization{} <-
-           Repo.one(from o in Organization, where: o.id == ^organization_id, lock: "FOR UPDATE") do
+           Repo.one(
+             from o in Organization,
+               where: o.id == ^organization_id,
+               lock: "FOR NO KEY UPDATE"
+           ) do
       if system_administrator?(actor_id) do
         {:ok, :system}
       else
