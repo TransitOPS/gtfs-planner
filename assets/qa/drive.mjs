@@ -9,9 +9,9 @@
 // The commands here cover a run's lifecycle around the driver: `scenario`
 // prints the scenario the launcher is about to run, `init` creates the run
 // directory and its `session.json`, `set-pid` records a process this run owns,
-// `open` starts the detached driver and waits for its sign-in, and `close`
-// stops it. The commands that act as a tester arrive with the driver's own
-// command table.
+// `open` starts the detached driver and waits for its sign-in, `step` acts as
+// the tester and prints the observation, and `close` stops it. The commands
+// that inspect a run afterwards arrive with their own steps.
 
 import { execFileSync, spawn } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
@@ -31,6 +31,12 @@ const DRIVER = join(HERE, "driver.mjs");
 // server wait is longer, so this is a bound rather than a guess.
 const OPEN_TIMEOUT_MS = 90_000;
 
+// A step gets a client deadline of its own: a `wait` step is allowed to hold
+// for the seconds it asked for, and the settle after an action is bounded too,
+// so the client adds a fixed allowance on top of whatever the step may wait.
+const STEP_TIMEOUT_SLACK_MS = 30_000;
+const STEP_TIMEOUT_MS = 60_000;
+
 // The poll interval while `open` waits; a tool interval is not a deadline.
 const OPEN_POLL_MS = 250;
 
@@ -43,6 +49,7 @@ const USAGE = `usage: node assets/qa/drive.mjs <command> [options]
   init --scenario ID --port N [--db-url URL] [--java-path PATH] [--headed]
   set-pid --run DIR --which phoenix|driver --pid N
   open --run DIR [--headed] [--timeout S]
+  step --run DIR <action> [target and value flags]
   close --run DIR [--timeout S]`;
 
 // `--flag value` pairs, `--flag` booleans, and bare words collected as `_`.
@@ -134,6 +141,8 @@ async function main(argv) {
       return setPid(rest);
     case "open":
       return open(rest);
+    case "step":
+      return step(rest);
     case "close":
       return close(rest);
     case undefined:
@@ -264,6 +273,33 @@ async function open(argv) {
   }
 }
 
+// One tester step, addressed the way a tester reads the page: an action, then
+// role and name or text or label, and the value the step carries. The action
+// is the first bare word; everything else is a flag the driver validates.
+function step(argv) {
+  const flags = parseFlags(argv);
+  const { run: runDir } = flags;
+  const action = flags._[0];
+
+  if (runDir === undefined || action === undefined) {
+    throw new Error("step needs --run and an action");
+  }
+
+  const session = readSession(runDir);
+  // The action is the first bare word and is already in the command, so the
+  // collected words are not sent a second time.
+  const { run: _run, _: _words, ...rest } = flags;
+  const command = { cmd: "step", run: runDir, action, ...rest };
+  const requested = Number(rest.timeout);
+
+  return sendCommand(session.socket, command, {
+    timeoutMs:
+      Number.isFinite(requested) && requested > 0
+        ? requested * 1000 + STEP_TIMEOUT_SLACK_MS
+        : STEP_TIMEOUT_MS
+  });
+}
+
 async function close(argv) {
   const flags = parseFlags(argv);
   const runDir = flags.run;
@@ -276,13 +312,55 @@ async function close(argv) {
   return sendCommand(session.socket, { cmd: "close" }, { timeoutMs });
 }
 
+// The observation a tester reads after every step, one `key: value` line per
+// field. A field with nothing in it says `none` rather than printing blank, so
+// a transcript of a run reads the same whether or not the page had alerts or
+// downloads. A rejected step reports the reason instead: it has no page to
+// describe.
+export function formatStepReply(reply) {
+  const lines = [`step ${reply.n ?? "?"}: ${reply.ok === true ? "ok" : "not ok"}`];
+
+  if (reply.rejected !== undefined) lines.push(`rejected: ${reply.rejected}`);
+  if (reply.ok !== true && reply.rejected === undefined) lines.push(`error: ${reply.error ?? "unknown"}`);
+
+  const observation = reply.observation;
+
+  if (observation === undefined || observation === null) return `${lines.join("\n")}\n`;
+
+  const values = {
+    url: observation.url,
+    title: observation.title,
+    headings: (observation.headings ?? []).join(" | "),
+    alerts: (observation.alerts ?? []).map(entry => `${entry.role}: ${entry.text}`).join(" | "),
+    focused: observation.focused === null ? "" : `${observation.focused.role}: ${observation.focused.name}`,
+    snapshot: observation.snapshot,
+    downloads: (observation.downloads ?? []).join(" | "),
+    consoleErrors: `${observation.consoleErrors?.count ?? 0}${
+      (observation.consoleErrors?.first ?? []).length > 0
+        ? ` (${observation.consoleErrors.first.join(" | ")})`
+        : ""
+    }`,
+    httpErrors: `${observation.httpErrors?.count ?? 0}${
+      (observation.httpErrors?.first ?? []).length > 0 ? ` (${observation.httpErrors.first.join(" | ")})` : ""
+    }`
+  };
+
+  for (const [key, value] of Object.entries(values)) {
+    lines.push(`${key}: ${value === "" || value === undefined ? "none" : value}`);
+  }
+
+  lines.push(`screenshot: ${observation.screenshot ?? "none"}`);
+
+  return `${lines.join("\n")}\n`;
+}
+
 const invokedDirectly =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (invokedDirectly) {
   main(process.argv.slice(2))
     .then(reply => {
-      process.stdout.write(`${JSON.stringify(reply)}\n`);
+      process.stdout.write(process.argv[2] === "step" ? formatStepReply(reply) : `${JSON.stringify(reply)}\n`);
       process.exit(typeof reply.code === "number" ? reply.code : reply.ok === true ? 0 : 2);
     })
     .catch(error => {

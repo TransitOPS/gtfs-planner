@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { ACCOUNTS } from "./accounts.mjs";
+import { MUTATING, validateStep } from "./actions.mjs";
 import { EventBuffer } from "./events.mjs";
 import { loadScenarios, selectScenarios, briefText } from "./scenario.mjs";
 import { readSession } from "./session.mjs";
@@ -39,6 +40,28 @@ const LOGIN_PASSWORD = "#login-password";
 const LOGIN_SUBMIT = "#login-submit";
 
 const SIGN_IN_TIMEOUT_MS = 30_000;
+
+// The LiveView settle after an action: the same condition the browser tests
+// wait for, bounded so a page that never reconnects does not hold a step. The
+// wait is not fatal — a step that navigated somewhere without a LiveView is
+// still a step the tester took and can see in the observation.
+const LIVEVIEW_TIMEOUT_MS = 10_000;
+
+// A short quiet window after the LiveView settles, so the observation reads
+// the page the tester is looking at rather than a half-rendered one.
+const DOM_QUIET_MS = 300;
+const DOM_QUIET_MAX_MS = 3_000;
+
+// An `ariaSnapshot` of a real page is long; the observation keeps a bounded
+// prefix so one line of `steps.jsonl` stays readable, marked so a reader knows
+// it is a prefix.
+const SNAPSHOT_LIMIT = 6_000;
+
+// How many names of the requested role an action failure lists, so a tester can
+// correct the name instead of guessing.
+const NEARBY_NAMES = 5;
+
+const CAPTURE_DIGITS = 3;
 
 const DRIVER_USAGE = "usage: node assets/qa/driver.mjs --run <run dir> [--headed]";
 
@@ -237,6 +260,14 @@ function createState({ session, scenario }) {
     page: null,
     buffer: new EventBuffer(),
     downloads: [],
+    // `attempt` counts every step attempt including rejected ones, and
+    // `observedHrefs` is what a later `goto` may address: the start path plus
+    // every same-origin link the driver has actually seen.
+    attempt: 0,
+    observedHrefs: new Set(),
+    // The page's URL as the driver last read it, so a rejected step records
+    // where the run was without asking the page anything.
+    url: "",
     ready: false,
     setupError: null,
     shuttingDown: false
@@ -330,6 +361,353 @@ async function startBrowser(state, { baseUrl, headed }) {
   }
 
   state.ready = signedIn;
+  state.url = page.url();
+}
+
+// ---------------------------------------------------------------------------
+// One tester step
+// ---------------------------------------------------------------------------
+
+// The LiveView settle, the condition `waitForLiveView` uses in
+// `assets/e2e/import_export.spec.js`. It runs after an action rather than as a
+// test assertion, so a page with no LiveView on it is not an error here.
+export async function waitForLiveView(page, { timeout = LIVEVIEW_TIMEOUT_MS } = {}) {
+  await page.waitForSelector("[data-phx-main]", { state: "attached", timeout });
+
+  await page.waitForFunction(
+    () => {
+      const main = document.querySelector("[data-phx-main]");
+
+      return (
+        main !== null &&
+        main.classList.contains("phx-connected") &&
+        !main.hasAttribute("data-phx-pending") &&
+        window.liveSocket?.isConnected()
+      );
+    },
+    undefined,
+    { timeout }
+  );
+}
+
+// The page's markup size, read for the quiet window. It is a named function so
+// a caller — and a test double — can recognise it rather than re-implementing
+// the probe.
+export function bodyLength() {
+  return document.body.innerHTML.length;
+}
+
+// A window in which the page's markup does not change, bounded so a page that
+// never goes quiet does not hold the step.
+export async function waitForDomQuiet(page, { quietMs = DOM_QUIET_MS, maxMs = DOM_QUIET_MAX_MS } = {}) {
+  const deadline = Date.now() + maxMs;
+
+  for (;;) {
+    const before = await page.evaluate(bodyLength);
+
+    await page.waitForTimeout(quietMs);
+
+    if ((await page.evaluate(bodyLength)) === before) return;
+    if (Date.now() >= deadline) return;
+  }
+}
+
+// The settle that follows an action. `look` and `scroll` change nothing the
+// server owns, so they are observed exactly as they are.
+const SETTLING_ACTIONS = new Set(["look", "scroll"]);
+
+async function settle(page, action) {
+  if (SETTLING_ACTIONS.has(action)) return;
+
+  await waitForLiveView(page).catch(() => {});
+  await waitForDomQuiet(page).catch(() => {});
+}
+
+// The one locator a step addresses the page with: a role with an exact name,
+// or exact text. Playwright's own matching decides whether that is one
+// element or none, and a strict-mode violation is the tester's correction, not
+// a harness failure.
+export function targetLocator(page, step) {
+  if (step.role !== undefined) {
+    return page.getByRole(step.role, { name: step.name, exact: true });
+  }
+
+  return page.getByText(step.text, { exact: true });
+}
+
+// Up to five visible names of the same role, so a failed action tells the
+// tester what the page does call the thing it asked for.
+export async function nearbyNames(page, role) {
+  try {
+    const located = page.getByRole(role);
+    const count = await located.count();
+    const names = [];
+
+    for (let index = 0; index < Math.min(count, NEARBY_NAMES); index += 1) {
+      const name = await located
+        .nth(index)
+        .evaluate(element => (element.getAttribute("aria-label") ?? element.textContent ?? "").trim().split("\n")[0]);
+
+      if (name !== "") names.push(name.slice(0, 80));
+    }
+
+    return names;
+  } catch {
+    return [];
+  }
+}
+
+// The first line of the failure plus, when the step named a role, the names
+// that role does carry. A full Playwright stack is noise to a tester reading
+// one line of output.
+export async function describeActionError(error, step, page) {
+  const firstLine = String(error?.message ?? error).split("\n")[0].trim();
+  const names = step?.role === undefined ? [] : await nearbyNames(page, step.role);
+
+  if (names.length === 0) return firstLine;
+
+  return `${firstLine} (${step.role} names here: ${names.join(", ")})`;
+}
+
+function baseUrlOf(session) {
+  return `http://localhost:${session.port}`;
+}
+
+// One executor per action. `upload` is absent on purpose: it waits for the
+// LiveView upload ref and confirms the entry, which is a different execution
+// path from these.
+const EXECUTORS = {
+  click: (page, step) => targetLocator(page, step).click(),
+  fill: (page, step) => page.getByLabel(step.label, { exact: true }).fill(step.value),
+  select: (page, step) => page.getByLabel(step.label, { exact: true }).selectOption({ label: step.option }),
+  press: (page, step) => page.keyboard.press(step.key),
+  goto: (page, step, { baseUrl }) => page.goto(new URL(step.path, baseUrl).href),
+  back: page => page.goBack(),
+  scroll: (page, step) => page.mouse.wheel(0, step.dy),
+  look: () => {},
+  wait: (page, step) => page.getByText(step.text).first().waitFor({ state: "visible", timeout: step.timeout * 1000 })
+};
+
+export function hasExecutor(action) {
+  return Object.hasOwn(EXECUTORS, action);
+}
+
+// What the page shows, read in one round trip. The function is serialized into
+// the page, so it stands alone and returns only plain data.
+function readPageFacts() {
+  const visible = element => {
+    const style = window.getComputedStyle(element);
+
+    return style.visibility !== "hidden" && style.display !== "none" && element.getClientRects().length > 0;
+  };
+
+  const text = element => (element.innerText ?? element.textContent ?? "").trim();
+
+  const headings = [...document.querySelectorAll("h1, h2, h3")]
+    .filter(visible)
+    .map(text)
+    .filter(value => value !== "");
+
+  const announcements = [...document.querySelectorAll('[role="alert"], [role="status"]')]
+    .filter(visible)
+    .map(element => ({ role: element.getAttribute("role"), text: text(element) }))
+    .filter(entry => entry.text !== "");
+
+  const active = document.activeElement;
+  const focused =
+    active === null || active === document.body
+      ? null
+      : {
+          role: active.getAttribute("role") ?? active.tagName.toLowerCase(),
+          name: (active.getAttribute("aria-label") ?? active.textContent ?? "").trim().split("\n")[0]
+        };
+
+  const hrefs = [...document.querySelectorAll("a[href]")]
+    .map(anchor => anchor.href)
+    .filter(href => {
+      try {
+        return new URL(href).origin === location.origin;
+      } catch {
+        return false;
+      }
+    })
+    .map(href => `${new URL(href).pathname}${new URL(href).search}`);
+
+  return { headings, announcements, focused, hrefs };
+}
+
+export function trimSnapshot(text, limit = SNAPSHOT_LIMIT) {
+  return text.length > limit ? `${text.slice(0, limit)} [truncated]` : text;
+}
+
+// The observation printed per step (contract C-4): where the page is, what it
+// says, what it announced, what has focus, a bounded accessibility snapshot,
+// the downloads this step produced, the errors the buffer drained, and the
+// capture the review reads.
+export async function buildObservation(page, { events, capture, hrefs = [] } = {}) {
+  const facts = await page.evaluate(readPageFacts).catch(() => ({
+    headings: [],
+    announcements: [],
+    focused: null,
+    hrefs: []
+  }));
+
+  const url = new URL(page.url());
+  const snapshot = await page
+    .locator("body")
+    .ariaSnapshot()
+    .catch(() => "");
+
+  return {
+    url: `${url.pathname}${url.search}`,
+    title: await page.title().catch(() => ""),
+    headings: facts.headings,
+    alerts: facts.announcements,
+    focused: facts.focused,
+    snapshot: trimSnapshot(snapshot),
+    downloads: events?.downloads ?? [],
+    consoleErrors: events?.consoleErrors ?? { count: 0, first: [] },
+    httpErrors: events?.httpErrors ?? { count: 0, first: [] },
+    screenshot: capture ?? null,
+    hrefs: [...new Set([...hrefs, ...facts.hrefs])]
+  };
+}
+
+// A recorded trail step carries no intent and no expectation (contract C-7), so
+// a run that replays one passes the vocabulary's target rules with those two
+// requirements filled in. Nothing else is skipped, and the record still logs
+// what the step actually had.
+function validatedFlags(flags, requireIntent) {
+  if (requireIntent || !MUTATING.includes(flags?.action)) return flags;
+
+  return { ...flags, intent: flags.intent ?? "replayed", expect: flags.expect ?? "replayed" };
+}
+
+function targetOf(step) {
+  const { action, ...target } = step;
+
+  return target;
+}
+
+function capturePath(runDir, n) {
+  return join(runDir, "captures", `s${String(n).padStart(CAPTURE_DIGITS, "0")}.png`);
+}
+
+// The single code path for a tester step: live steps and replay steps both
+// come through here, so the vocabulary check, the settle, the record and the
+// observation cannot drift apart. `requireIntent: false` is the replay shape.
+export async function executeStep(state, { flags, requireIntent = true } = {}) {
+  const { page, session, scenario, buffer } = state;
+
+  state.attempt += 1;
+
+  const n = state.attempt;
+  const startedAt = Date.now();
+  const at = new Date().toISOString();
+  const urlBefore = state.url;
+  const intent = typeof flags?.intent === "string" ? flags.intent : "";
+  const expected = typeof flags?.expect === "string" ? flags.expect : "";
+
+  const validation = validateStep(validatedFlags(flags, requireIntent), {
+    attempt: n,
+    startPath: scenario.startPath,
+    observedHrefs: state.observedHrefs,
+    files: scenario.files
+  });
+
+  // A rejected step is recorded and answered, and never reaches the browser.
+  if (!validation.ok) {
+    const record = appendRecord(session.run, {
+      kind: "step",
+      run: session.run,
+      n,
+      t: at,
+      action: typeof flags?.action === "string" ? flags.action : "",
+      target: null,
+      intent,
+      expected,
+      urlBefore,
+      urlAfter: urlBefore,
+      ok: false,
+      rejected: validation.reason,
+      error: validation.reason,
+      ms: Date.now() - startedAt,
+      capture: null,
+      consoleErrors: 0,
+      httpErrors: 0,
+      alerts: [],
+      downloads: []
+    });
+
+    return { ok: false, code: 1, n, rejected: validation.reason, error: validation.reason, record, observation: null };
+  }
+
+  const step = validation.step;
+  let error = null;
+
+  if (!hasExecutor(step.action)) {
+    error = `this driver does not execute ${step.action} yet`;
+  } else {
+    try {
+      await EXECUTORS[step.action](page, step, { baseUrl: baseUrlOf(session) });
+      await settle(page, step.action);
+    } catch (thrown) {
+      error = await describeActionError(thrown, step, page);
+    }
+  }
+
+  // The events this step produced are drained after it acts, so the console and
+  // network errors in the record and the observation are the ones since the
+  // previous step.
+  const events = buffer.drain();
+  const wanted = capturePath(session.run, n);
+  const captured = await page
+    .screenshot({ path: wanted })
+    .then(() => wanted, () => null);
+
+  const observation = await buildObservation(page, { events, capture: captured });
+
+  state.url = page.url();
+
+  for (const href of observation.hrefs) state.observedHrefs.add(href);
+  state.observedHrefs.add(observation.url);
+
+  const record = appendRecord(session.run, {
+    kind: "step",
+    run: session.run,
+    n,
+    t: at,
+    action: step.action,
+    target: targetOf(step),
+    intent,
+    expected,
+    urlBefore,
+    urlAfter: observation.url,
+    ok: error === null,
+    rejected: false,
+    error,
+    ms: Date.now() - startedAt,
+    capture: captured,
+    consoleErrors: events.consoleErrors.count,
+    httpErrors: events.httpErrors.count,
+    alerts: observation.alerts,
+    downloads: observation.downloads
+  });
+
+  return {
+    ok: error === null,
+    code: error === null ? 0 : 1,
+    n,
+    error,
+    record,
+    observation
+  };
+}
+
+export function registerStep(registry, state) {
+  registry.register("step", command => executeStep(state, { flags: command }));
+
+  return registry;
 }
 
 async function shutdown(state, server) {
@@ -386,7 +764,7 @@ export async function run(argv) {
   writeFileSync(join(runDir, "brief.md"), briefText(scenario), "utf8");
 
   const state = createState({ session, scenario });
-  const registry = registerBuiltins(createRegistry(), state);
+  const registry = registerStep(registerBuiltins(createRegistry(), state), state);
 
   await prepareSocketPath(session.socket);
   state.server = createCommandServer({ socketPath: session.socket, registry });
