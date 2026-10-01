@@ -68,6 +68,26 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   `{id, updated_at}` list all-or-nothing; both check scope, type and freshness only,
   never references, so a damaged imported row stays deletable and is audited with its
   stored values (R8), and a bulk batch shares one operation id across its logs.
+
+  `review_policy_change/3` reads one general-policy command without writing it. The
+  scope comes only from `audit` and the caller's scope must agree with it, so a
+  conversation cannot point a review at another organization or version. The
+  command's `before` and `after` are the eight GTFS columns the native editor would
+  write, `protected` is the unchanged state of the exception ids the caller named, and
+  `dependencies_digest` fingerprints every dependency an apply must still find: the
+  full general rules with their timestamps, the trips and routes they select, the
+  leaf/parent stop coverage they expand to, and the trip/route `stop_time` incidence
+  of those leaves. Each set is present even when empty, so an insertion changes the
+  digest. The reads run in one repeatable-read transaction that closes before the
+  review is returned, so no lock is held while a caller waits on a provider or a
+  person.
+
+  The review refuses a command that targets a `protected_ids` exception, and a command
+  whose own rule would join an equal-best witness with a differing effect
+  (`Overlaps.witnesses/2` on the prospective rule set, never a cached verdict). An
+  equal-best disagreement elsewhere in the version is returned in `conflicts` rather
+  than refused, because that is the native CRUD's existing behavior. Editing an
+  exception deliberately is a separate command that does not name it protected.
   """
 
   import Ecto.Changeset
@@ -536,6 +556,342 @@ defmodule GtfsPlanner.Gtfs.Transfers do
           | :not_found
           | :stale
           | :busy
+
+  @typedoc "The identity a reviewed policy command is bound to; it must match the audit context."
+  @type policy_scope :: %{
+          required(:organization_id) => Ecto.UUID.t(),
+          required(:gtfs_version_id) => Ecto.UUID.t()
+        }
+
+  @typedoc "One proposed change to the version's general policy, before any write."
+  @type policy_command :: %{
+          required(:action) => :create | :update | :delete,
+          required(:target_id) => Ecto.UUID.t() | nil,
+          required(:expected_updated_at) => DateTime.t() | String.t() | nil,
+          required(:attrs) => map(),
+          required(:protected_ids) => [Ecto.UUID.t()]
+        }
+
+  @typedoc "A reviewed command with its scoped before/after and dependency fingerprint."
+  @type policy_review :: %{
+          command: policy_command(),
+          before: map() | nil,
+          after: map() | nil,
+          dependencies_digest: String.t(),
+          conflicts: [Overlaps.conflict_witness()],
+          protected: [map()]
+        }
+
+  @doc """
+  Reviews one general-policy command without writing it, for the audit context's version.
+
+  See the module documentation for the review's shape, the dependency digest and the
+  refusals. The refusals are `:invalid_input` for a command that is not the documented
+  shape, `:forbidden` for a scope that disagrees with `audit`, `:not_found` for a
+  target outside this organization, version or the general types, `:stale` for an
+  `expected_updated_at` that no longer matches, `:protected` for a target the caller
+  named as a protected exception, `{:conflict, witnesses}` for a prospective equal-best
+  disagreement this command would cause, or an `Ecto.Changeset` for attrs the editor
+  changesets or the reference checks reject. A duplicate key is not refused here; the
+  writer raises it at insert time, so a review only reports what the prospective rule
+  set would conflict with.
+  """
+  @spec review_policy_change(policy_scope(), policy_command(), AuditContext.t()) ::
+          {:ok, policy_review()} | {:error, term()}
+  def review_policy_change(scope, command, %AuditContext{} = audit) do
+    with {:ok, command} <- validate_policy_command(command),
+         :ok <- check_policy_scope(scope, audit) do
+      run_policy_read(fn -> do_review_policy_change(command, audit) end)
+    end
+  end
+
+  def review_policy_change(_scope, _command, _audit), do: {:error, :invalid_input}
+
+  @doc """
+  Returns the 64-character lowercase hex dependency digest of one version's general policy.
+
+  This is the fingerprint `review_policy_change/3` records, exposed so an apply can
+  recompute the identical value from a reloaded state instead of trusting one it was
+  handed. It reads only; it never takes a lock and never writes.
+  """
+  @spec dependencies_digest(AuditContext.t()) :: String.t()
+  def dependencies_digest(%AuditContext{} = audit) do
+    general = load_general_rules(audit)
+    policy_dependencies_digest(audit, general)
+  end
+
+  # The command is normalized once here, so a review and any apply that replays it
+  # see one canonical command rather than the caller's raw map.
+  defp validate_policy_command(%{action: action} = command)
+       when action in [:create, :update, :delete] and is_map(command) do
+    with :ok <- validate_command_attrs(command),
+         {:ok, target_id} <- validate_command_target(command),
+         {:ok, protected_ids} <- validate_protected_ids(command) do
+      {:ok, Map.merge(command, %{target_id: target_id, protected_ids: protected_ids})}
+    end
+  end
+
+  defp validate_policy_command(_command), do: {:error, :invalid_input}
+
+  defp validate_command_attrs(%{attrs: attrs}) when is_map(attrs), do: :ok
+  defp validate_command_attrs(_command), do: {:error, :invalid_input}
+
+  defp validate_command_target(%{action: :create, target_id: nil}), do: {:ok, nil}
+  defp validate_command_target(%{action: :create}), do: {:error, :invalid_input}
+
+  defp validate_command_target(%{action: action, target_id: target_id})
+       when action in [:update, :delete] and is_binary(target_id) do
+    case Ecto.UUID.cast(target_id) do
+      {:ok, uuid} -> {:ok, uuid}
+      :error -> {:error, :invalid_input}
+    end
+  end
+
+  defp validate_command_target(_command), do: {:error, :invalid_input}
+
+  defp validate_protected_ids(%{protected_ids: ids}) when is_list(ids) do
+    ids
+    |> Enum.reduce_while({:ok, MapSet.new()}, fn id, {:ok, acc} ->
+      case Ecto.UUID.cast(id) do
+        {:ok, uuid} -> {:cont, {:ok, MapSet.put(acc, uuid)}}
+        :error -> {:halt, {:error, :invalid_input}}
+      end
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, acc |> MapSet.to_list() |> Enum.sort()}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_protected_ids(_command), do: {:error, :invalid_input}
+
+  defp check_policy_scope(%{organization_id: organization_id, gtfs_version_id: version_id}, audit) do
+    if organization_id == audit.organization_id and version_id == audit.gtfs_version_id do
+      :ok
+    else
+      {:error, :forbidden}
+    end
+  end
+
+  defp check_policy_scope(_scope, _audit), do: {:error, :invalid_input}
+
+  # One repeatable-read snapshot: a writer between two of this review's reads is
+  # invisible to the before/after, the conflicts and the digest alike, so the three
+  # describe the same state. The transaction closes before the value is returned, so
+  # nothing is held while a caller waits.
+  defp run_policy_read(read) do
+    Repo.transaction(fn ->
+      unless Keyword.get(Repo.config(), :pool) == Ecto.Adapters.SQL.Sandbox do
+        Repo.query!("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+      end
+
+      read.()
+    end)
+    |> case do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp do_review_policy_change(command, audit) do
+    general = load_general_rules(audit)
+
+    case policy_target(command, audit) do
+      {:ok, nil} ->
+        build_policy_review(command, audit, general, nil)
+
+      {:ok, target} ->
+        if target.id in command.protected_ids do
+          Repo.rollback(:protected)
+        else
+          build_policy_review(command, audit, general, target)
+        end
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  # The target goes through the same organization/version/general-type scope the
+  # native writers use, so a foreign, other-version, in-seat or unknown row is
+  # `:not_found` and a missing or unparseable `expected_updated_at` is `:stale`.
+  defp policy_target(%{action: :create}, _audit), do: {:ok, nil}
+
+  defp policy_target(
+         %{action: _action, target_id: target_id, expected_updated_at: expected},
+         audit
+       ) do
+    case load_general(audit, target_id) do
+      {:ok, transfer} ->
+        if stale?(transfer, expected), do: {:error, :stale}, else: {:ok, transfer}
+
+      :error ->
+        {:error, :not_found}
+    end
+  end
+
+  defp build_policy_review(command, audit, general, target) do
+    case prospective_rule(command, audit, target) do
+      {:ok, prospective} ->
+        policy_review(command, audit, general, target, prospective)
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        Repo.rollback(changeset)
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  # The prospective rule is the row the native writer would persist, produced by the
+  # same editor changeset and the same reference checks, so a review cannot bless a
+  # rule the writer would reject. A delete has no prospective row.
+  defp prospective_rule(%{action: :delete}, _audit, _target), do: {:ok, nil}
+
+  defp prospective_rule(%{action: :create, attrs: attrs}, audit, _target) do
+    audit
+    |> new_transfer()
+    |> Transfer.editor_changeset(attrs)
+    |> validate_references(audit.organization_id, audit.gtfs_version_id)
+    |> applied_or_error()
+  end
+
+  defp prospective_rule(%{action: :update, attrs: attrs}, audit, target) do
+    target
+    |> Transfer.editor_changeset(attrs)
+    |> validate_references(audit.organization_id, audit.gtfs_version_id)
+    |> applied_or_error()
+  end
+
+  defp new_transfer(audit) do
+    %Transfer{organization_id: audit.organization_id, gtfs_version_id: audit.gtfs_version_id}
+  end
+
+  defp applied_or_error(%Ecto.Changeset{valid?: true} = changeset),
+    do: {:ok, apply_changes(changeset)}
+
+  defp applied_or_error(%Ecto.Changeset{} = changeset), do: {:error, changeset}
+
+  defp policy_review(command, audit, general, target, prospective) do
+    prospective_rules = prospective_rules(general, target, prospective)
+    {stops, incidence} = load_policy_coverage(audit, prospective_rules)
+    conflicts = Overlaps.witnesses(Enum.map(prospective_rules, &rule(&1, stops)), incidence)
+
+    if caused_conflict?(conflicts, target, prospective) do
+      Repo.rollback({:conflict, conflicts})
+    else
+      {:ok,
+       %{
+         command: command,
+         before: target && Transfer.audit_snapshot(target),
+         after: prospective && Transfer.audit_snapshot(prospective),
+         dependencies_digest: policy_dependencies_digest(audit, general),
+         conflicts: conflicts,
+         protected: protected_snapshots(audit, command.protected_ids)
+       }}
+    end
+  end
+
+  # The prospective rule set is the version's general rules with this command's row
+  # replaced, added or removed. The stored rows keep their ids; a create's row has
+  # none yet, and no stored row carries a nil id, so a conflict naming it is
+  # unambiguous.
+  defp prospective_rules(general, nil, prospective), do: general ++ [prospective]
+  defp prospective_rules(general, target, nil), do: List.delete(general, target)
+
+  defp prospective_rules(general, target, prospective),
+    do: replace_rule(general, target, prospective)
+
+  defp replace_rule(rules, target, replacement) do
+    index = Enum.find_index(rules, &(&1.id == target.id))
+    List.replace_at(rules, index, replacement)
+  end
+
+  # Only a disagreement this command causes is refused. A deleted rule cannot appear
+  # in the prospective set, and an equal-best disagreement between two other rules is
+  # reported rather than refused, so the review does not re-judge the native CRUD.
+  defp caused_conflict?(_conflicts, nil, nil), do: false
+
+  defp caused_conflict?(conflicts, target, prospective) do
+    changed_id = if prospective, do: prospective.id, else: target.id
+    Enum.any?(conflicts, &(&1.rule_ids |> Enum.member?(changed_id)))
+  end
+
+  # The stop index and the `stop_time` incidence of every prospective rule's coverage
+  # leaves, which is what the evaluator reads. A create naming a stop nothing
+  # references yet still loads that stop and its children here.
+  defp load_policy_coverage(audit, rules) do
+    organization_id = audit.organization_id
+    version_id = audit.gtfs_version_id
+    stops = load_stop_index(organization_id, version_id, rules)
+
+    {stops, load_incidence(organization_id, version_id, coverage_leaves(rules, stops))}
+  end
+
+  # The one bounded read behind `dependencies_digest/1`: the version's general rules
+  # with the stops, trips, routes and `stop_time` incidence they resolve to. The five
+  # sets are the whole dependency surface an apply must still find, and each is hashed
+  # even when empty, so a version that gains its first rule, selector, stop or
+  # stop_time hashes differently from one that has none.
+  #
+  # A rule this command is about to create is deliberately absent: the digest
+  # describes the state an apply finds before it writes, and the command's own rows
+  # are already bound by the command and its before/after. Coverage and incidence a
+  # concurrent writer changes under those rows is fenced by the exclusive version
+  # lock the apply takes, not by this fingerprint.
+  defp policy_dependencies_digest(audit, general) do
+    organization_id = audit.organization_id
+    version_id = audit.gtfs_version_id
+    stops = load_stop_index(organization_id, version_id, general)
+    trips = load_trip_index(organization_id, version_id, general)
+    routes = load_route_index(organization_id, version_id, general, trips)
+    incidence = load_incidence(organization_id, version_id, coverage_leaves(general, stops))
+
+    term =
+      {general |> Enum.map(&rule_fingerprint/1) |> Enum.sort(),
+       trips |> Map.values() |> Enum.map(&trip_fingerprint/1) |> Enum.sort(),
+       routes |> Map.values() |> Enum.map(&route_fingerprint/1) |> Enum.sort(),
+       stops |> Map.values() |> Enum.map(&stop_fingerprint/1) |> Enum.sort(),
+       incidence_fingerprint(incidence)}
+
+    :sha256
+    |> :crypto.hash(:erlang.term_to_binary(term, [:deterministic]))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp rule_fingerprint(transfer) do
+    {transfer.id, transfer.from_stop_id, transfer.to_stop_id, transfer.from_route_id,
+     transfer.to_route_id, transfer.from_trip_id, transfer.to_trip_id, transfer.transfer_type,
+     transfer.min_transfer_time, transfer.inserted_at, transfer.updated_at}
+  end
+
+  # A selector's route binding and calendar are what a rule's evaluation reads, so
+  # they are in the fingerprint; a trip's headsign and a route's names are not.
+  defp trip_fingerprint(trip), do: {trip.trip_id, trip.route_id, trip.service_id}
+
+  defp route_fingerprint(route), do: {route.route_id, route.active}
+
+  # Location type and parent decide R2 coverage, so both are in the fingerprint.
+  defp stop_fingerprint(%Stop{} = stop),
+    do: {stop.stop_id, stop.location_type, stop.parent_station}
+
+  defp incidence_fingerprint(incidence) do
+    for {stop_id, trips} <- incidence, {trip_id, route_id} <- trips do
+      {stop_id, trip_id, route_id}
+    end
+  end
+
+  # Only rows this organization and version already hold are reported, so an id outside
+  # the scope discloses nothing.
+  defp protected_snapshots(_audit, []), do: []
+
+  defp protected_snapshots(audit, ids) do
+    rows = load_general_rows(audit, ids) |> Map.new(&{&1.id, &1})
+
+    for id <- ids, row = Map.get(rows, id) do
+      Transfer.audit_snapshot(row)
+    end
+  end
 
   @doc """
   Creates one general (types 0–3) transfer rule for the audit context's version.
@@ -1798,6 +2154,13 @@ defmodule GtfsPlanner.Gtfs.Transfers do
 
   defp load_general_rows(audit, transfer_ids),
     do: Repo.all(scoped_general_ids(audit.organization_id, audit.gtfs_version_id, transfer_ids))
+
+  defp load_general_rules(audit) do
+    audit.organization_id
+    |> general_scope(audit.gtfs_version_id)
+    |> order_by([t], asc: t.id)
+    |> Repo.all()
+  end
 
   defp update_general_transaction(id, attrs, expected_updated_at, audit) do
     Authorization.lock_editor!(audit)
