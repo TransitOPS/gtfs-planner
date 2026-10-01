@@ -661,7 +661,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
                 phx-value-garage_id={garage.id}
                 phx-value-opener_id={"garage-name-#{garage.id}"}
                 class={[
-                  "grid min-h-11 min-w-0 content-center rounded-control text-left [overflow-wrap:anywhere]",
+                  "grid min-h-11 min-w-11 content-center rounded-control text-left [overflow-wrap:anywhere]",
                   "group",
                   focus_class()
                 ]}
