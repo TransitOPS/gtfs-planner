@@ -134,6 +134,9 @@ defmodule GtfsPlannerWeb.Router do
         GtfsPlannerWeb.AssignGtfsVersion
       ] do
       # GTFS routes (viewer or editor roles required)
+      # Alerts is the first task area, and it lists the alerts of the version in
+      # the URL only (R1).
+      live "/alerts", Gtfs.AlertsLive, :index
       live "/routes", Gtfs.RoutesLive, :index
       # Transfers is the Routes area's second tab, beside the routes list.
       live "/transfers", Gtfs.TransfersLive, :index

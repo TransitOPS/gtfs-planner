@@ -229,6 +229,28 @@ defmodule GtfsPlanner.Alerts do
     end
   end
 
+  @doc """
+  Returns the route rows for a list of alerts, keyed by the row UUIDs they stored.
+
+  The list page reads this so each affected route renders as its own identity
+  badge rather than as a word an editor has to recognize. The IDs come from the
+  whole page at once, so the table costs one route read rather than one per row.
+  It is the same scoped read `labels_for/2` performs, so a route that no longer
+  exists is simply absent from both and the row's Needs attention badge explains
+  why (R8).
+  """
+  @spec routes_for(AuditContext.t(), [Alert.t()]) :: %{optional(Ecto.UUID.t()) => map()}
+  def routes_for(%AuditContext{} = audit_context, alerts) when is_list(alerts) do
+    case authorize_editor(audit_context) do
+      :ok ->
+        ids = Enum.flat_map(alerts, &Listing.referenced_ids(&1).routes)
+        Targets.routes_by_id(audit_context, ids)
+
+      {:error, :forbidden} ->
+        %{}
+    end
+  end
+
   # A target lookup takes no lock and writes nothing, so it authorizes rather
   # than locks, exactly as the other reads here do. A member without the editor
   # role reads no options; the refusal is the empty result the caller already

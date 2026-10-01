@@ -38,6 +38,7 @@ const VIEWPORTS = [DESKTOP, MOBILE];
 
 // `[id, label, path segment]`, in the information architecture's order.
 const TASKS = [
+  ["nav-alerts", "Alerts", "alerts"],
   ["nav-routes", "Routes", "routes"],
   ["nav-calendars", "Calendars", "calendars"],
   ["nav-operations", "Operations", "blocks"],
@@ -158,7 +159,7 @@ for (const { width, height, label } of VIEWPORTS) {
 
       const versionId = await seededVersionId(page);
 
-      // ── Main navigation: the six literal labels, in order, without icons ──
+      // ── Main navigation: the seven literal labels, in order, without icons ──
       for (const [id, taskLabel, segment] of TASKS) {
         const link = page.locator(`#main-navigation #${id}`);
         await expect(link).toHaveText(taskLabel);

@@ -11106,7 +11106,7 @@ case Accounts.register_first_admin(%{
     # code is set on the inserted row the same way the diagram coordinates are.
     # `platform_code` carries the same value because the editor's place search
     # matches a code there (AC-10), and a rider-facing code has to be findable.
-    _alerts_stops =
+    alerts_stops =
       [
         {"AL_NTC", "Newport Transit Center", "1001", "44.6210", "-124.0490"},
         {"AL_CST6", "N Coast Hwy & NE 6th St", "1012", "44.6250", "-124.0600"},
@@ -11346,6 +11346,97 @@ case Accounts.register_first_admin(%{
       })
 
     IO.puts("Browser seed: organization alert script \"Route detour\"")
+
+    # Four alerts so the list page's four tabs all have something to show:
+    # a current delay about Route 12, a planned street closure that is Upcoming,
+    # a draft still being answered, and an alert whose stop was deleted from the
+    # version so the Needs attention badge has a real cause. Created and finished
+    # through the same commands the editor uses, so no row carries a field an
+    # editor path cannot write.
+    alerts_today = Gtfs.DisplayClock.today(org.id, alerts_version.id).date
+    alerts_check_in = NaiveDateTime.new!(alerts_today, ~T[18:00:00])
+
+    alerts_new = fn attrs ->
+      {:ok, alert} = GtfsPlanner.Alerts.create_alert(alerts_audit, attrs)
+      alert
+    end
+
+    alerts_finish = fn alert, timing ->
+      {:ok, saved} =
+        GtfsPlanner.Alerts.save_draft(alerts_audit, alert.id, alert.revision, %{
+          "timing" => timing
+        })
+
+      saved
+    end
+
+    alerts_current =
+      alerts_new.(%{
+        "urgency" => "now",
+        "situation" => "delay",
+        "cause" => "weather",
+        "scope" => %{"shape" => "routes", "route_ids" => [alerts_route_12.id]},
+        "message" => %{
+          "header" => "Route 12 delays of up to 20 minutes",
+          "description" => "Wet roads on the coast road. Expect up to 20 minutes of delay."
+        }
+      })
+
+    alerts_finish.(alerts_current, %{
+      "start_date" => Date.to_iso8601(alerts_today),
+      "start_time" => "08:00:00",
+      "end_kind" => "estimated",
+      "check_in_at" => NaiveDateTime.to_iso8601(alerts_check_in)
+    })
+
+    alerts_upcoming =
+      alerts_new.(%{
+        "urgency" => "planned",
+        "situation" => "stop_closed",
+        "cause" => "construction",
+        "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [Enum.at(alerts_stops, 5).id]},
+        "message" => %{
+          "header" => "Harbor Street stop closed for road works",
+          "description" => "Harbor Street stop is closed. Board at the Ferry Terminal stop."
+        }
+      })
+
+    alerts_finish.(alerts_upcoming, %{
+      "pattern" => "continuous",
+      "first_date" => Date.to_iso8601(Date.add(alerts_today, 14)),
+      "last_date" => Date.to_iso8601(Date.add(alerts_today, 18)),
+      "all_day" => true
+    })
+
+    alerts_in_progress = alerts_new.(%{"urgency" => "planned", "situation" => "detour"})
+
+    alerts_needs_attention =
+      alerts_new.(%{
+        "urgency" => "now",
+        "situation" => "stop_closed",
+        "cause" => "construction",
+        "scope" => %{
+          "shape" => "stop_all_routes",
+          "stop_ids" => ["00000000-0000-0000-0000-000000000009"]
+        },
+        "message" => %{
+          "header" => "Old Depot Road stop closed",
+          "description" => "Old Depot Road stop is closed while the retaining wall is rebuilt."
+        }
+      })
+
+    alerts_finish.(alerts_needs_attention, %{
+      "start_date" => Date.to_iso8601(alerts_today),
+      "start_time" => "08:00:00",
+      "end_kind" => "estimated",
+      "check_in_at" => NaiveDateTime.to_iso8601(alerts_check_in)
+    })
+
+    IO.puts(
+      "Browser seed: alerts #{alerts_current.id} current, " <>
+        "#{alerts_upcoming.id} upcoming, #{alerts_in_progress.id} in progress, " <>
+        "#{alerts_needs_attention.id} needing attention"
+    )
 
     # The seed bulk-loads its rows, and a new database has no planner statistics
     # until autovacuum's first pass. A query planned before then estimates one row

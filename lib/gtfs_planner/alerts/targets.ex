@@ -301,6 +301,32 @@ defmodule GtfsPlanner.Alerts.Targets do
     }
   end
 
+  @doc """
+  Returns the route rows the given row UUIDs name, keyed by that UUID.
+
+  A list row shows each affected route as its own identity badge, and
+  `GtfsPlannerWeb.Components.RouteIdentity.route_badge/1` reads a route's own
+  short name and colors, so the list needs the rows rather than the labels
+  `labels_for/2` returns. An identity that is absent from the version is absent
+  from the result, which is exactly what `Alerts.Listing` flags as needing
+  attention (R8).
+  """
+  @spec routes_by_id(AuditContext.t(), [String.t()]) :: %{optional(Ecto.UUID.t()) => Route.t()}
+  def routes_by_id(%AuditContext{organization_id: o, gtfs_version_id: v}, ids) do
+    case uuids(ids) do
+      [] ->
+        %{}
+
+      route_uuids ->
+        from(r in Route,
+          where: r.organization_id == ^o and r.gtfs_version_id == ^v,
+          where: r.id in ^route_uuids
+        )
+        |> Repo.all()
+        |> Map.new(&{&1.id, &1})
+    end
+  end
+
   # -- Options -------------------------------------------------------------
 
   defp route_option(route) do
