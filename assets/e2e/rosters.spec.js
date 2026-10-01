@@ -41,8 +41,8 @@
 // serial and run in the order below: everything that reads the grid runs before
 // the pick, the import and the delete change it.
 //
-// Captures go to `.specs/09-basic-rosters/evidence/browser/`, the directory the
-// step card names, through the repository's own `captureShot` helper; the last
+// Captures go to `.specs/09-basic-rosters/evidence/browser/` through the
+// repository's own `captureShot` helper; the last
 // journey writes `qa-tour.md` from what the earlier ones recorded. `.specs/` is
 // gitignored and lives in the primary checkout, so the captures and the tour
 // are skipped (never failed) when that workspace is not linked.
@@ -58,9 +58,9 @@ const SPEC_PACKAGE = resolve(__dirname, "..", "..", ".specs", "09-basic-rosters"
 const EVIDENCE_DIR = resolve(SPEC_PACKAGE, "evidence", "browser");
 const REFERENCE_PROTOTYPE = resolve(SPEC_PACKAGE, "references", "rosters-prototype.html");
 
-// `captureShot` records only when this names a directory, and the step's own
+// `captureShot` records only when this names a directory, and the journey's
 // verification command is a bare `bin/test-browser e2e/rosters.spec.js`, so the
-// journey defaults it to the card's evidence folder and an environment value
+// journey defaults it to the spec package evidence folder and an environment value
 // still wins.
 process.env.ROUTE16_CAPTURE_DIR ??= EVIDENCE_DIR;
 
@@ -99,10 +99,17 @@ const PICK_OFFER = [
 ];
 const PICKS_OPERATOR = "Cleo Marchetti";
 
-// `.specs/09-basic-rosters/evidence/operators-sample.csv`: two rows that
-// import, one with no name and one whose seniority is not a number, and a column
-// nothing stores.
-const OPERATORS_CSV = resolve(SPEC_PACKAGE, "evidence", "operators-sample.csv");
+// `test/fixtures/tods/operators_sample.csv`: two rows that import, one with no
+// name and one whose seniority is not a number, and a column nothing stores.
+const OPERATORS_CSV = resolve(
+  __dirname,
+  "..",
+  "..",
+  "test",
+  "fixtures",
+  "tods",
+  "operators_sample.csv"
+);
 
 const DESKTOP = { width: 1440, height: 1000 };
 const NARROW = { width: 1280, height: 900 };
@@ -451,9 +458,7 @@ test.describe("Rosters page at 1440x1000", () => {
     await capture(page, "pick-saved-1440");
   });
 
-  test("importing operators-sample.csv shows the review and adds operators", async ({ page }) => {
-    test.skip(!existsSync(OPERATORS_CSV), "operators-sample.csv not present");
-
+  test("importing operators_sample.csv shows the review and adds operators", async ({ page }) => {
     await logInAs(page, EDITOR);
     const versionId = await versionIdFor(page);
     await openRosters(page, versionId, SEEDED_LINES + 1);
@@ -486,7 +491,7 @@ test.describe("Rosters page at 1440x1000", () => {
 
     // The review counts what the parser classified: two rows to add, none to
     // update, two skipped, and the column nothing stores.
-    await expect(page.locator("#rosters-import-review-title")).toContainText("operators-sample.csv");
+    await expect(page.locator("#rosters-import-review-title")).toContainText("operators_sample.csv");
     await expect(page.locator("#rosters-import-count-add")).toHaveText("2");
     await expect(page.locator("#rosters-import-count-update")).toHaveText("0");
     await expect(page.locator("#rosters-import-count-skipped")).toHaveText("2");
@@ -497,7 +502,7 @@ test.describe("Rosters page at 1440x1000", () => {
     await expect(page.locator("#rosters-import-apply")).toBeEnabled();
 
     tour.import = {
-      file: "operators-sample.csv",
+      file: "operators_sample.csv",
       add: 2,
       update: 0,
       skipped: 2,
@@ -772,7 +777,7 @@ test.describe("qa tour", () => {
       "| 2 | On run 1005 in Open work, choose **Create Mon–Fri line** | Line 6 is created, highlighted (`data-new=\"true\"`), works run 1005 on the five weekdays, is off at the weekend, and run 1005 leaves Open work | EV-30 `rosters_open_work_live_test.exs` |",
       "| 3 | Open line 2's Monday, read the refused **Set Mon–Fri**, then **Set Monday** | The group action is disabled with the sentence naming the rest it would leave and `minimum 10 h.`; the day's own action saves and the cell keeps its short-rest warning | EV-29 `rosters_slot_live_test.exs` |",
       "| 4 | Choose **Record pick** on line 6 and save an operator | The select lists the seniority order minus the two operators already holding a line; the saved row shows the operator's name and employee ID | EV-33 `rosters_pick_live_test.exs` |",
-      "| 5 | In **Operators**, import `evidence/operators-sample.csv` | The review shows Add 2 · Update 0 · Skipped 2, the two skipped IDs with their reasons, `phone` as unused, and the toast reports both halves | EV-36 `rosters_operator_import_live_test.exs` · EV-20, EV-21 |",
+      "| 5 | In **Operators**, import `test/fixtures/tods/operators_sample.csv` | The review shows Add 2 · Update 0 · Skipped 2, the two skipped IDs with their reasons, `phone` as unused, and the toast reports both halves | EV-36 `rosters_operator_import_live_test.exs` · EV-20, EV-21 |",
       "| 6 | Edit the operator who holds line 6 and delete them | The confirmation asks first, names the line, and after it the line reads Open with `Record pick` again | EV-34 `rosters_operators_live_test.exs` · EV-35 `rosters_operator_delete_live_test.exs` |",
       "| 7 | Open **Roster settings** and type 479 into minimum rest | The field's own range error appears on blur, only that field is `aria-invalid`, and saving is refused; closing leaves 600 | EV-37 `rosters_settings_live_test.exs` |",
       "| 8 | Read the export section, then narrow the window to 1280x900 | The planned-data note and the other-service warning naming Labor Day are on screen; the page has no horizontal overflow at 1280 | EV-38 `rosters_export_live_test.exs` · EV-22 |",

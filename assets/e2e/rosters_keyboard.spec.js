@@ -16,14 +16,12 @@
 // The tab traversal starts from the first sortable header and asserts the whole
 // sequence through the grid. A line's Line link and its Record pick control are
 // real buttons in the prototype as well as here, so they are stops too; what
-// this file pins is the part this step owns — each row's seven days
-// contributing exactly one stop between them, and the next stop being the next
-// line's rather than the next day of this one.
+// this file pins is each row's seven days contributing exactly one stop between
+// them, and the next stop being the next line's rather than the next day of
+// this one.
 //
-// "Enter opens #rosters-slot-drawer" is not asserted here. The drawer is step
-// 29's, so the journey asserts the half that is true today: the focused slot is
-// a real <button> and Enter dispatches the click its `phx-click="open_slot"`
-// binds to. The drawer opening is the LiveView tests' proof.
+// Enter on a focused day opens that day's slot drawer, and closing the drawer
+// puts focus back on the day, so the reader is where they left off.
 //
 // Run it with `bin/test-browser e2e/rosters_keyboard.spec.js`.
 
@@ -340,9 +338,11 @@ test.describe("Rosters grid roving row", () => {
   });
 
   // A slot is a real button, so Enter is native activation: the click the
-  // `open_slot` event binds to is dispatched on the focused day. The drawer
-  // itself is step 29's.
-  test("Enter activates the focused slot", async ({ page }) => {
+  // `open_slot` event binds to is dispatched on the focused day, the day's
+  // drawer opens, and closing it returns focus to the day.
+  test("Enter opens the focused slot's drawer and closing it returns focus", async ({
+    page,
+  }) => {
     expect(
       await page
         .locator(slot(FIRST_LINE, 1))
@@ -352,24 +352,22 @@ test.describe("Rosters grid roving row", () => {
       "open_slot"
     );
 
-    // The click is observed in the page rather than inferred from a drawer that
-    // does not exist yet, and it carries the line and the day it was for.
-    await page.evaluate(() => {
-      window.__slotClicks = [];
-      document
-        .querySelector("#rosters-grid")
-        .addEventListener("click", (e) => window.__slotClicks.push(e.target.id), true);
-    });
-
     await page.locator(slot(SECOND_LINE, 7)).focus();
     await page.keyboard.press("Enter");
 
-    expect(await page.evaluate(() => window.__slotClicks)).toEqual([
-      `slot-${SECOND_LINE}-7`,
-    ]);
-    // Focus stays on the day that was opened: the drawer is not this step's, and
-    // a roving row must not move under the reader when a key is pressed.
-    expect(await focusedSlot(page)).toBe(`slot-${SECOND_LINE}-7`);
+    const overlay = page.locator('#rosters-slot-drawer-overlay[data-open="true"]');
+    await expect(overlay).toBeVisible();
+    await expect(page.locator("#rosters-slot-drawer")).toContainText(
+      `Line ${SECOND_LINE} · Sunday`
+    );
+
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#rosters-slot-drawer-overlay")).toHaveCount(0, {
+      timeout: 15_000,
+    });
+    await expect
+      .poll(() => focusedSlot(page))
+      .toBe(`slot-${SECOND_LINE}-7`);
   });
 
   // The keyboard hint is visible under the table and names the keys.
