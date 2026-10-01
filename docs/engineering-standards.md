@@ -650,7 +650,13 @@ Derive actor, organization and version from trusted server context. Keep those f
 record identity out of editor `cast/4` masks. An intentional identity rename or historical
 restore needs its owning command, same-scope reference updates and atomic history; do not
 implement it by broadening a general changeset. Load referenced records within the selected
-organization/version and parent scope instead of accepting an unscoped struct or UUID.
+organization/version and the operation's required parent scope instead of accepting an
+unscoped struct or UUID. Keep selection predicates distinct from ownership checks: companion
+station bundles and their field/swap command include a pathway when either endpoint is a
+selected-station descendant (OR), while both endpoint rows must exist in the trusted
+organization/version. Full graph editing requires both endpoints in the station scope (AND).
+Do not reuse the graph predicate to silently narrow the companion contract; test a valid
+cross-station pathway as well as unrelated, missing and foreign endpoint refusals.
 
 For a retrying interactive command, lock and authorize current membership inside every
 attempt, before entity locks and expected-revision checks, using the established lock order.
