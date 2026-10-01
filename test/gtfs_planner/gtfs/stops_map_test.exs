@@ -328,6 +328,29 @@ defmodule GtfsPlanner.Gtfs.StopsMapTest do
 
       assert payload.stops |> hd() |> Map.fetch!(:point) == nil
     end
+
+    test "names the served flag the way the hook reads it", %{
+      organization: org,
+      version: version
+    } do
+      stop_fixture(org.id, version.id, %{
+        stop_id: "S1",
+        stop_lat: Decimal.new("44.62"),
+        stop_lon: Decimal.new("-124.05")
+      })
+
+      [stop] =
+        load!(org, version)
+        |> StopsMap.display_payload(2.0)
+        |> Map.fetch!(:stops)
+
+      # The model asks `served?` because Elixir asks a question. This map is
+      # the JSON boundary and the hook reads `stop.served`; carried across
+      # unchanged the key arrives as `"served?"`, which is undefined for every
+      # stop — so an unserved stop draws as a served one and nothing fails.
+      assert Map.fetch!(stop, :served) == false
+      assert Jason.encode!(stop) =~ ~s("served":false)
+    end
   end
 
   # --- fixtures and helpers

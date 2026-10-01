@@ -408,7 +408,11 @@ defmodule GtfsPlanner.Gtfs.StopsMap do
       point: display_point(stop.point),
       location_type: stop.location_type,
       parent_station: stop.parent_station,
-      served?: stop.served?,
+      # The model says `served?` because Elixir asks a question; JSON asks for a
+      # name. Left as-is it reaches the hook as the key `"served?"`, and the
+      # hook's `stop.served` is then undefined for every stop — which reads as
+      # served, so an unserved stop draws as a served one.
+      served: stop.served?,
       pattern_ids: Enum.map(stop.pattern_ids, &to_string/1)
     }
   end

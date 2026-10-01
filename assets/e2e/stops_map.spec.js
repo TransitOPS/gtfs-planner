@@ -122,13 +122,13 @@ function viewportLabel(page) {
 
 // One state at both viewports: 1440×900 for the comparison with the reference,
 // and 390×844 for the stacked workspace and the no-horizontal-scroll gate.
-async function captureBoth(page, testInfo, name) {
+async function captureBoth(page, testInfo, name, prefix = "shell-") {
   await expectFits(page);
-  await capture(page, testInfo, `shell-${name}-desktop`);
+  await capture(page, testInfo, `${prefix}${name}-desktop`);
 
   await page.setViewportSize(MOBILE);
   await expectFits(page);
-  await capture(page, testInfo, `shell-${name}-mobile`);
+  await capture(page, testInfo, `${prefix}${name}-mobile`);
 
   await page.setViewportSize(DESKTOP);
 }
@@ -136,14 +136,20 @@ async function captureBoth(page, testInfo, name) {
 // The same state from the prototype, at the current viewport, for the
 // side-by-side inspection. Skipped in a checkout that does not carry the
 // package, which is not a failure of this spec.
-async function captureReference(page, testInfo, state, name) {
+async function captureReference(
+  page,
+  testInfo,
+  state,
+  name,
+  prefix = "shell-ref-",
+) {
   if (!REFERENCE_FILE || !existsSync(REFERENCE_FILE)) return null;
 
   await page.setViewportSize(DESKTOP);
   await page.goto(`file://${REFERENCE_FILE}?state=${state}`);
   await page.waitForLoadState("load");
 
-  await capture(page, testInfo, `shell-ref-${name}-${state}-desktop`, {
+  await capture(page, testInfo, `${prefix}${name}-${state}-desktop`, {
     fullPage: false,
   });
 
@@ -151,7 +157,7 @@ async function captureReference(page, testInfo, state, name) {
   await page.goto(`file://${REFERENCE_FILE}?state=${state}`);
   await page.waitForLoadState("load");
 
-  await capture(page, testInfo, `shell-ref-${name}-${state}-mobile`, {
+  await capture(page, testInfo, `${prefix}${name}-${state}-mobile`, {
     fullPage: false,
   });
 
@@ -177,9 +183,56 @@ async function openMap(page, versionId) {
 
   await expect(page.locator("#stops-map-page")).toBeAttached();
   await expect(page.locator("#stops-map-panel")).toBeAttached();
-  await expect(page.locator("#stops-map-loading-caption")).toBeAttached();
 
   return page;
+}
+
+// Past the scene draw. The hook reports readiness by pushing `stop_map_ready`,
+// which is what clears the stage's loading overlay, and Leaflet marks its own
+// container once it owns it — so this waits for the drawing rather than for a
+// timeout.
+async function waitForMapReady(page) {
+  await expect(page.locator("#stop-map.leaflet-container")).toBeAttached();
+  await expect(
+    page.locator("#stop-map .stop-map-marker").first(),
+  ).toBeAttached();
+  // The stage's loading overlay is the server's word that the map is not up yet.
+  await expect(page.locator("#stops-map-loading-caption")).toHaveCount(0);
+}
+
+// How many of each mark the hook drew. Read from the DOM rather than from the
+// hook, so a broken redraw is a wrong count and not a passing assertion about
+// the hook's own bookkeeping.
+async function drawnCounts(page) {
+  return page.evaluate(() => ({
+    stops: document.querySelectorAll("#stop-map .stop-map-marker").length,
+    lines: document.querySelectorAll("#stop-map .leaflet-overlay-pane path")
+      .length,
+    ticks: document.querySelectorAll("#stop-map .stop-map-tick").length,
+    bays: document.querySelectorAll("#stop-map .stop-map-bay").length,
+  }));
+}
+
+// The workspace's own zoom stack, clicked the way a person would. A station's
+// bays sit metres apart, so the map has to be closed in before they are marks
+// of their own.
+async function zoom(page, steps) {
+  const label = steps > 0 ? "Zoom in" : "Zoom out";
+  for (let step = 0; step < Math.abs(steps); step++) {
+    await page.locator(`[aria-label="${label}"]`).click();
+  }
+}
+
+// The tile URL carries its own zoom, which is the only place the map's zoom is
+// readable from outside the hook — and what a mark shows is stated in zooms: a
+// bay separates from its station at 18, a name is readable up to 16.
+async function mapZoom(page) {
+  return page.evaluate(() => {
+    const tile = document.querySelector("#stop-map img.leaflet-tile");
+    if (!tile) return null;
+
+    return Number(new URL(tile.src).pathname.split("/").at(-3));
+  });
 }
 
 // ── seed ──────────────────────────────────────────────────────────────────
@@ -250,9 +303,6 @@ test("the map view shell @shell", async ({ page }, testInfo) => {
   await expect(
     page.locator("#stop-map[phx-hook=StopMap][phx-update=ignore]"),
   ).toBeAttached();
-  await expect(page.locator("#stops-map-loading-caption")).toHaveText(
-    "Loading map…",
-  );
 
   // The panel says what it holds, and its count is the header's count: one
   // sentence, two places, so the page never contradicts itself.
@@ -298,4 +348,147 @@ test("the shell at both viewports @shell", async ({ page }, testInfo) => {
   ).toMatchObject({ panel: expect.anything() });
 
   await captureBoth(page, testInfo, "workspace");
+});
+
+// ── render (step 24) ──────────────────────────────────────────────────────
+
+// The drawn map: stops as discs with a travel tick, a station as a filled
+// square, a bay as a lettered disc, and every pattern as two parallel lines
+// offset to the right of travel. The basemap toggle and the routes toggle are
+// client-only, so both are driven here rather than round-tripped.
+test("the drawn map @render", async ({ page }, testInfo) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+  await openMap(page, versionId);
+  await waitForMapReady(page);
+
+  // The stage is fitted to the whole feed, so every located stop in the seed is
+  // drawn except the two bays their station stands in for at this scale.
+  const atFit = await drawnCounts(page);
+  const fitZoom = await mapZoom(page);
+  expect(atFit.lines).toBeGreaterThan(0);
+  expect(atFit.ticks).toBeGreaterThan(0);
+  // The canvas is focusable, which is what lets the arrow keys pan it once
+  // Leaflet's keyboard handling has it.
+  await expect(page.locator("#stop-map")).toHaveAttribute("tabindex", "0");
+  // Below the bay gate the station stands in for the bays folded into it; the
+  // seed's two are thirteen metres apart and their discs would land on it.
+  expect(atFit.bays).toBe(fitZoom >= 18 ? 2 : 0);
+  expect(atFit.stops).toBe(fitZoom >= 18 ? 17 : 15);
+
+  // The legend describes marks that are actually on the map: a station square.
+  await expect(
+    page.locator("#stop-map .stop-map-station").first(),
+  ).toBeAttached();
+
+  // The panel's list still follows the map: the hook's view report is what
+  // filled it, and the seed's stops are all inside the fitted extent.
+  await expect(page.locator("#stops-map-row-1434")).toBeAttached();
+
+  await captureBoth(page, testInfo, "map", "render-");
+  await capture(page, testInfo, "render-street-desktop");
+
+  // At the fitted view no stop carries a name: the basemap's own street names
+  // are the text at that scale, and the panel's list is where a stop's name
+  // belongs — the prototype paints none here either.
+  expect(await page.locator("#stop-map .stop-map-label").count()).toBe(0);
+
+  // Closed in, the bays separate and take their letters and the stops take their
+  // names. The lines stay: a road wide enough on screen carries one line
+  // without the offset that keeps two buses apart.
+  // Closed in only as far as the bay gate needs: the feed's own extent is a few
+  // blocks, so eight steps would put the camera somewhere past the last stop.
+  await zoom(page, Math.max(1, 18 - fitZoom));
+  expect((await mapZoom(page)) >= 18).toBe(true);
+  const closed = await drawnCounts(page);
+  expect(closed.bays).toBe(2);
+  expect(closed.stops).toBe(17);
+  expect(closed.lines).toBe(atFit.lines);
+  expect(
+    await page.locator("#stop-map .stop-map-label").count(),
+  ).toBeGreaterThan(0);
+
+  // The two bays are attached and carry their letters; the seed's station sits
+  // at the west edge of the extent, so at this zoom they are drawn off the
+  // captured canvas rather than in it. The capture is of the marks and names a
+  // reader actually gets at street zoom.
+  await expect(page.locator("#stop-map .stop-map-bay").first()).toBeAttached();
+  await capture(page, testInfo, "render-street-zoom-desktop");
+
+  await captureReference(page, testInfo, "map", "map", "render-ref-");
+});
+
+test("the basemap and routes toggles @render", async ({ page }, testInfo) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+  await openMap(page, versionId);
+  await waitForMapReady(page);
+
+  const withRoutes = (await drawnCounts(page)).lines;
+
+  // Unchecking Routes leaves the stops where they are and takes the lines away:
+  // a line is context, and an editor reading one street wants the stops on it.
+  await page.locator("#stops-map-legend [data-map-routes]").uncheck();
+  expect((await drawnCounts(page)).lines).toBe(0);
+  expect((await drawnCounts(page)).stops).toBeGreaterThan(0);
+
+  await page.locator("#stops-map-legend [data-map-routes]").check();
+  expect((await drawnCounts(page)).lines).toBe(withRoutes);
+
+  // The basemap pair is a choice, so exactly one of the two is pressed.
+  await expect(
+    page.locator('#stops-map-legend [data-map-basemap="streets"]'),
+  ).toHaveAttribute("aria-pressed", "true");
+
+  await capture(page, testInfo, "render-streets-desktop");
+
+  await page
+    .locator('#stops-map-legend [data-map-basemap="satellite"]')
+    .click();
+  await expect(
+    page.locator('#stops-map-legend [data-map-basemap="satellite"]'),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    page.locator('#stops-map-legend [data-map-basemap="streets"]'),
+  ).toHaveAttribute("aria-pressed", "false");
+
+  await capture(page, testInfo, "render-satellite-desktop");
+  await captureReference(
+    page,
+    testInfo,
+    "satellite",
+    "satellite",
+    "render-ref-",
+  );
+});
+
+test("the drawn map at both viewports @render", async ({ page }, testInfo) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+  await openMap(page, versionId);
+  await waitForMapReady(page);
+
+  // 1440 px puts the map beside the 408 px panel; 390 px stacks them above it,
+  // and the legend wraps rather than pushing the page sideways.
+  await expectFits(page);
+  await capture(page, testInfo, "render-map-desktop");
+
+  await page.setViewportSize(MOBILE);
+  await waitForMapReady(page);
+  await expectFits(page);
+  await capture(page, testInfo, "render-map-mobile");
+
+  await page.setViewportSize(DESKTOP);
 });

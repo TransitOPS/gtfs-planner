@@ -4944,3 +4944,97 @@ html:has(#schedules-grid) {
   line-height: 1;
   white-space: nowrap;
 }
+
+/* The Stops map markers. Leaflet positions a divIcon's element; these rules are
+   what it looks like once it is there. The box is fixed in pixels rather than
+   scaled with zoom, because a stop that grows as the map zooms stops reading as
+   a point on a street. */
+.stop-map-marker {
+  background: none;
+  border: 0;
+}
+
+.stop-map-stop,
+.stop-map-bay,
+.stop-map-station {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: block;
+  transform: translate(-50%, -50%);
+  background: #fff;
+}
+
+.stop-map-stop {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #0f1a3d;
+  border-radius: 50%;
+}
+
+.stop-map-stop-unserved {
+  border-color: #7a85ac;
+  border-style: dashed;
+}
+
+.stop-map-station {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: #0f1a3d;
+}
+
+/* A bay is a labelled white disc: the letter is the part an editor looks for,
+   and a disc of the same size as a stop is what makes it read as the same kind
+   of thing on the same street. */
+.stop-map-bay {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 2px solid #0f1a3d;
+  border-radius: 50%;
+  color: #0f1a3d;
+  font-family: var(--font-ds);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* The travel tick. Positioned from the hook's bearing in degrees, so it points
+   the way the bus goes rather than up the screen. */
+.stop-map-tick {
+  position: absolute;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 7px solid #1a2654;
+}
+
+.stop-map-marker:hover .stop-map-stop,
+.stop-map-marker:focus-visible .stop-map-stop {
+  box-shadow: 0 0 0 3px rgba(200, 24, 112, 0.35);
+}
+
+/* The stop's name, once the map is close enough for it to be read. The white
+   halo is what lets a name sit over a coloured route line and still be read,
+   which is why the prototype paints the outline behind the text rather than
+   adding a box. */
+.stop-map-label {
+  position: absolute;
+  left: 16px;
+  bottom: 12px;
+  max-width: 180px;
+  overflow: hidden;
+  color: #0f1a3d;
+  font-family: var(--font-ds);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  -webkit-text-stroke: 3px #fff;
+  paint-order: stroke fill;
+  pointer-events: none;
+}

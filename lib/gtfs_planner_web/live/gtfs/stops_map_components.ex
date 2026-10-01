@@ -140,6 +140,141 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
         <p class="m-0 text-[15px] font-bold text-strong">{@caption.title}</p>
         <p :if={@caption.text} class="m-0 mt-0.5 text-[13px] text-default">{@caption.text}</p>
       </div>
+
+      <.map_legend />
+      <.map_zoom />
+    </div>
+    """
+  end
+
+  @doc """
+  The zoom stack: plus, minus and "show every stop" at the top right of the
+  stage.
+
+  Leaflet's own control is switched off in favour of this one because it is
+  top-left, 34 px, and its buttons are not the 44 px targets the rest of the
+  workspace uses. It sits outside `#stop-map` for the legend's reason: Leaflet
+  owns every child of the canvas.
+  """
+  def map_zoom(assigns) do
+    ~H"""
+    <div
+      class="absolute right-3 top-3 z-10 grid overflow-hidden rounded-control border border-control bg-overlay shadow-card"
+      role="group"
+      aria-label="Map zoom"
+    >
+      <button
+        type="button"
+        data-map-zoom="in"
+        aria-label="Zoom in"
+        title="Zoom in"
+        class="flex size-11 items-center justify-center text-strong hover:bg-canvas"
+      >
+        <.icon name="hero-plus" class="size-5" />
+      </button>
+      <button
+        type="button"
+        data-map-zoom="out"
+        aria-label="Zoom out"
+        title="Zoom out"
+        class="flex size-11 items-center justify-center border-t border-control text-strong hover:bg-canvas"
+      >
+        <.icon name="hero-minus" class="size-5" />
+      </button>
+      <button
+        type="button"
+        data-map-fit
+        aria-label="Show every stop"
+        title="Show every stop"
+        class="flex size-11 items-center justify-center border-t border-control text-strong hover:bg-canvas"
+      >
+        <.icon name="hero-arrows-pointing-in" class="size-5" />
+      </button>
+    </div>
+    """
+  end
+
+  @doc """
+  The legend: what the marks on the map mean, then the basemap and route toggles.
+
+  It sits at the bottom left, inside the stage and outside `#stop-map`, because
+  Leaflet owns every child of the canvas and a legend placed in there would be
+  the first thing a `fitBounds` threw away. The two toggles change what is drawn
+  and nothing the server stores, so the hook handles them on the client; the
+  basemap buttons carry `aria-pressed` because they are a pair of choices, not
+  two independent actions.
+  """
+  def map_legend(assigns) do
+    ~H"""
+    <div
+      id="stops-map-legend"
+      class="absolute bottom-3 left-3 z-10 flex max-w-[calc(100%-24px)] flex-wrap items-center gap-x-4 gap-y-1 rounded-control border border-subtle bg-overlay px-3 py-1 text-[13px] text-default shadow-card"
+    >
+      <span class="inline-flex items-center gap-1.5">
+        <svg width="22" height="16" viewBox="0 0 22 16" aria-hidden="true">
+          <circle cx="8" cy="8" r="5.5" fill="#fff" stroke="#0f1a3d" stroke-width="2"></circle>
+          <path
+            d="M15 8l4 0M17 5.5l2.5 2.5-2.5 2.5"
+            fill="none"
+            stroke="#1a2654"
+            stroke-width="1.6"
+          >
+          </path>
+        </svg>
+        Stop, arrow shows travel
+      </span>
+      <span class="inline-flex items-center gap-1.5">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+          <circle
+            cx="8"
+            cy="8"
+            r="5.5"
+            fill="#fff"
+            stroke="#7a85ac"
+            stroke-width="2"
+            stroke-dasharray="3 2"
+          >
+          </circle>
+        </svg>
+        Not served
+      </span>
+      <span class="inline-flex items-center gap-1.5">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+          <rect x="2" y="2" width="12" height="12" rx="3" fill="#0f1a3d"></rect>
+        </svg>
+        Station
+      </span>
+      <span
+        class="inline-flex overflow-hidden rounded-control border border-control"
+        role="group"
+        aria-label="Base map"
+      >
+        <button
+          type="button"
+          data-map-basemap="streets"
+          aria-pressed="true"
+          class="min-h-11 px-3 text-[13px] text-strong hover:bg-canvas"
+        >
+          Streets
+        </button>
+        <button
+          type="button"
+          data-map-basemap="satellite"
+          aria-pressed="false"
+          class="min-h-11 border-l border-control px-3 text-[13px] text-strong hover:bg-canvas"
+        >
+          Satellite
+        </button>
+      </span>
+      <label class="inline-flex min-h-11 cursor-pointer items-center gap-2">
+        <input
+          type="checkbox"
+          data-map-routes
+          checked
+          class="size-4 accent-action"
+        /> Routes
+      </label>
+      <span class="hidden max-xl:inline text-muted">Arrow keys move the map</span>
     </div>
     """
   end

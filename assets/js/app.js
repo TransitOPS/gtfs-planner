@@ -18,40 +18,43 @@
 // To load it, simply add a second `<link>` to your `root.html.heex` file.
 
 // Include phoenix_html to handle method=PUT/DELETE in forms and buttons.
-import "phoenix_html"
+import "phoenix_html";
 // Establish Phoenix Socket and LiveView configuration.
-import {Socket} from "phoenix"
-import {LiveSocket} from "phoenix_live_view"
-import {hooks as colocatedHooks} from "phoenix-colocated/gtfs_planner"
-import topbar from "../vendor/topbar.cjs"
-import GtfsVersionHook from "./gtfs_version_hook"
-import DiagramCanvasHook from "./diagram_canvas_hook"
-import DiagramCandidateProbe from "./diagram_candidate_probe_hook"
-import MapAlignmentHook from "./map_alignment_hook"
-import FareZoneMapHook from "./fare_zone_map_hook"
-import FlexAreaMapHook from "./flex_area_map_hook"
-import PatternAlignment from "./pattern_alignment_hook"
-import OverlayDialogHook from "./overlay_dialog_hook"
-import FormErrorFocusHook from "./form_error_focus_hook"
-import TablistHook from "./tablist_hook"
-import TimetableGrid from "./timetable_grid_hook"
-import UserMenuHook from "./user_menu_hook"
-import JournalPanelHook from "./journal_panel_hook"
-import CalendarDateChange from "./calendar_date_change"
-import CalendarCombination from "./calendar_combination"
-import CalendarEditor from "./calendar_editor"
-import RoutePatternEditorHook from "./route_pattern_editor"
-import RouteDetailsEditorHook from "./route_details_editor"
-import RouteDetailsMapHook from "./route_details_map"
-import PatternCompareWorkspace from "./pattern_compare_workspace"
-import PatternCompareMap from "./pattern_compare_map"
-import FillPreviewMapHook from "./fill_preview_map"
-import PathwayEvolutionsFloorplan from "./pathway_evolutions_floorplan"
-import TransferMapHook from "./transfer_map_hook"
-import "../vendor/leaflet"
-import LiveSelect from "../vendor/live_select"
+import { Socket } from "phoenix";
+import { LiveSocket } from "phoenix_live_view";
+import { hooks as colocatedHooks } from "phoenix-colocated/gtfs_planner";
+import topbar from "../vendor/topbar.cjs";
+import GtfsVersionHook from "./gtfs_version_hook";
+import DiagramCanvasHook from "./diagram_canvas_hook";
+import DiagramCandidateProbe from "./diagram_candidate_probe_hook";
+import MapAlignmentHook from "./map_alignment_hook";
+import FareZoneMapHook from "./fare_zone_map_hook";
+import StopMapHook from "./stop_map_hook";
+import FlexAreaMapHook from "./flex_area_map_hook";
+import PatternAlignment from "./pattern_alignment_hook";
+import OverlayDialogHook from "./overlay_dialog_hook";
+import FormErrorFocusHook from "./form_error_focus_hook";
+import TablistHook from "./tablist_hook";
+import TimetableGrid from "./timetable_grid_hook";
+import UserMenuHook from "./user_menu_hook";
+import JournalPanelHook from "./journal_panel_hook";
+import CalendarDateChange from "./calendar_date_change";
+import CalendarCombination from "./calendar_combination";
+import CalendarEditor from "./calendar_editor";
+import RoutePatternEditorHook from "./route_pattern_editor";
+import RouteDetailsEditorHook from "./route_details_editor";
+import RouteDetailsMapHook from "./route_details_map";
+import PatternCompareWorkspace from "./pattern_compare_workspace";
+import PatternCompareMap from "./pattern_compare_map";
+import FillPreviewMapHook from "./fill_preview_map";
+import PathwayEvolutionsFloorplan from "./pathway_evolutions_floorplan";
+import TransferMapHook from "./transfer_map_hook";
+import "../vendor/leaflet";
+import LiveSelect from "../vendor/live_select";
 
-const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
+const csrfToken = document
+  .querySelector("meta[name='csrf-token']")
+  .getAttribute("content");
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   // A rejoin after a dropped socket carries the open create-route drawer's signed
@@ -61,33 +64,77 @@ const liveSocket = new LiveSocket("/live", Socket, {
     _csrf_token: csrfToken,
     new_route_attempt: el?.querySelector("#new-route-attempt")?.value,
   }),
-  hooks: {...colocatedHooks, CalendarDateChange, CalendarCombination, CalendarEditor, DraftGuard: CalendarEditor, GtfsVersionHook, DiagramCanvas: DiagramCanvasHook, DiagramCandidateProbe, MapAlignment: MapAlignmentHook, FareZoneMap: FareZoneMapHook, FlexAreaMap: FlexAreaMapHook, PatternAlignment, OverlayDialog: OverlayDialogHook, FormErrorFocus: FormErrorFocusHook, TablistHook, TimetableGrid, UserMenu: UserMenuHook, JournalPanelHook, LiveSelect: LiveSelect.LiveSelect, RoutePatternEditor: RoutePatternEditorHook, RouteDetailsEditor: RouteDetailsEditorHook, RouteDetailsMap: RouteDetailsMapHook, FillPreviewMap: FillPreviewMapHook, TransferMap: TransferMapHook, PathwayEvolutionsFloorplan, PatternCompareWorkspace, PatternCompareMap},
-})
+  hooks: {
+    ...colocatedHooks,
+    CalendarDateChange,
+    CalendarCombination,
+    CalendarEditor,
+    DraftGuard: CalendarEditor,
+    GtfsVersionHook,
+    DiagramCanvas: DiagramCanvasHook,
+    DiagramCandidateProbe,
+    MapAlignment: MapAlignmentHook,
+    FareZoneMap: FareZoneMapHook,
+    StopMap: StopMapHook,
+    FlexAreaMap: FlexAreaMapHook,
+    PatternAlignment,
+    OverlayDialog: OverlayDialogHook,
+    FormErrorFocus: FormErrorFocusHook,
+    TablistHook,
+    TimetableGrid,
+    UserMenu: UserMenuHook,
+    JournalPanelHook,
+    LiveSelect: LiveSelect.LiveSelect,
+    RoutePatternEditor: RoutePatternEditorHook,
+    RouteDetailsEditor: RouteDetailsEditorHook,
+    RouteDetailsMap: RouteDetailsMapHook,
+    FillPreviewMap: FillPreviewMapHook,
+    TransferMap: TransferMapHook,
+    PathwayEvolutionsFloorplan,
+    PatternCompareWorkspace,
+    PatternCompareMap,
+  },
+});
 
-const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)")
+const prefersReducedMotion = window.matchMedia(
+  "(prefers-reduced-motion: reduce)",
+);
 
 function semanticPrimaryColor() {
-  return getComputedStyle(document.documentElement).getPropertyValue("--color-primary").trim() || "#29d"
+  return (
+    getComputedStyle(document.documentElement)
+      .getPropertyValue("--color-primary")
+      .trim() || "#29d"
+  );
 }
 
-topbar.config({barColors: {0: semanticPrimaryColor()}, shadowColor: "rgba(0, 0, 0, 0)"})
-window.addEventListener("phx:page-loading-start", _info => topbar.show(prefersReducedMotion.matches ? 0 : 300))
-window.addEventListener("phx:page-loading-stop", _info => topbar.hide())
+topbar.config({
+  barColors: { 0: semanticPrimaryColor() },
+  shadowColor: "rgba(0, 0, 0, 0)",
+});
+window.addEventListener("phx:page-loading-start", (_info) =>
+  topbar.show(prefersReducedMotion.matches ? 0 : 300),
+);
+window.addEventListener("phx:page-loading-stop", (_info) => topbar.hide());
 window.addEventListener("phx:scroll_to_error", (e) => {
   requestAnimationFrame(() => {
-    const el = document.getElementById(e.detail.id)
-    if (el) el.scrollIntoView({ behavior: prefersReducedMotion.matches ? "auto" : "smooth", block: "start" })
-  })
-})
+    const el = document.getElementById(e.detail.id);
+    if (el)
+      el.scrollIntoView({
+        behavior: prefersReducedMotion.matches ? "auto" : "smooth",
+        block: "start",
+      });
+  });
+});
 
 // connect if there are any LiveViews on the page
-liveSocket.connect()
+liveSocket.connect();
 
 // expose liveSocket on window for web console debug logs and latency simulation:
 // >> liveSocket.enableDebug()
 // >> liveSocket.enableLatencySim(1000)  // enabled for duration of browser session
 // >> liveSocket.disableLatencySim()
-window.liveSocket = liveSocket
+window.liveSocket = liveSocket;
 
 // The lines below enable quality of life phoenix_live_reload
 // development features:
@@ -96,30 +143,37 @@ window.liveSocket = liveSocket
 //     2. click on elements to jump to their definitions in your code editor
 //
 if (process.env.NODE_ENV === "development") {
-  window.addEventListener("phx:live_reload:attached", ({detail: reloader}) => {
-    // Enable server log streaming to client.
-    // Disable with reloader.disableServerLogs()
-    reloader.enableServerLogs()
+  window.addEventListener(
+    "phx:live_reload:attached",
+    ({ detail: reloader }) => {
+      // Enable server log streaming to client.
+      // Disable with reloader.disableServerLogs()
+      reloader.enableServerLogs();
 
-    // Open configured PLUG_EDITOR at file:line of the clicked element's HEEx component
-    //
-    //   * click with "c" key pressed to open at caller location
-    //   * click with "d" key pressed to open at function component definition location
-    let keyDown
-    window.addEventListener("keydown", e => keyDown = e.key)
-    window.addEventListener("keyup", _e => keyDown = null)
-    window.addEventListener("click", e => {
-      if(keyDown === "c"){
-        e.preventDefault()
-        e.stopImmediatePropagation()
-        reloader.openEditorAtCaller(e.target)
-      } else if(keyDown === "d"){
-        e.preventDefault()
-        e.stopImmediatePropagation()
-        reloader.openEditorAtDef(e.target)
-      }
-    }, true)
+      // Open configured PLUG_EDITOR at file:line of the clicked element's HEEx component
+      //
+      //   * click with "c" key pressed to open at caller location
+      //   * click with "d" key pressed to open at function component definition location
+      let keyDown;
+      window.addEventListener("keydown", (e) => (keyDown = e.key));
+      window.addEventListener("keyup", (_e) => (keyDown = null));
+      window.addEventListener(
+        "click",
+        (e) => {
+          if (keyDown === "c") {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            reloader.openEditorAtCaller(e.target);
+          } else if (keyDown === "d") {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            reloader.openEditorAtDef(e.target);
+          }
+        },
+        true,
+      );
 
-    window.liveReloader = reloader
-  })
+      window.liveReloader = reloader;
+    },
+  );
 }
