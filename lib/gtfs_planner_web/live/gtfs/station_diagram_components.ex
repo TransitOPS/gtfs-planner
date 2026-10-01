@@ -6796,7 +6796,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             tabindex="-1"
             phx-mounted={JS.focus()}
           />
-          <.message :if={@error and not @stale?} id="naming-error" kind="error" title={@error} />
+          <.message :if={@error && !@stale?} id="naming-error" kind="error" title={@error} />
 
           <p :if={@preview_rows == [] and is_nil(@error)} class="text-sm text-muted">
             No child stops to rename for this station.
