@@ -32,8 +32,10 @@ defmodule GtfsPlanner.Alerts.AlertScript do
 
   @max_name_length 80
   # The header a rider sees in an app list and the description they open. The
-  # bounds are `MessageAnswer`'s, so a generated message never overflows the
-  # field it is stored in.
+  # bounds are `MessageAnswer`'s, applied to the template. A filled placeholder
+  # can lengthen the generated text past the same bound (a long stop name in a
+  # header), and `Alerts.save_draft/4` then refuses it as it refuses any
+  # over-long answer.
   @max_header_template_length 120
   @max_description_template_length 2_000
 

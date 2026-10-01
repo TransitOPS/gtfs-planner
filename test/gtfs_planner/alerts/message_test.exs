@@ -69,6 +69,10 @@ defmodule GtfsPlanner.Alerts.MessageTest do
       assert Message.unknown_placeholders("[street] [route] [street]") == ["street"]
     end
 
+    test "a padded placeholder name is unknown, because the fill would never match it" do
+      assert Message.unknown_placeholders("[route ] and [ stop]") == ["route ", " stop"]
+    end
+
     test "a template using only the vocabulary has none to report" do
       assert Message.unknown_placeholders(@detour_header) == []
 
@@ -112,6 +116,11 @@ defmodule GtfsPlanner.Alerts.MessageTest do
 
       assert Message.fill("Route [route] detour", %{"route" => "   "}) ==
                "Route [route] detour"
+    end
+
+    test "a padded token stays as written even when a fact has that name" do
+      assert Message.fill("Route [route ] detour", %{"route" => "12", "route " => "12"}) ==
+               "Route [route ] detour"
     end
 
     test "a token outside the lowercase vocabulary is never filled" do
@@ -384,7 +393,12 @@ defmodule GtfsPlanner.Alerts.MessageTest do
       alert =
         detour(context, route_id(context, "12"), stop_id(context, "S6"), stop_id(context, "S20"))
 
-      alert = with_message(context, alert, Message.digest(%{"route" => "12"}))
+      # The wording was written against the answers as they stood, so its digest
+      # is the real facts' digest and nothing is flagged yet.
+      alert =
+        with_message(context, alert, Message.digest(Message.facts(alert, labels(context, alert))))
+
+      assert Message.review_wording?(alert, labels(context, alert)) == false
 
       alert = save!(context.audit, alert, %{"timing" => %{"first_date" => "2026-10-12"}})
 
@@ -404,11 +418,16 @@ defmodule GtfsPlanner.Alerts.MessageTest do
       assert Message.review_wording?(alert, labels(context, alert)) == false
     end
 
-    test "a draft with no message, or no digest stored, is not flagged", context do
+    test "a draft with no message is not flagged", context do
       alert =
         detour(context, route_id(context, "12"), stop_id(context, "S6"), stop_id(context, "S20"))
 
       assert Message.review_wording?(alert, labels(context, alert)) == false
+    end
+
+    test "customized text with no digest stored is flagged", context do
+      alert =
+        detour(context, route_id(context, "12"), stop_id(context, "S6"), stop_id(context, "S20"))
 
       alert = with_message(context, alert, nil)
 
@@ -527,8 +546,13 @@ defmodule GtfsPlanner.Alerts.MessageTest do
     route_fixture(context.organization.id, context.version.id, route_attrs(route_id, route_id)).id
   end
 
+  # The stops the detour cases read, named the way riders know them.
+  @stop_names %{"S6" => "NE 6th St", "S20" => "NE 20th St"}
+
   defp stop_id(context, stop_id) do
-    stop_fixture(context.organization.id, context.version.id, stop_attrs(stop_id, stop_id)).id
+    name = Map.get(@stop_names, stop_id, stop_id)
+
+    stop_fixture(context.organization.id, context.version.id, stop_attrs(stop_id, name)).id
   end
 
   # A planned weekly detour with a confirmed end, the shape the detour script

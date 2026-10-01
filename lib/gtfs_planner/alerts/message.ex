@@ -128,7 +128,7 @@ defmodule GtfsPlanner.Alerts.Message do
   def unknown_placeholders(template) when is_binary(template) do
     @any_token
     |> Regex.scan(template)
-    |> Enum.map(fn [_match, name] -> String.trim(name) end)
+    |> Enum.map(fn [_match, name] -> name end)
     |> Enum.reject(&(&1 in @placeholders))
     |> Enum.uniq()
   end
@@ -138,17 +138,23 @@ defmodule GtfsPlanner.Alerts.Message do
   @doc """
   Replaces each `[name]` in `template` with the matching fact, in one pass.
 
-  A fact that is missing or empty leaves its token exactly as written, so the
-  operator sees what could not be filled. A fact is inserted literally: the
-  replacement is not rescanned, so a stop or route named `[route]` appears in
+  A fact that is missing or blank leaves its token exactly as written, so the
+  operator sees what could not be filled, and so does a name outside the
+  vocabulary even when `facts` happens to hold it. A fact is inserted literally:
+  the replacement is not rescanned, so a stop or route named `[route]` appears in
   the text as that text and the fill does not run again over it.
+
+  A `nil` template is no template, and fills to the empty text.
   """
   @spec fill(String.t() | nil, facts()) :: String.t()
   def fill(template, facts) when is_binary(template) and is_map(facts) do
     Regex.replace(@fill_token, template, fn token, name ->
-      case Map.get(facts, name) do
-        value when is_binary(value) and value != "" -> value
-        _absent -> token
+      with true <- name in @placeholders,
+           value when is_binary(value) <- Map.get(facts, name),
+           true <- String.trim(value) != "" do
+        value
+      else
+        _unfilled -> token
       end
     end)
   end

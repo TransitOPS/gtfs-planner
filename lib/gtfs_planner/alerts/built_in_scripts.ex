@@ -28,7 +28,7 @@ defmodule GtfsPlanner.Alerts.BuiltInScripts do
       situation: :detour,
       header_template: "Route [route] detour: [first skipped] to [last skipped] not served",
       description_template:
-        "[when], Route [route] buses [direction] are detoured[because]. " <>
+        "[when], Route [route] buses are detoured[because]. " <>
           "Stops from [first skipped] to [last skipped] are not served."
     },
     %{
