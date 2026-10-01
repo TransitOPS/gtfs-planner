@@ -659,6 +659,111 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
   @spec artifact_available?(Run.t()) :: boolean()
   def artifact_available?(%Run{} = run), do: artifact_current?(run)
 
+  @typedoc """
+  Keyset position of one comparable-run page: the last row's
+  `(inserted_at, id)` in this module's `inserted_at DESC, id ASC` order.
+  """
+  @type comparable_position :: {DateTime.t(), Ecto.UUID.t()}
+
+  @doc """
+  Lists the organization's retained, ready, full-main export runs, newest
+  first, as release-comparison candidates.
+
+  A comparable run is `:ready`, of `export_type` `:full`, still inside its
+  artifact retention and carrying complete main artifact metadata. Nothing is
+  verified, read or claimed here: this is a copy of durable run rows, so an
+  expired run and a missing artifact are the same empty answer.
+  """
+  @spec list_comparable(Ecto.UUID.t(), keyword()) :: [Run.t()]
+  def list_comparable(organization_id, opts \\ []) do
+    position = Keyword.get(opts, :after)
+    limit = Keyword.get(opts, :limit, 25)
+
+    from(r in Run,
+      where: r.organization_id == ^organization_id,
+      where: r.state == :ready and r.export_type == :full,
+      where:
+        not is_nil(r.artifact_key) and not is_nil(r.artifact_sha256) and
+          not is_nil(r.artifact_size_bytes) and not is_nil(r.artifact_expires_at),
+      where: r.artifact_expires_at >= fragment("CURRENT_TIMESTAMP"),
+      order_by: [desc: r.inserted_at, asc: r.id],
+      limit: ^limit
+    )
+    |> after_position(position)
+    |> Repo.all()
+  end
+
+  # The ordering is `(inserted_at DESC, id ASC)`, so the keyset predicate keeps
+  # both directions: rows older than the position, and the later ids sharing
+  # exactly its insert timestamp.
+  defp after_position(query, nil), do: query
+
+  defp after_position(query, {inserted_at, run_id}) do
+    where(
+      query,
+      ^dynamic(
+        [r],
+        r.inserted_at < ^inserted_at or
+          (r.inserted_at == ^inserted_at and r.id > ^run_id)
+      )
+    )
+  end
+
+  @doc """
+  Resolves one run of this organization as a release-comparison candidate.
+
+  `version_id` is the caller's version identity, or `nil` when it resolved none:
+  a submitted identity that does not name the run's own version is refused
+  exactly like an absent run. The run's version must still exist inside the
+  organization, and the run must be retained, `:ready` and `:full`.
+
+  Returns `{:ok, run}`, `{:error, :unsupported_profile}` for a resolvable run
+  whose profile cannot be compared, or `{:error, :not_found}` for every other
+  refusal, so the caller cannot tell an absent run from a foreign, deleted or
+  expired one.
+  """
+  @spec get_comparable(Ecto.UUID.t(), Ecto.UUID.t() | nil, Ecto.UUID.t()) ::
+          {:ok, Run.t()} | {:error, :not_found | :unsupported_profile}
+  def get_comparable(organization_id, version_id, run_id) do
+    run =
+      from(r in Run,
+        where: r.id == ^run_id and r.organization_id == ^organization_id
+      )
+      |> Repo.one()
+
+    classify_comparable(organization_id, version_id, run)
+  end
+
+  defp classify_comparable(_organization_id, _version_id, nil), do: {:error, :not_found}
+
+  defp classify_comparable(organization_id, version_id, %Run{} = run) do
+    cond do
+      (is_binary(version_id) and version_id != run.gtfs_version_id) or
+          not version_in_scope?(organization_id, run.gtfs_version_id) ->
+        {:error, :not_found}
+
+      run.state != :ready or not retained?(run) or not main_metadata?(run) ->
+        {:error, :not_found}
+
+      run.export_type != :full ->
+        {:error, :unsupported_profile}
+
+      true ->
+        {:ok, run}
+    end
+  end
+
+  defp retained?(%Run{artifact_expires_at: expires_at}) when not is_nil(expires_at) do
+    DateTime.compare(expires_at, database_now()) != :lt
+  end
+
+  defp retained?(_run), do: false
+
+  defp main_metadata?(%Run{} = run) do
+    is_binary(run.artifact_key) and is_binary(run.artifact_sha256) and
+      is_integer(run.artifact_size_bytes)
+  end
+
   @spec topic(Run.t() | Ecto.UUID.t()) :: String.t()
   def topic(%Run{id: id}), do: topic(id)
   def topic(run_id) when is_binary(run_id), do: "export-run:" <> run_id
