@@ -29,7 +29,6 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Alerts
   alias GtfsPlanner.Alerts.Alert
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Repo
 
@@ -82,7 +81,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
   end
 
   describe "the start card on /alerts/new" do
-    setup :editor_conn
+    setup :log_in_editor
 
     test "it asks for the situation and writes nothing until it is sent", context do
       {:ok, view, _html} = live(context.conn, new_assistant_path(context))
@@ -130,9 +129,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
       |> element("#alert-assistant-form")
       |> render_submit(%{"assistant" => %{"note" => @note}})
 
-      assert_redirect(view, ~r|/gtfs/#{context.version.id}/alerts/[0-9a-f-]+\?mode=assistant|)
-
       assert [alert] = Repo.all(Alert)
+
+      assert_redirect(
+        view,
+        "/gtfs/#{context.version.id}/alerts/#{alert.id}?mode=assistant&step=urgency"
+      )
+
       assert alert.revision == 1
       assert alert.urgency == nil
       assert alert.organization_id == context.organization.id
@@ -156,7 +159,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
   end
 
   describe "a prepared change" do
-    setup :editor_conn
+    setup :log_in_editor
 
     test "is applied through save_draft, and the preview shows what it wrote", context do
       alert = alert_fixture(context.audit, %{"urgency" => "now"})
@@ -291,7 +294,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
   end
 
   describe "when the provider cannot answer" do
-    setup :editor_conn
+    setup :log_in_editor
 
     test "the mode control says so and the form still saves", context do
       alert = alert_fixture(context.audit, %{"urgency" => "now", "situation" => "detour"})
@@ -332,7 +335,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
   end
 
   describe "the message step" do
-    setup :editor_conn
+    setup :log_in_editor
 
     test "Draft with assistant opens assistant mode with the request in the composer", context do
       alert = alert_with_answers(context)
@@ -341,6 +344,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
 
       assert has_element?(view, "#draft-with-assistant", "Draft with assistant")
       assert has_element?(view, "#alert-form")
+
+      # Arriving at the message step may write generated wording; the revision
+      # this test guards is the one the click starts from.
+      assert {:ok, before_click} = Alerts.get_alert(context.audit, alert.id)
 
       view |> element("#draft-with-assistant") |> render_click()
 
@@ -352,7 +359,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
 
       # The form and the assistant read the same row.
       assert {:ok, untouched} = Alerts.get_alert(context.audit, alert.id)
-      assert untouched.revision == alert.revision
+      assert untouched.revision == before_click.revision
     end
   end
 
@@ -395,23 +402,18 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
   end
 
   # The settling reply parks until the test has committed the newer save, which
-  # is what makes the stale case a fact rather than a race.
+  # is what makes the stale case a fact rather than a race: it tells the test it
+  # is waiting, then answers once the test releases it.
   defp wait_for_release(conn, test_pid) do
-    receive do
-      {:stub_waiting, ^test_pid} ->
-        send(test_pid, {:stub_waiting, self()})
+    send(test_pid, {:stub_waiting, self()})
 
-        receive do
-          {:release, ^test_pid} -> :released
-        after
-          5_000 -> :released
-        end
+    receive do
+      {:release, ^test_pid} -> :released
     after
-      5_000 -> :released
+      5_000 -> :timed_out
     end
-    |> case do
-      :released -> respond(conn, text_reply(@prepared_text))
-    end
+
+    respond(conn, text_reply(@prepared_text))
   end
 
   defp alert_with_answers(context) do
@@ -426,6 +428,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
       "cause" => "accident"
     })
   end
+
+  defp log_in_editor(context), do: %{conn: editor_conn(context)}
 
   defp editor_conn(context) do
     log_in_user(build_conn(), context.actor, organization: context.organization)
@@ -455,7 +459,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
       user_email: context.actor.email,
       pack_id: "alerts",
       version_name: context.version.name,
-      subject_id: alert_id
+      subject_id: alert_id,
+      # The editor's panel binds the whole version as the conversation's page.
+      resource_context: Scope.context({:version, context.version.id})
     }
   end
 

@@ -9,10 +9,11 @@ defmodule GtfsPlannerWeb.AgentPanelHandoffTest do
   is scripted, so the SQL sandbox and the `Req.Test` plug are shared
   (`async: false`).
 
-  The host that opts in is `GtfsPlannerWeb.AgentPanelHostLive`, because no
-  production host does yet. The echo pack the card offers cannot reach this path:
-  `Agents.packs/0` is production configuration and registers only `"calendars"`,
-  so a session opened by the panel is a real calendars conversation.
+  The host that opts in is `GtfsPlannerWeb.AgentPanelHostLive`, which only
+  records what the panel hands it, so these tests do not depend on how the
+  alerts editor applies a change. The echo pack the card offers cannot reach
+  this path: `Agents.packs/0` is production configuration and does not register
+  it, so a session opened by the panel is a real `"calendars"` conversation.
   """
 
   use GtfsPlannerWeb.ConnCase, async: false
@@ -79,6 +80,10 @@ defmodule GtfsPlannerWeb.AgentPanelHandoffTest do
       session = socket_assigns(view).agent_session
       assert is_pid(session)
 
+      # The session sends its events only to attached listeners, so the test
+      # attaches to the conversation the panel holds.
+      assert {:ok, ^session, _snapshot} = Agents.open(scope(context, nil))
+
       {view, session, entry} = prepare_stop_change(view, session)
 
       conversation_id = socket_assigns(view).agent_conversation_id
@@ -100,20 +105,48 @@ defmodule GtfsPlannerWeb.AgentPanelHandoffTest do
       view |> element("#host-open") |> render_click()
 
       session = socket_assigns(view).agent_session
+      assert {:ok, ^session, _snapshot} = Agents.open(scope(context, nil))
+
       {view, session, entry} = prepare_stop_change(view, session)
 
       assert_receive {:host_received_prepared, _conversation_id, 2}, 5_000
 
       # A second conversation for another subject is a real session, and its
-      # events are not this panel's.
+      # events are not this panel's. The entry id is one the panel has never
+      # forwarded, so only the session check can stop it.
       {:ok, other_session, _snapshot} = Agents.open(scope(context, Ecto.UUID.generate()))
       assert other_session != session
 
-      send(view.pid, {:agent_event, other_session, {:entry, entry}})
+      send(view.pid, {:agent_event, other_session, {:entry, %{entry | id: 99}}})
       _ = :sys.get_state(view.pid)
 
       refute_receive {:host_received_prepared, _conversation_id, _entry_id}, 200
       assert socket_assigns(view).received_prepared == [2]
+    end
+
+    test "a new conversation hands over its own first prepared entry", context do
+      {view, _html} = mount_host(context, auto_apply: true)
+      view |> element("#host-open") |> render_click()
+
+      session = socket_assigns(view).agent_session
+      assert {:ok, ^session, _snapshot} = Agents.open(scope(context, nil))
+
+      {view, session, _entry} = prepare_stop_change(view, session)
+      first_conversation_id = socket_assigns(view).agent_conversation_id
+      assert_receive {:host_received_prepared, ^first_conversation_id, 2}, 5_000
+
+      # The new conversation numbers its entries from one again, so its first
+      # prepared entry is entry 2 once more and must not be taken for the one
+      # already handed over.
+      render_click(view, "agent_new", %{})
+      assert_receive {:agent_event, ^session, {:reset, second_conversation_id}}, 5_000
+      assert second_conversation_id != first_conversation_id
+      flush_agent_events(session)
+
+      {view, _session, _entry} = prepare_stop_change(view, session)
+
+      assert_receive {:host_received_prepared, ^second_conversation_id, 2}, 5_000
+      assert socket_assigns(view).received_prepared == [2, 2]
     end
   end
 
@@ -126,12 +159,17 @@ defmodule GtfsPlannerWeb.AgentPanelHandoffTest do
       assert has_element?(view, "#agent-panel")
 
       session = socket_assigns(view).agent_session
+      assert {:ok, ^session, _snapshot} = Agents.open(scope(context, nil))
+
       {view, _session, _entry} = prepare_stop_change(view, session)
 
       assert has_element?(view, "#agent-review-prepared-2")
       assert scoped_date_count(context) == 0
-      _ = :sys.get_state(view.pid)
-      refute_receive {:host_received_prepared, _conversation_id, _entry_id}, 200
+
+      # The panel never opted in, so it forwarded nothing to the page.
+      assigns = socket_assigns(view)
+      refute assigns.agent_auto_apply?
+      assert assigns.agent_forwarded == MapSet.new()
     end
   end
 
@@ -208,7 +246,9 @@ defmodule GtfsPlannerWeb.AgentPanelHandoffTest do
       user_email: context.user.email,
       pack_id: "calendars",
       version_name: context.version.name,
-      subject_id: subject_id
+      subject_id: subject_id,
+      # The host binds the whole version as the conversation's page.
+      resource_context: Scope.context({:version, context.version.id})
     }
   end
 
@@ -223,6 +263,16 @@ defmodule GtfsPlannerWeb.AgentPanelHandoffTest do
   end
 
   defp socket_assigns(view), do: :sys.get_state(view.pid).socket.assigns
+
+  # Drops the events of the conversation that just ended, so the next
+  # assertion waits for the new conversation's own.
+  defp flush_agent_events(session) do
+    receive do
+      {:agent_event, ^session, _event} -> flush_agent_events(session)
+    after
+      0 -> :ok
+    end
+  end
 
   defp add_calendar(organization, version, service_id, name) do
     calendar_fixture(organization.id, version.id, @weekdays |> Map.put(:service_id, service_id))

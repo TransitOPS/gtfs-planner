@@ -2,12 +2,12 @@ defmodule GtfsPlannerWeb.AgentPanelHostLive do
   @moduledoc """
   Test-only host LiveView for the panel's handoff to its host (EV-24).
 
-  No production host opts into `auto_apply` yet — the alerts editor does in the
-  editor step — so this module plays that host: it mounts `AgentPanel` with the
-  options the host passes, opens it through `AgentPanel.open/1` rather than the
-  open button, and forwards every `{:agent_prepared, conversation_id, entry_id}`
-  it receives to the process registered as
-  `:agent_panel_handoff_test_pid`.
+  The alerts editor is the production host that opts into `auto_apply`, and it
+  writes each prepared change itself. This module is a host with nothing to
+  write: it mounts `AgentPanel` with the options the host passes, opens it
+  through `AgentPanel.open/1` rather than the open button, and forwards every
+  `{:agent_prepared, conversation_id, entry_id}` it receives to the process
+  registered as `:agent_panel_handoff_test_pid`.
 
   It names no domain code and no pack of its own: the pack, the session and the
   prepared change all come from production, and the host only decides what to do
