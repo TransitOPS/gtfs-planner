@@ -126,13 +126,21 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveTest do
     end)
   end
 
-  defp insert_zone(organization, version) do
+  defp insert_zone(user, organization, version) do
     {:ok, zone} =
-      FareZones.create_zone(organization.id, version.id, %{
-        "name" => "Central",
-        "zone_id" => "A",
-        "color" => "ocean"
-      })
+      FareZones.create_zone(
+        %GtfsPlanner.Gtfs.AuditContext{
+          actor_id: user.id,
+          actor_email: user.email,
+          organization_id: organization.id,
+          gtfs_version_id: version.id
+        },
+        %{
+          "name" => "Central",
+          "zone_id" => "A",
+          "color" => "ocean"
+        }
+      )
 
     zone
   end
@@ -230,7 +238,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveTest do
         {:error, :unavailable}
       end)
 
-      insert_zone(organization, version)
+      insert_zone(user, organization, version)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
@@ -265,7 +273,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveTest do
     } do
       Application.delete_env(:gtfs_planner, @adapter_key)
 
-      insert_zone(organization, version)
+      insert_zone(user, organization, version)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")

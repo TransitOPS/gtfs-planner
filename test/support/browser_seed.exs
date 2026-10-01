@@ -3238,7 +3238,7 @@ case Accounts.register_first_admin(%{
     # stops AC-35 measures in the browser, in five zones, inserted in five
     # batches of 2,000.
     #
-    # Zone metadata goes through `FareZones.create_zone/3` (CR-1 keeps that
+    # Zone metadata goes through `FareZones.create_zone/2` (CR-1 keeps that
     # module `fare_zones`' only writer) and the route through
     # `Gtfs.create_route/1`. Stop, fare and rule rows are fixture data inserted
     # directly: no changeset casts `stops.zone_id`, and `FareRule.changeset/2`
@@ -3267,11 +3267,19 @@ case Accounts.register_first_admin(%{
           {"D", "Airport", "ochre"}
         ] do
       {:ok, _declared_zone} =
-        FareZones.create_zone(org.id, fare_zones_version.id, %{
-          zone_id: zone_id,
-          name: name,
-          color: color
-        })
+        FareZones.create_zone(
+          %AuditContext{
+            organization_id: org.id,
+            gtfs_version_id: fare_zones_version.id,
+            actor_id: editor.id,
+            actor_email: editor.email
+          },
+          %{
+            zone_id: zone_id,
+            name: name,
+            color: color
+          }
+        )
     end
 
     fare_stop = fn stop_id, stop_name, lat, lon, zone_id, attrs ->

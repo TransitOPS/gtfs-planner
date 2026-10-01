@@ -14,6 +14,10 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   cover boardable stops (`location_type` 0) only; station and entrance zone IDs
   are kept and exported but not edited.
 
+  Each write takes an `AuditContext` built from trusted server state. Its
+  transaction checks the actor's current editor membership before locking the
+  published version or reading entities; revoked access returns `:forbidden`.
+
   `list_rule_groups/2` is the read side of the rule projection. One UI fare rule
   is exactly the set of `fare_rules` rows sharing `(fare_id, route_id, origin_id,
   destination_id, contains_id IS NOT NULL)`: a `contains_id` of NULL forms the
@@ -38,22 +42,23 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   is `stop_name` with names missing last, then `stop_id`, so the list pages, the
   current match and the map points stay deterministic.
 
-  Reviewed bulk assignment is the three write functions `preview_assignment/4`,
-  `apply_assignment/3` and `undo_assignment/3`. A preview is a read that reports
+  Reviewed bulk assignment uses `preview_assignment/4`, `apply_assignment/2`
+  and `undo_assignment/2`. A preview is a read that reports
   each selected boardable stop's current and target zone; an apply writes the
-  reviewed changes in one transaction that first locks the organization's
-  published version row `FOR UPDATE`, so cooperating writers of one version
+  reviewed changes in one transaction that first locks the actor's membership
+  `FOR SHARE` and then the organization's published version row `FOR UPDATE`,
+  so cooperating writers of one version
   serialize and a pair that is not a published version of the organization
   changes nothing (`:not_found`). Every change is fenced: the locked current zone
   must still equal the reviewed `from`, otherwise nothing is written and the
-  changed stops are returned. `undo_assignment/3` takes exactly the `applied`
+  changed stops are returned. `undo_assignment/2` takes exactly the `applied`
   list of a successful apply, swaps its values back and restores them without
   inventory validation, so a zone that left the inventory when its last stop
   moved is restored byte-for-byte. Only boardable stops are assignable and only
   a zone in the inventory can be an assignment target.
 
-  Zone metadata is written by `create_zone/3` and `update_zone/4`, both inside
-  the same version-locked transaction. `update_zone/4` edits only a zone that is
+  Zone metadata is written by `create_zone/2` and `update_zone/3`, both inside
+  the same version-locked transaction. `update_zone/3` edits only a zone that is
   still in the inventory: a metadata edit keeps the stored ID bytes and inserts a
   record for an implicit zone under exactly that ID, while an ID change (a form
   `zone_id` that differs from the stored ID both byte-for-byte and after
@@ -67,7 +72,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   changeset and makes the same byte-for-byte decision, so a form validates what
   the write will do.
 
-  `delete_zone/5` removes a zone inside the same version-locked transaction. It
+  `delete_zone/4` removes a zone inside the same version-locked transaction. It
   refuses a zone that left the inventory (`:not_found`), a request whose expected
   stop and rule counts no longer match the inventory (`{:stale, zone}` with the
   current entry), a zone fare rules use with no replacement
@@ -81,19 +86,21 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   removed - so no row keeps the deleted ID and no group is left orphaned.
 
   The rule drawer's reads are `list_fares/2` and `list_rule_routes/2`, and its
-  form is `change_rule_group/2`. `save_rule_group/4` writes one reviewed rule
+  form is `change_rule_group/2`. `save_rule_group/3` writes one reviewed rule
   inside the same version-locked transaction: it fences the review against the
   version's current rows under the reviewed key, refuses a fare, route or zone
   outside the version, refuses a new reference to a stopless zone and a key
   another rule already holds, then deletes exactly the reviewed rows and inserts
   one row per contains zone (or one row without a `contains_id`) with the exact
-  chosen values. `delete_rule_group/3` removes exactly the reviewed rows under
+  chosen values. `delete_rule_group/2` removes exactly the reviewed rows under
   the same fence. So a rule edit can neither merge two rules, orphan a row, trim
   an ID nor overwrite a review the user never saw.
   """
 
   import Ecto.Query, warn: false
 
+  alias GtfsPlanner.Authorization
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareAttribute
   alias GtfsPlanner.Gtfs.FareRule
   alias GtfsPlanner.Gtfs.FareZone
@@ -573,39 +580,45 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   that is not nil must still be in the inventory (`:unknown_zone`), and every ID
   must still be a boardable stop of this organization and version
   (`:invalid_selection`, as for a duplicated foreign UUID). Inside one
-  transaction the published version row is locked `FOR UPDATE` and the selected
+  transaction the actor's membership is checked and the published version row
+  is locked `FOR UPDATE` before the selected
   stops are locked and re-read: if any stop's current zone differs from its
   reviewed `from`, the transaction rolls back with
   `{:stale, [%{id, stop_id, stop_name, reviewed, current}]}` and nothing is
   written. Otherwise one `update_all/3` per distinct target writes the exact
   zone ID (nil for unassign) and `updated_at`, and the applied changes are
-  returned for `undo_assignment/3`. A pair that is not a published version of the
+  returned for `undo_assignment/2`. A pair that is not a published version of the
   organization returns `:not_found` and changes nothing.
   """
-  @spec apply_assignment(Ecto.UUID.t(), Ecto.UUID.t(), [assignment_change()]) ::
+  @spec apply_assignment(AuditContext.t(), [assignment_change()]) ::
           {:ok, %{applied: [assignment_change()]}}
-          | {:error, {:stale, [stale_stop()]} | :invalid_selection | :unknown_zone | :not_found}
-  def apply_assignment(organization_id, gtfs_version_id, changes) do
-    write_assignment(organization_id, gtfs_version_id, changes, validate_targets?: true)
+          | {:error,
+             {:stale, [stale_stop()]}
+             | :invalid_selection
+             | :unknown_zone
+             | :not_found
+             | :forbidden}
+  def apply_assignment(%AuditContext{} = audit, changes) do
+    write_assignment(audit, changes, validate_targets?: true)
   end
 
   @doc """
-  Restores the zones an `apply_assignment/3` replaced, under the same fence.
+  Restores the zones an `apply_assignment/2` replaced, under the same fence.
 
   Call only with the exact `applied` list returned by a successful
-  `apply_assignment/3`: the values are swapped back and written with no inventory
+  `apply_assignment/2`: the values are swapped back and written with no inventory
   validation, so a zone that left the inventory when its last stop moved, or was
   unassigned, is restored byte-for-byte. The same transaction, version-row lock,
   selection check and stale fence apply: if any stop changed after the save,
   nothing is written and `{:error, {:stale, stops}}` is returned. `:not_found`
   means the pair is not a published version of the organization.
   """
-  @spec undo_assignment(Ecto.UUID.t(), Ecto.UUID.t(), [assignment_change()]) ::
+  @spec undo_assignment(AuditContext.t(), [assignment_change()]) ::
           {:ok, %{applied: [assignment_change()]}}
-          | {:error, {:stale, [stale_stop()]} | :invalid_selection | :not_found}
-  def undo_assignment(organization_id, gtfs_version_id, applied) do
+          | {:error, {:stale, [stale_stop()]} | :invalid_selection | :not_found | :forbidden}
+  def undo_assignment(%AuditContext{} = audit, applied) do
     changes = Enum.map(applied, &%{id: &1.id, from: &1.to, to: &1.from})
-    write_assignment(organization_id, gtfs_version_id, changes, validate_targets?: false)
+    write_assignment(audit, changes, validate_targets?: false)
   end
 
   @doc """
@@ -616,8 +629,8 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   bytes nor its trimmed bytes are the stored ID. Otherwise it is a metadata edit,
   and `:keep` never casts the ID: the drawer can re-send an imported `" A"` or
   `"Zone 1"` verbatim, padding included, and those bytes are neither trimmed nor
-  revalidated. A rename is trimmed and validated like a new ID. `create_zone/3`
-  and `update_zone/4` make the same decision from the same form values.
+  revalidated. A rename is trimmed and validated like a new ID. `create_zone/2`
+  and `update_zone/3` make the same decision from the same form values.
   """
   @spec change_zone(FareZone.t() | nil, map()) :: Ecto.Changeset.t()
   def change_zone(nil, attrs), do: FareZone.changeset(%FareZone{}, attrs, :new)
@@ -641,10 +654,13 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   returned zone is that version's inventory entry. A pair that is not a
   published version of the organization returns `:not_found` and writes nothing.
   """
-  @spec create_zone(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
-          {:ok, zone()} | {:error, Ecto.Changeset.t()} | {:error, :not_found}
-  def create_zone(organization_id, gtfs_version_id, attrs) do
-    transact(organization_id, gtfs_version_id, fn ->
+  @spec create_zone(AuditContext.t(), map()) ::
+          {:ok, zone()} | {:error, Ecto.Changeset.t()} | {:error, :not_found | :forbidden}
+  def create_zone(%AuditContext{} = audit, attrs) do
+    organization_id = audit.organization_id
+    gtfs_version_id = audit.gtfs_version_id
+
+    transact(audit, fn ->
       changeset =
         %FareZone{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
         |> FareZone.changeset(attrs, :new)
@@ -681,10 +697,13 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   the final ID. A pair that is not a published version of the organization
   returns `:not_found` and writes nothing.
   """
-  @spec update_zone(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), map()) ::
-          {:ok, zone()} | {:error, Ecto.Changeset.t()} | {:error, :not_found}
-  def update_zone(organization_id, gtfs_version_id, current_zone_id, attrs) do
-    transact(organization_id, gtfs_version_id, fn ->
+  @spec update_zone(AuditContext.t(), String.t(), map()) ::
+          {:ok, zone()} | {:error, Ecto.Changeset.t()} | {:error, :not_found | :forbidden}
+  def update_zone(%AuditContext{} = audit, current_zone_id, attrs) do
+    organization_id = audit.organization_id
+    gtfs_version_id = audit.gtfs_version_id
+
+    transact(audit, fn ->
       if zone_exists?(organization_id, gtfs_version_id, current_zone_id) do
         update_zone_write(organization_id, gtfs_version_id, current_zone_id, attrs)
       else
@@ -719,8 +738,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   and writes nothing.
   """
   @spec delete_zone(
-          Ecto.UUID.t(),
-          Ecto.UUID.t(),
+          AuditContext.t(),
           String.t(),
           String.t() | nil,
           %{stop_count: non_neg_integer(), rule_count: non_neg_integer()}
@@ -731,9 +749,17 @@ defmodule GtfsPlanner.Gtfs.FareZones do
              rewritten_rows: non_neg_integer(),
              removed_duplicate_rows: non_neg_integer()
            }}
-          | {:error, :not_found | :replacement_required | :invalid_replacement | {:stale, zone()}}
-  def delete_zone(organization_id, gtfs_version_id, zone_id, replacement, expected) do
-    transact(organization_id, gtfs_version_id, fn ->
+          | {:error,
+             :not_found
+             | :forbidden
+             | :replacement_required
+             | :invalid_replacement
+             | {:stale, zone()}}
+  def delete_zone(%AuditContext{} = audit, zone_id, replacement, expected) do
+    organization_id = audit.organization_id
+    gtfs_version_id = audit.gtfs_version_id
+
+    transact(audit, fn ->
       zone = inventory_zone(organization_id, gtfs_version_id, zone_id)
 
       cond do
@@ -804,7 +830,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   destination becomes nil, which is how the drawer's "Any origin", "Any
   destination" and "All routes" arrive; `contains` is deduplicated, empty entries
   dropped and a nil or empty list kept empty. `fare_id` is required. The same
-  changeset seeds `save_rule_group/4`, so the form checks what the save will do;
+  changeset seeds `save_rule_group/3`, so the form checks what the save will do;
   the save adds its own field errors for the values only the database can settle.
   """
   @spec change_rule_group(rule_group() | nil, map()) :: Ecto.Changeset.t()
@@ -841,10 +867,15 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   is returned. A pair that is not a published version of the organization returns
   `:not_found` and writes nothing.
   """
-  @spec save_rule_group(Ecto.UUID.t(), Ecto.UUID.t(), rule_group() | nil, map()) ::
-          {:ok, rule_group()} | {:error, Ecto.Changeset.t()} | {:error, :stale | :not_found}
-  def save_rule_group(organization_id, gtfs_version_id, reviewed, attrs) do
-    transact(organization_id, gtfs_version_id, fn ->
+  @spec save_rule_group(AuditContext.t(), rule_group() | nil, map()) ::
+          {:ok, rule_group()}
+          | {:error, Ecto.Changeset.t()}
+          | {:error, :stale | :not_found | :forbidden}
+  def save_rule_group(%AuditContext{} = audit, reviewed, attrs) do
+    organization_id = audit.organization_id
+    gtfs_version_id = audit.gtfs_version_id
+
+    transact(audit, fn ->
       save_rule_group_write(organization_id, gtfs_version_id, reviewed, attrs)
     end)
   end
@@ -852,17 +883,20 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   @doc """
   Removes one reviewed rule group, deleting exactly its rows.
 
-  `reviewed` is the group the drawer showed, fenced exactly as `save_rule_group/4`
+  `reviewed` is the group the drawer showed, fenced exactly as `save_rule_group/3`
   fences a save: the version's rows under its key must still be `reviewed.rows`
   (IDs and the five values), otherwise the call rolls back `:stale` and writes
   nothing. Otherwise the reviewed rows are deleted and their count returned; the
   fare attribute is untouched. A pair that is not a published version of the
   organization returns `:not_found` and writes nothing.
   """
-  @spec delete_rule_group(Ecto.UUID.t(), Ecto.UUID.t(), rule_group()) ::
-          {:ok, non_neg_integer()} | {:error, :stale | :not_found}
-  def delete_rule_group(organization_id, gtfs_version_id, reviewed) do
-    transact(organization_id, gtfs_version_id, fn ->
+  @spec delete_rule_group(AuditContext.t(), rule_group()) ::
+          {:ok, non_neg_integer()} | {:error, :stale | :not_found | :forbidden}
+  def delete_rule_group(%AuditContext{} = audit, reviewed) do
+    organization_id = audit.organization_id
+    gtfs_version_id = audit.gtfs_version_id
+
+    transact(audit, fn ->
       if stale_rule_review?(list_rows(organization_id, gtfs_version_id), reviewed) do
         Repo.rollback(:stale)
       else
@@ -871,10 +905,12 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     end)
   end
 
-  defp write_assignment(organization_id, gtfs_version_id, changes, opts) do
+  defp write_assignment(%AuditContext{} = audit, changes, opts) do
     changes = Enum.uniq_by(changes, & &1.id)
+    organization_id = audit.organization_id
+    gtfs_version_id = audit.gtfs_version_id
 
-    transact(organization_id, gtfs_version_id, fn ->
+    transact(audit, fn ->
       validate_targets(organization_id, gtfs_version_id, changes, opts)
       locked_stops = lock_selected_stops(organization_id, gtfs_version_id, changes)
       stale = stale_changes(locked_stops, changes)
@@ -888,14 +924,14 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     end)
   end
 
-  # One transaction per write, opening with the organization's published version
-  # row locked `FOR UPDATE` (precedent: `Calendars.published_version_for_update/2`).
-  # That single row both validates the scope pair and serializes writers of this
-  # version's zone aggregate; a pair that cannot be a published version - a
-  # non-UUID argument included - rolls back `:not_found` without touching
-  # anything.
-  defp transact(organization_id, gtfs_version_id, fun) do
-    Repo.transaction(fn -> lock_version_and_run(organization_id, gtfs_version_id, fun) end)
+  # Membership is checked on every write attempt before the published version
+  # lock. The version row then validates the selected scope and serializes zone
+  # writers; an invalid or unpublished version rolls back with :not_found.
+  defp transact(%AuditContext{} = audit, fun) do
+    Repo.transaction(fn ->
+      Authorization.lock_editor!(audit)
+      lock_version_and_run(audit.organization_id, audit.gtfs_version_id, fun)
+    end)
   end
 
   defp lock_version_and_run(organization_id, gtfs_version_id, fun) do
@@ -1231,7 +1267,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
 
   # The inventory entry of one zone, or nil when the ID is not in the inventory.
   # A caller inside a write that just put the ID in the inventory always
-  # resolves; `delete_zone/5` uses the nil result as its `:not_found` check, and
+  # resolves; `delete_zone/4` uses the nil result as its `:not_found` check, and
   # so does the stale fence's comparison against the counts the dialog showed.
   defp inventory_zone(organization_id, gtfs_version_id, zone_id) do
     organization_id

@@ -7,7 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneDeleteTest do
   operator does - the inventory row's filter, the stage header's `Edit zone`,
   then `Delete zone…` - and confirms through the dialog's own button. The copy
   and the counts the dialog shows therefore come from
-  `FareZones.inventory/2`, and every write is `FareZones.delete_zone/5`.
+  `FareZones.inventory/2`, and every write is `FareZones.delete_zone/4`.
 
   The fixture carries what AC-16, AC-26 and AC-27 name: a declared zone three
   fare-rule groups use and a station carries (so the replacement path, the

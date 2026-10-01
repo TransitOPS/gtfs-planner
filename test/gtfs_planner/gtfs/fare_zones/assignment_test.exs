@@ -15,8 +15,10 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
 
   alias GtfsPlanner.Gtfs.FareRule
   alias GtfsPlanner.Gtfs.FareZone
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.AccountsFixtures
   alias GtfsPlanner.OrganizationsFixtures
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion
@@ -25,8 +27,16 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
   setup do
     organization = OrganizationsFixtures.organization_fixture()
     version = VersionsFixtures.gtfs_version_fixture(organization.id)
+    actor = AccountsFixtures.editor_fixture(organization)
 
-    %{organization: organization, version: version}
+    audit = %AuditContext{
+      organization_id: organization.id,
+      gtfs_version_id: version.id,
+      actor_id: actor.id,
+      actor_email: actor.email
+    }
+
+    %{organization: organization, version: version, audit: audit}
   end
 
   test "previews changed, added, moved and unchanged counts from current values", %{
@@ -101,6 +111,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
   end
 
   test "apply writes exactly the reviewed changes and returns them as applied", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -124,7 +135,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
              )
 
     assert {:ok, %{applied: applied}} =
-             FareZones.apply_assignment(organization.id, version.id, review.changes)
+             FareZones.apply_assignment(audit, review.changes)
 
     assert applied == [
              %{id: alpha.id, from: nil, to: "A"},
@@ -142,6 +153,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
   end
 
   test "writes one group per distinct target in a single call", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -159,7 +171,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
     ]
 
     assert {:ok, %{applied: applied}} =
-             FareZones.apply_assignment(organization.id, version.id, changes)
+             FareZones.apply_assignment(audit, changes)
 
     assert applied == changes
     assert zone_of(alpha.id) == "B"
@@ -168,6 +180,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
   end
 
   test "apply returns the stale stops and writes nothing when a reviewed value changed", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -185,7 +198,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
     set_zone(alpha.id, "C")
 
     assert {:error, {:stale, stale}} =
-             FareZones.apply_assignment(organization.id, version.id, review.changes)
+             FareZones.apply_assignment(audit, review.changes)
 
     assert stale == [
              %{id: alpha.id, stop_id: "p-1", stop_name: "Alpha", reviewed: nil, current: "C"}
@@ -196,6 +209,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
   end
 
   test "rejects a duplicated foreign, station or other-version ID and writes nothing", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -224,22 +238,22 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
              FareZones.preview_assignment(organization.id, version.id, [station.id], "A")
 
     assert {:error, :invalid_selection} =
-             FareZones.apply_assignment(organization.id, version.id, [
+             FareZones.apply_assignment(audit, [
                %{id: foreign.id, from: "F", to: "A"}
              ])
 
     assert {:error, :invalid_selection} =
-             FareZones.apply_assignment(organization.id, version.id, [
+             FareZones.apply_assignment(audit, [
                %{id: station.id, from: "V", to: "A"}
              ])
 
     assert {:error, :invalid_selection} =
-             FareZones.apply_assignment(organization.id, version.id, [
+             FareZones.apply_assignment(audit, [
                %{id: sibling.id, from: "O", to: "A"}
              ])
 
     assert {:error, :invalid_selection} =
-             FareZones.apply_assignment(organization.id, version.id, [
+             FareZones.apply_assignment(audit, [
                %{id: alpha.id, from: nil, to: "A"},
                %{id: foreign.id, from: "F", to: "A"}
              ])
@@ -251,6 +265,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
   end
 
   test "rejects an unknown target and unassigns with a nil target", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -260,7 +275,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
              FareZones.preview_assignment(organization.id, version.id, [alpha.id], "Missing")
 
     assert {:error, :unknown_zone} =
-             FareZones.apply_assignment(organization.id, version.id, [
+             FareZones.apply_assignment(audit, [
                %{id: alpha.id, from: "A", to: "Missing"}
              ])
 
@@ -272,7 +287,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
              FareZones.preview_assignment(organization.id, version.id, [alpha.id], "R")
 
     assert {:ok, %{applied: [%{id: id, from: "A", to: "R"}]}} =
-             FareZones.apply_assignment(organization.id, version.id, [
+             FareZones.apply_assignment(audit, [
                %{id: alpha.id, from: "A", to: "R"}
              ])
 
@@ -288,13 +303,14 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
     assert review.moved_count == 0
 
     assert {:ok, %{applied: [%{id: id, from: "R", to: nil}]}} =
-             FareZones.apply_assignment(organization.id, version.id, review.changes)
+             FareZones.apply_assignment(audit, review.changes)
 
     assert id == alpha.id
     assert zone_of(alpha.id) == nil
   end
 
   test "undo restores an implicit zone that lost its last stop to a move", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -310,13 +326,13 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
     assert changes == [%{id: alpha.id, from: "A", to: "B"}]
 
     assert {:ok, %{applied: applied}} =
-             FareZones.apply_assignment(organization.id, version.id, changes)
+             FareZones.apply_assignment(audit, changes)
 
     assert zone_of(alpha.id) == "B"
     refute "A" in inventory_zone_ids(organization, version)
 
     assert {:ok, %{applied: undone}} =
-             FareZones.undo_assignment(organization.id, version.id, applied)
+             FareZones.undo_assignment(audit, applied)
 
     assert undone == [%{id: alpha.id, from: "B", to: "A"}]
     assert zone_of(alpha.id) == "A"
@@ -325,6 +341,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
   end
 
   test "undo restores an implicit zone after unassigning its last stop", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -336,19 +353,20 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
     assert changes == [%{id: padded.id, from: " A", to: nil}]
 
     assert {:ok, %{applied: applied}} =
-             FareZones.apply_assignment(organization.id, version.id, changes)
+             FareZones.apply_assignment(audit, changes)
 
     assert zone_of(padded.id) == nil
     refute " A" in inventory_zone_ids(organization, version)
 
     assert {:ok, %{applied: _}} =
-             FareZones.undo_assignment(organization.id, version.id, applied)
+             FareZones.undo_assignment(audit, applied)
 
     assert zone_of(padded.id) == " A"
     assert inventory_zone_ids(organization, version) == [" A"]
   end
 
   test "undo returns the stale stops and writes nothing after a newer change", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -362,12 +380,12 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
              FareZones.preview_assignment(organization.id, version.id, [alpha.id], "B")
 
     assert {:ok, %{applied: applied}} =
-             FareZones.apply_assignment(organization.id, version.id, changes)
+             FareZones.apply_assignment(audit, changes)
 
     set_zone(alpha.id, "C")
 
     assert {:error, {:stale, stale}} =
-             FareZones.undo_assignment(organization.id, version.id, applied)
+             FareZones.undo_assignment(audit, applied)
 
     assert stale == [
              %{id: alpha.id, stop_id: "p-1", stop_name: "Stop p-1", reviewed: "B", current: "C"}
@@ -378,10 +396,12 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
   end
 
   test "leaves twin scope rows unchanged and refuses a non-published pair", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
     twin_organization = OrganizationsFixtures.organization_fixture()
+    AccountsFixtures.organization_membership_fixture(%{id: audit.actor_id}, twin_organization)
     twin_version = VersionsFixtures.gtfs_version_fixture(twin_organization.id)
     other_version = VersionsFixtures.gtfs_version_fixture(organization.id)
     staging_version = stage(VersionsFixtures.gtfs_version_fixture(organization.id))
@@ -399,34 +419,49 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
              FareZones.preview_assignment(organization.id, version.id, [alpha.id], "B")
 
     assert {:ok, %{applied: applied}} =
-             FareZones.apply_assignment(organization.id, version.id, changes)
+             FareZones.apply_assignment(audit, changes)
 
     assert zone_of(alpha.id) == "B"
     assert zone_of(twin.id) == "T"
     assert zone_of(sibling.id) == "V"
 
     assert {:error, :not_found} =
-             FareZones.apply_assignment(twin_organization.id, version.id, [
-               %{id: alpha.id, from: "B", to: "A"}
-             ])
+             FareZones.apply_assignment(
+               %{audit | organization_id: twin_organization.id, gtfs_version_id: version.id},
+               [
+                 %{id: alpha.id, from: "B", to: "A"}
+               ]
+             )
 
     assert {:error, :not_found} =
-             FareZones.apply_assignment(organization.id, twin_version.id, [
-               %{id: twin.id, from: "T", to: "A"}
-             ])
+             FareZones.apply_assignment(
+               %{audit | organization_id: organization.id, gtfs_version_id: twin_version.id},
+               [
+                 %{id: twin.id, from: "T", to: "A"}
+               ]
+             )
 
     assert {:error, :not_found} =
-             FareZones.apply_assignment(organization.id, staging_version.id, [
-               %{id: alpha.id, from: "B", to: "A"}
-             ])
+             FareZones.apply_assignment(
+               %{audit | organization_id: organization.id, gtfs_version_id: staging_version.id},
+               [
+                 %{id: alpha.id, from: "B", to: "A"}
+               ]
+             )
+
+    assert {:error, :forbidden} =
+             FareZones.apply_assignment(
+               %{audit | organization_id: "not-a-uuid", gtfs_version_id: version.id},
+               [
+                 %{id: alpha.id, from: "B", to: "A"}
+               ]
+             )
 
     assert {:error, :not_found} =
-             FareZones.apply_assignment("not-a-uuid", version.id, [
-               %{id: alpha.id, from: "B", to: "A"}
-             ])
-
-    assert {:error, :not_found} =
-             FareZones.undo_assignment(organization.id, staging_version.id, applied)
+             FareZones.undo_assignment(
+               %{audit | organization_id: organization.id, gtfs_version_id: staging_version.id},
+               applied
+             )
 
     assert zone_of(alpha.id) == "B"
     assert zone_of(twin.id) == "T"
@@ -434,7 +469,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.AssignmentTest do
     assert zone_of(bravo.id) == "B"
 
     assert {:ok, %{applied: _}} =
-             FareZones.undo_assignment(organization.id, version.id, applied)
+             FareZones.undo_assignment(audit, applied)
 
     assert zone_of(alpha.id) == "A"
     assert zone_of(twin.id) == "T"

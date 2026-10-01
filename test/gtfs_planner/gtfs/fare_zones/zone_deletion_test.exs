@@ -20,8 +20,10 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
 
   alias GtfsPlanner.Gtfs.FareRule
   alias GtfsPlanner.Gtfs.FareZone
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.AccountsFixtures
   alias GtfsPlanner.OrganizationsFixtures
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion
@@ -30,11 +32,20 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
   setup do
     organization = OrganizationsFixtures.organization_fixture()
     version = VersionsFixtures.gtfs_version_fixture(organization.id)
+    actor = AccountsFixtures.editor_fixture(organization)
 
-    %{organization: organization, version: version}
+    audit = %AuditContext{
+      organization_id: organization.id,
+      gtfs_version_id: version.id,
+      actor_id: actor.id,
+      actor_email: actor.email
+    }
+
+    %{organization: organization, version: version, audit: audit}
   end
 
   test "moves a zone's platforms and stations to the replacement and removes its record", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -50,7 +61,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
       ])
 
     assert {:ok, %{moved_stops: 2, rewritten_rows: 0, removed_duplicate_rows: 0}} =
-             FareZones.delete_zone(organization.id, version.id, "A", "B", %{
+             FareZones.delete_zone(audit, "A", "B", %{
                stop_count: 1,
                rule_count: 0
              })
@@ -74,6 +85,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
   end
 
   test "keeps one row when a rewritten rule becomes identical to an untouched one", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -87,7 +99,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
       ])
 
     assert {:ok, %{moved_stops: 0, rewritten_rows: 0, removed_duplicate_rows: 1}} =
-             FareZones.delete_zone(organization.id, version.id, "A", "B", %{
+             FareZones.delete_zone(audit, "A", "B", %{
                stop_count: 0,
                rule_count: 1
              })
@@ -111,6 +123,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
   end
 
   test "turns a contains rule that lists the zone into one row", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -123,7 +136,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
     ])
 
     assert {:ok, %{moved_stops: 0, rewritten_rows: 1, removed_duplicate_rows: 1}} =
-             FareZones.delete_zone(organization.id, version.id, "A", "B", %{
+             FareZones.delete_zone(audit, "A", "B", %{
                stop_count: 0,
                rule_count: 1
              })
@@ -140,6 +153,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
   end
 
   test "rewrites every rule column and leaves no row with the deleted ID", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -157,7 +171,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
       ])
 
     assert {:ok, %{moved_stops: 1, rewritten_rows: 3, removed_duplicate_rows: 0}} =
-             FareZones.delete_zone(organization.id, version.id, "A", "B", %{
+             FareZones.delete_zone(audit, "A", "B", %{
                stop_count: 1,
                rule_count: 3
              })
@@ -217,6 +231,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
   end
 
   test "keeps a contains group intact and leaves no orphan rows", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -232,7 +247,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
     ])
 
     assert {:ok, %{moved_stops: 0, rewritten_rows: 3, removed_duplicate_rows: 0}} =
-             FareZones.delete_zone(organization.id, version.id, "A", "B", %{
+             FareZones.delete_zone(audit, "A", "B", %{
                stop_count: 0,
                rule_count: 2
              })
@@ -270,6 +285,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
   end
 
   test "refuses a rule-referenced zone with no replacement and writes nothing", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -282,7 +298,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
     # the stale fence runs first: the dialog's counts are checked before the
     # missing replacement is considered
     assert {:error, {:stale, zone}} =
-             FareZones.delete_zone(organization.id, version.id, "A", nil, %{
+             FareZones.delete_zone(audit, "A", nil, %{
                stop_count: 0,
                rule_count: 1
              })
@@ -290,7 +306,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
     assert zone.stop_count == 1
 
     assert {:error, :replacement_required} =
-             FareZones.delete_zone(organization.id, version.id, "A", nil, %{
+             FareZones.delete_zone(audit, "A", nil, %{
                stop_count: 1,
                rule_count: 1
              })
@@ -300,6 +316,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
   end
 
   test "unassigns an unreferenced zone's stops when the replacement is nil", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -313,7 +330,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
       ])
 
     assert {:ok, %{moved_stops: 2, rewritten_rows: 0, removed_duplicate_rows: 0}} =
-             FareZones.delete_zone(organization.id, version.id, "D", nil, %{
+             FareZones.delete_zone(audit, "D", nil, %{
                stop_count: 1,
                rule_count: 0
              })
@@ -329,6 +346,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
   end
 
   test "refuses a replacement that is the zone itself, blank or outside the inventory", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -343,7 +361,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
 
     for replacement <- ["A", "NOPE", ""] do
       assert {:error, :invalid_replacement} =
-               FareZones.delete_zone(organization.id, version.id, "A", replacement, %{
+               FareZones.delete_zone(audit, "A", replacement, %{
                  stop_count: 1,
                  rule_count: 0
                }),
@@ -357,6 +375,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
   end
 
   test "refuses expected counts that no longer match and writes nothing", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -369,7 +388,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
 
     # the dialog showed 0 stops; a stop was assigned after it opened
     assert {:error, {:stale, zone}} =
-             FareZones.delete_zone(organization.id, version.id, "A", "B", %{
+             FareZones.delete_zone(audit, "A", "B", %{
                stop_count: 0,
                rule_count: 1
              })
@@ -386,7 +405,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
 
     # the dialog showed 0 rules; a rule was added after it opened
     assert {:error, {:stale, %{rule_count: 1}}} =
-             FareZones.delete_zone(organization.id, version.id, "A", "B", %{
+             FareZones.delete_zone(audit, "A", "B", %{
                stop_count: 1,
                rule_count: 0
              })
@@ -395,7 +414,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
 
     # the refusals left the zone usable: the correct counts delete it
     assert {:ok, %{moved_stops: 1, rewritten_rows: 1, removed_duplicate_rows: 0}} =
-             FareZones.delete_zone(organization.id, version.id, "A", "B", %{
+             FareZones.delete_zone(audit, "A", "B", %{
                stop_count: 1,
                rule_count: 1
              })
@@ -417,6 +436,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
   end
 
   test "returns not_found for a zone outside the inventory and writes nothing", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -426,7 +446,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
     before = database_state(organization, version)
 
     assert {:error, :not_found} =
-             FareZones.delete_zone(organization.id, version.id, "GHOST", nil, %{
+             FareZones.delete_zone(audit, "GHOST", nil, %{
                stop_count: 0,
                rule_count: 0
              })
@@ -435,7 +455,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
 
     # a zone a rename removed from the inventory cannot be deleted afterwards
     assert {:ok, renamed} =
-             FareZones.update_zone(organization.id, version.id, "A", %{
+             FareZones.update_zone(audit, "A", %{
                "zone_id" => "B",
                "name" => "Bayside",
                "color" => "teal"
@@ -445,7 +465,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
     after_rename = database_state(organization, version)
 
     assert {:error, :not_found} =
-             FareZones.delete_zone(organization.id, version.id, "A", nil, %{
+             FareZones.delete_zone(audit, "A", nil, %{
                stop_count: 1,
                rule_count: 0
              })
@@ -456,10 +476,12 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
   end
 
   test "leaves twin scopes unchanged and refuses a mismatched pair", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
     twin_organization = OrganizationsFixtures.organization_fixture()
+    AccountsFixtures.organization_membership_fixture(%{id: audit.actor_id}, twin_organization)
     twin_version = VersionsFixtures.gtfs_version_fixture(twin_organization.id)
     other_version = VersionsFixtures.gtfs_version_fixture(organization.id)
     staging_version = stage(VersionsFixtures.gtfs_version_fixture(organization.id))
@@ -496,7 +518,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
     other_version_before = database_state(organization, other_version)
 
     assert {:ok, %{moved_stops: 2, rewritten_rows: 1, removed_duplicate_rows: 0}} =
-             FareZones.delete_zone(organization.id, version.id, "A", "B", %{
+             FareZones.delete_zone(audit, "A", "B", %{
                stop_count: 1,
                rule_count: 1
              })
@@ -505,28 +527,48 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
     assert database_state(organization, other_version) == other_version_before
 
     assert {:error, :not_found} =
-             FareZones.delete_zone(twin_organization.id, version.id, "A", "B", %{
-               stop_count: 1,
-               rule_count: 1
-             })
+             FareZones.delete_zone(
+               %{audit | organization_id: twin_organization.id, gtfs_version_id: version.id},
+               "A",
+               "B",
+               %{
+                 stop_count: 1,
+                 rule_count: 1
+               }
+             )
 
     assert {:error, :not_found} =
-             FareZones.delete_zone(organization.id, twin_version.id, "A", "B", %{
-               stop_count: 1,
-               rule_count: 1
-             })
+             FareZones.delete_zone(
+               %{audit | organization_id: organization.id, gtfs_version_id: twin_version.id},
+               "A",
+               "B",
+               %{
+                 stop_count: 1,
+                 rule_count: 1
+               }
+             )
 
     assert {:error, :not_found} =
-             FareZones.delete_zone(organization.id, staging_version.id, "A", "B", %{
-               stop_count: 1,
-               rule_count: 1
-             })
+             FareZones.delete_zone(
+               %{audit | organization_id: organization.id, gtfs_version_id: staging_version.id},
+               "A",
+               "B",
+               %{
+                 stop_count: 1,
+                 rule_count: 1
+               }
+             )
 
-    assert {:error, :not_found} =
-             FareZones.delete_zone("not-a-uuid", version.id, "A", "B", %{
-               stop_count: 1,
-               rule_count: 1
-             })
+    assert {:error, :forbidden} =
+             FareZones.delete_zone(
+               %{audit | organization_id: "not-a-uuid", gtfs_version_id: version.id},
+               "A",
+               "B",
+               %{
+                 stop_count: 1,
+                 rule_count: 1
+               }
+             )
 
     assert database_state(twin_organization, twin_version) == twin_organization_before
     assert database_state(organization, other_version) == other_version_before
@@ -534,6 +576,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
   end
 
   test "deletes the padded imported ID without trimming any bytes", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -555,7 +598,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
       ])
 
     assert {:ok, %{moved_stops: 2, rewritten_rows: 2, removed_duplicate_rows: 0}} =
-             FareZones.delete_zone(organization.id, version.id, " A", "B", %{
+             FareZones.delete_zone(audit, " A", "B", %{
                stop_count: 1,
                rule_count: 2
              })
@@ -608,6 +651,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
   end
 
   test "rolls the whole deletion back when the caller's transaction aborts", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -621,7 +665,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
     assert {:error, :aborted} =
              Repo.transaction(fn ->
                assert {:ok, %{moved_stops: 1, rewritten_rows: 1, removed_duplicate_rows: 0}} =
-                        FareZones.delete_zone(organization.id, version.id, "A", "B", %{
+                        FareZones.delete_zone(audit, "A", "B", %{
                           stop_count: 1,
                           rule_count: 1
                         })
@@ -639,7 +683,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneDeletionTest do
 
     # the prior state stayed usable: the same call now commits
     assert {:ok, %{moved_stops: 1, rewritten_rows: 1, removed_duplicate_rows: 0}} =
-             FareZones.delete_zone(organization.id, version.id, "A", "B", %{
+             FareZones.delete_zone(audit, "A", "B", %{
                stop_count: 1,
                rule_count: 1
              })

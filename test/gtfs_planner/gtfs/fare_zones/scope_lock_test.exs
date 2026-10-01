@@ -4,7 +4,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScopeLockTest do
 
   Two separately committing sessions are used (`Sandbox.unboxed_run/2`), never one
   shared sandbox connection: one holds `SELECT … FOR UPDATE` on the version row
-  while `apply_assignment/3` runs in another process, so the writer's wait is a
+  while `apply_assignment/2` runs in another process, so the writer's wait is a
   real row lock and its result is observed after the holder commits. The second
   case races two writers of the same reviewed change, so the lock plus the stale
   fence must let exactly one of them commit.
@@ -17,6 +17,8 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScopeLockTest do
   import Ecto.Query
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.AccountsFixtures
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareZone
   alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Gtfs.Stop
@@ -66,7 +68,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScopeLockTest do
         send(parent, {:writer_started, System.monotonic_time()})
 
         unboxed(fn ->
-          FareZones.apply_assignment(fixture.organization.id, fixture.version.id, changes)
+          FareZones.apply_assignment(fixture.audit, changes)
         end)
       end)
 
@@ -97,7 +99,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScopeLockTest do
       |> Enum.map(fn _index ->
         Task.Supervisor.async_nolink(supervisor, fn ->
           unboxed(fn ->
-            FareZones.apply_assignment(fixture.organization.id, fixture.version.id, changes)
+            FareZones.apply_assignment(fixture.audit, changes)
           end)
         end)
       end)
@@ -123,6 +125,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScopeLockTest do
         })
 
       version = VersionsFixtures.gtfs_version_fixture(organization.id)
+      actor = AccountsFixtures.editor_fixture(organization)
       now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
       stop_id = Ecto.UUID.generate()
@@ -156,7 +159,20 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScopeLockTest do
           }
         ])
 
-      %{organization: organization, version: version, stop: %{id: stop_id}}
+      audit = %AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        actor_id: actor.id,
+        actor_email: actor.email
+      }
+
+      %{
+        organization: organization,
+        version: version,
+        stop: %{id: stop_id},
+        actor: actor,
+        audit: audit
+      }
     end)
   end
 
@@ -170,6 +186,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScopeLockTest do
       Repo.delete_all(from(s in Stop, where: s.organization_id == ^organization_id))
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
       Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
+      Repo.delete!(fixture.actor)
 
       refute Repo.exists?(from(o in Organization, where: o.id == ^organization_id))
       refute Repo.exists?(from(v in GtfsVersion, where: v.organization_id == ^organization_id))

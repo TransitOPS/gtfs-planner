@@ -23,10 +23,12 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.FareRule
   alias GtfsPlanner.Gtfs.FareZone
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Import.CsvParser
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.AccountsFixtures
   alias GtfsPlanner.OrganizationsFixtures
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion
@@ -43,16 +45,25 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
   setup do
     organization = OrganizationsFixtures.organization_fixture()
     version = VersionsFixtures.gtfs_version_fixture(organization.id)
+    actor = AccountsFixtures.editor_fixture(organization)
 
-    %{organization: organization, version: version}
+    audit = %AuditContext{
+      organization_id: organization.id,
+      gtfs_version_id: version.id,
+      actor_id: actor.id,
+      actor_email: actor.email
+    }
+
+    %{organization: organization, version: version, audit: audit}
   end
 
   test "creates a zone from trimmed input and returns its inventory entry", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
     assert {:ok, zone} =
-             FareZones.create_zone(organization.id, version.id, %{
+             FareZones.create_zone(audit, %{
                "name" => "  Central  ",
                "zone_id" => "  A  ",
                "color" => "ocean"
@@ -75,6 +86,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
   end
 
   test "rejects an ID an inventory source already carries and writes nothing", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -84,7 +96,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
 
     for {zone_id, source} <- [{"A", "a stop"}, {"R", "a fare rule"}, {"D", "a record"}] do
       assert {:error, changeset} =
-               FareZones.create_zone(organization.id, version.id, %{
+               FareZones.create_zone(audit, %{
                  "name" => "Central",
                  "zone_id" => zone_id,
                  "color" => "ocean"
@@ -96,7 +108,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
 
     # the padded form of the same ID is trimmed before the check
     assert {:error, padded} =
-             FareZones.create_zone(organization.id, version.id, %{
+             FareZones.create_zone(audit, %{
                "name" => "Central",
                "zone_id" => " D ",
                "color" => "ocean"
@@ -108,12 +120,13 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
   end
 
   test "rejects an ID outside the safe-character format and writes nothing", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
     for zone_id <- ["zone.1", String.duplicate("a", 65), "  "] do
       assert {:error, changeset} =
-               FareZones.create_zone(organization.id, version.id, %{
+               FareZones.create_zone(audit, %{
                  "name" => "Central",
                  "zone_id" => zone_id,
                  "color" => "ocean"
@@ -124,7 +137,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
     end
 
     assert {:error, changeset} =
-             FareZones.create_zone(organization.id, version.id, %{
+             FareZones.create_zone(audit, %{
                "name" => "Central",
                "zone_id" => "zone.1",
                "color" => "ocean"
@@ -135,6 +148,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
   end
 
   test "names the implicit zone \" A\" and the full export keeps its bytes", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -143,7 +157,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
     assert result.counts[:fare_rules] == 2
 
     assert {:ok, zone} =
-             FareZones.update_zone(organization.id, version.id, " A", %{"name" => "Central"})
+             FareZones.update_zone(audit, " A", %{"name" => "Central"})
 
     assert zone == %{
              zone_id: " A",
@@ -162,7 +176,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
     # the drawer re-sends the imported ID verbatim; the exact bytes are neither
     # trimmed nor validated, so " A" is not renamed into the different zone "A"
     assert {:ok, resent} =
-             FareZones.update_zone(organization.id, version.id, " A", %{
+             FareZones.update_zone(audit, " A", %{
                "zone_id" => " A",
                "name" => "Central",
                "color" => "teal"
@@ -193,6 +207,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
   end
 
   test "an ID change moves stops of every location type and all three rule columns", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -215,7 +230,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
     [f1, _f2, _f3, f4] = rules
 
     assert {:ok, zone} =
-             FareZones.update_zone(organization.id, version.id, "A", %{
+             FareZones.update_zone(audit, "A", %{
                "zone_id" => " B ",
                "name" => "Bayside",
                "color" => "green"
@@ -279,6 +294,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
   end
 
   test "a metadata edit keeps an imported ID's bytes and never revalidates it", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -286,7 +302,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
 
     # the drawer sends the current ID back unchanged
     assert {:ok, zone} =
-             FareZones.update_zone(organization.id, version.id, "Zone 1", %{
+             FareZones.update_zone(audit, "Zone 1", %{
                "zone_id" => "Zone 1",
                "name" => "Downtown",
                "color" => "teal"
@@ -299,7 +315,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
 
     # padding that trims back to the stored ID is not a rename: the bytes stay
     assert {:ok, same} =
-             FareZones.update_zone(organization.id, version.id, "Zone 1", %{
+             FareZones.update_zone(audit, "Zone 1", %{
                "zone_id" => " Zone 1 ",
                "name" => "Old town"
              })
@@ -311,6 +327,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
   end
 
   test "an ID change to an ID the inventory already carries writes nothing", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -320,12 +337,12 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
     insert_rules(organization, version, [%{fare_id: "F1", origin_id: "A", destination_id: "C"}])
 
     assert {:error, changeset} =
-             FareZones.update_zone(organization.id, version.id, "A", %{"zone_id" => "C"})
+             FareZones.update_zone(audit, "A", %{"zone_id" => "C"})
 
     assert errors_on(changeset).zone_id == [@in_use_message]
 
     assert {:error, padded} =
-             FareZones.update_zone(organization.id, version.id, "A", %{"zone_id" => " C "})
+             FareZones.update_zone(audit, "A", %{"zone_id" => " C "})
 
     assert errors_on(padded).zone_id == [@in_use_message]
 
@@ -347,6 +364,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
   end
 
   test "an invalid rename writes nothing and leaves the zone editable", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -361,7 +379,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
     insert_rules(organization, version, [%{fare_id: "F1", origin_id: "A", contains_id: "A"}])
 
     assert {:error, changeset} =
-             FareZones.update_zone(organization.id, version.id, "A", %{
+             FareZones.update_zone(audit, "A", %{
                "zone_id" => "B",
                "name" => String.duplicate("n", 61),
                "color" => "ocean"
@@ -388,13 +406,14 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
 
     # the failed rename left the zone usable: the metadata edit still applies
     assert {:ok, zone} =
-             FareZones.update_zone(organization.id, version.id, "A", %{"name" => "Renamed"})
+             FareZones.update_zone(audit, "A", %{"name" => "Renamed"})
 
     assert zone.name == "Renamed"
     assert zone.zone_id == "A"
   end
 
   test "an edit of a zone that left the inventory writes nothing and creates no record", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
@@ -408,15 +427,15 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
              FareZones.preview_assignment(organization.id, version.id, [mover.id], "B")
 
     assert {:ok, %{applied: _}} =
-             FareZones.apply_assignment(organization.id, version.id, changes)
+             FareZones.apply_assignment(audit, changes)
 
     refute "A" in inventory_zone_ids(organization, version)
 
     assert {:error, :not_found} =
-             FareZones.update_zone(organization.id, version.id, "A", %{"name" => "Ghost"})
+             FareZones.update_zone(audit, "A", %{"name" => "Ghost"})
 
     assert {:error, :not_found} =
-             FareZones.update_zone(organization.id, version.id, "A", %{
+             FareZones.update_zone(audit, "A", %{
                "zone_id" => "G",
                "name" => "Ghost",
                "color" => "plum"
@@ -427,10 +446,12 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
   end
 
   test "leaves twin scopes unchanged and refuses a non-published pair", %{
+    audit: audit,
     organization: organization,
     version: version
   } do
     twin_organization = OrganizationsFixtures.organization_fixture()
+    AccountsFixtures.organization_membership_fixture(%{id: audit.actor_id}, twin_organization)
     twin_version = VersionsFixtures.gtfs_version_fixture(twin_organization.id)
     other_version = VersionsFixtures.gtfs_version_fixture(organization.id)
     staging_version = stage(VersionsFixtures.gtfs_version_fixture(organization.id))
@@ -459,7 +480,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
     insert_rules(organization, other_version, [%{fare_id: "F1", origin_id: "A"}])
 
     assert {:ok, created} =
-             FareZones.create_zone(organization.id, version.id, %{
+             FareZones.create_zone(audit, %{
                "name" => "New",
                "zone_id" => "NEW",
                "color" => "ocean"
@@ -468,7 +489,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
     assert created.zone_id == "NEW"
 
     assert {:ok, renamed} =
-             FareZones.update_zone(organization.id, version.id, "A", %{"zone_id" => "OLD"})
+             FareZones.update_zone(audit, "A", %{"zone_id" => "OLD"})
 
     assert renamed.zone_id == "OLD"
     assert renamed.declared?
@@ -478,46 +499,74 @@ defmodule GtfsPlanner.Gtfs.FareZones.ZoneEditingTest do
     assert inventory_zone_ids(organization, version) == ["NEW", "OLD"]
 
     assert {:error, :not_found} =
-             FareZones.create_zone(twin_organization.id, version.id, %{
-               "name" => "Clash",
-               "zone_id" => "CLASH",
-               "color" => "ocean"
-             })
+             FareZones.create_zone(
+               %{audit | organization_id: twin_organization.id, gtfs_version_id: version.id},
+               %{
+                 "name" => "Clash",
+                 "zone_id" => "CLASH",
+                 "color" => "ocean"
+               }
+             )
 
     assert {:error, :not_found} =
-             FareZones.create_zone(organization.id, twin_version.id, %{
-               "name" => "Clash",
-               "zone_id" => "CLASH",
-               "color" => "ocean"
-             })
+             FareZones.create_zone(
+               %{audit | organization_id: organization.id, gtfs_version_id: twin_version.id},
+               %{
+                 "name" => "Clash",
+                 "zone_id" => "CLASH",
+                 "color" => "ocean"
+               }
+             )
 
     assert {:error, :not_found} =
-             FareZones.create_zone(organization.id, staging_version.id, %{
-               "name" => "Clash",
-               "zone_id" => "CLASH",
-               "color" => "ocean"
-             })
+             FareZones.create_zone(
+               %{audit | organization_id: organization.id, gtfs_version_id: staging_version.id},
+               %{
+                 "name" => "Clash",
+                 "zone_id" => "CLASH",
+                 "color" => "ocean"
+               }
+             )
+
+    assert {:error, :forbidden} =
+             FareZones.create_zone(
+               %{audit | organization_id: "not-a-uuid", gtfs_version_id: version.id},
+               %{
+                 "name" => "Clash",
+                 "zone_id" => "CLASH",
+                 "color" => "ocean"
+               }
+             )
 
     assert {:error, :not_found} =
-             FareZones.create_zone("not-a-uuid", version.id, %{
-               "name" => "Clash",
-               "zone_id" => "CLASH",
-               "color" => "ocean"
-             })
+             FareZones.update_zone(
+               %{audit | organization_id: twin_organization.id, gtfs_version_id: version.id},
+               "A",
+               %{"name" => "Clash"}
+             )
 
     assert {:error, :not_found} =
-             FareZones.update_zone(twin_organization.id, version.id, "A", %{"name" => "Clash"})
+             FareZones.update_zone(
+               %{audit | organization_id: organization.id, gtfs_version_id: twin_version.id},
+               "A",
+               %{"name" => "Clash"}
+             )
 
     assert {:error, :not_found} =
-             FareZones.update_zone(organization.id, twin_version.id, "A", %{"name" => "Clash"})
+             FareZones.update_zone(
+               %{audit | organization_id: organization.id, gtfs_version_id: staging_version.id},
+               "OLD",
+               %{
+                 "name" => "Clash"
+               }
+             )
 
-    assert {:error, :not_found} =
-             FareZones.update_zone(organization.id, staging_version.id, "OLD", %{
-               "name" => "Clash"
-             })
-
-    assert {:error, :not_found} =
-             FareZones.update_zone("not-a-uuid", version.id, "OLD", %{"name" => "Clash"})
+    assert {:error, :forbidden} =
+             FareZones.update_zone(
+               %{audit | organization_id: "not-a-uuid", gtfs_version_id: version.id},
+               "OLD",
+               %{"name" => "Clash"}
+             )
 
     assert zone_of(platform.id) == "OLD"
     assert zone_of(station.id) == "OLD"

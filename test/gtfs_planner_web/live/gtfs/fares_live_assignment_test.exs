@@ -8,7 +8,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
   `Unassign`, the dialog's target select, `Refresh review`, `Keep selection`, the
   confirm button and Undo. The counts and rows the dialog shows therefore come
   from `FareZones.preview_assignment/4`, and every zone written comes from
-  `FareZones.apply_assignment/3` or `undo_assignment/3`.
+  `FareZones.apply_assignment/2` or `undo_assignment/2`.
 
   Three of the cases make another editor's change visible between the review and
   the save — a stop's zone, the target zone's deletion and the version's
@@ -215,6 +215,33 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
   end
 
   describe "saving" do
+    test "a revoked editor keeps the assignment review and leaves its stop unchanged", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version,
+      stop_ids: stop_ids
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+
+      select_stop(view, stop_ids["BAY_1"])
+      view |> element("#fare-zone-assign-selection") |> render_click()
+      choose_target(view, "B")
+
+      membership = Accounts.get_user_org_membership(user.id, organization.id)
+      deactivate_membership_fixture(membership)
+      confirm_save(view)
+
+      assert dialog_open?(view)
+      assert selected_target(view) == "B"
+
+      assert text_of(view, "#fare-zone-assignment-error") ==
+               "Changes couldn’t be saved. Your edits are still here."
+
+      assert zone_of(stop_ids["BAY_1"]) == nil
+    end
+
     test "two selected stops are assigned, the callout reports it and Undo restores them", %{
       conn: conn,
       user: user,
@@ -263,6 +290,36 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       assert zone_id_of(stop_ids["BAY_2"]) == nil
       assert has_element?(view, "#fare-zone-row-2-count", "150")
       assert has_element?(view, "#fare-zone-row-unassigned-count", "2")
+    end
+
+    test "a revoked editor cannot undo a saved assignment", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version,
+      stop_ids: stop_ids
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+
+      select_stop(view, stop_ids["BAY_1"])
+      view |> element("#fare-zone-assign-selection") |> render_click()
+      choose_target(view, "B")
+      confirm_save(view)
+
+      assert zone_id_of(stop_ids["BAY_1"]) == "B"
+      assert has_element?(view, "#fare-zone-undo")
+
+      membership = Accounts.get_user_org_membership(user.id, organization.id)
+      deactivate_membership_fixture(membership)
+
+      view |> element("#fare-zone-undo") |> render_click()
+
+      assert text_of(view, "#fare-zone-saved") ==
+               "Changes couldn’t be saved. Your edits are still here."
+
+      refute has_element?(view, "#fare-zone-undo")
+      assert zone_id_of(stop_ids["BAY_1"]) == "B"
     end
 
     test "removing assignments unassigns the reviewed stops", %{
@@ -394,10 +451,20 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
 
       # Another editor deletes the target zone; its 150 stops become unassigned.
       {:ok, _result} =
-        FareZones.delete_zone(organization.id, version.id, "B", nil, %{
-          stop_count: @east_count,
-          rule_count: 0
-        })
+        FareZones.delete_zone(
+          %GtfsPlanner.Gtfs.AuditContext{
+            actor_id: user.id,
+            actor_email: user.email,
+            organization_id: organization.id,
+            gtfs_version_id: version.id
+          },
+          "B",
+          nil,
+          %{
+            stop_count: @east_count,
+            rule_count: 0
+          }
+        )
 
       confirm_save(view)
 
