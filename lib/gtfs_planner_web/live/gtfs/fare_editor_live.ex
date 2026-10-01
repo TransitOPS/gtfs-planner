@@ -51,13 +51,19 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
   import GtfsPlannerWeb.Gtfs.FareEditorComponents,
     only: [
       fare_cards: 1,
+      fare_delete_dialog: 1,
+      fare_drawer: 1,
       fare_note: 1,
       fare_table: 1,
       fares_conflict: 1,
       header_primary: 1,
       load_error: 1,
       loading: 1,
-      price_save_bar: 1
+      media_delete_dialog: 1,
+      media_drawer: 1,
+      price_save_bar: 1,
+      rider_delete_dialog: 1,
+      rider_drawer: 1
     ]
 
   import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1]
@@ -89,7 +95,17 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
      |> assign(:price_impacts, [])
      |> assign(:price_form, to_form(%{}, as: :price))
      |> assign(:carried, nil)
-     |> assign(:lens?, false)}
+     |> assign(:lens?, false)
+     |> assign(:fare_draft, nil)
+     |> assign(:fare_focus, nil)
+     |> assign(:fare_delete, nil)
+     |> assign(:rider_draft, nil)
+     |> assign(:rider_focus, nil)
+     |> assign(:rider_delete, nil)
+     |> assign(:media_draft, nil)
+     |> assign(:media_focus, nil)
+     |> assign(:media_delete, nil)
+     |> assign(:drawer_pending?, false)}
   end
 
   @impl true
@@ -195,14 +211,16 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
   @impl true
   def handle_event("choose_conflict", _params, socket), do: {:noreply, socket}
 
+  # The undo covers one write or a fan-out of them. A drawer save is a fan-out
+  # whenever the fare holds more than one `fare_products` row, so it reverses its
+  # writes newest first, which is the only order that can put each row back under
+  # the name and the product the next one still expects.
   @impl true
   def handle_event("undo_prices", _params, socket) do
     case socket.assigns.price_note do
-      %{undo: {operation_id, inverse}} ->
-        scope = fare_scope(socket)
-
-        case Fares.undo(scope, operation_id, inverse) do
-          {:ok, _result} ->
+      %{undo: undo} when undo != [] ->
+        case undo_writes(fare_scope(socket), undo) do
+          {:ok, _undone} ->
             {:noreply,
              socket
              |> load_workspace()
@@ -245,6 +263,1082 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       {:noreply, socket}
     end
   end
+
+  # -- Drawers -----------------------------------------------------------------
+
+  # One drawer at a time: opening any of them closes the others, so the page
+  # never carries two forms that both answer to a submit.
+  @impl true
+  def handle_event("open_fare_drawer", params, socket) do
+    {:noreply,
+     socket
+     |> close_rider_and_media()
+     |> assign(:fare_draft, open_fare_draft(socket, params))
+     |> assign(:fare_focus, params["opener_id"])
+     |> assign(:fare_delete, nil)
+     |> assign(:price_note, nil)}
+  end
+
+  @impl true
+  def handle_event("close_fare_drawer", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:fare_draft, nil)
+     |> assign(:fare_delete, nil)
+     |> assign(:fare_focus, nil)}
+  end
+
+  # A change clears what the last submit found: the operator has moved past the
+  # problems, and a stale error summary would name fields they just fixed. A
+  # change that arrives after its own drawer has closed is ignored rather than
+  # applied to nothing: a debounced keystroke and a submit can cross, and the
+  # submit has already answered the operator.
+  @impl true
+  def handle_event("validate_fare", %{"fare" => params}, socket) do
+    case socket.assigns.fare_draft do
+      nil -> {:noreply, socket}
+      draft -> {:noreply, assign(socket, :fare_draft, fare_draft(draft, socket, params))}
+    end
+  end
+
+  def handle_event("validate_fare", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("save_fare", %{"fare" => params}, socket) do
+    {draft, failures} =
+      socket.assigns.fare_draft |> fare_draft(socket, params) |> fare_failures(socket)
+
+    if failures == [] do
+      save_fare(socket, draft)
+    else
+      {:noreply, socket |> assign(:fare_draft, draft) |> focus_error_summary()}
+    end
+  end
+
+  def handle_event("save_fare", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("open_delete_fare", _params, socket) do
+    case fare_of_product(socket, socket.assigns.fare_draft.key) do
+      nil ->
+        {:noreply, socket}
+
+      fare ->
+        {:noreply,
+         assign(socket, :fare_delete, %{
+           fare: fare,
+           rules: fare.rules,
+           replacement: nil,
+           error: nil
+         })}
+    end
+  end
+
+  @impl true
+  def handle_event("change_fare_replacement", %{"replacement" => slug}, socket) do
+    case socket.assigns.fare_delete do
+      nil ->
+        {:noreply, socket}
+
+      state ->
+        replacement = blank_to_nil(slug)
+        {:noreply, assign(socket, :fare_delete, %{state | replacement: replacement, error: nil})}
+    end
+  end
+
+  @impl true
+  def handle_event("cancel_delete_fare", _params, socket) do
+    {:noreply, assign(socket, :fare_delete, nil)}
+  end
+
+  @impl true
+  def handle_event("delete_fare", _params, socket) do
+    case socket.assigns.fare_delete do
+      nil -> {:noreply, socket}
+      state -> delete_fare(socket, state)
+    end
+  end
+
+  @impl true
+  def handle_event("go_fares_where", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:fare_draft, nil)
+     |> assign(:fare_delete, nil)
+     |> push_patch(to: fares_path(version_id(socket), :where))}
+  end
+
+  @impl true
+  def handle_event("open_rider_drawer", params, socket) do
+    {:noreply,
+     socket
+     |> close_fare_and_media()
+     |> assign(:rider_draft, open_rider_draft(socket, params))
+     |> assign(:rider_focus, params["opener_id"])
+     |> assign(:rider_delete, nil)
+     |> assign(:price_note, nil)}
+  end
+
+  @impl true
+  def handle_event("close_rider_drawer", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:rider_draft, nil)
+     |> assign(:rider_delete, nil)
+     |> assign(:rider_focus, nil)}
+  end
+
+  @impl true
+  def handle_event("validate_rider", %{"rider" => params}, socket) do
+    case socket.assigns.rider_draft do
+      nil ->
+        {:noreply, socket}
+
+      draft ->
+        {:noreply, assign(socket, :rider_draft, rider_draft(draft, socket, params))}
+    end
+  end
+
+  def handle_event("validate_rider", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("save_rider_type", %{"rider" => params}, socket) do
+    {draft, failures} =
+      socket.assigns.rider_draft |> rider_draft(socket, params) |> rider_failures()
+
+    if failures == [] do
+      save_rider_type(socket, draft)
+    else
+      {:noreply, socket |> assign(:rider_draft, draft) |> focus_error_summary()}
+    end
+  end
+
+  def handle_event("save_rider_type", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("open_delete_rider", _params, socket) do
+    rider = socket.assigns.rider_draft
+    workspace = socket.assigns.workspace
+
+    state = %{
+      name: rider.name,
+      rider_category_id: rider.key,
+      price_count: rider_price_count(workspace, rider.key)
+    }
+
+    {:noreply, assign(socket, :rider_delete, state)}
+  end
+
+  @impl true
+  def handle_event("cancel_delete_rider", _params, socket) do
+    {:noreply, assign(socket, :rider_delete, nil)}
+  end
+
+  @impl true
+  def handle_event("delete_rider_type", _params, socket) do
+    case socket.assigns.rider_delete do
+      nil ->
+        {:noreply, socket}
+
+      state ->
+        scope = fare_scope(socket)
+
+        case Fares.delete_rider_type(scope, state.rider_category_id, %{name: state.name}) do
+          {:ok, %{operation_id: operation_id, inverse: inverse}} ->
+            {:noreply,
+             socket
+             |> load_workspace()
+             |> assign(:rider_draft, nil)
+             |> assign(:rider_delete, nil)
+             |> assign(:rider_focus, nil)
+             |> assign(:price_note, %{
+               text:
+                 "#{state.name} deleted from #{socket.assigns.current_gtfs_version.name} service.",
+               undo: [{operation_id, inverse}]
+             })}
+
+          {:error, reason} ->
+            {:noreply,
+             socket
+             |> assign(:rider_delete, nil)
+             |> assign(:price_note, %{text: "That rider type couldn’t be deleted (#{reason})."})}
+        end
+    end
+  end
+
+  @impl true
+  def handle_event("open_media_drawer", params, socket) do
+    {:noreply,
+     socket
+     |> close_fare_and_rider()
+     |> assign(:media_draft, open_media_draft(socket, params))
+     |> assign(:media_focus, params["opener_id"])
+     |> assign(:media_delete, nil)
+     |> assign(:price_note, nil)}
+  end
+
+  @impl true
+  def handle_event("close_media_drawer", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:media_draft, nil)
+     |> assign(:media_delete, nil)
+     |> assign(:media_focus, nil)}
+  end
+
+  @impl true
+  def handle_event("validate_media", %{"media" => params}, socket) do
+    case socket.assigns.media_draft do
+      nil ->
+        {:noreply, socket}
+
+      draft ->
+        {:noreply, assign(socket, :media_draft, media_draft(draft, socket, params))}
+    end
+  end
+
+  def handle_event("validate_media", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("save_payment_method", %{"media" => params}, socket) do
+    {draft, failures} =
+      socket.assigns.media_draft |> media_draft(socket, params) |> media_failures()
+
+    if failures == [] do
+      save_payment_method(socket, draft)
+    else
+      {:noreply, socket |> assign(:media_draft, draft) |> focus_error_summary()}
+    end
+  end
+
+  def handle_event("save_payment_method", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("open_delete_media", _params, socket) do
+    media = socket.assigns.media_draft
+    workspace = socket.assigns.workspace
+
+    state = %{
+      name: media.name,
+      fare_media_id: media.key,
+      fare_count: media_fare_count(workspace, media.key)
+    }
+
+    {:noreply, assign(socket, :media_delete, state)}
+  end
+
+  @impl true
+  def handle_event("cancel_delete_media", _params, socket) do
+    {:noreply, assign(socket, :media_delete, nil)}
+  end
+
+  @impl true
+  def handle_event("delete_payment_method", _params, socket) do
+    case socket.assigns.media_delete do
+      nil ->
+        {:noreply, socket}
+
+      state ->
+        scope = fare_scope(socket)
+
+        case Fares.delete_payment_method(scope, state.fare_media_id, %{name: state.name}) do
+          {:ok, %{operation_id: operation_id, inverse: inverse}} ->
+            {:noreply,
+             socket
+             |> load_workspace()
+             |> assign(:media_draft, nil)
+             |> assign(:media_delete, nil)
+             |> assign(:media_focus, nil)
+             |> assign(:price_note, %{
+               text:
+                 "#{state.name} deleted from #{socket.assigns.current_gtfs_version.name} service.",
+               undo: [{operation_id, inverse}]
+             })}
+
+          {:error, reason} ->
+            {:noreply,
+             socket
+             |> assign(:media_delete, nil)
+             |> assign(:price_note, %{
+               text: "That payment method couldn’t be deleted (#{reason})."
+             })}
+        end
+    end
+  end
+
+  defp close_fare_and_media(socket) do
+    socket
+    |> assign(:fare_draft, nil)
+    |> assign(:fare_delete, nil)
+    |> assign(:media_draft, nil)
+    |> assign(:media_delete, nil)
+  end
+
+  defp close_rider_and_media(socket) do
+    socket
+    |> assign(:rider_draft, nil)
+    |> assign(:rider_delete, nil)
+    |> assign(:media_draft, nil)
+    |> assign(:media_delete, nil)
+  end
+
+  defp close_fare_and_rider(socket) do
+    socket
+    |> assign(:fare_draft, nil)
+    |> assign(:fare_delete, nil)
+    |> assign(:rider_draft, nil)
+    |> assign(:rider_delete, nil)
+  end
+
+  defp focus_error_summary(socket) do
+    push_event(socket, "focus_scoped_target", %{id: "error-summary"})
+  end
+
+  # -- The fare drawer ---------------------------------------------------------
+
+  defp open_fare_draft(socket, %{"fare_product_id" => product_id}) do
+    case fare_of_product(socket, product_id) do
+      nil -> new_fare_draft(socket)
+      fare -> edit_fare_draft(socket, fare)
+    end
+  end
+
+  defp open_fare_draft(socket, _params), do: new_fare_draft(socket)
+
+  defp new_fare_draft(socket) do
+    workspace = socket.assigns.workspace
+    base = default_media_id(workspace)
+
+    %{
+      key: nil,
+      name: "",
+      kind: "single",
+      prices: blank_prices(workspace),
+      app_prices: blank_prices(workspace),
+      amounts: %{},
+      app_amounts: %{},
+      invalid_riders: [],
+      differ?: false,
+      media_ids: if(base, do: [base], else: []),
+      group_ids: [],
+      base_medium: base,
+      app_medium: other_media_id(workspace, base),
+      rules: [],
+      name_error: nil,
+      price_error: nil,
+      media_error: nil,
+      failures: []
+    }
+  end
+
+  # The drawer opens on what the grid was showing: the fare's own row price for
+  # each rider type, and, for the payment method that prices differently, the
+  # sub-row's amount beside it.
+  defp edit_fare_draft(socket, fare) do
+    workspace = socket.assigns.workspace
+    base = fare.base_media_id || default_media_id(workspace)
+    app = app_media_id(fare, workspace, base)
+
+    %{
+      key: List.first(fare.product_ids),
+      name: fare.name,
+      kind: fare.kind,
+      prices: prices_text(fare, workspace),
+      app_prices: app_prices_text(fare, workspace, app),
+      amounts: %{},
+      app_amounts: %{},
+      invalid_riders: [],
+      differ?: Map.has_key?(fare.media_prices, app),
+      media_ids: fare.media,
+      group_ids: fare.accepted_network_ids,
+      base_medium: base,
+      app_medium: app,
+      rules: fare.rules,
+      name_error: nil,
+      price_error: nil,
+      media_error: nil,
+      failures: []
+    }
+    |> parse_fare_prices()
+  end
+
+  defp blank_prices(workspace) do
+    Map.new(workspace.riders, &{&1.rider_category_id, ""})
+  end
+
+  defp prices_text(fare, workspace) do
+    Map.new(workspace.riders, fn rider ->
+      amount = Map.get(fare.prices, rider.rider_category_id)
+
+      {rider.rider_category_id, Money.format(amount, workspace.currency) || ""}
+    end)
+  end
+
+  defp app_prices_text(_fare, workspace, nil), do: blank_prices(workspace)
+
+  defp app_prices_text(fare, workspace, app) do
+    Map.new(workspace.riders, fn rider ->
+      amount = get_in(fare.media_prices, [app, rider.rider_category_id])
+
+      {rider.rider_category_id, Money.format(amount, workspace.currency) || ""}
+    end)
+  end
+
+  # The payment method a fare's own row prices: the one paid on board where the
+  # version has one, because that is what the older format carries.
+  defp default_media_id(workspace) do
+    Enum.find_value(workspace.media, fn medium ->
+      case medium do
+        %{fare_media_type: 0} -> medium.fare_media_id
+        _other -> nil
+      end
+    end) || first_media_id(workspace)
+  end
+
+  defp first_media_id(workspace) do
+    case List.first(workspace.media) do
+      nil -> nil
+      medium -> medium.fare_media_id
+    end
+  end
+
+  # The payment method the "price differs" column names: the first one that is
+  # not the fare's own.
+  defp other_media_id(workspace, base) do
+    workspace.media
+    |> Enum.map(& &1.fare_media_id)
+    |> Enum.reject(&(&1 == base))
+    |> List.first()
+  end
+
+  defp app_media_id(fare, workspace, base) do
+    fare.media_prices |> Map.keys() |> Enum.reject(&(&1 == base)) |> List.first() ||
+      other_media_id(workspace, base)
+  end
+
+  # The change event carries the whole form, so every field is rebuilt from it.
+  # A checkbox that is not ticked is simply absent, which is how unticking one
+  # reads.
+  defp fare_draft(draft, socket, params) do
+    socket
+    |> merge_fare_params(draft, params)
+    |> parse_fare_prices()
+  end
+
+  defp merge_fare_params(_socket, draft, params) do
+    %{
+      draft
+      | name: params["name"] || "",
+        kind: params["kind"] || draft.kind,
+        differ?: params["differ"] == "true",
+        media_ids: checkbox_ids(params["media_ids"]),
+        group_ids: checkbox_ids(params["group_ids"]),
+        prices: Map.merge(draft.prices, text_map(params["prices"])),
+        app_prices:
+          Map.merge(draft.app_prices, text_map(params["media_prices"][draft.app_medium]))
+    }
+  end
+
+  # LiveView names every input a form's data does not account for
+  # `_unused_<name>` and sends it alongside the real ones. They are the browser's
+  # bookkeeping, not rider types, so they are dropped before a price is read.
+  defp text_map(nil), do: %{}
+
+  defp text_map(params) when is_map(params),
+    do: Map.reject(params, fn {key, _text} -> String.starts_with?(key, "_unused_") end)
+
+  defp checkbox_ids(nil), do: []
+
+  defp checkbox_ids(params) when is_list(params),
+    do: Enum.reject(params, &String.starts_with?(to_string(&1), "_unused_"))
+
+  defp checkbox_ids(params) when is_binary(params), do: [params]
+
+  # Prices are read exactly as the grid reads a cell: `Fares.Money.parse/1` is
+  # what decides a price, a blank is not sold, and an unreadable one keeps the
+  # rider type it belongs to so the drawer can name it and refuse the save.
+  defp parse_fare_prices(draft) do
+    {amounts, invalid} = read_amounts(draft.prices)
+    {app_amounts, app_invalid} = read_amounts(draft.app_prices)
+
+    %{
+      draft
+      | amounts: amounts,
+        app_amounts: app_amounts,
+        invalid_riders: Enum.uniq(invalid ++ app_invalid)
+    }
+  end
+
+  defp read_amounts(texts) do
+    Enum.reduce(texts, {%{}, []}, fn {rider_id, text}, {amounts, invalid} ->
+      case Money.parse(text) do
+        {:ok, amount} -> {Map.put(amounts, rider_id, amount), invalid}
+        {:error, :invalid} -> {amounts, [rider_id | invalid]}
+      end
+    end)
+  end
+
+  # What a refused save found, each as a link to the field it names so the
+  # summary is the list of things to fix rather than the first field that
+  # happens to be at the top of the drawer.
+  defp fare_failures(draft, socket) do
+    {name_failure, name_error} = fare_name_failure(draft)
+    {price_failure, price_error, invalid} = fare_price_failure(draft, socket)
+    {media_failure, media_error} = fare_media_failure(draft)
+
+    failures = Enum.reject([name_failure, price_failure, media_failure], &is_nil/1)
+
+    draft = %{
+      draft
+      | name_error: name_error,
+        price_error: price_error,
+        media_error: media_error,
+        invalid_riders: invalid,
+        failures: failures
+    }
+
+    {draft, failures}
+  end
+
+  defp fare_name_failure(%{name: name}) do
+    if blank?(name) do
+      message = "Enter a name riders will see, such as Local ride."
+      {%{href: "#fare-name", msg: "Name: #{message}"}, message}
+    else
+      {nil, nil}
+    end
+  end
+
+  defp fare_price_failure(draft, socket) do
+    workspace = socket.assigns.workspace
+
+    cond do
+      draft.invalid_riders != [] ->
+        names = Enum.map_join(draft.invalid_riders, ", ", &rider_name(workspace, &1))
+
+        message = "Enter a price in dollars and cents, such as 1.50, or Free."
+
+        {%{
+           href: "#fare-price-#{List.first(draft.invalid_riders)}",
+           msg: "Prices: #{names}: #{message}"
+         }, message, draft.invalid_riders}
+
+      Enum.all?(draft.amounts, fn {_rider_id, amount} -> is_nil(amount) end) ->
+        message = "Enter a price for at least one rider type."
+
+        {%{href: "#fare-prices", msg: "Prices: #{message}"}, message, []}
+
+      true ->
+        {nil, nil, []}
+    end
+  end
+
+  defp fare_media_failure(%{media_ids: []}) do
+    message = "Choose at least one."
+
+    {%{href: "#fare-media", msg: "Riders can pay with: #{message}"}, message}
+  end
+
+  defp fare_media_failure(%{media_ids: [_ | _]}), do: {nil, nil}
+
+  defp rider_name(workspace, rider_id) do
+    case Enum.find(workspace.riders, &(&1.rider_category_id == rider_id)) do
+      %{name: name} -> name || rider_id
+      nil -> rider_id
+    end
+  end
+
+  # -- Writing a fare ----------------------------------------------------------
+
+  defp save_fare(socket, draft) do
+    socket = assign(socket, :drawer_pending?, true)
+    name = draft.name
+    version_name = socket.assigns.current_gtfs_version.name
+
+    case write_each(
+           fare_scope(socket),
+           Enum.map(fare_calls(socket, draft), &{&1}),
+           &Fares.save_fare/2
+         ) do
+      {:ok, undos} ->
+        {:noreply,
+         socket
+         |> load_workspace()
+         |> assign(:fare_draft, nil)
+         |> assign(:fare_focus, nil)
+         |> assign(:drawer_pending?, false)
+         |> assign(:price_note, %{text: "#{name} saved to #{version_name} service.", undo: undos})}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:drawer_pending?, false)
+         |> assign(:price_note, %{text: "#{name} couldn’t be saved (#{reason})."})}
+    end
+  end
+
+  # One `Fares.save_fare/2` call per `fare_products` row the fare owns.
+  #
+  # The writers address one product at a time, and an imported fare holds one row
+  # per rider type and payment method — "Local ride" is eight rows, not one. So
+  # the draft's grid is grouped by the row each cell already writes: a cell keeps
+  # the id it had, because the leg rules name that id, and a cell with no row yet
+  # joins the fare's first row, which is the same convention the price grid's
+  # `cell_product_id/3` uses. Each call is then scoped to its own row's rider type
+  # and payment method, so no call invents a row that was not there.
+  #
+  # A fare being created has no rows to inherit, so it takes a single call under
+  # the id its name produces — which is the shape `Conversion` writes.
+  defp fare_calls(socket, draft) do
+    fare = current_fare(socket, draft)
+
+    draft
+    |> fare_cells(fare)
+    |> Map.new(fn {rider_id, medium_id} ->
+      {{rider_id, medium_id}, fare_cell_product(fare, rider_id, medium_id, draft)}
+    end)
+    |> Enum.group_by(&elem(&1, 1), &elem(&1, 0))
+    |> Enum.map(fn {product_id, cells} -> fare_call(draft, fare, product_id, cells) end)
+  end
+
+  defp fare_call(draft, fare, product_id, cells) do
+    media_ids = cells |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
+
+    %{
+      name: draft.name,
+      fare_product_id: product_id,
+      kind: draft.kind,
+      media_ids: media_ids,
+      prices: cell_prices(draft, cells),
+      media_prices: %{},
+      accepted_network_ids: draft.group_ids,
+      position: fare && fare.position
+    }
+  end
+
+  # One row's prices: every cell that row owns, at what the draft says for that
+  # rider type on that payment method. The text is sent rather than the parsed
+  # amount, because `Fares.Money.parse/1` is what decides a price at the writer
+  # too — a blank is "not sold" there as it is here.
+  defp cell_prices(draft, cells) do
+    Map.new(cells, fn cell -> {elem(cell, 0), fare_cell_text(draft, cell)} end)
+  end
+
+  defp fare_cell_text(draft, {rider_id, medium_id}) do
+    if medium_id == draft.app_medium and draft.differ? do
+      Map.get(draft.app_prices, rider_id, "")
+    else
+      Map.get(draft.prices, rider_id, "")
+    end
+  end
+
+  # Every cell the draft draws: one per rider type, on each payment method the
+  # fare is sold on.
+  defp fare_cells(draft, _fare) do
+    for rider_id <- Map.keys(draft.prices),
+        medium_id <- draft.media_ids,
+        do: {rider_id, medium_id}
+  end
+
+  # A fare being created has no row to inherit, and `Fares.save_fare/2` names the
+  # new id from the fare's own name, so the whole draft is one create under no id.
+  defp fare_cell_product(nil, _rider_id, _medium_id, _draft), do: nil
+
+  defp fare_cell_product(fare, rider_id, medium_id, _draft) do
+    fare.cells
+    |> Enum.find_value(List.first(fare.product_ids), fn cell ->
+      if cell.rider_category_id == rider_id and cell_medium_id(cell, fare) == medium_id do
+        cell.fare_product_id
+      end
+    end)
+  end
+
+  # A stored row naming no payment method is the fare's own base method, so it
+  # answers to the id the grid drew it under.
+  defp cell_medium_id(cell, fare), do: cell.fare_media_id || fare.base_media_id
+
+  defp current_fare(%{assigns: %{fare_draft: %{key: nil}}}, _draft), do: nil
+
+  defp current_fare(socket, draft), do: fare_of_product(socket, draft.key)
+
+  # -- Deleting a fare ---------------------------------------------------------
+
+  defp delete_fare(socket, state) do
+    fare = state.fare
+    version_name = socket.assigns.current_gtfs_version.name
+
+    # "Nothing chosen" and "no fare" are different answers, and neither is an
+    # answer a fare no rule charges needs: nothing points at it, so it goes.
+    # A priced fare is not deleted while the operator has not said what its rides
+    # should charge instead.
+    case replacement_choice(socket, state.replacement) do
+      :unchosen when state.rules == [] ->
+        write_fare_delete(socket, state, fare, nil, version_name)
+
+      :unchosen ->
+        {:noreply, socket |> put_replacement_error(state) |> focus_replacement()}
+
+      replacement ->
+        write_fare_delete(socket, state, fare, replacement, version_name)
+    end
+  end
+
+  defp put_replacement_error(socket, state) do
+    assign(socket, :fare_delete, %{state | error: "Choose what these rides charge instead."})
+  end
+
+  defp focus_replacement(socket) do
+    push_event(socket, "focus_scoped_target", %{id: "fare-delete-replacement"})
+  end
+
+  defp write_fare_delete(socket, state, fare, replacement, version_name) do
+    socket = assign(socket, :drawer_pending?, true)
+
+    case write_each(
+           fare_scope(socket),
+           delete_fare_calls(fare, replacement),
+           &Fares.delete_fare/4
+         ) do
+      {:ok, undos} ->
+        {:noreply,
+         socket
+         |> load_workspace()
+         |> assign(:fare_draft, nil)
+         |> assign(:fare_delete, nil)
+         |> assign(:fare_focus, nil)
+         |> assign(:drawer_pending?, false)
+         |> assign(:price_note, %{
+           text: "#{fare.name} deleted from #{version_name} service.",
+           undo: undos
+         })}
+
+      {:error, :replacement_required} ->
+        {:noreply,
+         socket
+         |> assign(:drawer_pending?, false)
+         |> put_replacement_error(state)
+         |> focus_replacement()}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:drawer_pending?, false)
+         |> assign(:price_note, %{
+           text: "#{fare.name} couldn’t be deleted (#{inspect(reason)})."
+         })}
+    end
+  end
+
+  # One `Fares.delete_fare/4` call per row the fare owns, each fenced against
+  # only that row's own prices: the fence is checked against what is stored at
+  # the time of the call, and an earlier call in the fan-out has already removed
+  # the rows that came before it.
+  #
+  # The replacement is chosen by fare, and each row is pointed at the
+  # replacement's row for the same rider type and payment method — a rule about a
+  # reduced rider's cash price belongs on the reduced rider's cash price. A row
+  # the replacement does not mirror falls back to the replacement's own first
+  # row, and choosing "no fare" removes the rules instead.
+  defp delete_fare_calls(fare, replacement) do
+    for product_id <- fare.product_ids do
+      cells = Enum.filter(fare.cells, &(&1.fare_product_id == product_id))
+
+      {product_id, replacement_product(fare, replacement, product_id),
+       %{
+         name: fare.name,
+         kind: fare.kind,
+         prices:
+           Enum.map(cells, fn cell ->
+             %{
+               fare_product_id: cell.fare_product_id,
+               rider_category_id: cell.rider_category_id,
+               fare_media_id: cell.fare_media_id,
+               reviewed: stored_row_amount(fare, cell.rider_category_id, cell.fare_media_id)
+             }
+           end)
+       }}
+    end
+  end
+
+  # What the chosen replacement resolves to: `:unchosen` while the operator has
+  # not answered, `:remove_rules` for the explicit "no fare", and otherwise the
+  # fare whose rows the rules move to.
+  defp replacement_choice(_socket, nil), do: :unchosen
+  defp replacement_choice(_socket, ""), do: :unchosen
+  defp replacement_choice(_socket, "none"), do: :remove_rules
+  defp replacement_choice(socket, product_id), do: fare_of_product(socket, product_id)
+
+  # The row one of the deleted fare's own rows is replaced by: the replacement
+  # fare's row for the same rider type and payment method. The deleted row is
+  # looked up on the fare being deleted, which is the only one that knows it.
+  defp replacement_product(_fare, :remove_rules, _product_id), do: :remove_rules
+
+  defp replacement_product(_fare, nil, _product_id), do: nil
+
+  defp replacement_product(fare, replacement, product_id) do
+    cell = Enum.find(fare.cells, &(&1.fare_product_id == product_id))
+
+    mirrored =
+      cell &&
+        Enum.find(replacement.cells, fn other ->
+          other.rider_category_id == cell.rider_category_id and
+            other.fare_media_id == cell.fare_media_id
+        end)
+
+    (mirrored && mirrored.fare_product_id) || List.first(replacement.product_ids)
+  end
+
+  # -- The rider type drawer ---------------------------------------------------
+
+  defp open_rider_draft(socket, %{"rider_category_id" => rider_id}) do
+    case Enum.find(socket.assigns.workspace.riders, &(&1.rider_category_id == rider_id)) do
+      nil -> new_rider_draft(socket)
+      rider -> edit_rider_draft(rider)
+    end
+  end
+
+  defp open_rider_draft(socket, _params), do: new_rider_draft(socket)
+
+  defp new_rider_draft(_socket) do
+    %{
+      key: nil,
+      name: "",
+      eligibility_url: "",
+      default?: false,
+      default_locked?: false,
+      starting: "half",
+      name_error: nil,
+      failures: []
+    }
+  end
+
+  defp edit_rider_draft(rider) do
+    %{
+      key: rider.rider_category_id,
+      name: rider.name || "",
+      eligibility_url: rider.eligibility_url || "",
+      default?: rider.default?,
+      # The one rider type shown first cannot give that up here: another editor
+      # has to claim it first, so the control is stated rather than offered.
+      default_locked?: rider.default?,
+      starting: "same",
+      name_error: nil,
+      failures: []
+    }
+  end
+
+  defp rider_draft(draft, _socket, params) do
+    %{
+      draft
+      | name: params["name"] || "",
+        eligibility_url: params["eligibility_url"] || "",
+        default?: params["default?"] == "true" or draft.default_locked?,
+        starting: params["starting"] || draft.starting
+    }
+  end
+
+  defp rider_failures(draft) do
+    if blank?(draft.name) do
+      message = "Enter a name riders will see, such as Reduced fare."
+      failures = [%{href: "#rider-name", msg: "Name: #{message}"}]
+
+      {%{draft | name_error: message, failures: failures}, failures}
+    else
+      {%{draft | name_error: nil}, []}
+    end
+  end
+
+  defp save_rider_type(socket, draft) do
+    scope = fare_scope(socket)
+    socket = assign(socket, :drawer_pending?, true)
+    name = draft.name
+    version_name = socket.assigns.current_gtfs_version.name
+
+    params = %{
+      name: name,
+      rider_category_id: draft.key,
+      eligibility_url: blank_to_nil(draft.eligibility_url),
+      default?: draft.default?
+    }
+
+    params =
+      if draft.key,
+        do: params,
+        else: Map.put(params, :starting, starting_choice(draft.starting))
+
+    case Fares.save_rider_type(scope, params) do
+      {:ok, %{operation_id: operation_id, inverse: inverse}} ->
+        {:noreply,
+         socket
+         |> load_workspace()
+         |> assign(:rider_draft, nil)
+         |> assign(:rider_focus, nil)
+         |> assign(:drawer_pending?, false)
+         |> assign(:price_note, %{
+           text: "#{name} saved to #{version_name} service.",
+           undo: [{operation_id, inverse}]
+         })}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:drawer_pending?, false)
+         |> assign(:price_note, %{text: "#{name} couldn’t be saved (#{reason})."})}
+    end
+  end
+
+  # The starting choice is a fixed set named by the drawer's own choice cards, so
+  # it is read from that set rather than turned into an atom from what arrived.
+  defp starting_choice("half"), do: :half
+  defp starting_choice("same"), do: :same
+  defp starting_choice("free"), do: :free
+  defp starting_choice("blank"), do: :blank
+
+  defp rider_price_count(workspace, rider_id) do
+    Enum.count(workspace.fares, fn fare ->
+      Map.has_key?(fare.prices, rider_id) or
+        Enum.any?(Map.values(fare.media_prices), &Map.has_key?(&1, rider_id))
+    end)
+  end
+
+  # -- The payment method drawer -----------------------------------------------
+
+  defp open_media_draft(socket, %{"fare_media_id" => medium_id}) do
+    case Enum.find(socket.assigns.workspace.media, &(&1.fare_media_id == medium_id)) do
+      nil -> new_media_draft(socket)
+      medium -> edit_media_draft(socket, medium)
+    end
+  end
+
+  defp open_media_draft(socket, _params), do: new_media_draft(socket)
+
+  defp new_media_draft(_socket) do
+    %{
+      key: nil,
+      name: "",
+      fare_media_type: 0,
+      accepted_products: [],
+      name_error: nil,
+      failures: []
+    }
+  end
+
+  defp edit_media_draft(socket, medium) do
+    %{
+      key: medium.fare_media_id,
+      name: medium.name || "",
+      fare_media_type: medium.fare_media_type || 0,
+      accepted_products: accepted_products(socket, medium.fare_media_id),
+      name_error: nil,
+      failures: []
+    }
+  end
+
+  # The fares a payment method is accepted for, as the `fare_products` row that
+  # `Fares.save_payment_method/4` names. One row per fare is enough, because the
+  # writer expands it to every row of the same fare name.
+  defp accepted_products(socket, medium_id) do
+    for fare <- socket.assigns.workspace.fares,
+        medium_id in fare.media,
+        product_id = List.first(fare.product_ids),
+        do: product_id
+  end
+
+  defp media_draft(draft, _socket, params) do
+    %{
+      draft
+      | name: params["name"] || "",
+        fare_media_type: media_type_param(params["fare_media_type"], draft.fare_media_type),
+        accepted_products: checkbox_ids(params["accepted_products"])
+    }
+  end
+
+  # The kind is one of the five the drawer's choice cards offer, so anything else
+  # arriving is not read as a kind at all.
+  defp media_type_param(nil, current), do: current
+  defp media_type_param(text, _current) when text in ~w(0 1 2 3 4), do: String.to_integer(text)
+  defp media_type_param(_text, current), do: current
+
+  defp media_failures(draft) do
+    if blank?(draft.name) do
+      message = "Enter a name riders will see, such as NCT Ride app."
+      failures = [%{href: "#media-name", msg: "Name: #{message}"}]
+
+      {%{draft | name_error: message, failures: failures}, failures}
+    else
+      {%{draft | name_error: nil}, []}
+    end
+  end
+
+  defp save_payment_method(socket, draft) do
+    scope = fare_scope(socket)
+    socket = assign(socket, :drawer_pending?, true)
+    name = draft.name
+    version_name = socket.assigns.current_gtfs_version.name
+
+    params = %{
+      name: name,
+      fare_media_id: draft.key,
+      fare_media_type: draft.fare_media_type,
+      fare_product_ids: draft.accepted_products
+    }
+
+    case Fares.save_payment_method(scope, params) do
+      {:ok, %{operation_id: operation_id, inverse: inverse}} ->
+        {:noreply,
+         socket
+         |> load_workspace()
+         |> assign(:media_draft, nil)
+         |> assign(:media_focus, nil)
+         |> assign(:drawer_pending?, false)
+         |> assign(:price_note, %{
+           text: "#{name} saved to #{version_name} service.",
+           undo: [{operation_id, inverse}]
+         })}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:drawer_pending?, false)
+         |> assign(:price_note, %{text: "#{name} couldn’t be saved (#{reason})."})}
+    end
+  end
+
+  defp media_fare_count(workspace, medium_id) do
+    Enum.count(workspace.fares, &(medium_id in &1.media))
+  end
+
+  # -- Writing -----------------------------------------------------------------
+
+  # A fan-out of writes, newest failure first: the writes stop at the first one
+  # that is refused and the caller reports that reason, rather than pressing on
+  # with a half-written fare. The undos come back in the order they were written,
+  # which is the order they have to be reversed in.
+  defp write_each(scope, calls, writer) do
+    Enum.reduce_while(calls, {:ok, []}, fn args, {:ok, undos} ->
+      case apply(writer, [scope | Tuple.to_list(args)]) do
+        {:ok, %{operation_id: operation_id, inverse: inverse}} ->
+          {:cont, {:ok, undos ++ [{operation_id, inverse}]}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp undo_writes(scope, undos) do
+    Enum.reduce_while(Enum.reverse(undos), {:ok, []}, fn undo, {:ok, done} ->
+      case Fares.undo(scope, elem(undo, 0), elem(undo, 1)) do
+        {:ok, _result} -> {:cont, {:ok, done}}
+        {:error, _reason} -> {:halt, {:error, :refused}}
+      end
+    end)
+  end
+
+  defp blank?(nil), do: true
+  defp blank?(""), do: true
+  defp blank?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank?(_value), do: false
 
   defp price_edit(socket, {key, text}, edits) do
     edit = price_edit(text)
@@ -349,6 +1443,62 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
             </div>
           </div>
         </div>
+
+        <%!-- The drawers are siblings of the grid, not cells inside it: a drawer
+          is fixed to the edge of the viewport, and a grid container would place it
+          by its own column. They also sit outside the grid's own form, because a
+          drawer is a separate form with its own submit and two nested forms submit
+          the wrong one. --%>
+
+        <.fare_drawer
+          :if={@fare_draft}
+          draft={@fare_draft}
+          form={to_form(%{"name" => @fare_draft.name}, as: :fare)}
+          workspace={@workspace}
+          version_name={@current_gtfs_version.name}
+          published?={published?(@current_gtfs_version)}
+          return_focus_id={@fare_focus}
+          pending?={@drawer_pending?}
+        />
+        <.fare_delete_dialog
+          :if={@fare_delete}
+          fare_delete={@fare_delete}
+          workspace={@workspace}
+          return_focus_id={@fare_focus}
+        />
+        <.rider_drawer
+          :if={@rider_draft}
+          draft={@rider_draft}
+          form={
+            to_form(
+              %{"name" => @rider_draft.name, "eligibility_url" => @rider_draft.eligibility_url},
+              as: :rider
+            )
+          }
+          workspace={@workspace}
+          version_name={@current_gtfs_version.name}
+          return_focus_id={@rider_focus}
+          pending?={@drawer_pending?}
+        />
+        <.rider_delete_dialog
+          :if={@rider_delete}
+          rider_delete={@rider_delete}
+          workspace={@workspace}
+          return_focus_id={@rider_focus}
+        />
+        <.media_drawer
+          :if={@media_draft}
+          draft={@media_draft}
+          form={to_form(%{"name" => @media_draft.name}, as: :media)}
+          workspace={@workspace}
+          return_focus_id={@media_focus}
+          pending?={@drawer_pending?}
+        />
+        <.media_delete_dialog
+          :if={@media_delete}
+          media_delete={@media_delete}
+          return_focus_id={@media_focus}
+        />
       </div>
     </Layouts.app>
     """
@@ -453,7 +1603,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
            %{
              text:
                "#{price_count_text(count)} saved to #{socket.assigns.current_gtfs_version.name} service.",
-             undo: {operation_id, inverse}
+             undo: [{operation_id, inverse}]
            }
          )}
 

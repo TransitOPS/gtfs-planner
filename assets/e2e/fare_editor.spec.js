@@ -124,7 +124,25 @@ async function capture(page, testInfo, name) {
     path = resolve(CAPTURE_DIR, `${name}.png`);
   }
 
-  await page.screenshot({ path, fullPage: true });
+  // A drawer slides in over the page, so a capture taken as it arrives shows a
+  // half-open panel. Playwright fast-forwards CSS animations so every capture
+  // shows the settled state.
+  await page.screenshot({ path, fullPage: true, animations: "disabled" });
+  return path;
+}
+
+// A drawer and its confirm dialog are fixed to the edge of the viewport, so a
+// full-page capture — which the Prices tab needs for its whole grid — leaves
+// them off the image. Drawer states are captured in the viewport instead.
+async function captureDrawer(page, testInfo, name) {
+  let path = testInfo.outputPath(`${name}.png`);
+
+  if (CAPTURE_DIR) {
+    mkdirSync(CAPTURE_DIR, { recursive: true });
+    path = resolve(CAPTURE_DIR, `${name}.png`);
+  }
+
+  await page.screenshot({ path, fullPage: false, animations: "disabled" });
   return path;
 }
 
@@ -509,4 +527,281 @@ test("prices", async ({ page }, testInfo) => {
   await captureReference(page, testInfo, "?state=prices-editing", "ref-prices-editing");
   await captureReference(page, testInfo, "?state=prices-conflict", "ref-prices-conflict");
   await captureReference(page, testInfo, "?state=prices-lens", "ref-prices-lens");
+});
+
+// ── drawers ───────────────────────────────────────────────────────────────
+
+// The three drawers the Prices tab owns — the fare, the rider type and the
+// payment method — and the confirm dialog that settles a fare's rules.
+//
+// Each journey proves one thing through the DOM the LiveView renders: a
+// rejected save lands on the error summary rather than on the first field, a
+// priced fare cannot be deleted until the operator says what its rides charge
+// instead, the rider type shown first offers no delete action, and Escape puts
+// focus back on the control that opened the drawer.
+test("drawers", async ({ page }, testInfo) => {
+  await routeBlankTiles(page);
+  await logIn(page);
+
+  const versionId = await versionIdByName(page, VERSIONS.managed);
+
+  const openPrices = async () => {
+    await page.goto(`/gtfs/${versionId}/settings/fares`);
+    await waitForLiveView(page);
+    await expect(page.locator("#fare-table")).toBeAttached();
+  };
+
+  // A refused save focuses the summary that lists what to fix, and the summary
+  // links to the field each failure names. Both drawers, so the answer is not
+  // the fare drawer's own habit.
+  await openPrices();
+
+  await page.locator("#create-fare").click();
+  await expect(page.locator("#fare-drawer")).toBeAttached();
+  await expect(page.locator("#fare-media-cash")).toBeChecked();
+  await page.locator("#fare-price-adult").fill("1.00");
+  await page.locator("#fare-save").click();
+
+  const summary = page.locator("#error-summary");
+  await expect(summary).toBeAttached();
+  await expect(summary).toHaveAttribute("tabindex", "-1");
+  await expect(page.locator('#error-summary a[href="#fare-name"]')).toHaveCount(1);
+  await expect(
+    await page.evaluate(() => document.activeElement?.id),
+  ).toBe("error-summary");
+
+  // No summary at all while the form is valid: it is drawn only for a refusal.
+  await page.locator("#fare-name").fill("Summer beach shuttle");
+  await page.locator("#fare-save").click();
+
+  await expect(page.locator("#fare-drawer")).toHaveCount(0);
+  await expect(page.locator("#error-summary")).toHaveCount(0);
+  await expect(page.locator("#fare-note")).toContainText("Summer beach shuttle saved");
+  await expect(page.locator("#fare-table")).toContainText("Summer beach shuttle");
+
+  // The fare is removed again so the journeys after this one read the fixture
+  // they seeded.
+  await page.locator("#undo-prices").click();
+  await expect(page.locator("#fare-note")).toContainText("Change undone.");
+  await expect(page.locator("#fare-table")).not.toContainText(
+    "Summer beach shuttle",
+  );
+
+  // Escape closes the drawer and puts focus back on the control that opened it,
+  // which is the fare name the grid drew.
+  await page.locator("#fare-open-local_ride").click();
+  await expect(page.locator("#fare-drawer")).toBeAttached();
+  await expect(page.locator("#fare-name")).toHaveValue("Local ride");
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#fare-drawer")).toHaveCount(0);
+  expect(await page.evaluate(() => document.activeElement?.id)).toBe(
+    "fare-open-local_ride",
+  );
+
+  // A fare no rule charges deletes without a replacement question at all.
+  await openPrices();
+  await page.locator("#create-fare").click();
+
+  await page.locator("#fare-name").fill("Summer beach shuttle");
+  await page.locator("#fare-price-adult").fill("1.00");
+  await page.locator("#fare-save").click();
+  await expect(page.locator("#fare-table")).toContainText("Summer beach shuttle");
+
+  // A priced fare will not go until its rules say what they charge instead.
+  await page.locator("#fare-open-valley_ride").click();
+  await page.locator("#fare-delete").click();
+  await expect(page.locator("#fare-delete-dialog")).toBeAttached();
+  await expect(page.locator("#fare-delete-rules")).toContainText("Valley ride");
+  await expect(page.locator("#fare-delete-replacement")).toBeAttached();
+
+  await page.locator("#fare-delete-dialog-confirm").click();
+  await expect(page.locator("#fare-delete-dialog")).toBeAttached();
+  await expect(page.locator("#fare-delete-replacement")).toHaveAttribute(
+    "aria-invalid",
+    "true",
+  );
+  await expect(page.locator("#fare-delete-replacement-error")).toHaveText(
+    "Choose what these rides charge instead.",
+  );
+  await expect(page.locator("#fare-table")).toContainText("Valley ride");
+
+  // Choosing Coast ride deletes the fare and points its rules there.
+  await page.locator("#fare-delete-replacement").selectOption("coast_ride_adult_cash");
+  await page.locator("#fare-delete-dialog-confirm").click();
+  await expect(page.locator("#fare-delete-dialog")).toHaveCount(0);
+  await expect(page.locator("#fare-table")).not.toContainText("Valley ride");
+
+  // Undo is the whole way back, and it restores the fare and its rules.
+  await page.locator("#undo-prices").click();
+  await expect(page.locator("#fare-table")).toContainText("Valley ride");
+
+  await page.locator("#fare-open-summer_beach_shuttle").click();
+  await page.locator("#fare-delete").click();
+  await expect(page.locator("#fare-delete-unused")).toBeAttached();
+  await page.locator("#fare-delete-dialog-confirm").click();
+  await expect(page.locator("#fare-table")).not.toContainText(
+    "Summer beach shuttle",
+  );
+
+  // The rider type shown first is the one trip planners lead with, so it offers
+  // no delete action; another one does.
+  await page.locator("#rider-edit-adult").click();
+  await expect(page.locator("#rider-drawer")).toBeAttached();
+  await expect(page.locator("#rider-name")).toHaveValue("Adult");
+  await expect(page.locator("#rider-delete")).toHaveCount(0);
+  await expect(page.locator("#rider-default")).toBeDisabled();
+
+  await page.locator("#rider-cancel").click();
+  await expect(page.locator("#rider-drawer")).toHaveCount(0);
+
+  await page.locator("#rider-edit-reduced").click();
+  await expect(page.locator("#rider-delete")).toBeAttached();
+  await page.locator("#rider-cancel").click();
+
+  // A create states the starting prices it would create before it writes them.
+  await page.locator("#create-rider").click();
+  await expect(page.locator("#rider-starting-preview")).toBeAttached();
+  await expect(page.locator("#rider-name")).toHaveValue("");
+  await page.locator("#rider-save").click();
+  await expect(page.locator('#error-summary a[href="#rider-name"]')).toHaveCount(1);
+
+  await page.locator("#rider-name").fill("Senior (65+)");
+  await page.locator("#rider-starting-half").check();
+  await page.locator("#rider-save").click();
+  await expect(page.locator("#rider-drawer")).toHaveCount(0);
+  await expect(page.locator("#rider-edit-senior_65")).toBeAttached();
+
+  await page.locator("#undo-prices").click();
+  await expect(page.locator("#rider-edit-senior_65")).toHaveCount(0);
+
+  // The payment method drawer offers GTFS's five kinds and the fares that
+  // accept it.
+  await page.locator("#create-media").click();
+  await expect(page.locator("#media-drawer")).toBeAttached();
+  await expect(page.locator("#media-kind-4")).toBeAttached();
+
+  await page.locator("#media-save").click();
+  await expect(page.locator('#error-summary a[href="#media-name"]')).toHaveCount(1);
+
+  await page.locator("#media-name").fill("NCT Ride app");
+  await page.locator("#media-kind-4").check();
+  await page.locator("#media-fare-local_ride").check();
+  await page.locator("#media-save").click();
+  await expect(page.locator("#media-drawer")).toHaveCount(0);
+  await expect(page.locator("#fare-payment-title")).toBeAttached();
+  await expect(page.locator("#media-open-nct_ride_app")).toBeAttached();
+  await expect(page.locator("#fare-payment-list")).toContainText(
+    "NCT Ride app",
+  );
+
+  // The payment method this journey made is removed again through its own
+  // drawer, so the captures below read the fixture this journey seeded.
+  await page.locator("#media-open-nct_ride_app").click();
+  await page.locator("#media-delete").click();
+  await page.locator("#media-delete-dialog-confirm").click();
+  await expect(page.locator("#media-drawer")).toHaveCount(0);
+  // The seed already carries an app by that name, so what went is the method
+  // this journey made — its own row, the one the drawer opened.
+  await expect(page.locator("#media-open-nct_ride_app")).toHaveCount(0);
+  await expect(page.locator("#media-open-app")).toBeAttached();
+
+  // ── captures ────────────────────────────────────────────────────────────
+  // Each drawer state at both prepared viewports, beside the prototype states
+  // they follow.
+  for (const viewport of [DESKTOP, PHONE]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await openPrices();
+
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await capture(page, testInfo, `drawers-prices-${viewport.label}`);
+
+    // The fare drawer, empty and ready to be filled in.
+    await page.locator("#create-fare").click();
+    await expect(page.locator("#fare-drawer")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+await captureDrawer(page, testInfo, `drawers-fare-create-${viewport.label}`);
+
+    // The same drawer with prices typed, so the live result card is showing.
+    await page.locator("#fare-name").fill("Summer beach shuttle");
+    await page.locator("#fare-price-adult").fill("1.00");
+    await page.locator("#fare-price-reduced").fill("0.50");
+    await page.locator("#fare-differ").check();
+    await expect(page.locator("#fare-result-card")).toBeAttached();
+    await expect(page.locator("#fare-result-card")).toContainText("$1.00");
+    await captureDrawer(page, testInfo, `drawers-fare-filled-${viewport.label}`);
+
+    // The refused state: the summary focused and linked to the name.
+    await page.locator("#fare-name").fill("");
+    await page.locator("#fare-save").click();
+    await expect(page.locator("#error-summary")).toBeAttached();
+    await captureDrawer(page, testInfo, `drawers-fare-errors-${viewport.label}`);
+    await page.locator("#fare-cancel").click();
+
+    // The fare being edited, with its own prices.
+    await page.locator("#fare-open-local_ride").click();
+    await expect(page.locator("#fare-drawer")).toBeAttached();
+    await expect(page.locator("#fare-result-card")).toContainText("$1.50");
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `drawers-fare-edit-${viewport.label}`);
+    await page.locator("#fare-cancel").click();
+
+    // The delete dialog, and the refused delete that asks for a replacement.
+    await page.locator("#fare-open-valley_ride").click();
+    await page.locator("#fare-delete").click();
+    await expect(page.locator("#fare-delete-dialog")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `drawers-fare-delete-${viewport.label}`);
+
+    await page.locator("#fare-delete-dialog-confirm").click();
+    await expect(page.locator("#fare-delete-replacement-error")).toHaveText(
+      "Choose what these rides charge instead.",
+    );
+    await captureDrawer(page, testInfo, `drawers-fare-delete-error-${viewport.label}`);
+
+    await page.locator("#fare-delete-replacement").selectOption("coast_ride_adult_cash");
+    await expect(page.locator("#fare-delete-replacement")).toHaveValue(
+      "coast_ride_adult_cash",
+    );
+    await page.locator("#fare-delete-dialog-cancel").click();
+    await expect(page.locator("#fare-drawer")).toBeAttached();
+    await page.locator("#fare-cancel").click();
+
+    // The rider type drawer, and its create with the starting prices stated.
+    await page.locator("#create-rider").click();
+    await expect(page.locator("#rider-drawer")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `drawers-rider-create-${viewport.label}`);
+    await page.locator("#rider-cancel").click();
+
+    await page.locator("#rider-edit-reduced").click();
+    await expect(page.locator("#rider-drawer")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `drawers-rider-edit-${viewport.label}`);
+    await page.locator("#rider-cancel").click();
+
+    // The payment method drawer and its create.
+    await page.locator("#create-media").click();
+    await expect(page.locator("#media-drawer")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `drawers-media-create-${viewport.label}`);
+    await page.locator("#media-cancel").click();
+
+    await page.locator("#media-open-app").click();
+    await expect(page.locator("#media-drawer")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `drawers-media-edit-${viewport.label}`);
+
+    await page.locator("#media-delete").click();
+    await expect(page.locator("#media-delete-dialog")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `drawers-media-delete-${viewport.label}`);
+    await page.locator("#media-delete-dialog-cancel").click();
+  }
+
+  await captureReference(page, testInfo, "?state=fare-create", "ref-fare-create");
+  await captureReference(page, testInfo, "?state=fare-errors", "ref-fare-errors");
+  await captureReference(page, testInfo, "?state=fare-delete", "ref-fare-delete");
+  await captureReference(page, testInfo, "?state=rider-create", "ref-rider-create");
+  await captureReference(page, testInfo, "?state=media-create", "ref-media-create");
 });

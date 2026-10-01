@@ -31,7 +31,14 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
 
   use GtfsPlannerWeb, :html
 
-  import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
+  import GtfsPlannerWeb.PlannerComponents,
+    only: [
+      choice_cards: 1,
+      drawer_footer: 1,
+      drawer_scroll: 1,
+      form_error_summary: 1,
+      message: 1
+    ]
 
   alias GtfsPlanner.Gtfs.Fares.Money
   alias GtfsPlanner.Gtfs.Stop
@@ -67,8 +74,14 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
     ~H"""
     <%= case header_action(@active_tab, @ready?, @transfers?, @dirty?) do %>
       <% :none -> %>
-      <% {:button, id, label, variant} -> %>
-        <.button id={id} class="min-h-11" variant={variant} disabled={not @ready?}>
+      <% {:button, id, label, variant, event} -> %>
+        <.button
+          id={id}
+          class="min-h-11"
+          variant={variant}
+          disabled={not @ready?}
+          phx-click={event}
+        >
           <.icon name="hero-plus" class="size-4" /> {label}
         </.button>
     <% end %>
@@ -76,15 +89,20 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
   end
 
   # The tab's own primary, named once so the label and the id cannot drift from
-  # each other. `:none` is a real answer for a tab that offers no action.
+  # each other. `:none` is a real answer for a tab that offers no action. Only
+  # Prices names an event, because the fare drawer is the one primary this page
+  # owns; the other two belong to the Where and Transfers tabs, whose drawers
+  # arrive in their own steps.
   defp header_action(:prices, true, _transfers?, dirty?),
-    do: {:button, "create-fare", "Create fare", if(dirty?, do: "secondary", else: "primary")}
+    do:
+      {:button, "create-fare", "Create fare", if(dirty?, do: "secondary", else: "primary"),
+       "open_fare_drawer"}
 
   defp header_action(:where, true, _transfers?, _dirty?),
-    do: {:button, "add-fare-rule", "Add fare rule", "primary"}
+    do: {:button, "add-fare-rule", "Add fare rule", "primary", nil}
 
   defp header_action(:transfers, true, true, _dirty?),
-    do: {:button, "add-transfer-rule", "Add transfer rule", "primary"}
+    do: {:button, "add-transfer-rule", "Add transfer rule", "primary", nil}
 
   defp header_action(_active_tab, _ready?, _transfers?, _dirty?), do: :none
 
@@ -249,16 +267,43 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
                 scope="col"
                 class="w-[168px] min-w-[140px] border-b border-subtle bg-canvas py-2 pl-1 pr-4 align-bottom"
               >
-                <div class="min-w-0 text-right">
-                  <span class="block text-[13px] font-semibold leading-snug text-strong">
-                    {rider.name}
-                  </span>
-                  <span class="block text-[12px] font-normal text-muted">
-                    {if(rider.default?, do: "Shown first", else: " ")}
-                  </span>
+                <div class="flex items-end justify-end gap-0.5">
+                  <.button
+                    id={"rider-edit-#{rider.rider_category_id}"}
+                    type="button"
+                    variant="quiet"
+                    class="min-h-11 min-w-11 -mb-1.5 px-1"
+                    phx-click="open_rider_drawer"
+                    phx-value-rider_category_id={rider.rider_category_id}
+                    phx-value-opener_id={"rider-edit-#{rider.rider_category_id}"}
+                    aria-label={"Edit rider type #{rider.name}"}
+                    title="Edit rider type"
+                  >
+                    <.icon name="hero-pencil-square" class="size-4" />
+                  </.button>
+                  <div class="min-w-0 text-right">
+                    <span class="block text-[13px] font-semibold leading-snug text-strong">
+                      {rider.name}
+                    </span>
+                    <span class="block text-[12px] font-normal text-muted">
+                      {if(rider.default?, do: "Shown first", else: " ")}
+                    </span>
+                  </div>
                 </div>
               </th>
-              <th class="w-[1%] border-b border-subtle bg-canvas px-2 py-1"></th>
+              <th class="w-[1%] border-b border-subtle bg-canvas px-2 py-1 text-right align-bottom">
+                <.button
+                  id="create-rider"
+                  type="button"
+                  variant="quiet"
+                  class="min-h-11 px-2 whitespace-nowrap"
+                  phx-click="open_rider_drawer"
+                  phx-value-opener_id="create-rider"
+                  aria-label="Create rider type"
+                >
+                  <.icon name="hero-plus" class="size-4" /> Rider type
+                </.button>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -279,10 +324,21 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
                     scope="row"
                     class="border-b border-subtle px-4 py-2 text-left align-top font-normal"
                   >
-                    <span class="block text-sm font-bold text-strong">{fare.name}</span>
-                    <span class="block text-[13px] font-normal text-default">
-                      {fare_where_text(fare, @workspace)}
-                    </span>
+                    <button
+                      type="button"
+                      id={"fare-open-#{fare_slug(fare)}"}
+                      phx-click="open_fare_drawer"
+                      phx-value-fare_product_id={List.first(fare.product_ids)}
+                      phx-value-opener_id={"fare-open-#{fare_slug(fare)}"}
+                      class="group/name block min-h-11 w-full text-left"
+                    >
+                      <span class="text-sm font-bold text-strong underline decoration-subtle underline-offset-4 group-hover/name:decoration-action">
+                        {fare.name}
+                      </span>
+                      <span class="block text-[13px] font-normal text-default">
+                        {fare_where_text(fare, @workspace)}
+                      </span>
+                    </button>
                     <span
                       :if={length(fare.media) < length(@workspace.media)}
                       class="block text-[12px] text-muted"
@@ -670,13 +726,32 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
                 Trip planners show these as ways to pay. A fare can cost less with one of them.
               </p>
             </div>
+            <.button
+              id="create-media"
+              type="button"
+              variant="quiet"
+              class="min-h-11 max-sm:w-full"
+              phx-click="open_media_drawer"
+              phx-value-opener_id="create-media"
+            >
+              <.icon name="hero-plus" class="size-4" /> Create payment method
+            </.button>
           </div>
-          <ul>
+          <ul id="fare-payment-list">
             <li
               :for={medium <- @workspace.media}
               class="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-subtle px-4 py-2 last:border-b-0 sm:px-5"
             >
-              <span class="text-sm font-bold text-strong">{medium.name}</span>
+              <button
+                type="button"
+                id={"media-open-#{medium.fare_media_id}"}
+                phx-click="open_media_drawer"
+                phx-value-fare_media_id={medium.fare_media_id}
+                phx-value-opener_id={"media-open-#{medium.fare_media_id}"}
+                class="min-h-11 text-left text-sm font-bold text-strong underline decoration-subtle underline-offset-4 hover:decoration-action"
+              >
+                {medium.name}
+              </button>
               <span class="text-[13px] text-muted">{media_type_name(medium.fare_media_type)}</span>
               <span class="ml-auto text-[13px] tabular-nums text-default">
                 Accepted for {counted(
@@ -1203,6 +1278,1051 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
 
   # A count with its noun, the way the prototype's summary lines read it: "7
   # fares", "1 fare".
+  # -- Fare drawer --------------------------------------------------------------
+
+  @doc """
+  Renders the fare drawer: one fare as one form, whether it is being created or
+  edited.
+
+  `draft` is the LiveView's own draft, built when the drawer opens and rebuilt on
+  every change: the fare's name and kind, one price per rider type, a second
+  price per rider type for the payment method that differs, the methods it is
+  sold on, and the route groups a pass is accepted on. It also carries what the
+  last submit found — `failures` for the error summary, `name_error`,
+  `price_error`, `media_error` for the fields they name, and `invalid_riders` for
+  the price inputs a rider type's unreadable price belongs to.
+
+  Prices are plain inputs named by their rider type and payment method rather
+  than `to_form` fields, because they are a grid whose shape is the version's
+  own rider types and payment methods rather than a fixed set of columns. The
+  name is the one field `to_form` carries, so it renders through `<.input>`.
+
+  ## Examples
+
+      <.fare_drawer
+        draft={@fare_draft}
+        form={to_form(%{"name" => @fare_draft.name}, as: :fare)}
+        workspace={@workspace}
+        version_name={@current_gtfs_version.name}
+        published?={published?}
+        return_focus_id={@fare_return_focus_id}
+      />
+  """
+  attr :draft, :map, required: true
+  attr :form, :any, required: true
+  attr :workspace, :map, required: true
+  attr :version_name, :string, default: nil
+  attr :published?, :boolean, default: true
+  attr :return_focus_id, :string, default: nil
+  attr :pending?, :boolean, default: false
+
+  def fare_drawer(assigns) do
+    assigns =
+      assigns
+      |> assign(:editing?, assigns.draft.key != nil)
+      |> assign(:title, fare_drawer_title(assigns.draft))
+
+    ~H"""
+    <.drawer
+      id="fare-drawer"
+      chrome="planner"
+      open
+      pending={@pending?}
+      on_close="close_fare_drawer"
+      title={@title}
+      initial_focus={:first_field}
+      return_focus_id={@return_focus_id}
+      class="max-w-[520px]"
+    >
+      <:lede>
+        Changes apply to {version_phrase(@version_name, @published?)} as soon as you save.
+      </:lede>
+
+      <div
+        id="fare-drawer-content"
+        phx-hook="FormErrorFocus"
+        class="flex min-h-0 flex-1 flex-col"
+      >
+        <.form
+          for={@form}
+          id="fare-form"
+          as={:fare}
+          novalidate
+          phx-change="validate_fare"
+          phx-submit="save_fare"
+          class="flex min-h-0 flex-1 flex-col"
+        >
+          <.drawer_scroll>
+            <.form_error_summary
+              id="error-summary"
+              title={fare_error_summary_title(length(@draft.failures))}
+              failures={@draft.failures}
+            />
+
+            <.input
+              id="fare-name"
+              field={@form[:name]}
+              type="text"
+              label="Name"
+              placeholder="For example, Local ride"
+              errors={List.wrap(@draft.name_error)}
+              help="Riders see this name in trip planners, such as “Local ride” or “Day pass”."
+              autocomplete="off"
+              phx-debounce="300"
+            />
+
+            <.choice_cards
+              id="fare-kind"
+              name="fare[kind]"
+              type="radio"
+              label="What riders get"
+              selected={List.wrap(@draft.kind)}
+              options={[
+                %{
+                  value: "single",
+                  label: "Single ride",
+                  description: "Pays for one ride. Changes follow your transfer rules."
+                },
+                %{
+                  value: "pass",
+                  label: "Pass",
+                  description:
+                    "Unlimited rides on the route groups you choose. Put the period in the name, such as “Day pass”."
+                }
+              ]}
+            />
+
+            <fieldset id="fare-prices" class="min-w-0">
+              <legend class="text-sm font-semibold text-strong">Prices</legend>
+              <p class="mt-0.5 text-[13px] text-muted">
+                Enter Free for no charge. Leave a price blank when that rider type can’t buy this
+                fare.
+              </p>
+              <p
+                :if={@draft.price_error}
+                id="fare-prices-error"
+                class="mt-1.5 flex items-start gap-1.5 text-[13px] font-semibold text-error-fg"
+              >
+                <.icon name="hero-exclamation-circle" class="mt-px size-4 shrink-0" />
+                <span>{@draft.price_error}</span>
+              </p>
+
+              <div class="mt-3 grid grid-cols-[minmax(0,1fr)_120px] gap-3 text-[12px] font-semibold text-muted">
+                <span>Rider type</span>
+                <span class="text-right">Price</span>
+              </div>
+
+              <div class="mt-2 grid gap-3">
+                <div
+                  :for={rider <- @workspace.riders}
+                  class="grid grid-cols-[minmax(0,1fr)_120px] items-center gap-3 border-b border-subtle py-1.5 last:border-b-0"
+                >
+                  <label for={"fare-price-#{rider.rider_category_id}"} class="text-sm text-strong">
+                    {rider.name}
+                    <span :if={rider.default?} class="text-[12px] text-muted">· shown first</span>
+                  </label>
+                  <.fare_price_input
+                    id={"fare-price-#{rider.rider_category_id}"}
+                    name={"fare[prices][#{rider.rider_category_id}]"}
+                    value={Map.get(@draft.prices, rider.rider_category_id, "")}
+                    label={"#{rider.name} price"}
+                    invalid?={rider.rider_category_id in @draft.invalid_riders}
+                  />
+                </div>
+              </div>
+
+              <.fare_checkbox
+                :if={@draft.app_medium}
+                id="fare-differ"
+                name="fare[differ]"
+                value="true"
+                checked={@draft.differ?}
+                label="Price differs by payment method"
+                help="For example a lower price in the app. Blank app prices use the cash price."
+              />
+            </fieldset>
+
+            <fieldset :if={@draft.differ?} id="fare-app-prices" class="min-w-0">
+              <legend class="text-sm font-semibold text-strong">
+                Prices in the {medium_name(@workspace, @draft.app_medium)}
+              </legend>
+              <div class="mt-2 grid gap-3">
+                <div
+                  :for={rider <- @workspace.riders}
+                  class="grid grid-cols-[minmax(0,1fr)_120px] items-center gap-3 border-b border-subtle py-1.5 last:border-b-0"
+                >
+                  <label
+                    for={"fare-app-price-#{rider.rider_category_id}"}
+                    class="text-sm text-strong"
+                  >
+                    {rider.name}
+                  </label>
+                  <.fare_price_input
+                    id={"fare-app-price-#{rider.rider_category_id}"}
+                    name={"fare[media_prices][#{@draft.app_medium}][#{rider.rider_category_id}]"}
+                    value={Map.get(@draft.app_prices, rider.rider_category_id, "")}
+                    placeholder="Same"
+                    label={"#{rider.name} price in the #{medium_name(@workspace, @draft.app_medium)}"}
+                  />
+                </div>
+              </div>
+            </fieldset>
+
+            <fieldset id="fare-media" class="min-w-0">
+              <legend class="text-sm font-semibold text-strong">Riders can pay with</legend>
+              <div class="grid">
+                <.fare_checkbox
+                  :for={medium <- @workspace.media}
+                  id={"fare-media-#{medium.fare_media_id}"}
+                  name="fare[media_ids][]"
+                  value={medium.fare_media_id}
+                  checked={medium.fare_media_id in @draft.media_ids}
+                  label={medium.name}
+                  help={media_type_help(medium)}
+                />
+              </div>
+              <p
+                :if={@draft.media_error}
+                id="fare-media-error"
+                class="mt-2 flex items-start gap-1.5 text-[13px] font-semibold text-error-fg"
+              >
+                <.icon name="hero-exclamation-circle" class="mt-px size-4 shrink-0" />
+                <span>{@draft.media_error}</span>
+              </p>
+            </fieldset>
+
+            <.fare_result_card draft={@draft} workspace={@workspace} />
+
+            <fieldset :if={@draft.kind == "pass"} id="fare-groups" class="min-w-0">
+              <legend class="text-sm font-semibold text-strong">Accepted on</legend>
+              <p class="mt-0.5 text-[13px] text-muted">
+                A pass covers every ride on the route groups you choose.
+              </p>
+              <div class="mt-1 grid">
+                <.fare_checkbox
+                  :for={group <- @workspace.groups}
+                  id={"fare-group-#{group.network_id}"}
+                  name="fare[group_ids][]"
+                  value={group.network_id}
+                  checked={group.network_id in @draft.group_ids}
+                  label={group.name}
+                  help={counted(length(group.route_ids), "route", "routes")}
+                />
+              </div>
+            </fieldset>
+
+            <div :if={@draft.kind != "pass"} id="fare-where">
+              <p class="text-sm font-semibold text-strong">Where it’s charged</p>
+              <ul :if={@draft.rules != []} class="mt-1 grid gap-1 text-sm">
+                <li :for={rule <- @draft.rules}>{fare_rule_sentence(rule, @workspace)}</li>
+              </ul>
+              <p :if={@draft.rules == []} class="mt-1 text-sm text-muted">
+                No fare rule charges this fare yet. After you create it, choose where it applies.
+              </p>
+              <.button
+                id="fare-drawer-where"
+                type="button"
+                variant="quiet"
+                class="-ml-2 min-h-11 px-2"
+                phx-click="go_fares_where"
+              >
+                Change where fares apply
+              </.button>
+            </div>
+
+            <details id="fare-id-disclosure" class="group">
+              <summary class="flex min-h-11 cursor-pointer list-none items-center gap-2 text-sm font-semibold text-strong [&::-webkit-details-marker]:hidden">
+                <.icon
+                  name="hero-chevron-right"
+                  class="size-4 text-muted transition-transform group-open:rotate-90 motion-reduce:transition-none"
+                /> Fare ID:
+                <span class="font-mono text-[13px] font-normal font-normal">
+                  {fare_id_text(@draft)}
+                </span>
+              </summary>
+              <p class="pb-2 pl-6 text-[13px] text-muted">
+                Used in the exported feed. Filled in from the name until you edit it.
+              </p>
+            </details>
+          </.drawer_scroll>
+
+          <.drawer_footer>
+            <.button
+              :if={@editing?}
+              id="fare-delete"
+              type="button"
+              variant="quiet"
+              class="mr-auto min-h-11 px-2 text-error-fg hover:bg-error-bg"
+              phx-click="open_delete_fare"
+            >
+              <.icon name="hero-trash" class="size-4" /> Delete fare…
+            </.button>
+            <.button
+              id="fare-cancel"
+              type="button"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="close_fare_drawer"
+            >
+              Cancel
+            </.button>
+            <.button
+              id="fare-save"
+              type="submit"
+              class="min-h-11"
+              disabled={@pending?}
+              phx-disable-with="Saving…"
+            >
+              {if @editing?, do: "Save changes", else: "Create fare"}
+            </.button>
+          </.drawer_footer>
+        </.form>
+      </div>
+    </.drawer>
+    """
+  end
+
+  @doc """
+  Renders one price field of the fare drawer: a currency-marked text input that
+  keeps exactly what was typed, so an unreadable price shows the typo rather than
+  a formatted value that hides it.
+  """
+  attr :id, :string, required: true
+  attr :name, :string, required: true
+  attr :value, :string, default: ""
+  attr :placeholder, :string, default: "Not sold"
+  attr :label, :string, required: true
+  attr :invalid?, :boolean, default: false
+
+  def fare_price_input(assigns) do
+    ~H"""
+    <div class="relative">
+      <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted">
+        $
+      </span>
+      <input
+        type="text"
+        id={@id}
+        name={@name}
+        value={@value}
+        inputmode="decimal"
+        autocomplete="off"
+        placeholder={@placeholder}
+        aria-label={@label}
+        aria-invalid={to_string(@invalid?)}
+        class={[
+          "h-11 w-full rounded-control border bg-white pl-7 pr-3 text-right text-sm tabular-nums text-strong",
+          "focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-focus",
+          if(@invalid?, do: "border-error-line", else: "border-control")
+        ]}
+      />
+    </div>
+    """
+  end
+
+  @doc """
+  Renders one checkbox of the fare, rider type or payment method drawer: the
+  control, its label, and the one line that says what it is for.
+  """
+  attr :id, :string, required: true
+  attr :name, :string, required: true
+  attr :value, :string, required: true
+  attr :label, :string, required: true
+  attr :checked, :boolean, default: false
+  attr :disabled, :boolean, default: false
+  attr :help, :string, default: nil
+
+  def fare_checkbox(assigns) do
+    ~H"""
+    <label
+      for={@id}
+      class={[
+        "flex min-h-11 items-start gap-3 py-2",
+        if(@disabled, do: "cursor-not-allowed opacity-60", else: "cursor-pointer")
+      ]}
+    >
+      <input
+        type="checkbox"
+        id={@id}
+        name={@name}
+        value={@value}
+        checked={@checked}
+        disabled={@disabled}
+        class="mt-0.5 size-5 shrink-0 accent-action"
+      />
+      <span class="min-w-0">
+        <span class="block text-sm font-semibold text-strong">{@label}</span>
+        <span :if={@help} class="block text-[13px] text-muted">{@help}</span>
+      </span>
+    </label>
+    """
+  end
+
+  @doc """
+  Renders the fare drawer's live result card: what a trip planner will show for
+  the prices typed so far, and what the older format keeps of them.
+  """
+  attr :draft, :map, required: true
+  attr :workspace, :map, required: true
+
+  def fare_result_card(assigns) do
+    assigns =
+      assigns
+      |> assign(:default_rider, rider_default(assigns.workspace))
+      |> assign(:adult, result_amount(assigns.draft, assigns.draft.amounts, assigns.workspace))
+      |> assign(:others, result_others(assigns.draft, assigns.workspace))
+
+    ~H"""
+    <div
+      id="fare-result-card"
+      aria-live="polite"
+      class="rounded-card border border-subtle bg-canvas px-4 py-3"
+    >
+      <p class="text-[13px] text-muted">What trip planners show</p>
+      <p class="mt-0.5 font-display text-[26px] font-semibold leading-tight tracking-[-0.02em] tabular-nums text-strong">
+        {@adult || "Add a price"}
+      </p>
+      <p class="mt-1 text-sm text-default">
+        {if @others == [],
+          do: "Add prices for other rider types above.",
+          else: Enum.join(@others, " · ")}
+      </p>
+      <p class="mt-2 text-sm font-bold text-strong">{older_format_line(@draft, @workspace)}</p>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders the confirm dialog that deletes a fare.
+
+  `fare_delete` is the LiveView's whole dialog state: the fare it was opened on,
+  the rules that charge it, the replacement select's value, and the error a
+  refused confirm produced. Replacement is chosen by fare name, because an
+  operator thinks about the fare they are deleting rather than about which of its
+  `fare_products` rows a rule happens to name.
+  """
+  attr :fare_delete, :map, required: true
+  attr :workspace, :map, required: true
+  attr :return_focus_id, :string, default: nil
+
+  def fare_delete_dialog(assigns) do
+    assigns =
+      assigns
+      |> assign(:fare, assigns.fare_delete.fare)
+      |> assign(:rules, assigns.fare_delete.rules)
+
+    ~H"""
+    <.confirm_dialog
+      id="fare-delete-dialog"
+      chrome="planner"
+      open={true}
+      title={"Delete #{@fare.name}?"}
+      confirm_label="Delete fare"
+      pending_label="Deleting…"
+      on_confirm="delete_fare"
+      on_cancel="cancel_delete_fare"
+      cancel_label="Keep fare"
+      return_focus_id={@return_focus_id}
+    >
+      <div class="grid gap-4">
+        <%= if @rules == [] do %>
+          <p id="fare-delete-unused" class="text-sm">
+            No fare rule charges {@fare.name}. Its {counted(length(@fare.cells), "price", "prices")} are deleted with it.
+          </p>
+        <% else %>
+          <p id="fare-delete-rules" class="text-sm">
+            {counted(length(@rules), "fare rule charges", "fare rules charge")} {@fare.name}:
+          </p>
+          <ul class="grid gap-1 rounded-card bg-canvas px-3 py-2 text-sm">
+            <li :for={rule <- @rules}>{fare_rule_sentence(rule, @workspace)}</li>
+          </ul>
+
+          <form id="fare-delete-replacement-form" phx-change="change_fare_replacement">
+            <.input
+              id="fare-delete-replacement"
+              name="replacement"
+              type="select"
+              label="What should these rides charge instead?"
+              value={@fare_delete.replacement || ""}
+              options={fare_replacement_options(@fare_delete.fare, @workspace)}
+              prompt="Choose a fare"
+              errors={List.wrap(@fare_delete.error)}
+              help="Removing the rules leaves those rides with no price in trip planners."
+            />
+          </form>
+
+          <p id="fare-delete-prices" class="text-sm">
+            Its {counted(length(@fare.cells), "price", "prices")} are deleted too.
+          </p>
+        <% end %>
+
+        <p id="fare-delete-undo" class="text-[13px] text-muted">
+          Undo is available right after you delete.
+        </p>
+      </div>
+    </.confirm_dialog>
+    """
+  end
+
+  @doc """
+  Renders the rider type drawer: its name, the page that says who qualifies for
+  it, whether it is the one shown first, and — on a create — the starting prices
+  it gets on every fare the version holds.
+  """
+  attr :draft, :map, required: true
+  attr :form, :any, required: true
+  attr :workspace, :map, required: true
+  attr :version_name, :string, default: nil
+  attr :return_focus_id, :string, default: nil
+  attr :pending?, :boolean, default: false
+
+  def rider_drawer(assigns) do
+    assigns =
+      assigns
+      |> assign(:editing?, assigns.draft.key != nil)
+      |> assign(:title, rider_drawer_title(assigns.draft))
+      |> assign(:default_rider, rider_default(assigns.workspace))
+
+    ~H"""
+    <.drawer
+      id="rider-drawer"
+      chrome="planner"
+      open={true}
+      pending={@pending?}
+      on_close="close_rider_drawer"
+      title={@title}
+      initial_focus={:first_field}
+      return_focus_id={@return_focus_id}
+      class="max-w-[480px]"
+    >
+      <:lede>
+        Changes apply to {version_phrase(@version_name, true)} as soon as you save.
+      </:lede>
+
+      <div
+        id="rider-drawer-content"
+        phx-hook="FormErrorFocus"
+        class="flex min-h-0 flex-1 flex-col"
+      >
+        <.form
+          for={@form}
+          id="rider-form"
+          as={:rider}
+          novalidate
+          phx-change="validate_rider"
+          phx-submit="save_rider_type"
+          class="flex min-h-0 flex-1 flex-col"
+        >
+          <.drawer_scroll>
+            <.form_error_summary
+              id="error-summary"
+              title={fare_error_summary_title(length(@draft.failures))}
+              failures={@draft.failures}
+            />
+
+            <.input
+              id="rider-name"
+              field={@form[:name]}
+              type="text"
+              label="Name"
+              placeholder="For example, Reduced fare"
+              errors={List.wrap(@draft.name_error)}
+              help="As riders see it, such as “Reduced fare” or “Youth (6–18)”."
+              autocomplete="off"
+              phx-debounce="300"
+            />
+
+            <.input
+              id="rider-url"
+              field={@form[:eligibility_url]}
+              type="url"
+              label="Web page about who qualifies"
+              placeholder="https://"
+              help="Trip planners link to it. Say there who qualifies and what proof they need."
+              autocomplete="off"
+              phx-debounce="300"
+            />
+
+            <.fare_checkbox
+              id="rider-default"
+              name="rider[default?]"
+              value="true"
+              checked={@draft.default?}
+              disabled={@draft.default_locked?}
+              label="Show these prices first in trip planners"
+              help={
+                if @draft.default_locked?,
+                  do:
+                    "This is the one shown first. To change that, open another rider type and choose it instead.",
+                  else: "Usually Adult. Only one rider type can be shown first."
+              }
+            />
+
+            <div :if={not @editing?}>
+              <.choice_cards
+                id="rider-starting"
+                name="rider[starting]"
+                type="radio"
+                label="Starting prices"
+                help="You can change each price on the Prices tab afterwards."
+                selected={List.wrap(@draft.starting)}
+                options={[
+                  %{
+                    value: "half",
+                    label: "Half the adult price",
+                    description: "Rounded to the nearest 5 cents."
+                  },
+                  %{
+                    value: "same",
+                    label: "Same as adult",
+                    description: "Useful when only some fares differ."
+                  },
+                  %{
+                    value: "free",
+                    label: "Free",
+                    description: "Every fare costs nothing for this rider type."
+                  },
+                  %{
+                    value: "blank",
+                    label: "Leave blank",
+                    description: "Not sold until you enter prices."
+                  }
+                ]}
+              />
+
+              <div
+                id="rider-starting-preview"
+                aria-live="polite"
+                class="rounded-card border border-subtle bg-canvas px-4 py-3"
+              >
+                <p class="text-[13px] text-muted">Prices this creates</p>
+                <p
+                  :for={fare <- Enum.take(@workspace.fares, 1)}
+                  class="mt-0.5 text-sm font-bold text-strong"
+                >
+                  {rider_starting_text(@draft, fare, @default_rider)} {fare.name}
+                </p>
+                <p :if={@workspace.fares == []} class="mt-0.5 text-sm font-bold text-strong">
+                  Not sold yet
+                </p>
+                <p class="mt-2 text-sm font-bold text-strong">
+                  Adds a column to the fare table and {counted(
+                    starting_price_count(@draft, @workspace.fares),
+                    "price",
+                    "prices"
+                  )} to the newer format.
+                </p>
+              </div>
+            </div>
+          </.drawer_scroll>
+
+          <.drawer_footer>
+            <.button
+              :if={@editing? and not @draft.default?}
+              id="rider-delete"
+              type="button"
+              variant="quiet"
+              class="mr-auto min-h-11 px-2 text-error-fg hover:bg-error-bg"
+              phx-click="open_delete_rider"
+            >
+              <.icon name="hero-trash" class="size-4" /> Delete rider type…
+            </.button>
+            <.button
+              id="rider-cancel"
+              type="button"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="close_rider_drawer"
+            >
+              Cancel
+            </.button>
+            <.button
+              id="rider-save"
+              type="submit"
+              class="min-h-11"
+              disabled={@pending?}
+              phx-disable-with="Saving…"
+            >
+              {if @editing?, do: "Save changes", else: "Create rider type"}
+            </.button>
+          </.drawer_footer>
+        </.form>
+      </div>
+    </.drawer>
+    """
+  end
+
+  @doc """
+  Renders the confirm dialog that deletes a rider type: the prices it removes and
+  the trip-planner answer they leave behind.
+  """
+  attr :rider_delete, :map, required: true
+  attr :workspace, :map, required: true
+  attr :return_focus_id, :string, default: nil
+
+  def rider_delete_dialog(assigns) do
+    assigns = assign(assigns, :default_rider, rider_default(assigns.workspace))
+
+    ~H"""
+    <.confirm_dialog
+      id="rider-delete-dialog"
+      chrome="planner"
+      open={true}
+      title={"Delete #{@rider_delete.name}?"}
+      confirm_label="Delete rider type"
+      pending_label="Deleting…"
+      on_confirm="delete_rider_type"
+      on_cancel="cancel_delete_rider"
+      cancel_label="Keep rider type"
+      return_focus_id={@return_focus_id}
+    >
+      <div class="grid gap-3">
+        <p id="rider-delete-prices" class="text-sm">
+          This deletes the {@rider_delete.name} column and its {counted(
+            @rider_delete.price_count,
+            "price",
+            "prices"
+          )}.
+          Trip planners will show these riders the {@default_rider.name} prices.
+        </p>
+        <p id="rider-delete-older" class="text-sm">
+          The older format isn’t affected: it has only adult prices.
+        </p>
+        <p id="rider-delete-undo" class="text-[13px] text-muted">
+          Undo is available right after you delete.
+        </p>
+      </div>
+    </.confirm_dialog>
+    """
+  end
+
+  @doc """
+  Renders the payment method drawer: its name, which of GTFS's five kinds it is,
+  and the fares that accept it.
+  """
+  attr :draft, :map, required: true
+  attr :form, :any, required: true
+  attr :workspace, :map, required: true
+  attr :return_focus_id, :string, default: nil
+  attr :pending?, :boolean, default: false
+
+  def media_drawer(assigns) do
+    assigns =
+      assigns
+      |> assign(:editing?, assigns.draft.key != nil)
+      |> assign(:title, media_drawer_title(assigns.draft))
+
+    ~H"""
+    <.drawer
+      id="media-drawer"
+      chrome="planner"
+      open={true}
+      pending={@pending?}
+      on_close="close_media_drawer"
+      title={@title}
+      initial_focus={:first_field}
+      return_focus_id={@return_focus_id}
+      class="max-w-[520px]"
+    >
+      <:lede>
+        Payment methods appear only in the newer format. The older format records only whether
+        riders pay on board or before boarding.
+      </:lede>
+
+      <div
+        id="media-drawer-content"
+        phx-hook="FormErrorFocus"
+        class="flex min-h-0 flex-1 flex-col"
+      >
+        <.form
+          for={@form}
+          id="media-form"
+          as={:media}
+          novalidate
+          phx-change="validate_media"
+          phx-submit="save_payment_method"
+          class="flex min-h-0 flex-1 flex-col"
+        >
+          <.drawer_scroll>
+            <.form_error_summary
+              id="error-summary"
+              title={fare_error_summary_title(length(@draft.failures))}
+              failures={@draft.failures}
+            />
+
+            <.input
+              id="media-name"
+              field={@form[:name]}
+              type="text"
+              label="Name"
+              placeholder="For example, NCT Ride app"
+              errors={List.wrap(@draft.name_error)}
+              help="Use the name riders know, such as the card or app brand. For cash, “Cash on board” is enough."
+              autocomplete="off"
+              phx-debounce="300"
+            />
+
+            <.choice_cards
+              id="media-kind"
+              name="media[fare_media_type]"
+              type="radio"
+              label="Kind"
+              selected={[to_string(@draft.fare_media_type)]}
+              options={media_type_options()}
+            />
+
+            <fieldset class="min-w-0">
+              <legend class="text-sm font-semibold text-strong">Accepted for</legend>
+              <p class="mt-0.5 text-[13px] text-muted">
+                To charge a different price with this method, open the fare and choose “Price differs
+                by payment method”.
+              </p>
+              <div class="mt-1 grid sm:grid-cols-2">
+                <.fare_checkbox
+                  :for={fare <- @workspace.fares}
+                  id={"media-fare-#{fare_slug(fare)}"}
+                  name="media[accepted_products][]"
+                  value={List.first(fare.product_ids)}
+                  checked={List.first(fare.product_ids) in @draft.accepted_products}
+                  label={fare.name}
+                />
+              </div>
+            </fieldset>
+          </.drawer_scroll>
+
+          <.drawer_footer>
+            <.button
+              :if={@editing?}
+              id="media-delete"
+              type="button"
+              variant="quiet"
+              class="mr-auto min-h-11 px-2 text-error-fg hover:bg-error-bg"
+              phx-click="open_delete_media"
+            >
+              <.icon name="hero-trash" class="size-4" /> Delete payment method…
+            </.button>
+            <.button
+              id="media-cancel"
+              type="button"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="close_media_drawer"
+            >
+              Cancel
+            </.button>
+            <.button
+              id="media-save"
+              type="submit"
+              class="min-h-11"
+              disabled={@pending?}
+              phx-disable-with="Saving…"
+            >
+              {if @editing?, do: "Save changes", else: "Create payment method"}
+            </.button>
+          </.drawer_footer>
+        </.form>
+      </div>
+    </.drawer>
+    """
+  end
+
+  @doc """
+  Renders the confirm dialog that deletes a payment method and the prices that
+  named it.
+  """
+  attr :media_delete, :map, required: true
+  attr :return_focus_id, :string, default: nil
+
+  def media_delete_dialog(assigns) do
+    ~H"""
+    <.confirm_dialog
+      id="media-delete-dialog"
+      chrome="planner"
+      open={true}
+      title={"Delete #{@media_delete.name}?"}
+      confirm_label="Delete payment method"
+      pending_label="Deleting…"
+      on_confirm="delete_payment_method"
+      on_cancel="cancel_delete_media"
+      cancel_label="Keep payment method"
+      return_focus_id={@return_focus_id}
+    >
+      <div class="grid gap-3">
+        <p id="media-delete-prices" class="text-sm">
+          This deletes every price riders bought with the {@media_delete.name}, across {counted(
+            @media_delete.fare_count,
+            "fare",
+            "fares"
+          )}. Riders pay on board unless another
+          payment method is chosen.
+        </p>
+        <p id="media-delete-undo" class="text-[13px] text-muted">
+          Undo is available right after you delete.
+        </p>
+      </div>
+    </.confirm_dialog>
+    """
+  end
+
+  # -- Drawer text -------------------------------------------------------------
+
+  defp fare_drawer_title(%{key: nil}), do: "Create fare"
+  defp fare_drawer_title(%{name: name}), do: "Edit fare · #{name}"
+
+  defp rider_drawer_title(%{key: nil}), do: "Create rider type"
+  defp rider_drawer_title(%{name: name}), do: "Edit rider type · #{name}"
+
+  defp media_drawer_title(%{key: nil}), do: "Create payment method"
+  defp media_drawer_title(%{name: name}), do: "Edit payment method · #{name}"
+
+  defp fare_error_summary_title(1), do: "Fix this problem to save"
+  defp fare_error_summary_title(_count), do: "Fix these problems to save"
+
+  # A fare being created has no id yet, so the disclosure shows the id its name
+  # will produce — which is what the writer will use.
+  defp fare_id_text(%{key: nil, name: name}) when is_binary(name), do: Stop.slugify(name)
+  defp fare_id_text(%{key: id}), do: id
+
+  defp fare_rule_sentence(rule, workspace) do
+    "#{group_name(workspace, rule.network_id)} · #{fare_rule_condition(rule, workspace)}"
+  end
+
+  defp fare_rule_condition(%{from_area_id: from, to_area_id: to}, workspace) do
+    cond do
+      blank_area?(from) and blank_area?(to) -> "any stops"
+      from == to -> "within #{zone_name(workspace, from)}"
+      true -> "#{zone_name(workspace, from)} ↔ #{zone_name(workspace, to)}"
+    end
+  end
+
+  defp rider_default(workspace) do
+    Enum.find(workspace.riders, & &1.default?) || List.first(workspace.riders)
+  end
+
+  # A starting choice of "leave blank" creates no prices at all; every other
+  # choice creates one per fare the version holds.
+  defp starting_price_count(%{starting: "blank"}, _fares), do: 0
+  defp starting_price_count(_draft, fares), do: length(fares)
+
+  defp result_amount(_draft, amounts, workspace) do
+    case rider_default(workspace) do
+      nil -> nil
+      rider -> Money.format(Map.get(amounts, rider.rider_category_id), workspace.currency)
+    end
+  end
+
+  defp result_others(draft, workspace) do
+    default = rider_default(workspace)
+
+    for rider <- workspace.riders,
+        rider.rider_category_id != (default && default.rider_category_id),
+        amount = Map.get(draft.amounts, rider.rider_category_id),
+        text = Money.format(amount, workspace.currency),
+        do: "#{String.downcase(rider.name)} #{text}"
+  end
+
+  # The one line that says what the older format keeps. A pass has no older-format
+  # row at all, and the older format's payment method is "on board" only when the
+  # fare is sold on one.
+  defp older_format_line(%{kind: "pass"}, _workspace),
+    do: "Not in the older format, which has no passes."
+
+  defp older_format_line(draft, workspace) do
+    name = if draft.name in [nil, ""], do: "This fare", else: draft.name
+    adult = result_amount(draft, draft.amounts, workspace) || "no price"
+
+    "Older format: #{name} #{adult} for adults, paid #{fare_paid_on_board_text(draft, workspace)}."
+  end
+
+  defp fare_paid_on_board_text(draft, workspace) do
+    on_board? =
+      Enum.any?(workspace.media, fn medium ->
+        medium.fare_media_id in draft.media_ids and medium.fare_media_type == 0
+      end)
+
+    if on_board?, do: "on board", else: "before boarding"
+  end
+
+  # The prices a new rider type would start with on one fare, spelled the way the
+  # prototype's preview spells them: the amount, or "Not sold" when the starting
+  # choice leaves it blank, or "Free" when the amount is zero. The fare's own
+  # price is read through the rider type the version shows first, because that is
+  # the price the starting choices are a fraction of.
+  defp rider_starting_text(%{starting: "blank"}, _fare, _rider), do: "Not sold ·"
+  defp rider_starting_text(%{starting: "free"}, _fare, _rider), do: "Free ·"
+
+  defp rider_starting_text(%{starting: "same"}, fare, rider),
+    do: "#{adult_price(fare, rider)} ·"
+
+  defp rider_starting_text(_draft, fare, rider),
+    do: "#{half_price(fare, rider)} ·"
+
+  defp adult_price(_fare, nil), do: "Not sold ·"
+
+  defp adult_price(fare, rider) do
+    case Map.get(fare.prices, rider.rider_category_id) do
+      nil -> "Not sold ·"
+      amount -> "#{Money.format(amount, "USD")} ·"
+    end
+  end
+
+  # Half the adult price, rounded to the nearest 5 cents as the drawer's own
+  # choice card says it will be. A fare with no adult price has no half to take.
+  defp half_price(fare, rider) do
+    case fare && rider && Map.get(fare.prices, rider.rider_category_id) do
+      nil ->
+        "Not sold ·"
+
+      amount ->
+        nickels = Decimal.round(Decimal.div(Decimal.mult(amount, "0.5"), "0.05"), 0)
+        "$#{Decimal.to_string(Decimal.mult(nickels, "0.05"))} ·"
+    end
+  end
+
+  @media_type_help %{
+    0 => "Cash or no ticket",
+    1 => "Paper ticket or pass",
+    2 => "Transit card",
+    3 => "Contactless bank card or phone",
+    4 => "Mobile app"
+  }
+
+  defp media_type_help(%{fare_media_type: type}), do: Map.get(@media_type_help, type, "")
+
+  defp media_type_options do
+    Enum.map(@media_type_help, fn {type, description} ->
+      %{
+        value: to_string(type),
+        label: media_type_name(type),
+        description: description
+      }
+    end)
+  end
+
+  # The fares a deleted fare's rules could point at instead: every other single
+  # ride, named with the price a trip planner shows for it, and the choice of
+  # removing the rules outright.
+  defp fare_replacement_options(fare, workspace) do
+    choices =
+      for candidate <- workspace.fares,
+          candidate.kind == "single",
+          candidate.name != fare.name do
+        {fare_replacement_label(candidate, workspace), List.first(candidate.product_ids)}
+      end
+
+    choices ++
+      [{"No fare — remove the #{counted(length(fare.rules), "rule", "rules")}", "none"}]
+  end
+
+  defp fare_replacement_label(fare, workspace) do
+    rider = rider_default(workspace)
+
+    amount =
+      rider && Money.format(Map.get(fare.prices, rider.rider_category_id), workspace.currency)
+
+    if amount, do: "#{fare.name} · #{amount}", else: fare.name
+  end
+
   defp counted(1, one, _many), do: "1 #{one}"
   defp counted(count, _one, many), do: "#{count} #{many}"
 end
