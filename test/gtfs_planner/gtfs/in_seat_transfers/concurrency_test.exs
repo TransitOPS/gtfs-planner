@@ -12,10 +12,13 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers.ConcurrencyTest do
     paused before its commit: the second cannot finish inside that window, and
     after the first commits the second ends `{:error, :stale}` while the pair keeps
     the first session's type (AC-4);
-  - case 2 — a third connection holds `pg_advisory_xact_lock(hashtext('blocking:' ||
-    version_id))` and moves trip X between the pair's two trips; the write waits for
-    the lock and, once the holder commits, is refused with R1's own `{:refused, _}`
-    rather than writing a record that is no longer consecutive (R1, R4);
+  - case 2 — the Blocks command assigning trip X (timed between the pair) to the
+    pair's block is paused before its commit with the blocking lock held; the write
+    waits for the lock and, once the command commits, is refused with R1's own
+    `{:refused, _}` naming X rather than writing a record that is no longer
+    consecutive (R1, R4). The write's snapshot predates the command's commit, so the
+    refusal comes from SERIALIZABLE aborting the first attempt — the command read
+    the pair's in-seat records — and the retry reading the moved trip;
   - case 3 — `:reviewed_apply_transaction` is the Mox mock: one raised
     `%Postgrex.Error{postgres: %{code: :deadlock_detected}}` retries into the real
     sandbox module and succeeds, and three raised deadlocks return `{:error, :busy}`
@@ -60,12 +63,11 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers.ConcurrencyTest do
   alias GtfsPlanner.Versions.GtfsVersion
 
   # Every case holds one lock open and observes another backend's wait, so each
-  # test is bounded: EV-6's 180 s command deadline and a 10 s self-release for any
-  # hold the test never gets to release.
+  # test is bounded: EV-6's 180 s command deadline, and `on_exit` releases any
+  # paused session the test never gets to release.
   @moduletag timeout: 120_000
 
   @weekday_dates [~D[2026-09-01], ~D[2026-09-02], ~D[2026-09-03]]
-  @hold_timeout 10_000
   @receive_timeout 5_000
   @lock_wait_attempts 500
   @task_timeout 15_000
@@ -143,15 +145,19 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers.ConcurrencyTest do
       on_exit(fn -> cleanup([scope]) end)
       parent = self()
 
-      # A → B is consecutive in block 101 while X is not blocked; the holder moves X
-      # into the block between them, which is exactly the edit the save must not
-      # write across.
+      # A → B is consecutive in block 101 while X, timed between them, is not
+      # blocked. The holder is the Blocks command that assigns X to block 101,
+      # paused before its commit with the blocking lock held: exactly the edit the
+      # save must not write across.
       holder =
         Task.Supervisor.async_nolink(supervisor, fn ->
-          unboxed(fn -> hold_blocking_move(scope, parent) end)
+          Process.put(@barrier, parent)
+          unboxed(fn -> assign_x_to_block(scope) end)
         end)
 
-      assert_receive :blocking_lock_held, @receive_timeout
+      assert_receive {:before_commit, holder_pid}, @collect_timeout
+      assert holder_pid == holder.pid
+      on_exit(fn -> send(holder_pid, :commit) end)
 
       writer =
         Task.Supervisor.async_nolink(supervisor, fn ->
@@ -165,12 +171,16 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers.ConcurrencyTest do
       assert_receive {:write_pid, write_pid}, @receive_timeout
       assert wait_until_locked(write_pid)
 
-      send(holder.pid, :commit)
-      assert await_task(holder, @task_timeout) == {:ok, :ok}
+      send(holder_pid, :commit)
+      assert {:ok, %{changed_trip_ids: [_moved]}} = await_task(holder, @task_timeout)
 
-      assert {:error, {:refused, _state}} = await_task(writer, @collect_timeout)
+      # The write's snapshot predates the command's commit. The command read the
+      # pair's in-seat records and the write read X's pre-move row, so SERIALIZABLE
+      # aborts the write and the retry evaluates R1 against the moved trip.
+      assert {:error, {:refused, {:stale, {:not_next, [%{next_trip_id: "X"}]}}}} =
+               await_task(writer, @collect_timeout)
 
-      # The refusal wrote nothing: no row and no log for the pair.
+      # The refusal wrote nothing: no row and no transfer log for the pair.
       assert pair_rows(scope) == []
       assert change_log_count(scope) == 0
     end
@@ -221,53 +231,11 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers.ConcurrencyTest do
     Gtfs.set_in_seat_connection("a", "b", choice, expected, scope.audit)
   end
 
-  # Holds the version's blocking lock on an own connection, moves trip X into the
-  # pair's block between its two trips and holds both changes uncommitted, so the
-  # write reaches its rule only after the block has changed.
-  defp hold_blocking_move(scope, parent) do
-    unboxed(fn ->
-      Repo.transaction(fn ->
-        Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [
-          "blocking:" <> scope.version_id
-        ])
-
-        {1, _moved} =
-          Repo.update_all(
-            from(t in Trip,
-              where: t.organization_id == ^scope.organization_id and t.trip_id == "X"
-            ),
-            set: [block_id: "101", updated_at: DateTime.utc_now()]
-          )
-
-        {1, _retimed} =
-          Repo.update_all(
-            from(st in StopTime,
-              where:
-                st.organization_id == ^scope.organization_id and st.trip_id == "X" and
-                  st.stop_sequence == 1
-            ),
-            set: [arrival_time: "07:05:00", departure_time: "07:05:00"]
-          )
-
-        {1, _retimed} =
-          Repo.update_all(
-            from(st in StopTime,
-              where:
-                st.organization_id == ^scope.organization_id and st.trip_id == "X" and
-                  st.stop_sequence == 2
-            ),
-            set: [arrival_time: "08:05:00", departure_time: "08:05:00"]
-          )
-
-        send(parent, :blocking_lock_held)
-
-        receive do
-          :commit -> :ok
-        after
-          @hold_timeout -> Repo.rollback(:timeout)
-        end
-      end)
-    end)
+  # The production Blocks command, through the configured transaction module, so
+  # it takes the blocking lock and reads the pair's in-seat records exactly as an
+  # editor's assign does.
+  defp assign_x_to_block(scope) do
+    Gtfs.apply_block_change(nil, {:assign, [scope.trips.x.id], "101"}, scope.audit)
   end
 
   # Answers every before-commit message from a paused session with :commit until
@@ -429,8 +397,8 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers.ConcurrencyTest do
         trip.(%{
           trip_id: "X",
           service_id: "W",
-          first_arrival: "09:00:00",
-          last_arrival: "10:00:00"
+          first_arrival: "07:05:00",
+          last_arrival: "08:05:00"
         })
 
       _b =
