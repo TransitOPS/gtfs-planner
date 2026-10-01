@@ -601,7 +601,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
       <h3 class="mb-0 mt-4 text-[13px] font-bold text-muted">On the map now</h3>
       <ul id={"#{@id}-items"} class="m-0 mt-1 list-none p-0">
         <li :for={row <- @stops} id={"#{@id}-item-#{row.id}"}>
-          <.stop_row row={row} />
+          <.stop_row row={row} selectable />
         </li>
       </ul>
     </div>
@@ -616,11 +616,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
   question about a stop anybody asks, so it is on the row rather than behind a
   click.
 
-  A row is read-only until something can be done with it. `selectable` is set
-  where choosing the row selects that stop, which today is the search results:
-  the browse list's own rows stay inert until the edit panel behind them exists,
-  because a row that looks pressable and does nothing is worse than a row that
-  does not look pressable.
+  A row is read-only until something can be done with it. `selectable` marks the
+  rows whose activation opens the edit panel, which is now every row the panel
+  lists: step 30 put the panel behind them, so a row that looked pressable and
+  did nothing is no longer either true or worth keeping.
   """
   attr :row, :map, required: true
   attr :selectable, :boolean, default: false
@@ -976,7 +975,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
       </button>
 
       <div :if={@coords_open?} class="mt-3">
-        <.coord_fields form={@form} errors={@errors} />
+        <.coord_fields
+          lat_field={:lat}
+          lon_field={:lon}
+          lat_error="lat"
+          lon_error="lon"
+          form={@form}
+          errors={@errors}
+        />
       </div>
     </div>
 
@@ -988,7 +994,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
         Drag the pin to adjust. The stop is not saved until you create it.
       </p>
 
-      <.coord_fields form={@form} errors={@errors} />
+      <.coord_fields
+        lat_field={:lat}
+        lon_field={:lon}
+        lat_error="lat"
+        lon_error="lon"
+        form={@form}
+        errors={@errors}
+      />
 
       <div id="stops-map-add-warnings" class="mt-3 grid gap-3">
         <.add_warning :for={warning <- @warnings} warning={warning} />
@@ -1053,6 +1066,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
   into: a stop placed from a gazetteer or a survey sheet arrives as a pair of
   numbers and nobody should have to drag a pin to it.
   """
+  attr :id, :string, default: "stops-map-add"
+  attr :lat_field, :atom, required: true
+  attr :lon_field, :atom, required: true
+  attr :lat_error, :string, required: true
+  attr :lon_error, :string, required: true
   attr :form, :any, required: true
   attr :errors, :map, default: %{}
 
@@ -1060,32 +1078,32 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
     ~H"""
     <div class="mt-3 grid grid-cols-2 gap-3">
       <div>
-        <label for="stops-map-add-lat" class="block text-sm font-semibold text-strong">
+        <label for={"#{@id}-lat"} class="block text-sm font-semibold text-strong">
           Latitude
         </label>
         <.input
-          field={@form[:lat]}
-          id="stops-map-add-lat"
-          errors={field_errors(@errors, "lat")}
+          field={@form[@lat_field]}
+          id={"#{@id}-lat"}
+          errors={field_errors(@errors, @lat_error)}
           type="text"
           inputmode="decimal"
           autocomplete="off"
-          class={coord_input_class(Map.has_key?(@errors, "lat"))}
+          class={coord_input_class(Map.has_key?(@errors, @lat_error))}
         />
       </div>
 
       <div>
-        <label for="stops-map-add-lon" class="block text-sm font-semibold text-strong">
+        <label for={"#{@id}-lon"} class="block text-sm font-semibold text-strong">
           Longitude
         </label>
         <.input
-          field={@form[:lon]}
-          id="stops-map-add-lon"
-          errors={field_errors(@errors, "lon")}
+          field={@form[@lon_field]}
+          id={"#{@id}-lon"}
+          errors={field_errors(@errors, @lon_error)}
           type="text"
           inputmode="decimal"
           autocomplete="off"
-          class={coord_input_class(Map.has_key?(@errors, "lon"))}
+          class={coord_input_class(Map.has_key?(@errors, @lon_error))}
         />
       </div>
     </div>
@@ -1490,6 +1508,656 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
     """
   end
 
+  @doc """
+  The stop edit panel: what the stop is, the fields that change it, what else
+  names it, and the footer that says whether anything has changed yet.
+
+  The panel owns three things the browse list deliberately did not (step 30).
+  It owns the **dirty state**, which the footer states in words rather than by
+  greying the Save button alone — a disabled button with no sentence is a control
+  an editor has to guess at. It owns the **fare zone**, which is text with a
+  link rather than a select, because zone assignment belongs to Settings ›
+  Fares (AC-STOP-023) and a select here would offer a choice this page cannot
+  honour. And it owns the **unsaved-changes guard**: Escape, Cancel and choosing
+  another stop all pass through the same dialog rather than each inventing its
+  own.
+
+  "Not served" is information only. This package does not change the export, so
+  there is no keep-in-feed checkbox here: the prototype's copy was superseded by
+  context decision 4, and a checkbox that changed nothing would be worse than
+  its absence.
+
+  The `phx-window-keydown` is on the panel rather than the document because the
+  panel is the only thing that can be dirty, and a key handler that fires from a
+  panel nobody is editing would guard an exit nobody took.
+  """
+  attr :id, :string, required: true
+  attr :stop, :map, required: true
+  attr :form, :any, required: true
+  attr :where, :string, default: nil
+  attr :usage, :any, default: nil
+  attr :zone_name, :string, default: nil
+  attr :zone_id, :string, default: nil
+  attr :zone_href, :string, required: true
+  attr :errors, :map, default: %{}
+  attr :dirty?, :boolean, default: false
+  attr :saving?, :boolean, default: false
+  attr :outcome, :atom, default: :none
+  attr :review_band, :atom, default: nil
+  attr :conflict, :map, default: nil
+  attr :more_open?, :boolean, default: false
+  attr :tech_open?, :boolean, default: false
+  attr :discard_action, :any, default: nil
+
+  def edit_panel(assigns) do
+    ~H"""
+    <aside
+      id={@id}
+      aria-label="Edit stop"
+      phx-hook="FormErrorFocus"
+      phx-window-keydown={@dirty? && "edit_escape"}
+      class="flex min-h-0 flex-col border-t border-subtle bg-white lg:border-l lg:border-t-0"
+    >
+      <div class="min-h-0 flex-1 overflow-y-auto">
+        <div class="px-5 py-5">
+          <div class="flex items-start gap-3">
+            <div class="min-w-0 flex-1">
+              <h2 class="font-display text-[22px] font-semibold text-strong">
+                {@stop.name}
+              </h2>
+              <div class="mt-1 flex flex-wrap items-center gap-2">
+                <p class="m-0 text-sm text-muted">{edit_subtitle(@stop)}</p>
+                <%!-- The routes beside the ID, as the prototype's heading has
+                     them: a stop is identified to a rider by the routes that
+                     call at it, so the panel says so before any field does. --%>
+                <span class="flex flex-wrap items-center gap-1">
+                  <.route_badge :for={route <- @stop.routes} route={route} />
+                </span>
+              </div>
+            </div>
+
+            <%!-- More actions is a server-held disclosure rather than a native
+                 `<details>`: step 27's reason applies here too, because a
+                 re-render from a `phx-change` on the form would snap a native
+                 one shut under the editor who opened it. --%>
+            <div class="relative shrink-0">
+              <button
+                id="stops-map-edit-more"
+                type="button"
+                phx-click="toggle_edit_more"
+                aria-expanded={to_string(@more_open?)}
+                aria-label="More actions for this stop"
+                aria-haspopup="menu"
+                class="flex size-11 cursor-pointer items-center justify-center rounded-control text-strong hover:bg-canvas"
+              >
+                <.icon name="hero-ellipsis-vertical" class="size-5" />
+              </button>
+
+              <div
+                :if={@more_open?}
+                id="stops-map-edit-more-menu"
+                role="menu"
+                aria-label="More actions for this stop"
+                class="absolute right-0 top-full z-30 mt-1 w-72 rounded-card border border-subtle bg-white p-2 shadow-float"
+              >
+                <a
+                  id="stops-map-edit-open-page"
+                  href={@stop.href}
+                  class="flex min-h-11 items-center gap-2 rounded-control px-3 text-sm text-strong no-underline hover:bg-canvas"
+                >
+                  <.icon name="hero-arrow-top-right-on-square" class="size-4" /> Open stop page
+                </a>
+              </div>
+            </div>
+          </div>
+
+          <div :if={@stop.location_type == 1} id="stops-map-edit-bays" class="mt-5">
+            <.bays_block bays={@stop.bays} />
+          </div>
+
+          <div
+            :if={@outcome == :stale and @conflict}
+            id="stops-map-edit-conflict"
+            class="mt-5"
+          >
+            <.message
+              kind="warning"
+              role="status"
+              title={conflict_title(@conflict)}
+              id="stops-map-edit-conflict-message"
+            >
+              {conflict_body(@conflict)}
+            </.message>
+          </div>
+
+          <div :if={@outcome == :failed} id="stops-map-edit-failed" class="mt-5">
+            <.message
+              kind="error"
+              title="We couldn’t save this stop"
+              id="stops-map-edit-failed-message"
+            >
+              Nothing was changed. Your edits are still here. Check your connection and save again.
+            </.message>
+          </div>
+
+          <div :if={@outcome == :review_required} id="stops-map-edit-review" class="mt-5">
+            <.message
+              kind="warning"
+              role="status"
+              title="This stop moved further than a correction"
+              id="stops-map-edit-review-message"
+            >
+              Nothing was saved. A move of this distance changes which pattern lines run past the
+              stop, so it is reviewed before it is written.
+            </.message>
+          </div>
+
+          <div :if={@errors != %{}} id="stops-map-edit-errors" class="mt-5">
+            <.message
+              kind="error"
+              title={error_summary_title(@errors)}
+              id="stops-map-edit-errors-message"
+            >
+              <ul class="m-0 list-disc pl-5">
+                <li :for={{field, error} <- summary_errors(@errors)}>
+                  <a href={"#stops-map-edit-#{field}"} class="font-semibold text-error-fg underline">
+                    {error.short}
+                  </a>
+                </li>
+              </ul>
+            </.message>
+          </div>
+
+          <.form
+            for={@form}
+            id="stops-map-edit-form"
+            phx-change="edit_field"
+            phx-submit="save_stop"
+            class="mt-5"
+          >
+            <fieldset class="m-0 min-w-0 border-0 p-0">
+              <legend class="mb-2 p-0 text-[15px] font-bold text-strong">Location</legend>
+              <p
+                :if={@where}
+                id="stops-map-edit-where"
+                class="m-0 text-[15px] font-semibold text-strong"
+              >
+                {@where}
+              </p>
+              <.coord_fields
+                id="stops-map-edit"
+                lat_field={:stop_lat}
+                lon_field={:stop_lon}
+                lat_error="stop_lat"
+                lon_error="stop_lon"
+                form={@form}
+                errors={@errors}
+              />
+              <p class="m-0 mt-1 text-[13px] text-muted">
+                The saved position stays where it is until you save.
+              </p>
+            </fieldset>
+
+            <div class="mt-7 grid gap-5">
+              <div>
+                <label for="stops-map-edit-name" class="block text-sm font-semibold text-strong">
+                  Name
+                </label>
+                <.input
+                  field={@form[:stop_name]}
+                  id="stops-map-edit-name"
+                  errors={field_errors(@errors, "stop_name")}
+                  type="text"
+                  autocomplete="off"
+                  class={text_input_class(Map.has_key?(@errors, "stop_name"))}
+                />
+                <p class="m-0 mt-1 text-[13px] text-muted">
+                  Riders see this on signs and in trip planners: the street the bus is on, then the
+                  cross street or a landmark people know.
+                </p>
+              </div>
+
+              <div :if={@stop.location_type == 0}>
+                <label for="stops-map-edit-desc" class="block text-sm font-semibold text-strong">
+                  Description <span class="font-normal text-muted">(optional)</span>
+                </label>
+                <.input
+                  field={@form[:stop_desc]}
+                  id="stops-map-edit-desc"
+                  type="text"
+                  autocomplete="off"
+                  class="h-11 w-full rounded-control border border-control px-3 text-[15px]"
+                />
+                <p class="m-0 mt-1 text-[13px] text-muted">
+                  Tells apart stops with the same name, such as the two sides of a street.
+                </p>
+              </div>
+
+              <div :if={@stop.location_type == 0}>
+                <label for="stops-map-edit-code" class="block text-sm font-semibold text-strong">
+                  Sign number <span class="font-normal text-muted">(optional)</span>
+                </label>
+                <.input
+                  field={@form[:stop_code]}
+                  id="stops-map-edit-code"
+                  type="text"
+                  inputmode="numeric"
+                  autocomplete="off"
+                  class="h-11 max-w-[180px] rounded-control border border-control px-3 font-mono text-[15px]"
+                />
+                <p class="m-0 mt-1 text-[13px] text-muted">
+                  The number on the sign riders use to look up arrivals.
+                </p>
+              </div>
+
+              <fieldset class="m-0 min-w-0 border-0 p-0">
+                <legend class="p-0 text-sm font-semibold text-strong">Wheelchair access</legend>
+                <div class="mt-1.5 flex flex-wrap gap-x-5">
+                  <label
+                    :for={{value, label} <- wheelchair_choices()}
+                    class="inline-flex min-h-11 cursor-pointer items-center gap-2 text-[15px] text-strong"
+                  >
+                    <input
+                      type="radio"
+                      id={"stops-map-edit-wb-#{value}"}
+                      name="stop[wheelchair_boarding]"
+                      value={value}
+                      checked={@form[:wheelchair_boarding].value == value}
+                      class="size-4 accent-action"
+                    />
+                    {label}
+                  </label>
+                </div>
+                <p class="m-0 mt-1 text-[13px] text-muted">
+                  Leave Not recorded until someone has checked the stop, its landing pad and its
+                  route to the curb.
+                </p>
+              </fieldset>
+
+              <div :if={@stop.location_type == 0}>
+                <p class="m-0 text-sm font-semibold text-strong" id="stops-map-edit-zone-label">
+                  Fare zone
+                </p>
+                <%!-- Read-only, and a link rather than a select: zone assignment is
+                     Settings › Fares' (AC-STOP-023), so this panel states the
+                     stop's zone and sends the editor where it can be changed. --%>
+                <p class="m-0 mt-1 text-[15px] text-strong" id="stops-map-edit-zone">
+                  {zone_text(@zone_id, @zone_name)}
+                </p>
+                <p class="m-0 mt-1 text-[13px] text-muted">
+                  Zones are managed in <.link
+                    id="stops-map-edit-zone-link"
+                    navigate={@zone_href}
+                    class="font-semibold text-action underline underline-offset-4"
+                  >
+                    Settings &rsaquo; Fares &rsaquo; Zones
+                  </.link>.
+                </p>
+              </div>
+            </div>
+
+            <.edit_usage id="stops-map-edit-used" usage={@usage} station?={@stop.location_type == 1} />
+
+            <div class="mt-7">
+              <.edit_tech form={@form} stop={@stop} open?={@tech_open?} />
+            </div>
+
+            <div class="mt-7 flex flex-wrap items-center gap-3">
+              <p
+                id="stops-map-edit-status"
+                role="status"
+                class={[
+                  "m-0 mr-auto text-[13px]",
+                  @dirty? && "font-semibold text-warning-fg",
+                  !@dirty? && "text-muted"
+                ]}
+              >
+                {if @saving?,
+                  do: "Saving…",
+                  else: if(@dirty?, do: "Unsaved changes", else: "No changes yet")}
+              </p>
+              <button
+                id="stops-map-edit-cancel"
+                type="button"
+                phx-click="cancel_edit"
+                disabled={@saving?}
+                class="inline-flex min-h-11 items-center rounded-control border border-control bg-white px-4 text-sm font-semibold text-strong hover:bg-canvas disabled:opacity-70"
+              >
+                Cancel
+              </button>
+              <.button
+                id="stops-map-edit-save"
+                type="submit"
+                class="min-h-11"
+                disabled={@saving? or not @dirty?}
+              >
+                {if @saving?, do: "Saving…", else: "Save changes"}
+              </.button>
+            </div>
+          </.form>
+        </div>
+      </div>
+
+      <%!-- One dialog for every exit. It is a dialog rather than a panel of its
+           own because the question is the same each time and the answer is one
+           of two buttons; the pending exit lives in `@discard_action`, so
+           Escape, Cancel and choosing another stop share one question and one
+           answer rather than three copies of it. --%>
+      <.confirm_dialog
+        id="stops-map-discard"
+        chrome="planner"
+        open={@discard_action != nil}
+        title={discard_title(@discard_action, @stop)}
+        cancel_label="Keep editing"
+        cancel_id="stops-map-discard-keep"
+        on_cancel="keep_editing"
+        confirm_label="Discard changes"
+        confirm_id="stops-map-discard-go"
+        pending_label="Discarding…"
+        on_confirm="discard_changes"
+        pending={false}
+        described_by="stops-map-discard-body"
+      >
+        {discard_body(@discard_action)}
+      </.confirm_dialog>
+    </aside>
+    """
+  end
+
+  @doc """
+  "Where it's used": what names this stop besides its own row.
+
+  `StopReferences.usage/3` answers with a count per kind and, for the kinds an
+  editor acts on, the rows themselves. Only the blocking list is rendered: a
+  descriptive reference is context for the delete and replace panels (steps 32
+  and 33), and listing it here would make the panel taller than the evidence it
+  carries.
+  """
+  attr :id, :string, required: true
+  attr :usage, :any, default: nil
+  attr :station?, :boolean, default: false
+
+  def edit_usage(assigns) do
+    ~H"""
+    <section :if={not @station?} class="mt-7">
+      <h3 class="m-0 text-[15px] font-bold text-strong">Where it&rsquo;s used</h3>
+
+      <div :if={@usage == nil} id={"#{@id}-loading"} role="status" class="mt-1 text-sm text-muted">
+        Reading what uses this stop&hellip;
+      </div>
+
+      <p :if={@usage != nil and usage_rows(@usage) == []} id={"#{@id}-empty"} class="m-0 mt-1 text-sm">
+        Nothing uses this stop. No pattern, rule or run names it.
+      </p>
+
+      <ul
+        :if={@usage != nil and usage_rows(@usage) != []}
+        id={"#{@id}-items"}
+        class="m-0 mt-1 list-none divide-y divide-subtle p-0 text-sm"
+      >
+        <li :for={row <- usage_rows(@usage)} id={row.dom_id} class="flex items-center gap-2 py-1.5">
+          <.route_badge :if={row.route} route={row.route} />
+          <span :if={row.headsign} class="toward {row.headsign}">toward {row.headsign}</span>
+          <span :if={is_nil(row.route) and is_nil(row.headsign)} class="min-w-0 flex-1">
+            {row.text}
+          </span>
+          <span
+            :if={row.trips}
+            class="ml-auto text-[13px] text-muted"
+            title="Trips that run Monday to Friday"
+          >
+            {row.trips} weekday trips
+          </span>
+          <span :if={is_nil(row.trips)} class="ml-auto text-[13px] text-muted">{row.count_text}</span>
+        </li>
+      </ul>
+
+      <p :if={@usage != nil and usage_rows(@usage) != []} class="m-0 mt-1 text-[13px] text-muted">
+        A move redraws these patterns&rsquo; lines next to the stop; you review it before saving.
+      </p>
+    </section>
+    """
+  end
+
+  # The usage read answers with a count per kind, and with the rows themselves
+  # for the kinds an editor acts on. A pattern is the row worth naming — which
+  # route, which way, and how much service — because that is what a rider
+  # recognises about the stop, so it is rendered as a row rather than a total.
+  # Every other kind is one line each, with its count, because the panel's claim
+  # is that the stop is in use and these are the kinds that put it there.
+  defp usage_rows(%{blocking: blocking}) do
+    Enum.flat_map(blocking, &usage_item_rows/1)
+  end
+
+  defp usage_item_rows(%{key: :route_pattern_stops, details: details}) do
+    Enum.map(details, fn detail ->
+      %{
+        dom_id: "stops-map-edit-used-pattern-#{dom_id(detail.detail.route_pattern_id)}",
+        route: pattern_route(detail.detail),
+        headsign: detail.detail.headsign,
+        trips: detail.weekday_trips,
+        text: nil,
+        count_text: nil
+      }
+    end)
+  end
+
+  defp usage_item_rows(%{key: key, label: label, count: count, details: details}) do
+    if details == [] do
+      [
+        %{
+          dom_id: "stops-map-edit-used-#{key}",
+          route: nil,
+          headsign: nil,
+          trips: nil,
+          text: label,
+          count_text: "#{count} #{pluralize(count, "row")}"
+        }
+      ]
+    else
+      Enum.map(details, fn detail ->
+        %{
+          dom_id: "stops-map-edit-used-#{key}-#{dom_id(detail.label)}",
+          route: nil,
+          headsign: nil,
+          trips: nil,
+          text: "#{label}: #{detail.label}",
+          count_text: nil
+        }
+      end)
+    end
+  end
+
+  # The badge takes the shape the browse rows already use, so a route reads the
+  # same wherever it appears. A pattern with no route colour falls back to the
+  # panel's own ink inside `route_badge/1`.
+  defp pattern_route(detail) do
+    %{
+      short_name: detail.route_short_name || detail.route_id,
+      long_name: detail.route_id,
+      color: detail.route_color
+    }
+  end
+
+  # DOM ids carry a feed's own strings, which are GTFS IDs (letters, digits,
+  # underscores, dashes) but here also stop names. Anything else is replaced and
+  # given a hash, so a feed cannot inject markup or make two rows share an id.
+  defp dom_id(value) when is_binary(value) do
+    if String.match?(value, ~r/\A[A-Za-z0-9_-]+\z/) do
+      value
+    else
+      safe = String.replace(value, ~r/[^A-Za-z0-9_-]/, "-")
+      "#{safe}-#{:erlang.phash2(value)}"
+    end
+  end
+
+  defp dom_id(_value), do: "unknown"
+
+  @doc """
+  A station's bays: the stops that name it as their parent.
+
+  Trips stop at bays, not at the station, so a station's own row is not where an
+  editor moves riders. Each bay carries its ID, which is what a pattern's stop
+  list holds.
+  """
+  attr :bays, :list, required: true
+
+  def bays_block(assigns) do
+    ~H"""
+    <section>
+      <h3 class="m-0 text-[15px] font-bold text-strong">Bays</h3>
+      <ul
+        :if={@bays != []}
+        id="stops-map-edit-bay-items"
+        class="m-0 mt-1 list-none divide-y divide-subtle p-0 text-sm"
+      >
+        <li
+          :for={bay <- @bays}
+          id={"stops-map-edit-bay-#{bay.dom_id}"}
+          class="flex items-center gap-3 py-2"
+        >
+          <span class="min-w-0 flex-1">
+            <span class="block truncate">{bay.name}</span>
+            <span class="block font-mono text-[13px] text-muted">ID {bay.stop_id}</span>
+          </span>
+        </li>
+      </ul>
+      <p :if={@bays == []} id="stops-map-edit-bay-empty" class="m-0 mt-1 text-sm text-muted">
+        No bays yet. Add them on the station page.
+      </p>
+      <p class="m-0 mt-1 text-[13px] text-muted">
+        Trips stop at bays. Add bays, entrances and walkways on the station page.
+      </p>
+    </section>
+    """
+  end
+
+  @doc """
+  The collapsed "Stop ID and feed details" block.
+
+  The ID is text, not a field: it cannot change (INV-5), and a disabled input
+  still looks editable to a reader who has not been told why. The spoken name
+  and the web page are fields, because they are content rather than identity.
+  """
+  attr :form, :any, required: true
+  attr :stop, :map, required: true
+  attr :open?, :boolean, default: false
+
+  def edit_tech(assigns) do
+    ~H"""
+    <div id="stops-map-edit-tech" class="rounded-card border border-subtle">
+      <button
+        id="stops-map-edit-tech-toggle"
+        type="button"
+        phx-click="toggle_edit_tech"
+        aria-expanded={to_string(@open?)}
+        aria-controls="stops-map-edit-tech-items"
+        class="flex min-h-11 w-full cursor-pointer items-center gap-2 rounded-card px-4 py-2 text-left text-sm font-bold text-strong"
+      >
+        <.icon name="hero-chevron-right" class="size-4 text-muted" /> Stop ID and feed details
+        <span class="ml-auto text-[13px] font-semibold text-muted">
+          {if @open?, do: "Hide", else: "Show"}
+        </span>
+      </button>
+
+      <div
+        :if={@open?}
+        id="stops-map-edit-tech-items"
+        class="grid gap-4 border-t border-subtle px-4 py-4"
+      >
+        <div>
+          <p class="m-0 text-sm font-semibold text-strong">Stop ID</p>
+          <p id="stops-map-edit-stop-id" class="m-0 mt-1 font-mono text-[15px] text-strong">
+            {@stop.stop_id}
+          </p>
+          <p class="m-0 mt-1 text-[13px] text-muted">
+            Stop IDs don&rsquo;t change. Trip planners, real-time arrivals and riders&rsquo; saved
+            stops find the stop by its ID, so it stays the same when you move or rename it. To use a
+            different ID, add a new stop and replace this one with it.
+          </p>
+        </div>
+
+        <div>
+          <label for="stops-map-edit-tts" class="block text-sm font-semibold text-strong">
+            Spoken name <span class="font-normal text-muted">(optional)</span>
+          </label>
+          <.input
+            field={@form[:tts_stop_name]}
+            id="stops-map-edit-tts"
+            type="text"
+            autocomplete="off"
+            placeholder="Southeast First Street and U S one oh one"
+            class="h-11 w-full rounded-control border border-control px-3 text-[15px]"
+          />
+          <p class="m-0 mt-1 text-[13px] text-muted">
+            How screen readers and announcements should say the name, when abbreviations would be read
+            wrong.
+          </p>
+        </div>
+
+        <div>
+          <label for="stops-map-edit-url" class="block text-sm font-semibold text-strong">
+            Stop web page <span class="font-normal text-muted">(optional)</span>
+          </label>
+          <.input
+            field={@form[:stop_url]}
+            id="stops-map-edit-url"
+            type="url"
+            autocomplete="off"
+            class="h-11 w-full rounded-control border border-control px-3 text-[15px]"
+          />
+        </div>
+
+        <p class="m-0 text-[13px] text-muted">
+          GTFS: <span class="font-mono">stop_id</span>, <span class="font-mono">stop_code</span>
+          is
+          the sign number, <span class="font-mono">stop_desc</span>
+          the description, <span class="font-mono">tts_stop_name</span>
+          the spoken name.
+        </p>
+      </div>
+    </div>
+    """
+  end
+
+  # The heading's second line: what kind of stop this is, its ID, and either the
+  # routes that call there or the fact that nothing does. "Not served" is the
+  # whole answer for an unserved stop — context decision 4 removed the
+  # keep-in-feed question from the export question entirely.
+  defp edit_subtitle(%{location_type: 1} = stop) do
+    "Station · ID #{stop.stop_id} · #{stop.bay_count} #{pluralize(stop.bay_count, "bay")}"
+  end
+
+  defp edit_subtitle(%{routes: []} = stop), do: "Stop · ID #{stop.stop_id} · Not served"
+  defp edit_subtitle(stop), do: "Stop · ID #{stop.stop_id}"
+
+  defp pluralize(1, word), do: word
+  defp pluralize(_count, word), do: word <> "s"
+
+  # A stop with no zone says so; a stop whose zone has no `fare_zones` record
+  # shows its ID, because `FareZones.zone_names/3` resolves an undeclared zone to
+  # its exact ID rather than dropping it.
+  defp zone_text(nil, _name), do: "No fare zone"
+  defp zone_text(_id, nil), do: "No fare zone"
+  defp zone_text(_id, name), do: name
+
+  defp conflict_title(%{actor: nil}), do: "Someone else saved this stop"
+  defp conflict_title(%{actor: actor}), do: "#{actor} saved a change to this stop"
+
+  defp conflict_body(%{fields: fields}) when fields != [] do
+    "They changed #{Enum.join(fields, ", ")}. Your changes haven’t been saved."
+  end
+
+  defp conflict_body(_conflict),
+    do: "Their changes haven’t been saved over. Yours haven’t been saved either."
+
+  defp discard_title(nil, _stop), do: "Discard changes?"
+
+  defp discard_title(_action, stop), do: "Discard changes to #{stop.name}?"
+
+  defp discard_body(_action),
+    do: "The stop keeps its saved name, details and position. Nothing you typed is saved."
+
   # An action names what it acts on rather than carrying it: the panel looks the
   # key up among the warnings it is rendering and refuses anything else, so a
   # forged key cannot move a draft somewhere the geometry did not agree to.
@@ -1604,9 +2272,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
       }) do
     "#{stop_count} #{pluralize(stop_count, "stop")} and #{station_count} #{pluralize(station_count, "station")} in #{version.name}"
   end
-
-  defp pluralize(1, word), do: word
-  defp pluralize(_count, word), do: word <> "s"
 
   defp row_subtitle(%{location_type: 1, bays: bays}) when bays > 0,
     do: "Station · #{bays} #{pluralize(bays, "bay")}"

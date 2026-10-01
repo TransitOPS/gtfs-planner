@@ -54,6 +54,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       first_use_panel: 1,
       add_panel: 1,
       created_panel: 1,
+      edit_panel: 1,
       map_stage: 1,
       page_header: 1,
       search_field: 1,
@@ -66,9 +67,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
   alias GtfsPlanner.Geocoding
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Gtfs.StopEditing
   alias GtfsPlanner.Gtfs.StopNaming
   alias GtfsPlanner.Gtfs.StopPlacement
+  alias GtfsPlanner.Gtfs.StopReferences
   alias GtfsPlanner.Gtfs.StopsMap
   alias GtfsPlannerWeb.Gtfs.StopsMapComponents
   require Logger
@@ -113,6 +116,27 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # How many of the nearest stops the fare zone line speaks for.
   @zone_neighbour_count 5
 
+  # The form name the edit form's params arrive under, and the fields the panel
+  # will read. The list is a whitelist for the same reason the add form's is: a
+  # param the panel does not name is not a field, so a forged one cannot become
+  # an attribute of the stop that gets saved.
+  @edit_as :stop
+  @edit_fields ~w(stop_name stop_desc stop_lat stop_lon stop_code wheelchair_boarding tts_stop_name stop_url)
+
+  # The stop fields whose names the audit entry carries, mapped to the words the
+  # conflict message uses. The message names what the other editor changed; the
+  # audit row is the only record of that.
+  @edit_field_words %{
+    "stop_name" => "the name",
+    "stop_desc" => "the description",
+    "stop_lat" => "the position",
+    "stop_lon" => "the position",
+    "stop_code" => "the sign number",
+    "wheelchair_boarding" => "wheelchair access",
+    "tts_stop_name" => "the spoken name",
+    "stop_url" => "the stop web page"
+  }
+
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
@@ -131,8 +155,59 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
      |> assign(:checks, nil)
      |> assign(:checks_open, false)
      |> assign(:dismissed_checks, MapSet.new())
+     |> assign_edit_state()
      |> assign_add_state()
      |> assign_search("", [], [], false)}
+  end
+
+  # Everything the edit panel owns, in one place, so every way into it — the
+  # list, the search, the checks disclosure, the map, `?stop=` — starts from the
+  # same empty state rather than from whatever the last stop left behind.
+  defp assign_edit_state(socket) do
+    socket
+    |> assign(:edit_stop, nil)
+    |> assign(:edit_baseline, nil)
+    |> assign(:edit_errors, %{})
+    |> assign(:edit_saving, false)
+    |> assign(:edit_outcome, :none)
+    |> assign(:edit_conflict, nil)
+    |> assign(:edit_more_open?, false)
+    |> assign(:edit_tech_open?, false)
+    |> assign(:edit_usage, nil)
+    |> assign(:edit_zone_name, nil)
+    |> assign(:edit_usage_for, nil)
+    |> assign(:edit_loaded_updated_at, nil)
+    |> assign(:edit_dirty?, false)
+    |> assign(:edit_review_band, nil)
+    |> assign(:discard_action, nil)
+    |> assign_edit_draft(empty_edit_draft())
+  end
+
+  defp empty_edit_draft do
+    %{
+      "stop_name" => "",
+      "stop_desc" => "",
+      "stop_lat" => "",
+      "stop_lon" => "",
+      "stop_code" => "",
+      "wheelchair_boarding" => "0",
+      "tts_stop_name" => "",
+      "stop_url" => ""
+    }
+  end
+
+  # The form is rebuilt from the draft on every change rather than carried
+  # through, so a refused write, a slow usage read or a re-render cannot take a
+  # half-typed name back out of the field. The errors go on the form rather than
+  # beside it, which is what makes `<.input>` mark the control `aria-invalid`.
+  defp assign_edit_draft(socket, draft),
+    do: assign_edit_draft(socket, draft, socket.assigns.edit_errors)
+
+  defp assign_edit_draft(socket, draft, errors) do
+    socket
+    |> assign(:edit_draft, draft)
+    |> assign(:edit_errors, errors)
+    |> assign(:edit_form, to_form(draft, as: @edit_as, errors: form_errors(errors)))
   end
 
   # Everything the add flow owns, in one place, so every way into it — the
@@ -190,8 +265,18 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   end
 
   @impl true
-  def handle_params(_params, _url, socket) do
+  def handle_params(params, _url, socket) do
     if connected?(socket) do
+      # `?stop=` is the third way into the edit panel, alongside the list and the
+      # search. It is remembered rather than acted on here because the stop is
+      # read from the model, and the model has not arrived yet.
+      socket =
+        if is_binary(params["stop"]) do
+          assign(socket, :requested_stop_id, params["stop"])
+        else
+          assign(socket, :requested_stop_id, nil)
+        end
+
       {:noreply, start_load(socket)}
     else
       {:noreply, socket}
@@ -208,7 +293,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       |> assign_new_panel()
       |> start_checks(model)
 
-    {:noreply, push_scene(socket)}
+    {:noreply, push_scene(open_requested_stop(socket))}
   end
 
   def handle_async(:load_model, {:ok, {:error, :unavailable}}, socket) do
@@ -325,6 +410,202 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
        :add_failure,
        "We couldn’t save this stop. Nothing was changed, and your draft is still here."
      )}
+  end
+
+  def handle_async(:edit_save, {:ok, {:ok, stop}}, socket) do
+    # `stops.updated_at` is a whole second, so the struct an update returns
+    # carries the microseconds Ecto generated rather than the value the row
+    # holds, which is that instant rounded. Editing from the struct would make
+    # the very next save read as someone else's write, so the panel edits from
+    # the row as the database now holds it.
+    reloaded = reload_stop(socket, stop)
+
+    {:noreply,
+     socket
+     |> assign(:edit_saving, false)
+     |> assign_edit_stop(reloaded)
+     |> start_edit_usage(reloaded)
+     |> assign(:edit_outcome, :saved)
+     |> start_load()}
+  end
+
+  def handle_async(:edit_save, {:ok, {:review_required, band}}, socket) do
+    # A move past the correction band is step 31's review, not a failure here.
+    # Nothing was written, and the panel says so rather than pretending the save
+    # landed or discarding the draft that asked for it.
+    {:noreply,
+     socket
+     |> assign(:edit_saving, false)
+     |> assign(:edit_outcome, :review_required)
+     |> assign(:edit_review_band, band)}
+  end
+
+  def handle_async(:edit_save, {:ok, {:error, :stale}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:edit_saving, false)
+     |> assign(:edit_outcome, :stale)
+     |> assign_edit_conflict(socket.assigns.edit_stop)}
+  end
+
+  def handle_async(:edit_save, {:ok, {:error, %Ecto.Changeset{} = changeset}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:edit_saving, false)
+     |> assign(:edit_outcome, :invalid)
+     |> assign_edit_draft(socket.assigns.edit_draft, edit_changeset_errors(changeset))}
+  end
+
+  def handle_async(:edit_save, {:ok, {:error, _reason}}, socket) do
+    # A refused command writes nothing. The draft stays exactly as typed, because
+    # the editor's next action is to fix the cause and press Save again.
+    {:noreply, socket |> assign(:edit_saving, false) |> assign(:edit_outcome, :failed)}
+  end
+
+  def handle_async(:edit_save, {:exit, _reason}, socket),
+    do: {:noreply, socket |> assign(:edit_saving, false) |> assign(:edit_outcome, :failed)}
+
+  # `start_async/3` hands the callback whatever the function returned, so the
+  # function's own `{:ok, _}` is the reply's first layer.
+  def handle_async(:edit_usage, {:ok, {:ok, {usage, zone_names}}}, socket) do
+    if usage_matches_panel?(socket.assigns, usage) do
+      {:noreply, socket |> assign(:edit_usage, usage) |> assign(:edit_zone_name, zone_names)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # A read that failed leaves the list absent rather than showing "nothing uses
+  # this stop" about a read that never answered.
+  def handle_async(:edit_usage, _result, socket),
+    do: {:noreply, assign(socket, :edit_usage, nil)}
+
+  # The usage is read from one stop's struct, so the reply has to name the stop
+  # it was read for or the panel cannot tell whether it is still the right one.
+  defp usage_matches_panel?(%{edit_usage_for: stop_id, edit_stop: %{stop_id: stop_id}}, _usage),
+    do: true
+
+  defp usage_matches_panel?(_assigns, _usage), do: false
+
+  # Every keystroke arrives as the whole form, so the draft is merged field by
+  # field rather than replaced: a param the panel does not name is not a field
+  # (the whitelist), and a field the browser did not send keeps its value
+  # rather than being blanked by an omission.
+  defp apply_edit_field(socket, params) do
+    socket
+    |> assign_edit_draft(merge_draft(socket.assigns.edit_draft, params, @edit_fields), %{})
+    |> assign(:edit_outcome, :none)
+    |> assign(:edit_conflict, nil)
+    |> assign_dirty()
+  end
+
+  defp assign_dirty(socket) do
+    assign(socket, :edit_dirty?, edit_dirty?(socket.assigns))
+  end
+
+  # Dirty is a comparison against the loaded row, over the same fields the form
+  # carries. A coordinate typed with a trailing space and one the editor did not
+  # touch are the same value to a rider, so the numbers are compared as numbers
+  # rather than as the text in the field.
+  defp edit_dirty?(%{edit_baseline: baseline, edit_draft: draft}) when is_map(baseline) do
+    Enum.any?(@edit_fields, fn field ->
+      if field in ["stop_lat", "stop_lon"] do
+        coordinate_changed?(baseline[field], draft[field])
+      else
+        trim(draft[field]) != trim(baseline[field])
+      end
+    end)
+  end
+
+  defp coordinate_changed?(before, after_value) do
+    case {number(before), number(after_value)} do
+      {{:ok, a}, {:ok, b}} -> abs(a - b) > 0.000005
+      _not_both_numbers -> trim(before) != trim(after_value)
+    end
+  end
+
+  defp trim(value), do: value |> to_string() |> String.trim()
+
+  # The guard. A clean form exits without a question; a dirty one holds the exit
+  # and asks, so the same question and the same two answers serve Escape, Cancel
+  # and choosing another stop.
+  # The head matches the assigns, not the socket: a socket is a struct, and a
+  # pattern written against its own keys would never match it — the dirty flag
+  # lives inside `assigns`.
+  defp guard_edit(%{assigns: %{edit_dirty?: true}} = socket, action),
+    do: assign(socket, :discard_action, action)
+
+  defp guard_edit(socket, {:close}), do: close_edit(socket)
+  defp guard_edit(socket, _action), do: socket
+
+  defp close_edit(socket) do
+    socket
+    |> assign(:panel, :browse)
+    |> assign(:selected_stop_id, nil)
+    |> assign(:edit_stop, nil)
+    |> assign(:edit_baseline, nil)
+    |> assign(:edit_dirty?, false)
+    |> assign(:edit_outcome, :none)
+    |> assign(:edit_conflict, nil)
+    |> assign(:edit_usage, nil)
+    |> assign_edit_state()
+  end
+
+  # --- saving ---------------------------------------------------------------
+
+  defp start_save(socket, params) do
+    draft = merge_draft(socket.assigns.edit_draft, params, @edit_fields)
+
+    case socket.assigns.edit_stop do
+      nil ->
+        assign(socket, :edit_draft, draft)
+
+      stop ->
+        attrs = edit_attrs(socket.assigns, stop, draft)
+        audit = audit_context(socket.assigns)
+        loaded = socket.assigns.edit_loaded_updated_at
+
+        # A submit arrives without a preceding `phx-change` when the editor
+        # presses Enter in a field, so the draft and the dirty flag are set from
+        # the posted params here too. Otherwise the form would report "No
+        # changes yet" while it is writing one.
+        socket =
+          socket
+          |> assign(:edit_draft, draft)
+          |> assign(:edit_saving, true)
+          |> assign_dirty()
+
+        start_async(socket, :edit_save, fn ->
+          StopEditing.update_stop(stop.uuid, attrs, loaded, audit)
+        end)
+    end
+  end
+
+  # Only the fields the panel owns are read out of the form, and they are mapped
+  # to the names `Stop.editor_changeset/2` casts. A stop ID, a zone, a parent or
+  # a location type posted alongside them is not in this map, so it cannot reach
+  # the command even if the command were to read it (INV-5).
+  defp edit_attrs(_assigns, stop, draft) do
+    %{
+      "stop_name" => presence(draft["stop_name"]),
+      "stop_desc" => presence(draft["stop_desc"]),
+      "stop_lat" => coordinate_value(draft["stop_lat"], stop),
+      "stop_lon" => coordinate_value(draft["stop_lon"], stop),
+      "stop_code" => presence(draft["stop_code"]),
+      "wheelchair_boarding" => wheelchair_value(draft["wheelchair_boarding"]),
+      "tts_stop_name" => presence(draft["tts_stop_name"]),
+      "stop_url" => presence(draft["stop_url"])
+    }
+  end
+
+  # An unparseable coordinate is `nil` rather than the loaded value: the command's
+  # changeset refuses a nil, and the panel shows why. Writing the loaded value
+  # back would silently discard an edit the editor believed they had made.
+  defp coordinate_value(value, _stop) do
+    case number(value) do
+      {:ok, parsed} -> parsed
+      :error -> nil
+    end
   end
 
   @impl true
@@ -471,7 +752,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     if socket.assigns.add_saving do
       {:noreply, socket}
     else
-      draft = merge_draft(socket.assigns.add_draft, params)
+      draft = merge_draft(socket.assigns.add_draft, params, @add_fields)
 
       case add_errors(socket.assigns, draft) do
         errors when map_size(errors) == 0 ->
@@ -510,21 +791,72 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
          socket.assigns.search_unavailable?
        )}
 
-  # Choosing a stop from the results selects it. The panel's heading becomes
-  # that stop, which is the selection an editor can see before the edit panel
-  # (step 30) takes the heading over.
+  # Choosing another stop while the form is dirty asks first. The pending choice
+  # is held rather than performed, so `discard_changes` performs it and
+  # `keep_editing` drops it — and neither has to know what the other was.
   def handle_event("select_stop", %{"stop_id" => stop_id}, socket) do
-    if Enum.any?(socket.assigns.search_stops, &(&1.stop_id == stop_id)) do
-      {:noreply, assign(socket, :selected_stop_id, stop_id)}
-    else
-      # A result id that is not one this search produced is refused rather than
-      # looked up: the panel only shows what the search returned, so accepting
-      # an id it never showed would select a stop the editor cannot see.
-      {:noreply, socket}
+    cond do
+      !stop_in_model?(socket.assigns, stop_id) ->
+        # A result id that is not one this search produced is refused rather than
+        # looked up: the panel only shows what the search returned, so accepting
+        # an id it never showed would select a stop the editor cannot see.
+        {:noreply, socket}
+
+      socket.assigns.edit_dirty? ->
+        {:noreply, assign(socket, :discard_action, {:select, stop_id})}
+
+      true ->
+        {:noreply, open_edit(socket, stop_id)}
     end
   end
 
+  # A `select_stop` that carries no stop is no choice at all, so it changes
+  # nothing rather than closing the panel.
   def handle_event("select_stop", _params, socket), do: {:noreply, socket}
+
+  def handle_event("edit_field", %{"stop" => params}, socket),
+    do: {:noreply, apply_edit_field(socket, params)}
+
+  def handle_event("edit_field", _params, socket), do: {:noreply, socket}
+
+  def handle_event("save_stop", %{"stop" => params}, socket),
+    do: {:noreply, start_save(socket, params)}
+
+  def handle_event("save_stop", _params, socket), do: {:noreply, socket}
+
+  # Escape is the one exit with no control of its own, so it arrives as a window
+  # key from the panel rather than from a button.
+  def handle_event("edit_escape", %{"key" => "Escape"}, socket),
+    do: {:noreply, guard_edit(socket, {:close})}
+
+  def handle_event("edit_escape", _params, socket), do: {:noreply, socket}
+
+  def handle_event("cancel_edit", _params, socket),
+    do: {:noreply, guard_edit(socket, {:close})}
+
+  # Keeping the draft closes the dialog and nothing else. It writes nothing: a
+  # refusal that changed the feed would be the guard's own defect.
+  def handle_event("keep_editing", _params, socket),
+    do: {:noreply, assign(socket, :discard_action, nil)}
+
+  def handle_event("discard_changes", _params, socket) do
+    case socket.assigns.discard_action do
+      nil ->
+        {:noreply, socket}
+
+      {:select, stop_id} ->
+        {:noreply, socket |> assign(:discard_action, nil) |> open_edit(stop_id)}
+
+      {:close} ->
+        {:noreply, socket |> assign(:discard_action, nil) |> close_edit()}
+    end
+  end
+
+  def handle_event("toggle_edit_more", _params, socket),
+    do: {:noreply, assign(socket, :edit_more_open?, not socket.assigns.edit_more_open?)}
+
+  def handle_event("toggle_edit_tech", _params, socket),
+    do: {:noreply, assign(socket, :edit_tech_open?, not socket.assigns.edit_tech_open?)}
 
   # Choosing a place is a placement. It writes the same `placement` a click on
   # the map writes, so the pin, the caption and the map's mode are unchanged by
@@ -692,6 +1024,233 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # Every way into the add panel starts from an empty draft and no placement, so
   # the header's button, the first-use panel and the created panel's "add
   # another" cannot inherit a draft from the one before them.
+  # --- the edit panel -------------------------------------------------------
+
+  # A stop ID this version does not hold is refused rather than looked up. The
+  # list, the search and `?stop=` all arrive here, so the model is the one gate:
+  # an ID outside it would open a panel for a stop the editor cannot see listed.
+  defp stop_in_model?(%{model: nil}, _stop_id), do: false
+
+  defp stop_in_model?(%{model: model}, stop_id),
+    do: Enum.any?(model.stops, &(&1.stop_id == stop_id))
+
+  # `?stop=` is answered after the model arrives rather than in `handle_params/3`,
+  # so the stop is opened from the same read everything else on the page came
+  # from, and an unknown ID leaves the browse panel alone.
+  defp open_requested_stop(%{assigns: %{requested_stop_id: stop_id}} = socket)
+       when is_binary(stop_id) do
+    if stop_in_model?(socket.assigns, stop_id) do
+      socket
+      |> assign(:requested_stop_id, nil)
+      |> open_edit(stop_id)
+    else
+      assign(socket, :requested_stop_id, nil)
+    end
+  end
+
+  defp open_requested_stop(socket), do: socket
+
+  # Opening the panel is one query for the row and a second, asynchronous, for
+  # what uses it. `usage/3` reads fourteen tables, so the panel paints its
+  # fields first and the usage list fills in — the same arrangement as the
+  # checks disclosure, and for the same reason.
+  defp open_edit(socket, stop_id) do
+    case StopsMap.load_stop(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           stop_id
+         ) do
+      {:ok, stop} ->
+        socket
+        |> assign_edit_stop(stop)
+        |> start_edit_usage(stop)
+        |> push_focus(stop_point(socket.assigns.model, stop.stop_id))
+
+      # A stop this version does not hold leaves the panel where it was: an
+      # unknown ID is a stale link, not an editor's mistake worth a message.
+      _missing ->
+        socket
+    end
+  end
+
+  # The row as the database holds it now. A stop that cannot be read back is
+  # not a reason to throw away a save that landed, so the struct the command
+  # returned stands in.
+  defp reload_stop(socket, stop) do
+    case StopsMap.load_stop(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           stop.stop_id
+         ) do
+      {:ok, reloaded} -> reloaded
+      _unavailable -> stop
+    end
+  end
+
+  defp assign_edit_stop(socket, stop) do
+    draft = edit_draft_of(stop)
+
+    socket
+    |> assign(:panel, :edit)
+    |> assign(:selected_stop_id, stop.stop_id)
+    |> assign(:edit_stop, edit_stop_row(stop, socket.assigns))
+    |> assign(:edit_loaded_updated_at, stop.updated_at)
+    |> assign(:edit_baseline, draft)
+    |> assign(:edit_errors, %{})
+    |> assign(:edit_outcome, :none)
+    |> assign(:edit_conflict, nil)
+    |> assign(:edit_more_open?, false)
+    |> assign_edit_draft(draft)
+    |> assign(:edit_dirty?, false)
+  end
+
+  # The draft is the stop's own values as strings. The baseline is the same map,
+  # and the two being compared field by field is what "Unsaved changes" means —
+  # so the answer cannot disagree with what the form is showing.
+  defp edit_draft_of(stop) do
+    %{
+      "stop_name" => stop.stop_name || "",
+      "stop_desc" => stop.stop_desc || "",
+      "stop_lat" => decimal_text(stop.stop_lat),
+      "stop_lon" => decimal_text(stop.stop_lon),
+      "stop_code" => stop.stop_code || "",
+      "wheelchair_boarding" => Integer.to_string(stop.wheelchair_boarding || 0),
+      "tts_stop_name" => stop.tts_stop_name || "",
+      "stop_url" => stop.stop_url || ""
+    }
+  end
+
+  defp decimal_text(nil), do: ""
+
+  defp decimal_text(value) do
+    value
+    |> Decimal.to_float()
+    |> Float.round(5)
+    |> to_string()
+  end
+
+  # The panel's own view of the stop: what it is called, where its page is, the
+  # routes that call there and the bays of a station. Everything except the
+  # fields is read from the model the page already holds, so opening a stop
+  # costs the one query and nothing else.
+  defp edit_stop_row(stop, assigns) do
+    model = assigns.model
+    stop_row = Enum.find(model.stops, &(&1.stop_id == stop.stop_id))
+    bays = bays_of(model, stop)
+
+    %{
+      uuid: stop.id,
+      stop_id: stop.stop_id,
+      name: stop.stop_name || stop.stop_id,
+      desc: stop.stop_desc,
+      location_type: stop.location_type,
+      parent_station: stop.parent_station,
+      zone_id: stop.zone_id,
+      level_id: stop.level_id,
+      href: ~p"/gtfs/#{assigns.current_gtfs_version.id}/stops/#{stop.stop_id}",
+      routes: if(stop_row, do: stop_routes(model, stop_row), else: []),
+      bays: bays,
+      bay_count: length(bays)
+    }
+  end
+
+  defp bays_of(model, %{location_type: 1} = stop) do
+    model.stops
+    |> Enum.filter(&(&1.parent_station == stop.stop_id))
+    |> Enum.sort_by(& &1.stop_id)
+    |> Enum.map(&%{stop_id: &1.stop_id, name: &1.name || &1.stop_id, dom_id: dom_stop_id(&1)})
+  end
+
+  defp bays_of(_model, _stop), do: []
+
+  defp start_edit_usage(socket, stop) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    # The usage clears the moment the panel changes stop, so the list never
+    # answers for a stop the editor has already left, and the token names the
+    # stop it was read for.
+    socket =
+      socket
+      |> assign(:edit_usage, nil)
+      |> assign(:edit_usage_for, stop.stop_id)
+
+    start_async(socket, :edit_usage, fn ->
+      zone_names =
+        case stop.zone_id do
+          nil -> nil
+          zone_id -> FareZones.zone_names(organization_id, gtfs_version_id, [zone_id])[zone_id]
+        end
+
+      {:ok, {StopReferences.usage(organization_id, gtfs_version_id, stop), zone_names}}
+    end)
+  end
+
+  # The conflict's other half: who saved, when, and what they changed. The audit
+  # entry is the only record of that, and it is read for the stop this panel
+  # holds rather than for a name the client supplied.
+  defp assign_edit_conflict(socket, stop) do
+    conflict =
+      case stop do
+        nil ->
+          nil
+
+        stop ->
+          %{
+            actor:
+              last_actor(
+                socket.assigns.current_organization.id,
+                socket.assigns.current_gtfs_version.id,
+                stop
+              ),
+            fields:
+              changed_field_words(
+                socket.assigns.current_organization.id,
+                socket.assigns.current_gtfs_version.id,
+                stop
+              )
+          }
+      end
+
+    socket |> assign(:edit_conflict, conflict) |> start_edit_usage(stop)
+  end
+
+  defp last_actor(organization_id, gtfs_version_id, stop) do
+    case StopEditing.last_change(organization_id, gtfs_version_id, stop.uuid) do
+      nil -> nil
+      log -> log.actor_email
+    end
+  end
+
+  defp changed_field_words(_organization_id, _gtfs_version_id, nil), do: []
+
+  defp changed_field_words(organization_id, gtfs_version_id, stop) do
+    case StopEditing.last_change(organization_id, gtfs_version_id, stop.uuid) do
+      nil ->
+        []
+
+      log ->
+        log.changed_fields
+        |> Map.keys()
+        |> Enum.filter(&Map.has_key?(@edit_field_words, &1))
+        |> Enum.map(&Map.fetch!(@edit_field_words, &1))
+        |> Enum.uniq()
+    end
+  end
+
+  # The command's own messages, keyed to the field names the form posts. Ecto's
+  # keys are atoms of the schema; the form's are the strings the browser sent.
+  defp edit_changeset_errors(changeset) do
+    Ecto.Changeset.traverse_errors(changeset, fn {message, opts} ->
+      Regex.replace(~r"%{(\w+)}", message, fn _whole, key ->
+        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
+      end)
+    end)
+    |> Map.new(fn {field, messages} ->
+      {to_string(field), %{short: List.first(messages), long: Enum.join(messages, " ")}}
+    end)
+  end
+
   defp begin_add(socket, kind) do
     socket
     |> assign(:panel, :add)
@@ -849,7 +1408,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # both numbers into the latitude field places the draft, because that is how a
   # coordinate arrives from a gazetteer or a survey sheet.
   defp change_add_field(socket, params) do
-    draft = merge_draft(socket.assigns.add_draft, params)
+    draft = merge_draft(socket.assigns.add_draft, params, @add_fields)
     socket = socket |> assign_draft(draft) |> touch_fields(params)
     before = socket.assigns.placement
 
@@ -871,10 +1430,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   end
 
   # Only the draft's own fields are read, and only as strings. Everything the
-  # create command uses is decided server-side from this map, so a forged
-  # attribute is not one the create command can see.
-  defp merge_draft(draft, params) do
-    Enum.reduce(@add_fields, draft, fn field, acc ->
+  # command uses is decided server-side from this map, so a forged attribute is
+  # not one the command can see. `fields` is the whitelist the caller owns: the
+  # add form's and the edit form's are different and neither is the other's.
+  defp merge_draft(draft, params, fields) do
+    Enum.reduce(fields, draft, fn field, acc ->
       case Map.fetch(params, field) do
         {:ok, value} when is_binary(value) -> Map.put(acc, field, value)
         _absent -> acc
@@ -994,6 +1554,23 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   end
 
   defp add_where(_assigns), do: nil
+
+  # The same sentence the add panel shows, for the stop's saved position rather
+  # than for a draft. It is what tells an editor whether the pin on the map and
+  # the row in the form are talking about the same place.
+  defp edit_where(%{panel: :edit, edit_stop: %{uuid: uuid}, model: model}) do
+    case Enum.find(model.stops, &(&1.id == uuid)) do
+      %{point: {lon, lat}} ->
+        {lon, lat}
+        |> StopPlacement.describe_point(model)
+        |> Map.fetch!(:text)
+
+      _unlocated ->
+        nil
+    end
+  end
+
+  defp edit_where(_assigns), do: nil
 
   # The placement assign holds `{lat, lon}` because that is what the hook reports
   # and what the coordinate fields show; the geometry takes `{lon, lat}`.
@@ -1349,6 +1926,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     end
   end
 
+  # A stop the model does not carry is not centred on: there is nothing on the
+  # map to centre, and a fabricated point would put the editor somewhere else.
+  defp push_focus(socket, _missing), do: socket
+
   # --- search ----------------------------------------------------------------
 
   defp run_search(socket, raw) do
@@ -1502,60 +2083,82 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
               failure={@add_failure}
             />
           <% else %>
-            <%= if @panel == :created do %>
-              <.created_panel
-                id="stops-map-created-panel"
-                stop={@created_stop}
-                version_name={@current_gtfs_version.name}
+            <%= if @panel == :edit do %>
+              <.edit_panel
+                id="stops-map-edit-panel"
+                stop={@edit_stop}
+                form={@edit_form}
+                where={edit_where(assigns)}
+                usage={@edit_usage}
+                zone_id={@edit_stop && @edit_stop.zone_id}
+                zone_name={@edit_zone_name}
+                zone_href={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares"}
+                errors={@edit_errors}
+                dirty?={@edit_dirty?}
+                saving?={@edit_saving}
+                outcome={@edit_outcome}
+                review_band={@edit_review_band}
+                conflict={@edit_conflict}
+                more_open?={@edit_more_open?}
+                tech_open?={@edit_tech_open?}
+                discard_action={@discard_action}
               />
             <% else %>
-              <.browse_panel
-                id="stops-map-panel"
-                title={panel_title(assigns)}
-                subtitle={panel_subtitle(assigns)}
-              >
-                <div class="px-5">
-                  <.search_field
-                    id="stops-map-search"
-                    form={@search_form}
-                    label="Find a stop, street or place"
-                    placeholder="Name, stop ID or cross street"
-                  />
-                </div>
-
-                <%= if @stops_state == :loading do %>
-                  <div id="stops-map-panel-loading" role="status">
-                    <span class="sr-only">Loading stops&hellip;</span>
-                    <.browse_panel_loading id="stops-map-skeleton" />
+              <%= if @panel == :created do %>
+                <.created_panel
+                  id="stops-map-created-panel"
+                  stop={@created_stop}
+                  version_name={@current_gtfs_version.name}
+                />
+              <% else %>
+                <.browse_panel
+                  id="stops-map-panel"
+                  title={panel_title(assigns)}
+                  subtitle={panel_subtitle(assigns)}
+                >
+                  <div class="px-5">
+                    <.search_field
+                      id="stops-map-search"
+                      form={@search_form}
+                      label="Find a stop, street or place"
+                      placeholder="Name, stop ID or cross street"
+                    />
                   </div>
-                <% else %>
-                  <%= if @model == nil or @model.stops == [] do %>
-                    <.first_use_panel id="stops-map-first-use" version={@current_gtfs_version} />
+
+                  <%= if @stops_state == :loading do %>
+                    <div id="stops-map-panel-loading" role="status">
+                      <span class="sr-only">Loading stops&hellip;</span>
+                      <.browse_panel_loading id="stops-map-skeleton" />
+                    </div>
                   <% else %>
-                    <%!-- A search replaces the list rather than sitting above it:
+                    <%= if @model == nil or @model.stops == [] do %>
+                      <.first_use_panel id="stops-map-first-use" version={@current_gtfs_version} />
+                    <% else %>
+                      <%!-- A search replaces the list rather than sitting above it:
                         forty rows under a result set is a page an editor has to
                         scroll past to see what they searched for. --%>
-                    <%= if @search_query == "" do %>
-                      <%= if panel_checks(assigns) != [] do %>
-                        <.checks_disclosure
-                          id="stops-map-checks"
-                          checks={panel_checks(assigns)}
-                          open?={@checks_open}
+                      <%= if @search_query == "" do %>
+                        <%= if panel_checks(assigns) != [] do %>
+                          <.checks_disclosure
+                            id="stops-map-checks"
+                            checks={panel_checks(assigns)}
+                            open?={@checks_open}
+                          />
+                        <% end %>
+                        <.stop_list id="stops-map-list" stops={panel_rows(assigns)} />
+                      <% else %>
+                        <.search_results
+                          id="stops-map-search-results"
+                          query={@search_query}
+                          stops={@search_stops}
+                          places={@search_places}
+                          unavailable?={@search_unavailable?}
                         />
                       <% end %>
-                      <.stop_list id="stops-map-list" stops={panel_rows(assigns)} />
-                    <% else %>
-                      <.search_results
-                        id="stops-map-search-results"
-                        query={@search_query}
-                        stops={@search_stops}
-                        places={@search_places}
-                        unavailable?={@search_unavailable?}
-                      />
                     <% end %>
                   <% end %>
-                <% end %>
-              </.browse_panel>
+                </.browse_panel>
+              <% end %>
             <% end %>
           <% end %>
         </div>

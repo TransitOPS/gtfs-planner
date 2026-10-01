@@ -125,6 +125,38 @@ defmodule GtfsPlanner.Gtfs.StopsMap do
     }
   end
 
+  @doc """
+  Reads one stop of the version for the edit panel, as the `%Stop{}` itself.
+
+  `load/2` answers what to draw and hands back plain rows, because everything
+  downstream of it is JSON. The edit panel is the one reader that needs the
+  schema struct: `StopEditing.update_stop/4` and `StopReferences.usage/3` both
+  take a `%Stop{}`, and `updated_at` is the row this panel posts back so the
+  command can refuse a save that would overwrite another editor.
+
+  Scoped by organization and version exactly as `load/2` is, so a stop ID from
+  the query string cannot open another feed's stop, and a stop of another
+  version is `:not_found` rather than an answer.
+  """
+  @spec load_stop(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, Stop.t()} | {:error, :not_found | :unavailable}
+  def load_stop(organization_id, gtfs_version_id, stop_id)
+      when is_binary(stop_id) do
+    from(stop in Stop,
+      where:
+        stop.organization_id == ^organization_id and stop.gtfs_version_id == ^gtfs_version_id and
+          stop.stop_id == ^stop_id,
+      limit: 1
+    )
+    |> Repo.one()
+    |> case do
+      %Stop{} = stop -> {:ok, stop}
+      nil -> {:error, :not_found}
+    end
+  rescue
+    DBConnection.ConnectionError -> {:error, :unavailable}
+  end
+
   # 1. Stops. Every stop in the version, located or not: an unlocated stop still
   # belongs in the browse panel, and dropping it here would make the panel lie
   # about how many stops the version has.

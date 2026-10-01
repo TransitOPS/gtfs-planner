@@ -42,6 +42,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
@@ -2105,6 +2106,41 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
       Repo.rollback(:not_found)
     end
   end
+
+  @doc """
+  The most recent audit entry for one stop, or `nil` when it has never been saved.
+
+  This is the other half of a stale save: `update_stop/4` refuses the write and
+  says the row moved on, and this says who moved it and what they changed. The
+  panel needs both, because "someone else saved this stop" without a name is a
+  dead end an editor cannot act on.
+
+  Scoped by organization and version and bound to the stop's UUID, so a deleted
+  and recreated natural ID never inherits the old attribution — the same reason
+  the route command's history view binds to `route.id`.
+  """
+  @spec last_change(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t() | nil) :: map() | nil
+  def last_change(_organization_id, _gtfs_version_id, nil), do: nil
+
+  def last_change(organization_id, gtfs_version_id, stop_uuid)
+      when is_binary(stop_uuid) do
+    if uuid?(stop_uuid) do
+      from(log in ChangeLog,
+        where:
+          log.organization_id == ^organization_id and
+            log.gtfs_version_id == ^gtfs_version_id and
+            log.entity_type == "stop" and log.entity_id == ^stop_uuid,
+        order_by: [desc: log.inserted_at, desc: log.id],
+        limit: 1,
+        select: %{actor_email: log.actor_email, changed_fields: log.changed_fields}
+      )
+      |> Repo.one()
+    else
+      nil
+    end
+  end
+
+  def last_change(_organization_id, _gtfs_version_id, _stop_uuid), do: nil
 
   # Mutation and audit commit together (INV-2). An unrecordable audit rolls the
   # whole closure back, so there is no committed stop without its history entry.

@@ -1195,6 +1195,164 @@ test("the created panel's next steps @created", async ({ page }, testInfo) => {
   await captureReference(page, testInfo, "created", "created", "created-ref-");
 });
 
+// ── edit a stop (step 30) ────────────────────────────────────────────────────
+
+// The edit panel: the stop's own fields, where it is, what uses it, the footer
+// that says whether there is anything to save, and the guard on every way out.
+// The states are driven in the order a person meets them, so each capture is a
+// step of the same journey.
+test("the edit panel @edit", async ({ page }, testInfo) => {
+  test.setTimeout(300_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+
+  // A deep link opens the panel for the stop it names, which is where a link
+  // from a pattern or a search result has to land.
+  await page.goto(`/gtfs/${versionId}/stops/map?stop=1434`);
+  await waitForLiveView(page);
+  await waitForMapReady(page);
+
+  await expect(page.locator("#stops-map-edit-panel")).toBeAttached();
+  await expect(page.locator("#stops-map-edit-panel h2")).toHaveText(
+    "US 101 & SE 1st St",
+  );
+  await expect(page.locator("#stops-map-edit-name")).toHaveValue(
+    "US 101 & SE 1st St",
+  );
+  await expect(page.locator("#stops-map-edit-desc")).toHaveValue("Northbound");
+  await expect(page.locator("#stops-map-edit-code")).toHaveValue("1434");
+  await expect(page.locator("#stops-map-edit-lat")).toHaveValue("44.63561");
+  await expect(page.locator("#stops-map-edit-lon")).toHaveValue("-124.05317");
+
+  // Where it is, in the words the panel uses everywhere else: the route and the
+  // end of it, rather than a pair of numbers to read twice.
+  await expect(page.locator("#stops-map-edit-where")).toContainText("1");
+
+  // The usage list answers after the fields do, so the wait is for the list.
+  // A row per pattern, each with the route's own badge and the direction it
+  // runs: those are what a rider recognises about a stop, not a total.
+  await expect(page.locator("#stops-map-edit-used-items")).toContainText(
+    "toward Lincoln City",
+  );
+  await expect(page.locator("#stops-map-edit-used-items")).toContainText(
+    "toward Nye Beach",
+  );
+
+  const badges = await page
+    .locator("#stops-map-edit-used-items .rounded-badge")
+    .allTextContents();
+
+  expect(badges.map((text) => text.trim()).sort()).toEqual(["1", "3"]);
+
+  // The fare zone is a statement and a way to change it, not a control here:
+  // the zone belongs to Settings › Fares (AC-STOP-023).
+  await expect(page.locator("#stops-map-edit-zone")).toHaveText(
+    "Newport local",
+  );
+  await expect(page.locator("#stops-map-edit-zone-link")).toHaveAttribute(
+    "href",
+    /\/settings\/fares$/,
+  );
+  await expect(
+    page.locator("#stops-map-edit-panel select[name*='zone']"),
+  ).toHaveCount(0);
+
+  // Nothing to save means nothing to press, and the footer says so in words.
+  await expect(page.locator("#stops-map-edit-status")).toHaveText(
+    "No changes yet",
+  );
+  await expect(page.locator("#stops-map-edit-save")).toBeDisabled();
+
+  await captureBoth(page, testInfo, "edit", "edit-");
+
+  // The dirty state is in the footer, and it is words rather than a colour.
+  await page.locator("#stops-map-edit-desc").fill("Northbound, by Post Office");
+  await expect(page.locator("#stops-map-edit-status")).toHaveText(
+    "Unsaved changes",
+  );
+  await expect(page.locator("#stops-map-edit-save")).toBeEnabled();
+
+  // The guard is on every exit. Escape is the one with no control of its own,
+  // so the dialog it opens has to be the same one Cancel opens: the question is
+  // about the draft, not about which key asked.
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#stops-map-discard")).toHaveAttribute(
+    "data-open",
+    "true",
+  );
+  await expect(page.locator("#stops-map-discard")).toContainText(
+    "Discard changes to US 101 & SE 1st St?",
+  );
+
+  await captureBoth(page, testInfo, "guard", "edit-");
+
+  // Keeping the draft drops the exit and the draft survives it: the dialog is a
+  // question, not a navigation.
+  await page.locator("#stops-map-discard-keep").click();
+  await expect(page.locator("#stops-map-discard")).toHaveAttribute(
+    "data-open",
+    "false",
+  );
+  await expect(page.locator("#stops-map-edit-desc")).toHaveValue(
+    "Northbound, by Post Office",
+  );
+
+  // Cancel asks the same question and, on Discard changes, brings the
+  // version's list back.
+  await page.locator("#stops-map-edit-cancel").click();
+  await expect(page.locator("#stops-map-discard")).toHaveAttribute(
+    "data-open",
+    "true",
+  );
+  await page.locator("#stops-map-discard-go").click();
+  await expect(page.locator("#stops-map-edit-panel")).toHaveCount(0);
+  await expect(page.locator("#stops-map-panel")).toBeAttached();
+
+  await captureBoth(page, testInfo, "discarded", "edit-");
+
+  // A stop the feed does not serve says so, and offers no choice about it:
+  // context decision 4 rules the keep-in-feed checkbox out of this panel.
+  await page.goto(`/gtfs/${versionId}/stops/map?stop=1531`);
+  await waitForLiveView(page);
+  await expect(page.locator("#stops-map-edit-panel")).toContainText(
+    "Not served",
+  );
+  await expect(
+    page.locator("#stops-map-edit-panel input[type=checkbox]"),
+  ).toHaveCount(0);
+  await expect(page.locator("#stops-map-edit-used-empty")).toBeAttached();
+
+  await captureBoth(page, testInfo, "unserved", "edit-");
+
+  // A station is the other kind of stop: trips stop at its bays, so the panel
+  // lists them rather than offering fields a station has no use for.
+  await page.goto(`/gtfs/${versionId}/stops/map?stop=ST-NTC`);
+  await waitForLiveView(page);
+  await expect(page.locator("#stops-map-edit-panel h2")).toHaveText(
+    "Newport Transit Center",
+  );
+  await expect(page.locator("#stops-map-edit-bay-items")).toContainText(
+    "Bay A",
+  );
+
+  await capture(page, testInfo, "edit-station-desktop");
+
+  // The save-failed and conflict states are left to the ExUnit cases: the save
+  // submits through the panel's own form, and this journey's presses on that
+  // form did not reach the server, which is recorded in the step learning as a
+  // finding rather than papered over with a synthetic event.
+
+  // The prototype's own states for the same moments, captured last because the
+  // reference is a file:// page: driving the app and reading the prototype are
+  // two navigations, not one.
+  await captureReference(page, testInfo, "edit", "edit", "edit-ref-");
+  await captureReference(page, testInfo, "edit-dirty", "dirty", "edit-ref-");
+  await captureReference(page, testInfo, "unserved", "unserved", "edit-ref-");
+});
+
 // A click on the canvas in the middle of the map, the way a person places a
 // stop: the middle is a point the assertions and the capture can both name.
 async function clickCentre(page) {
