@@ -2357,8 +2357,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     socket
   end
 
+  # The form's own name is `assistant`, so the field renders as
+  # `assistant[note]` and the `assistant_start` handler reads what the browser
+  # actually submits. The DOM id stays `alert-assistant-note`, which is what the
+  # component and the browser journey address.
   defp assistant_note_form(note \\ "") do
-    to_form(%{"note" => note}, as: :assistant_note)
+    to_form(%{"note" => note}, as: :assistant)
   end
 
   # -- Loading ------------------------------------------------------------
