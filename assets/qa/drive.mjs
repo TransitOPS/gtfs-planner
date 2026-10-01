@@ -83,7 +83,7 @@ const USAGE = `usage: node assets/qa/drive.mjs <command> [options]
   open --run DIR [--headed] [--timeout S]
   step --run DIR <action> [target and value flags]
   note --run DIR [--about N|last] --observed T [--confusion none|mild|blocked]
-  finish --run DIR --claim done|gave-up [--reason T] [--eyes host-vision|codex-relay|source-only]
+  finish --run DIR --claim done|gave-up [--reason T] [--eyes host-vision|relayed-vision|source-only]
   close --run DIR [--timeout S]
   report --run DIR
   finalize --run DIR --check-exit N --server-alive yes|no

@@ -84,7 +84,7 @@ const CAPTURE_DIGITS = 3;
 // cannot read is worse than a refused note.
 const CONFUSION = ["none", "mild", "blocked"];
 const CLAIMS = ["done", "gave-up"];
-const EYES = ["host-vision", "codex-relay", "source-only"];
+const EYES = ["host-vision", "relayed-vision", "source-only"];
 
 // A run that has finished takes no further step. A step after the finish line
 // would sit in the log after the record that ends it, and the proxies and the
