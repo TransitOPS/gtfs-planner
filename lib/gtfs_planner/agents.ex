@@ -22,9 +22,12 @@ defmodule GtfsPlanner.Agents do
   cap) and `GtfsPlanner.Agents.TurnSupervisor`, which bounds the eight active
   turns of AC-30. Session ids are
   `{user_id, organization_id, gtfs_version_id, pack_id, identity,
-  approved_digest, subject_id}`, so a second tab on the same route shares the
+context_digest, subject_id}`, so a second tab on the same route shares the
   conversation while the same user on another route never does (INV-1).
-  `subject_id` is `nil` for a pack with no subject record.
+  `context_digest/1` binds the approved extension and any accepted source
+  snapshot, so two accepted inputs for one route are two conversations rather
+  than one answering for the other; `subject_id` is `nil` for a pack with no
+  subject record, and separates two conversations about two different records.
 
   `packs/0` is the only function here that names a concrete pack (INV-1). The
   Alerts pack is keyed by a subject: its tools read one alert of the scope's
@@ -42,7 +45,8 @@ defmodule GtfsPlanner.Agents do
   @packs %{
     "alerts" => GtfsPlanner.Agents.Packs.Alerts,
     "calendars" => GtfsPlanner.Agents.Packs.Calendars,
-    "service_queries" => GtfsPlanner.Agents.Packs.ServiceQueries
+    "service_queries" => GtfsPlanner.Agents.Packs.ServiceQueries,
+    "dated_changes" => GtfsPlanner.Agents.Packs.DatedChanges
   }
 
   @doc "Every shipped capability pack, keyed by `Pack.id/0`."
@@ -145,7 +149,7 @@ defmodule GtfsPlanner.Agents do
   # route's panel from reaching this conversation (FH-3, INV-1).
   defp key(%Scope{} = scope) do
     {scope.user_id, scope.organization_id, scope.gtfs_version_id, scope.pack_id,
-     Scope.identity(scope), Scope.approved_digest(scope), scope.subject_id}
+Scope.identity(scope), Scope.context_digest(scope), scope.subject_id}
   end
 
   defp start_session(scope, pack) do
