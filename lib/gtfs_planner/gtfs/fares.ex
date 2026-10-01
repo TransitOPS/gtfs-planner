@@ -16,12 +16,14 @@ defmodule GtfsPlanner.Gtfs.Fares do
   stored-row summary, in one scoped snapshot, so no tab queries a fare table
   itself and no two tabs can disagree about what the version holds.
 
-  The remaining writers of this package — `Fares.Conversion`,
-  `Fares.Transfers` and `Fares.Normalize` — are added by later steps.
+  `Fares.Conversion` is the first of this package's writers: it builds a
+  version's first managed fare set from the four answers of the first-use setup,
+  and converts imported fares in later steps. `Fares.Transfers` follows.
   """
 
   import Ecto.Query, warn: false
 
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.FareAttribute
   alias GtfsPlanner.Gtfs.FareLegJoinRule
@@ -30,6 +32,7 @@ defmodule GtfsPlanner.Gtfs.Fares do
   alias GtfsPlanner.Gtfs.FareProduct
   alias GtfsPlanner.Gtfs.FareProductDetail
   alias GtfsPlanner.Gtfs.FareRule
+  alias GtfsPlanner.Gtfs.Fares.Conversion
   alias GtfsPlanner.Gtfs.Fares.Interpreter
   alias GtfsPlanner.Gtfs.Fares.Workspace
   alias GtfsPlanner.Gtfs.FareTimePeriod
@@ -46,6 +49,26 @@ defmodule GtfsPlanner.Gtfs.Fares do
 
   @default_currency "USD"
 
+  @typedoc """
+  The arguments every writer of this package takes: the organization and version
+  whose fare rows the write touches, and the audit identity its change-log entry
+  is recorded for (R15).
+  """
+  @type scope :: %{
+          organization_id: Ecto.UUID.t(),
+          gtfs_version_id: Ecto.UUID.t(),
+          audit: AuditContext.t()
+        }
+
+  @typedoc """
+  What a write answers: the shared operation id naming its change-log entry, and
+  the inverse `undo/3` applies. A refusal answers `{:error, reason}` and has
+  written nothing.
+  """
+  @type write_result ::
+          {:ok, %{operation_id: Ecto.UUID.t(), inverse: term()}}
+          | {:error, {:stale, [map()]} | Ecto.Changeset.t() | atom()}
+
   # The stored-row counts an unmanaged version's read-only view and its
   # conversion review both state, in the order the review lists them.
   @unmanaged_tables [
@@ -60,6 +83,22 @@ defmodule GtfsPlanner.Gtfs.Fares do
     {:networks, Network},
     {:fare_time_periods, FareTimePeriod}
   ]
+
+  @doc """
+  Applies the inverse of a write while the rows it created are still the
+  version's own (R15).
+
+  A `setup/2` inverse is applied by `Fares.Conversion.undo_setup/3`, which deletes
+  the rows that setup wrote while the version's settings row still names this
+  operation. An inverse no writer of this package produces yet is refused with
+  `{:error, :unknown_inverse}` rather than guessed at.
+  """
+  @spec undo(scope(), Ecto.UUID.t(), term()) :: write_result()
+  def undo(scope, operation_id, %{setup: _inverse} = inverse) do
+    Conversion.undo_setup(scope, operation_id, inverse)
+  end
+
+  def undo(_scope, _operation_id, _inverse), do: {:error, :unknown_inverse}
 
   @doc """
   Whether the version's fares are managed here.
