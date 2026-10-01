@@ -65,11 +65,16 @@ async function setLiveUploadFiles(page, inputSelector, entriesSelector, file) {
 async function openRoute(page, route, { authenticate = true } = {}) {
   if (authenticate) await logIn(page);
   // The header's GTFS area owns Export and Import; its two pages are the bar's
-  // tabs, so the journey enters through the task link and then the tab.
+  // tabs, so the journey enters through the task link and then the tab. The
+  // task link already lands on Export; clicking the Export tab as well mounts
+  // the page again and replaces the one the test is using, which drops focus
+  // and closes open details.
   await page.locator("#main-navigation #nav-gtfs").click();
   await page.waitForURL(/\/gtfs\/[^/]+\/export$/);
-  await page.locator(`#gtfs-tab-${route}`).click();
-  await page.waitForURL(new RegExp(`/gtfs/[^/]+/${route}$`));
+  if (route !== "export") {
+    await page.locator(`#gtfs-tab-${route}`).click();
+    await page.waitForURL(new RegExp(`/gtfs/[^/]+/${route}$`));
+  }
   // Import shows a review in progress in place of its forms, so its page, not
   // its feed form, is what says the route has loaded.
   const ready = route === "import" ? "#import-page" : `#gtfs-${route}-form`;
@@ -392,16 +397,8 @@ test.describe("durable import and export browser journeys", () => {
       await openRoute(page, "export", { authenticate: false });
       await expect(page.locator("#gtfs-export-form")).toBeVisible();
       await expect(page.locator("#export-workspace")).toBeVisible();
-      // A patch that lands after the click re-renders the closed details, so
-      // the click is repeated until the file list stays open.
-      await expect(async () => {
-        if (!(await page.locator("#export-files").evaluate((el) => el.open))) {
-          await page.locator("#export-files summary").click();
-        }
-        await expect(page.locator("#export-inventory")).toBeVisible({
-          timeout: 1_000,
-        });
-      }).toPass();
+      await page.locator("#export-files summary").click();
+      await expect(page.locator("#export-inventory")).toBeVisible();
       await expect(page.locator("#export-download-link")).toBeVisible();
       await expectKeyboardAccess(page, "#export-type-full");
       await expectKeyboardAccess(page, "#start-export");
