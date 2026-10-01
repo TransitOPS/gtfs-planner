@@ -264,6 +264,37 @@ defmodule GtfsPlanner.Validations do
   end
 
   @doc """
+  Gets a scoped validation run: the row must belong to `organization_id` *and*
+  `gtfs_version_id`.
+
+  Every identity is checked in the query, so `result_json` is never read for a
+  run outside the caller's scope. A malformed identifier, an absent run and a
+  foreign one are all `{:error, :unavailable}`, which discloses nothing about
+  another organization (INV-1, AC-1).
+  """
+  @spec fetch_scoped_run(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, ValidationRun.t()} | {:error, :unavailable}
+  def fetch_scoped_run(organization_id, gtfs_version_id, run_id) do
+    with {:ok, organization_id} <- Ecto.UUID.cast(organization_id),
+         {:ok, gtfs_version_id} <- Ecto.UUID.cast(gtfs_version_id),
+         {:ok, run_id} <- Ecto.UUID.cast(run_id) do
+      ValidationRun
+      |> where(
+        [run],
+        run.id == ^run_id and run.organization_id == ^organization_id and
+          run.gtfs_version_id == ^gtfs_version_id
+      )
+      |> Repo.one()
+      |> case do
+        %ValidationRun{} = run -> {:ok, run}
+        nil -> {:error, :unavailable}
+      end
+    else
+      _other -> {:error, :unavailable}
+    end
+  end
+
+  @doc """
   Gets a single validation run, raising if not found.
   """
   @spec get_validation_run!(Ecto.UUID.t()) :: ValidationRun.t()
