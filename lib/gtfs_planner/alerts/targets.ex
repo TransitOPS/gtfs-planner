@@ -32,6 +32,7 @@ defmodule GtfsPlanner.Alerts.Targets do
 
   alias GtfsPlanner.Alerts.Alert
   alias GtfsPlanner.Alerts.Listing
+  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarDate
@@ -46,6 +47,9 @@ defmodule GtfsPlanner.Alerts.Targets do
   alias GtfsPlanner.Repo
 
   @search_limit 25
+  # The scope answer allows at most this many route or stop ids, so a larger
+  # list from a caller names nothing the editor could have stored.
+  @max_ids 200
   @day_seconds 86_400
   @label_origin ~D[2000-01-01]
   @midnight ~T[00:00:00]
@@ -122,29 +126,25 @@ defmodule GtfsPlanner.Alerts.Targets do
         []
 
       pattern ->
-        excluded = Keyword.get(opts, :exclude_stop_ids, []) |> uuids()
-        prefer = Keyword.get(opts, :prefer_route_ids, []) |> uuids()
-        # The excluded rows are dropped below, so they are read here too:
-        # otherwise excluding a stop would shorten the list below its limit.
-        read_limit = @search_limit + length(excluded)
+        excluded = opts |> Keyword.get(:exclude_stop_ids, []) |> uuids() |> Enum.take(@max_ids)
+        prefer = opts |> Keyword.get(:prefer_route_ids, []) |> uuids() |> Enum.take(@max_ids)
+        preferred = preferred_stop_ids(audit_context, prefer)
 
-        matches =
-          from(s in Stop,
-            where: s.organization_id == ^audit_context.organization_id,
-            where: s.gtfs_version_id == ^audit_context.gtfs_version_id,
-            where: is_nil(s.location_type) or s.location_type in [0, 1],
-            where:
-              ilike(s.stop_name, ^pattern) or ilike(s.stop_id, ^pattern) or
-                ilike(s.platform_code, ^pattern),
-            order_by: [asc: s.stop_name, asc: s.stop_id],
-            limit: ^read_limit
-          )
-          |> Repo.all()
-
-        matches
-        |> reject_ids(excluded)
-        |> prefer_stops(audit_context, prefer)
-        |> Enum.take(@search_limit)
+        # The preference is part of the ordering rather than a re-sort of the
+        # first matches, so a broad query still lists the preferred routes' stops
+        # ahead of every other match.
+        from(s in Stop,
+          where: s.organization_id == ^audit_context.organization_id,
+          where: s.gtfs_version_id == ^audit_context.gtfs_version_id,
+          where: is_nil(s.location_type) or s.location_type in [0, 1],
+          where: s.id not in ^excluded,
+          where:
+            ilike(s.stop_name, ^pattern) or ilike(s.stop_id, ^pattern) or
+              ilike(s.platform_code, ^pattern),
+          order_by: [desc: s.stop_id in ^preferred, asc: s.stop_name, asc: s.stop_id],
+          limit: @search_limit
+        )
+        |> Repo.all()
         |> Enum.map(&stop_option/1)
     end
   end
@@ -152,33 +152,34 @@ defmodule GtfsPlanner.Alerts.Targets do
   @doc """
   Lists the stops one version's route serves, in the order its trips serve them.
 
-  The order is the route's own `stop_sequence`, the order riders meet the stops
-  in. A stop that only some of the route's trips serve appears at the earliest
-  position any of them gives it, and a stop with no sequence at all follows.
+  The order is one trip's own `stop_sequence`, the order riders meet the stops
+  in: a `stop_sequence` is a position within its trip, so positions from trips of
+  both directions are never merged. The stops the other trips add follow the
+  one trip's, each at the earliest position any trip gives it.
   """
   @spec route_stops(AuditContext.t(), term()) :: [stop_option()]
   def route_stops(%AuditContext{} = audit_context, route_id) do
-    with route when not is_nil(route) <- scoped_route(audit_context, route_id) do
-      positions = served_stop_positions(audit_context, route.route_id)
-      stop_ids = positions |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+    case scoped_route(audit_context, route_id) do
+      nil ->
+        []
 
-      stops =
-        from(s in Stop,
-          where: s.organization_id == ^audit_context.organization_id,
-          where: s.gtfs_version_id == ^audit_context.gtfs_version_id,
-          where: is_nil(s.location_type) or s.location_type in [0, 1],
-          where: s.stop_id in ^stop_ids
-        )
-        |> Repo.all()
-        |> Map.new(&{&1.stop_id, &1})
+      route ->
+        stop_ids = served_stop_ids(audit_context, route.route_id)
 
-      positions
-      |> Enum.uniq_by(&elem(&1, 0))
-      |> Enum.map(&Map.get(stops, elem(&1, 0)))
-      |> Enum.reject(&is_nil/1)
-      |> Enum.map(&stop_option/1)
-    else
-      _no_such_route -> []
+        stops =
+          from(s in Stop,
+            where: s.organization_id == ^audit_context.organization_id,
+            where: s.gtfs_version_id == ^audit_context.gtfs_version_id,
+            where: is_nil(s.location_type) or s.location_type in [0, 1],
+            where: s.stop_id in ^stop_ids
+          )
+          |> Repo.all()
+          |> Map.new(&{&1.stop_id, &1})
+
+        stop_ids
+        |> Enum.map(&Map.get(stops, &1))
+        |> Enum.reject(&is_nil/1)
+        |> Enum.map(&stop_option/1)
     end
   end
 
@@ -244,17 +245,19 @@ defmodule GtfsPlanner.Alerts.Targets do
         direction_id,
         %Date{} = date
       ) do
-    with route when not is_nil(route) <- scoped_route(audit_context, route_id) do
-      trips = route_trips(audit_context, route.route_id, direction_id)
-      services = service_exceptions(audit_context, trips)
+    case scoped_route(audit_context, route_id) do
+      nil ->
+        []
 
-      trips
-      |> Enum.filter(&running_on?(&1, services, date))
-      |> Enum.map(&departure(audit_context, &1))
-      |> Enum.reject(&is_nil/1)
-      |> Enum.sort_by(&{&1.first_departure_seconds, &1.trip_id})
-    else
-      _no_such_route -> []
+      route ->
+        trips = route_trips(audit_context, route.route_id, direction_id)
+        services = service_exceptions(audit_context, trips)
+
+        trips
+        |> Enum.filter(&running_on?(&1, services, date))
+        |> Enum.map(&departure(audit_context, &1))
+        |> Enum.reject(&is_nil/1)
+        |> Enum.sort_by(&{&1.first_departure_seconds, &1.trip_id})
     end
   end
 
@@ -266,13 +269,7 @@ defmodule GtfsPlanner.Alerts.Targets do
   """
   @spec route_types(AuditContext.t()) :: [integer()]
   def route_types(%AuditContext{organization_id: o, gtfs_version_id: v}) do
-    from(r in Route,
-      where: r.organization_id == ^o and r.gtfs_version_id == ^v,
-      select: r.route_type,
-      distinct: true
-    )
-    |> Repo.all()
-    |> Enum.sort()
+    Gtfs.list_distinct_route_types(o, v)
   end
 
   @doc """
@@ -297,22 +294,22 @@ defmodule GtfsPlanner.Alerts.Targets do
       )
       |> Repo.all()
 
+    # One label per direction: the first active pattern that has a headsign, in
+    # the version's own pattern order, so the card reads the same on every render.
     from(p in RoutePattern,
       where: p.organization_id == ^audit_context.organization_id,
       where: p.gtfs_version_id == ^audit_context.gtfs_version_id,
       where: p.route_id in ^gtfs_route_ids,
-      where: p.direction_id in [0, 1],
-      select: {p.direction_id, p.headsign},
-      distinct: true
+      where: p.direction_id in [0, 1] and p.active,
+      order_by: [asc_nulls_last: p.route_pattern_sort_order, asc: p.route_pattern_id],
+      select: {p.direction_id, p.headsign}
     )
     |> Repo.all()
-    |> Enum.map(fn {direction_id, headsign} ->
-      %{
-        direction_id: direction_id,
-        label: present_name(List.wrap(headsign)) || "Direction #{direction_id}"
-      }
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Enum.map(fn {direction_id, headsigns} ->
+      label = Enum.find_value(headsigns, &present_name(List.wrap(&1)))
+      %{direction_id: direction_id, label: label || "Direction #{direction_id}"}
     end)
-    |> Enum.uniq_by(& &1.direction_id)
     |> Enum.sort_by(& &1.direction_id)
   end
 
@@ -396,6 +393,57 @@ defmodule GtfsPlanner.Alerts.Targets do
     end
   end
 
+  @doc """
+  Returns the identities that name no row of the context's organization and
+  version, per table.
+
+  `ids` maps `:routes`, `:stops` and `:trips` to the row UUIDs a write is about
+  to store. An identity that is not a UUID, or that names a row of another
+  version or organization, comes back in the same table's list; an empty list
+  reads nothing. This is the check `Alerts` applies before an answer is saved, so
+  an identity the editor could not have chosen cannot be stored by naming it
+  (R1, CR-4).
+  """
+  @spec unresolved_ids(AuditContext.t(), %{
+          routes: [term()],
+          stops: [term()],
+          trips: [term()]
+        }) :: %{routes: [term()], stops: [term()], trips: [term()]}
+  def unresolved_ids(%AuditContext{} = audit_context, %{
+        routes: routes,
+        stops: stops,
+        trips: trips
+      }) do
+    %{
+      routes: unresolved(Route, audit_context, routes),
+      stops: unresolved(Stop, audit_context, stops),
+      trips: unresolved(Trip, audit_context, trips)
+    }
+  end
+
+  defp unresolved(_schema, _audit_context, []), do: []
+
+  defp unresolved(schema, %AuditContext{organization_id: o, gtfs_version_id: v}, ids) do
+    present =
+      from(row in schema,
+        where: row.organization_id == ^o and row.gtfs_version_id == ^v,
+        where: row.id in ^uuids(ids),
+        select: row.id
+      )
+      |> Repo.all()
+      |> MapSet.new()
+
+    Enum.reject(ids, &(canonical_uuid(&1) in present))
+  end
+
+  # The form a row's `id` is read back in, or nil for an identity no row can have.
+  defp canonical_uuid(id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, uuid} -> uuid
+      :error -> nil
+    end
+  end
+
   # -- Options -------------------------------------------------------------
 
   defp route_option(route) do
@@ -435,41 +483,72 @@ defmodule GtfsPlanner.Alerts.Targets do
   # -- Scoped reads --------------------------------------------------------
 
   defp scoped_route(%AuditContext{organization_id: o, gtfs_version_id: v}, route_id) do
-    with {:ok, uuid} <- Ecto.UUID.cast(route_id) do
-      from(r in Route,
-        where: r.organization_id == ^o and r.gtfs_version_id == ^v and r.id == ^uuid
-      )
-      |> Repo.one()
-    else
-      :error -> nil
+    case Gtfs.get_route_in_version(o, v, route_id) do
+      {:ok, route} -> route
+      {:error, :not_found} -> nil
     end
   end
 
-  # The earliest position any of the route's trips gives each stop it serves.
-  defp served_stop_positions(%AuditContext{organization_id: o, gtfs_version_id: v}, route_id) do
+  # The stops the route serves, in the order of one representative trip. A
+  # `stop_sequence` is a position within its own trip, so sequences from different
+  # trips (above all the two directions) cannot be merged into one order. The
+  # spine is the lowest direction's trip with the most stop times; the stops it
+  # lacks follow, each at the earliest position any trip of the route gives it.
+  defp served_stop_ids(%AuditContext{} = audit_context, route_id) do
+    spine = spine_stop_ids(audit_context, route_id)
+    extra = stops_beyond_spine(audit_context, route_id, spine)
+
+    spine ++ extra
+  end
+
+  defp spine_stop_ids(%AuditContext{} = audit_context, route_id) do
+    case spine_trip_id(audit_context, route_id) do
+      nil -> []
+      trip_id -> trip_stop_ids(audit_context, trip_id)
+    end
+  end
+
+  defp spine_trip_id(%AuditContext{organization_id: o, gtfs_version_id: v}, route_id) do
+    from(t in Trip,
+      left_join: st in StopTime,
+      on:
+        st.trip_id == t.trip_id and st.organization_id == t.organization_id and
+          st.gtfs_version_id == t.gtfs_version_id,
+      where: t.organization_id == ^o and t.gtfs_version_id == ^v and t.route_id == ^route_id,
+      group_by: [t.trip_id, t.direction_id],
+      order_by: [asc_nulls_last: t.direction_id, desc: count(st.id), asc: t.trip_id],
+      select: t.trip_id,
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
+  defp trip_stop_ids(%AuditContext{organization_id: o, gtfs_version_id: v}, trip_id) do
+    from(st in StopTime,
+      where: st.organization_id == ^o and st.gtfs_version_id == ^v,
+      where: st.trip_id == ^trip_id,
+      order_by: [asc_nulls_last: st.stop_sequence],
+      select: st.stop_id
+    )
+    |> Repo.all()
+    |> Enum.uniq()
+  end
+
+  defp stops_beyond_spine(%AuditContext{organization_id: o, gtfs_version_id: v}, route_id, spine) do
     from(st in StopTime,
       join: t in Trip,
       on: t.trip_id == st.trip_id,
       where: st.organization_id == ^o and st.gtfs_version_id == ^v,
       where: t.organization_id == ^o and t.gtfs_version_id == ^v,
-      where: t.route_id == ^route_id,
-      select: {st.stop_id, st.stop_sequence}
+      where: t.route_id == ^route_id and st.stop_id not in ^spine,
+      group_by: st.stop_id,
+      select: {st.stop_id, min(st.stop_sequence)}
     )
     |> Repo.all()
-    |> Enum.reduce(%{}, fn {stop_id, position}, acc ->
-      Map.update(acc, stop_id, position, &earliest(&1, position))
-    end)
-    |> Enum.map(fn {stop_id, position} -> {stop_id, position} end)
     # A stop whose only recorded position is absent sorts last rather than first.
     |> Enum.sort_by(fn {stop_id, position} -> {is_nil(position), position || 0, stop_id} end)
+    |> Enum.map(&elem(&1, 0))
   end
-
-  defp earliest(existing, position)
-       when is_integer(existing) and is_integer(position),
-       do: min(existing, position)
-
-  defp earliest(nil, position), do: position
-  defp earliest(existing, _position), do: existing
 
   defp route_trips(%AuditContext{organization_id: o, gtfs_version_id: v}, route_id, direction_id) do
     Trip
@@ -510,12 +589,13 @@ defmodule GtfsPlanner.Alerts.Targets do
       |> Repo.all()
       |> Enum.group_by(& &1.service_id)
 
-    %{
-      calendars: calendars,
-      exceptions: Map.new(exceptions, fn {service_id, dates} -> {service_id, dates} end)
-    }
+    %{calendars: calendars, exceptions: exceptions}
   end
 
+  # The evaluator raises for a retained calendar whose source cannot be read, such
+  # as an imported range that ends before it starts. That service's trips are not
+  # offered, so one bad calendar does not stop the route's other departures from
+  # being listed (`ServiceQueries.active_on?/3` guards the same call).
   defp running_on?(%Trip{service_id: service_id}, services, date) do
     active =
       ServiceDates.active_dates_between(
@@ -526,6 +606,8 @@ defmodule GtfsPlanner.Alerts.Targets do
       )
 
     date in active
+  rescue
+    ArgumentError -> false
   end
 
   # A trip with no readable first stop time has no departure the operator could
@@ -588,6 +670,8 @@ defmodule GtfsPlanner.Alerts.Targets do
   # absent from the labels - the same reading `Alerts.Listing` gives it. Each
   # table is read once for every identity at once, so labelling an alert does
   # not grow with the number of rows it names.
+  defp route_labels(_audit_context, []), do: %{}
+
   defp route_labels(%AuditContext{organization_id: o, gtfs_version_id: v}, ids) do
     from(r in Route,
       where: r.organization_id == ^o and r.gtfs_version_id == ^v,
@@ -597,6 +681,8 @@ defmodule GtfsPlanner.Alerts.Targets do
     |> Map.new(&{&1.id, route_label(&1)})
   end
 
+  defp stop_labels(_audit_context, []), do: %{}
+
   defp stop_labels(%AuditContext{organization_id: o, gtfs_version_id: v}, ids) do
     from(s in Stop,
       where: s.organization_id == ^o and s.gtfs_version_id == ^v,
@@ -605,6 +691,8 @@ defmodule GtfsPlanner.Alerts.Targets do
     |> Repo.all()
     |> Map.new(&{&1.id, stop_label(&1)})
   end
+
+  defp trip_labels(_audit_context, []), do: %{}
 
   defp trip_labels(%AuditContext{} = audit_context, ids) do
     from(t in Trip,
@@ -634,21 +722,15 @@ defmodule GtfsPlanner.Alerts.Targets do
         nil
 
       trimmed ->
-        "%" <> String.replace(trimmed, ~r/[\\%_]/, &("\\" <> &1)) <> "%"
+        "%" <> Gtfs.escape_like_pattern(trimmed) <> "%"
     end
   end
 
   defp search_pattern(_query), do: nil
 
-  defp prefer_stops(stops, _audit_context, []), do: stops
-
-  defp prefer_stops(stops, audit_context, prefer_route_ids) do
-    preferred = preferred_stop_ids(audit_context, prefer_route_ids)
-
-    Enum.sort_by(stops, fn stop ->
-      {if(MapSet.member?(preferred, stop.stop_id), do: 0, else: 1), stop.stop_name, stop.stop_id}
-    end)
-  end
+  # The GTFS stop ids the preferred routes serve, or none when no route is
+  # preferred.
+  defp preferred_stop_ids(_audit_context, []), do: []
 
   defp preferred_stop_ids(%AuditContext{organization_id: o, gtfs_version_id: v}, route_uuids) do
     route_ids =
@@ -669,14 +751,6 @@ defmodule GtfsPlanner.Alerts.Targets do
       distinct: true
     )
     |> Repo.all()
-    |> MapSet.new()
-  end
-
-  defp reject_ids(stops, []), do: stops
-
-  defp reject_ids(stops, excluded) do
-    excluded = MapSet.new(excluded)
-    Enum.reject(stops, &MapSet.member?(excluded, &1.id))
   end
 
   # An identity that is not a row UUID is dropped before it can reach a query,

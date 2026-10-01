@@ -94,16 +94,62 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
 
       serve(context, twelve, on_twelve, "08:00:00", 1)
 
+      # Without a preference the stops read by name, so Birch St leads.
       assert [first, second] = Alerts.search_stops(context.audit, "St")
 
-      assert first.id == on_twelve.id
-      assert second.id == elsewhere.id
+      assert first.id == elsewhere.id
+      assert second.id == on_twelve.id
 
       assert [first, second] =
                Alerts.search_stops(context.audit, "St", prefer_route_ids: [twelve.id])
 
       assert first.id == on_twelve.id
       assert second.id == elsewhere.id
+    end
+
+    test "lists the preferred route's stops first even when more than 25 stops match",
+         context do
+      route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
+
+      for index <- 1..30 do
+        stop_fixture(
+          context.organization.id,
+          context.version.id,
+          stop_attrs("H#{index}", "Hwy #{String.pad_leading("#{index}", 2, "0")}")
+        )
+      end
+
+      # Alphabetically after all thirty, so it is outside the first 25 matches.
+      on_route =
+        stop_fixture(context.organization.id, context.version.id, stop_attrs("HZ", "Hwy Zulu"))
+
+      serve(context, route, on_route, "08:00:00", 1)
+
+      options = Alerts.search_stops(context.audit, "Hwy", prefer_route_ids: [route.id])
+
+      assert length(options) == 25
+      assert hd(options).id == on_route.id
+    end
+
+    test "still returns twenty-five options when the alert already names some", context do
+      stops =
+        for index <- 1..30 do
+          stop_fixture(
+            context.organization.id,
+            context.version.id,
+            stop_attrs("B#{index}", "Broadway #{String.pad_leading("#{index}", 2, "0")}")
+          )
+        end
+
+      excluded = Enum.take(stops, 3)
+
+      options =
+        Alerts.search_stops(context.audit, "Broadway",
+          exclude_stop_ids: Enum.map(excluded, & &1.id)
+        )
+
+      assert length(options) == 25
+      assert Enum.all?(excluded, fn stop -> stop.id not in Enum.map(options, & &1.id) end)
     end
 
     test "omits the stops the alert already names", context do
@@ -187,7 +233,7 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
         route_fixture(
           context.organization.id,
           context.version.id,
-          route_attrs("r44", "44", long_name: "Harbour Line")
+          route_attrs("r44", "44", route_long_name: "Harbour Line")
         )
 
       assert [option] = Alerts.search_routes(context.audit, "12")
@@ -208,7 +254,7 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
         route_fixture(
           context.organization.id,
           other.gtfs_version_id,
-          route_attrs("r12", "12", long_name: "Elsewhere Express")
+          route_attrs("r12", "12", route_long_name: "Elsewhere Express")
         )
 
       assert Alerts.search_routes(context.audit, "r12") == []
@@ -284,6 +330,44 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
       assert a.label == "Depot"
     end
 
+    test "orders a two-direction route by one trip, not by the smallest sequence across both",
+         context do
+      route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
+
+      stops =
+        for {stop_id, name} <- [
+              {"A", "Alder"},
+              {"B", "Birch"},
+              {"C", "Cedar"},
+              {"D", "Dogwood"},
+              {"E", "Elm"}
+            ],
+            into: %{} do
+          {stop_id,
+           stop_fixture(context.organization.id, context.version.id, stop_attrs(stop_id, name))}
+        end
+
+      # The outbound trips run A to D and the inbound trip runs back over the same
+      # stops, then on to E. Merging both directions by smallest sequence would
+      # give A, D, B, C, E.
+      outbound = directed_trip(context, route, "out", 0)
+      short_turn = directed_trip(context, route, "short", 0)
+      inbound = directed_trip(context, route, "in", 1)
+
+      sequence(context, outbound, [stops["A"], stops["B"], stops["C"], stops["D"]])
+      sequence(context, short_turn, [stops["A"], stops["B"]])
+      sequence(context, inbound, [stops["D"], stops["C"], stops["B"], stops["A"], stops["E"]])
+
+      assert Enum.map(Alerts.route_stops(context.audit, route.id), & &1.stop_id) ==
+               ["A", "B", "C", "D", "E"]
+    end
+
+    test "a route with no trips has no stops", context do
+      route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
+
+      assert Alerts.route_stops(context.audit, route.id) == []
+    end
+
     test "a route of another version has no stops here", context do
       route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
       stop = stop_fixture(context.organization.id, context.version.id, stop_attrs("S1", "Depot"))
@@ -331,9 +415,10 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
       serve(context, twelve, shared, "08:00:00", 1)
       serve(context, five, shared, "08:10:00", 1)
 
+      # Routes order by short name as text, so "12" precedes "5".
       assert [first, second] = Alerts.routes_at_stops(context.audit, [shared.id])
 
-      assert [first.id, second.id] == [five.id, twelve.id]
+      assert [first.id, second.id] == [twelve.id, five.id]
     end
 
     test "a stop of another version finds no routes", context do
@@ -482,6 +567,31 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
       assert Alerts.departures_on(context.audit, their_route.id, 0, @monday) == []
     end
 
+    test "a trip whose calendar cannot be read does not hide the route's other departures",
+         context do
+      route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
+
+      _weekday =
+        calendar_fixture(context.organization.id, context.version.id, %{service_id: "weekday"})
+
+      broken =
+        calendar_fixture(context.organization.id, context.version.id, %{service_id: "broken"})
+
+      # An imported calendar can end before it starts; the changeset refuses that,
+      # so the retained row is written past it.
+      {1, _rows} =
+        Repo.update_all(
+          from(c in GtfsPlanner.Gtfs.Calendar, where: c.id == ^broken.id),
+          set: [start_date: ~D[2026-12-31], end_date: ~D[2026-01-01]]
+        )
+
+      good = serving_trip(context, route, "t_0815", "weekday", 0, "Depot", "08:15:00")
+      _bad = serving_trip(context, route, "t_0900", "broken", 0, "Depot", "09:00:00")
+
+      assert [only] = Alerts.departures_on(context.audit, route.id, 0, @monday)
+      assert only.trip_id == good.id
+    end
+
     test "a trip with no readable first stop time is not offered", context do
       route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
 
@@ -508,21 +618,21 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
         route_fixture(
           context.organization.id,
           context.version.id,
-          route_attrs("r12", "12", type: 3)
+          route_attrs("r12", "12", route_type: 3)
         )
 
       _tram =
         route_fixture(
           context.organization.id,
           context.version.id,
-          route_attrs("t1", "T1", type: 0)
+          route_attrs("t1", "T1", route_type: 0)
         )
 
       _another_bus =
         route_fixture(
           context.organization.id,
           context.version.id,
-          route_attrs("r5", "5", type: 3)
+          route_attrs("r5", "5", route_type: 3)
         )
 
       assert Alerts.route_types(context.audit) == [0, 3]
@@ -533,7 +643,7 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
         route_fixture(
           context.organization.id,
           context.version.id,
-          route_attrs("r12", "12", type: 3)
+          route_attrs("r12", "12", route_type: 3)
         )
 
       other = sibling_version(context)
@@ -542,10 +652,80 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
         route_fixture(
           context.organization.id,
           other.gtfs_version_id,
-          route_attrs("t1", "T1", type: 0)
+          route_attrs("t1", "T1", route_type: 0)
         )
 
       assert Alerts.route_types(context.audit) == [3]
+    end
+  end
+
+  describe "route_directions/2" do
+    test "labels each direction by its first active pattern's headsign", context do
+      route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
+
+      pattern(context, route, 0, "Depot", 2)
+      pattern(context, route, 0, "Lincoln City", 1)
+      pattern(context, route, 0, "Retired", 0, active: false)
+      pattern(context, route, 1, nil, 1)
+
+      assert Alerts.route_directions(context.audit, [route.id]) == [
+               %{direction_id: 0, label: "Lincoln City"},
+               %{direction_id: 1, label: "Direction 1"}
+             ]
+    end
+
+    test "a pattern of another version sharing the route id names no direction here", context do
+      route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
+      pattern(context, route, 1, nil, 1)
+
+      other = sibling_version(context)
+
+      their_route =
+        route_fixture(context.organization.id, other.gtfs_version_id, route_attrs("r12", "12"))
+
+      pattern(
+        %{context | audit: audit_context(context.organization, other.version, context.actor)},
+        their_route,
+        1,
+        "Elsewhere",
+        0
+      )
+
+      assert Alerts.route_directions(context.audit, [route.id]) == [
+               %{direction_id: 1, label: "Direction 1"}
+             ]
+    end
+  end
+
+  describe "stops_by_id/2 and routes_by_id/2" do
+    test "an editor reads the version's rows and none of a sibling version's", context do
+      route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
+
+      stop =
+        stop_fixture(context.organization.id, context.version.id, stop_attrs("S1", "Central"))
+
+      other = sibling_version(context)
+
+      their_stop =
+        stop_fixture(context.organization.id, other.gtfs_version_id, stop_attrs("S1", "Central"))
+
+      assert %{} = stops = Alerts.stops_by_id(context.audit, [stop.id, their_stop.id])
+      assert Map.keys(stops) == [stop.id]
+      assert Map.keys(Alerts.routes_by_id(context.audit, [route.id])) == [route.id]
+    end
+
+    test "a member without the editor role reads empty maps, not lists", context do
+      route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
+
+      stop =
+        stop_fixture(context.organization.id, context.version.id, stop_attrs("S1", "Central"))
+
+      viewer = user_fixture()
+      organization_membership_fixture(viewer, context.organization, [])
+      audit = audit_context(context.organization, context.version, viewer)
+
+      assert Alerts.stops_by_id(audit, [stop.id]) == %{}
+      assert Alerts.routes_by_id(audit, [route.id]) == %{}
     end
   end
 
@@ -647,6 +827,46 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
     %{trip_id: trip_id, service_id: service_id, trip_headsign: "Depot"}
   end
 
+  defp pattern(context, route, direction_id, headsign, sort_order, overrides \\ []) do
+    route_pattern_fixture(
+      context.organization.id,
+      context.audit.gtfs_version_id,
+      Map.merge(
+        %{
+          route_id: route.route_id,
+          direction_id: direction_id,
+          headsign: headsign,
+          route_pattern_sort_order: sort_order
+        },
+        Map.new(overrides)
+      )
+    )
+  end
+
+  defp directed_trip(context, route, trip_id, direction_id) do
+    trip_fixture(
+      context.organization.id,
+      context.version.id,
+      route.route_id,
+      Map.put(trip_attrs(trip_id, "weekday"), :direction_id, direction_id)
+    )
+  end
+
+  # The stops in the order the trip serves them, one stop time each.
+  defp sequence(context, trip, stops) do
+    stops
+    |> Enum.with_index(1)
+    |> Enum.each(fn {stop, position} ->
+      stop_time_fixture(
+        context.organization.id,
+        context.version.id,
+        trip.trip_id,
+        stop.stop_id,
+        %{stop_sequence: position}
+      )
+    end)
+  end
+
   # A route with one stop at one time, which is all the "serving" lookups need.
   defp serve(context, route, stop, departure_time, stop_sequence) do
     trip =
@@ -702,7 +922,7 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
   # through the same commands the editor uses.
   defp cancellation(context, route_id, stop_id, trip_id) do
     alert =
-      alert_fixture(%{
+      alert_fixture(context.audit, %{
         "urgency" => "now",
         "situation" => "stop_closed",
         "cause" => "construction",
