@@ -224,11 +224,13 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
   end
 
   @doc """
-  Renews the active lease on a pending or running run using database time.
+  Renews the active lease on a pending, running or cleaning run using database
+  time.
 
   The stored lease token must match; a stale owner (wrong token, already
   terminated run, or cross-organization request) receives `{:error, :lease_lost}`
-  and writes nothing (AC-8).
+  and writes nothing (AC-8). A cleanup runner renews the `cleaning` lease the same
+  way an import runner renews `running` (AC-33).
   """
   @spec renew_lease(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
           :ok | {:error, :lease_lost}
@@ -239,7 +241,7 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
           {:error, :lease_lost}
 
         run ->
-          case guard_lease(run, ~w(pending running), lease_token) do
+          case guard_lease(run, ~w(pending running cleaning), lease_token) do
             :ok ->
               lease_current? =
                 from(r in Run,
@@ -264,6 +266,53 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
           end
       end
     end)
+  end
+
+  # --- owner fence ----------------------------------------------------------
+
+  @doc """
+  Fences a run-owned write: inside the caller's transaction, locks the run row
+  `FOR SHARE` and returns it only when the run is in one of `expected_states`,
+  holds `lease_token`, and its lease has not expired in database time.
+
+  Otherwise it rolls the caller's transaction back with `:lease_lost`, so a
+  superseded owner commits nothing. Call it as the first statement of each
+  write transaction (INV-4). Outside `Repo.transaction/1` it raises
+  `ArgumentError`, because the share lock would end with the statement.
+
+  Inside a transaction the lock lasts until it ends, so a handover that needs
+  the row `FOR UPDATE` (`reconcile_expired/1`, a terminal closure) waits for a
+  batch that already passed the check, and every later batch fails it. The check
+  never takes a membership lock; cleanup and batch writes are system-owned.
+
+  The predicate is part of the locking read, so a row another transaction
+  changed while this one waited is re-evaluated against its committed state.
+  Expiry is judged at `CURRENT_TIMESTAMP`, the transaction's start, as in
+  `renew_lease/3` and `reconcile_expired/1`; that is why the check comes first.
+  """
+  @spec assert_owner!(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t() | nil, [String.t()]) ::
+          Run.t()
+  def assert_owner!(organization_id, run_id, lease_token, expected_states) do
+    if not Repo.in_transaction?() do
+      raise ArgumentError,
+            "assert_owner!/4 holds a row lock and must run inside Repo.transaction/1"
+    end
+
+    owner_run(organization_id, run_id, lease_token, expected_states) ||
+      Repo.rollback(:lease_lost)
+  end
+
+  defp owner_run(_organization_id, _run_id, nil, _expected_states), do: nil
+
+  defp owner_run(organization_id, run_id, lease_token, expected_states) do
+    from(r in Run,
+      where:
+        r.id == ^run_id and r.organization_id == ^organization_id and
+          r.state in ^expected_states and r.lease_token == ^lease_token and
+          r.lease_expires_at >= fragment("CURRENT_TIMESTAMP"),
+      lock: "FOR SHARE"
+    )
+    |> Repo.one()
   end
 
   # --- terminal: fail / publish --------------------------------------------

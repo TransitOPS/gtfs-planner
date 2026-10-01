@@ -166,17 +166,55 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
     assert DateTime.compare(after_, previous_expiry) == :gt
 
     # Expire the lease in the database, then send another renewal tick. The runner
-    # must terminate the linked worker and stop.
+    # must terminate the linked worker, tell subscribers the run changed, and stop.
     set_run_lease_expiry(run, ~U[2000-01-01 00:00:00.000000Z])
+    Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ImportRuns.topic(run.id))
 
     ref = Process.monitor(runner_pid)
     send(runner_pid, :renew_lease)
     assert_receive {:DOWN, ^ref, :process, ^runner_pid, :lease_lost}
+    run_id = run.id
+    assert_received {:import_run_changed, ^run_id}
 
     # The linked worker was killed.
     assert_receive {:DOWN, ^worker_ref, :process, ^worker_pid, _reason}
     # The runner did not write a second closure (still running, lease cleared by reconcile only).
     assert Repo.get!(Run, run.id).state == "running"
+  end
+
+  # --- AC-33: cleanup lease renewal ------------------------------------------
+
+  test "a cleanup runner renews its lease on every heartbeat and the run stays cleaning" do
+    org = organization_fixture()
+    actor = editor_actor(org)
+
+    {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, actor, %{name: "Feed"})
+
+    set_run_lease_expiry(run, ~U[2000-01-01 00:00:00.000000Z])
+    [_reconciled] = ImportRuns.reconcile_expired(org.id)
+
+    # The suite's setup restores the heartbeat after the test.
+    Application.put_env(:gtfs_planner, :import_runner_heartbeat_ms, 50)
+
+    {:ok, runner_pid} = Runner.start_cleanup(org.id, run.id, actor)
+    allow_repo(runner_pid)
+
+    runner_ref = Process.monitor(runner_pid)
+    worker_pid = :sys.get_state(runner_pid).task_pid
+
+    # Trace the runner's receives so the test counts heartbeats instead of sleeping.
+    1 = :erlang.trace(runner_pid, true, [:receive])
+    assert_receive {:trace, ^runner_pid, :receive, :renew_lease}, 5_000
+    assert_receive {:trace, ^runner_pid, :receive, :renew_lease}, 5_000
+
+    # The state call queues behind the second heartbeat, so the runner handled it.
+    state = :sys.get_state(runner_pid)
+    refute_received {:DOWN, ^runner_ref, :process, ^runner_pid, _reason}
+    assert state.kind == :cleanup
+    assert Repo.get!(Run, run.id).state == "cleaning"
+
+    send(worker_pid, :complete)
+    assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, :normal}
   end
 
   # --- AC-7/AC-11: abnormal worker exit closure + temporary non-restart ------

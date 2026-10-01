@@ -10,7 +10,7 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
     * traps exits so an abnormal worker death arrives as a message, not a crash;
     * starts the injected worker as a linked task under `GtfsPlanner.TaskSupervisor`;
     * renews the database lease on a configurable timer;
-    * terminates the linked worker when the lease is lost;
+    * terminates the linked worker and broadcasts the change when the lease is lost;
     * persists an unexpected closure as `interrupted`/`cleanup_failed` and
       broadcasts `{:import_run_changed, run_id}` only after the durable write.
 
@@ -139,8 +139,12 @@ defmodule GtfsPlanner.Gtfs.Import.Runner do
 
       {:error, :lease_lost} ->
         # Lease lost: terminate the linked worker and stop. The worker's
-        # subsequent exit is trapped and handled (or it is already gone).
+        # subsequent exit is trapped and handled (or it is already gone). The run
+        # was changed by another writer, so subscribers reload it; when the writer
+        # is this runner's own worker closing the run just before this tick, no
+        # other process would announce the closure.
         terminate_worker(state)
+        broadcast_changed(state)
         {:stop, :lease_lost, state}
     end
   end
