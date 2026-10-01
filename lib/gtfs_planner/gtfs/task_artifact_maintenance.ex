@@ -2,8 +2,9 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenance do
   @moduledoc """
   Periodically reconciles durable task leases and their private filesystem artifacts.
 
-  Database rows remain the authority: active/retained run IDs are read first, then
-  storage reconciliation removes only directories that no durable retained row owns.
+  Database rows remain the authority: active/retained run IDs are read inside the
+  artifact root lock, then storage reconciliation removes only directories that no
+  durable retained row owns and that are older than the orphan grace period.
   """
 
   use GenServer
@@ -57,8 +58,19 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenance do
 
     safely(fn -> reconcile_change_artifacts(opts) end)
 
-    safely(fn -> ArtifactStorage.reconcile(retained_export_run_ids()) end)
+    safely(fn -> reconcile_export_artifacts(opts) end)
     :ok
+  end
+
+  defp reconcile_export_artifacts(opts) do
+    ArtifactStorage.reconcile(
+      fn ->
+        run_ids = retained_export_run_ids()
+        after_export_snapshot(opts)
+        run_ids
+      end,
+      orphan_grace_seconds: orphan_grace_seconds()
+    )
   end
 
   defp reconcile_change_artifacts(opts) do
@@ -79,6 +91,13 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenance do
 
   defp after_change_snapshot(opts) do
     case Keyword.get(opts, :after_change_snapshot) do
+      hook when is_function(hook, 0) -> hook.()
+      nil -> :ok
+    end
+  end
+
+  defp after_export_snapshot(opts) do
+    case Keyword.get(opts, :after_export_snapshot) do
       hook when is_function(hook, 0) -> hook.()
       nil -> :ok
     end
