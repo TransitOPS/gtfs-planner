@@ -328,7 +328,8 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
         {:error, changeset_message(changeset)}
 
       true ->
-        {:prepared, summary(alert, changeset), %{"status" => "prepared"}}
+        {:prepared, %{summary: summary(alert, changeset), command: {:alert_changes, args}},
+         %{"status" => "prepared"}}
     end
   end
 
