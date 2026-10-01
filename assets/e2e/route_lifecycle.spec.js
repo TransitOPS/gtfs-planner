@@ -2028,7 +2028,9 @@ test.describe("Complete route lifecycle journey", () => {
     await expect(page.locator("#flash-info")).toContainText(
       "Pattern created with its first timing",
     );
-    await page.waitForURL(/\/patterns\/[^/?]+\?task=timings$/);
+    // The create navigates with a `link` marker that names the new pattern, so
+    // the editor can offer to link left-out trips to it.
+    await page.waitForURL(/\/patterns\/[^/?]+\?task=timings&link=[^&]+$/);
     const patternId = new URL(page.url()).pathname.split("/").pop();
     await expect(page.locator("#timing-row-1")).toBeVisible();
 
