@@ -186,6 +186,35 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternGroupingLiveTest do
       assert chooser =~ "Joins pattern_full"
       assert chooser =~ "Joins pattern_twin"
     end
+
+    test "an untouched chooser joins the pattern its headline names", %{
+      conn: conn,
+      organization: organization,
+      version: version
+    } do
+      build_scenario(organization, version, "GRP9", two_candidates: true)
+
+      {:ok, view, _html} = live(conn, review_path(version, "GRP9"))
+
+      full = group_key(organization, version, "GRP9", stops_count(@stop_count))
+      short = group_key(organization, version, "GRP9", stops_count(@short_stop_count))
+
+      assert has_element?(view, "##{target_id(full)} option[selected]", "Joins pattern_full")
+
+      render_change(view |> element("#grouping-form"), %{"grouping" => selections(full, short)})
+      render_submit(view |> element("#grouping-form"))
+
+      linked =
+        Repo.all(
+          from(t in Trip,
+            where: t.organization_id == ^organization.id and like(t.trip_id, "supplement_full_%"),
+            select: t.route_pattern_id,
+            distinct: true
+          )
+        )
+
+      assert linked == ["pattern_full"]
+    end
   end
 
   describe "applying the review" do

@@ -2636,10 +2636,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   # only for a card with more than one candidate. Without one the apply takes the
   # rule-5 candidate head, and creates a new pattern when there is no candidate --
   # which is the same outcome as an explicit `:new`, so nothing is guessed here.
+  # The chooser lists the preview direction's candidates, so a choice made before
+  # the operator switched direction is dropped rather than sent with the wrong one.
   defp grouping_selection(group, direction, selections) do
     base = %{key: group.key, direction_id: String.to_integer(direction)}
 
     case Map.get(Map.get(selections, group.key, %{}), "target") do
+      _chosen when base.direction_id != group.direction_id -> base
       "new" -> Map.put(base, :target, :new)
       target when is_binary(target) -> Map.put(base, :target, target)
       _default -> base

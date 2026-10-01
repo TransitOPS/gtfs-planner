@@ -227,6 +227,22 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.GroupingApplyTest do
     end)
   end
 
+  test "a target in the other direction than the confirmed one is refused and writes nothing" do
+    unboxed(fn ->
+      scope = build_scenario()
+      review = open_review(scope, "1")
+      group = group_of(review, 18)
+      before = snapshot(scope.organization_id)
+
+      assert {:error, :invalid_selection} =
+               apply_review(scope, "1", review.fingerprint, [
+                 %{key: group.key, direction_id: 1, target: scope.pattern.id}
+               ])
+
+      assert snapshot(scope.organization_id) == before
+    end)
+  end
+
   test "an unknown group key is refused and writes nothing" do
     unboxed(fn ->
       scope = build_scenario()

@@ -177,13 +177,21 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternGroupingComponents do
   # arrives as `%{"grouping" => %{group_key => %{"direction_id" => ...}}}` and one
   # map holds every group's answer.
   defp group_card(assigns) do
-    field = group_form(assigns.group.key, assigns.selection)
+    %{group: group, selection: selection} = assigns
+    chosen = chosen_direction(group, selection)
+    target = chosen_target(group, chosen, selection)
+
+    # The chooser's value comes from the form, so the target the headline names
+    # is written into it; otherwise the browser would show and send "new".
+    field =
+      group_form(group.key, if(target, do: Map.put(selection, "target", target), else: selection))
 
     assigns =
       assigns
-      |> assign(:key, assigns.group.key)
+      |> assign(:key, group.key)
       |> assign(:field, field)
-      |> assign(:chosen, chosen_direction(assigns.group, assigns.selection))
+      |> assign(:chosen, chosen)
+      |> assign(:target, target)
 
     ~H"""
     <article
@@ -244,14 +252,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternGroupingComponents do
         </fieldset>
 
         <div class="rounded-card bg-canvas px-4 py-3">
-          <p class="text-sm text-strong">{target_headline(@group, @chosen)}</p>
+          <p class="text-sm text-strong">{target_headline(@group, @chosen, @target)}</p>
           <dl class="mt-1.5 divide-y divide-subtle">
             <.detail term="Stops">
               {length(@group.stop_names)}, {stop_range(@group.stop_names)} in the same order.
             </.detail>
             <.detail term="Running times">{timing_label(@group)}</.detail>
             <.detail term="Map line">{map_line_label(@group)}</.detail>
-            <.detail :if={length(@group.candidates) > 1} term="Joins">
+            <.detail
+              :if={length(@group.candidates) > 1 and @chosen == @group.direction_id}
+              term="Joins"
+            >
               <.input
                 field={@field[:target]}
                 id={target_id(@key)}
@@ -478,16 +489,37 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternGroupingComponents do
       Enum.map(candidates, &{"Joins #{&1.route_pattern_id}", &1.id})
   end
 
-  # With no direction chosen there is nothing to name yet, and the candidates the
-  # preview returned belong to the direction it suggested, not to an answer.
-  defp target_headline(_group, nil),
+  # The candidates belong to the preview's direction. With the chooser untouched
+  # the apply joins the rule-5 head, so that is what the chooser shows and what
+  # the headline names; a choice no longer on offer falls back the same way.
+  defp chosen_target(
+         %{candidates: [head | _rest] = candidates, direction_id: direction},
+         direction,
+         selection
+       ) do
+    chosen = Map.get(selection, "target")
+
+    if chosen == "new" or Enum.any?(candidates, &(&1.id == chosen)), do: chosen, else: head.id
+  end
+
+  defp chosen_target(_group, _direction, _selection), do: nil
+
+  # With no direction chosen there is nothing to name yet. A direction other than
+  # the preview's has no candidates listed here, so the apply decides between the
+  # same-stop pattern of that direction and a new one.
+  defp target_headline(_group, nil, _target),
     do: "Once you choose a direction, this shows the pattern it joins or the one it creates."
 
-  defp target_headline(%{candidates: []}, direction),
-    do: "Creates a new pattern in Direction #{direction}."
+  defp target_headline(%{direction_id: preview}, direction, _target) when direction != preview,
+    do:
+      "Joins the Direction #{direction} pattern with these stops, or creates one if there is none."
 
-  defp target_headline(%{candidates: [candidate | _rest]}, _direction),
-    do: "Joins #{candidate.route_pattern_id}, as a new timing. No new pattern."
+  defp target_headline(%{candidates: candidates}, direction, target) do
+    case Enum.find(candidates, &(&1.id == target)) do
+      nil -> "Creates a new pattern in Direction #{direction}."
+      candidate -> "Joins #{candidate.route_pattern_id}, as a new timing. No new pattern."
+    end
+  end
 
   defp timing_label(%{timing_names: []}), do: "Named after their service"
 
