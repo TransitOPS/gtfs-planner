@@ -208,7 +208,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionsGroupLiveTest do
 
     block_pair(context, %{stop: stop, block_id: "303", suffix: "o", first: 21_600})
 
-    Map.put(context, :stops, context.stops ++ [stop])
+    Map.put(context, :stops, Map.get(context, :stops, []) ++ [stop])
   end
 
   # A group whose pair hands over at a stop other than the one it arrives at, so
@@ -228,7 +228,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionsGroupLiveTest do
       first: 21_600
     })
 
-    Map.put(context, :stops, context.stops ++ [arrives, departs])
+    Map.put(context, :stops, Map.get(context, :stops, []) ++ [arrives, departs])
   end
 
   # The word `Blocking.Checks` uses for a handoff kind, so the case asserts the
@@ -303,7 +303,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionsGroupLiveTest do
       # line to name.
       assert has_element?(view, "#connections-group-facts", "Same stop")
       assert has_element?(view, "#connections-group-facts", "On board")
-      assert has_element?(view, "#connections-group-facts", "min, arrivals 06:00:00–08:00:00")
+      assert has_element?(view, "#connections-group-facts", "min, arrivals 07:00–08:00")
       refute has_element?(view, "#connections-group-facts", "Handoff")
     end
 
@@ -363,13 +363,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionsGroupLiveTest do
 
       assert has_element?(
                view,
-               "#connections-connection-#{row_token(first)}",
-               "06:00:00"
+               "#connections-connection-row-#{row_token(first)}",
+               "07:00"
              )
 
       assert has_element?(
                view,
-               "#connections-connection-#{row_token(first)}",
+               "#connections-connection-row-#{row_token(first)}",
                "101-s-a→101-s-b"
              )
 
@@ -568,19 +568,23 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionsGroupLiveTest do
       {:ok, view, _html} = open_group(context, group)
 
       assert has_element?(view, "#connections-group-back", "All places")
-      refute has_element?(view, "#connections-group-table")
+
+      # The group replaces the list rather than sitting beside it, and the table
+      # it brings is the group's own.
+      refute has_element?(view, "#connections-group-#{group.token}")
+      assert has_element?(view, "#connections-group-table")
+
+      # The back control is one command and one focus: the row the reader came
+      # from is the element that takes the keyboard, not the top of the panel.
+      [back_command] = attribute(view, "#connections-group-back", "phx-click")
+      assert back_command =~ "close_group"
+      assert back_command =~ "#connections-group-#{group.token}"
 
       render_click(view, "close_group", %{})
 
       assert_patch(view, connections_url(context.version.id, view: "connections"))
       assert has_element?(view, "#connections-group-#{group.token}")
       refute has_element?(view, "#connections-group-heading")
-
-      # The back control is one command and one focus: the row the reader came
-      # from is the element that takes the keyboard, not the top of the panel.
-      back_command = attribute(view, "#connections-group-back", "phx-click")
-      assert back_command =~ "close_group"
-      assert back_command =~ "#connections-group-#{group.token}"
     end
 
     test "a group the filters dropped is not a group panel, it is the list", context do
@@ -613,7 +617,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionsGroupLiveTest do
     |> render()
     |> LazyHTML.from_fragment()
     |> LazyHTML.query("#connections-group-table tbody tr")
-    |> length()
+    |> Enum.count()
   end
 
   defp current_row?(view, token) do
@@ -627,7 +631,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionsGroupLiveTest do
     view
     |> render()
     |> LazyHTML.from_fragment()
-    |> LazyHTML.filter(selector)
+    |> LazyHTML.query(selector)
     |> Enum.flat_map(&LazyHTML.attribute(&1, name))
   end
 
@@ -642,6 +646,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionsGroupLiveTest do
     |> render()
     |> LazyHTML.from_fragment()
     |> LazyHTML.query("#connections-bulk-form input[name='bulk']")
-    |> length()
+    |> Enum.count()
   end
 end
