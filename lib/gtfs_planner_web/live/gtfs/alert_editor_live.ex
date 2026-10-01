@@ -1865,6 +1865,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     :stops,
     :shared,
     :alternative,
+    :departures,
     :message
   ]
 
