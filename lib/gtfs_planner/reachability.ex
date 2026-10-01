@@ -203,6 +203,41 @@ defmodule GtfsPlanner.Reachability do
     end)
   end
 
+  # The scoped read of one recorded run. A run id alone is never enough: the
+  # organization, the service version, the station the page shows and the
+  # reachability kind must all be the caller's own, so a foreign, deleted or
+  # malformed target is the one `{:error, :unavailable}` and discloses no
+  # metadata about another organization's run.
+  @spec get_station_run(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), Ecto.UUID.t()) ::
+          {:ok, ValidationRun.t()} | {:error, :unavailable}
+  def get_station_run(organization_id, gtfs_version_id, station_stop_id, run_id)
+      when is_binary(station_stop_id) do
+    with {:ok, _organization_id} <- Ecto.UUID.cast(organization_id),
+         {:ok, _gtfs_version_id} <- Ecto.UUID.cast(gtfs_version_id),
+         {:ok, _run_id} <- Ecto.UUID.cast(run_id),
+         true <- station_stop_id != "" do
+      ValidationRun
+      |> where(
+        [r],
+        r.organization_id == ^organization_id and
+          r.gtfs_version_id == ^gtfs_version_id and
+          r.run_type == "station_reachability" and
+          r.id == ^run_id and
+          fragment("result_json -> 'metadata' ->> 'station_stop_id' = ?", ^station_stop_id)
+      )
+      |> Repo.one()
+      |> case do
+        %ValidationRun{} = run -> {:ok, run}
+        nil -> {:error, :unavailable}
+      end
+    else
+      _other -> {:error, :unavailable}
+    end
+  end
+
+  def get_station_run(_organization_id, _gtfs_version_id, _station_stop_id, _run_id),
+    do: {:error, :unavailable}
+
   @spec topology_summary(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
           {:ok, map()} | {:error, :station_not_found}
   def topology_summary(organization_id, gtfs_version_id, station_stop_id) do
