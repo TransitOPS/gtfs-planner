@@ -209,3 +209,22 @@ describe("joinPieces", () => {
     expect(joinPieces([only])).toEqual(only);
   });
 });
+
+describe("fitSummary with a stop that has no coordinates", () => {
+  it("reports the stop as far with no distance instead of throwing", () => {
+    const points = alongLine(400);
+    const visits = [
+      visit(0, 0),
+      { position: 1, stop_id: "S1", lon: null, lat: null },
+      visit(2, 400),
+    ];
+
+    const fit = fitSummary({ visits, points });
+
+    expect(fit.far).toEqual([{ position: 1, stopId: "S1", distanceM: null }]);
+    expect(fit.within).toBe(2);
+    expect(fit.direction).toBe("same");
+    expect(fit.reachesStart).toBe(true);
+    expect(fit.reachesEnd).toBe(true);
+  });
+});
