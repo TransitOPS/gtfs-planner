@@ -8,7 +8,7 @@ defmodule GtfsPlanner.Operations.OperatorsTest do
   import GtfsPlanner.OrganizationsFixtures
 
   defp create_operator(organization_id, attrs) do
-    actor = operations_actor()
+    actor = operations_actor(organization_id)
     {:ok, operator} = Operations.create_operator(organization_id, actor, attrs)
     operator
   end
@@ -117,7 +117,7 @@ defmodule GtfsPlanner.Operations.OperatorsTest do
     test "persists only the caller's organization and records the acting user" do
       organization = organization_fixture()
       other = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
 
       submitted =
         attrs("E4101", "Aurelia Nowak", 10)
@@ -145,7 +145,7 @@ defmodule GtfsPlanner.Operations.OperatorsTest do
       assert {:ok, operator} =
                Operations.create_operator(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  %{"employee_id" => "E4101", "display_name" => "Aurelia Nowak"}
                )
 
@@ -159,7 +159,7 @@ defmodule GtfsPlanner.Operations.OperatorsTest do
       assert {:error, changeset} =
                Operations.create_operator(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  attrs("E4101", "Arjun Menon")
                )
 
@@ -174,7 +174,7 @@ defmodule GtfsPlanner.Operations.OperatorsTest do
       assert {:error, changeset} =
                Operations.create_operator(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  attrs("  E4101  ", "Arjun Menon")
                )
 
@@ -190,7 +190,7 @@ defmodule GtfsPlanner.Operations.OperatorsTest do
       assert {:ok, operator} =
                Operations.create_operator(
                  other.id,
-                 operations_actor(),
+                 operations_actor(other.id),
                  attrs("E4101", "Arjun Menon")
                )
 
@@ -201,7 +201,7 @@ defmodule GtfsPlanner.Operations.OperatorsTest do
       organization = organization_fixture()
 
       assert {:error, changeset} =
-               Operations.create_operator(organization.id, operations_actor(), %{
+               Operations.create_operator(organization.id, operations_actor(organization.id), %{
                  "employee_id" => " E4101 ",
                  "display_name" => "Aurelia Nowak",
                  "seniority_number" => 100_000
@@ -217,7 +217,7 @@ defmodule GtfsPlanner.Operations.OperatorsTest do
     test "updates the organization's operator and records the acting user" do
       organization = organization_fixture()
       operator = create_operator(organization.id, attrs("E4101", "Aurelia Nowak", 10))
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
 
       assert {:ok, updated} =
                Operations.update_operator(
@@ -243,7 +243,7 @@ defmodule GtfsPlanner.Operations.OperatorsTest do
       assert {:ok, updated} =
                Operations.update_operator(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  operator.id,
                  %{"employee_id" => "E4101", "display_name" => "Aurelia N."}
                )
@@ -260,7 +260,7 @@ defmodule GtfsPlanner.Operations.OperatorsTest do
       assert {:error, changeset} =
                Operations.update_operator(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  operator.id,
                  %{"employee_id" => "E4101"}
                )
@@ -278,9 +278,14 @@ defmodule GtfsPlanner.Operations.OperatorsTest do
       foreign = create_operator(other.id, attrs("E4101", "Foreign Operator"))
 
       for id <- [foreign.id, Ecto.UUID.generate(), "not-a-uuid"] do
-        assert Operations.update_operator(organization.id, operations_actor(), id, %{
-                 "display_name" => "Hijacked"
-               }) == {:error, :not_found}
+        assert Operations.update_operator(
+                 organization.id,
+                 operations_actor(organization.id),
+                 id,
+                 %{
+                   "display_name" => "Hijacked"
+                 }
+               ) == {:error, :not_found}
       end
 
       assert Repo.get(Operator, foreign.id).display_name == "Foreign Operator"
@@ -299,7 +304,7 @@ defmodule GtfsPlanner.Operations.OperatorsTest do
       assert {:ok, _updated} =
                Operations.update_operator(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  operator.id,
                  %{"seniority_number" => 1}
                )

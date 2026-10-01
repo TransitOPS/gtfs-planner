@@ -307,8 +307,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersExportLiveTest do
       {:ok, day} = Blocking.load_day(world.organization.id, world.version.id, nil)
       saturday = Enum.find(day.day_types, &("SAT" in &1.service_ids))
 
-      assert {:ok, _} =
-               Gtfs.rename_run(world.organization.id, world.version.id, saturday.key, "6001", "9")
+      assert {:ok, _} = Gtfs.rename_run(world.audit, saturday.key, "6001", "9")
 
       {:ok, view, _html} = live(conn, path(world))
 

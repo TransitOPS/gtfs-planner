@@ -180,7 +180,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.CreateLineFromRunTest do
 
     test "a run whose own consecutive days would leave short rest is refused", %{world: world} do
       {:ok, _crew} =
-        Gtfs.update_crew_settings(world.organization.id, world.version.id, @long_spread_crew)
+        Gtfs.update_crew_settings(world.audit, @long_spread_crew)
 
       run = derived_run(world, world.day_type_key, @run_3003_id).work
 

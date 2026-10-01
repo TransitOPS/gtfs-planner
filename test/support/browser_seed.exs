@@ -7581,7 +7581,7 @@ case Accounts.register_first_admin(%{
     end
 
     {:ok, _rosters_blocking} =
-      GtfsPlanner.Gtfs.Blocking.update_settings(org.id, rosters_version.id, %{
+      GtfsPlanner.Gtfs.Blocking.update_settings(seed_audit.(rosters_version), %{
         min_layover_minutes: 5,
         max_block_minutes: nil,
         pull_out_buffer_minutes: 0,
@@ -7597,7 +7597,7 @@ case Accounts.register_first_admin(%{
     })
 
     {:ok, _rosters_crew} =
-      GtfsPlanner.Gtfs.update_crew_settings(org.id, rosters_version.id, %{
+      GtfsPlanner.Gtfs.update_crew_settings(seed_audit.(rosters_version), %{
         report_pull_out_minutes: 15,
         report_relief_minutes: 5,
         sign_off_minutes: 5,

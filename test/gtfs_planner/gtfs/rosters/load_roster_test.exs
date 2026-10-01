@@ -129,13 +129,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.LoadRosterTest do
       slot_line(world, run, @monday)
 
       assert {:ok, %{undo: [_ | _]}} =
-               Runs.rename_run(
-                 world.organization.id,
-                 world.version.id,
-                 world.day_type_key,
-                 "2001",
-                 "2999"
-               )
+               Runs.rename_run(world.audit, world.day_type_key, "2001", "2999")
 
       assert {:ok, %{roster: roster}} = Gtfs.load_roster(world.organization.id, world.version.id)
 

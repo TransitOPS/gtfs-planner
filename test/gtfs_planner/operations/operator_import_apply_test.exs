@@ -38,7 +38,9 @@ defmodule GtfsPlanner.Operations.OperatorImportApplyTest do
   end
 
   defp create_operator(organization_id, attrs) do
-    {:ok, operator} = Operations.create_operator(organization_id, operations_actor(), attrs)
+    {:ok, operator} =
+      Operations.create_operator(organization_id, operations_actor(organization_id), attrs)
+
     operator
   end
 
@@ -111,7 +113,7 @@ defmodule GtfsPlanner.Operations.OperatorImportApplyTest do
       assert {:ok, %{added: 1, updated: 1}} =
                Operations.apply_operator_import(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  parsed,
                  preview
                )
@@ -133,7 +135,7 @@ defmodule GtfsPlanner.Operations.OperatorImportApplyTest do
       assert {:ok, %{added: 1, updated: 1}} =
                Operations.apply_operator_import(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  parsed,
                  preview
                )
@@ -160,7 +162,7 @@ defmodule GtfsPlanner.Operations.OperatorImportApplyTest do
       assert {:ok, %{added: 0, updated: 1}} =
                Operations.apply_operator_import(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  parsed,
                  preview
                )
@@ -179,7 +181,7 @@ defmodule GtfsPlanner.Operations.OperatorImportApplyTest do
       assert {:ok, %{added: 0, updated: 1}} =
                Operations.apply_operator_import(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  parsed,
                  preview
                )
@@ -204,7 +206,7 @@ defmodule GtfsPlanner.Operations.OperatorImportApplyTest do
       assert {:error, {:preview_changed, fresh}} =
                Operations.apply_operator_import(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  parsed,
                  preview
                )
@@ -226,7 +228,7 @@ defmodule GtfsPlanner.Operations.OperatorImportApplyTest do
     test "records the acting user and leaves another organization's operators untouched" do
       organization = organization_fixture()
       other = organization_fixture()
-      actor = operations_actor()
+      actor = operations_actor(organization.id)
 
       create_operator(organization.id, attrs("E4101", "Old Name", 3))
       foreign = create_operator(other.id, attrs("E4101", "Foreign Operator", 1))
@@ -268,7 +270,7 @@ defmodule GtfsPlanner.Operations.OperatorImportApplyTest do
       assert {:ok, %{added: 0, updated: 1}} =
                Operations.apply_operator_import(
                  organization.id,
-                 operations_actor(),
+                 operations_actor(organization.id),
                  parsed,
                  preview
                )

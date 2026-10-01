@@ -277,11 +277,13 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSettingsTest do
 
   describe "column ownership" do
     test "a crew save after a roster save leaves every roster value unchanged", context do
-      %{organization: organization, version: version, day_type_key: day_type_key} = context
+      %{organization: organization, version: version, day_type_key: day_type_key, audit: audit} =
+        context
+
       roster = Map.put(@valid, :roster_day_types, %{"1" => day_type_key})
 
       assert {:ok, _} = Gtfs.update_roster_settings(organization.id, version.id, roster)
-      assert {:ok, _} = Gtfs.update_crew_settings(organization.id, version.id, @crew_rules)
+      assert {:ok, _} = Gtfs.update_crew_settings(audit, @crew_rules)
 
       # The mutation that must not occur: the crew upsert replaced only its own
       # five columns, so the roster rules are exactly as the roster save left them.
@@ -296,12 +298,12 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSettingsTest do
     end
 
     test "a roster save after the crew and Block rules saves keeps both", context do
-      %{organization: organization, version: version, day_type_key: day_type_key} = context
+      %{organization: organization, version: version, day_type_key: day_type_key, audit: audit} =
+        context
 
-      assert {:ok, _} = Gtfs.update_crew_settings(organization.id, version.id, @crew_rules)
+      assert {:ok, _} = Gtfs.update_crew_settings(audit, @crew_rules)
 
-      assert {:ok, %BlockingSetting{}} =
-               Gtfs.update_blocking_settings(organization.id, version.id, @block_rules)
+      assert {:ok, %BlockingSetting{}} = Gtfs.update_blocking_settings(audit, @block_rules)
 
       roster = Map.put(@valid, :roster_day_types, %{"1" => day_type_key})
       assert {:ok, _} = Gtfs.update_roster_settings(organization.id, version.id, roster)

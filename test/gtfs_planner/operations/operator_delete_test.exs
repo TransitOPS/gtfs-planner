@@ -108,11 +108,15 @@ defmodule GtfsPlanner.Operations.OperatorDeleteTest do
          seniority \\ 10
        ) do
     {:ok, operator} =
-      Operations.create_operator(world.organization.id, operations_actor(), %{
-        "employee_id" => employee_id,
-        "display_name" => display_name,
-        "seniority_number" => seniority
-      })
+      Operations.create_operator(
+        world.organization.id,
+        operations_actor(world.organization.id),
+        %{
+          "employee_id" => employee_id,
+          "display_name" => display_name,
+          "seniority_number" => seniority
+        }
+      )
 
     operator
   end

@@ -227,14 +227,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRostersTest do
 
       line(world, @friday, stale_run, operator(world, "E4109", "Wren Abara", 3))
 
-      assert {:ok, _} =
-               Gtfs.rename_run(
-                 world.organization.id,
-                 world.version.id,
-                 world.day_type_key,
-                 stale_run,
-                 "9"
-               )
+      assert {:ok, _} = Gtfs.rename_run(world.audit, world.day_type_key, stale_run, "9")
 
       warnings = warnings(world)
 
@@ -379,7 +372,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRostersTest do
       {:ok, plan} =
         Gtfs.suggest_runs(world.organization.id, world.version.id, day_type.key, :replace_all)
 
-      assert {:ok, _} = Gtfs.apply_run_plan(world.organization.id, world.version.id, plan)
+      assert {:ok, _} = Gtfs.apply_run_plan(world.audit, plan)
     end
 
     world

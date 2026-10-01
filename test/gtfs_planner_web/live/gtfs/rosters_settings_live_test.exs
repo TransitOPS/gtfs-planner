@@ -700,7 +700,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersSettingsLiveTest do
       {conn, world} = signed_in(context)
 
       {:ok, _crew} =
-        Gtfs.update_crew_settings(world.organization.id, world.version.id, %{
+        Gtfs.update_crew_settings(world.audit, %{
           "max_piece_minutes" => 300,
           "report_pull_out_minutes" => 20,
           "report_relief_minutes" => 6,
