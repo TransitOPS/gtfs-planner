@@ -456,6 +456,49 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       assert feedback =~ "invite its first administrator"
     end
 
+    test "creating after the system administrator's access was revoked is refused", %{
+      conn: conn,
+      admin_user: admin_user,
+      organization: organization
+    } do
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations/new")
+
+      deactivate_membership_fixture(membership(admin_user.id, organization.id))
+
+      view
+      |> form("#org-form", organization: %{name: "Refused Org", alias: "refused-org"})
+      |> render_submit()
+
+      assert_patch(view, ~p"/admin/organizations")
+
+      assert view |> element("#organization-action-feedback") |> render() =~
+               "Your system administrator access has changed."
+
+      refute Organizations.get_organization_by_alias("refused-org")
+    end
+
+    test "editing after the system administrator's access was revoked is refused", %{
+      conn: conn,
+      admin_user: admin_user,
+      organization: organization
+    } do
+      org = organization_fixture(%{name: "Original Name", alias: "kept-alias"})
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations/#{org.id}/edit")
+
+      deactivate_membership_fixture(membership(admin_user.id, organization.id))
+
+      view
+      |> form("#org-form", organization: %{name: "Refused Name"})
+      |> render_submit()
+
+      assert_patch(view, ~p"/admin/organizations")
+
+      assert view |> element("#organization-action-feedback") |> render() =~
+               "Your system administrator access has changed."
+
+      assert Organizations.get_organization!(org.id).name == "Original Name"
+    end
+
     test "editing an organization keeps the index behind it and saves changes", %{conn: conn} do
       org = organization_fixture(%{name: "Original Name", alias: "original-alias"})
 

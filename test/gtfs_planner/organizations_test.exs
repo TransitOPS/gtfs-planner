@@ -3,6 +3,7 @@ defmodule GtfsPlanner.OrganizationsTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.User
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Accounts.UserToken
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.AdminReadAdapterMock
@@ -14,6 +15,16 @@ defmodule GtfsPlanner.OrganizationsTest do
   import GtfsPlanner.AccountsFixtures
 
   @adapter_key :organizations_admin_read_adapter
+
+  defp system_admin, do: system_admin_fixture(organization_fixture())
+
+  defp admin_of(organization) do
+    admin = user_fixture()
+    organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
+    admin
+  end
+
+  defp organization_count, do: Repo.aggregate(Organization, :count)
 
   describe "list_organizations/0" do
     test "returns all organizations" do
@@ -81,9 +92,9 @@ defmodule GtfsPlanner.OrganizationsTest do
     end
   end
 
-  describe "create_organization/1" do
+  describe "create_organization/2" do
     test "requires alias and name to be set" do
-      {:error, changeset} = Organizations.create_organization(%{})
+      {:error, changeset} = Organizations.create_organization(system_admin(), %{})
 
       assert %{
                alias: ["can't be blank"],
@@ -93,7 +104,7 @@ defmodule GtfsPlanner.OrganizationsTest do
 
     test "validates alias and name when given" do
       {:error, changeset} =
-        Organizations.create_organization(%{alias: "", name: ""})
+        Organizations.create_organization(system_admin(), %{alias: "", name: ""})
 
       assert %{
                alias: ["can't be blank"],
@@ -105,7 +116,7 @@ defmodule GtfsPlanner.OrganizationsTest do
       %{alias: alias} = organization_fixture()
 
       {:error, changeset} =
-        Organizations.create_organization(%{
+        Organizations.create_organization(system_admin(), %{
           alias: alias,
           name: "Another Name"
         })
@@ -117,21 +128,21 @@ defmodule GtfsPlanner.OrganizationsTest do
       attrs = valid_organization_attributes()
 
       assert {:ok, %Organization{} = organization} =
-               Organizations.create_organization(attrs)
+               Organizations.create_organization(system_admin(), attrs)
 
       assert organization.alias == attrs.alias
       assert organization.name == attrs.name
     end
   end
 
-  describe "update_organization/2" do
+  describe "update_organization/3" do
     setup do
       %{organization: organization_fixture()}
     end
 
     test "requires name to be set", %{organization: organization} do
       {:error, changeset} =
-        Organizations.update_organization(organization, %{name: ""})
+        Organizations.update_organization(system_admin(), organization, %{name: ""})
 
       assert %{name: ["can't be blank"]} = errors_on(changeset)
     end
@@ -140,7 +151,7 @@ defmodule GtfsPlanner.OrganizationsTest do
       other_org = organization_fixture()
 
       {:error, changeset} =
-        Organizations.update_organization(organization, %{alias: other_org.alias})
+        Organizations.update_organization(system_admin(), organization, %{alias: other_org.alias})
 
       assert "has already been taken" in errors_on(changeset).alias
     end
@@ -149,19 +160,128 @@ defmodule GtfsPlanner.OrganizationsTest do
       new_name = "Updated Organization Name"
 
       assert {:ok, %Organization{} = updated} =
-               Organizations.update_organization(organization, %{name: new_name})
+               Organizations.update_organization(system_admin(), organization, %{name: new_name})
 
       assert updated.name == new_name
       assert updated.id == organization.id
     end
   end
 
+  describe "create_organization/2 authorization" do
+    test "refuses editors, organization administrators and a revoked system administrator" do
+      organization = organization_fixture()
+      editor = editor_fixture(organization)
+      org_admin = admin_of(organization)
+      revoked = system_admin_fixture(organization)
+      deactivate_membership_fixture(Repo.get_by!(UserOrgMembership, user_id: revoked.id))
+      before = organization_count()
+
+      for actor <- [editor, org_admin, revoked] do
+        assert {:error, :forbidden} =
+                 Organizations.create_organization(actor, valid_organization_attributes())
+      end
+
+      assert organization_count() == before
+    end
+
+    test "creates the organization and its default version for a system administrator" do
+      attrs = valid_organization_attributes()
+
+      assert {:ok, %Organization{id: id}} =
+               Organizations.create_organization(system_admin(), attrs)
+
+      assert Repo.get_by!(GtfsPlanner.Versions.GtfsVersion, organization_id: id)
+    end
+
+    test "publishes the created organization after commit" do
+      actor = system_admin()
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "organizations")
+
+      {:ok, organization} =
+        Organizations.create_organization(actor, valid_organization_attributes())
+
+      assert_receive {[:organizations, :created], %Organization{id: id}}
+      assert id == organization.id
+    end
+  end
+
+  describe "update_organization/3 authorization" do
+    setup do
+      organization = organization_fixture()
+      %{organization: organization, admin: admin_of(organization)}
+    end
+
+    test "a usable organization administrator renames the organization", %{
+      organization: organization,
+      admin: admin
+    } do
+      assert {:ok, %Organization{name: "Renamed"}} =
+               Organizations.update_organization(admin, organization, %{name: "Renamed"})
+    end
+
+    test "an administrator revoked after the page loaded is refused and nothing changes", %{
+      organization: organization,
+      admin: admin
+    } do
+      other_admin = admin_of(organization)
+      assert other_admin.id != admin.id
+      deactivate_membership_fixture(Repo.get_by!(UserOrgMembership, user_id: admin.id))
+
+      assert {:error, :forbidden} =
+               Organizations.update_organization(admin, organization, %{name: "Renamed"})
+
+      assert Organizations.get_organization!(organization.id).name == organization.name
+    end
+
+    test "refuses editors and administrators of another organization", %{
+      organization: organization
+    } do
+      editor = editor_fixture(organization)
+      foreign_admin = admin_of(organization_fixture())
+
+      for actor <- [editor, foreign_admin] do
+        assert {:error, :forbidden} =
+                 Organizations.update_organization(actor, organization, %{name: "Renamed"})
+      end
+
+      assert Organizations.get_organization!(organization.id).name == organization.name
+    end
+
+    test "a system administrator of another organization renames it", %{
+      organization: organization
+    } do
+      assert {:ok, %Organization{name: "Renamed"}} =
+               Organizations.update_organization(system_admin(), organization, %{name: "Renamed"})
+    end
+
+    test "applies attributes to the current row, not to the struct the page holds", %{
+      organization: organization,
+      admin: admin
+    } do
+      {:ok, _renamed} =
+        Organizations.update_organization(admin, organization, %{name: "Changed elsewhere"})
+
+      assert {:ok, %Organization{name: name}} =
+               Organizations.update_organization(admin, organization, %{name: organization.name})
+
+      assert name == organization.name
+      assert Organizations.get_organization!(organization.id).name == organization.name
+    end
+
+    test "a deleted organization is not found", %{organization: organization, admin: admin} do
+      {:ok, _deleted} = Organizations.delete_organization(organization)
+
+      assert {:error, :not_found} =
+               Organizations.update_organization(admin, organization, %{name: "Renamed"})
+    end
+  end
+
   describe "product field" do
-    test "create_organization/1 without product defaults to :planner" do
+    test "create_organization/2 without product defaults to :planner" do
       attrs = valid_organization_attributes()
 
       assert {:ok, %Organization{} = organization} =
-               Organizations.create_organization(attrs)
+               Organizations.create_organization(system_admin(), attrs)
 
       assert organization.product == :planner
     end
@@ -178,16 +298,18 @@ defmodule GtfsPlanner.OrganizationsTest do
       assert %Organization{product: :planner} = Organizations.get_organization!(id)
     end
 
-    test "update_organization/2 stores :pathways and rejects unknown products" do
+    test "update_organization/3 stores :pathways and rejects unknown products" do
       organization = organization_fixture()
 
       assert {:ok, %Organization{} = updated} =
-               Organizations.update_organization(organization, %{product: "pathways"})
+               Organizations.update_organization(system_admin(), organization, %{
+                 product: "pathways"
+               })
 
       assert updated.product == :pathways
 
       assert {:error, changeset} =
-               Organizations.update_organization(updated, %{product: "other"})
+               Organizations.update_organization(system_admin(), updated, %{product: "other"})
 
       assert %{product: [_ | _]} = errors_on(changeset)
     end
@@ -259,7 +381,10 @@ defmodule GtfsPlanner.OrganizationsTest do
 
     test "trims whitespace from name on create" do
       {:ok, organization} =
-        Organizations.create_organization(%{name: "  Acme  ", alias: "acme-trim-create"})
+        Organizations.create_organization(system_admin(), %{
+          name: "  Acme  ",
+          alias: "acme-trim-create"
+        })
 
       assert organization.name == "Acme"
     end
@@ -268,7 +393,9 @@ defmodule GtfsPlanner.OrganizationsTest do
       organization = organization_fixture()
 
       {:ok, updated} =
-        Organizations.update_organization(organization, %{name: "  Trimmed Name  "})
+        Organizations.update_organization(system_admin(), organization, %{
+          name: "  Trimmed Name  "
+        })
 
       assert updated.name == "Trimmed Name"
     end

@@ -895,7 +895,7 @@ case Accounts.register_first_admin(%{
 
     # ── Long-name fixtures for responsive data-view browser tests ──
     {:ok, _long_org} =
-      Organizations.create_organization(%{
+      Organizations.create_organization_unchecked(%{
         name: "Metropolitan Regional Transit Authority of the Greater Metropolitan Area",
         alias: "metro-regional-transit-authority-greater-metropolitan-area"
       })
@@ -2802,7 +2802,7 @@ case Accounts.register_first_admin(%{
     # organization from the session (the system-`administrator` org-skip does not
     # apply) and `/admin/users` is scoped to it.
     {:ok, admin_org} =
-      Organizations.create_organization(%{
+      Organizations.create_organization_unchecked(%{
         name: "Admin Contracts Org",
         alias: "admin-contracts"
       })
@@ -2900,7 +2900,7 @@ case Accounts.register_first_admin(%{
     # logo and the hidden task links are absent. Versions are per organization,
     # so this version cannot become Browser Test Org's latest.
     {:ok, pathways_org} =
-      Organizations.create_organization(%{
+      Organizations.create_organization_unchecked(%{
         name: "Browser Pathways Org",
         alias: "browser-pathways",
         product: :pathways
@@ -2939,7 +2939,7 @@ case Accounts.register_first_admin(%{
     # and leaves staging-only so the published-only latest query returns nil.
 
     {:ok, no_version_org} =
-      Organizations.create_organization(%{
+      Organizations.create_organization_unchecked(%{
         name: "Account No Version Org",
         alias: "account-no-version"
       })
@@ -2971,7 +2971,7 @@ case Accounts.register_first_admin(%{
     )
 
     {:ok, no_task_org} =
-      Organizations.create_organization(%{
+      Organizations.create_organization_unchecked(%{
         name: "Account No Task Org",
         alias: "account-no-task"
       })
@@ -9350,7 +9350,10 @@ case Accounts.register_first_admin(%{
 
     # ── Home Planner Org: the attention and new-member states ──
     {:ok, home_planner_org} =
-      Organizations.create_organization(%{name: "Home Planner Org", alias: "home-planner-org"})
+      Organizations.create_organization_unchecked(%{
+        name: "Home Planner Org",
+        alias: "home-planner-org"
+      })
 
     home_pin_default_version.(home_planner_org)
 
@@ -9547,7 +9550,7 @@ case Accounts.register_first_admin(%{
 
     # ── Home Pathways Org: the 14-station board ──
     {:ok, home_pathways_org} =
-      Organizations.create_organization(%{
+      Organizations.create_organization_unchecked(%{
         name: "Home Pathways Org",
         alias: "home-pathways-org",
         product: :pathways

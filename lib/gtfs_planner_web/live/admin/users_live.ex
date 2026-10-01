@@ -432,6 +432,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
 
   def handle_event("save_organization", %{"organization" => org_params}, socket) do
     case Organizations.update_organization(
+           socket.assigns.current_user,
            socket.assigns.current_organization,
            allowed_org_params(org_params)
          ) do
@@ -441,6 +442,17 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
          |> assign(:current_organization, organization)
          |> assign(:organization_form, organization_form(organization))
          |> put_flash(:info, "Organization updated")
+         |> push_patch(to: ~p"/admin/users")}
+
+      {:error, reason} when reason in [:forbidden, :not_found] ->
+        {:noreply,
+         socket
+         |> put_feedback(
+           "error",
+           "Your administrator access has changed.",
+           "The organization name was not changed. Ask a current organization administrator to change it.",
+           nil
+         )
          |> push_patch(to: ~p"/admin/users")}
 
       {:error, changeset} ->

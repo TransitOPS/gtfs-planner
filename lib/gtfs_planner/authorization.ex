@@ -62,6 +62,20 @@ defmodule GtfsPlanner.Authorization do
   def lock_editor!(_), do: Repo.rollback(:forbidden)
 
   @doc """
+  Locks the actor's current system-administrator membership for the rest of a
+  write transaction.
+
+  Call only inside `Repo.transaction/1`. Missing or revoked platform permission
+  rolls the transaction back with `:forbidden`.
+  """
+  @spec lock_system_admin!(User.t()) :: :system
+  def lock_system_admin!(%User{id: actor_id}) do
+    if system_administrator?(actor_id), do: :system, else: Repo.rollback(:forbidden)
+  end
+
+  def lock_system_admin!(_), do: Repo.rollback(:forbidden)
+
+  @doc """
   Locks the organization before checking membership administration permission.
 
   Call only inside `Repo.transaction/1`. A missing organization rolls back with

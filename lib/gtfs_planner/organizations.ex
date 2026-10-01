@@ -86,43 +86,77 @@ defmodule GtfsPlanner.Organizations do
   end
 
   @doc """
-  Creates an organization.
+  Creates an organization and its default version for a system administrator.
+
+  The transaction first locks the actor's current `administrator` membership, so
+  a platform permission revoked after the page loaded refuses the write.
 
   ## Examples
 
-      iex> create_organization(%{alias: "my-org", name: "My Org"})
+      iex> create_organization(system_admin, %{alias: "my-org", name: "My Org"})
       {:ok, %Organization{}}
 
-      iex> create_organization(%{alias: nil})
+      iex> create_organization(system_admin, %{alias: nil})
       {:error, %Ecto.Changeset{}}
+
+      iex> create_organization(editor, %{alias: "my-org", name: "My Org"})
+      {:error, :forbidden}
   """
-  def create_organization(attrs \\ %{}) do
+  @spec create_organization(User.t(), map()) ::
+          {:ok, Organization.t()} | {:error, :forbidden | Ecto.Changeset.t()}
+  def create_organization(actor, attrs) do
     Repo.transaction(fn ->
-      with {:ok, org} <- insert_organization(attrs),
-           {:ok, _version} <- Versions.create_default_version(org.id) do
-        org
-      else
-        {:error, changeset} -> Repo.rollback(changeset)
-      end
+      Authorization.lock_system_admin!(actor)
+      insert_organization_with_default_version(attrs)
     end)
     |> broadcast([:organizations, :created])
   end
 
   @doc """
-  Updates an organization.
+  Creates an organization and its default version with no actor check.
+
+  For fixtures, seeds and operator scripts that run outside a signed-in session.
+  A caller that acts for a signed-in user uses `create_organization/2`.
+  """
+  @spec create_organization_unchecked(map()) ::
+          {:ok, Organization.t()} | {:error, Ecto.Changeset.t()}
+  def create_organization_unchecked(attrs \\ %{}) do
+    Repo.transaction(fn -> insert_organization_with_default_version(attrs) end)
+    |> broadcast([:organizations, :created])
+  end
+
+  @doc """
+  Updates an organization for a system administrator or a usable administrator
+  of that organization.
+
+  The transaction locks the organization and the actor's current permission
+  before it reads the row, so a permission revoked after the page loaded
+  refuses the write and attributes apply to the current row, not to the struct
+  the page holds.
 
   ## Examples
 
-      iex> update_organization(organization, %{name: "New Name"})
+      iex> update_organization(admin, organization, %{name: "New Name"})
       {:ok, %Organization{}}
 
-      iex> update_organization(organization, %{alias: nil})
+      iex> update_organization(admin, organization, %{alias: nil})
       {:error, %Ecto.Changeset{}}
+
+      iex> update_organization(editor, organization, %{name: "New Name"})
+      {:error, :forbidden}
   """
-  def update_organization(%Organization{} = organization, attrs) do
-    organization
-    |> Organization.changeset(attrs)
-    |> Repo.update()
+  @spec update_organization(User.t(), Organization.t(), map()) ::
+          {:ok, Organization.t()} | {:error, :forbidden | :not_found | Ecto.Changeset.t()}
+  def update_organization(actor, %Organization{id: organization_id}, attrs) do
+    Repo.transaction(fn ->
+      Authorization.lock_member_admin!(actor, organization_id)
+      organization = Repo.get!(Organization, organization_id)
+
+      case organization |> Organization.changeset(attrs) |> Repo.update() do
+        {:ok, organization} -> organization
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
     |> broadcast([:organizations, :updated])
   end
 
@@ -545,6 +579,15 @@ defmodule GtfsPlanner.Organizations do
       :organizations_admin_read_adapter,
       @default_admin_read_adapter
     )
+  end
+
+  defp insert_organization_with_default_version(attrs) do
+    with {:ok, org} <- insert_organization(attrs),
+         {:ok, _version} <- Versions.create_default_version(org.id) do
+      org
+    else
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
   end
 
   defp insert_organization(attrs) do

@@ -604,7 +604,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   # ---------------------------------------------------------------------------
 
   defp save_organization(socket, :new, params) do
-    case Organizations.create_organization(params) do
+    case Organizations.create_organization(socket.assigns.current_user, params) do
       {:ok, organization} ->
         {:noreply,
          socket
@@ -615,18 +615,52 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
          )
          |> push_patch(to: ~p"/admin/organizations")}
 
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> put_organization_feedback(
+           "error",
+           "Your system administrator access has changed.",
+           "The organization was not created. Ask a current system administrator to create it."
+         )
+         |> push_patch(to: ~p"/admin/organizations")}
+
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, reject_organization(socket, changeset, :insert)}
     end
   end
 
   defp save_organization(socket, :edit, params) do
-    case Organizations.update_organization(socket.assigns.organization, params) do
+    case Organizations.update_organization(
+           socket.assigns.current_user,
+           socket.assigns.organization,
+           params
+         ) do
       {:ok, organization} ->
         {:noreply,
          socket
          |> assign(:organization, organization)
          |> put_organization_feedback("success", "#{organization.name} updated.")
+         |> push_patch(to: ~p"/admin/organizations")}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> put_organization_feedback(
+           "error",
+           "Your system administrator access has changed.",
+           "The organization was not changed. Ask a current system administrator to change it."
+         )
+         |> push_patch(to: ~p"/admin/organizations")}
+
+      {:error, :not_found} ->
+        {:noreply,
+         socket
+         |> put_organization_feedback(
+           "error",
+           "That organization no longer exists.",
+           "The list has been refreshed."
+         )
          |> push_patch(to: ~p"/admin/organizations")}
 
       {:error, %Ecto.Changeset{} = changeset} ->

@@ -142,6 +142,28 @@ defmodule GtfsPlanner.AuthorizationTest do
              end)
   end
 
+  test "an active system administrator holds the platform permission", %{
+    organization: organization
+  } do
+    actor = system_admin_fixture(organization)
+
+    assert {:ok, :system} = Repo.transaction(fn -> Authorization.lock_system_admin!(actor) end)
+  end
+
+  test "editors, organization admins, deactivated system administrators and non-users are refused",
+       %{organization: organization} do
+    editor = editor_fixture(organization)
+    org_admin = user_fixture()
+    organization_membership_fixture(org_admin, organization, ["pathways_studio_admin"])
+    revoked = system_admin_fixture(organization)
+    deactivate_membership_fixture(Repo.get_by!(UserOrgMembership, user_id: revoked.id))
+
+    for actor <- [editor, org_admin, revoked, nil, %{id: editor.id}] do
+      assert {:error, :forbidden} =
+               Repo.transaction(fn -> Authorization.lock_system_admin!(actor) end)
+    end
+  end
+
   defp context(actor, organization) do
     %{actor_id: actor.id, organization_id: organization.id}
   end
