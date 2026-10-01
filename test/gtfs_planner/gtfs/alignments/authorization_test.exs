@@ -7,6 +7,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.AuthorizationTest do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AlignmentSegment
+  alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Shape
@@ -18,8 +19,18 @@ defmodule GtfsPlanner.Gtfs.Alignments.AuthorizationTest do
     route = route_fixture(organization.id, version.id)
     actor = editor_fixture(organization)
     membership = GtfsPlanner.Accounts.get_user_org_membership(actor.id, organization.id)
-    first = stop_fixture(organization.id, version.id)
-    second = stop_fixture(organization.id, version.id)
+
+    first =
+      stop_fixture(organization.id, version.id, %{
+        stop_lat: Decimal.new("40.712800"),
+        stop_lon: Decimal.new("-74.006000")
+      })
+
+    second =
+      stop_fixture(organization.id, version.id, %{
+        stop_lat: Decimal.new("40.713800"),
+        stop_lon: Decimal.new("-74.005000")
+      })
 
     pattern =
       route_pattern_fixture(organization.id, version.id, %{route_id: route.route_id})
@@ -34,8 +45,25 @@ defmodule GtfsPlanner.Gtfs.Alignments.AuthorizationTest do
       actor_email: actor.email
     }
 
+    section =
+      pattern |> Alignments.resolve() |> Map.fetch!(:sections) |> Enum.find(&(&1.position == 1))
+
+    draft = [
+      %{
+        "position" => section.position,
+        "from_occurrence_id" => section.from_occurrence_id,
+        "to_stop_id" => section.to_stop_id,
+        "op" => "set",
+        "points" => [[-74.0056, 40.7132]],
+        "base" => %{
+          "segment_id" => section.revision.segment_id,
+          "lock_version" => section.revision.lock_version
+        }
+      }
+    ]
+
     assert {:ok, %{fingerprint: fingerprint}} =
-             Gtfs.review_alignment_save(pattern.id, [], audit)
+             Gtfs.review_alignment_save(pattern.id, draft, audit)
 
     before_pattern = Repo.reload!(pattern)
     before_segments = count(AlignmentSegment, organization.id)
@@ -44,7 +72,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.AuthorizationTest do
     deactivate_membership_fixture(membership)
 
     assert {:error, :forbidden} =
-             Gtfs.apply_alignment_save(pattern.id, [], %{}, fingerprint, audit)
+             Gtfs.apply_alignment_save(pattern.id, draft, %{}, fingerprint, audit)
 
     assert Repo.reload!(pattern) == before_pattern
     assert count(AlignmentSegment, organization.id) == before_segments
