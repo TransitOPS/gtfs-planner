@@ -24,6 +24,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
 
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
+  alias GtfsPlanner.Gtfs.StopReferences
+
   @doc """
   The page header: the title, the List | Map switch, the version's stop count
   and the Add stop primary.
@@ -1615,6 +1617,16 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
                      the two that only change which panel is showing. --%>
                 <div class="my-1 border-t border-subtle"></div>
                 <button
+                  id="stops-map-edit-replace"
+                  type="button"
+                  phx-click="start_replace"
+                  class="flex min-h-11 w-full flex-col justify-center rounded-control px-3 py-2 text-left text-sm text-strong hover:bg-canvas"
+                >
+                  Replace with another stop…<span class="text-[13px] text-muted">
+                    Moves its patterns and rules to a stop nearby
+                  </span>
+                </button>
+                <button
                   id="stops-map-edit-delete"
                   type="button"
                   phx-click="start_delete"
@@ -2550,6 +2562,15 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
               </li>
             </ul>
 
+            <button
+              id="stops-map-delete-replace"
+              type="button"
+              phx-click="start_replace"
+              class="mt-4 inline-flex min-h-11 items-center gap-2 rounded-control border border-control bg-white px-4 text-sm font-semibold text-strong hover:bg-canvas"
+            >
+              <.icon name="hero-arrows-right-left" class="size-4" /> Replace with another stop…
+            </button>
+
             <p :if={delete_pending_count(@review) > 0} class="m-0 mt-6 text-[13px] text-muted">
               When it can be deleted, its {count_word(
                 delete_pending_count(@review),
@@ -2822,6 +2843,325 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
     |> Enum.map(& &1.count)
     |> Enum.sum()
   end
+
+  @doc """
+  The replace panel: which stop to keep, what moving everything to it changes,
+  and the one button that does it.
+
+  The candidates are a convenience rather than the limit — the panel says a
+  stop can also be chosen by clicking it on the map — so the list is the nearest
+  few rather than a picklist of everything in the version.
+
+  The review and the refusal share the panel rather than being two of them: the
+  refusals are the review's own answer, so an editor who picks a stop the
+  command will refuse reads the words here instead of pressing a button that
+  does nothing. There is no apply button at all in that state, for the same
+  reason the blocked delete has none.
+  """
+  attr :id, :string, required: true
+  attr :stop, :map, required: true
+  attr :candidates, :list, default: []
+  attr :with, :any, default: nil
+  attr :usage, :any, default: nil
+  attr :review, :any, default: nil
+  attr :refusals, :list, default: []
+  attr :loading?, :boolean, default: false
+  attr :delete_old?, :boolean, default: true
+  attr :saving?, :boolean, default: false
+  attr :outcome, :atom, default: :none
+  attr :saved, :map, default: nil
+
+  def replace_panel(assigns) do
+    ~H"""
+    <aside
+      id={@id}
+      aria-label="Replace stop"
+      class="flex min-h-0 flex-col border-t border-subtle bg-white lg:border-l lg:border-t-0"
+    >
+      <div class="min-h-0 flex-1 overflow-y-auto">
+        <div class="px-5 py-5">
+          <h2
+            id="stops-map-replace-heading"
+            tabindex="-1"
+            autofocus
+            class="font-display text-[22px] font-semibold text-strong"
+          >
+            Replace {@stop.name}
+          </h2>
+          <p class="m-0 mt-1 text-sm text-muted">
+            Stop · ID {@stop.stop_id} · move what uses it to another stop
+          </p>
+
+          <div :if={@loading?} id="stops-map-replace-loading" role="status" class="mt-5">
+            <.message kind="info" title="Reading what would move">
+              Working out what this stop is used by, and where it would go&hellip;
+            </.message>
+          </div>
+
+          <div :if={@outcome == :failed} id="stops-map-replace-failed" class="mt-5">
+            <.message
+              kind="error"
+              title="We couldn’t replace this stop"
+              id="stops-map-replace-failed-message"
+            >
+              Nothing was changed. Check your connection and try again.
+            </.message>
+          </div>
+
+          <fieldset class="m-0 mt-5 min-w-0 border-0 p-0" id="stops-map-replace-candidates">
+            <legend class="p-0 text-[15px] font-bold text-strong">Keep this stop instead</legend>
+            <div class="mt-2 grid gap-1">
+              <label
+                :for={candidate <- @candidates}
+                id={"stops-map-replace-candidate-#{dom_id(candidate.stop_id)}"}
+                class={[
+                  "flex min-h-11 cursor-pointer items-start gap-3 rounded-control px-2 py-2 hover:bg-canvas",
+                  (@with != nil and @with.stop_id == candidate.stop_id) && "bg-selection"
+                ]}
+              >
+                <input
+                  type="radio"
+                  name="replace_with"
+                  value={candidate.stop_id}
+                  checked={@with != nil and @with.stop_id == candidate.stop_id}
+                  phx-click="choose_replace"
+                  phx-value-stop-id={candidate.stop_id}
+                  class="mt-1 size-4 accent-action"
+                />
+                <span class="min-w-0 flex-1">
+                  <span class="block text-[15px] font-semibold text-strong">{candidate.name}</span>
+                  <span class="block text-[13px] text-muted">
+                    {candidate.away} away · {candidate.desc || "no description"} · ID {candidate.stop_id}
+                  </span>
+                </span>
+              </label>
+            </div>
+            <p class="m-0 mt-1 text-[13px] text-muted">
+              Nearest first. You can also click a stop on the map.
+            </p>
+          </fieldset>
+
+          <%= if @refusals != [] do %>
+            <div id="stops-map-replace-refused" class="mt-5">
+              <.message
+                kind="warning"
+                role="status"
+                title="This replace would break something"
+                id="stops-map-replace-refused-message"
+              >
+                <ul class="m-0 list-disc pl-5">
+                  <li :for={reason <- replace_refusal_words(@refusals, @stop)}>{reason}</li>
+                </ul>
+              </.message>
+            </div>
+          <% end %>
+
+          <%= if @review do %>
+            <section :if={@outcome != :stale} class="mt-6">
+              <h3 class="m-0 text-[15px] font-bold text-strong">What changes</h3>
+              <ul
+                id="stops-map-replace-changes"
+                class="m-0 mt-1 list-none divide-y divide-subtle p-0 text-sm"
+              >
+                <li
+                  :for={row <- replace_change_rows(@review, @usage, @with)}
+                  id={row.dom_id}
+                  class={["flex items-start gap-2 py-2", row.route && "flex items-center"]}
+                >
+                  <.route_badge :if={row.route} route={row.route} />
+                  <span class="min-w-0 flex-1">{row.text}</span>
+                </li>
+              </ul>
+              <p :if={@with} class="m-0 mt-2 text-[13px] text-muted">
+                {@with.name} keeps its name, ID {@with.stop_id} and sign number.
+              </p>
+            </section>
+
+            <div
+              :if={@outcome == :stale}
+              id="stops-map-replace-stale"
+              class="mt-5"
+            >
+              <.message
+                kind="warning"
+                role="status"
+                title="This changed while you were reading"
+                id="stops-map-replace-stale-message"
+              >
+                Nothing was replaced. What used this stop has changed since the review was read, so
+                it no longer describes it. Choose again to read it afresh.
+              </.message>
+            </div>
+
+            <label class="mt-5 flex min-h-11 cursor-pointer items-start gap-3">
+              <input
+                type="checkbox"
+                id="stops-map-replace-delete-old"
+                checked={@delete_old?}
+                phx-click="replace_delete_old"
+                phx-value-delete={to_string(!@delete_old?)}
+                class="mt-1 size-4 accent-action"
+              />
+              <span>
+                <span class="block text-[15px] text-strong">Delete {@stop.name} afterwards</span>
+                <span class="block text-[13px] text-muted">
+                  Nothing will use it. Its ID won’t be reused for another place.
+                </span>
+              </span>
+            </label>
+          <% end %>
+        </div>
+      </div>
+
+      <div class="border-t border-subtle px-5 py-4">
+        <div class="flex flex-wrap items-center gap-3">
+          <button
+            id="stops-map-replace-cancel"
+            type="button"
+            phx-click="back_to_edit"
+            disabled={@saving?}
+            class="inline-flex min-h-11 items-center rounded-control border border-control bg-white px-4 text-sm font-semibold text-strong hover:bg-canvas disabled:opacity-70"
+          >
+            Cancel
+          </button>
+          <.button
+            :if={@review != nil and @refusals == []}
+            id="stops-map-replace-go"
+            type="button"
+            phx-click="apply_replace"
+            disabled={@saving?}
+            class="ml-auto min-h-11"
+          >
+            {if @saving?,
+              do: "Replacing…",
+              else: replace_apply_label(@review)}
+          </.button>
+        </div>
+      </div>
+    </aside>
+    """
+  end
+
+  # What changes, one row per kind that has rows. A kind with no rows is not
+  # listed: the review is the arithmetic an editor reads before agreeing, and a
+  # list of the fourteen kinds that do nothing is a list nobody finishes.
+  defp replace_change_rows(review, usage, with) do
+    review.changes
+    |> Enum.filter(&(&1.count > 0))
+    |> Enum.flat_map(&replace_change_rows_for(&1, usage, with))
+  end
+
+  # A pattern is the one kind an editor reads as a sentence rather than a count:
+  # which route, which way, and how much service keeps its times. Those three
+  # are the usage read the panel already holds — the same rows the edit panel
+  # lists — and the count that says they all move comes from the review.
+  defp replace_change_rows_for(%{key: :route_pattern_stops} = change, usage, with) do
+    case replace_pattern_rows(usage, with) do
+      [] -> [generic_change_row(change)]
+      rows -> rows
+    end
+  end
+
+  defp replace_change_rows_for(change, _usage, _with), do: [generic_change_row(change)]
+
+  defp generic_change_row(change) do
+    %{
+      dom_id: "stops-map-replace-change-#{change.key}",
+      route: nil,
+      text: replace_change_text(change)
+    }
+  end
+
+  defp replace_pattern_rows(%{blocking: blocking}, with) do
+    case Enum.find(blocking, &(&1.key == :route_pattern_stops)) do
+      nil ->
+        []
+
+      %{details: details} ->
+        Enum.map(details, fn detail ->
+          pattern = detail.detail
+
+          %{
+            dom_id: "stops-map-replace-change-#{dom_id(pattern.route_pattern_id)}",
+            route: pattern_route(pattern),
+            text:
+              "toward #{pattern.headsign || "the end of the line"} stops at #{with.name} instead." <>
+                trips_sentence(detail.weekday_trips)
+          }
+        end)
+    end
+  end
+
+  defp replace_pattern_rows(_usage, _with), do: []
+
+  defp trips_sentence(0), do: ""
+
+  defp trips_sentence(count),
+    do: " #{count_word(count, "weekday trip", "weekday trips")} keep their times."
+
+  defp replace_change_text(%{label: label, count: count, dropped: dropped}) do
+    "#{label}: #{count_word(count, "row", "rows")}" <> replace_dropped_text(dropped)
+  end
+
+  # A drop is a row the new stop already has, so carrying the old one across
+  # would put two rows on one key. Saying so is the difference between a review
+  # an editor can agree to and one they have to take on trust.
+  defp replace_dropped_text(dropped) when dropped > 0 do
+    ", and #{count_word(dropped, "row", "rows")} the new stop already has " <>
+      if(dropped == 1, do: "is", else: "are") <> " not duplicated"
+  end
+
+  defp replace_dropped_text(_dropped), do: ""
+
+  # The button repeats the scope, because a replace that touches one pattern and
+  # a replace that touches nine are different decisions and the editor should
+  # not have to open the review to tell them apart.
+  defp replace_apply_label(review) do
+    "Replace in #{count_word(replace_pattern_count(review), "pattern", "patterns")}"
+  end
+
+  defp replace_pattern_count(review) do
+    case Enum.find(review.changes, &(&1.key == :route_pattern_stops)) do
+      nil -> 0
+      change -> change.count
+    end
+  end
+
+  # The refusals are the command's own words, restated for a reader rather than
+  # for a log. Each reason says what would be wrong with the feed afterwards,
+  # because "refused" on its own does not tell an editor what to do instead.
+  defp replace_refusal_words(refusals, stop) do
+    Enum.map(refusals, &replace_refusal_word(&1, stop))
+  end
+
+  defp replace_refusal_word(:same_stop, _stop),
+    do: "That is the same stop. Choose a different one."
+
+  defp replace_refusal_word(:station, _stop),
+    do:
+      "A station is a drawing with entrances and levels under it, so its patterns are not moved onto a stop, and a stop’s are not moved onto a station."
+
+  defp replace_refusal_word(:child, _stop),
+    do:
+      "One of these is a bay. A bay’s trips belong to its station, so merging the two would lose which stop riders were taken to."
+
+  defp replace_refusal_word(:type_mismatch, _stop),
+    do: "These are different kinds of place — one is not interchangeable with the other."
+
+  defp replace_refusal_word({:consecutive_pattern, patterns}, stop),
+    do:
+      "#{pluralize(length(patterns), "pattern")} would visit the new stop twice in a row, because they already stop at #{stop_label(stop)} and then at the stop you chose. Nothing was changed."
+
+  defp replace_refusal_word({:consecutive_trip, count}, _stop),
+    do: "#{count_word(count, "trip", "trips")} would stop there twice in a row."
+
+  defp replace_refusal_word({:blocked, key}, _stop) do
+    "The #{StopReferences.fetch(key).label} describes this stop, and moving everything off it would leave them describing nothing."
+  end
+
+  defp replace_refusal_word(_other, _stop), do: "This replace would change what the feed says."
+
+  defp stop_label(stop), do: "#{stop.name || stop.stop_id} (#{stop.stop_id})"
 
   @doc """
   The collapsed "Stop ID and feed details" block.

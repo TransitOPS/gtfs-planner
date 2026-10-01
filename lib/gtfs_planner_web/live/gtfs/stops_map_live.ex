@@ -57,6 +57,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       edit_panel: 1,
       move_review_panel: 1,
       delete_panel: 1,
+      replace_panel: 1,
       map_stage: 1,
       page_header: 1,
       search_field: 1,
@@ -99,6 +100,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # them still fits at 390 px.
   @search_stop_limit 6
   @search_place_limit 4
+
+  # How far the nearest stops the replace panel offers are looked for, and how
+  # many it shows. A replace is a question about the same place, so the radius
+  # is the one a rider would call the same place; the count is the prototype's
+  # and keeps the list inside one screen at 390 px.
+  @replace_candidate_metres 260.0
+  @replace_candidate_limit 4
 
   # The form name the search field's params arrive under.
   @search_as :search
@@ -183,6 +191,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     |> assign(:edit_review_band, nil)
     |> assign_move_state()
     |> assign_delete_state()
+    |> assign_replace_state()
     |> assign(:discard_action, nil)
     |> assign_edit_draft(empty_edit_draft())
   end
@@ -198,6 +207,22 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     |> assign(:delete_loading?, false)
     |> assign(:delete_saving?, false)
     |> assign(:delete_outcome, :none)
+  end
+
+  # Everything the replace panel owns. The chosen stop is a GTFS ID because that
+  # is what the candidates, the map click and the command's own lookup all
+  # speak; the review and its fingerprint stay in the assign for the same reason
+  # the delete review's does.
+  defp assign_replace_state(socket) do
+    socket
+    |> assign(:replace_candidates, [])
+    |> assign(:replace_with, nil)
+    |> assign(:replace_review, nil)
+    |> assign(:replace_refusals, nil)
+    |> assign(:replace_loading?, false)
+    |> assign(:replace_saving?, false)
+    |> assign(:replace_outcome, :none)
+    |> assign(:replace_delete_old, true)
   end
 
   # Everything the move review owns, in one place, for the same reason the edit
@@ -650,6 +675,68 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     {:noreply, socket |> assign(:delete_saving?, false) |> assign(:delete_outcome, :failed)}
   end
 
+  # A refusal is not a failure: the panel shows the words and offers nothing to
+  # press, because the command would refuse the same choice again.
+  def handle_async(:replace_review, {:ok, {:ok, review}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:replace_loading?, false)
+     |> assign(:replace_review, review)
+     |> assign(:replace_refusals, nil)
+     |> assign(:replace_outcome, :none)}
+  end
+
+  def handle_async(:replace_review, {:ok, {:error, {:refused, reasons}}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:replace_loading?, false)
+     |> assign(:replace_review, nil)
+     |> assign(:replace_refusals, reasons)
+     |> assign(:replace_outcome, :refused)}
+  end
+
+  def handle_async(:replace_review, _result, socket) do
+    {:noreply,
+     socket
+     |> assign(:replace_loading?, false)
+     |> assign(:replace_review, nil)
+     |> assign(:replace_refusals, nil)
+     |> assign(:replace_outcome, :failed)}
+  end
+
+  # The editor is left on the stop that is now the stop: the panel moves to it,
+  # because what is being edited has changed identity rather than content.
+  def handle_async(:replace_apply, {:ok, {:ok, result}}, socket) do
+    {:noreply,
+     socket
+     |> put_flash(:info, replaced_message(socket.assigns.edit_stop, result.new))
+     |> close_edit()
+     |> then(fn closed -> open_edit(closed, result.new.stop_id) end)
+     |> assign(:selected_stop_id, result.new.stop_id)
+     |> start_load()}
+  end
+
+  def handle_async(:replace_apply, {:ok, {:error, {:refused, reasons}}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:replace_saving?, false)
+     |> assign(:replace_review, nil)
+     |> assign(:replace_refusals, reasons)
+     |> assign(:replace_outcome, :refused)}
+  end
+
+  def handle_async(:replace_apply, {:ok, {:error, :stale_review}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:replace_saving?, false)
+     |> assign(:replace_outcome, :stale)
+     |> push_map_mode()}
+  end
+
+  def handle_async(:replace_apply, _result, socket) do
+    {:noreply, socket |> assign(:replace_saving?, false) |> assign(:replace_outcome, :failed)}
+  end
+
   # A move that landed is a move that is over: the review, the pending move and
   # the pin's ghost all belong to the position the stop no longer has.
   defp assign_move_state_after_apply(socket) do
@@ -708,6 +795,125 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       _no_review -> socket
     end
   end
+
+  # --- replacing ------------------------------------------------------------
+
+  # The candidates are the nearest few stops the model already holds, so opening
+  # the panel reads nothing: the version's stops are on the page. A station or a
+  # bay is never offered, because the command refuses both and offering them
+  # would be offering a choice that cannot be made.
+  defp start_replace(socket) do
+    case socket.assigns.edit_stop do
+      nil ->
+        socket
+
+      %{stop_id: stop_id} ->
+        socket =
+          socket
+          |> assign_replace_state()
+          |> assign(:replace_candidates, replace_candidates(socket.assigns, stop_id))
+
+        case socket.assigns.replace_candidates do
+          [] -> socket
+          [nearest | _] -> choose_replace(socket, nearest.stop_id)
+        end
+    end
+  end
+
+  defp replace_candidates(%{model: model}, stop_id) when is_map(model) do
+    case stop_point(model, stop_id) do
+      nil ->
+        []
+
+      origin ->
+        model.stops
+        |> Enum.reject(&(&1.stop_id == stop_id))
+        |> Enum.filter(&(&1.location_type == 0 and is_nil(&1.parent_station) and &1.point))
+        |> Enum.map(&Map.put(&1, :away, StopPlacement.distance(origin, &1.point)))
+        |> Enum.filter(&(&1.away <= @replace_candidate_metres))
+        |> Enum.sort_by(& &1.away)
+        |> Enum.take(@replace_candidate_limit)
+        |> Enum.map(fn candidate ->
+          %{
+            id: candidate.id,
+            stop_id: candidate.stop_id,
+            name: candidate.name,
+            desc: candidate.desc,
+            away: format_distance(candidate.away)
+          }
+        end)
+    end
+  end
+
+  defp replace_candidates(_assigns, _stop_id), do: []
+
+  # Choosing is one question asked twice — a radio in the panel and a click on
+  # the map — so both write the same assign and read the same review.
+  defp choose_replace(socket, stop_id) do
+    with %{edit_stop: %{uuid: old_uuid}} <- socket.assigns,
+         %{uuid: new_uuid} <- replace_uuid(socket.assigns, stop_id) do
+      audit = audit_context(socket.assigns)
+
+      socket =
+        socket
+        |> assign(:replace_with, replace_with_row(socket.assigns, stop_id))
+        |> assign(:replace_review, nil)
+        |> assign(:replace_refusals, nil)
+        |> assign(:replace_loading?, true)
+        |> assign(:replace_outcome, :none)
+
+      start_async(socket, :replace_review, fn ->
+        StopEditing.replace_review(old_uuid, new_uuid, audit)
+      end)
+    else
+      _not_a_stop -> socket
+    end
+  end
+
+  # The model rows carry the UUID the command wants, and `stop_point/2`'s row
+  # does too; a stop ID the model does not hold is not a choice.
+  defp replace_uuid(%{model: model}, stop_id) when is_map(model) do
+    case Enum.find(model.stops, &(&1.stop_id == stop_id)) do
+      nil -> nil
+      stop -> %{uuid: stop.id}
+    end
+  end
+
+  defp replace_uuid(_assigns, _stop_id), do: nil
+
+  defp replace_with_row(%{model: model}, stop_id) when is_map(model) do
+    case Enum.find(model.stops, &(&1.stop_id == stop_id)) do
+      nil -> nil
+      stop -> %{stop_id: stop.stop_id, name: stop.name}
+    end
+  end
+
+  defp replace_with_row(_assigns, _stop_id), do: nil
+
+  # The apply carries the editor's two answers — which stop to keep, and whether
+  # the old one goes — and the fingerprint from the review in the assign. The
+  # `changes` the review computed are never posted back by the browser.
+  defp start_replace_apply(socket) do
+    with %{replace_review: review} when is_map(review) <- socket.assigns,
+         %{edit_stop: %{uuid: old_uuid}} <- socket.assigns,
+         %{replace_with: %{stop_id: stop_id}} <- socket.assigns,
+         %{uuid: new_uuid} <- replace_uuid(socket.assigns, stop_id) do
+      audit = audit_context(socket.assigns)
+      options = %{fingerprint: review.fingerprint, delete_old: socket.assigns.replace_delete_old}
+
+      socket = socket |> assign(:replace_saving?, true)
+
+      start_async(socket, :replace_apply, fn ->
+        StopEditing.replace_stop(old_uuid, new_uuid, options, audit)
+      end)
+    else
+      _no_review -> socket
+    end
+  end
+
+  defp replaced_message(nil, _new), do: "The references were moved."
+
+  defp replaced_message(old, new), do: "What used #{old.name} now uses #{new.stop_name}."
 
   defp deleted_message(nil, _removed), do: "That stop was deleted."
 
@@ -788,6 +994,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
   defp guard_edit(socket, {:delete}),
     do: socket |> assign(:delete_outcome, :none) |> start_delete_review()
+
+  defp guard_edit(socket, {:replace}),
+    do: socket |> assign_replace_state() |> start_replace()
 
   defp guard_edit(socket, _action), do: socket
 
@@ -1134,6 +1343,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
      |> assign(:move_loading?, false)
      |> assign(:move_outcome, :none)
      |> assign_delete_state()
+     |> assign_replace_state()
      |> push_map_mode()}
   end
 
@@ -1146,6 +1356,26 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
   def handle_event("delete_stop", _params, socket) do
     {:noreply, start_delete(socket)}
+  end
+
+  def handle_event("start_replace", _params, socket) do
+    {:noreply, guard_edit(socket, {:replace})}
+  end
+
+  def handle_event("choose_replace", %{"stop_id" => stop_id}, socket) do
+    {:noreply, choose_replace(socket, stop_id)}
+  end
+
+  def handle_event("choose_replace", _params, socket), do: {:noreply, socket}
+
+  def handle_event("replace_delete_old", %{"delete" => value}, socket) do
+    {:noreply, assign(socket, :replace_delete_old, value == "true")}
+  end
+
+  def handle_event("replace_delete_old", _params, socket), do: {:noreply, socket}
+
+  def handle_event("apply_replace", _params, socket) do
+    {:noreply, start_replace_apply(socket)}
   end
 
   def handle_event("save_move", _params, socket) do
@@ -1269,6 +1499,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # `keep_editing` drops it — and neither has to know what the other was.
   def handle_event("select_stop", %{"stop_id" => stop_id}, socket) do
     cond do
+      # The replace panel is a question about which stop to keep, so a click on
+      # the map answers that question instead of opening the stop that was
+      # clicked. The gate is the panel being open, not the model: the editor was
+      # told any stop on the map can be chosen.
+      socket.assigns.replace_candidates != [] and stop_in_model?(socket.assigns, stop_id) ->
+        {:noreply, choose_replace(socket, stop_id)}
+
       !selectable_stop?(socket.assigns, stop_id) ->
         # A result id that is not one this search produced is refused rather than
         # looked up: the panel only shows what the search returned, so accepting
@@ -1333,6 +1570,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
          |> assign(:delete_outcome, :none)
          |> put_back_edit_move()
          |> start_delete_review()}
+
+      {:replace} ->
+        {:noreply,
+         socket
+         |> assign(:discard_action, nil)
+         |> put_back_edit_move()
+         |> assign_replace_state()
+         |> start_replace()}
     end
   end
 
@@ -2599,53 +2844,69 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
             />
           <% else %>
             <%= if @panel == :edit do %>
-              <%= if @delete_review != nil or @delete_loading? do %>
-                <.delete_panel
-                  id="stops-map-delete-panel"
+              <%= if @replace_candidates != [] do %>
+                <.replace_panel
+                  id="stops-map-replace-panel"
                   stop={@edit_stop}
-                  review={@delete_review}
-                  loading?={@delete_loading?}
-                  version_id={@current_gtfs_version.id}
-                  saving?={@delete_saving?}
-                  outcome={@delete_outcome}
+                  candidates={@replace_candidates}
+                  with={@replace_with}
+                  usage={@edit_usage}
+                  review={@replace_review}
+                  refusals={@replace_refusals || []}
+                  loading?={@replace_loading?}
+                  delete_old?={@replace_delete_old}
+                  saving?={@replace_saving?}
+                  outcome={@replace_outcome}
                 />
               <% else %>
-                <%= if @move_review != nil or @move_loading? do %>
-                  <.move_review_panel
-                    id="stops-map-move-panel"
+                <%= if @delete_review != nil or @delete_loading? do %>
+                  <.delete_panel
+                    id="stops-map-delete-panel"
                     stop={@edit_stop}
-                    review={@move_review}
-                    loading?={@move_loading?}
-                    distance={@edit_move && @edit_move.distance_m}
-                    lines={@move_lines}
-                    answer={@move_answer}
-                    errors={@move_errors}
-                    saving?={@move_saving?}
-                    outcome={@move_outcome}
-                    saved={@move_saved}
+                    review={@delete_review}
+                    loading?={@delete_loading?}
+                    version_id={@current_gtfs_version.id}
+                    saving?={@delete_saving?}
+                    outcome={@delete_outcome}
                   />
                 <% else %>
-                  <.edit_panel
-                    id="stops-map-edit-panel"
-                    stop={@edit_stop}
-                    form={@edit_form}
-                    where={edit_where(assigns)}
-                    usage={@edit_usage}
-                    zone_id={@edit_stop && @edit_stop.zone_id}
-                    zone_name={@edit_zone_name}
-                    zone_href={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares"}
-                    errors={@edit_errors}
-                    dirty?={@edit_dirty?}
-                    saving?={@edit_saving}
-                    outcome={@edit_outcome}
-                    move={@edit_move}
-                    move_saved={@move_saved}
-                    pin_off_canvas?={pin_off_canvas?(assigns)}
-                    conflict={@edit_conflict}
-                    more_open?={@edit_more_open?}
-                    tech_open?={@edit_tech_open?}
-                    discard_action={@discard_action}
-                  />
+                  <%= if @move_review != nil or @move_loading? do %>
+                    <.move_review_panel
+                      id="stops-map-move-panel"
+                      stop={@edit_stop}
+                      review={@move_review}
+                      loading?={@move_loading?}
+                      distance={@edit_move && @edit_move.distance_m}
+                      lines={@move_lines}
+                      answer={@move_answer}
+                      errors={@move_errors}
+                      saving?={@move_saving?}
+                      outcome={@move_outcome}
+                      saved={@move_saved}
+                    />
+                  <% else %>
+                    <.edit_panel
+                      id="stops-map-edit-panel"
+                      stop={@edit_stop}
+                      form={@edit_form}
+                      where={edit_where(assigns)}
+                      usage={@edit_usage}
+                      zone_id={@edit_stop && @edit_stop.zone_id}
+                      zone_name={@edit_zone_name}
+                      zone_href={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares"}
+                      errors={@edit_errors}
+                      dirty?={@edit_dirty?}
+                      saving?={@edit_saving}
+                      outcome={@edit_outcome}
+                      move={@edit_move}
+                      move_saved={@move_saved}
+                      pin_off_canvas?={pin_off_canvas?(assigns)}
+                      conflict={@edit_conflict}
+                      more_open?={@edit_more_open?}
+                      tech_open?={@edit_tech_open?}
+                      discard_action={@discard_action}
+                    />
+                  <% end %>
                 <% end %>
               <% end %>
             <% else %>
@@ -3009,6 +3270,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # A pin moved outside the current view is a pin the editor cannot see, and a
   # distance they cannot check. The caption says which way it went and offers to
   # find it rather than leaving the editor to pan for it.
+  defp map_caption(%{panel: :edit, replace_candidates: [_ | _]}) do
+    %{
+      title: "Choose the stop to keep",
+      text: "Click a stop on the map, or pick one of the nearest in the panel."
+    }
+  end
+
   defp map_caption(%{panel: :edit, edit_move: %{distance_m: distance}} = assigns)
        when is_number(distance) do
     off_canvas? = pin_off_canvas?(assigns)

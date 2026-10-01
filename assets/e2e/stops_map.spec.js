@@ -1624,6 +1624,68 @@ test("deleting a stop @delete", async ({ page }, testInfo) => {
   );
 });
 
+test("replacing a stop @replace", async ({ page }, testInfo) => {
+  test.setTimeout(300_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+
+  await page.goto(`/gtfs/${versionId}/stops/map?stop=1433`);
+  await waitForLiveView(page);
+  await waitForMapReady(page);
+
+  await page.locator("#stops-map-edit-more").click();
+  await page.locator("#stops-map-edit-replace").click();
+
+  await expect(page.locator("#stops-map-replace-panel")).toBeAttached();
+  await expect(page.locator("#stops-map-replace-heading")).toHaveText(
+    "Replace US 101 & SE 1st St",
+  );
+
+  // The candidates are the nearest stops within a walk of each other, and in
+  // this seed only one other stop is: 1434, the pair the checks list already
+  // reports as 5 ft apart. Everything else in the version is further away than
+  // a rider would call the same place, so it is not offered.
+  await expect(page.locator("#stops-map-replace-candidates label")).toHaveCount(
+    1,
+  );
+  await expect(page.locator("#stops-map-replace-candidate-1434")).toContainText(
+    "5 ft away",
+  );
+  await expect(
+    page.locator("#stops-map-replace-candidate-1434 input[type=radio]"),
+  ).toBeChecked();
+
+  // The panel opens on an answer, so the review below it is about a real pair.
+  // Each pattern is a sentence rather than a count: which route, which way, and
+  // what moves. The rest of the kinds are one line each with their row count.
+  await expect(page.locator("#stops-map-replace-changes")).toContainText(
+    "toward Newport Transit Center stops at US 101 & SE 1st St instead.",
+  );
+  await expect(page.locator("#stops-map-replace-changes")).toContainText(
+    "Map line sections",
+  );
+  await expect(page.locator("#stops-map-replace-go")).toContainText(
+    "Replace in 1 pattern",
+  );
+
+  // The map's own caption changes with the question it is being asked.
+  await expect(page.locator("#stops-map-caption")).toContainText(
+    "Choose the stop to keep",
+  );
+
+  await captureBoth(page, testInfo, "review", "replace-");
+
+  // Cancelling writes nothing and returns to the form.
+  await page.locator("#stops-map-replace-cancel").click();
+  await expect(page.locator("#stops-map-edit-panel")).toBeAttached();
+  await expect(page.locator("#stops-map-replace-panel")).toHaveCount(0);
+
+  await captureReference(page, testInfo, "replace", "review", "replace-ref-");
+});
+
 // A pointer drag on the pin. The hook reports one move per gesture, on pointer
 // up, so the drag is a down, a move and a release — never a click.
 async function dragPinBy(page, dx, dy) {
