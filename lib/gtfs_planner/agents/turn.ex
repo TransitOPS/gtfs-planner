@@ -5,9 +5,12 @@ defmodule GtfsPlanner.Agents.Turn do
   The loop alternates model calls and tool calls: `Model.complete/2`, the pack's
   tool calls through `Dispatch.call/4`, one tool result message per call, and the
   next model call, at most sixteen model calls per turn. The scope is re-authorized
-  before every provider request, so access withdrawn mid-turn sends no further
-  request and runs no further tool. Only the pack the session chose is named here,
-  and only through its behaviour: this module holds no domain code (INV-1).
+  before every provider request — membership, the server-owned resource context and
+  the pack's own precondition — so access withdrawn mid-turn, a route or version
+  this conversation no longer resolves, or a pack whose precondition is gone sends
+  no further request, runs no further tool and delivers no result (INV-1). Only the
+  pack the session chose is named here, and only through its behaviour: this module
+  holds no domain code (INV-1).
 
   Messages use OpenAI's chat format with string keys. The system message is
   rebuilt from `Prompt.system/2` for every request and never stored in history.
@@ -90,9 +93,9 @@ defmodule GtfsPlanner.Agents.Turn do
   end
 
   defp authorize_and_request(pack, scope, history, acc, calls_made, notify) do
-    case Scope.authorize(scope) do
+    case authorized_context(pack, scope) do
       :ok -> consume_and_request(pack, scope, history, acc, calls_made, notify)
-      {:error, :forbidden} -> {:error, :forbidden, progress(acc)}
+      {:error, reason} -> {:error, reason, progress(acc)}
     end
   end
 
@@ -100,6 +103,16 @@ defmodule GtfsPlanner.Agents.Turn do
     case UsageBudget.consume(scope.organization_id, scope.user_id) do
       :ok -> request(pack, scope, history, acc, calls_made, notify)
       {:error, :allowance_exhausted} -> {:error, :allowance_exhausted, progress(acc)}
+    end
+  end
+
+  # The provider boundary and the pack boundary are one check, in the session's
+  # order: membership, then the server-owned resource context, then the pack's own
+  # precondition.
+  defp authorized_context(pack, scope) do
+    with :ok <- Scope.authorized_context(scope),
+         :ok <- Pack.authorize_context(pack, scope) do
+      :ok
     end
   end
 
@@ -140,6 +153,9 @@ defmodule GtfsPlanner.Agents.Turn do
       {:forbidden, acc, _messages} ->
         {:error, :forbidden, progress(acc)}
 
+      {:unavailable, acc, _messages} ->
+        {:error, :unavailable, progress(acc)}
+
       {:ok, acc, tool_messages} ->
         loop(pack, scope, history ++ [assistant | tool_messages], acc, calls_made + 1, notify)
     end
@@ -157,8 +173,8 @@ defmodule GtfsPlanner.Agents.Turn do
       notify.({:tool, name})
 
       case Dispatch.call(pack, scope, call.name, call.arguments) do
-        {:error, :forbidden} ->
-          {:halt, {:forbidden, acc, messages}}
+        {:error, reason} when reason in [:forbidden, :unavailable] ->
+          {:halt, {reason, acc, messages}}
 
         result ->
           {payload, prepared} = payload(result)

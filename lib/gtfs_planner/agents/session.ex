@@ -37,6 +37,11 @@ defmodule GtfsPlanner.Agents.Session do
 
   Every listener receives `{:agent_event, session_pid, event}` where the event is
   `{:entry, entry}`, `{:status, status}` or `{:reset, conversation_id}`.
+
+  A session also re-checks its own resource identity (`Scope.authorized_context/1`)
+  and the pack's optional `authorize_context/1` at admission, on delivery and on a
+  prepared lookup, so a deleted route or version ends the conversation the same way
+  a revoked membership does, with the single `:unavailable` result (INV-1).
   """
 
   use GenServer, restart: :temporary
@@ -61,9 +66,11 @@ defmodule GtfsPlanner.Agents.Session do
   @context_limit_text "This conversation is too large. Start a new conversation or narrow the request."
   @forbidden_text "Your access changed. The helper stopped."
   @allowance_exhausted_text "Daily assistant limit reached. It resets at 00:00 UTC."
+  @unavailable_context_text "This route or calendar is no longer available, so the helper stopped."
 
   @typedoc "Session status the panel renders alongside the entries."
-  @type status :: :idle | :working | :ended | :forbidden | :limit | :allowance_exhausted
+  @type status ::
+          :idle | :working | :ended | :forbidden | :unavailable | :limit | :allowance_exhausted
 
   @typedoc "One visible turn in the transcript."
   @type entry :: %{
@@ -80,6 +87,7 @@ defmodule GtfsPlanner.Agents.Session do
             | :failed
             | :incomplete
             | :forbidden
+            | :unavailable
             | :allowance_exhausted
         }
 
@@ -102,7 +110,8 @@ defmodule GtfsPlanner.Agents.Session do
   @doc """
   Authorizes, monitors `pid` as a listener once and returns the conversation snapshot.
   """
-  @spec attach(GenServer.server()) :: {:ok, snapshot()} | {:error, :forbidden | :ended}
+  @spec attach(GenServer.server()) ::
+          {:ok, snapshot()} | {:error, :forbidden | :unavailable | :ended}
   def attach(session), do: GenServer.call(session, :attach)
 
   @doc "Removes `pid` as a listener and flushes its monitor."
@@ -113,11 +122,12 @@ defmodule GtfsPlanner.Agents.Session do
   Admits one turn for `text`.
 
   Returns `:ok` once the turn starts, or `{:error, reason}` for a forbidden
-  member, a running turn, blank or overlong text, the exhausted request
-  allowance, or the shared eight-turn capacity.
+  member, an unavailable resource context, a running turn, blank or overlong
+  text, the exhausted request allowance, or the shared eight-turn capacity.
   """
   @spec send_message(GenServer.server(), String.t()) ::
-          :ok | {:error, :forbidden | :busy | :empty | :too_long | :limit | :capacity}
+          :ok
+          | {:error, :forbidden | :unavailable | :busy | :empty | :too_long | :limit | :capacity}
   def send_message(session, text), do: GenServer.call(session, {:send_message, text})
 
   @doc """
@@ -296,10 +306,22 @@ defmodule GtfsPlanner.Agents.Session do
 
   ## Admission
 
+  # Membership, then the server-owned resource context, then the pack's own
+  # precondition: all three are re-read here, on delivery and on a prepared
+  # lookup, so no provider request, tool read or proposal outlives the page that
+  # owns this conversation (INV-1).
   defp authorized(state, fun) do
-    case Scope.authorize(state.scope) do
+    case check_context(state) do
       :ok -> fun.(state)
       {:error, :forbidden} -> revoke(state)
+      {:error, :unavailable} -> stop_unavailable(state)
+    end
+  end
+
+  defp check_context(state) do
+    with :ok <- Scope.authorized_context(state.scope),
+         :ok <- Pack.authorize_context(state.pack, state.scope) do
+      :ok
     end
   end
 
@@ -438,7 +460,7 @@ defmodule GtfsPlanner.Agents.Session do
   end
 
   defp settle_task_result(state, {:ok, result}) do
-    case Scope.authorize(state.scope) do
+    case check_context(state) do
       :ok ->
         {:cont, complete_turn(state, result)}
 
@@ -446,11 +468,20 @@ defmodule GtfsPlanner.Agents.Session do
         # The membership changed while the answer was in flight: discard the
         # answer and its proposal (AC-12).
         {:stop, settle_forbidden(state, progress_of(result))}
+
+      {:error, :unavailable} ->
+        # The route or version this conversation answers about is gone: the
+        # in-flight answer and its proposal are discarded too (INV-1).
+        {:stop, settle_unavailable(state, progress_of(result))}
     end
   end
 
   defp settle_task_result(state, {:error, :forbidden, progress}) do
     {:stop, settle_forbidden(state, progress)}
+  end
+
+  defp settle_task_result(state, {:error, :unavailable, progress}) do
+    {:stop, settle_unavailable(state, progress)}
   end
 
   defp settle_task_result(state, {:error, reason, progress}) do
@@ -565,7 +596,17 @@ defmodule GtfsPlanner.Agents.Session do
   # Every call from a revoked member ends the conversation: the running task is
   # terminated, the entry settles as forbidden without a proposal, and the panel
   # receives the access-changed status (AC-12).
-  defp revoke(state) do
+  defp revoke(state), do: stop_context(state, :forbidden)
+
+  defp settle_forbidden(state, progress), do: settle_context(state, progress, :forbidden)
+
+  defp settle_unavailable(state, progress), do: settle_context(state, progress, :unavailable)
+
+  # A call refused because the conversation's own resource context is gone ends
+  # it the same way a revoked membership does, with the one `:unavailable`
+  # result: the running task is terminated and the entry settles without a
+  # proposal. Only an idle conversation needs no entry at all.
+  defp stop_context(state, status) do
     {progress, state} =
       if state.turn do
         {interrupted_progress(state), kill_task(state)}
@@ -573,10 +614,14 @@ defmodule GtfsPlanner.Agents.Session do
         {nil, state}
       end
 
-    {:stop, :normal, {:error, :forbidden}, settle_forbidden(state, progress)}
+    {:stop, :normal, {:error, status}, settle_context(state, progress, status)}
   end
 
-  defp settle_forbidden(state, progress) do
+  defp stop_unavailable(state), do: stop_context(state, :unavailable)
+
+  defp settle_context(state, progress, status) do
+    text = context_text(status)
+
     state =
       case state.turn do
         nil ->
@@ -585,22 +630,25 @@ defmodule GtfsPlanner.Agents.Session do
         turn ->
           state =
             state
-            |> commit_messages([turn.pending_user_message, synthetic_message(@forbidden_text)])
+            |> commit_messages([turn.pending_user_message, synthetic_message(text)])
             |> put_entry(turn.entry_id, %{
-              text: @forbidden_text,
+              text: text,
               activity: progress.activity,
               prepared: nil,
-              status: :forbidden
+              status: status
             })
             |> put_retry_source(turn)
             |> clear_turn()
 
-          log_turn(state, turn, "forbidden", progress)
+          log_turn(state, turn, Atom.to_string(status), progress)
           broadcast(state, {:entry, find_entry(state, turn.entry_id)})
       end
 
-    state |> Map.put(:status, :forbidden) |> broadcast({:status, :forbidden})
+    state |> Map.put(:status, status) |> broadcast({:status, status})
   end
+
+  defp context_text(:forbidden), do: @forbidden_text
+  defp context_text(:unavailable), do: @unavailable_context_text
 
   defp reset_conversation(state) do
     state = %{

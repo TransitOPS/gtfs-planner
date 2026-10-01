@@ -60,4 +60,31 @@ defmodule GtfsPlanner.Agents.Pack do
   """
   @callback call(name :: String.t(), args :: map(), Scope.t()) ::
               {:ok, map()} | {:prepared, prepared(), map()} | {:error, String.t()}
+
+  @doc """
+  Optional, code-owned check of the conversation's own resource context.
+
+  It runs before the provider request, every tool, a delivered result and a
+  prepared lookup, so a pack whose own preconditions are gone (a pack that
+  prepared a date change, for example) sends no request, reads no data and hands
+  off nothing. `{:error, :unavailable}` is the single refusal: the same result an
+  absent, foreign or deleted resource produces, so no other organization's or
+  version's metadata can reach the model.
+  """
+  @callback authorize_context(Scope.t()) :: :ok | {:error, :unavailable}
+
+  @optional_callbacks authorize_context: 1
+
+  @doc """
+  Runs `pack`'s optional `authorize_context/1` callback, or `:ok` for a pack
+  without one.
+  """
+  @spec authorize_context(module(), Scope.t()) :: :ok | {:error, :unavailable}
+  def authorize_context(pack, %Scope{} = scope) do
+    if Code.ensure_loaded?(pack) and function_exported?(pack, :authorize_context, 1) do
+      pack.authorize_context(scope)
+    else
+      :ok
+    end
+  end
 end

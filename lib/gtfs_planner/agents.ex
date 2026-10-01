@@ -19,7 +19,9 @@ defmodule GtfsPlanner.Agents do
   (`max_children: 200`, so `open/1` returns `{:error, :unavailable}` beyond the
   cap) and `GtfsPlanner.Agents.TurnSupervisor`, which bounds the eight active
   turns of AC-30. Session ids are
-  `{user_id, organization_id, gtfs_version_id, pack_id}`.
+  `{user_id, organization_id, gtfs_version_id, pack_id, identity,
+  approved_digest}`, so a second tab on the same route shares the conversation
+  while the same user on another route never does (INV-1).
 
   `packs/0` is the only function here that names a concrete pack (INV-1).
   """
@@ -43,16 +45,17 @@ defmodule GtfsPlanner.Agents do
 
   Returns the session pid with the conversation snapshot `Session.attach/1`
   replies. A pack the application does not ship returns `{:error, :unknown_pack}`,
-  a member without current access `{:error, :forbidden}`, the 200-session cap
-  `{:error, :unavailable}`, and a session that ended while attaching
-  `{:error, :ended}`.
+  a member without current access `{:error, :forbidden}`, a resource the current
+  organization and version cannot resolve `{:error, :unavailable}`, the
+  200-session cap `{:error, :unavailable}`, and a session that ended while
+  attaching `{:error, :ended}`.
   """
   @spec open(Scope.t()) ::
           {:ok, pid(), Session.snapshot()}
           | {:error, :unknown_pack | :forbidden | :unavailable | :ended}
   def open(%Scope{pack_id: pack_id} = scope) do
     with {:ok, pack} <- fetch_pack(pack_id),
-         :ok <- Scope.authorize(scope) do
+         :ok <- Scope.authorized_context(scope) do
       case Registry.lookup(@registry, key(scope)) do
         [{pid, _value}] -> attach(pid)
         [] -> start_session(scope, pack)
@@ -129,10 +132,11 @@ defmodule GtfsPlanner.Agents do
     end
   end
 
-  # The unique key is what keeps another person's or another version's panel
-  # from reaching this conversation (FH-3).
+  # The unique key is what keeps another person's, another version's or another
+  # route's panel from reaching this conversation (FH-3, INV-1).
   defp key(%Scope{} = scope) do
-    {scope.user_id, scope.organization_id, scope.gtfs_version_id, scope.pack_id}
+    {scope.user_id, scope.organization_id, scope.gtfs_version_id, scope.pack_id,
+     Scope.identity(scope), Scope.approved_digest(scope)}
   end
 
   defp start_session(scope, pack) do

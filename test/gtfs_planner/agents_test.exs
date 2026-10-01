@@ -22,6 +22,7 @@ end
 defmodule GtfsPlanner.AgentsTest do
   use GtfsPlanner.DataCase, async: false
 
+  import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
@@ -92,6 +93,40 @@ defmodule GtfsPlanner.AgentsTest do
       assert other_user_pid != other_version_pid
       assert snapshot.conversation_id != other_user_snapshot.conversation_id
       assert snapshot.conversation_id != other_version_snapshot.conversation_id
+    end
+
+    test "open/1 reuses one session per route and separates another route of the same version",
+         context do
+      route = route_fixture(context.organization.id, context.version.id)
+      other_route = route_fixture(context.organization.id, context.version.id)
+
+      scope = route_scope(context, route)
+      other_scope = route_scope(context, other_route)
+
+      assert {:ok, pid, snapshot} = Agents.open(scope)
+      assert {:ok, other_pid, other_snapshot} = Agents.open(other_scope)
+      on_exit(fn -> Enum.each([pid, other_pid], &terminate/1) end)
+
+      # A second tab on the same route attaches to the same conversation.
+      assert {:ok, ^pid, ^snapshot} = Agents.open(scope)
+
+      assert pid != other_pid
+      assert snapshot.conversation_id != other_snapshot.conversation_id
+    end
+
+    test "open/1 starts no session for a route the version cannot resolve", context do
+      route = route_fixture(context.organization.id, context.version.id)
+      other_version = gtfs_version_fixture(context.organization.id)
+      foreign_route = route_fixture(context.organization.id, other_version.id)
+
+      active = active_sessions()
+
+      assert Agents.open(route_scope(context, foreign_route)) == {:error, :unavailable}
+      assert Agents.open(route_scope(context, Ecto.UUID.generate())) == {:error, :unavailable}
+      assert active_sessions() == active
+
+      assert {:ok, pid, _snapshot} = Agents.open(route_scope(context, route))
+      on_exit(fn -> terminate(pid) end)
     end
 
     test "open/1 starts no session for a deactivated membership", context do
@@ -209,8 +244,17 @@ defmodule GtfsPlanner.AgentsTest do
     }
   end
 
+  # The identity a Route schedules page binds for the route it shows.
+  defp route_scope(context, route) do
+    %{
+      scope_for(context.organization, context.version, context.user)
+      | resource_context: Scope.context({:route, route.id})
+    }
+  end
+
   defp registry_key(scope) do
-    {scope.user_id, scope.organization_id, scope.gtfs_version_id, scope.pack_id}
+    {scope.user_id, scope.organization_id, scope.gtfs_version_id, scope.pack_id,
+     Scope.identity(scope), Scope.approved_digest(scope)}
   end
 
   defp active_sessions, do: DynamicSupervisor.count_children(SessionSupervisor).active

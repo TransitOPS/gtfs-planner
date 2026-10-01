@@ -3,6 +3,7 @@ defmodule GtfsPlanner.Agents.TurnAllowanceTest do
 
   import GtfsPlanner.ConcurrencyHelpers, only: [unboxed: 1]
   import GtfsPlanner.OrganizationsFixtures
+  import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts.User
   alias GtfsPlanner.Agents.EchoPack
@@ -31,8 +32,9 @@ defmodule GtfsPlanner.Agents.TurnAllowanceTest do
     organization = organization_fixture()
     user = user_fixture()
     organization_membership_fixture(user, organization)
+    version = gtfs_version_fixture(organization.id)
 
-    %{scope: scope(organization, user)}
+    %{scope: scope(organization, version, user)}
   end
 
   test "a tool loop sends only two requests under an actor limit of two", %{scope: scope} do
@@ -70,12 +72,12 @@ defmodule GtfsPlanner.Agents.TurnAllowanceTest do
     # The ordinary SQL sandbox owner remains available to the test process.
     # This fixture and the turn instead use committing connections so the
     # activity check can distinguish the allowance transaction from the HTTP wait.
-    {organization, user} =
+    {organization, version, user} =
       unboxed(fn ->
         organization = organization_fixture()
         user = user_fixture()
         organization_membership_fixture(user, organization)
-        {organization, user}
+        {organization, gtfs_version_fixture(organization.id), user}
       end)
 
     on_exit(fn ->
@@ -105,7 +107,7 @@ defmodule GtfsPlanner.Agents.TurnAllowanceTest do
              unboxed(fn ->
                %{rows: [[backend_pid]]} = Repo.query!("SELECT pg_backend_pid()")
                send(test_pid, {:turn_backend, backend_pid})
-               run(scope(organization, user))
+               run(scope(organization, version, user))
              end)
 
            send(test_pid, {:turn_result, result})
@@ -136,10 +138,12 @@ defmodule GtfsPlanner.Agents.TurnAllowanceTest do
     assert_receive {:DOWN, ^ref, :process, ^turn_pid, :normal}, 5_000
   end
 
-  defp scope(organization, user) do
+  # The turn re-resolves the scope's version before every provider request, so the
+  # scope names a version that exists in the organization.
+  defp scope(organization, version, user) do
     %Scope{
       organization_id: organization.id,
-      gtfs_version_id: Ecto.UUID.generate(),
+      gtfs_version_id: version.id,
       user_id: user.id,
       user_email: user.email,
       pack_id: EchoPack.id(),

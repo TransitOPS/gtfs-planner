@@ -39,7 +39,15 @@ defmodule GtfsPlannerWeb.AgentComponents do
 
   import GtfsPlannerWeb.CoreComponents, only: [button: 1, callout: 1, icon: 1, input: 1]
 
-  @panel_statuses [:idle, :working, :ended, :forbidden, :limit, :allowance_exhausted]
+  @panel_statuses [
+    :idle,
+    :working,
+    :ended,
+    :forbidden,
+    :unavailable,
+    :limit,
+    :allowance_exhausted
+  ]
 
   @doc """
   Renders the helper panel: header, transcript, status, notice and composer.
@@ -330,11 +338,15 @@ defmodule GtfsPlannerWeb.AgentComponents do
   end
 
   # Copy for the conversation status. The panel announces the same words a
-  # reader sees, so the working, ended, forbidden and exhausted states are
-  # visible and audible from one place (AC-2, AC-4, AC-12, AC-18).
+  # reader sees, so the working, ended, forbidden, unavailable and exhausted
+  # states are visible and audible from one place (AC-2, AC-4, AC-12, AC-18).
   defp status_text(:working), do: "Working…"
   defp status_text(:ended), do: "This conversation ended. Start a new conversation."
   defp status_text(:forbidden), do: "Your access changed. The helper stopped."
+
+  defp status_text(:unavailable),
+    do: "This route or calendar is no longer available. The helper stopped."
+
   defp status_text(:limit), do: "This conversation reached its limit. Start a new conversation."
 
   defp status_text(:allowance_exhausted),
@@ -353,9 +365,10 @@ defmodule GtfsPlannerWeb.AgentComponents do
   defp composer_hint(_status), do: "Review changes before applying."
 
   defp send_disabled?(status),
-    do: status in [:working, :ended, :forbidden, :limit, :allowance_exhausted]
+    do: status in [:working, :ended, :forbidden, :unavailable, :limit, :allowance_exhausted]
 
-  defp composer_locked?(status), do: status in [:ended, :forbidden, :limit, :allowance_exhausted]
+  defp composer_locked?(status),
+    do: status in [:ended, :forbidden, :unavailable, :limit, :allowance_exhausted]
 
   defp entry_badge(%{status: :working}), do: {"Working", nil}
 
@@ -369,6 +382,7 @@ defmodule GtfsPlannerWeb.AgentComponents do
   defp entry_badge(%{status: :allowance_exhausted}), do: {"Daily limit", "badge-warning"}
   defp entry_badge(%{status: :failed}), do: {"Unavailable", "badge-error"}
   defp entry_badge(%{status: :forbidden}), do: nil
+  defp entry_badge(%{status: :unavailable}), do: nil
 
   defp prepared_badge(%{applied?: true}), do: {"Applied", "badge-success"}
   defp prepared_badge(_entry), do: {"Ready to review", "badge-info"}
@@ -378,6 +392,7 @@ defmodule GtfsPlannerWeb.AgentComponents do
   defp callout_kind(:failed), do: "error"
   defp callout_kind(:allowance_exhausted), do: "warning"
   defp callout_kind(:forbidden), do: "error"
+  defp callout_kind(:unavailable), do: "error"
   defp callout_kind(_status), do: nil
 
   defp activity_noun([_one]), do: "step"

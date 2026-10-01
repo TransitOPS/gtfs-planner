@@ -8,6 +8,11 @@ defmodule GtfsPlanner.Agents.Dispatch do
   only then does the pack run. Scope-bearing arguments such as `organization_id`
   are undeclared for every tool and are rejected before the pack sees them.
 
+  Authorization here is the whole chain: the membership, the server-owned
+  resource context and the pack's own precondition, so no tool reads anything for
+  a route or version this conversation no longer resolves (INV-1). A refusal is
+  `{:error, :unavailable}`, the same single result a foreign resource produces.
+
   A pack exception is not rescued: it crashes the calling task, which the session
   owns and reports as a failed turn.
   """
@@ -25,13 +30,14 @@ defmodule GtfsPlanner.Agents.Dispatch do
           {:ok, map()}
           | {:prepared, Pack.prepared(), map()}
           | {:tool_error, String.t()}
-          | {:error, :forbidden}
+          | {:error, :forbidden | :unavailable}
   def call(pack, %Scope{} = scope, name, arguments_json) when is_binary(name) do
     with {:ok, tool} <- find_tool(pack, name),
          {:ok, args} <- decode_arguments(arguments_json),
          :ok <- reject_undeclared_keys(tool, args),
          :ok <- validate_declared_types(tool, args),
-         :ok <- Scope.authorize(scope) do
+         :ok <- Scope.authorized_context(scope),
+         :ok <- Pack.authorize_context(pack, scope) do
       invoke(pack, name, args, scope)
     end
   end

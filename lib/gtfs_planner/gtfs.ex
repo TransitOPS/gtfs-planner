@@ -1212,6 +1212,40 @@ defmodule GtfsPlanner.Gtfs do
   def get_route!(id), do: Repo.get!(Route, id)
 
   @doc """
+  Gets one route by its own id within an organization and GTFS version.
+
+  This is the scoped lookup a server-owned resource identity resolves through: a
+  route of another organization, another version, or a malformed id is
+  `{:error, :not_found}`, exactly like a deleted one.
+
+  ## Examples
+
+      iex> get_route_in_version(organization_id, gtfs_version_id, route.id)
+      {:ok, %Route{}}
+
+      iex> get_route_in_version(organization_id, gtfs_version_id, Ecto.UUID.generate())
+      {:error, :not_found}
+  """
+  @spec get_route_in_version(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, Route.t()} | {:error, :not_found}
+  def get_route_in_version(organization_id, gtfs_version_id, id) do
+    with {:ok, id} <- Ecto.UUID.cast(id) do
+      from(r in Route,
+        where:
+          r.id == ^id and r.organization_id == ^organization_id and
+            r.gtfs_version_id == ^gtfs_version_id
+      )
+      |> Repo.one()
+      |> case do
+        nil -> {:error, :not_found}
+        route -> {:ok, route}
+      end
+    else
+      :error -> {:error, :not_found}
+    end
+  end
+
+  @doc """
   Gets a route by its route_id within an organization and GTFS version.
 
   Returns nil if the route does not exist.
@@ -4755,6 +4789,40 @@ defmodule GtfsPlanner.Gtfs do
   @doc "Loads one calendar identity as its weekly row, anchor, exceptions and fingerprint."
   def get_calendar(organization_id, gtfs_version_id, service_id),
     do: Calendars.get_calendar(organization_id, gtfs_version_id, service_id)
+
+  @doc """
+  Gets one calendar identity within an organization and GTFS version.
+
+  This is the scoped lookup a server-owned approved extension resolves through: a
+  service ID of another organization or version, or a malformed one, is
+  `{:error, :not_found}`, exactly like a deleted calendar.
+
+  ## Examples
+
+      iex> get_calendar_in_version(organization_id, gtfs_version_id, "SCHOOL_WD")
+      {:ok, %Calendar{}}
+
+      iex> get_calendar_in_version(organization_id, gtfs_version_id, "NONE")
+      {:error, :not_found}
+  """
+  @spec get_calendar_in_version(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, Calendar.t()} | {:error, :not_found}
+  def get_calendar_in_version(organization_id, gtfs_version_id, service_id)
+      when is_binary(service_id) do
+    from(c in Calendar,
+      where:
+        c.organization_id == ^organization_id and c.gtfs_version_id == ^gtfs_version_id and
+          c.service_id == ^service_id
+    )
+    |> Repo.one()
+    |> case do
+      nil -> {:error, :not_found}
+      calendar -> {:ok, calendar}
+    end
+  end
+
+  def get_calendar_in_version(_organization_id, _gtfs_version_id, _service_id),
+    do: {:error, :not_found}
 
   @doc "Creates one weekly or dates-only calendar under the scoped write lock."
   def create_calendar(attrs, %AuditContext{} = audit_context),
