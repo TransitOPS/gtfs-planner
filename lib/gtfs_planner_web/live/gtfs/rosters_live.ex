@@ -91,6 +91,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     confirm_delete_line
     save_pick
     save_operator
+    confirm_delete_operator
   )
 
   # A role revoked while the page is open is not an error the reader caused and
@@ -107,6 +108,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   # organization by the writer, so this sentence says what the page can know and
   # nothing about another tenant's operator.
   @operator_not_offered "That operator is not on this organization's list. Choose another operator."
+
+  # The operator the confirmation named is gone by the time the editor confirms
+  # it. Both the form and the confirmation close and the page says why in its own
+  # toast: a form for an operator that no longer exists is a lie, and there is no
+  # card left to own the sentence.
+  @operator_gone "That operator is no longer on this organization's list."
 
   # The operators drawer's two addresses a push names: the form the submit is
   # about, and the panel that lists the failures when the form has no invalid
@@ -190,6 +197,11 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
      # events that change them, for the slot drawer's reason.
      |> assign(:operators, nil)
      |> assign(:operator_form, nil)
+     # The delete confirmation and what it names. Built by the events that change
+     # it, for the drawers' reason: `:holdings` is a read of every version's
+     # picks, and an assign made during a render would cost the page its
+     # streamed rows.
+     |> assign(:delete_operator, nil)
      |> stream(:roster_lines, [], dom_id: &roster_row_dom_id/1)
      |> attach_hook(:editor_access, :handle_event, &require_editor/3)}
   end
@@ -963,6 +975,52 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     end
   end
 
+  # The delete confirmation names the operator and the lines their picks empty.
+  # Those lines are read across every version of the organization with
+  # `Gtfs.roster_operator_holdings/2`, not off this version's roster: a hard
+  # delete empties a pick in each of them, so naming only the one on screen
+  # would leave the reader to find the others themselves.
+  #
+  # It is a read of state this socket could name without writing, so it is not in
+  # `@write_events`; only `confirm_delete_operator` is.
+  def handle_event("ask_delete_operator", %{"id" => operator_id}, socket) do
+    case drawn_operator(socket, operator_id) do
+      nil ->
+        {:noreply, socket}
+
+      operator ->
+        {:noreply,
+         assign(socket, :delete_operator, %{
+           operator_id: operator.id,
+           name: operator.display_name,
+           holdings:
+             Gtfs.roster_operator_holdings(socket.assigns.current_organization.id, operator.id)
+         })}
+    end
+  end
+
+  def handle_event("cancel_delete_operator", _params, socket) do
+    {:noreply, assign(socket, :delete_operator, nil)}
+  end
+
+  # The delete. `Operations.delete_operator/2` is a hard delete whose foreign key
+  # leaves every held line open, in this version and in every other; the roster
+  # is re-read afterwards so the grid redraws from the composition rather than
+  # from a pick this page removed itself.
+  #
+  # The confirmation carries the id it was opened for, so a hand-built event
+  # cannot reach another operator than the one on screen, and the writer scopes
+  # the id to the caller's organization anyway.
+  def handle_event("confirm_delete_operator", _params, socket) do
+    case socket.assigns.delete_operator do
+      %{operator_id: operator_id} ->
+        delete_operator(socket, operator_id)
+
+      nil ->
+        {:noreply, socket}
+    end
+  end
+
   # ── The pick row ──────────────────────────────────────────────────────────
   #
   # The pick is a record of what a bid agreed, not a proposal the page decides
@@ -1462,6 +1520,38 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
       "display_name" => operator.display_name,
       "seniority_number" => operator.seniority_number
     }
+  end
+
+  defp delete_operator(socket, operator_id) do
+    case Operations.delete_operator(socket.assigns.current_organization.id, operator_id) do
+      {:ok, operator} ->
+        socket =
+          socket
+          |> assign(:delete_operator, nil)
+          |> close_operator_form()
+          |> clear_open_work()
+          |> load_roster()
+          |> put_operators(load_operators(socket))
+
+        {:noreply,
+         socket
+         |> put_toast("#{operator.display_name} deleted.", :done)
+         |> push_event("focus_scoped_target", %{id: @operators_title_id})}
+
+      {:error, :not_found} ->
+        # The operator went while the confirmation was up. The form and the
+        # confirmation both close, and the reason is the page's own toast because
+        # there is no drawer left to own it.
+        socket =
+          socket
+          |> assign(:delete_operator, nil)
+          |> close_operator_form()
+          |> clear_open_work()
+          |> load_roster()
+          |> put_operators(load_operators(socket))
+
+        {:noreply, put_toast(socket, @operator_gone, :refused)}
+    end
   end
 
   defp delete_line(socket, line_id) do
@@ -2056,8 +2146,17 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
           name={@operator_form.name}
           line_number={@operator_form.line_number}
           failures={@operator_form.failures}
+          operator_id={@operator_form.editing_id}
         />
       </div>
+
+      <RosterOperatorsComponents.delete_operator_confirm
+        :if={@delete_operator}
+        open
+        name={@delete_operator.name}
+        holdings={@delete_operator.holdings}
+        version_id={@current_gtfs_version.id}
+      />
 
       <RostersComponents.slot_drawer
         :if={@slot}

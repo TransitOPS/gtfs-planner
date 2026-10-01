@@ -190,6 +190,8 @@ defmodule GtfsPlannerWeb.Gtfs.RosterOperatorsComponents do
   attr :line_number, :integer, default: nil
   attr :failures, :list, default: []
   attr :on_close, :string, default: "cancel_operator"
+  attr :on_delete, :string, default: "ask_delete_operator"
+  attr :operator_id, :string, default: nil, doc: "the operator being edited; nil when adding"
 
   def operator_form(assigns) do
     ~H"""
@@ -273,6 +275,20 @@ defmodule GtfsPlannerWeb.Gtfs.RosterOperatorsComponents do
           </.drawer_scroll>
 
           <.drawer_footer>
+            <%!-- The destructive action sits at the opposite edge from the save, as
+            the drawer's own rules ask, and it is drawn only while editing: there
+            is nothing to delete when adding. --%>
+            <.button
+              :if={@editing}
+              id="rosters-delete-operator"
+              type="button"
+              variant="danger"
+              class="min-h-11 mr-auto"
+              phx-click={@on_delete}
+              phx-value-id={@operator_id}
+            >
+              Delete operator
+            </.button>
             <.button
               id="rosters-operator-cancel"
               type="button"
@@ -295,5 +311,107 @@ defmodule GtfsPlannerWeb.Gtfs.RosterOperatorsComponents do
       </div>
     </.drawer>
     """
+  end
+
+  @doc """
+  The delete confirmation: what the operator is, what stops being theirs, and
+  that it cannot be undone.
+
+  The held lines are read with `Gtfs.roster_operator_holdings/2`, which answers
+  across every version of the organization, because a hard delete empties a pick
+  in every version and not only in the one on screen. When any of those lines is
+  in another version the sentence names the version each line belongs to —
+  "Line 4 in 2027 spring becomes Open" — because this page cannot otherwise
+  account for a line the reader is not looking at. When every held line is in
+  this version the version is left out: the reader is looking at it.
+
+  An operator nobody holds says only what is removed from them. There is no
+  consequence to name, and a sentence about lines that do not exist is worse
+  than none.
+
+  The confirmation's destructive button repeats the verb and the object —
+  "Delete operator" — so the action is readable from the button alone, and
+  "Keep operator" is the way out. The dialog returns focus to the control that
+  opened it, which is still in the form the reader came from.
+  """
+  attr :open, :boolean, default: true
+  attr :name, :string, required: true
+  attr :holdings, :list, default: []
+  attr :version_id, :string, required: true, doc: "the version on screen"
+
+  def delete_operator_confirm(assigns) do
+    assigns =
+      assign(assigns, :sentence, open_lines_sentence(assigns.holdings, assigns.version_id))
+
+    ~H"""
+    <.confirm_dialog
+      id="rosters-delete-operator-confirm"
+      chrome="planner"
+      open={@open}
+      title={"Delete #{@name}?"}
+      confirm_label="Delete operator"
+      cancel_label="Keep operator"
+      pending_label="Deleting…"
+      on_confirm="confirm_delete_operator"
+      on_cancel="cancel_delete_operator"
+      return_focus_id="rosters-delete-operator"
+    >
+      <p id="rosters-delete-operator-body">
+        <span :if={@sentence}>{@sentence}</span>
+        Their name, employee ID and seniority number are removed from the app.
+      </p>
+    </.confirm_dialog>
+    """
+  end
+
+  @doc """
+  What an operator's held lines are about to be, in one sentence, or `nil` when
+  they hold none.
+
+  It is a clause list plus a verb, because the number of held lines decides
+  both, and it is a public function rather than markup so that the wording has
+  one home: the confirmation draws it, and a test asserts the sentence a reader
+  is shown rather than the sentence the template happens to produce.
+  """
+  def open_lines_sentence([], _version_id), do: nil
+
+  def open_lines_sentence(holdings, version_id) do
+    # The version is named only when a line outside this one is involved: with
+    # every line here, the reader is already looking at it.
+    named? = Enum.any?(holdings, &(&1.gtfs_version_id != version_id))
+    one? = length(holdings) == 1
+
+    clauses =
+      holdings
+      |> Enum.map(&line_clause(&1, named?))
+      |> join_clauses()
+      |> capitalize_first()
+
+    "#{clauses} #{if one?, do: "becomes", else: "become"} Open."
+  end
+
+  # Only the first letter: `String.capitalize/1` would downcase a version name
+  # in the middle of the sentence. A grapheme rather than a byte, because a
+  # version name may open with anything.
+  defp capitalize_first(""), do: ""
+
+  defp capitalize_first(string) do
+    {first, rest} = String.next_grapheme(string)
+
+    String.upcase(first) <> rest
+  end
+
+  defp line_clause(%{line_number: number, version_name: name}, true),
+    do: "line #{number} in #{name}"
+
+  defp line_clause(%{line_number: number}, _named?), do: "line #{number}"
+
+  # "line 4", "line 4 and line 7", "line 4, line 7 and line 11".
+  defp join_clauses([only]), do: only
+
+  defp join_clauses([first | rest] = clauses) do
+    joiner = if length(clauses) == 2, do: " and ", else: ", "
+
+    Enum.join(Enum.intersperse(rest, joiner)) |> then(&(first <> joiner <> &1))
   end
 end
