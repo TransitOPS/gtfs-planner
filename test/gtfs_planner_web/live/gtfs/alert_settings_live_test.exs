@@ -93,8 +93,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
         |> LazyHTML.query("#scripts tr")
         |> LazyHTML.attribute("id")
 
-      assert Enum.take(ids, 1) == [org_script.id]
-      assert Enum.drop(ids, 1) == Enum.map(@built_in_keys, &"builtin-#{&1}")
+      # LiveView prefixes a stream item's DOM id with the container's name.
+      assert Enum.take(ids, 1) == ["scripts-#{org_script.id}"]
+
+      assert Enum.drop(ids, 1) ==
+               Enum.map(@built_in_keys, &"scripts-builtin-#{&1}")
 
       # The built-ins are the read-only ones: each has a copy control and no
       # Edit, which is what keeps a default uniform across tenants.

@@ -2053,6 +2053,32 @@ async function captureSettingsReference(page, testInfo, state, width) {
   });
 }
 
+// The drawer slides in over 300ms. Capturing before the panel settles
+// photographs a panel still translated off the right edge, so the wait requires
+// the panel's right edge to sit on the viewport edge and its animation to have
+// finished.
+async function settleScriptDrawer(page) {
+  const panel = page.locator("#script-drawer");
+  await panel.waitFor({ state: "visible" });
+  await page.waitForFunction(
+    () => {
+      const element = document.querySelector("#script-drawer");
+      if (!element) return false;
+
+      const rect = element.getBoundingClientRect();
+      const settled =
+        Math.abs(rect.right - window.innerWidth) <= 2 && rect.left < window.innerWidth;
+      const stillMoving = element
+        .getAnimations()
+        .some((animation) => animation.playState === "running");
+
+      return settled && !stillMoving;
+    },
+    null,
+    { timeout: 15_000 },
+  );
+}
+
 // The version this tab opens against, resolved through the header's own version
 // panel the way the other alert journeys resolve theirs.
 async function alertsVersionId(page) {
@@ -2130,6 +2156,7 @@ test.describe("alert settings", () => {
 
     await page.locator("#create-script").click();
     await page.waitForSelector("#script-form", { timeout: 15_000 });
+    await settleScriptDrawer(page);
     await expect(page.locator("#script-fill-ins")).toContainText("Fill-ins");
 
     // An unknown placeholder is refused on the field that caused it, and the
@@ -2165,6 +2192,7 @@ test.describe("alert settings", () => {
     // opens that new row in the drawer, so one tenant's copy stays theirs.
     await page.locator("#copy-builtin-detour").click();
     await page.waitForSelector("#script-form", { timeout: 15_000 });
+    await settleScriptDrawer(page);
     await expect(page.locator("#script-drawer-title")).toContainText("Edit script");
     await expect(page.locator("#script-name")).toHaveValue("Detour, stops skipped");
     await expect(page.locator("#script-header")).toHaveValue(
@@ -2184,7 +2212,7 @@ test.describe("alert settings", () => {
     page,
   }, testInfo) => {
     await page.setViewportSize(DESKTOP);
-    await openAlertSettings(page, "guidelines");
+    const versionId = await openAlertSettings(page, "guidelines");
 
     // The recommended text is shown at revision 0, and reading it stored nothing.
     await expect(page.locator("#guidelines-revision")).toContainText(
@@ -2210,8 +2238,14 @@ test.describe("alert settings", () => {
     // stale one: it is refused with the conflict sentence rather than silently
     // overwriting (R6, FH-24).
     await page.locator("#guidelines-text").fill("A second wording from this tab.");
+    // A second page of the same context shares the sign-in but starts on a blank
+    // document, so the version is resolved from this tab rather than from a
+    // header panel the new page has not rendered yet.
     const otherSession = await page.context().newPage();
-    await openAlertSettingsSignedIn(otherSession, "guidelines");
+    await otherSession.goto(
+      `/gtfs/${versionId}/settings/alerts?tab=guidelines`,
+    );
+    await otherSession.waitForSelector("#guidelines-card", { timeout: 15000 });
     await otherSession.locator("#guidelines-text").fill("Another editor's wording.");
     await otherSession.locator("#save-guidelines").click();
     await otherSession.waitForSelector("#guidelines-revision:has-text('Revision 2')", {

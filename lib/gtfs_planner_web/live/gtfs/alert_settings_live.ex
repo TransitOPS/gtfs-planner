@@ -349,18 +349,18 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
     |> stream(:scripts, Enum.map(scripts, &script_row/1), reset: true)
   end
 
-  # A stream item's `:id` is its DOM identity, so an organization script's row is
-  # named by the script's own UUID and a built-in's by its stable key: the copy
-  # button's id is built from the same key, which is what the card's browser and
-  # ExUnit journeys select.
+  # LiveView prefixes a stream item's DOM id with the container's name, so the
+  # comprehension's `id` is not the script's own identity and cannot be built
+  # into another element's id. `:dom_key` carries the script's own identity
+  # instead - its UUID, or a built-in's stable key - and the row's controls are
+  # named from it.
   defp script_row(%{built_in?: true} = script) do
-    Map.merge(script, %{
-      id: "builtin-#{built_in_key(script.key)}",
-      built_in_key: built_in_key(script.key)
-    })
+    key = built_in_key(script.key)
+
+    Map.merge(script, %{id: "builtin-#{key}", dom_key: "builtin-#{key}", built_in_key: key})
   end
 
-  defp script_row(script), do: script
+  defp script_row(script), do: Map.put(script, :dom_key, "org-#{script.id}")
 
   defp built_in_key("builtin:" <> key), do: key
   defp built_in_key(key), do: key
@@ -659,7 +659,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
             <th scope="col" class="px-3 py-2.5 text-left text-[13px] font-[650] text-default">
               For
             </th>
-            <th scope="col" class="w-[1%] px-5 py-2.5 text-right text-[13px] font-[650] text-default">
+            <th
+              scope="col"
+              class="w-[1%] px-5 py-2.5 text-right text-[13px] font-[650] text-default whitespace-nowrap"
+            >
               <span class="sr-only">Actions</span>
             </th>
           </tr>
@@ -696,7 +699,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
             </td>
             <td data-label="For" class="px-3 py-3 max-md:mt-1 max-md:block max-md:p-0">
               <span
-                id={"script-for-#{id}"}
+                id={"script-for-#{script.dom_key}"}
                 class="inline-flex items-center rounded-badge bg-canvas px-2 py-0.5 text-[12px] font-[650] text-default"
               >
                 {situation_label(script.situation) || script.situation}
@@ -704,13 +707,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
             </td>
             <td
               data-label="Actions"
-              class="py-3 pl-3 pr-5 text-right max-md:mt-1 max-md:block max-md:p-0 max-md:text-left"
+              class="py-3 pl-3 pr-5 text-right whitespace-nowrap max-md:mt-1 max-md:block max-md:p-0 max-md:text-left"
             >
               <.button
                 :if={not script.built_in?}
                 id={"edit-script-#{script.id}"}
                 type="button"
-                class="min-h-11"
+                class="min-h-11 whitespace-nowrap"
                 phx-click="open_edit_script"
                 phx-value-script_id={script.id}
                 aria-label={"Edit script: #{script.name}"}
@@ -723,7 +726,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
                 id={"copy-builtin-#{script.built_in_key}"}
                 type="button"
                 variant="secondary"
-                class="min-h-11"
+                class="min-h-11 whitespace-nowrap"
                 phx-click="copy_built_in_script"
                 phx-value-key={script.built_in_key}
                 aria-label={"Copy to edit: #{script.name}"}
