@@ -404,11 +404,14 @@ trail reaches them: open `Routes` from the dashboard; open route `AAMV` in the l
 `Schedules` in the route navigation; press `Add trips`; type `17:00` into `First departure`; press
 `Add 1 trip`. Reading the flash and the reloaded row are not actions.
 
-The traced estimate counted four actions this trail does not need. `Scheduled trips` is already the
-selected radio in the drawer, and `Service days` and `Pattern` already carry `WE · 4 trips` and
+Of the eight actions the trace estimated, three are unnecessary and the executed trail adds one:
+`8 - 3 + 1 = 6`. `Scheduled trips` is already the selected radio in the drawer, and `Service days`
+and `Pattern` already carry `WE · 4 trips` and
 `Nye County Airport (Demo) – Amargosa Valley (Demo)`, the calendar and pattern the timetable was
-filtered to, so a tester who filters first never chooses them. Only the departure has to change. As
-in `change-times`, the field shows 24-hour clocks where the goal reads 5:00 p.m.
+filtered to, so a tester who filters first never chooses them. What the estimate did not have is
+the hop from the dashboard to `Routes`, which the executed trail opens before the route list. Only
+the departure has to change. As in `change-times`, the field shows 24-hour clocks where the goal
+reads 5:00 p.m.
 
 The drawer is one screen taller than the viewport, so `Where these trips run` and the timetables
 behind it are reached by scrolling the drawer; that is why the trail's step on the save button

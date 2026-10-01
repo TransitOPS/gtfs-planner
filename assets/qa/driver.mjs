@@ -323,11 +323,15 @@ export function attachListeners(state) {
   const { page, buffer } = state;
 
   page.on("console", message => {
+    // A console message names the source it came from, so a message the browser
+    // attributes to a stubbed resource carries that resource's URL and the stub
+    // exclusion can see it. The page URL is the fallback for a message with no
+    // source location of its own.
     buffer.push({
       type: "console",
       level: message.type(),
       text: message.text(),
-      url: page.url()
+      url: message.location()?.url || page.url()
     });
   });
 
@@ -566,13 +570,14 @@ export function pageTextIncludes(name) {
 // One upload attempt: open the chooser on the control the tester named, wait
 // for the input to carry a ref, set the file, and confirm the page listed it.
 async function uploadOnce(page, step, path) {
-  // The event is awaited together with the click that raises it, so the two
-  // are never ordered wrongly against each other.
+  // The chooser and the click that raises it settle together. Settling them in
+  // one expression also disposes of the waiter when the click throws: the
+  // waiter keeps a rejection handler for the rest of its life, so an attempt
+  // that failed before the chooser opened cannot reject on Playwright's
+  // timeout with nothing awaiting it and take the resident driver down.
   const opened = page.waitForEvent("filechooser");
+  const [chooser] = await Promise.all([opened, targetLocator(page, step).click()]);
 
-  await targetLocator(page, step).click();
-
-  const chooser = await opened;
   const input = await chooser.element();
 
   await page.waitForFunction(hasUploadRef, input, { timeout: UPLOAD_REF_TIMEOUT_MS });
@@ -998,27 +1003,35 @@ export function registerReplay(registry, state, { primary = gitPrimary, isIgnore
 
     mkdirSync(folder, { recursive: true });
 
-    for (const [index, step] of trail.steps.entries()) {
-      const n = index + 1;
-      const reply = await executeStep(state, {
-        flags: step,
-        requireIntent: false,
-        replay: true,
-        captureTo: journeyCapturePath(root, scenarioId, n)
-      });
+    // The capture folder is shared with the run before this one, so it is
+    // pruned however the loop leaves: a trail that stops partway must not
+    // leave the previous longer run's captures behind to read as this one's
+    // evidence. `trail.steps.length` is what a full replay would retain.
+    let pruned = [];
 
-      if (reply.ok !== true) {
-        return {
-          ok: false,
-          code: 1,
-          failedStep: n,
-          error: reply.error ?? "unknown",
-          screenshot: await failureCapture(state, reply.n ?? n)
-        };
+    try {
+      for (const [index, step] of trail.steps.entries()) {
+        const n = index + 1;
+        const reply = await executeStep(state, {
+          flags: step,
+          requireIntent: false,
+          replay: true,
+          captureTo: journeyCapturePath(root, scenarioId, n)
+        });
+
+        if (reply.ok !== true) {
+          return {
+            ok: false,
+            code: 1,
+            failedStep: n,
+            error: reply.error ?? "unknown",
+            screenshot: await failureCapture(state, reply.n ?? n)
+          };
+        }
       }
+    } finally {
+      pruned = pruneStaleCaptures(folder, state.scenario.slug, trail.steps.length);
     }
-
-    const pruned = pruneStaleCaptures(folder, state.scenario.slug, trail.steps.length);
 
     return ok({ steps: trail.steps.length, pruned });
   });

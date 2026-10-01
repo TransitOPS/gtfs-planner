@@ -67,8 +67,7 @@ test("a trail keeps the ok action steps of a run in order and carries their targ
     steps: [
       { action: "goto", path: "/" },
       { action: "click", role: "button", name: "Import feed" },
-      { action: "wait", text: "Feed imported", timeout: 30 },
-      { action: "press", key: "Enter" }
+      { action: "wait", text: "Feed imported", timeout: 30 }
     ]
   });
 });
@@ -248,9 +247,44 @@ test("the first failing step stops the replay, names itself and saves a screensh
   expect(page.calls.some(call => call.includes("Save"))).toBe(false);
   expect(records(runDir)).toHaveLength(2);
 
-  // A drifted replay does not prune: the captures it did not reach are still
-  // the evidence of the earlier trail.
+  // A drifted replay does not prune the steps it did reach: the captures of
+  // the earlier trail stay as evidence.
   expect(readdirSync(dirname(journeyCapturePath(captureRoot(primary), "JRNY-001/import", 1)))).toHaveLength(2);
+});
+
+test("a drifted replay prunes the steps a shorter trail no longer has", async () => {
+  const runDir = temporaryDirectory();
+  const primary = temporaryDirectory();
+  const folder = dirname(journeyCapturePath(captureRoot(primary), "JRNY-001/import", 1));
+
+  mkdirSync(folder, { recursive: true });
+
+  // What a previous, longer run of the same scenario left behind.
+  for (const name of ["import-s001.png", "import-s002.png", "import-s003.png", "import-s004.png"]) {
+    writeFileSync(join(folder, name), "png");
+  }
+
+  const registry = replayRegistry(fakePage({ failOn: "Deleted" }), runDir, primary);
+  const reply = await handleLine(
+    JSON.stringify({
+      cmd: "replay",
+      trail: {
+        scenario: "JRNY-001/import",
+        steps: [
+          { action: "click", role: "button", name: "Import feed" },
+          { action: "click", role: "button", name: "Deleted" }
+        ]
+      }
+    }),
+    registry
+  );
+
+  expect(reply).toMatchObject({ ok: false, failedStep: 2 });
+
+  // The capture folder is shared with the previous run, so a capture past the
+  // shorter trail's length is stale evidence and is removed however the replay
+  // left.
+  expect(readdirSync(folder).sort()).toEqual(["import-s001.png", "import-s002.png"]);
 });
 
 test("a capture root that is not ignored stops the replay before its first step", async () => {
@@ -313,18 +347,25 @@ test("a shorter trail removes its own stale captures and no other scenario's", a
 
 test("pruning selects only this scenario's files above the new count", () => {
   const removed = [];
-  const pruned = pruneStaleCaptures("/nowhere", "import", 2, { list: () => [], remove: () => removed.push("x") });
+  // A folder that does not exist has nothing to prune: the existsSync guard
+  // answers before the injected list is reached.
+  const pruned = pruneStaleCaptures(join(temporaryDirectory(), "never-created"), "import", 2, {
+    list: () => [],
+    remove: () => removed.push("x")
+  });
 
   expect(pruned).toEqual([]);
+  expect(removed).toEqual([]);
 
+  const folder = temporaryDirectory();
   const names = ["import-s001.png", "import-s002.png", "import-s003.png", "import-s003-alt.png", "other-s009.png"];
-  const selected = pruneStaleCaptures("/folder", "import", 2, {
+  const selected = pruneStaleCaptures(folder, "import", 2, {
     list: () => names,
     remove: file => removed.push(file)
   });
 
   expect(selected).toEqual(["import-s003.png", "import-s003-alt.png"]);
-  expect(removed).toEqual(["/folder/import-s003.png", "/folder/import-s003-alt.png"]);
+  expect(removed).toEqual([join(folder, "import-s003.png"), join(folder, "import-s003-alt.png")]);
 });
 
 test("the replay line names the drifted step, its error and its screenshot", () => {

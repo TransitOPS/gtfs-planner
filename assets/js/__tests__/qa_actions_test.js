@@ -51,6 +51,26 @@ test("a goto path is normalized without its fragment", () => {
   expect(result.step.path).toBe("/gtfs/import");
 });
 
+test("a goto on a foreign origin is rejected however well its path matches", () => {
+  const result = validateStep({ action: "goto", path: "https://evil.example/gtfs/v1/stations" }, ctx);
+
+  expect(result.ok).toBe(false);
+  expect(result.reason).toContain("origin");
+});
+
+test("a goto on the origin the run has navigated is accepted", () => {
+  const observed = {
+    attempt: 1,
+    startPath: "/gtfs/import",
+    observedHrefs: new Set(["http://localhost:4001/gtfs/v1/stations"]),
+    files: []
+  };
+  const result = validateStep({ action: "goto", path: "http://localhost:4001/gtfs/v1/stations" }, observed);
+
+  expect(result.ok).toBe(true);
+  expect(result.step.path).toBe("http://localhost:4001/gtfs/v1/stations");
+});
+
 test("a click without an expectation is rejected", () => {
   const click = { action: "click", role: "button", name: "Import feed", intent: "start it" };
   const result = validateStep(click, ctx);

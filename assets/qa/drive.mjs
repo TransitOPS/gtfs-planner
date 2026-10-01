@@ -270,7 +270,9 @@ function setPid(argv) {
 // Starts the driver detached so it outlives this process, then waits for its
 // sign-in. The launcher records the printed pid with `set-pid`; the driver
 // never writes `session.json` itself, so the launcher stays the only writer of
-// the run's own record.
+// the run's own record. A driver that does not reach a ready state is killed
+// here, so a failed open leaves no detached child behind for a stop path that
+// never received a pid to stop.
 async function open(argv) {
   const flags = parseFlags(argv, ["headed"]);
   const runDir = flags.run;
@@ -305,7 +307,7 @@ async function open(argv) {
       }
 
       if (reply.ok === true && reply.setup?.error) {
-        return failure(`the driver signed in unsuccessfully: ${reply.setup.error}`);
+        return stopUnreadyDriver(child, `the driver signed in unsuccessfully: ${reply.setup.error}`);
       }
 
       if (reply.ok !== true) lastError = reply.error;
@@ -313,7 +315,8 @@ async function open(argv) {
       if (Date.now() >= deadline) {
         // A driver that died before signing in never answers, so the last
         // error it left is what the run's `driver.log` explains.
-        return failure(
+        return stopUnreadyDriver(
+          child,
           `the driver at ${session.socket} was not ready within ${deadlineMs / 1000}s: ${lastError}`
         );
       }
@@ -323,6 +326,18 @@ async function open(argv) {
   } finally {
     closeSync(log);
   }
+}
+
+// A driver that never reached a ready state is signalled, and the failure is
+// returned, so an abandoned browser does not outlive the open that started it.
+function stopUnreadyDriver(child, reason) {
+  try {
+    child.kill();
+  } catch {
+    // A child that already exited needs no signal.
+  }
+
+  return failure(reason);
 }
 
 // One tester step, addressed the way a tester reads the page: an action, then

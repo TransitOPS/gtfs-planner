@@ -118,20 +118,19 @@ defmodule GtfsPlanner.Gtfs.Import.UxQaSampleFeedTest do
         |> Map.new(fn {name, content} -> {to_string(name), content} end)
         |> Map.fetch!("stop_times.txt")
         |> String.split("\n", trim: true)
-        # Upstream declares `drop_off_time` and gives every row five fields, which
-        # is the shape `GtfsPlanner.Gtfs.Import.CsvParser` rejects.
-        |> then(fn ["trip_id,_,_,_,_,_,_,drop_off_type,shape_dist_traveled" | rows] ->
-          Enum.join(
-            ["trip_id,_,_,_,_,_,_,drop_off_time,shape_dist_traveled" | rows]
-            |> Enum.map(fn
-              row when is_binary(row) ->
-                row |> String.split(",") |> Enum.take(5) |> Enum.join(",")
+        # Upstream declares `drop_off_time` and gives every row five fields,
+        # which is the shape `GtfsPlanner.Gtfs.Import.CsvParser` rejects. The
+        # header is taken from the zip's own row — matched by its first field,
+        # since every field is spelled out — and only the data rows are cut to
+        # five fields.
+        |> then(fn [header | rows] ->
+          assert String.starts_with?(header, "trip_id,")
 
-              header ->
-                String.replace(header, "drop_off_type", "drop_off_time")
-            end),
-            "\n"
-          )
+          String.replace(header, "drop_off_type", "drop_off_time") <>
+            "\n" <>
+            Enum.map_join(rows, "\n", fn row ->
+              row |> String.split(",") |> Enum.take(5) |> Enum.join(",")
+            end)
         end)
 
       zip =

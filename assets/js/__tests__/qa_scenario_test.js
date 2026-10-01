@@ -157,7 +157,6 @@ test("the brief carries the tester keys and none of the harness values", () => {
 
   for (const harnessOnly of [
     scenario.account,
-    scenario.seed,
     scenario.successCheck.id,
     scenario.successCheck.text,
     scenario.entryRoute,
@@ -166,6 +165,16 @@ test("the brief carries the tester keys and none of the harness values", () => {
   ]) {
     expect(brief).not.toContain(harnessOnly);
   }
+
+  // The seed is not carried as a harness value, but the fixture's seed is the
+  // stem of a file name the brief must list, so the check removes the listed
+  // file names before looking for it.
+  const withoutFiles = scenario.files.reduce(
+    (text, file) => text.replaceAll(file, ""),
+    brief
+  );
+
+  expect(withoutFiles).not.toContain(scenario.seed);
 
   expect(Object.keys(testerView(scenario)).sort()).toEqual([
     "files",

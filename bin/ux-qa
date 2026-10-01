@@ -140,10 +140,15 @@ process.stdout.write([replaysRoot(primary), referenceTrailsRoot(primary)].join("
 }
 
 # `JRNY-001-import.json` is `JRNY-001/import` with its slash replaced, which is
-# the name `trailFileName` writes; the reverse turns a scenario ID back into
-# the file that holds its trail.
+# the name `trailFileName` writes. The name comes from that function rather than
+# from a second rule here, so the launcher and the harness cannot disagree; the
+# reverse turns a scenario ID back into the file that holds its trail.
 trail_file_of() {
-  printf '%s.json\n' "${1//\//-}"
+  node --input-type=module -e '
+import { trailFileName } from "./assets/qa/session.mjs";
+
+process.stdout.write(trailFileName(process.argv[1]));
+' "$1"
 }
 
 scenario_id_of_trail_file() {
@@ -291,7 +296,17 @@ up() {
   # Everything a missing dependency would break is checked before a process
   # starts, so a stack that cannot work is never left half-built.
   local scenario_json seed java jar
-  scenario_json=$(node assets/qa/drive.mjs scenario --id "$scenario_id")
+  scenario_json=$(node assets/qa/drive.mjs scenario --id "$scenario_id" || true)
+
+  # A scenario the journey pages do not declare answers `{"ok":false,...}` and
+  # exits 2, so the diagnostic is keyed on the answer rather than on an
+  # assignment that `set -e` would abort in a plain call and that the
+  # conditional callers would let through.
+  if [ "$(field "$scenario_json" .ok)" != "true" ]; then
+    echo "no scenario \"$scenario_id\"; run bin/ux-qa with a scenario the journey pages declare" >&2
+    return 2
+  fi
+
   seed=$(field "$scenario_json" .scenario.seed)
 
   if [ "$seed" = "null" ]; then
@@ -377,12 +392,21 @@ up() {
     --port "$port" \
     --db-url "$GTFS_PLANNER_TEST_DATABASE_URL" \
     --java-path "$java" \
-    ${headed:+"$headed"})
+    ${headed:+"$headed"} || true)
+
+  if [ "$(field "$init_json" .ok)" != "true" ]; then
+    echo "the run could not be initialized for \"$scenario_id\"; no run can be judged" >&2
+    return 2
+  fi
+
   run=$(field "$init_json" .run)
 
   # The baseline is captured before the tester acts, so a check that compares
   # content in seconds has a known starting state to compare against.
-  node assets/qa/baseline.mjs --run "$run"
+  if ! node assets/qa/baseline.mjs --run "$run"; then
+    echo "the baseline could not be captured for ${run}; no run can be judged" >&2
+    return 2
+  fi
 
   # From here on the run owns real processes, so a failure stops exactly those
   # pids and nothing else.
@@ -396,16 +420,36 @@ up() {
     BROWSER_E2E=true UX_QA_REAL_VALIDATOR=true PHX_SERVER=true \
     PORT="$port" JAVA_PATH="$java" mix phx.server)
   owned_pids+=("$phoenix_pid")
-  node assets/qa/drive.mjs set-pid --run "$run" --which phoenix --pid "$phoenix_pid" >/dev/null
+
+  if ! node assets/qa/drive.mjs set-pid --run "$run" --which phoenix --pid "$phoenix_pid" >/dev/null; then
+    echo "the run could not record the server pid; run bin/ux-qa down for $run" >&2
+    return 2
+  fi
 
   if ! wait_for_health "$port" "$phoenix_pid"; then
     return 2
   fi
 
-  open_json=$(node assets/qa/drive.mjs open --run "$run" ${headed:+"$headed"})
+  open_json=$(node assets/qa/drive.mjs open --run "$run" ${headed:+"$headed"} || true)
+
+  if [ "$(field "$open_json" .ok)" != "true" ]; then
+    echo "the driver could not sign in for \"$scenario_id\"; the run is not usable" >&2
+    return 2
+  fi
+
   driver_pid=$(field "$open_json" .pid)
+
+  if [ -z "$driver_pid" ] || [ "$driver_pid" = "null" ]; then
+    echo "the driver reported no pid for \"$scenario_id\"; the run is not usable" >&2
+    return 2
+  fi
+
   owned_pids+=("$driver_pid")
-  node assets/qa/drive.mjs set-pid --run "$run" --which driver --pid "$driver_pid" >/dev/null
+
+  if ! node assets/qa/drive.mjs set-pid --run "$run" --which driver --pid "$driver_pid" >/dev/null; then
+    echo "the run could not record the driver pid; run bin/ux-qa down for $run" >&2
+    return 2
+  fi
 
   echo "run: ${run}"
   echo "brief: ${run}/brief.md"

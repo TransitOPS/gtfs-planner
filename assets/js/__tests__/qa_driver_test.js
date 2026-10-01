@@ -174,9 +174,12 @@ test("a stale socket file is removed and a live one is refused", async () => {
     await new Promise(resolve => server.close(resolve));
   }
 
-  // The path survives a close that did not remove it, which is exactly the
-  // leftover the next run has to clear.
-  await expect(prepareSocketPath(socketPath)).resolves.toBe(true);
+  // A path nothing answers on is the leftover the next run has to clear. A
+  // closed server removes its own socket file, so the leftover is written
+  // rather than relied upon.
+  const stale = join(temporaryDirectory(), "stale.sock");
+  writeFileSync(stale, "");
+  await expect(prepareSocketPath(stale)).resolves.toBe(true);
   await expect(prepareSocketPath(join(temporaryDirectory(), "never.sock"))).resolves.toBe(false);
 });
 // A page stand-in for the step executor. It answers the calls the executor
@@ -193,7 +196,11 @@ function fakePage({
   liveView = "settles",
   ref = true,
   listed = true,
-  downloads = []
+  downloads = [],
+  // `chooserFails` makes the filechooser waiter reject after the click has
+  // already thrown, which is the abandoned waiter an unhandled rejection comes
+  // from.
+  chooserFails = false
 } = {}) {
   const calls = [];
   const facts = {
@@ -280,6 +287,12 @@ function fakePage({
     waitForEvent: async name => {
       calls.push(`waitFor:${name}`);
 
+      if (chooserFails && name === "filechooser") {
+        return new Promise((_, rejectPromise) => {
+          setTimeout(() => rejectPromise(new Error("Timeout 30000ms exceeded waiting for the filechooser")), 1);
+        });
+      }
+
       return chooser;
     },
     waitForFunction: async (fn, arg) => {
@@ -321,7 +334,10 @@ function fakeState(page, runDir) {
     downloads: [],
     attempt: 0,
     observedHrefs: new Set(),
-    url: "http://localhost:4001/gtfs/1/import"
+    url: "http://localhost:4001/gtfs/1/import",
+    // `executeStep` guards on `finish !== null`, so a state without the key
+    // reads as a finished run and every step returns before it acts.
+    finish: null
   };
 }
 
@@ -554,6 +570,62 @@ test("an input with no upload ref yet is waited for, not raced", async () => {
     "waitRef:false",
     "waitRef:false"
   ]);
+});
+
+test("an upload whose click fails leaves the filechooser waiter handled", async () => {
+  const runDir = temporaryDirectory();
+  const page = fakePage({ fail: "the control is covered", chooserFails: true });
+  const unhandled = [];
+  const record = reason => unhandled.push(reason);
+
+  process.on("unhandledRejection", record);
+
+  try {
+    const reply = await executeStep(fakeState(page, runDir), {
+      flags: {
+        action: "upload",
+        text: "Choose a .zip file",
+        file: "sample-feed.zip",
+        intent: "give the page a feed",
+        expect: "the file listed"
+      }
+    });
+
+    expect(reply).toMatchObject({ ok: false, code: 1 });
+    expect(page.calls.filter(call => call === "waitFor:filechooser")).toHaveLength(3);
+
+    // The abandoned waiter rejects a tick later; it must already have a
+    // handler, or the resident driver would terminate on it mid-run.
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(unhandled).toEqual([]);
+  } finally {
+    process.off("unhandledRejection", record);
+  }
+});
+
+test("a console error the browser attributes to a stubbed resource is not a product error", async () => {
+  const runDir = temporaryDirectory();
+  const page = fakePage();
+  const state = fakeState(page, runDir);
+
+  attachListeners(state);
+  page.emit("console", {
+    type: () => "error",
+    text: () => "Failed to load resource",
+    location: () => ({ url: "http://localhost:4001/map/tiles/3/4/5.png" })
+  });
+
+  // The buffer's stub exclusion can only see the tile URL if the listener
+  // attributes the event to the source the browser reported.
+  expect(state.buffer.drain().consoleErrors).toEqual({ count: 0, first: [] });
+
+  page.emit("console", {
+    type: () => "error",
+    text: () => "boom",
+    location: () => ({ url: "http://localhost:4001/assets/app.js" })
+  });
+
+  expect(state.buffer.drain().consoleErrors).toEqual({ count: 1, first: ["boom"] });
 });
 
 test("a file name outside the upload folder is refused before the page is touched", async () => {

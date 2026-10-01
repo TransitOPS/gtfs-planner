@@ -57,12 +57,25 @@ function wholeNumber(value) {
   return /^-?\d+$/.test(value) ? Number.parseInt(value, 10) : null;
 }
 
+// The origin every route key is resolved against, for the paths that carry no
+// origin of their own.
+const ROUTE_BASE = "http://ux-qa.local";
+
 // Compare a path with an observed one on pathname and query, dropping any
 // fragment, so "#" anchors and absolute URLs both resolve to one route key.
 function routeKey(value) {
   try {
-    const url = new URL(value, "http://ux-qa.local");
+    const url = new URL(value, ROUTE_BASE);
     return `${url.pathname}${url.search}`;
+  } catch {
+    return null;
+  }
+}
+
+// The origin of an absolute URL, or `null` for a relative path.
+function originOf(value) {
+  try {
+    return new URL(value).origin;
   } catch {
     return null;
   }
@@ -179,10 +192,21 @@ export function validateStep(flags, ctx = {}) {
   }
 
   if (action === "goto") {
+    // A `goto` may only name a path the run already knows: the scenario start
+    // path or an href the driver observed. Those hrefs are same-origin by
+    // construction, so an absolute URL on a foreign origin is not one of them
+    // however well its path matches, and is refused before the routeKey
+    // comparison would accept it.
+    const candidates = [startPath, ...observedHrefs].filter(
+      value => typeof value === "string" && value.trim() !== ""
+    );
+    const origin = originOf(step.path);
+    if (origin !== null && !candidates.some(candidate => originOf(candidate) === origin)) {
+      return fail(`goto ${step.path} is not on an origin this run has navigated`);
+    }
+
     const wanted = routeKey(step.path);
-    const allowed = [startPath, ...observedHrefs]
-      .filter(value => typeof value === "string" && value.trim() !== "")
-      .map(routeKey);
+    const allowed = candidates.map(routeKey);
     if (wanted === null || !allowed.includes(wanted)) {
       return fail(`goto ${step.path} is neither the start path nor an observed href`);
     }
