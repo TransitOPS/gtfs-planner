@@ -60,20 +60,16 @@ defmodule GtfsPlanner.Gtfs.Blocking.Connections do
   How many of a group's connections carry each setting, and how many need review.
   A connection needing review is counted under its setting and under `:review`.
 
-  `quiet_stay` and `quiet_reboard` count only the connections `filter/2` keeps
-  under that setting — a stale or conflicting connection is never kept under a
-  decided setting, so a surface that offers the filter must quote these two
-  rather than `stay` and `reboard`, or the row would promise connections the
-  filter then drops.
+  A surface that quotes `stay` or `reboard` beside a filter should count the
+  filtered group's own decidable connections instead — these two fields cover
+  every connection the group holds, including the ones a chosen filter drops.
   """
   @type counts :: %{
           none: non_neg_integer(),
           stay: non_neg_integer(),
           reboard: non_neg_integer(),
           conflict: non_neg_integer(),
-          review: non_neg_integer(),
-          quiet_stay: non_neg_integer(),
-          quiet_reboard: non_neg_integer()
+          review: non_neg_integer()
         }
 
   @type connection :: %{
@@ -310,13 +306,20 @@ defmodule GtfsPlanner.Gtfs.Blocking.Connections do
   end
 
   # The place is the arrival stop's station when it has one, so the two bays of a
-  # station are one decision, and the stop's own name otherwise.
+  # station are one decision, and the stop's own name otherwise. The id follows
+  # the name: the parent station's id when there is one, else the stop's own, so
+  # `places/1` rolls every group decided at one station into a single place.
   defp place(stop_ref) do
     %{
-      id: stop_id(stop_ref) || "",
+      id: place_id(stop_ref) || "",
       name: name(stop_ref) || stop_id(stop_ref) || ""
     }
   end
+
+  defp place_id(stop_ref) when is_map(stop_ref),
+    do: presence(Map.get(stop_ref, :parent_station)) || Map.get(stop_ref, :stop_id)
+
+  defp place_id(_stop_ref), do: nil
 
   # Google offers staying on board within one route only for a loop, so a group
   # whose two directions of one route meet is a turnback; a direction the version
@@ -356,19 +359,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.Connections do
       acc
       |> Map.update!(connection.setting, &(&1 + 1))
       |> Map.update!(:review, &(&1 + if(connection.review?, do: 1, else: 0)))
-      |> Map.update!(quiet_count(connection), &(&1 + 1))
     end)
   end
 
-  # A connection needing review is kept by no decided setting, so only a quiet
-  # one is counted under its setting's quiet count.
-  defp quiet_count(%{review?: true}), do: :none
-  defp quiet_count(%{setting: :stay}), do: :quiet_stay
-  defp quiet_count(%{setting: :reboard}), do: :quiet_reboard
-  defp quiet_count(_connection), do: :none
-
   defp empty_counts,
-    do: %{none: 0, stay: 0, reboard: 0, conflict: 0, review: 0, quiet_stay: 0, quiet_reboard: 0}
+    do: %{none: 0, stay: 0, reboard: 0, conflict: 0, review: 0}
 
   defp filter_group(group, setting, route, q) do
     case Enum.filter(group.connections, &matches?(&1, group.place.name, setting, route, q)) do
