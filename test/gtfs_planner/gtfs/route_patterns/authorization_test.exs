@@ -220,6 +220,47 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuthorizationTest do
     assert count(ChangeLog, context.organization.id) == before_logs
   end
 
+  test "label removal rejects a revoked editor before clearing the owner", context do
+    owner = pattern!(context)
+    child = pattern!(context)
+
+    {1, nil} =
+      Repo.update_all(
+        from(p in RoutePattern, where: p.id == ^child.id),
+        set: [label_pattern_id: owner.id]
+      )
+
+    before_child = Repo.reload!(child)
+    before_logs = count(ChangeLog, context.organization.id)
+    deactivate_membership_fixture(context.membership)
+
+    assert {:error, :forbidden} =
+             Gtfs.remove_route_pattern_label(context.route.route_id, child.id, context.audit)
+
+    assert Repo.reload!(child) == before_child
+    assert count(ChangeLog, context.organization.id) == before_logs
+  end
+
+  test "grouping apply rejects a revoked editor before touching a trip or history", context do
+    trip = trip_fixture(context.organization.id, context.version.id, context.route.route_id)
+    before_trip = Repo.reload!(trip)
+    before_logs = count(ChangeLog, context.organization.id)
+    review = %{selections: [], fingerprint: "reviewed-before-revocation"}
+
+    # An active editor reaches the fingerprint comparison, which refuses this
+    # stale review, so the :forbidden below comes from the membership check.
+    assert {:error, :stale} =
+             Gtfs.group_left_out_trips(context.route.route_id, review, context.audit)
+
+    deactivate_membership_fixture(context.membership)
+
+    assert {:error, :forbidden} =
+             Gtfs.group_left_out_trips(context.route.route_id, review, context.audit)
+
+    assert Repo.reload!(trip) == before_trip
+    assert count(ChangeLog, context.organization.id) == before_logs
+  end
+
   defp pattern!(context) do
     attrs = %{
       route_pattern_name: "Original",

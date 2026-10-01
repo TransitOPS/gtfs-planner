@@ -1905,6 +1905,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         {:noreply,
          socket
          |> assign(:label_remove, nil)
+         |> mark_editor_refusal(reason)
          |> put_flash(:error, label_error(reason))}
     end
   end
@@ -1918,6 +1919,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   defp label_error(:not_found),
     do: "That pattern is no longer on this route, so nothing was removed."
+
+  defp label_error(:forbidden), do: "You no longer have editor access, so nothing was removed."
 
   defp label_error(_reason),
     do: "Nothing was removed. Try again in a moment."
@@ -1966,6 +1969,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
          |> load_screen()
          |> push_patch(to: unlinked_path(socket))}
 
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> assign(:link_pending, false)
+         |> mark_editor_refusal(:forbidden)
+         |> assign(:link_error, "Nothing was linked. #{link_error(:forbidden)}")}
+
       {:error, reason} ->
         {:noreply,
          socket
@@ -1976,6 +1986,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
          )}
     end
   end
+
+  defp link_error(:forbidden), do: "You no longer have editor access to this organization."
 
   defp link_error(:stale), do: "Review the offer again before linking."
 
@@ -2637,6 +2649,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       {:error, :invalid_selection} ->
         {:noreply,
          reload_grouping(socket, grouping.selections, :missing, missing_group_key(grouping))}
+
+      # A revoked editor writes nothing; the review keeps every choice the
+      # operator made so they survive an access restore.
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> mark_editor_refusal(:forbidden)
+         |> assign(:grouping, %{
+           grouping
+           | state: :failed,
+             missing_key: nil,
+             failed_reason: @forbidden_message
+         })}
 
       {:error, reason} ->
         {:noreply, reload_grouping(socket, grouping.selections, :failed, inspect(reason))}

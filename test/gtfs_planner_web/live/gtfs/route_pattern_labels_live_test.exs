@@ -185,6 +185,22 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLabelsLiveTest do
       refute has_element?(view, "#label-drawer")
     end
 
+    test "a revoked editor's confirm is refused and the child keeps its label", context do
+      build_scenario(context)
+      {:ok, view, _html} = live(context.conn, patterns_path(context))
+
+      render_click(view, "open_label", %{"label-id" => @label})
+      render_click(view, "request_remove_label", %{"pattern-id" => @child})
+
+      membership = Accounts.get_user_org_membership(context.user.id, context.organization.id)
+      {:ok, _membership} = Accounts.update_user_org_membership(membership, %{roles: []})
+
+      html = render_click(view, "remove_label")
+
+      assert html =~ "You no longer have editor access, so nothing was removed."
+      assert pattern_label(loaded_pattern(context, @child)) == owner_id(context)
+    end
+
     test "leaves the pattern, its stops and its trips in place", context do
       build_scenario(context)
       {:ok, view, _html} = live(context.conn, patterns_path(context))

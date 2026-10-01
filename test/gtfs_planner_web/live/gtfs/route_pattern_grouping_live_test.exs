@@ -345,6 +345,43 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternGroupingLiveTest do
     end
   end
 
+  describe "an editor revoked after the review opened" do
+    test "is refused, keeps their choices and writes nothing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      build_scenario(organization, version, "GRP13")
+
+      {:ok, view, _html} = live(conn, review_path(version, "GRP13"))
+
+      full = group_key(organization, version, "GRP13", stops_count(@stop_count))
+      short = group_key(organization, version, "GRP13", stops_count(@short_stop_count))
+      before = linkage(organization)
+
+      render_change(view |> element("#grouping-form"), %{
+        "grouping" => selections(full, short, direction: "1", short_direction: "0")
+      })
+
+      membership = Accounts.get_user_org_membership(user.id, organization.id)
+      {:ok, _membership} = Accounts.update_user_org_membership(membership, %{roles: []})
+
+      html = render_submit(view |> element("#grouping-form"))
+
+      assert html =~ ~s(id="grouping-failed")
+      assert html =~ "You no longer have editor access to this organization."
+      assert linkage(organization) == before
+
+      # The operator's override is still the checked answer, so restoring access
+      # does not make them choose again.
+      assert has_element?(
+               view,
+               "##{card_id(full)} [name='#{direction_name(full)}'][value='1'][checked]"
+             )
+    end
+  end
+
   describe "leaving the review" do
     test "keeps the trips as they are and returns to the list", %{
       conn: conn,

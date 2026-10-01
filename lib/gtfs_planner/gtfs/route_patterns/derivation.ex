@@ -309,10 +309,13 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   route is planned, named and timed exactly as a derived one (CR-4). Only trip
   linkage, direction, `updated_at`, pattern/timing rows and the route audit
   entry are written; imported `stop_times` are never touched (rule 3, INV-2).
+
+  Each attempt locks the actor's current editor membership before the route row,
+  so a missing or revoked editor is `{:error, :forbidden}` with nothing written.
   """
   @spec group_left_out(String.t(), [selection()], String.t(), AuditContext.t()) ::
           {:ok, summary()}
-          | {:error, :stale | :not_found | :busy | :invalid_selection | term()}
+          | {:error, :forbidden | :stale | :not_found | :busy | :invalid_selection | term()}
   def group_left_out(route_id, selections, fingerprint, %AuditContext{} = audit)
       when is_binary(route_id) and is_list(selections) and is_binary(fingerprint) do
     case run_editor_transaction(fn ->
@@ -344,6 +347,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
          fingerprint,
          audit
        ) do
+    Authorization.lock_editor!(audit)
+
     route = lock_route!(organization_id, version_id, route_id, {:editor, audit})
     review = left_out_review(route)
 

@@ -1319,12 +1319,16 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   The owner itself is never touched: it stays a first-class pattern, and it may
   still be referenced by other children.
+
+  Each attempt locks the actor's current editor membership first; a missing or
+  revoked editor is `{:error, :forbidden}` and nothing is written.
   """
   @spec remove_label(String.t(), Ecto.UUID.t(), AuditContext.t()) ::
-          {:ok, RoutePattern.t()} | {:error, :not_found | :not_labelled}
+          {:ok, RoutePattern.t()} | {:error, :forbidden | :not_found | :not_labelled}
   def remove_label(route_id, pattern_id, %AuditContext{} = audit_context)
       when is_binary(route_id) do
     run_serializable_write(fn ->
+      Authorization.lock_editor!(audit_context)
       route = lock_published_route!(audit_context, route_id)
       pattern = lock_pattern!(route, pattern_id)
 
