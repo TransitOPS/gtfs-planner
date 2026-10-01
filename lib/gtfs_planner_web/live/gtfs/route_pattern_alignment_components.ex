@@ -46,9 +46,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     default: nil,
     doc: ":stale_stops, :stale_review, :busy, :save_error or {:error, message}"
 
-  attr :import_dialog, :map,
+  attr :import_card, :map,
     default: nil,
-    doc: "%{shape_id} when the import review dialog is open"
+    doc: "%{shape_id} when the imported-line card is open"
 
   attr :applying?, :boolean,
     default: false,
@@ -90,15 +90,23 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
       |> assign(:generating?, not is_nil(assigns[:generation]))
       |> assign(:save_pending?, not is_nil(assigns[:pending]))
       |> assign(:generate_overlay?, generate_overlay?(assigns.alignment, assigns[:editable?]))
+      # The imported-line card and the path-file panel are two ways into the
+      # same fit review, so only one of them owns the column at a time.
+      |> assign(
+        :import_card?,
+        assigns.notice == :imported_shape and not is_nil(assigns[:import_card])
+      )
 
     # The first-alignment overlay is a nudge, not a gate: once a draft
     # exists (generated or drawn) the hook owns visible geometry, so the
-    # overlay gets out of the way. Discarding the draft brings it back.
+    # overlay gets out of the way. The imported-line card previews a shape
+    # the same way, so it counts as visible geometry too. Discarding the
+    # draft brings the overlay back.
     assigns =
       assign(
         assigns,
         :overlay_dismissed?,
-        assigns.generating? or assigns.dirty_positions != []
+        assigns.generating? or assigns.dirty_positions != [] or assigns.import_card?
       )
 
     assigns =
@@ -397,14 +405,29 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
           aria-label="Alignment sections"
           class="order-2 flex min-h-0 min-w-0 flex-col overflow-y-auto border-subtle max-lg:border-t lg:order-1 lg:border-r"
         >
+          <%!-- Step 32: a pattern still on an imported shape reviews that line
+            in the panel itself instead of behind a dialog, so the fit the hook
+            measured sits beside the choice and its draft action. The path-file
+            panel owns the column while it is open. --%>
+          <.imported_line_card
+            :if={@import_card? and @file_import == nil}
+            card={@import_card}
+            alignment={@alignment}
+            fit={@file_fit}
+            visits={@visits_by_position}
+          />
+
           <.file_import_panel
-            :if={@file_import != nil or @file_fit != nil}
+            :if={not @import_card? and (@file_import != nil or @file_fit != nil)}
             upload={@map_line_upload}
             file={@file_import}
             fit={@file_fit}
             visits={@visits_by_position}
           />
-          <div :if={@file_import == nil and @file_fit == nil} class="flex min-h-0 flex-1 flex-col">
+          <div
+            :if={@file_import == nil and (@file_fit == nil or @import_card?)}
+            class="flex min-h-0 flex-1 flex-col"
+          >
             <div class="sticky top-0 z-10 border-b border-subtle bg-white px-4 pb-3 pt-4">
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <h2 id="alignment-title" class="text-base font-bold text-strong">
@@ -511,7 +534,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
         version_name={@version_name}
         organization_name={@organization_name}
       />
-      <.import_dialog dialog={@import_dialog} alignment={@alignment} />
+      
       <.generate_replace_dialog dialog={@generate_dialog} />
       <.blocked_dialog pending={@pending} />
       <.conflict_dialog pending={@pending} visits_by_position={@visits_by_position} />
@@ -1619,88 +1642,129 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
 
   defp fit_distance_ft(_distance_m), do: "more than 330 ft"
 
-  # --- import dialog (imported shapes) ------------------------------------
+  # --- imported line card (imported shapes) ------------------------------
 
-  attr :dialog, :map, default: nil, doc: "%{shape_id} when the import review dialog is open"
+  attr :card, :map, default: nil, doc: "%{shape_id} when the imported-line card is open"
   attr :alignment, :map, default: nil, doc: "the Gtfs.alignment_editor/4 read model"
+  attr :fit, :map, default: nil, doc: "the hook's reported fit for the shown shape, or nil"
+  attr :visits, :map, default: %{}, doc: "visits by position, for the names the review uses"
 
-  # Step 29 import dialog: a single imported shape shows its length,
-  # visit count and point count in a card; divergent shapes render as
-  # radios with trip counts and lengths plus a warning naming every
-  # affected trip. "Keep original" only closes; "Create editable draft"
-  # pushes alignment:convert for the chosen shape (CR-9: the server
-  # never converts, the hook drafts). The prototype's "Proposed
-  # workflow" paragraph is omitted (production behavior is real).
-  def import_dialog(assigns) do
+  # Step 32 imported line card: the review a dialog used to hold, in the
+  # panel itself (the prototype's `imported-shape` state). The shape's own
+  # numbers come from the model, the fit from the hook's report through
+  # `fit_review/1`, and one card covers both one shape and divergent shapes
+  # by rendering the chooser when the trips disagree (INV-5, no modal).
+  def imported_line_card(assigns) do
+    shapes = import_shapes(assigns.alignment)
+
     assigns =
       assigns
-      |> assign(:shapes, import_shapes(assigns.alignment))
-      |> assign(:open?, import_open?(assigns.dialog, assigns.alignment))
+      |> assign(:shapes, shapes)
+      |> assign(:shape, import_shape(shapes, assigns[:card]))
       |> assign(:total_trips, import_total_trips(assigns.alignment))
       |> assign(:visit_count, import_visit_count(assigns.alignment))
+      |> assign(:blocked?, assigns[:fit] != nil and assigns[:fit].direction == "reversed")
 
     ~H"""
-    <.confirm_dialog
-      id="alignment-import-dialog"
-      open={@open?}
-      title={import_dialog_title(@shapes)}
-      confirm_label="Create editable draft"
-      pending_label="Creating…"
-      chrome="planner"
-      on_confirm="alignment_confirm_import"
-      on_cancel="alignment_close_dialog"
-      cancel_label="Keep original"
-      described_by="alignment-import-dialog-body"
-      return_focus_id="alignment-review-import"
-      size="xl"
-    >
-      <div :if={@open?}>
-        <p :if={length(@shapes) == 1}>
-          The existing whole shape is retained for exports. Conversion creates an
-          editable draft; it does not change the saved shape.
+    <div :if={@shape} id="imported-line-card" class="mx-4 mt-4 rounded-card border border-subtle bg-white">
+      <div class="px-4 py-3">
+        <h3 id="imported-line-card-title" class="text-sm font-bold text-strong">
+          Imported shape {@shape.shape_id}
+        </h3>
+        <p class="mt-0.5 text-[13px] text-muted">
+          <span class="tabular-nums">{import_shape_km(@shape)}</span> &middot;
+          <span class="tabular-nums">{length(@shape.points || [])}</span> points &middot; used by the
+          {@shape.trip_count} {if @shape.trip_count == 1, do: "trip", else: "trips"} on this pattern &middot;
+          {@visit_count} {if @visit_count == 1, do: "visit", else: "visits"}
         </p>
-        <p :if={length(@shapes) > 1}>
-          {length(@shapes)} shapes are referenced by this pattern's trips. They are
-          retained until you explicitly replace them.
-        </p>
-        <div :if={length(@shapes) == 1} class="mt-3 rounded-card border border-subtle p-3">
-          <p class="text-sm font-[650] text-strong">Shape {hd(@shapes).shape_id}</p>
-          <p class="mt-0.5 text-[13px]">
-            {import_shape_km(hd(@shapes))} · {@visit_count} {if(@visit_count == 1,
-              do: "visit",
-              else: "visits"
-            )} · {length(hd(@shapes).points || [])} imported points
+      </div>
+
+      <form
+        :if={length(@shapes) > 1}
+        id="imported-shape-form"
+        phx-change="alignment_import_choice"
+        class="border-t border-subtle px-4 py-3"
+      >
+        <fieldset>
+          <legend class="text-sm font-bold text-strong">
+            Which imported shape is this pattern&rsquo;s path?
+          </legend>
+          <p class="mt-0.5 text-[13px] text-muted">
+            This pattern&rsquo;s trips reference {length(@shapes)} shapes. They are retained until you
+            explicitly replace them, and the fit below is measured on the one you choose.
           </p>
-        </div>
-        <form
-          :if={length(@shapes) > 1}
-          id="alignment-import-form"
-          phx-change="alignment_import_choice"
-        >
-          <.scope_option
-            :for={shape <- @shapes}
-            id={"alignment-import-shape-#{shape.shape_id}"}
-            name="import_shape"
-            value={shape.shape_id}
-            checked={import_selected?(@dialog, shape, @shapes)}
-          >
-            <strong class="text-strong">Shape {shape.shape_id}</strong>
-            <span class="mt-0.5 block text-[13px] text-muted">
-              {shape.trip_count} {if(shape.trip_count == 1, do: "trip", else: "trips")} · {import_shape_km(
-                shape
-              )}
-            </span>
-          </.scope_option>
-        </form>
-        <p :if={length(@shapes) > 1} class="mt-3">
+          <div class="mt-2 grid gap-2">
+            <.scope_option
+              :for={shape <- @shapes}
+              id={"imported-shape-#{shape.shape_id}"}
+              name="import_shape"
+              value={shape.shape_id}
+              checked={import_selected?(@card, shape, @shapes)}
+            >
+              <strong class="text-strong">Shape {shape.shape_id}</strong>
+              <span class="mt-0.5 block text-[13px] text-muted">
+                {shape.trip_count} {if shape.trip_count == 1, do: "trip", else: "trips"} &middot; {import_shape_km(
+                  shape
+                )} &middot; {length(shape.points || [])} points
+              </span>
+            </.scope_option>
+          </div>
+        </fieldset>
+        <p class="mt-3">
           <.badge tone="warning" icon="hero-exclamation-triangle">
             Saving the replacement would affect all {@total_trips} trips.
           </.badge>
         </p>
+      </form>
+
+      <div class="border-t border-subtle px-4 py-3">
+        <%!-- The fit is the hook's own measurement of the chosen shape
+          against this pattern's stops, so the card waits for it rather
+          than repeating the work on the server (INV-5). --%>
+        <.fit_review :if={@fit} fit={@fit} visits={@visits} />
+        <p :if={is_nil(@fit)} id="imported-line-checking" class="text-[13px] text-muted">
+          Checking this shape against the pattern&rsquo;s stops&hellip;
+        </p>
       </div>
-    </.confirm_dialog>
+
+      <div class="border-t border-subtle px-4 py-3">
+        <p id="imported-line-note" class="text-[13px] text-muted">
+          <span :if={@blocked?} class="font-semibold text-error-fg">
+            Reverse the line to continue. It runs the other way from this pattern.
+          </span>
+          <span :if={not @blocked?}>
+            Nothing changes until you save. Until then, trips and exports keep shape {@shape.shape_id}.
+          </span>
+        </p>
+        <div class="mt-2 flex flex-wrap gap-2">
+          <button
+            type="button"
+            id="imported-line-close"
+            phx-click="alignment_close_import"
+            class="btn btn-outline min-h-11"
+          >
+            Close
+          </button>
+          <button
+            type="button"
+            id="imported-line-draft"
+            phx-click="alignment_confirm_import"
+            disabled={@blocked?}
+            title={if @blocked?, do: "Reverse the line first", else: nil}
+            class="btn btn-primary min-h-11"
+          >
+            <.icon name="hero-pencil-square" class="size-4" /> Create editable draft
+          </button>
+        </div>
+      </div>
+    </div>
     """
   end
+
+  defp import_shape(shapes, %{shape_id: shape_id}) when is_list(shapes),
+    do: Enum.find(shapes, &(&1.shape_id == shape_id))
+
+  defp import_shape(_shapes, _card), do: nil
 
   attr :dialog, :map,
     default: nil,
@@ -2110,11 +2174,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
     if length(import_shapes(alignment)) > 1, do: "Compare shapes", else: "Review imported path"
   end
 
-  defp import_open?(%{shape_id: shape_id}, alignment),
-    do: shape_id in Enum.map(import_shapes(alignment), & &1.shape_id)
-
-  defp import_open?(_dialog, _alignment), do: false
-
   defp import_total_trips(alignment) do
     alignment |> import_shapes() |> Enum.map(& &1.trip_count) |> Enum.sum()
   end
@@ -2122,8 +2181,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
   defp import_visit_count(%{visits: visits}) when is_list(visits), do: length(visits)
   defp import_visit_count(_alignment), do: 0
 
-  defp import_dialog_title([_single]), do: "Review imported path"
-  defp import_dialog_title(_shapes), do: "Choose an imported path"
+  
 
   defp import_shape_km(%{length_m: length_m}) when is_number(length_m) do
     "#{:erlang.float_to_binary(length_m / 1000, decimals: 1)} km"

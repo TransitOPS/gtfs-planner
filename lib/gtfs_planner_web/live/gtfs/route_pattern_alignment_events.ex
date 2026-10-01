@@ -127,7 +127,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     |> Component.assign(:alignment_discard_dialog, nil)
     |> Component.assign(:alignment_delete_dialog, nil)
     |> Component.assign(:alignment_simplify_dialog, nil)
-    |> Component.assign(:alignment_import_dialog, nil)
+    |> Component.assign(:alignment_import_card, nil)
     |> Component.assign(:alignment_generate_dialog, nil)
     |> Component.assign(:bulk_dialog, nil)
     |> Component.assign(:map_line_file, nil)
@@ -409,73 +409,130 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   def action_notice(socket, _params), do: socket
 
   @doc """
-  Opens the import review dialog for a pattern on imported shapes (step 29).
+  Opens the imported-line card for a pattern on imported shapes (step 32).
 
-  Viewers and patterns without imported shapes leave the socket
-  unchanged. The dialog pre-selects the first shape (shapes arrive sorted
-  by ID); divergent choices update it through `import_choice/2`.
-  Conversion itself is client-only (CR-9): confirming only pushes
-  `alignment:convert` for the hook to draft, never writes.
+  Viewers and patterns without imported shapes leave the socket unchanged.
+  The card shows the first shape (shapes arrive sorted by ID) and asks the
+  hook to preview and measure it: the shape's own points go out as
+  `alignment:file_line`, exactly as a line picked from a path file does, so
+  one fit report and one review serve both (INV-5). Nothing is measured,
+  drafted or written here (CR-9).
   """
   def open_import(socket, _params) do
-    with true <- editable?(socket),
-         %{alignment: %{imported_shapes: [%{shape_id: first} | _]}} <- socket.assigns do
-      Component.assign(socket, :alignment_import_dialog, %{shape_id: first})
+    shapes = imported_shapes(socket)
+
+    if editable?(socket) and shapes != [] do
+      socket
+      |> Component.assign(:alignment_import_card, %{shape_id: hd(shapes).shape_id})
+      |> Component.assign(:file_fit, nil)
+      |> push_imported_line(hd(shapes))
     else
-      _ -> socket
+      socket
     end
   end
 
   @doc """
-  Records the divergent shape choice from the import dialog form (step 29).
+  Records the divergent shape choice from the imported-line card (step 32).
 
   Read-only like `save_choice/2`: only a shape the loaded model actually
-  references is kept, so a stale form never converts a foreign shape.
+  references is kept, so a stale form never converts or measures a foreign
+  shape. The chosen shape is measured in its own right, so the fit the card
+  shows is always the one for the shape on screen.
   """
   def import_choice(socket, params) when is_map(params) do
-    case {editable?(socket), socket.assigns[:alignment_import_dialog], socket.assigns[:alignment]} do
-      {true, %{shape_id: _}, %{imported_shapes: shapes}} when is_list(shapes) ->
-        wanted = import_choice_param(params)
+    shapes = imported_shapes(socket)
+    wanted = import_choice_param(params)
 
-        if wanted in Enum.map(shapes, & &1.shape_id) do
-          Component.assign(socket, :alignment_import_dialog, %{shape_id: wanted})
-        else
-          socket
-        end
-
-      _ ->
-        socket
+    if editable?(socket) and wanted in Enum.map(shapes, & &1.shape_id) do
+      case Enum.find(shapes, &(&1.shape_id == wanted)) do
+        nil -> socket
+        shape -> show_imported_shape(socket, shape)
+      end
+    else
+      socket
     end
   end
 
   def import_choice(socket, _params), do: socket
 
   @doc """
-  Confirms the import dialog: closes it and pushes `alignment:convert`
-  with the chosen shape so the hook drafts every section (CR-5, CR-9).
-  A closed dialog or an unknown shape only closes, never pushes.
+  Creates the editable draft from the shape the card shows (step 32).
+
+  The card closes, the card's preview goes with it, and `alignment:convert`
+  pushes the chosen shape so the hook drafts every section (CR-5, CR-9).
+  Nothing is written until that draft is saved. A closed card or an unknown
+  shape only closes, never pushes.
   """
   def confirm_import(socket, _params) do
-    case {editable?(socket), socket.assigns[:alignment_import_dialog], socket.assigns[:alignment]} do
-      {true, %{shape_id: wanted}, %{imported_shapes: shapes}} when is_list(shapes) ->
-        socket =
-          socket
-          |> Component.assign(:alignment_import_dialog, nil)
-          |> Component.assign(
-            :status_message,
-            "Editable draft created. Original shape retained until you save."
-          )
+    shapes = imported_shapes(socket)
+    shape_id = socket.assigns[:alignment_import_card] |> card_shape_id()
 
-        if wanted in Enum.map(shapes, & &1.shape_id) do
-          Phoenix.LiveView.push_event(socket, "alignment:convert", %{shape_id: wanted})
-        else
-          socket
-        end
+    socket =
+      socket
+      |> close_import_card()
+      |> Component.assign(
+        :status_message,
+        "Editable draft created. Original shape retained until you save."
+      )
 
-      _ ->
-        Component.assign(socket, :alignment_import_dialog, nil)
+    if editable?(socket) and shape_id in Enum.map(shapes, & &1.shape_id) do
+      socket
+      |> Phoenix.LiveView.push_event("alignment:clear_file_line", %{})
+      |> Phoenix.LiveView.push_event("alignment:convert", %{shape_id: shape_id})
+    else
+      socket
     end
   end
+
+  @doc """
+  Closes the imported-line card and drops the fit and preview it described.
+
+  The preview belongs to the shape the card was reviewing, so it leaves with
+  the card; the hook's own imported-shape reference layer stays, because the
+  pattern is still on that shape.
+  """
+  def close_import(socket, _params) do
+    close_import_card(socket)
+  end
+
+  defp show_imported_shape(socket, shape) do
+    socket
+    |> Component.assign(:alignment_import_card, %{shape_id: shape.shape_id})
+    |> Component.assign(:file_fit, nil)
+    |> push_imported_line(shape)
+  end
+
+  defp close_import_card(socket) do
+    socket
+    |> Component.assign(:alignment_import_card, nil)
+    |> Component.assign(:file_fit, nil)
+    |> Phoenix.LiveView.push_event("alignment:clear_file_line", %{})
+  end
+
+  # The hook's preview and fit report are the file line's, so an imported
+  # shape is measured the same way. The push carries the [lon, lat] chain the
+  # hook measures from: the shape's own distances stay on the server, where
+  # the conversion reads them (INV-5).
+  defp push_imported_line(socket, %{shape_id: shape_id, points: points}) do
+    socket
+    |> Component.assign(
+      :status_message,
+      "Checking imported shape #{shape_id} against this pattern's stops."
+    )
+    |> Phoenix.LiveView.push_event("alignment:file_line", %{
+      points: Enum.map(points || [], fn [lon, lat | _rest] -> [lon, lat] end),
+      name: shape_id
+    })
+  end
+
+  defp imported_shapes(%{assigns: %{alignment: %{imported_shapes: shapes}}})
+       when is_list(shapes),
+       do: shapes
+
+  defp imported_shapes(_socket), do: []
+
+  defp card_shape_id(%{shape_id: shape_id}), do: shape_id
+  defp card_shape_id(_card), do: nil
 
   # --- the map-line path file -----------------------------------------------
   #
@@ -496,8 +553,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
       socket
       |> Component.assign(:map_line_file, %{step: :choose})
       # A previous line's fit described a line that is no longer being
-      # checked, so choosing another file drops it.
+      # checked, so choosing another file drops it, and the imported-line
+      # card shares that review.
       |> Component.assign(:file_fit, nil)
+      |> Component.assign(:alignment_import_card, nil)
     else
       socket
     end
@@ -2060,7 +2119,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
          |> Component.assign(:alignment_discard_dialog, nil)
          |> Component.assign(:alignment_delete_dialog, nil)
          |> Component.assign(:alignment_simplify_dialog, nil)
-         |> Component.assign(:alignment_import_dialog, nil)
+         |> Component.assign(:alignment_import_card, nil)
          |> Component.assign(:alignment_generate_dialog, nil)
          |> Component.assign(:alignment_generate_notice, nil)
          |> Component.assign(:alignment_generation, nil)

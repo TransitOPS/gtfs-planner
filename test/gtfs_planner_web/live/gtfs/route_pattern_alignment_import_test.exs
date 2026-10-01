@@ -1,11 +1,13 @@
 defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentImportTest do
   @moduledoc false
-  # Step 29 / EV-28: the import review UI for patterns still on imported
-  # shapes (CL-28/FH-41): the imported notice with its review entry point,
-  # the single-shape dialog (length, visits, points), the divergent radios
-  # with trip counts and the all-trips warning, and the alignment:convert
-  # push for the chosen shape. Conversion only drafts (CR-9); saving the
-  # replacement is EV-27/EV-17 territory.
+  # Step 29 / EV-28 and step 32 / EV-31: the review for patterns still on
+  # imported shapes (CL-28/FH-41, CL-26/FH-26). The notice keeps its entry
+  # point; opening it now renders the imported-line card in the panel rather
+  # than a dialog, names the shape's length, visits and points, shows the
+  # chooser when the trips diverge, renders the hook's fit review, and pushes
+  # the chosen shape's points for measurement and alignment:convert for the
+  # draft. Conversion only drafts (CR-9); saving the replacement is
+  # EV-27/EV-17 territory.
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
@@ -168,9 +170,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentImportTest do
 
       assert has_element?(view, "#alignment-notice", "Imported path · original shape retained")
       assert has_element?(view, "#alignment-review-import", "Review imported path")
+      refute has_element?(view, "#imported-line-card")
     end
 
-    test "the single-shape dialog names length, visits and points",
+    test "opening the card renders the fit review and no dialog",
          %{conn: conn, organization: organization, version: version} do
       {route, pattern} = single_imported(organization, version)
 
@@ -178,48 +181,119 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentImportTest do
 
       view |> element("#alignment-review-import") |> render_click()
 
-      assert has_element?(view, "#alignment-import-dialog[data-open=\"true\"]")
-      assert has_element?(view, "#alignment-import-dialog", "Review imported path")
-      assert has_element?(view, "#alignment-import-dialog", "Shape IMP-SINGLE")
-      assert has_element?(view, "#alignment-import-dialog", "0.1 km")
-      assert has_element?(view, "#alignment-import-dialog", "2 visits")
-      assert has_element?(view, "#alignment-import-dialog", "3 imported points")
-      assert has_element?(view, "#alignment-import-dialog-cancel", "Keep original")
+      assert has_element?(view, "#imported-line-card")
+      refute has_element?(view, "#alignment-import-dialog")
 
-      assert has_element?(
-               view,
-               "#alignment-import-dialog-confirm",
-               "Create editable draft"
-             )
+      # Card anatomy: the shape's own identity, trips and length.
+      assert has_element?(view, "#imported-line-card", "Imported shape IMP-SINGLE")
+      assert has_element?(view, "#imported-line-card", "0.1 km")
+      assert has_element?(view, "#imported-line-card", "3 points")
+      assert has_element?(view, "#imported-line-card", "2 visits")
+      assert has_element?(view, "#imported-line-card", "Nothing changes until you save")
+
+      # The hook has not reported a fit yet, so the card waits rather than
+      # measuring the shape itself.
+      assert has_element?(view, "#imported-line-checking")
+      refute has_element?(view, "#file-fit-review")
     end
 
-    test "confirming the single-shape dialog pushes alignment:convert",
+    test "the card's fit review renders the hook's report for the chosen shape",
          %{conn: conn, organization: organization, version: version} do
       {route, pattern} = single_imported(organization, version)
 
       {:ok, view, _html} = live(conn, pattern_path(version, route, pattern))
 
       view |> element("#alignment-review-import") |> render_click()
-      view |> element("#alignment-import-dialog-confirm") |> render_click()
 
+      render_hook(view, "alignment_fit_result", %{
+        "direction" => "same",
+        "reaches_start" => true,
+        "reaches_end" => true,
+        "far" => [%{"position" => 2, "distance_m" => 180.0}],
+        "within" => 1,
+        "visit_count" => 2,
+        "length_m" => 139.5
+      })
+
+      assert has_element?(view, "#imported-line-card #file-fit-review")
+      assert has_element?(view, "#imported-line-card #file-fit-headline", "1 of 2")
+      assert has_element?(view, "#imported-line-card #fit-far", "Import Bravo")
+      # A reversed fit cannot be drafted; an "unknown" one can (INV-5).
+      assert has_element?(view, "#imported-line-draft")
+
+      render_hook(view, "alignment_fit_result", %{
+        "direction" => "unknown",
+        "reaches_start" => true,
+        "reaches_end" => true,
+        "far" => [],
+        "within" => 2,
+        "visit_count" => 2,
+        "length_m" => 139.5
+      })
+
+      assert has_element?(view, "#imported-line-card #fit-direction-unknown")
+      assert has_element?(view, "#imported-line-draft:not([disabled])")
+      assert has_element?(view, "#imported-line-card #file-fit-headline", "2 of 2")
+
+      render_hook(view, "alignment_fit_result", %{
+        "direction" => "reversed",
+        "reaches_start" => true,
+        "reaches_end" => true,
+        "far" => [],
+        "within" => 2,
+        "visit_count" => 2,
+        "length_m" => 139.5
+      })
+
+      assert has_element?(view, "#imported-line-draft[disabled]")
+    end
+
+    test "opening the card pushes the chosen shape's points to the hook",
+         %{conn: conn, organization: organization, version: version} do
+      {route, pattern} = single_imported(organization, version)
+
+      {:ok, view, _html} = live(conn, pattern_path(version, route, pattern))
+
+      view |> element("#alignment-review-import") |> render_click()
+
+      assert_push_event(view, "alignment:file_line", %{points: points, name: "IMP-SINGLE"})
+
+      assert points == [
+               [-73.987, 40.7408],
+               [-73.9865, 40.7413],
+               [-73.986, 40.7418]
+             ]
+    end
+
+    test "Create editable draft pushes alignment:convert for the shown shape",
+         %{conn: conn, organization: organization, version: version} do
+      {route, pattern} = single_imported(organization, version)
+
+      {:ok, view, _html} = live(conn, pattern_path(version, route, pattern))
+
+      view |> element("#alignment-review-import") |> render_click()
+      view |> element("#imported-line-draft") |> render_click()
+
+      assert_push_event(view, "alignment:clear_file_line", %{})
       assert_push_event(view, "alignment:convert", %{shape_id: "IMP-SINGLE"})
+      refute has_element?(view, "#imported-line-card")
     end
 
-    test "Keep original only closes the dialog",
+    test "closing the card drops the fit and pushes nothing",
          %{conn: conn, organization: organization, version: version} do
       {route, pattern} = single_imported(organization, version)
 
       {:ok, view, _html} = live(conn, pattern_path(version, route, pattern))
 
       view |> element("#alignment-review-import") |> render_click()
-      assert has_element?(view, "#alignment-import-dialog[data-open=\"true\"]")
+      view |> element("#imported-line-close") |> render_click()
 
-      view |> element("#alignment-import-dialog-cancel") |> render_click()
-      assert has_element?(view, "#alignment-import-dialog[data-open=\"false\"]")
+      refute has_element?(view, "#imported-line-card")
+      assert_push_event(view, "alignment:clear_file_line", %{})
       refute_push_event(view, "alignment:convert", %{})
     end
 
-    test "divergent shapes list trip counts and convert the chosen shape",
+    test "divergent shapes render the chooser in the card and measure the chosen one",
          %{conn: conn, organization: organization, version: version} do
       {route, pattern} = divergent_imported(organization, version)
 
@@ -230,24 +304,22 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentImportTest do
 
       view |> element("#alignment-review-import") |> render_click()
 
-      assert has_element?(view, "#alignment-import-dialog[data-open=\"true\"]")
-      assert has_element?(view, "#alignment-import-dialog", "Choose an imported path")
-      assert has_element?(view, "#alignment-import-dialog", "Shape IMP-DIV-X")
-      assert has_element?(view, "#alignment-import-dialog", "2 trips")
-      assert has_element?(view, "#alignment-import-dialog", "Shape IMP-DIV-Y")
-      assert has_element?(view, "#alignment-import-dialog", "1 trip")
-
-      assert has_element?(
-               view,
-               "#alignment-import-dialog",
-               "Saving the replacement would affect all 3 trips."
-             )
+      assert has_element?(view, "#imported-line-card")
+      refute has_element?(view, "#alignment-import-dialog")
+      assert has_element?(view, "#imported-line-card", "Imported shape IMP-DIV-X")
+      assert has_element?(view, "label[for=imported-shape-IMP-DIV-X]", "2 trips")
+      assert has_element?(view, "label[for=imported-shape-IMP-DIV-Y]", "1 trip")
+      assert has_element?(view, "#imported-line-card", "Saving the replacement would affect all 3 trips.")
 
       view
-      |> element("#alignment-import-form")
+      |> element("#imported-shape-form")
       |> render_change(%{"import_shape" => "IMP-DIV-Y"})
 
-      view |> element("#alignment-import-dialog-confirm") |> render_click()
+      assert has_element?(view, "#imported-line-card", "Imported shape IMP-DIV-Y")
+      assert_push_event(view, "alignment:file_line", %{points: points, name: "IMP-DIV-Y"})
+      assert length(points) == 2
+
+      view |> element("#imported-line-draft") |> render_click()
 
       assert_push_event(view, "alignment:convert", %{shape_id: "IMP-DIV-Y"})
     end

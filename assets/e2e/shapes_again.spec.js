@@ -1276,3 +1276,86 @@ test.describe("file import", () => {
     });
   }
 });
+
+// ── Imported line card (step 32) ─────────────────────────────────────────────
+//
+// A pattern still on an imported shape reviews that line in the panel, not
+// behind a dialog: the card names the shape, the hook's fit of it is the
+// review, and the draft action splits it into editable sections. The seed
+// carries BROWSER_IMPORTED for this, whose shape bows east of the corridor
+// so the fit names the stop it runs wide of.
+
+const IMPORTED_ROUTE = "BROWSER_IMPORTED";
+const IMPORTED_PATTERN = "BROWSER-IMPORTED-A";
+
+test.describe("imported shape", () => {
+  test("reviews the imported shape in the panel and drafts it", async ({
+    page,
+  }, testInfo) => {
+    testInfo.setTimeout(180_000);
+
+    const problems = collectPageErrors(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.goto(
+      `/gtfs/${versionId}/routes/${IMPORTED_ROUTE}/patterns/${IMPORTED_PATTERN}?task=alignment`,
+    );
+    await waitForLiveView(page);
+
+    await expect(page.locator("#alignment-review-import")).toHaveText(
+      "Review imported path",
+    );
+
+    await page.locator("#alignment-review-import").click();
+
+    const card = page.locator("#imported-line-card");
+    await expect(card).toBeVisible();
+    // The dialog is gone: the review is in the panel.
+    await expect(page.locator("#alignment-import-dialog")).toHaveCount(0);
+    await expect(card).toContainText("Imported shape BROWSER_IMPORTED_SHAPE");
+    await expect(card).toContainText("5 points");
+    await expect(card).toContainText("used by the 3 trips on this pattern");
+    await expect(card).toContainText("5 visits");
+    await expect(card).toContainText("Nothing changes until you save");
+
+    // The hook measured the shape it was given, so the review is its answer.
+    await expect(page.locator("#file-fit-headline")).toContainText("4 of 5");
+    await expect(page.locator("#fit-far")).toContainText("Import Stop 3");
+    await expect(page.locator("#fit-ok")).toHaveCount(0);
+    await expect(page.locator("#imported-line-draft")).toBeEnabled();
+
+    await capture(page, "imported-line-card-production-1440");
+
+    if (existsSync(PATTERN_REFERENCE_PATH)) {
+      await page.goto(`file://${PATTERN_REFERENCE_PATH}?state=imported-shape`);
+      await page.waitForLoadState("networkidle");
+      await capture(page, "imported-line-card-reference-1440");
+    }
+
+    // The draft splits the shape into editable sections: the card closes, the
+    // sections carry unsaved drafts, and nothing is written until Save.
+    await page.goto(
+      `/gtfs/${versionId}/routes/${IMPORTED_ROUTE}/patterns/${IMPORTED_PATTERN}?task=alignment`,
+    );
+    await waitForLiveView(page);
+    await page.locator("#alignment-review-import").click();
+    await page.locator("#imported-line-draft").click();
+
+    await expect(page.locator("#imported-line-card")).toHaveCount(0);
+    await expect(page.locator("#alignment-sections")).toContainText("Unsaved");
+    await expect(page.locator("#alignment-save")).toBeEnabled();
+
+    await capture(page, "imported-line-draft-production-1440");
+
+    if (existsSync(PATTERN_REFERENCE_PATH)) {
+      await page.goto(`file://${PATTERN_REFERENCE_PATH}?state=imported-draft`);
+      await page.waitForLoadState("networkidle");
+      await capture(page, "imported-line-draft-reference-1440");
+    }
+
+    expect(problems).toEqual([]);
+  });
+});
