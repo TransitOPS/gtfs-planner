@@ -137,6 +137,12 @@ defmodule GtfsPlannerWeb.Router do
       # Alerts is the first task area, and it lists the alerts of the version in
       # the URL only (R1).
       live "/alerts", Gtfs.AlertsLive, :index
+      # The alert editor's two entry points share one LiveView, because the
+      # editor is one frame: `new` writes no row until the first answer, and
+      # `edit` is where that answer navigates to. `new` is declared before the
+      # `:alert_id` segment so the literal never reads as an alert ID.
+      live "/alerts/new", Gtfs.AlertEditorLive, :new
+      live "/alerts/:alert_id", Gtfs.AlertEditorLive, :edit
       live "/routes", Gtfs.RoutesLive, :index
       # Transfers is the Routes area's second tab, beside the routes list.
       live "/transfers", Gtfs.TransfersLive, :index

@@ -104,6 +104,40 @@ defmodule GtfsPlanner.Alerts do
   end
 
   @doc """
+  Names the service version an alert belongs to, for the editor's own redirect.
+
+  `get_alert/2` answers `:not_found` for an alert of another version, which is
+  the answer R1 requires: the alert's content is never read through a version
+  the editor is not editing. The editor still has to say *where* the alert went,
+  so this reads only the `gtfs_versions.name` of the row whose ID the editor
+  holds, scoped to the editor's own organization. It returns a name, never the
+  alert and never anything from another organization, so a forged UUID from
+  another tenant is still `:not_found` and the editor gets the same
+  "that alert is not here" answer.
+  """
+  @spec version_name_for(AuditContext.t(), Ecto.UUID.t() | term()) ::
+          {:ok, String.t()} | {:error, :forbidden | :not_found}
+  def version_name_for(%AuditContext{} = audit_context, alert_id) do
+    with :ok <- authorize_editor(audit_context) do
+      if uuid?(alert_id) do
+        from(a in Alert,
+          join: v in GtfsPlanner.Versions.GtfsVersion,
+          on: v.id == a.gtfs_version_id,
+          where: a.organization_id == ^audit_context.organization_id and a.id == ^alert_id,
+          select: v.name
+        )
+        |> Repo.one()
+        |> case do
+          nil -> {:error, :not_found}
+          name -> {:ok, name}
+        end
+      else
+        {:error, :not_found}
+      end
+    end
+  end
+
+  @doc """
   Returns the alerts list page's four tabs as of `local_now`.
 
   `local_now` is the agency's own civil time, which `agency_now/1` supplies, so
