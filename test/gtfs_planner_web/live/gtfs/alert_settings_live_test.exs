@@ -244,7 +244,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
       assert copy.header_template ==
                "Route [route] detour: [first skipped] to [last skipped] not served"
 
-      assert copy.description_template =~ "[when], Route [route] buses [direction] are detoured"
+      assert copy.description_template ==
+               "[when], Route [route] buses are detoured[because]. " <>
+                 "Stops from [first skipped] to [last skipped] are not served."
 
       # It is now an editable organization row: it has an Edit and no copy
       # control, and the drawer is open on that row's own id.
@@ -428,6 +430,34 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
       assert has_element?(view, "#guidelines-notice", "Guidelines saved.")
       assert has_element?(view, "#guidelines-revision", "Revision 1")
       assert Alerts.get_guidelines(context.audit) == %{text: "Our own wording.", revision: 1}
+    end
+
+    test "a document over the limit is refused on the field and saves once shortened", context do
+      {:ok, view, _html} = live(context.conn, alerts_path(context.version) <> "?tab=guidelines")
+
+      view
+      |> form("#guidelines-form", %{
+        "guidelines" => %{"guidelines" => String.duplicate("a", 10_001), "revision" => "0"}
+      })
+      |> render_submit()
+
+      assert has_element?(
+               view,
+               "#guidelines-text-error",
+               "should be at most 10000 character(s)"
+             )
+
+      assert has_element?(view, "input[name='guidelines[revision]'][value='0']")
+      assert Alerts.get_guidelines(context.audit).revision == 0
+
+      view
+      |> form("#guidelines-form", %{
+        "guidelines" => %{"guidelines" => "Short wording.", "revision" => "0"}
+      })
+      |> render_submit()
+
+      assert has_element?(view, "#guidelines-notice", "Guidelines saved.")
+      assert Alerts.get_guidelines(context.audit) == %{text: "Short wording.", revision: 1}
     end
 
     test "a stale revision is refused with the conflict sentence and overwrites nothing",

@@ -319,14 +319,18 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
          |> store_guidelines(settings.guidelines || "", settings.revision)
          |> assign(:guidelines_notice, "Guidelines saved.")}
 
-      {:error, :stale, _current} ->
-        {:noreply, stale_guidelines(socket, text, revision)}
-
       {:error, :stale} ->
         {:noreply, stale_guidelines(socket, text, revision)}
 
-      {:error, %Ecto.Changeset{} = changeset} ->
-        {:noreply, assign(socket, :guidelines_form, to_form(changeset, as: :guidelines))}
+      # The refused document stays in the form beside its error, at the base
+      # revision it was written from.
+      {:error, %Ecto.Changeset{errors: errors}} ->
+        {:noreply,
+         assign(
+           socket,
+           :guidelines_form,
+           guidelines_form(text, revision, Keyword.take(errors, [:guidelines]))
+         )}
 
       {:error, :forbidden} ->
         {:noreply,
@@ -452,8 +456,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
   # The guidelines form is a plain document rather than a changeset: the base
   # revision is a hidden field the reader never edits, and `save_guidelines/3`
   # compares it against the row the transaction holds.
-  defp guidelines_form(text, revision) do
-    to_form(%{"guidelines" => text, "revision" => revision}, as: :guidelines)
+  defp guidelines_form(text, revision, errors \\ []) do
+    to_form(%{"guidelines" => text, "revision" => revision}, as: :guidelines, errors: errors)
   end
 
   defp guidelines_params(%{"guidelines" => text, "revision" => revision})
