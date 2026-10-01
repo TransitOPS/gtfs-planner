@@ -150,7 +150,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
 
       assert_patch(view, gap_url(base, a.id, b.id))
 
-      assert has_element?(view, "#gap-drawer", "12 min between trips")
+      assert has_element?(view, "#gap-drawer", "Route 1 continues")
+      assert has_element?(view, "#gap-available", "12 min · Same stop")
       assert has_element?(view, "#gap-drawer", "Block 101 · trip a → b · Main St · Weekday")
       assert has_element?(view, "#gap-drawer", "Arrives")
       assert has_element?(view, "#gap-drawer", "07:00")
@@ -284,7 +285,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
       # short layover and the callout stays an info one.
       {:ok, view, _html} = live(conn, gap_url(base, a.id, b.id))
 
-      assert has_element?(view, "#gap-drawer", "6 min between trips")
+      assert has_element?(view, "#gap-drawer", "Route 1 continues")
+      assert has_element?(view, "#gap-available", "6 min · 120 m walk between stops")
       assert has_element?(view, "#gap-text", "Nearby stop · 120 m · 6 min available")
       assert has_element?(view, "#gap-text[data-short='false']")
       assert has_element?(view, "#gap-rider-note", @rider_note)

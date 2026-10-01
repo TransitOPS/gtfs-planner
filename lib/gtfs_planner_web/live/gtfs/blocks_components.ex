@@ -3356,7 +3356,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           :if={@record_note}
           id="gap-record-note"
           data-role="gap-record"
-          data-quiet={to_string(!@record_note.quiet?)}
+          data-quiet={to_string(@record_note.quiet?)}
           kind={if @record_note.quiet?, do: "info", else: "warning"}
           title={@record_note.title}
         >
@@ -5136,7 +5136,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           body ->
             %{
               title: record_note_title(entry.state),
-              body: body
+              body: body,
+              quiet?: false
             }
         end
     end
