@@ -21,7 +21,7 @@ defmodule GtfsPlanner.Agents.Scope do
   `subject_id` names the record one conversation is about — the alert of an
   assistant editor — and is `nil` for a conversation with no such record, such as
   Calendar's. It is part of the session key, so two alerts of one person and
-  version get two conversations (AC-25).
+  version get two conversations.
   """
 
   alias GtfsPlanner.Authorization

@@ -100,7 +100,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
   Options:
 
     * `:auto_apply` - hand each settled, unapplied prepared entry to the host as
-      `{:agent_prepared, conversation_id, entry_id}` (AC-26). Defaults to false,
+      `{:agent_prepared, conversation_id, entry_id}`. Defaults to false,
       so a host that reviews changes itself — Calendar's — receives nothing.
     * `:subject_id` - the record this conversation is about, carried into the
       session `Scope` so two records get two conversations.
@@ -444,7 +444,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
   # A settled assistant entry carrying a prepared change is offered to the host
   # once per conversation. The session re-broadcasts an entry whenever its state
   # changes — a working state, a retry, the applied mark — so the forwarded set is
-  # what keeps one change from being applied twice (AC-26).
+  # what keeps one change from being applied twice.
   defp forward_prepared(socket, entry) do
     if socket.assigns.agent_auto_apply? and forwardable?(entry) and
          not MapSet.member?(socket.assigns.agent_forwarded, entry.id) do

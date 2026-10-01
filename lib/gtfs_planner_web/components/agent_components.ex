@@ -14,9 +14,9 @@ defmodule GtfsPlannerWeb.AgentComponents do
 
   ## Two layouts, one panel
 
-  `layout={:panel}` is the Calendar side panel and is what this module has always
+  `layout={:panel}` is the side panel and is what this module has always
   rendered: an `<aside>` with a close button, in the reader's own card palette.
-  `layout={:main}` is the alerts editor's conversation card — a `<section>` in
+  `layout={:main}` is a host editor's conversation card — a `<section>` in
   the editor's palette, with no close button because the mode control beside it
   is how a reader leaves assistant mode. Only the frame and its header differ;
   the transcript, status, notice and composer are the same markup in both, so a
@@ -98,7 +98,7 @@ defmodule GtfsPlannerWeb.AgentComponents do
   attr :layout, :atom,
     default: :panel,
     values: [:panel, :main],
-    doc: ":panel is the Calendar side panel; :main is a full-width conversation card"
+    doc: ":panel is the side panel; :main is a full-width conversation card"
 
   def agent_panel(assigns) do
     ~H"""
@@ -239,8 +239,8 @@ defmodule GtfsPlannerWeb.AgentComponents do
     """
   end
 
-  # The panel's frame. The `:panel` layout is the Calendar `<aside>` exactly as it
-  # has always rendered, close button included; the `:main` layout is the alerts
+  # The panel's frame. The `:panel` layout is the `<aside>` exactly as it has
+  # always rendered, close button included; the `:main` layout is a host
   # editor's conversation card, which has no close button because the mode
   # control beside it is how a reader returns to the form.
   attr :id, :string, required: true

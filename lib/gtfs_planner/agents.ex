@@ -3,7 +3,7 @@ defmodule GtfsPlanner.Agents do
   The LiveViews' entry point to the helper agent.
 
   A conversation is one session process, keyed by the person, organization,
-  service version, pack and subject (AC-24, AC-25). Two panels opened by the same
+  service version, pack and subject (AC-24). Two panels opened by the same
   person on the same version for the same record share the conversation, while
   another person's, another version's or another record's panel never attaches to
   it (FH-3). A Calendar panel carries no subject, so its key is unchanged.
