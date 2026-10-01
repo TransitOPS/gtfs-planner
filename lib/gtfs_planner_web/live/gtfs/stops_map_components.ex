@@ -441,6 +441,90 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
   end
 
   @doc """
+  The "things to check" disclosure: what the version's stops are getting wrong,
+  and the one action each finding offers.
+
+  The count is in the summary because a disclosure whose contents are hidden has
+  to say how much is hidden, and it is text rather than a colour for the same
+  reason — a badge nobody can read is not a count.
+
+  The rows are the version's own findings, so the summary is a claim the
+  disclosure has to answer for; each row's text names the stops or the pattern
+  it is about, because a title an editor cannot act on is a title they have to
+  re-derive from the map.
+
+  A duplicate offers a second action. "They&rsquo;re different stops" is the
+  answer a person has when the finding is real and the data is right, and it
+  dismisses the row for this session without touching the feed: two stops a metre
+  apart are a judgement call, and the judgement belongs to the editor.
+
+  The disclosure is a button and a region rather than a `<details>` element,
+  because its open state has to survive a server-rendered re-render — a native
+  one does not, and the row list would snap shut under the reader mid-check.
+  """
+  attr :id, :string, required: true
+  attr :checks, :list, required: true
+  attr :open?, :boolean, default: false
+
+  def checks_disclosure(assigns) do
+    ~H"""
+    <div id={@id} class="mt-5 ml-5 mr-5 rounded-card border border-subtle">
+      <button
+        type="button"
+        id={"#{@id}-toggle"}
+        phx-click="toggle_checks"
+        aria-expanded={to_string(@open?)}
+        aria-controls={"#{@id}-items"}
+        class="flex min-h-11 w-full cursor-pointer items-center gap-2 rounded-card px-4 py-2 text-left text-sm font-bold text-strong"
+      >
+        <.icon name="hero-exclamation-triangle" class="size-4 shrink-0 text-warning-fg" />
+        {length(@checks)} {pluralize(length(@checks), "thing")} to check
+        <span class="ml-auto text-[13px] font-semibold text-muted">
+          {if @open?, do: "Hide", else: "Show"}
+        </span>
+      </button>
+
+      <ul
+        id={"#{@id}-items"}
+        hidden={!@open?}
+        class="m-0 list-none divide-y divide-subtle border-t border-subtle p-0"
+      >
+        <li
+          :for={check <- @checks}
+          id={"#{@id}-#{check.dom_id}"}
+          data-check-kind={check.kind}
+          data-check-key={check.key}
+          class="px-4 py-3 text-sm"
+        >
+          <p class="m-0 font-bold text-strong">{check.title}</p>
+          <p class="m-0 mt-0.5 text-[13px]">{check.text}</p>
+          <div class="mt-1 flex flex-wrap items-center gap-x-5 gap-y-1">
+            <button
+              type="button"
+              phx-click="review_check"
+              phx-value-key={check.key}
+              class="inline-flex min-h-11 items-center gap-1.5 text-left text-sm font-semibold text-action hover:underline"
+            >
+              {check.action}
+            </button>
+            <button
+              :if={check.kind == :duplicate}
+              type="button"
+              id={"#{@id}-dismiss-#{check.dom_id}"}
+              phx-click="dismiss_check"
+              phx-value-key={check.key}
+              class="inline-flex min-h-11 items-center gap-1.5 text-left text-sm font-semibold text-action hover:underline"
+            >
+              They&rsquo;re different stops
+            </button>
+          </div>
+        </li>
+      </ul>
+    </div>
+    """
+  end
+
+  @doc """
   One place from the address search: a pin, its name and what kind of place it is.
 
   A place is a button because choosing it is the whole point of searching for
@@ -483,7 +567,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
     <div
       :for={width <- @skeleton_widths}
       id={"#{@id}-#{width}"}
-      class="flex items-start gap-3 px-4 py-3"
+      class="flex items-start gap-3 px-5 py-3"
     >
       <span class="mt-0.5 block size-5 shrink-0 rounded-full bg-navy-100/60 motion-safe:animate-pulse">
       </span>
@@ -513,7 +597,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
 
   def stop_list(assigns) do
     ~H"""
-    <div id={@id} class="px-4 pb-6">
+    <div id={@id} class="px-5 pb-6">
       <h3 class="mb-0 mt-4 text-[13px] font-bold text-muted">On the map now</h3>
       <ul id={"#{@id}-items"} class="m-0 mt-1 list-none p-0">
         <li :for={row <- @stops} id={"#{@id}-item-#{row.id}"}>

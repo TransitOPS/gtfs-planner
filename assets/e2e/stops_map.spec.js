@@ -765,3 +765,114 @@ test("the panel search @search", async ({ page }, testInfo) => {
 
   await page.setViewportSize(DESKTOP);
 });
+
+// ── checks (step 27) ───────────────────────────────────────────────────────
+
+// The browse panel's "things to check" disclosure: the version's placement
+// findings, read after the list rather than with it. What this asserts is that
+// the findings reach the real page, that the disclosure is a control a person
+// can open, and that "They're different stops" removes a row for this session
+// and writes nothing to the feed.
+test("the version checks @checks", async ({ page }, testInfo) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+  await openMap(page, versionId);
+  await waitForMapReady(page);
+
+  // The disclosure is closed and says how much is inside it. It is a control,
+  // not a decoration: the count is text and the state is `aria-expanded`.
+  const toggle = page.locator("#stops-map-checks-toggle");
+  await expect(toggle).toBeVisible();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(toggle).toContainText("things to check");
+  await expect(toggle).toContainText("Show");
+
+  // The list is already painted while the findings are still being read, and
+  // the findings never replace it.
+  await expect(page.locator("#stops-map-list")).toBeAttached();
+
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(toggle).toContainText("Hide");
+
+  // The seed's duplicate pair is 1.5 m apart, so the row names a distance an
+  // editor can act on and offers both of the answers the finding allows.
+  const duplicate = page
+    .locator('#stops-map-checks li[data-check-kind="duplicate"]')
+    .first();
+  await expect(duplicate).toBeVisible();
+  await expect(duplicate).toContainText(/Two stops \d+ (ft|mi) apart/);
+  await expect(duplicate).toContainText("Riders see two stops at one sign");
+  await expect(
+    duplicate.getByRole("button", { name: "Review pair" }),
+  ).toBeVisible();
+  await expect(
+    duplicate.getByRole("button", { name: "They’re different stops" }),
+  ).toBeVisible();
+
+  // The seed's unserved stop is listed as unserved, with the reason and the
+  // one thing to try.
+  const unserved = page
+    .locator('#stops-map-checks li[data-check-kind="not_served"]')
+    .first();
+  await expect(unserved).toBeVisible();
+  await expect(unserved).toContainText("isn’t served");
+  await expect(unserved).toContainText("No pattern stops here");
+  await expect(
+    unserved.getByRole("button", { name: "Show stop" }),
+  ).toBeVisible();
+
+  await captureBoth(page, testInfo, "checks-open", "checks-");
+
+  // "Show stop" names a stop, and the map goes to it: the stop the row is about
+  // is the stop the panel's heading now names.
+  await unserved.getByRole("button", { name: "Show stop" }).click();
+  await expect(page.locator("#stops-map-panel h2")).not.toHaveText(
+    "Stops in this area",
+  );
+
+  // Dismissing a finding removes that row and takes the count with it. Nothing
+  // is written: the feed the browser reads back is the feed it started with.
+  const before = await countDisclosureRows(page);
+  await duplicate
+    .getByRole("button", { name: "They’re different stops" })
+    .click();
+  await expect(
+    page.locator('#stops-map-checks li[data-check-kind="duplicate"]'),
+  ).toHaveCount(0);
+  expect(await countDisclosureRows(page)).toBe(before - 1);
+
+  await capture(page, testInfo, "checks-dismissed-desktop");
+  await page.setViewportSize(MOBILE);
+  await expectFits(page);
+  await capture(page, testInfo, "checks-dismissed-mobile");
+  await page.setViewportSize(DESKTOP);
+
+  // The prototype's checks state, at both viewports, for the side-by-side
+  // inspection.
+  if (REFERENCE_FILE && existsSync(REFERENCE_FILE)) {
+    for (const state of ["checks"]) {
+      for (const viewport of [DESKTOP, MOBILE]) {
+        await page.setViewportSize(viewport);
+        await page.goto(`file://${REFERENCE_FILE}?state=${state}`);
+        await page.waitForLoadState("load");
+
+        await capture(page, testInfo, `checks-ref-${state}-${viewport.label}`, {
+          fullPage: false,
+        });
+      }
+    }
+  }
+
+  await page.setViewportSize(DESKTOP);
+});
+
+// How many findings the disclosure is currently showing, read from the rows
+// rather than from the summary's own words, so a stale count fails here too.
+async function countDisclosureRows(page) {
+  return page.locator("#stops-map-checks-items li").count();
+}

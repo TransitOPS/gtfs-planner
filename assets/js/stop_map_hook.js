@@ -234,6 +234,9 @@ const StopMap = {
     this.handleEvent("stop_map:mode", (event) =>
       this._applyMode((event && event.payload) || event),
     );
+    this.handleEvent("stop_map:focus", (event) =>
+      this._applyFocus((event && event.payload) || event),
+    );
 
     // Readiness is reported by the push, not written onto the container: LiveView
     // patches the hook element's attributes on every render, and an attribute the
@@ -330,6 +333,18 @@ const StopMap = {
     this._ensureOverlay();
     this._syncModeChrome();
     this._renderPin();
+  },
+
+  // A check names a stop an editor has to look at, so the view goes to it. The
+  // point is dropped rather than clamped, exactly as a placement is: a check
+  // that pointed at latitude 0 would centre the map on the equator.
+  _applyFocus(payload) {
+    const point = readPoint(payload);
+    if (!this._map || !point) return;
+
+    // Street zoom at least: a stop seen at the fitted view is a dot among every
+    // other dot, and "review this pair" is worth nothing at that scale.
+    this._map.setView([point.lat, point.lon], Math.max(this._map.getZoom(), 18));
   },
 
   _syncModeChrome() {

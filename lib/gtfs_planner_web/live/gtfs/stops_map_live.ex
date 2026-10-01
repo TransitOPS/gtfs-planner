@@ -25,6 +25,12 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   - `pin_moved` — the editor dragged or nudged the pin. One report per change,
     and the point is echoed back the same way.
 
+  The version's placement findings are read after the model rather than with
+  it, so the panel lists its stops on the first paint and the disclosure fills
+  in when the scan does. Each finding's action names a stop, and the map is
+  asked to go to it — `stop_map:focus`, the same rule as a placement: a point
+  that cannot be read is dropped rather than clamped.
+
   Each of these is idempotent and order-independent: the panel recomputes from
   the whole model rather than from deltas, so a report that arrives twice, or
   after the version changed, is answered from what the server holds now.
@@ -51,12 +57,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       page_header: 1,
       search_field: 1,
       search_results: 1,
-      stop_list: 1
+      stop_list: 1,
+      checks_disclosure: 1
     ]
 
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
   alias GtfsPlanner.Geocoding
+  alias GtfsPlanner.Gtfs.StopPlacement
   alias GtfsPlanner.Gtfs.StopsMap
   alias GtfsPlannerWeb.Gtfs.StopsMapComponents
   require Logger
@@ -101,6 +109,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
      |> assign(:stops_state, :loading)
      |> assign(:placement, nil)
      |> assign(:scope_error, nil)
+     |> assign(:checks, nil)
+     |> assign(:checks_open, false)
+     |> assign(:dismissed_checks, MapSet.new())
      |> assign_search("", [], [], false)}
   end
 
@@ -121,6 +132,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       |> assign(:stops_state, :ready)
       |> assign(:scope_error, nil)
       |> assign_new_panel()
+      |> start_checks(model)
 
     {:noreply, push_scene(socket)}
   end
@@ -138,6 +150,16 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
      |> assign(:stops_state, :unavailable)
      |> assign(:scope_error, "The stops for this version could not be read.")}
   end
+
+  @impl true
+  def handle_async(:checks, {:ok, {:ok, checks}}, socket) when is_map(checks) do
+    {:noreply, assign(socket, :checks, checks)}
+  end
+
+  # A read that failed leaves the disclosure absent rather than showing a
+  # finding nobody can trust. The list and the map are unaffected: they were
+  # never waiting on this.
+  def handle_async(:checks, _result, socket), do: {:noreply, assign(socket, :checks, nil)}
 
   @impl true
   def handle_event("stop_map_ready", _params, socket) do
@@ -221,6 +243,170 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # how the editor got there — one draft, one position.
   def handle_event("choose_place", params, socket),
     do: {:noreply, assign_placement(socket, params)}
+
+  # --- version checks -------------------------------------------------------
+
+  # The disclosure is a region behind a button, not a `<details>` element, so
+  # its open state is the server's and survives the re-render a dismissed row
+  # causes. A native disclosure snaps shut under the reader instead.
+  def handle_event("toggle_checks", _params, socket),
+    do: {:noreply, assign(socket, :checks_open, not socket.assigns.checks_open)}
+
+  # "Review pair" and "Show stop" both name a stop, so both do the same thing
+  # here: the panel's heading says which stop, and the map goes to it. Step 33
+  # replaces a duplicate's action with the replace flow, which is a panel of
+  # its own rather than a focus.
+  def handle_event("review_check", %{"key" => key}, socket) do
+    case find_check(socket.assigns, key) do
+      nil ->
+        {:noreply, socket}
+
+      check ->
+        {:noreply, socket |> assign(:selected_stop_id, check.stop_id) |> push_focus(check.point)}
+    end
+  end
+
+  def handle_event("review_check", _params, socket), do: {:noreply, socket}
+
+  # "They're different stops" is the editor's judgement that a pair a metre
+  # apart is two places. It is remembered for this session and written to
+  # nothing: the next mount asks again, because a dismissal nobody made is a
+  # dismissal nobody agreed to.
+  def handle_event("dismiss_check", %{"key" => key}, socket) do
+    if find_check(socket.assigns, key) do
+      {:noreply,
+       assign(socket, :dismissed_checks, MapSet.put(socket.assigns.dismissed_checks, key))}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("dismiss_check", _params, socket), do: {:noreply, socket}
+
+  # The checks run after the list, never before it. The panel answers "which
+  # stops are here" from the model it already holds, and the findings are a
+  # reading of the same model — a page that waited for the findings to list its
+  # stops would be slower for no new information.
+  defp start_checks(socket, model) do
+    start_async(socket, :checks, fn -> {:ok, StopPlacement.version_checks(model)} end)
+  end
+
+  # The rows the disclosure lists, in the order the checks were found and with
+  # the dismissed ones taken out. Nothing is listed while the read is
+  # outstanding, and the list the page already has is not held back for it.
+  defp check_rows(%{
+         model: model,
+         checks: %{duplicates: duplicates, wrong_side: wrong_side, not_served: not_served},
+         dismissed_checks: dismissed
+       }) do
+    [duplicates, wrong_side, not_served]
+    |> Enum.concat()
+    |> Enum.flat_map(&check_row(&1, model))
+    |> Enum.reject(&MapSet.member?(dismissed, &1.key))
+  end
+
+  defp check_rows(_assigns), do: []
+
+  defp panel_checks(assigns), do: check_rows(assigns)
+
+  defp check_row({first, second, metres}, _model) do
+    [
+      %{
+        key: pair_key(first, second),
+        dom_id: "duplicate-#{dom_key(first, second)}",
+        kind: :duplicate,
+        title: "Two stops #{format_distance(metres)} apart",
+        text: "#{stop_label(first)} and #{stop_label(second)}. Riders see two stops at one sign.",
+        action: "Review pair",
+        stop_id: first.stop_id,
+        point: first.point
+      }
+    ]
+  end
+
+  defp check_row({stop, line}, model) do
+    [
+      %{
+        key: "wrong-side|#{stop.stop_id}",
+        dom_id: "wrong-side-#{dom_stop_id(stop)}",
+        kind: :wrong_side,
+        title: "#{stop_label(stop)} is across the street from its buses",
+        text: "#{route_label(model, line)} passes on the far side. Riders board on the right.",
+        action: "Show stop",
+        stop_id: stop.stop_id,
+        point: stop.point
+      }
+    ]
+  end
+
+  defp check_row(stop, _model) when is_map(stop) do
+    [
+      %{
+        key: "not-served|#{stop.stop_id}",
+        dom_id: "not-served-#{dom_stop_id(stop)}",
+        kind: :not_served,
+        title: "#{stop_label(stop)} isn’t served",
+        text:
+          "No pattern stops here, so the export leaves it out. Delete it if it’s gone for good.",
+        action: "Show stop",
+        stop_id: stop.stop_id,
+        point: stop.point
+      }
+    ]
+  end
+
+  # A pair's key is sorted, so a row's identity does not depend on which stop
+  # the scan happened to reach first: a dismissal that changed when the list was
+  # read from the other end would not be a dismissal.
+  defp pair_key(first, second),
+    do: "duplicate|#{Enum.join(Enum.sort([first.stop_id, second.stop_id]), "+")}"
+
+  # A row's DOM id is its key with everything that is not a letter, a digit or
+  # a dash replaced. GTFS stop IDs are free text, so `A|B` would otherwise end
+  # up in an element id and read as a CSS combinator in every selector and
+  # every test that names it.
+  defp dom_key(first, second) do
+    [first.stop_id, second.stop_id]
+    |> Enum.sort()
+    |> Enum.join("-")
+    |> String.replace(~r/[^A-Za-z0-9-]+/, "-")
+  end
+
+  defp dom_stop_id(stop), do: String.replace(stop.stop_id, ~r/[^A-Za-z0-9]+/, "-")
+
+  defp stop_label(stop), do: "#{stop.name || stop.stop_id} (#{stop.stop_id})"
+
+  defp route_label(model, line) do
+    case Map.get(model.routes || %{}, line.route_id) do
+      %{short_name: short} when is_binary(short) and short != "" -> short
+      %{long_name: long} when is_binary(long) and long != "" -> long
+      _other -> "Its pattern"
+    end
+  end
+
+  # The wording the prototype measures a finding in: feet to the nearest five
+  # under a thousand of them, miles with two decimals beyond. A pair a metre and
+  # a half apart is "5 ft apart" because that is the coarsest distance an
+  # editor can act on.
+  defp format_distance(metres) do
+    feet = metres / 0.3048
+
+    if feet < 1000 do
+      "#{round(feet / 5) * 5} ft"
+    else
+      "#{Float.round(metres / 1609.344, 2)} mi"
+    end
+  end
+
+  defp find_check(assigns, key), do: Enum.find(check_rows(assigns), &(&1.key == key))
+
+  defp push_focus(socket, {lon, lat}) do
+    if connected?(socket) do
+      push_event(socket, "stop_map:focus", %{lat: lat, lon: lon})
+    else
+      socket
+    end
+  end
 
   # --- search ----------------------------------------------------------------
 
@@ -364,12 +550,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
               title={panel_title(assigns)}
               subtitle={panel_subtitle(assigns)}
             >
-              <.search_field
-                id="stops-map-search"
-                form={@search_form}
-                label="Find a stop, street or place"
-                placeholder="Name, stop ID or cross street"
-              />
+              <div class="px-5">
+                <.search_field
+                  id="stops-map-search"
+                  form={@search_form}
+                  label="Find a stop, street or place"
+                  placeholder="Name, stop ID or cross street"
+                />
+              </div>
 
               <%= if @stops_state == :loading do %>
                 <div id="stops-map-panel-loading" role="status">
@@ -384,6 +572,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
                         forty rows under a result set is a page an editor has to
                         scroll past to see what they searched for. --%>
                   <%= if @search_query == "" do %>
+                    <%= if panel_checks(assigns) != [] do %>
+                      <.checks_disclosure
+                        id="stops-map-checks"
+                        checks={panel_checks(assigns)}
+                        open?={@checks_open}
+                      />
+                    <% end %>
                     <.stop_list id="stops-map-list" stops={panel_rows(assigns)} />
                   <% else %>
                     <.search_results

@@ -290,6 +290,7 @@ function mount({ reply = SCENE, stub } = {}) {
     map: hook._map,
     pushes,
     pushed: (name) => pushes.filter((push) => push.name === name),
+    focus: (payload) => subscriptions["stop_map:focus"]({ payload }),
     markers: hook._stopLayers,
     lines: hook._lineLayers,
     tileLayers: () => hook._tileLayers,
@@ -816,6 +817,36 @@ describe("the basemap", () => {
 
     expect(hook._tileLayers[0].url).toContain("World_Imagery");
     expect(hook._tileLayers[1].url).toContain("World_Transportation");
+  });
+});
+
+describe("focusing a finding (step 27)", () => {
+  it("moves the view to the named stop and closes in to street zoom", () => {
+    const stub = createLeafletStub({ zoom: 12 });
+    const { map, focus } = mount({ stub });
+
+    focus({ lat: 44.63561, lon: -124.05317 });
+
+    expect(map.setView).toHaveBeenCalledWith([44.63561, -124.05317], 18);
+  });
+
+  it("leaves a closer view where the editor put it", () => {
+    const stub = createLeafletStub({ zoom: 19 });
+    const { map, focus } = mount({ stub });
+
+    focus({ lat: 44.63561, lon: -124.05317 });
+
+    expect(map.setView).toHaveBeenCalledWith([44.63561, -124.05317], 19);
+  });
+
+  it("drops a point it cannot read rather than centring on zero", () => {
+    const { map, focus } = mount();
+
+    focus({ lat: "north", lon: -124.05317 });
+    focus({});
+    focus(null);
+
+    expect(map.setView).not.toHaveBeenCalled();
   });
 });
 
