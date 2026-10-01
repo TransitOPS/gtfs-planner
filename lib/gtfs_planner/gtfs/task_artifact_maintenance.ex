@@ -2,9 +2,14 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenance do
   @moduledoc """
   Periodically reconciles durable task leases and their private filesystem artifacts.
 
+  Every organization with a change, export, import or validation run has its expired
+  leases closed here, so recovery does not depend on someone opening a page.
+
   Database rows remain the authority: active/retained run IDs are read inside the
   artifact root lock, then storage reconciliation removes only directories that no
-  durable retained row owns and that are older than the orphan grace period.
+  durable retained row owns and that are older than the orphan grace period. Import
+  source directories are swept against the active import runs; the grace period
+  protects a directory created after that read.
   """
 
   use GenServer
@@ -15,8 +20,20 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenance do
 
   alias GtfsPlanner.Gtfs.Export.{ArtifactStorage, Run}
   alias GtfsPlanner.Gtfs.ExportRuns
-  alias GtfsPlanner.Gtfs.Import.{ChangeArtifactStorage, ChangeDecision, ChangeRun, ChangeRuns}
+
+  alias GtfsPlanner.Gtfs.Import.{
+    ChangeArtifactStorage,
+    ChangeDecision,
+    ChangeRun,
+    ChangeRuns,
+    SourceStorage
+  }
+
+  alias GtfsPlanner.Gtfs.Import.Run, as: ImportRun
+  alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Validations
+  alias GtfsPlanner.Validations.ValidationRun
 
   @default_interval_ms :timer.minutes(5)
   @change_active_states [
@@ -52,10 +69,13 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenance do
     organization_ids()
     |> Enum.each(fn organization_id ->
       safely(fn -> ChangeRuns.reconcile_expired(organization_id) end)
+      safely(fn -> ImportRuns.reconcile_expired(organization_id) end)
+      safely(fn -> Validations.reconcile_expired(organization_id) end)
       safely(fn -> ExportRuns.reconcile_expired(organization_id) end)
       safely(fn -> ExportRuns.cleanup_expired(organization_id) end)
     end)
 
+    safely(fn -> reconcile_import_sources() end)
     safely(fn -> reconcile_change_artifacts(opts) end)
 
     safely(fn -> reconcile_export_artifacts(opts) end)
@@ -71,6 +91,15 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenance do
       end,
       orphan_grace_seconds: orphan_grace_seconds()
     )
+  end
+
+  # Read after run reconciliation, so a run closed above no longer protects its directory.
+  # A directory created after this read is protected by the orphan grace period.
+  defp reconcile_import_sources do
+    active_run_ids =
+      Repo.all(from r in ImportRun, where: r.state in ^ImportRun.active_states(), select: r.id)
+
+    SourceStorage.reconcile(active_run_ids)
   end
 
   defp reconcile_change_artifacts(opts) do
@@ -111,9 +140,9 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenance do
   end
 
   defp organization_ids do
-    change_ids = Repo.all(from r in ChangeRun, select: r.organization_id, distinct: true)
-    export_ids = Repo.all(from r in Run, select: r.organization_id, distinct: true)
-    Enum.uniq(change_ids ++ export_ids)
+    [ChangeRun, Run, ImportRun, ValidationRun]
+    |> Enum.flat_map(&Repo.all(from r in &1, select: r.organization_id, distinct: true))
+    |> Enum.uniq()
   end
 
   defp retained_change_runs do
