@@ -105,6 +105,99 @@ defmodule GtfsPlannerWeb.Api.V1.SyncRevisionTest do
     assert Repo.get!(Pathway, second_id).lock_version == second_new_revision
   end
 
+  test "cross-station bundle pathway syncs fields and an exact swap", scope do
+    other_station = stop_fixture(scope.org.id, scope.version.id, location_type: 1)
+    other_child = child_stop_fixture(scope.org.id, scope.version.id, other_station.stop_id)
+
+    cross =
+      pathway_fixture(scope.org.id, scope.version.id, scope.from.stop_id, other_child.stop_id)
+
+    initial_revision = bundle_pathway(bundle(scope), cross.id)["revision"]
+    assert initial_revision == cross.lock_version
+
+    assert %{"data" => %{"synced_count" => 1, "revisions" => [%{"id" => id, "revision" => next}]}} =
+             sync(scope, %{
+               "pathways" => [
+                 %{"id" => cross.id, "revision" => initial_revision, "traversal_time" => 75}
+               ]
+             })
+             |> json_response(200)
+
+    assert id == cross.id
+    assert next == initial_revision + 1
+    assert Repo.get!(Pathway, cross.id).traversal_time == 75
+    assert bundle_pathway(bundle(scope), cross.id)["revision"] == next
+    assert change_log_count(scope, cross.id) == 1
+
+    assert %{
+             "data" => %{
+               "synced_count" => 1,
+               "revisions" => [%{"id" => ^id, "revision" => final}]
+             }
+           } =
+             sync(scope, %{
+               "pathways" => [
+                 %{
+                   "id" => cross.id,
+                   "revision" => next,
+                   "from_stop_id" => other_child.stop_id,
+                   "to_stop_id" => scope.from.stop_id
+                 }
+               ]
+             })
+             |> json_response(200)
+
+    assert final == next + 1
+    stored = Repo.get!(Pathway, cross.id)
+    assert {stored.from_stop_id, stored.to_stop_id} == {other_child.stop_id, scope.from.stop_id}
+    assert stored.lock_version == final
+
+    fresh = bundle_pathway(bundle(scope), cross.id)
+    assert fresh["revision"] == final
+    assert fresh["traversal_time"] == 75
+
+    assert {fresh["from_stop_id"], fresh["to_stop_id"]} ==
+             {other_child.stop_id, scope.from.stop_id}
+
+    assert change_log_count(scope, cross.id) == 2
+  end
+
+  test "sync hides unrelated, foreign-endpoint, and missing-endpoint pathways", scope do
+    other_station = stop_fixture(scope.org.id, scope.version.id, location_type: 1)
+    other_a = child_stop_fixture(scope.org.id, scope.version.id, other_station.stop_id)
+    other_b = child_stop_fixture(scope.org.id, scope.version.id, other_station.stop_id)
+    foreign_org = organization_fixture()
+    foreign_version = gtfs_version_fixture(foreign_org.id)
+    foreign_stop = stop_fixture(foreign_org.id, foreign_version.id)
+
+    pathways = [
+      pathway_fixture(scope.org.id, scope.version.id, other_a.stop_id, other_b.stop_id),
+      pathway_fixture(scope.org.id, scope.version.id, scope.from.stop_id, foreign_stop.stop_id),
+      pathway_fixture(scope.org.id, scope.version.id, scope.from.stop_id, "missing-stop")
+    ]
+
+    current_bundle = bundle(scope)
+    assert Enum.all?(pathways, &(bundle_pathway(current_bundle, &1.id) == nil))
+
+    entries =
+      Enum.map(pathways, fn pathway ->
+        %{"id" => pathway.id, "revision" => pathway.lock_version, "traversal_time" => 120}
+      end)
+
+    assert %{"data" => %{"synced_count" => 0, "revisions" => [], "errors" => errors}} =
+             sync(scope, %{"pathways" => entries}) |> json_response(200)
+
+    assert Enum.map(errors, &{&1["id"], &1["code"]}) ==
+             Enum.map(pathways, &{&1.id, "not_found"})
+
+    for pathway <- pathways do
+      stored = Repo.get!(Pathway, pathway.id)
+      assert stored.traversal_time == pathway.traversal_time
+      assert stored.lock_version == pathway.lock_version
+      assert change_log_count(scope, pathway.id) == 0
+    end
+  end
+
   test "missing and string revisions fail per entry without a write", scope do
     second =
       pathway_fixture(scope.org.id, scope.version.id, scope.from.stop_id, scope.to.stop_id)

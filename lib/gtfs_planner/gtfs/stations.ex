@@ -109,7 +109,7 @@ defmodule GtfsPlanner.Gtfs.Stations do
   def update_pathway_fields(%AuditContext{} = audit, id, attrs, expected_revision)
       when is_map(attrs) do
     run(audit, :share, fn station ->
-      pathway = lock_pathway!(audit, station, id)
+      pathway = lock_companion_pathway!(audit, station, id)
       stale_pathway!(pathway, expected_revision)
 
       case companion_endpoint_attrs(attrs, pathway) do
@@ -516,7 +516,11 @@ defmodule GtfsPlanner.Gtfs.Stations do
              target: map(),
              expected_revision: pos_integer()
            }}
-          | {:error, :not_found | :audit_only_entity | :cannot_rollback_create_or_delete | :missing_rollback_snapshot}
+          | {:error,
+             :not_found
+             | :audit_only_entity
+             | :cannot_rollback_create_or_delete
+             | :missing_rollback_snapshot}
   def rollback_preview(%AuditContext{} = audit, log_id) do
     with {:ok, log_id} <- Ecto.UUID.cast(log_id),
          %Stop{} = station <- station(audit),
@@ -1219,6 +1223,41 @@ defmodule GtfsPlanner.Gtfs.Stations do
     with {:ok, id} <- Ecto.UUID.cast(id),
          %Pathway{} = pathway <-
            pathway_query(audit, station, id) |> lock("FOR UPDATE") |> Repo.one() do
+      pathway
+    else
+      _ -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp lock_companion_pathway!(audit, station, id) do
+    descendants =
+      descendant_stop_ids_query(
+        audit.organization_id,
+        audit.gtfs_version_id,
+        station.stop_id
+      )
+
+    scoped_stops =
+      from(s in Stop,
+        where:
+          s.organization_id == ^audit.organization_id and
+            s.gtfs_version_id == ^audit.gtfs_version_id,
+        select: s.stop_id
+      )
+
+    with {:ok, id} <- Ecto.UUID.cast(id),
+         %Pathway{} = pathway <-
+           from(p in Pathway,
+             where:
+               p.id == ^id and p.organization_id == ^audit.organization_id and
+                 p.gtfs_version_id == ^audit.gtfs_version_id and
+                 p.from_stop_id in subquery(scoped_stops) and
+                 p.to_stop_id in subquery(scoped_stops) and
+                 (p.from_stop_id in subquery(descendants) or
+                    p.to_stop_id in subquery(descendants)),
+             lock: "FOR UPDATE"
+           )
+           |> Repo.one() do
       pathway
     else
       _ -> Repo.rollback(:not_found)

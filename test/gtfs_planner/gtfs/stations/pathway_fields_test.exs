@@ -32,6 +32,7 @@ defmodule GtfsPlanner.Gtfs.Stations.PathwayFieldsTest do
       organization: organization,
       version: version,
       actor: actor,
+      station: station,
       from: from,
       to: to,
       pathway: pathway,
@@ -215,6 +216,113 @@ defmodule GtfsPlanner.Gtfs.Stations.PathwayFieldsTest do
     assert Repo.get!(Pathway, other.id).traversal_time == other.traversal_time
   end
 
+  test "a pathway touching one selected child accepts field edits and an exact swap", scope do
+    other_station = stop_fixture(scope.organization.id, scope.version.id, location_type: 1)
+
+    other_child =
+      child_stop_fixture(scope.organization.id, scope.version.id, other_station.stop_id)
+
+    cross =
+      pathway_fixture(
+        scope.organization.id,
+        scope.version.id,
+        scope.from.stop_id,
+        other_child.stop_id
+      )
+
+    assert {:error, :not_found} =
+             Stations.update_pathway(
+               scope.audit,
+               cross.id,
+               %{"traversal_time" => 90},
+               cross.lock_version
+             )
+
+    assert Repo.get!(Pathway, cross.id).lock_version == cross.lock_version
+    assert logs(scope, cross.id) == []
+
+    assert {:ok, edited} =
+             Stations.update_pathway_fields(
+               scope.audit,
+               cross.id,
+               %{"traversal_time" => 90},
+               cross.lock_version
+             )
+
+    assert edited.traversal_time == 90
+    assert edited.lock_version == cross.lock_version + 1
+    assert [%{action: "updated", changed_fields: fields}] = logs(scope, cross.id)
+    assert Map.keys(fields) == ["traversal_time"]
+
+    assert {:ok, swapped} =
+             Stations.update_pathway_fields(
+               scope.audit,
+               cross.id,
+               %{"from_stop_id" => other_child.stop_id, "to_stop_id" => scope.from.stop_id},
+               edited.lock_version
+             )
+
+    assert {swapped.from_stop_id, swapped.to_stop_id} ==
+             {other_child.stop_id, scope.from.stop_id}
+
+    assert swapped.lock_version == edited.lock_version + 1
+    assert Repo.get!(Pathway, cross.id).lock_version == swapped.lock_version
+    assert [%{action: "updated"}, %{action: "updated"}] = logs(scope, cross.id)
+  end
+
+  test "companion scope excludes unrelated and unresolved endpoint rows without writes", scope do
+    other_station = stop_fixture(scope.organization.id, scope.version.id, location_type: 1)
+    other_a = child_stop_fixture(scope.organization.id, scope.version.id, other_station.stop_id)
+    other_b = child_stop_fixture(scope.organization.id, scope.version.id, other_station.stop_id)
+    foreign_org = organization_fixture()
+    foreign_version = gtfs_version_fixture(foreign_org.id)
+    foreign_stop = stop_fixture(foreign_org.id, foreign_version.id)
+    later_version = gtfs_version_fixture(scope.organization.id)
+    later_stop = stop_fixture(scope.organization.id, later_version.id)
+
+    pathways = [
+      pathway_fixture(scope.organization.id, scope.version.id, other_a.stop_id, other_b.stop_id),
+      pathway_fixture(
+        scope.organization.id,
+        scope.version.id,
+        scope.station.stop_id,
+        other_a.stop_id
+      ),
+      pathway_fixture(
+        scope.organization.id,
+        scope.version.id,
+        scope.from.stop_id,
+        "missing-stop"
+      ),
+      pathway_fixture(
+        scope.organization.id,
+        scope.version.id,
+        scope.from.stop_id,
+        foreign_stop.stop_id
+      ),
+      pathway_fixture(
+        scope.organization.id,
+        scope.version.id,
+        scope.from.stop_id,
+        later_stop.stop_id
+      )
+    ]
+
+    for pathway <- pathways do
+      assert {:error, :not_found} =
+               Stations.update_pathway_fields(
+                 scope.audit,
+                 pathway.id,
+                 %{"traversal_time" => 120},
+                 pathway.lock_version
+               )
+
+      assert Repo.get!(Pathway, pathway.id).traversal_time == pathway.traversal_time
+      assert Repo.get!(Pathway, pathway.id).lock_version == pathway.lock_version
+      assert logs(scope, pathway.id) == []
+    end
+  end
+
   test "a failed history insert rolls back the pathway update", scope do
     invalid_audit = %{scope.audit | actor_email: nil}
 
@@ -231,12 +339,14 @@ defmodule GtfsPlanner.Gtfs.Stations.PathwayFieldsTest do
     assert logs(scope) == []
   end
 
-  defp logs(scope) do
+  defp logs(scope), do: logs(scope, scope.pathway.id)
+
+  defp logs(scope, pathway_id) do
     Audit.list_change_logs_for_entity(
       scope.audit.organization_id,
       scope.audit.gtfs_version_id,
       "pathway",
-      scope.pathway.id
+      pathway_id
     )
   end
 end
