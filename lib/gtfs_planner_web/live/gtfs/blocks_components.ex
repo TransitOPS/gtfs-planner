@@ -5840,9 +5840,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # A day with connections that the filters dropped says so and offers the filters
   # back, because the connections exist and the reader asked the wrong question.
   #
-  # The map pane is an empty placeholder of step 23's shape and height: the layout
-  # is the workspace's, so the list keeps its column and the map takes the rest
-  # without either one re-measuring the other.
+  # The map pane is a locator, never a second copy of the list. It draws one
+  # marker per place of the filtered groups and, when a group is selected or a
+  # connection is open, the two stops that group's decision is about. Its failure
+  # states — no Leaflet, no tiles, a place with no coordinates — each name
+  # themselves and leave the list beside it working (CL-15, CR-6).
   attr :connections, :map, required: true
   attr :routes, :map, required: true
   attr :state, :map, required: true
@@ -5856,6 +5858,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       |> assign(:sections, connection_sections(assigns.connections))
       |> assign(:route_options, route_options(assigns.routes))
       |> assign(:chips, assigns.connections.chips)
+      |> assign(:map_places, connections_map_places(assigns.connections))
+      |> assign(:map_selection, connections_map_selection(assigns))
+      |> assign(:unplaced_places, connections_unplaced_places(assigns.connections))
       # Set all offers the three settings, never the review filter: "Needs
       # review" is a way of reading the list, not a setting anyone can apply, so
       # the fieldset's radios are the Show control's own values without it.
@@ -6040,14 +6045,138 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           </div>
         </div>
 
-        <div
-          id="connections-map-pane"
-          class="h-[max(560px,calc(100dvh-230px))] min-w-0 max-w-full overflow-hidden bg-map-paper"
-        >
-        </div>
+        <.connections_map_pane
+          places={@map_places}
+          selection={@map_selection}
+          unplaced={@unplaced_places}
+        />
       </div>
     </div>
     """
+  end
+
+  # The Connections workspace's right column: the map, its own controls and the
+  # note naming the places this version cannot place.
+  #
+  # The hook element is `phx-update="ignore"` and takes its whole input from two
+  # server-rendered data attributes, so the server never patches inside the map
+  # and the places and the selection can change under a live mount. Everything
+  # around it — the zoom and fit controls, the wheel hint, the unavailable
+  # notice — is ordinary server-rendered markup, because those are text a reader
+  # needs whether or not Leaflet ever loads.
+  attr :places, :list, required: true
+  attr :selection, :map, default: nil
+  attr :unplaced, :list, default: []
+
+  defp connections_map_pane(assigns) do
+    ~H"""
+    <div
+      id="connections-map-pane"
+      class="relative h-[max(560px,calc(100dvh-230px))] min-w-0 max-w-full overflow-hidden bg-map-paper"
+    >
+      <div
+        id="connections-map"
+        phx-hook="ConnectionMap"
+        phx-update="ignore"
+        data-mode="network"
+        data-places={Jason.encode!(@places)}
+        data-selection={Jason.encode!(@selection)}
+        aria-label="Map of connection places. Drag to pan; plus and minus zoom."
+        tabindex="0"
+        class="absolute inset-0 outline-offset-[-3px]"
+      >
+      </div>
+
+      <%!-- Leaflet draws its own zoom control into the top-right corner (see
+      `zoomControlPosition` in the hook) and the hook adds "Show every place"
+      beside it, so both controls belong to the map and neither is an orphaned
+      button when the map fails to load. --%>
+
+      <div id="connections-map-note" class="absolute left-3 top-3 z-[500] grid max-w-[340px] gap-2">
+        <.message
+          :for={place <- @unplaced}
+          id={"connections-map-note-#{place_token(place.id)}"}
+          kind="warning"
+          role="status"
+          title={"#{place.name} isn't on the map."}
+          class="shadow-card"
+        >
+          Its stop has no coordinates; its {count_label(place.count, "connection", "connections")} are
+          still in the list.
+        </.message>
+      </div>
+
+      <p
+        id="connections-map-wheel-hint"
+        data-map-wheel-hint
+        hidden
+        class="pointer-events-none absolute inset-0 z-[600] flex items-center justify-center bg-navy-800/40 px-6 text-center text-sm font-semibold text-white"
+      >
+        Hold ⌘ or Ctrl and scroll to zoom the map
+      </p>
+
+      <div
+        id="connections-map-unavailable"
+        data-role="connection-map-unavailable"
+        hidden
+        class="absolute inset-0 z-[1000] content-center bg-canvas px-8 text-center text-[13px] text-muted"
+      >
+        <p class="font-semibold text-strong">Map unavailable</p>
+        <p class="mt-1">The list still works.</p>
+      </div>
+    </div>
+    """
+  end
+
+  # The map payload, one row per place of the filtered groups. The count and the
+  # review flag are the place's own derivation, and `tokens` and `anchor` name
+  # the list the marker stands for: one token opens that group, several scroll to
+  # the place's section and put the keyboard on its first row. A place the
+  # version cannot place is still sent — with nil coordinates — so the hook skips
+  # it and the note below names it rather than the map silently dropping it.
+  defp connections_map_places(connections) do
+    Enum.map(connections.places, fn place ->
+      %{
+        id: place.id,
+        name: place.name,
+        lat: place.lat,
+        lon: place.lon,
+        count: place.count,
+        review?: place.review?,
+        tokens: Map.get(connections.place_tokens, place.id, []),
+        anchor: "connections-place-#{place_token(place.id)}"
+      }
+    end)
+  end
+
+  # The places the pane names in its own note: those the version stores no
+  # coordinates for. A coordinate of 0 is a real position and stays on the map;
+  # only a missing one is a place this version cannot draw.
+  defp connections_unplaced_places(connections) do
+    Enum.filter(connections.places, &place_unplaced?/1)
+  end
+
+  defp place_unplaced?(%{lat: lat, lon: lon}), do: not (is_number(lat) and is_number(lon))
+
+  # The selected group's own two stops, or `nil` when no group is selected. The
+  # open connection's stops are the same two stops of the group its row belongs
+  # to, so the selection is read from the selected group rather than from the
+  # drawer: the drawer can only be open for a group this panel is showing, and a
+  # group selected without its drawer open still deserves its pins.
+  defp connections_map_selection(%{connections: %{group: nil}}), do: nil
+
+  defp connections_map_selection(%{connections: %{group: group}, routes: routes}) do
+    with {:ok, arrival} <-
+           pair_point(group.arrival_stop, route_color(routes, group.from_route_id)),
+         {:ok, departure} <-
+           pair_point(group.departure_stop, route_color(routes, group.to_route_id)) do
+      %{arrival: arrival, departure: departure}
+    else
+      # A group whose stops this version cannot place draws no pins. The group
+      # panel already names both stops, so nothing is lost by the map saying
+      # nothing rather than drawing half a handoff.
+      _other -> nil
+    end
   end
 
   # One removable filter chip. Its control carries the kind it removes and the
