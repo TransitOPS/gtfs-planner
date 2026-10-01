@@ -19,8 +19,8 @@
 
 import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, connect } from "node:net";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { ACCOUNTS } from "./accounts.mjs";
 import { MUTATING, validateStep } from "./actions.mjs";
@@ -60,6 +60,21 @@ const SNAPSHOT_LIMIT = 6_000;
 // How many names of the requested role an action failure lists, so a tester can
 // correct the name instead of guessing.
 const NEARBY_NAMES = 5;
+
+// The folder a scenario's `Files` name, relative to the repository root. The
+// names come from the journey page and the file system keeps them here, so an
+// upload can only ever read a file this repository ships as a fixture.
+const UPLOAD_FIXTURE_DIR = "test/fixtures/gtfs/ux_qa";
+
+// An upload is tried this many times, because the failure it works around —
+// a chooser whose input has no upload ref yet — is a race the page resolves by
+// itself on a second attempt.
+const UPLOAD_ATTEMPTS = 3;
+
+// Bounded so an input that never gets a ref and an entry the page never lists
+// both end the attempt instead of holding the step.
+const UPLOAD_REF_TIMEOUT_MS = 10_000;
+const UPLOAD_ENTRY_TIMEOUT_MS = 5_000;
 
 const CAPTURE_DIGITS = 3;
 
@@ -259,6 +274,9 @@ function createState({ session, scenario }) {
     context: null,
     page: null,
     buffer: new EventBuffer(),
+    // Downloads this run has seen, each with its save in flight. A step
+    // awaits them before it builds its observation, so a file the run reports
+    // is a file on disk.
     downloads: [],
     // `attempt` counts every step attempt including rejected ones, and
     // `observedHrefs` is what a later `goto` may address: the start path plus
@@ -274,7 +292,7 @@ function createState({ session, scenario }) {
   };
 }
 
-function attachListeners(state) {
+export function attachListeners(state) {
   const { page, buffer } = state;
 
   page.on("console", message => {
@@ -311,12 +329,21 @@ function attachListeners(state) {
     buffer.push({ type: "dialog", message: dialog.message() });
   });
 
-  // The download itself is saved by the command that awaits it; the event is
-  // buffered here so the step record can name it even if nothing awaited it.
+  // The download is saved into the run's downloads folder. The event arrives
+  // while a step is acting, so the save is recorded rather than awaited here;
+  // the step awaits it before its observation, and the buffered event is what
+  // puts the name in that step's record.
   page.on("download", download => {
     const name = download.suggestedFilename();
+    const saved = join(state.session.run, "downloads", name);
 
-    state.downloads.push(download);
+    state.downloads.push({
+      name,
+      save: download.saveAs(saved).then(
+        () => null,
+        error => String(error?.message ?? error)
+      )
+    });
     buffer.push({ type: "download", name });
   });
 }
@@ -473,13 +500,87 @@ function baseUrlOf(session) {
   return `http://localhost:${session.port}`;
 }
 
-// One executor per action. `upload` is absent on purpose: it waits for the
-// LiveView upload ref and confirms the entry, which is a different execution
-// path from these.
+// The repository root, derived from this module's own path so an upload's file
+// resolves the same whichever directory the driver was started in.
+export function repositoryRoot() {
+  return dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+}
+
+// Resolves a scenario's `Files` name to the fixture it names. The name is
+// checked rather than sanitised: a name carrying a path is refused, because a
+// journey page names files and never names folders.
+export function uploadFilePath(name, root = repositoryRoot()) {
+  const folder = resolve(root, UPLOAD_FIXTURE_DIR);
+  const path = resolve(folder, name);
+
+  if (dirname(path) !== folder) {
+    throw new Error(`upload --file ${name} is not a file of ${UPLOAD_FIXTURE_DIR}`);
+  }
+
+  return path;
+}
+
+// The chooser's input carrying a non-empty LiveView upload ref. A file set
+// before this exists is dropped by the client with no error, which would read
+// as tester confusion rather than as a harness race.
+export function hasUploadRef(input) {
+  const ref = input?.getAttribute("data-phx-upload-ref");
+
+  return typeof ref === "string" && ref !== "";
+}
+
+// The file's own name appearing anywhere in the page text, which is how the
+// page answers that it took the file. Reading text rather than a list keeps
+// this independent of how either import page renders its entries.
+export function pageTextIncludes(name) {
+  return (document.body.innerText ?? "").includes(name);
+}
+
+// One upload attempt: open the chooser on the control the tester named, wait
+// for the input to carry a ref, set the file, and confirm the page listed it.
+async function uploadOnce(page, step, path) {
+  // The event is awaited together with the click that raises it, so the two
+  // are never ordered wrongly against each other.
+  const opened = page.waitForEvent("filechooser");
+
+  await targetLocator(page, step).click();
+
+  const chooser = await opened;
+  const input = await chooser.element();
+
+  await page.waitForFunction(hasUploadRef, input, { timeout: UPLOAD_REF_TIMEOUT_MS });
+  await chooser.setFiles(path);
+  await page.waitForFunction(pageTextIncludes, basename(path), { timeout: UPLOAD_ENTRY_TIMEOUT_MS });
+}
+
+// The upload action. The step is ok once the page has listed the file, and is
+// not ok — with the reason the tester can act on — once three attempts have
+// each failed to produce that listing.
+async function uploadFile(page, step) {
+  const path = uploadFilePath(step.file);
+
+  for (let attempt = 1; attempt <= UPLOAD_ATTEMPTS; attempt += 1) {
+    try {
+      await uploadOnce(page, step, path);
+
+      return;
+    } catch {
+      // A chooser with no ref yet, or a file the page never listed, is
+      // retried: each attempt clicks the control again, which opens a fresh
+      // chooser with a fresh input.
+    }
+  }
+
+  throw new Error(`the file name did not appear after ${UPLOAD_ATTEMPTS} attempts`);
+}
+
+// One executor per action. `upload` is the only one that opens a file chooser
+// and the only one that retries.
 const EXECUTORS = {
   click: (page, step) => targetLocator(page, step).click(),
   fill: (page, step) => page.getByLabel(step.label, { exact: true }).fill(step.value),
   select: (page, step) => page.getByLabel(step.label, { exact: true }).selectOption({ label: step.option }),
+  upload: (page, step) => uploadFile(page, step),
   press: (page, step) => page.keyboard.press(step.key),
   goto: (page, step, { baseUrl }) => page.goto(new URL(step.path, baseUrl).href),
   back: page => page.goBack(),
@@ -589,6 +690,18 @@ function targetOf(step) {
   return target;
 }
 
+// Awaits the save of every download seen so far and empties the list, so the
+// observation a step builds reports files that are on disk rather than in
+// flight. A save that failed is the step's error: a download the run cannot
+// open is not a download it may report.
+export async function drainDownloads(state) {
+  const pending = state.downloads.splice(0, state.downloads.length);
+
+  return Promise.all(
+    pending.map(async download => ({ name: download.name, error: await download.save }))
+  );
+}
+
 function capturePath(runDir, n) {
   return join(runDir, "captures", `s${String(n).padStart(CAPTURE_DIGITS, "0")}.png`);
 }
@@ -653,6 +766,14 @@ export async function executeStep(state, { flags, requireIntent = true } = {}) {
       await settle(page, step.action);
     } catch (thrown) {
       error = await describeActionError(thrown, step, page);
+    }
+  }
+
+  // A download the run lost is a tester-visible failure, and it is decided
+  // before the record is written so the record and its capture cannot disagree.
+  for (const download of await drainDownloads(state)) {
+    if (download.error !== null && error === null) {
+      error = `the download ${download.name} did not save: ${download.error}`;
     }
   }
 
