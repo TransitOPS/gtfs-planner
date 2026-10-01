@@ -796,7 +796,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # `keep_editing` drops it — and neither has to know what the other was.
   def handle_event("select_stop", %{"stop_id" => stop_id}, socket) do
     cond do
-      !stop_in_model?(socket.assigns, stop_id) ->
+      !selectable_stop?(socket.assigns, stop_id) ->
         # A result id that is not one this search produced is refused rather than
         # looked up: the panel only shows what the search returned, so accepting
         # an id it never showed would select a stop the editor cannot see.
@@ -1033,6 +1033,18 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
   defp stop_in_model?(%{model: model}, stop_id),
     do: Enum.any?(model.stops, &(&1.stop_id == stop_id))
+
+  # A `select_stop` is only ever a row the editor can see: a search result while
+  # a search is showing, and a row of the list otherwise. The model is the wider
+  # of the two, and a forged id drawn from it would open a stop the panel never
+  # named, so the search narrows the answer while one is on the screen.
+  defp selectable_stop?(assigns, stop_id) do
+    if assigns.search_query == "" do
+      stop_in_model?(assigns, stop_id)
+    else
+      Enum.any?(assigns.search_stops, &(&1.stop_id == stop_id))
+    end
+  end
 
   # `?stop=` is answered after the model arrives rather than in `handle_params/3`,
   # so the stop is opened from the same read everything else on the page came

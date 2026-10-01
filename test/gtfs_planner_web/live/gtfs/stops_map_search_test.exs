@@ -183,7 +183,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapSearchTest do
       assert has_element?(view, "#stops-map-search-results-places")
     end
 
-    test "choosing a stop result selects it and the panel says which one", ctx do
+    test "choosing a stop result opens its editor and the panel says which one", ctx do
       two_stops(ctx)
 
       view = open_map(ctx.editor_conn, ctx.version)
@@ -195,7 +195,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapSearchTest do
 
       view |> element("#stops-map-row-1434") |> render_click()
 
-      assert view |> element("#stops-map-panel") |> render() =~ "Stop · ID 1434"
+      # Step 30 put the editor behind every row, so choosing a result opens the
+      # editor for that stop; the heading it has to carry is the one that says
+      # which stop this is.
+      assert view |> element("#stops-map-edit-panel") |> render() =~ "Stop · ID 1434"
     end
 
     # The panel only shows what the search returned. A forged id from another
