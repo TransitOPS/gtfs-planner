@@ -207,7 +207,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Grouping do
       |> MapSet.new(& &1.label_pattern_id)
 
     Enum.filter(pattern_refs, fn pattern ->
-      ownerless? = is_nil(pattern.label_pattern_id) or not MapSet.member?(owners, pattern.id)
+      ownerless? =
+        is_nil(pattern.label_pattern_id) or
+          not MapSet.member?(owners, pattern.label_pattern_id)
+
       ownerless? and (same_endpoints?(pattern, stop_ids) or within?(pattern, stop_ids))
     end)
   end

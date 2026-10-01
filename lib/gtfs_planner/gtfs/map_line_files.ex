@@ -40,8 +40,8 @@ defmodule GtfsPlanner.Gtfs.MapLineFiles do
   # A KMZ entry is untrusted, so its inflate reads the compressed bytes in
   # chunks and stops once this much has come out of it. A chunk is 16 KiB, so
   # the running total is checked against every chunk's output before it is kept:
-  # the overshoot a high-ratio entry could otherwise make is bounded by one
-  # chunk rather than by the entry's claimed size.
+  # the overshoot a high-ratio entry could otherwise make is bounded by the
+  # expansion of a single chunk rather than by the entry's claimed size.
   @max_inflate_bytes 20 * 1024 * 1024
   @inflate_chunk_bytes 16 * 1024
 
