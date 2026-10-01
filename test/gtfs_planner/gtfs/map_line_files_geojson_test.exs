@@ -136,6 +136,40 @@ defmodule GtfsPlanner.Gtfs.MapLineFilesGeojsonTest do
       assert {:ok, [line]} = MapLineFiles.parse(document, "lines.geojson")
       assert line == %{name: "Route 1", points: @north, joined_from: 1}
     end
+
+    test "skips positions off the globe and integers too large for a float" do
+      huge = String.to_integer(String.duplicate("9", 400))
+
+      document =
+        Jason.encode!(%{
+          "type" => "FeatureCollection",
+          "features" => [
+            feature("MultiLineString", [[[0, 100], [180, 80]], [[huge, 1], [2, 3]], @north], %{
+              "name" => "Route 1"
+            })
+          ]
+        })
+
+      assert {:ok, [line]} = MapLineFiles.parse(document, "lines.geojson")
+      assert line == %{name: "Route 1", points: @north, joined_from: 1}
+    end
+
+    test "joins many touching parts into one line in file order" do
+      parts =
+        for i <- 0..4_999, do: [[-71.0 + i * 1.0e-5, 42.0], [-71.0 + (i + 1) * 1.0e-5, 42.0]]
+
+      document =
+        Jason.encode!(%{
+          "type" => "FeatureCollection",
+          "features" => [feature("MultiLineString", parts, %{"name" => "Long"})]
+        })
+
+      assert {:ok, [line]} = MapLineFiles.parse(document, "lines.geojson")
+      assert line.joined_from == 5_000
+      assert length(line.points) == 10_000
+      assert List.first(line.points) == [-71.0, 42.0]
+      assert List.last(line.points) == [-70.95, 42.0]
+    end
   end
 
   describe "parse/2 file problems" do

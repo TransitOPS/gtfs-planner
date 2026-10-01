@@ -644,29 +644,36 @@ defmodule GtfsPlanner.Gtfs.MapLineFiles do
 
   defp add_piece(_piece, runs), do: runs
 
-  defp join_or_start(points, [%{points: _} = current | earlier]) do
-    if meets?(List.last(current.points), List.first(points)) do
+  # A run keeps its points reversed and its last point aside, so each join costs
+  # the new piece's length rather than the whole run's: a file of many short
+  # pieces would otherwise take quadratic time in the editor's process.
+  defp join_or_start(points, [%{last: last} = current | earlier]) do
+    if meets?(last, List.first(points)) do
       [
-        %{current | points: current.points ++ points, joined_from: current.joined_from + 1}
+        %{
+          current
+          | reversed: Enum.reverse(points, current.reversed),
+            last: List.last(points),
+            joined_from: current.joined_from + 1
+        }
         | earlier
       ]
     else
-      [%{points: points, joined_from: 1} | [current | earlier]]
+      [new_run(points) | [current | earlier]]
     end
   end
 
-  defp join_or_start(points, runs), do: [%{points: points, joined_from: 1} | runs]
+  defp join_or_start(points, runs), do: [new_run(points) | runs]
+
+  defp new_run(points),
+    do: %{reversed: Enum.reverse(points), last: List.last(points), joined_from: 1}
 
   defp name_runs(runs, name) do
-    case runs do
-      [] ->
-        []
-
-      [%{points: points, joined_from: joined} | rest] ->
-        [
-          %{name: name, points: points, joined_from: joined}
-          | Enum.map(rest, &Map.put(&1, :name, nil))
-        ]
+    runs
+    |> Enum.map(&%{name: nil, points: Enum.reverse(&1.reversed), joined_from: &1.joined_from})
+    |> case do
+      [] -> []
+      [first | rest] -> [%{first | name: name} | rest]
     end
   end
 
@@ -696,7 +703,11 @@ defmodule GtfsPlanner.Gtfs.MapLineFiles do
     end)
   end
 
-  defp position?([lon, lat | _rest]) when is_number(lon) and is_number(lat), do: true
+  # A position outside the globe is not a place, and an unbounded integer would
+  # fail the float conversion, so both are skipped like any other non-position.
+  defp position?([lon, lat | _rest]) when is_number(lon) and is_number(lat),
+    do: abs(lon) <= 180 and abs(lat) <= 90
+
   defp position?(_position), do: false
 
   defp meets?(nil, _next), do: false
@@ -715,7 +726,8 @@ defmodule GtfsPlanner.Gtfs.MapLineFiles do
       :math.pow(:math.sin(dlat / 2.0), 2) +
         :math.cos(rad1) * :math.cos(rad2) * :math.pow(:math.sin(dlon / 2.0), 2)
 
-    2.0 * @earth_radius_m * :math.asin(:math.sqrt(a))
+    # Rounding can leave `a` a hair outside 0..1, where `sqrt`/`asin` raise.
+    2.0 * @earth_radius_m * :math.asin(:math.sqrt(a |> max(0.0) |> min(1.0)))
   end
 
   defp feature_positions(%{"geometry" => %{"coordinates" => coordinates}}),
