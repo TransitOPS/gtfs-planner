@@ -110,7 +110,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSchemaTest do
       end
 
       results =
-        [Task.async(insert.(first)), Task.async(insert.(second))]
+        Enum.map([first, second], fn line -> Task.async(fn -> insert.(line) end) end)
         |> Task.await_many(5_000)
 
       assert Enum.count(results, &match?({:ok, _day}, &1)) == 1

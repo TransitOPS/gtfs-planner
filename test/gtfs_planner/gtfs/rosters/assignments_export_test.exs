@@ -255,6 +255,69 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignmentsExportTest do
     end
   end
 
+  describe "sentences/2" do
+    test "names the assigned slots whose run the export dropped for errors" do
+      sentences = AssignmentsExport.sentences(rows(roster()))
+
+      assert {"tods_assignments_left_out",
+              "1 assigned slot names a run with errors and was left out."} in sentences
+
+      # The plural form is the other branch of the same sentence: the same
+      # errored run worked on two weekdays of one line is two assigned slots the
+      # file will not carry, and the count is per slot rather than per line.
+      two_left_out =
+        roster([
+          line(
+            60,
+            [held(3, "weekday", @run_1030), held(4, "weekday", @run_1030)],
+            operator("E4110", "Sam Idris")
+          )
+        ])
+
+      assert {"tods_assignments_left_out",
+              "2 assigned slots name runs with errors and were left out."} in AssignmentsExport.sentences(
+               rows(two_left_out)
+             )
+    end
+
+    test "says nothing about left-out slots when every assigned run exports" do
+      healthy =
+        roster([
+          line(
+            12,
+            Enum.map(1..5, &held(&1, "weekday", @run_1001)),
+            operator("E4101", "Rosa Iversen")
+          )
+        ])
+
+      result = rows(healthy)
+
+      assert result.left_out_slots == 0
+
+      refute Enum.any?(
+               AssignmentsExport.sentences(result),
+               &(elem(&1, 0) == "tods_assignments_left_out")
+             )
+    end
+
+    test "a stale slot is skipped, not left out: the run is still there" do
+      # Line 50 is the re-cut Saturday slot. The run is present and healthy, so
+      # it is skipped as stale and never counted as a dropped assignment — the
+      # two sentences have to stay apart.
+      result =
+        rows(
+          roster([line(50, [re_cut(6, "saturday", @run_6010)], operator("E4102", "Lena Vogt"))])
+        )
+
+      assert %{stale_slots: 1, left_out_slots: 0} = result
+
+      codes = Enum.map(AssignmentsExport.sentences(result), &elem(&1, 0))
+
+      assert "tods_assignments_stale" in codes
+      refute "tods_assignments_left_out" in codes
+    end
+  end
+
   # The roster every expectation above is read off: a Mon–Fri line, a Sunday line,
   # a second Sunday line working a run that signs on before midnight, a Saturday
   # slot a re-cut has made stale, a Wednesday slot on a run with an error, and a

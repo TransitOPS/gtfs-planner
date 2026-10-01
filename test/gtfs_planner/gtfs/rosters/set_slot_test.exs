@@ -39,7 +39,6 @@ defmodule GtfsPlanner.Gtfs.Rosters.SetSlotTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.RosterLine
   alias GtfsPlanner.Gtfs.RosterLineDay
   alias GtfsPlanner.Gtfs.Runs
   alias GtfsPlanner.Gtfs.TripRun
@@ -262,7 +261,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.SetSlotTest do
         |> Enum.map(fn line ->
           Task.async(fn ->
             Sandbox.allow(Repo, parent, self())
-            Gtfs.set_roster_slot(world.organization.id, world.version.id, line, @thursday, "2001")
+            set(world, line, @thursday, "2001")
           end)
         end)
         |> Enum.map(&Task.await(&1, 30_000))
@@ -277,7 +276,11 @@ defmodule GtfsPlanner.Gtfs.Rosters.SetSlotTest do
       assert holder_line in [1, 2]
       assert day_count(world) == 1
 
-      assert stored_day(world, line_id_of(world, holder_line), @thursday) ==
+      # The stored row is read back from the line that won, found by the number
+      # the refusal named rather than by which of the two writers came first.
+      winner = Enum.find([first, second], &(&1.line_number == holder_line))
+
+      assert stored_day(world, winner, @thursday) ==
                {world.day_type_key, "2001", @run_2001.sign_on_secs, @run_2001.sign_off_secs}
 
       # The other line worked no day at all, which is what "one line per
@@ -286,19 +289,8 @@ defmodule GtfsPlanner.Gtfs.Rosters.SetSlotTest do
     end
   end
 
-  # The id the version's line numbered `line_number` was given, read back from the
-  # table rather than from a writer's answer.
-  defp line_id_of(world, line_number) do
-    Repo.one!(
-      from(l in RosterLine,
-        where:
-          l.organization_id == ^world.organization.id and
-            l.gtfs_version_id == ^world.version.id and l.line_number == ^line_number,
-        select: l.id
-      )
-    )
-  end
-
+  # The line `new_line/1` built, kept with the number the writer gave it so a
+  # case can say which of two lines won a race.
   defp new_line(world) do
     assert {:ok, %{id: id, line_number: number}} =
              Gtfs.create_roster_line(world.organization.id, world.version.id)

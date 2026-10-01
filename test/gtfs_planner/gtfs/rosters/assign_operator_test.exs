@@ -146,16 +146,19 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignOperatorTest do
       their_line = new_line(theirs)
       their_operator = operator_fixture(theirs, "E-1", "Bo Lindqvist", 8)
 
-      for {scope, bad_line, bad_operator} <- [
-            {theirs, their_line.id, their_operator.id},
-            {world, line.id, "not-a-uuid"},
-            {world, "not-a-uuid", operator.id},
-            {world, nil, operator.id}
+      # Every call is made in *this* world's scope with an id that belongs to
+      # theirs, is malformed, or is absent: the caller's own line and operator
+      # never appear here, because a pick this version can make is not a refusal.
+      for {bad_line, bad_operator} <- [
+            {their_line.id, their_operator.id},
+            {their_line.id, "not-a-uuid"},
+            {"not-a-uuid", operator.id},
+            {nil, operator.id}
           ] do
         assert {:error, :not_found} =
                  Gtfs.assign_roster_operator(
-                   scope.organization.id,
-                   scope.version.id,
+                   world.organization.id,
+                   world.version.id,
                    bad_line,
                    bad_operator
                  )

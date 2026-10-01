@@ -184,13 +184,20 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignmentsExport do
   defp error_run?(run), do: Enum.any?(run.findings, &(&1.severity == :error))
 
   # A slot the roster still trusts whose run the export will drop. Counted per
-  # slot, not per row, because the run is dropped from every date it works.
+  # slot, not per row, because the run is dropped from every date it works — and
+  # not per line either, because one line can work an errored run on three
+  # weekdays and then has three assigned slots missing from the file, not one.
   defp left_out_slots(roster) do
-    Enum.count(roster.lines, fn line ->
-      not is_nil(line.operator) and
-        Enum.any?(line.slots, fn {_weekday, slot} ->
-          slot.state == :ok and not is_nil(slot.run) and error_run?(slot.run)
-        end)
+    Enum.reduce(roster.lines, 0, fn line, total -> total + left_out_slot_count(line) end)
+  end
+
+  # An unassigned line is not in the file at all, so its slots are not "left out
+  # for run errors" either: the `unassigned` sentence is what names that line.
+  defp left_out_slot_count(%{operator: nil}), do: 0
+
+  defp left_out_slot_count(line) do
+    Enum.count(line.slots, fn {_weekday, slot} ->
+      slot.state == :ok and not is_nil(slot.run) and error_run?(slot.run)
     end)
   end
 

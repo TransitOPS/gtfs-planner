@@ -86,7 +86,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSettingsTest do
 
       # The read answered from the defaults without creating a row, so opening the
       # page cannot leave a settings row behind as a side effect of looking at it.
-      assert Repo.aggregate(BlockingSetting, :count) == 0
+      assert no_settings_row(version)
     end
 
     test "the reader is scoped, so another organization's version reads the defaults", %{
@@ -171,7 +171,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSettingsTest do
 
         # Nothing was written: a refused value leaves no row at all on a version
         # that had none, so a read still answers the defaults.
-        assert Repo.aggregate(BlockingSetting, :count) == 0
+        assert no_settings_row(version)
         assert Rosters.get_roster_settings(organization.id, version.id) == @roster_defaults
       end
     end
@@ -192,7 +192,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSettingsTest do
       # `cast/4` as an "is invalid" field error instead of turning it into `nil`,
       # which is what would let the default through.
       assert %{min_rest_minutes: ["is invalid"]} = errors_on(changeset)
-      assert Repo.aggregate(BlockingSetting, :count) == 0
+      assert no_settings_row(version)
     end
 
     test "a day type that is not current for the weekday is refused", context do
@@ -388,5 +388,15 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSettingsTest do
 
   defp roster_of(setting) do
     Map.take(setting, BlockingSetting.roster_fields())
+  end
+
+  # Whether a version holds no `blocking_settings` row at all. Scoped to the
+  # version, not counted over the table: this file's `setup` builds a whole
+  # `runs_version_fixture/0` world, and that world writes the Block and crew
+  # rules of its *own* version through their own writers. A whole-table count
+  # would read that unrelated row as a leaked write.
+  defp no_settings_row(version) do
+    Repo.aggregate(from(b in BlockingSetting, where: b.gtfs_version_id == ^version.id), :count) ==
+      0
   end
 end

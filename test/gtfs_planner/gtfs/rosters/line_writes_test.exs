@@ -48,10 +48,15 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
   @tuesday 2
 
   setup do
-    world = runs_version_fixture()
+    %{world: assign_runs(runs_version_fixture())}
+  end
 
-    # One run per block, so a run that keeps its ID and loses its last trip stays
-    # observable; the derivation follows the stored assignments, not the blocks.
+  # One run per block, so a run that keeps its ID and loses its last trip stays
+  # observable; the derivation follows the stored assignments, not the blocks.
+  # A second world built by a case — the other organization of the scoping cases
+  # — needs the same assignment, or it derives no runs at all and every write
+  # against it is refused as an unknown run.
+  defp assign_runs(world) do
     for {block_id, run_id} <- [{"101", "2001"}, {"102", "2002"}],
         trip <- world.blocks[block_id] do
       trip_run_fixture(world.organization.id, world.version.id, %{
@@ -61,7 +66,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
       })
     end
 
-    %{world: world}
+    world
   end
 
   describe "create_roster_line/2" do
@@ -97,7 +102,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
       assert {:ok, %{line_number: 1}} =
                Gtfs.create_roster_line(world.organization.id, world.version.id)
 
-      assert {:ok, %{line_number: 1}} =
+      assert {:ok, %{line_number: 2}} =
                Gtfs.create_roster_line(world.organization.id, world.version.id)
 
       sibling = gtfs_version_fixture(world.organization.id)
@@ -176,7 +181,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
       line = working_line(world, "2001", @monday)
       operator = operator_fixture(world)
 
-      {:ok, _} =
+      {1, nil} =
         Repo.update_all(from(l in RosterLine, where: l.id == ^line.id),
           set: [operator_id: operator.id]
         )
@@ -221,7 +226,11 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
     test "a line of another version is not found and nothing is written", %{world: world} do
       working_line(world, "2001", @monday)
       sibling = gtfs_version_fixture(world.organization.id)
-      other_line = working_line(%{world | version: sibling}, "2001", @monday)
+
+      # The sibling has no calendars of its own, so it derives no runs; the slot
+      # it holds only has to exist under a foreign version for these refusals.
+      # Its times come from the run the caller's own version derives.
+      other_line = line_with_run(world, sibling, derived_run(world, "2001"), @monday)
 
       # The row exists, under the right shape and the caller's own organization —
       # only the version is foreign. Version scoping is the query's own work, not
@@ -245,7 +254,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
     end
 
     test "a line of another organization is not found and nothing is written", %{world: world} do
-      theirs = runs_version_fixture()
+      theirs = assign_runs(runs_version_fixture())
       their_line = working_line(theirs, "2001", @monday)
 
       assert {:error, :not_found} =
@@ -296,14 +305,21 @@ defmodule GtfsPlanner.Gtfs.Rosters.LineWritesTest do
   # step 13. It goes through `create_roster_line/2` so the line it returns is one
   # a writer numbered, not a row the test invented.
   defp working_line(world, run_id, weekday) do
-    {:ok, %{id: id}} = Gtfs.create_roster_line(world.organization.id, world.version.id)
-    run = derived_run(world, run_id)
+    line_with_run(world, world.version, derived_run(world, run_id), weekday)
+  end
+
+  # A line of `version` working `run` on `weekday`, stored with that run's own
+  # sign-on and sign-off. `world` supplies the organization, the day-type key and
+  # the run; `version` is where the line goes, which is what lets a case put one
+  # under a sibling version the world itself never derived a run for.
+  defp line_with_run(world, version, run, weekday) do
+    {:ok, %{id: id}} = Gtfs.create_roster_line(world.organization.id, version.id)
 
     {:ok, _day} =
       %RosterLineDay{
         roster_line_id: id,
         organization_id: world.organization.id,
-        gtfs_version_id: world.version.id,
+        gtfs_version_id: version.id,
         weekday: weekday,
         day_type_key: world.day_type_key
       }

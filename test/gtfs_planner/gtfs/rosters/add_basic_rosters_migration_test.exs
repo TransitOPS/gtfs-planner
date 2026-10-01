@@ -130,6 +130,13 @@ defmodule GtfsPlanner.Gtfs.Rosters.AddBasicRostersMigrationTest do
 
       assert columns["roster_day_types"]["is_nullable"] == "NO"
 
+      # The defaults are what an *existing* row takes, so the row has to exist:
+      # the columns are NOT NULL with a default, not a value the migration writes
+      # per row.
+      organization_id = insert_organization(schema, "Defaults Org")
+      version_id = insert_version(schema, organization_id)
+      insert_settings(schema, organization_id, version_id)
+
       %{rows: [[min_rest, warn_above, day_types]]} =
         SQL.query!(
           Repo,

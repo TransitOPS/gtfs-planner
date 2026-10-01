@@ -51,10 +51,14 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterQueriesTest do
   @unused_key "9Y3vQ0RkZmFrY3lKZzBBRQ"
 
   setup do
-    world = runs_version_fixture()
+    %{world: assign_runs(runs_version_fixture())}
+  end
 
-    # One run per block, so two lines can work the same day type on the same
-    # weekday without either of them taking a run the other holds.
+  # One run per block, so two lines can work the same day type on the same
+  # weekday without either of them taking a run the other holds. The second
+  # organization of the scoping case is built by the case itself and needs the
+  # same assignment, or it derives no runs and its own write is refused.
+  defp assign_runs(world) do
     for {block_id, run_id} <- [{"101", "2001"}, {"102", "2002"}],
         trip <- world.blocks[block_id] do
       trip_run_fixture(world.organization.id, world.version.id, %{
@@ -64,7 +68,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterQueriesTest do
       })
     end
 
-    %{world: world}
+    world
   end
 
   describe "roster_operator_holdings/2" do
@@ -237,7 +241,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterQueriesTest do
 
       # A second organization of the same fixture derives the same key, so a
       # count scoped only by key would answer twice the slots.
-      theirs = runs_version_fixture()
+      theirs = assign_runs(runs_version_fixture())
       their_line = new_line(theirs)
       assert {:ok, %{short_rests: _rest}} = set(theirs, their_line, 1, "2001")
       assert theirs.day_type_key == world.day_type_key
