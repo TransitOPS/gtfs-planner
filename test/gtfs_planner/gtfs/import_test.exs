@@ -1143,14 +1143,15 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
             %{
               "station_stop_id" => "station_main",
               "filename" => "../escape.png",
-              "zip_path" => "_pathways_extensions/diagrams/station_main/../escape.png"
+              "zip_path" => "_pathways_extensions/diagrams/station_main/escape.png"
             }
           ]
         })
 
-      # The unsafe filename must match the manifest's referenced path.
+      # The archive member is safe (a `..` member is rejected during archive expansion);
+      # the manifest's destination filename is what the extension restore must refuse.
       image_entry =
-        {~c"_pathways_extensions/diagrams/station_main/../escape.png", "fake png"}
+        {~c"_pathways_extensions/diagrams/station_main/escape.png", "fake png"}
 
       # Standard files reference a DIFFERENT level/stop than the fixtures.
       levels_content = "level_id,level_index,level_name\n32095_BUSWAY,0.0,Busway"

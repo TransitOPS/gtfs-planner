@@ -772,139 +772,281 @@ defmodule GtfsPlanner.Gtfs.Import do
   end
 
   @doc """
-  Expands uploaded `.zip` archives into individual file entries.
+  Expands in-memory `.zip` uploads into `%{filename, content}` entries.
+
+  An adapter over `expand_staged_archives/2` for callers that still hold file
+  contents (change review, and `import_files/5` until it takes staged files). Each
+  archive is written to a private temporary directory, expanded there, read back and
+  removed. Non-zip entries pass through unchanged.
 
   Returns `{expanded_files, archive_warnings}` where `archive_warnings` is a list
   of `%{filename: String.t(), reason: atom(), detail: String.t()}` maps describing
-  archives that could not be expanded.
-
-  Non-zip entries pass through unchanged.
-
-  Safety behavior:
-  - ignores hidden/system zip entries
-  - rejects nested archives inside archives
-  - enforces entry-count and total-uncompressed-size limits
-  - emits a structured warning when expansion fails (instead of passing the raw archive through)
+  archives or members that were rejected.
   """
   def expand_archives(files) do
+    root = Path.join(System.tmp_dir!(), "gtfs-import-expand-#{Ecto.UUID.generate()}")
+
+    try do
+      staged =
+        files
+        |> Enum.with_index()
+        |> Enum.map(fn {file, index} -> stage_archive(file, root, index) end)
+
+      {expanded, warnings} = expand_staged_archives(staged, Path.join(root, "expanded"))
+      {Enum.map(expanded, &read_member/1), warnings}
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  defp stage_archive(file, root, index) do
+    if zip_file?(file) do
+      path = Path.join([root, "archives", "#{index}.zip"])
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, file.content)
+      %{filename: file.filename, path: path}
+    else
+      file
+    end
+  end
+
+  defp read_member(%{path: path, filename: filename}),
+    do: %{filename: filename, content: File.read!(path)}
+
+  defp read_member(file), do: file
+
+  @doc """
+  Expands the `.zip` descriptors in `files` under `dir`, one subdirectory per archive.
+
+  `files` is a list of `%{filename, path}` descriptors. Each zip goes through
+  `expand_archive/3` into `dir/<index>`, so same-named members of different archives
+  cannot overwrite each other. Other descriptors pass through unchanged.
+
+  Returns `{files, archive_warnings}` with the pass-through descriptors and the
+  extracted members in upload order. No file contents are read.
+  """
+  def expand_staged_archives(files, dir) when is_list(files) and is_binary(dir) do
+    limits = zip_limits()
+
     {files_acc, warnings_acc} =
-      Enum.reduce(files, {[], []}, &expand_archive_file/2)
+      files
+      |> Enum.with_index()
+      |> Enum.reduce({[], []}, fn {file, index}, {files_acc, warnings_acc} ->
+        if zip_file?(file) do
+          {members, warnings} =
+            expand_archive(file, Path.join(dir, Integer.to_string(index)), limits)
+
+          {Enum.reverse(members, files_acc), Enum.reverse(warnings, warnings_acc)}
+        else
+          {[file | files_acc], warnings_acc}
+        end
+      end)
 
     {Enum.reverse(files_acc), Enum.reverse(warnings_acc)}
   end
 
-  defp expand_archive_file(file, acc) do
-    if String.ends_with?(String.downcase(file.filename), ".zip") do
-      expand_zip_archive(file, acc, zip_limits())
-    else
-      {files_acc, warnings_acc} = acc
-      {[file | files_acc], warnings_acc}
+  defp zip_file?(file), do: String.ends_with?(String.downcase(file.filename), ".zip")
+
+  @doc """
+  Preflights and extracts one staged `.zip` into `dir`.
+
+  `file` is `%{filename, path}`: the upload's name, used in warnings, and the
+  archive's path. `preflight_archive/2` runs first, so an archive that is unreadable,
+  over a limit or repeats a member name is rejected before `dir` is touched, and only
+  the accepted members are extracted. The extracted files' sizes are then checked
+  against the same limits; if extraction fails or a size is over, `dir` is removed.
+  `dir` must be dedicated to this archive.
+
+  Returns `{members, warnings}`. `members` is a list of `%{filename, path}`:
+  `filename` is the member's normalized archive-relative name and `path` the absolute
+  extracted file. It is empty when the whole archive is rejected. `warnings` has the
+  same shape as in `expand_archives/1`.
+
+  Extraction streams each member to disk, and a member whose header understates its
+  size is only caught by the size check afterwards, not bounded while it is written.
+  """
+  def expand_archive(file, dir, limits) do
+    case preflight_archive(file, limits) do
+      {:ok, [], warnings} ->
+        {[], warnings}
+
+      {:ok, accepted, warnings} ->
+        extract_members(file, Path.expand(dir), accepted, limits, warnings)
+
+      {:error, warnings} ->
+        {[], warnings}
     end
   end
 
-  defp expand_zip_archive(file, acc, limits) do
-    file
-    |> check_zip_archive_metadata_against_limits(limits)
-    |> handle_zip_preflight(file, acc, limits)
+  defp extract_members(file, dir, accepted, limits, warnings) do
+    File.mkdir_p!(dir)
+
+    case unzip_members(file, dir, accepted, limits) do
+      {:ok, members} ->
+        {members, warnings}
+
+      error ->
+        File.rm_rf(dir)
+        {[], warnings ++ [extraction_warning(file, limits, error)]}
+    end
   end
 
-  defp handle_zip_preflight({:ok, preflight_warnings}, file, acc, limits) do
-    file.content
-    |> :zip.unzip([:memory])
-    |> handle_zip_expansion(file, acc, limits, preflight_warnings)
+  defp unzip_members(file, dir, accepted, limits) do
+    options = [{:cwd, String.to_charlist(dir)}, {:file_list, accepted}]
+
+    # `:zip` extracts by the name in each member's local header and skips one that
+    # climbs above `dir`, even when the directory entry looked safe. A short result
+    # means a member was not extracted.
+    with {:ok, written} when length(written) == length(accepted) <-
+           :zip.unzip(String.to_charlist(file.path), options),
+         members = Enum.map(written, &extracted_member(&1, dir)),
+         :ok <- ensure_members_within_root(members, dir),
+         {:ok, _count, _total} <-
+           members
+           |> Enum.map(&File.stat!(&1.path).size)
+           |> check_zip_entry_sizes_against_limits(limits) do
+      {:ok, members}
+    else
+      {:ok, _written} -> {:error, :member_mismatch}
+      error -> error
+    end
   end
 
-  defp handle_zip_preflight(
-         {:error, reason, entries_count, total_bytes, entry_bytes, preflight_warnings},
-         file,
-         acc,
-         limits
-       ) do
-    add_archive_too_large_warning(
-      file,
-      acc,
-      limits,
-      preflight_warnings,
-      {reason, entries_count, total_bytes, entry_bytes},
-      ""
-    )
+  defp extracted_member(written, dir) do
+    path = List.to_string(written)
+    %{filename: path |> Path.relative_to(dir) |> normalize_uploaded_filename(), path: path}
   end
 
-  defp handle_zip_preflight({:error, reason, preflight_warnings}, file, acc, _limits) do
-    add_unreadable_archive_warning(file, acc, preflight_warnings, reason, "preflight")
-  end
-
-  defp handle_zip_expansion(
-         {:ok, entries},
-         file,
-         acc,
-         limits,
-         preflight_warnings
-       ) do
-    entry_sizes = Enum.map(entries, fn {_name, content} -> byte_size(content) end)
-
-    entry_sizes
-    |> check_zip_entry_sizes_against_limits(limits)
-    |> handle_expanded_entry_sizes(file, entries, acc, limits, preflight_warnings)
-  end
-
-  defp handle_zip_expansion(
-         {:error, reason},
-         file,
-         acc,
-         _limits,
-         preflight_warnings
-       ) do
-    add_unreadable_archive_warning(file, acc, preflight_warnings, reason, "expand")
-  end
-
-  defp handle_expanded_entry_sizes(
-         {:ok, _entries_count, _total_bytes},
-         _file,
-         entries,
-         {files_acc, warnings_acc},
-         _limits,
-         preflight_warnings
-       ) do
-    files_acc = Enum.reduce(normalize_zip_entries(entries), files_acc, &[&1 | &2])
-    {files_acc, Enum.reverse(preflight_warnings) ++ warnings_acc}
-  end
-
-  defp handle_expanded_entry_sizes(
-         {:error, reason, entries_count, total_bytes, entry_bytes},
-         file,
-         _entries,
-         acc,
-         limits,
-         preflight_warnings
-       ) do
-    add_archive_too_large_warning(
-      file,
-      acc,
-      limits,
-      preflight_warnings,
-      {reason, entries_count, total_bytes, entry_bytes},
-      " after expansion"
-    )
-  end
-
-  defp normalize_zip_entries(entries) do
-    Enum.flat_map(entries, fn {name, content} ->
-      filename = normalize_uploaded_filename(to_string(name))
-
-      if ignore_zip_entry?(filename) or String.ends_with?(String.downcase(filename), ".zip") do
-        []
-      else
-        [%{filename: filename, content: content}]
+  defp ensure_members_within_root(members, dir) do
+    Enum.find_value(members, :ok, fn member ->
+      case Extensions.PathSafety.ensure_within_root(dir, member.path) do
+        :ok -> nil
+        error -> error
       end
     end)
   end
 
-  defp add_archive_too_large_warning(
+  defp extraction_warning(file, limits, {:error, reason, count, total, entry}),
+    do: archive_too_large_warning(file, limits, {reason, count, total, entry}, " after expansion")
+
+  defp extraction_warning(file, _limits, {:error, reason}),
+    do: unreadable_archive_warning(file, reason, "expand")
+
+  @doc """
+  Reads a staged `.zip`'s directory and decides which members to extract, without
+  extracting anything.
+
+  Every entry counts toward the entry-count and declared-size limits, including
+  ignored and rejected ones. Members whose name is absolute, has a `..` segment (after
+  turning `\\` into `/`) or contains a NUL byte are dropped with an `:unsafe_member_path`
+  warning, and nested `.zip` members with a `:nested_archive` warning. Directories and
+  hidden or system entries are dropped silently.
+
+  Returns `{:ok, accepted, warnings}`, where `accepted` holds the member names to
+  extract as the archive spells them, or `{:error, warnings}` when the archive is
+  unreadable, over a limit or repeats a member name. The last warning then names the
+  reason.
+  """
+  def preflight_archive(file, limits) do
+    case :zip.list_dir(String.to_charlist(file.path)) do
+      {:ok, entries} ->
+        members =
+          for {:zip_file, name, info, _comment, _offset, _comp_size} <- entries,
+              do: {name, to_string(name), zip_entry_uncompressed_size(info)}
+
+        classify_members(file, members, limits)
+
+      {:error, reason} ->
+        {:error, [unreadable_archive_warning(file, reason, "preflight")]}
+    end
+  end
+
+  defp classify_members(file, members, limits) do
+    {accepted, warnings} =
+      Enum.reduce(members, {[], []}, fn {name, string, _size}, {accepted, warnings} ->
+        case member_disposition(string) do
+          :accept ->
+            {[name | accepted], warnings}
+
+          :ignore ->
+            {accepted, warnings}
+
+          {:reject, reason, filename} ->
+            {accepted, [member_warning(file, reason, filename) | warnings]}
+        end
+      end)
+
+    sizes = Enum.map(members, fn {_name, _string, size} -> size end)
+    warnings = Enum.reverse(warnings)
+
+    case check_zip_entry_sizes_against_limits(sizes, limits) do
+      {:ok, _count, _total} ->
+        accept_unique_members(file, Enum.reverse(accepted), warnings)
+
+      {:error, reason, count, total, entry} ->
+        {:error,
+         warnings ++ [archive_too_large_warning(file, limits, {reason, count, total, entry}, "")]}
+    end
+  end
+
+  defp member_disposition(name) do
+    filename = normalize_uploaded_filename(name)
+
+    cond do
+      unsafe_member_path?(name) -> {:reject, :unsafe_member_path, name}
+      ignore_zip_entry?(filename) -> :ignore
+      String.ends_with?(String.downcase(filename), ".zip") -> {:reject, :nested_archive, filename}
+      true -> :accept
+    end
+  end
+
+  defp unsafe_member_path?(name) do
+    normalized = String.replace(name, "\\", "/")
+
+    String.starts_with?(normalized, "/") or
+      String.match?(normalized, ~r/^[A-Za-z]:/) or
+      String.contains?(name, <<0>>) or
+      ".." in String.split(normalized, "/")
+  end
+
+  # Two members that resolve to one destination would leave a single file standing
+  # for both, so the descriptors would no longer describe each member's bytes.
+  defp accept_unique_members(file, accepted, warnings) do
+    destinations =
+      Enum.map(accepted, fn name ->
+        name |> to_string() |> normalize_uploaded_filename() |> Path.expand("/")
+      end)
+
+    if length(Enum.uniq(destinations)) == length(destinations) do
+      {:ok, accepted, warnings}
+    else
+      {:error, warnings ++ [unreadable_archive_warning(file, :duplicate_members, "preflight")]}
+    end
+  end
+
+  defp member_warning(file, :unsafe_member_path, filename) do
+    Logger.warning("Rejecting unsafe zip member #{inspect(filename)} in archive #{file.filename}")
+
+    %{
+      filename: file.filename,
+      reason: :unsafe_member_path,
+      detail: "unsafe member path rejected: #{inspect(filename)}"
+    }
+  end
+
+  defp member_warning(file, :nested_archive, filename) do
+    Logger.warning("Rejecting nested zip entry #{filename} in archive #{file.filename}")
+
+    %{
+      filename: file.filename,
+      reason: :nested_archive,
+      detail: "nested archive rejected: #{filename}"
+    }
+  end
+
+  defp archive_too_large_warning(
          file,
-         {files_acc, warnings_acc},
          limits,
-         preflight_warnings,
          {reason, entries_count, total_bytes, entry_bytes},
          phase
        ) do
@@ -916,32 +1058,22 @@ defmodule GtfsPlanner.Gtfs.Import do
         "max_entry_bytes=#{limits.max_entry_bytes}), skipping expansion"
     )
 
-    warning = %{
+    %{
       filename: file.filename,
       reason: :archive_too_large,
       detail:
         "exceeds safety limits (#{reason}: #{entries_count} entries, #{total_bytes} bytes uncompressed)"
     }
-
-    {files_acc, [warning | Enum.reverse(preflight_warnings)] ++ warnings_acc}
   end
 
-  defp add_unreadable_archive_warning(
-         file,
-         {files_acc, warnings_acc},
-         preflight_warnings,
-         reason,
-         phase
-       ) do
+  defp unreadable_archive_warning(file, reason, phase) do
     Logger.warning("Failed to #{phase} zip archive #{file.filename}: #{inspect(reason)}")
 
-    warning = %{
+    %{
       filename: file.filename,
       reason: :unzip_failed,
       detail: "archive could not be read (#{inspect(reason)})"
     }
-
-    {files_acc, [warning | Enum.reverse(preflight_warnings)] ++ warnings_acc}
   end
 
   @doc false
@@ -969,79 +1101,6 @@ defmodule GtfsPlanner.Gtfs.Import do
           {:cont, {:ok, next_count, next_total}}
       end
     end)
-  end
-
-  defp check_zip_archive_metadata_against_limits(file, limits) do
-    with_temp_file(file.content, ".zip", fn path ->
-      case :zip.list_dir(String.to_charlist(path)) do
-        {:ok, entries} ->
-          {entry_sizes, nested_warnings} =
-            Enum.reduce(entries, {[], []}, fn
-              {:zip_file, name, file_info, _comment, _offset, _comp_size},
-              {entry_sizes, nested_warnings} ->
-                filename = normalize_uploaded_filename(to_string(name))
-
-                nested_warnings =
-                  if not ignore_zip_entry?(filename) and
-                       String.ends_with?(String.downcase(filename), ".zip") do
-                    Logger.warning(
-                      "Rejecting nested zip entry #{filename} in archive #{file.filename}"
-                    )
-
-                    warning = %{
-                      filename: file.filename,
-                      reason: :nested_archive,
-                      detail: "nested archive rejected: #{filename}"
-                    }
-
-                    [warning | nested_warnings]
-                  else
-                    nested_warnings
-                  end
-
-                {[zip_entry_uncompressed_size(file_info) | entry_sizes], nested_warnings}
-
-              _, acc ->
-                acc
-            end)
-
-          nested_warnings = Enum.reverse(nested_warnings)
-
-          case check_zip_entry_sizes_against_limits(Enum.reverse(entry_sizes), limits) do
-            {:ok, _, _} ->
-              {:ok, nested_warnings}
-
-            {:error, reason, entries_count, total_bytes, entry_bytes} ->
-              {:error, reason, entries_count, total_bytes, entry_bytes, nested_warnings}
-          end
-
-        {:error, reason} ->
-          {:error, reason, []}
-      end
-    end)
-    |> case do
-      {:error, reason} -> {:error, reason, []}
-      result -> result
-    end
-  end
-
-  defp with_temp_file(binary, extension, fun) when is_binary(binary) and is_binary(extension) do
-    filename =
-      "gtfs-import-#{System.unique_integer([:positive, :monotonic])}#{extension}"
-
-    path = Path.join(System.tmp_dir!(), filename)
-
-    case File.write(path, binary) do
-      :ok ->
-        try do
-          fun.(path)
-        after
-          File.rm(path)
-        end
-
-      {:error, reason} ->
-        {:error, reason}
-    end
   end
 
   defp zip_entry_uncompressed_size({:file_info, size, _, _, _, _, _, _, _, _, _, _, _, _})
