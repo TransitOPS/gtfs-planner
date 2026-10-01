@@ -451,7 +451,12 @@ export function fitSummary({ visits, points, thresholdM = 100 }) {
   const L = leaflet();
   const projected = lonLat.map(([lon, lat]) => L.CRS.EPSG3857.project(L.latLng(lat, lon)));
   const cum = alongDistances(projected);
-  const placed = visits.map((visit) => projectVisitOntoLine(L, projected, cum, visit.lon, visit.lat));
+  // A stop without coordinates cannot be placed, so it reads as unplaced (far
+  // with no distance) rather than throwing in the projection.
+  const placeable = (visit) => typeof visit.lon === "number" && typeof visit.lat === "number";
+  const placed = visits.map((visit) =>
+    placeable(visit) ? projectVisitOntoLine(L, projected, cum, visit.lon, visit.lat) : null,
+  );
   const alongs = placed.map((placement) => (placement ? placement.alongM : null));
 
   let direction = "unknown";
@@ -463,6 +468,7 @@ export function fitSummary({ visits, points, thresholdM = 100 }) {
   // the line's own length, so an end point beyond the visit's position is
   // still reached.
   const ground = (a, b) => L.CRS.Earth.distance(L.latLng(a[1], a[0]), L.latLng(b[1], b[0]));
+  const reaches = (visit, end) => placeable(visit) && ground([visit.lon, visit.lat], end) <= thresholdM;
   const far = [];
   let within = 0;
   visits.forEach((visit, i) => {
@@ -476,8 +482,8 @@ export function fitSummary({ visits, points, thresholdM = 100 }) {
 
   return {
     direction,
-    reachesStart: ground([visits[0].lon, visits[0].lat], lonLat[0]) <= thresholdM,
-    reachesEnd: ground([visits[visitCount - 1].lon, visits[visitCount - 1].lat], lonLat[lonLat.length - 1]) <= thresholdM,
+    reachesStart: reaches(visits[0], lonLat[0]),
+    reachesEnd: reaches(visits[visitCount - 1], lonLat[lonLat.length - 1]),
     far,
     within,
     visitCount,
@@ -506,6 +512,7 @@ export function joinPieces(pieces, toleranceM = 50) {
 
   const L = leaflet();
   const ground = (a, b) => L.CRS.Earth.distance(L.latLng(a[1], a[0]), L.latLng(b[1], b[0]));
+  const reaches = (visit, end) => placeable(visit) && ground([visit.lon, visit.lat], end) <= thresholdM;
   const joined = pieces[0].slice();
   for (let i = 1; i < pieces.length; i++) {
     if (ground(joined[joined.length - 1], pieces[i][0]) > toleranceM) return null;
