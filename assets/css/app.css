@@ -344,6 +344,115 @@ body {
   padding: 1px 3px;
 }
 
+/* The Connections map (AC-17). A place is a count in a cased disc with its name
+   beside it, and the marker is a 44 px button so a keyboard reader reaches the
+   same place the list row beside it offers. Leaflet's default marker chrome (the
+   grey square and its shadow) is cleared: the divIcon already draws everything. */
+#blocks-page #connections-map .leaflet-control-attribution {
+  background: color-mix(in srgb, var(--color-base-100) 82%, transparent);
+  font-size: 10px;
+  margin: 0;
+  padding: 1px 4px;
+}
+
+#blocks-page .connection-map-place {
+  background: transparent;
+  border: 0;
+}
+
+#blocks-page .connection-map-place-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 44px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  /* The disc and its name sit on live map tiles, so the button itself carries no
+     surface of its own — only its children do. */
+  padding: 0;
+}
+
+#blocks-page .connection-map-place-disc {
+  position: relative;
+  display: inline-flex;
+  height: 36px;
+  width: 36px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  border: 2px solid var(--color-navy-700);
+  background: var(--color-base-100);
+  box-shadow: var(--shadow-card);
+  color: var(--color-strong);
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+#blocks-page .connection-map-place-review {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  display: inline-flex;
+  height: 18px;
+  width: 18px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  border: 1px solid var(--color-warning-line);
+  background: var(--color-warning-bg);
+  color: var(--color-warning-fg);
+}
+
+/* The place name beside the disc. It reads over pavement and grass alike because
+   it is cased on white rather than relying on the tiles behind it. */
+#blocks-page .connection-map-place-label {
+  border-radius: var(--radius-badge, 0.375rem);
+  background: color-mix(in srgb, var(--color-base-100) 94%, transparent);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.18);
+  padding: 2px 6px;
+  color: var(--color-strong);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+#blocks-page .connection-map-place-button:hover .connection-map-place-disc,
+#blocks-page .connection-map-place-button:focus-visible .connection-map-place-disc {
+  border-color: var(--color-action);
+}
+
+#blocks-page .connection-map-place-button:focus-visible {
+  outline: 2px solid var(--color-action);
+  outline-offset: 2px;
+}
+
+/* "Show every place", the one control this map adds, in Leaflet's own corner so
+   it sits under the zoom control rather than beside it at a different offset. */
+#blocks-page #connections-map .connection-map-fit {
+  display: inline-flex;
+  height: 34px;
+  width: 34px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: var(--color-base-100);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke-width='1.8' stroke='%230f1a3d'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M3 8V5a2 2 0 0 1 2-2h3m4 0h3a2 2 0 0 1 2 2v3m0 8v3a2 2 0 0 1-2 2h-3m-4 0H5a2 2 0 0 1-2-2v-3'/%3E%3C/svg%3E");
+  cursor: pointer;
+}
+
+#blocks-page #connections-map .connection-map-fit:hover {
+  background-color: var(--color-canvas);
+}
+
+#blocks-page #connections-map .connection-map-fit:focus-visible {
+  outline: 2px solid var(--color-action);
+  outline-offset: -2px;
+}
+
 #blocks-timeline-scroll {
   overflow: auto;
   max-height: var(--blocks-timeline-max-height);

@@ -14,19 +14,35 @@
  * and the stop. One stop that both trips use gets a single "Arrives and
  * departs" marker and no connector, because there is nothing to connect.
  *
+ * In `network` mode the same hook is the Connections workspace's map: one count
+ * marker per place of the filtered groups, a review badge on a place holding
+ * anything needing review, and the arrival/departure pins of the selected group
+ * or the open connection drawn the way the drawer draws them. It is still only a
+ * locator — the list carries every action (CR-6) — but unlike the mini-map it
+ * is interactive: a reader can pan, zoom with the wheel and Ctrl or the zoom
+ * control, and choose a place from the map.
+ *
  * The container is `phx-update="ignore"`, so the server never patches inside it
- * and this hook owns its contents for the life of the mount. The `data-pair`
- * attribute is the only input, and a re-render that changes the pair arrives as
+ * and this hook owns its contents for the life of the mount. The `data-*`
+ * attributes are the only input, and a re-render that changes them arrives as
  * `updated()` rather than as a remount, so a gap drawer reopened on another trip
- * redraws in place.
+ * — or a filter that changed the Connections list — redraws in place.
  *
  * Required data-* attrs on the hook root element:
- *   data-mode      "pair" for the drawer mini-map. The hook refuses any other
- *                  value rather than drawing the wrong map: the Connections
- *                  view's `network` map is step 22's contract and nothing else
- *                  should land here before it exists.
- *   data-pair      JSON `{arrival: {name, lat, lon, color}, departure: {...},
- *                  meters}` — the gap's own two stop references.
+ *   data-mode      "pair" for the drawer mini-map or "network" for the
+ *                  Connections map. The hook refuses any other value rather
+ *                  than drawing the wrong map.
+ *   data-pair      `pair` only: JSON `{arrival: {name, lat, lon, color},
+ *                  departure: {...}, meters}` — the gap's own two stop
+ *                  references.
+ *   data-places    `network` only: JSON `[{id, name, lat, lon, count, "review?",
+ *                  tokens, anchor}]` — one row per place of the filtered groups.
+ *                  `tokens` are the group's URL tokens at that place and `anchor`
+ *                  is the list section's DOM id, so a click can open the one
+ *                  group a place holds or bring a place with several to the list.
+ *   data-selection `network` only: JSON `{arrival: {name, lat, lon, color},
+ *                  departure: {...}}` for the selected group or the open
+ *                  connection, or `null` for neither.
  *
  * This is an external-runtime boundary: `window.L` and the tile source. Missing
  * Leaflet and a failed tile both degrade to `data-state="unavailable"` plus the
@@ -70,6 +86,64 @@ const ENDPOINT_Z_OFFSET = 500;
 // than Leaflet's defaults. The container is `phx-update="ignore"`, so this
 // cannot come from a server-rendered attribute.
 const TOOLTIP_CLASS = "connection-map-tooltip";
+
+// The Connections map fits places rather than one handoff, and a day of
+// connections spreads over a whole region, so its fit is looser than the
+// drawer's: the pins are two stops apart and the reader is being shown where
+// they sit among the day's other places, not how far apart two marks are.
+const NETWORK_FIT_PADDING = [32, 32];
+const NETWORK_FIT_MAX_ZOOM = 17;
+const NETWORK_SINGLE_POINT_ZOOM = 15;
+
+// A place's marker is a real 44 px button with the count in a disc and the place
+// name beside it, matching the list row it stands for.
+const PLACE_BUTTON_SIZE = 44;
+const PLACE_DISC_SIZE = 36;
+
+// A place holding anything that needs review carries the prototype's warning
+// mark on its count. Drawn rather than imported: the marker HTML is built inside
+// the map pane, which has no access to the `<.icon>` component, and the mark is
+// decorative — the button's own label says "some need review".
+const REVIEW_BADGE_SVG =
+  '<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 2.6 14.4 13.4H1.6z"/><path d="M8 6.6v3.1"/><path d="M8 11.6h.01"/></svg>';
+
+// The Blocks page scrolls, so a bare wheel over the map would scroll the page
+// past a list the reader is using. The map takes the wheel only when the reader
+// asks for it with the modifier the browser itself uses for zoom, and says so
+// for long enough to read.
+const WHEEL_HINT_MS = 1100;
+
+// The drawer's map is a picture: no drag, no zoom, no keyboard panning, because
+// the drawer's own text already says what the two dots are.
+const PAIR_MAP_OPTIONS = {
+  dragging: false,
+  scrollWheelZoom: false,
+  doubleClickZoom: false,
+  boxZoom: false,
+  touchZoom: false,
+  keyboard: false,
+  zoomControl: false,
+  attributionControl: true,
+  maxZoom: STREET_MAX_ZOOM,
+};
+
+// The Connections map is a locator the reader drives: it pans, it zooms by
+// keyboard and by the control, and it takes the wheel only with the modifier.
+// Leaflet's own wheel handler is off because it would take every wheel.
+const NETWORK_MAP_OPTIONS = {
+  dragging: true,
+  scrollWheelZoom: false,
+  doubleClickZoom: true,
+  boxZoom: false,
+  touchZoom: true,
+  keyboard: true,
+  // Leaflet adds its zoom control itself at the top left, where the prototype
+  // does not put it. The map adds both controls at the top right instead, so the
+  // corner a reader reaches for matches the rest of the application.
+  zoomControl: false,
+  attributionControl: true,
+  maxZoom: STREET_MAX_ZOOM,
+};
 
 // The fallback when a route carries no usable colour, so an uncoloured feed
 // still draws a legible dot.
@@ -129,6 +203,93 @@ function pairFromJson(raw) {
   return { arrival, departure, meters };
 }
 
+// `data-places` is server-rendered JSON. A place the version cannot place is
+// skipped rather than drawn at (0, 0) — the server names it in the pane's own
+// note and still lists it, so dropping the marker loses nothing (FH-16).
+function placesFromJson(raw) {
+  if (!raw) return [];
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return [];
+  }
+
+  if (!Array.isArray(parsed)) return [];
+
+  return parsed.map(placeFrom).filter(Boolean);
+}
+
+function placeFrom(raw) {
+  if (!raw || typeof raw !== "object") return null;
+
+  const lat = coordinate(raw.lat);
+  const lon = coordinate(raw.lon);
+  if (lat === null || lon === null) return null;
+
+  const count = Number(raw.count);
+  return {
+    id: raw.id === undefined || raw.id === null ? "" : String(raw.id),
+    name: raw.name || "",
+    lat,
+    lon,
+    count: Number.isFinite(count) && count > 0 ? count : 0,
+    review: raw["review?"] === true,
+    // The server sends the tokens it drew the list rows from, so the marker and
+    // the row beside it cannot disagree about which group a place holds.
+    tokens: Array.isArray(raw.tokens) ? raw.tokens.map(String) : [],
+    anchor: typeof raw.anchor === "string" ? raw.anchor : "",
+  };
+}
+
+// `data-selection` is the selected group or the open connection's two stops, or
+// `null` when the reader has chosen neither. Anything unparseable, or a payload
+// missing either endpoint, draws no pins rather than half a handoff.
+function selectionFromJson(raw) {
+  if (!raw) return null;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return null;
+  }
+
+  if (!parsed || typeof parsed !== "object") return null;
+
+  const arrival = mapPoint(parsed.arrival);
+  const departure = mapPoint(parsed.departure);
+  if (!arrival || !departure) return null;
+
+  return { arrival, departure };
+}
+
+function placeMarkerHtml(place) {
+  const connections = place.count === 1 ? "1 connection" : `${place.count} connections`;
+  const review = place.review
+    ? `<span class="connection-map-place-review" aria-hidden="true">${REVIEW_BADGE_SVG}</span>`
+    : "";
+  const label = `${place.name}: ${connections}${place.review ? ", some need review" : ""}`;
+
+  return (
+    `<button type="button" class="connection-map-place-button" aria-label="${escapeHtml(label)}">` +
+    `<span class="connection-map-place-disc">${place.count}${review}</span>` +
+    `<span class="connection-map-place-label">${escapeHtml(place.name)}</span>` +
+    "</button>"
+  );
+}
+
+function boundsOf(points) {
+  const lats = points.map((point) => point.lat);
+  const lons = points.map((point) => point.lon);
+
+  return [
+    [Math.min(...lats), Math.min(...lons)],
+    [Math.max(...lats), Math.max(...lons)],
+  ];
+}
+
 function pointTuple(point) {
   return [point.lat, point.lon];
 }
@@ -151,6 +312,9 @@ const ConnectionMapHook = {
     this.mode = this.el.dataset.mode;
     this._destroyed = false;
     this._points = [];
+    this._placePoints = [];
+    this._selection = [];
+    this._placeMarkers = [];
 
     const L = window.L;
     if (!L) {
@@ -167,24 +331,16 @@ const ConnectionMapHook = {
       this.el.innerHTML = "";
     }
 
-    this._map = L.map(this.el, {
-      // A picture, not a control: no drag, no zoom, no keyboard panning. The
-      // drawer's own text says what the two dots are.
-      dragging: false,
-      scrollWheelZoom: false,
-      doubleClickZoom: false,
-      boxZoom: false,
-      touchZoom: false,
-      keyboard: false,
-      zoomControl: false,
-      attributionControl: true,
-      maxZoom: STREET_MAX_ZOOM,
-    });
+    this._map = L.map(this.el, this.el.dataset.mode === "network" ? NETWORK_MAP_OPTIONS : PAIR_MAP_OPTIONS);
 
     this._tileLayers = addStreetBasemap(L, this._map).filter(Boolean);
     this._bindTileState();
 
     this.layers = L.layerGroup().addTo(this._map);
+
+    if (this.el.dataset.mode === "network") {
+      this._bindNetworkControls();
+    }
 
     // A drawer that opens on a phone or inside a collapsed panel is measured at
     // 0 × 0, and Leaflet keeps the view it computed for nothing. Re-measuring
@@ -198,15 +354,25 @@ const ConnectionMapHook = {
     this._draw();
   },
 
-  // The drawer's pair can change under a live mount: the drawer is re-rendered
-  // on its own state and this element keeps its identity. Redrawing here is what
-  // keeps the mini-map from describing the previous trip.
+  // The Connections map redraws only when its own payload changed. A filter
+  // keystroke re-renders the whole panel, and rebuilding a day's markers on every
+  // character would drop the reader's pan and zoom for nothing.
   updated() {
+    if (this.el.dataset.mode !== "network") {
+      this._draw();
+      return;
+    }
+
+    const key = this._networkKey();
+    if (key === this._drawnKey) return;
+
     this._draw();
   },
 
   destroyed() {
     this._destroyed = true;
+
+    this._unbindNetworkControls();
 
     if (this._resizeObserver) {
       this._resizeObserver.disconnect();
@@ -224,16 +390,23 @@ const ConnectionMapHook = {
   },
 
   // Missing Leaflet and a failed tile both answer the same way: the map region
-  // says it is unavailable and the drawer's own sentence carries the stops. The
-  // hook must never throw here — the map is not allowed to take the drawer with
-  // it (FH-16, CL-15).
+  // says it is unavailable and the drawer's own sentence — or the pane's, beside
+  // the list — carries the facts. The hook must never throw here: the map is not
+  // allowed to take the drawer or the list with it (FH-16, CL-15).
+  //
+  // Both hiding idioms are cleared, because the two surfaces render the notice
+  // the way their own markup does: the drawer region uses a Tailwind `hidden`
+  // class, the Connections pane a server-rendered `hidden` attribute.
   _setUnavailable() {
     this.el.dataset.state = "unavailable";
 
     const notice = this.el.parentElement?.querySelector(
       "[data-role='connection-map-unavailable']",
     );
-    if (notice) notice.classList.remove("hidden");
+    if (!notice) return;
+
+    notice.classList.remove("hidden");
+    notice.hidden = false;
   },
 
   _setReady() {
@@ -259,10 +432,15 @@ const ConnectionMapHook = {
     this.layers.clearLayers();
     this._points = [];
 
-    // `network` is a different map with a different payload; drawing this one
-    // from a network payload would be a lie. Before step 22 owns it, the mode is
-    // left unavailable rather than half-drawn.
-    if (this.el.dataset.mode !== "pair") {
+    // Any mode this hook does not own is left unavailable rather than half-drawn:
+    // a map that shows the wrong thing is worse than one that says it cannot.
+    const mode = this.el.dataset.mode;
+    if (mode === "network") {
+      this._drawNetwork();
+      return;
+    }
+
+    if (mode !== "pair") {
       this._setUnavailable();
       return;
     }
@@ -307,6 +485,250 @@ const ConnectionMapHook = {
 
   _fallbackColor() {
     return paletteColor(this.el, "--color-primary", COLOR_FALLBACK);
+  },
+
+  // What the map is currently drawing, as one string. `updated()` compares it
+  // so an unrelated re-render does not redraw the map.
+  _networkKey() {
+    return `${this.el.dataset.places || ""}|${this.el.dataset.selection || ""}`;
+  },
+
+  // The Connections map. A day with no place the version can place still draws
+  // nothing wrong: there are simply no markers, and the pane's own note names
+  // the places it could not draw. That is a drawn map with nothing on it, not an
+  // unavailable one, so the note and the list are the answer and `data-state`
+  // stays `ready`.
+  _drawNetwork() {
+    const places = placesFromJson(this.el.dataset.places);
+    const selection = selectionFromJson(this.el.dataset.selection);
+
+    this._drawnKey = this._networkKey();
+    this._color = this._fallbackColor();
+
+    // The place markers and the selection pins are kept apart: the fit targets
+    // one set or the other, never their union, and `_points` belongs to the
+    // drawer pair's own fit.
+    this._placePoints = places;
+
+    this._placeMarkers = places.map((place) => this._placeMarker(place));
+
+    if (selection) {
+      // The place the selected group belongs to drops its own count marker while
+      // that group is on the map. The pins already say which stop is which, and a
+      // count disc standing on the same pixel only hides one of the words.
+      const stops = [selection.arrival, selection.departure];
+
+      this._placeMarkers
+        .filter((marker) => stops.some((stop) => marker.place.lat === stop.lat && marker.place.lon === stop.lon))
+        .forEach((marker) => this.layers.removeLayer(marker));
+
+      // The same drawing as the drawer's pair, on the same terms: one stop both
+      // trips use is one pin and no connector.
+      const sameStop = selection.arrival.stop_id === selection.departure.stop_id;
+
+      if (sameStop) {
+        this._marker(selection.arrival, "Arrives and departs", "top");
+      } else {
+        // The labels go above and below the two pins, pointing away from each
+        // other, so neither word lands on the connector or on the other pin. A
+        // handoff is often short enough that both stops land in the same stretch
+        // of frame, so a label laid out sideways is a label laid on a place
+        // marker instead.
+        const arrivalNorth = selection.arrival.lat >= selection.departure.lat;
+
+        this._marker(selection.arrival, "Arrives", arrivalNorth ? "top" : "bottom");
+        this._marker(selection.departure, "Departs", arrivalNorth ? "bottom" : "top");
+        this._casedLine([pointTuple(selection.arrival), pointTuple(selection.departure)]);
+      }
+
+      this._selection = [selection.arrival, selection.departure];
+    } else {
+      this._selection = [];
+    }
+
+    this._setReady();
+    this._fitNetwork();
+  },
+
+  // One place, one marker. The marker is a `divIcon` holding a real button, so
+  // it is in the tab order and answers Enter and Space the way the list row
+  // beside it does; Leaflet's own `keyboard` marker option is off so a reader
+  // does not meet the same place twice.
+  _placeMarker(place) {
+    const marker = this._L.marker(pointTuple(place), {
+      icon: this._L.divIcon({
+        className: "connection-map-place",
+        html: placeMarkerHtml(place),
+        iconSize: [PLACE_BUTTON_SIZE, PLACE_BUTTON_SIZE],
+        iconAnchor: [PLACE_BUTTON_SIZE / 2, PLACE_BUTTON_SIZE / 2],
+      }),
+      keyboard: false,
+      riseOnHover: true,
+      title: place.name,
+      alt: place.name,
+    });
+
+    marker.on("click", () => this._choosePlace(place));
+    marker.addTo(this.layers);
+    // The place rides along on the marker so the selection can recognise it and
+    // drop its count while this group's pins are drawn.
+    marker.place = place;
+
+    return marker;
+  },
+
+  // The one action a place marker has, and it is the same action the list row
+  // has. A place holding one group opens it, the way its row does. A place
+  // holding several has no single group to open, so the marker brings that
+  // place's section into view and puts the keyboard on its first row instead of
+  // guessing which of them the reader meant.
+  _choosePlace(place) {
+    if (place.tokens.length === 1) {
+      this.pushEvent("open_group", { group: place.tokens[0] });
+      return;
+    }
+
+    const section = place.anchor ? document.getElementById(place.anchor) : null;
+    if (!section) return;
+
+    section.scrollIntoView({ block: "start" });
+    section.querySelector("button")?.focus();
+  },
+
+  _fitNetwork() {
+    if (this._destroyed || !this._map) return;
+
+    // A selection is what the reader is looking at, so it wins the fit; with no
+    // selection the fit is every place, which is what the "Show every place"
+    // control asks for.
+    const points = this._selection.length ? this._selection : this._placePoints;
+    if (!points.length) return;
+
+    if (points.length === 1) {
+      this._map.setView(pointTuple(points[0]), NETWORK_SINGLE_POINT_ZOOM);
+      return;
+    }
+
+    // The connection drawer is non-modal and 480 px wide, so it covers the right
+    // of the pane. Fitting into the covered width would centre the selection
+    // under the drawer; the right padding is the width the drawer takes, so the
+    // fit lands in the part of the pane the reader can actually see.
+    const right = NETWORK_FIT_PADDING[0] + this._drawerOverlap();
+
+    this._map.fitBounds(this._L.latLngBounds(...boundsOf(points)), {
+      paddingTopLeft: [NETWORK_FIT_PADDING[0], NETWORK_FIT_PADDING[1]],
+      paddingBottomRight: [NETWORK_FIT_PADDING[0], right],
+      maxZoom: NETWORK_FIT_MAX_ZOOM,
+    });
+  },
+
+  // How much of the map pane the open connection drawer covers, in pixels, or 0
+  // when no drawer is open. The drawer element is only in the DOM while its
+  // LiveView render includes it, so its absence is the closed case.
+  _drawerOverlap() {
+    const drawer = document.getElementById("gap-drawer");
+    if (!drawer) return 0;
+
+    const width = drawer.getBoundingClientRect().width;
+    if (!width) return 0;
+
+    const pane = this.el.getBoundingClientRect();
+    const covered = pane.right - (window.innerWidth - width);
+    return covered > 0 ? Math.round(covered) : 0;
+  },
+
+  _bindNetworkControls() {
+    this._addZoomControl();
+    this._addFitControl();
+    this._bindWheelHint();
+  },
+
+  _addZoomControl() {
+    if (!this._map || typeof this._L.control?.zoom !== "function") return;
+
+    const zoom = this._L.control.zoom({ position: "topright" }).addTo(this._map);
+    this._zoomControl = zoom;
+  },
+
+  // Leaflet's zoom control is the map's own; "Show every place" is the one
+  // control this map adds, and it is added the same way into the same corner, so
+  // a reader finds both in one place and neither is orphaned server markup when
+  // the map never loads.
+  _addFitControl() {
+    if (!this._map || !this._L.Control || typeof this._L.Control.extend !== "function") {
+      return;
+    }
+
+    const L = this._L;
+    const FitControl = L.Control.extend({
+      options: { position: "topright" },
+      onAdd: () => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.id = "connections-map-fit";
+        button.setAttribute("aria-label", "Show every place");
+        button.setAttribute("title", "Show every place");
+        button.className = "connection-map-fit";
+        button.addEventListener("click", () => this._fitNetwork());
+        return button;
+      },
+    });
+
+    const control = new FitControl();
+    control.addTo(this._map);
+    this._fitControl = control;
+  },
+
+  _bindWheelHint() {
+    const pane = this.el.parentElement;
+    if (!pane) return;
+
+    this._hint = pane.querySelector("[data-map-wheel-hint]");
+    this._wheelHandler = (event) => this._onWheel(event);
+    this.el.addEventListener("wheel", this._wheelHandler, { passive: false });
+  },
+
+  _unbindNetworkControls() {
+    if (this._wheelHandler) {
+      this.el.removeEventListener("wheel", this._wheelHandler);
+      this._wheelHandler = null;
+    }
+
+    if (this._hintTimer) {
+      clearTimeout(this._hintTimer);
+      this._hintTimer = null;
+    }
+
+    this._fitControl = null;
+    this._zoomControl = null;
+  },
+
+  // The Blocks page scrolls, so a bare wheel over the map would scroll the page
+  // out from under a reader using the list beside it. The wheel zooms when the
+  // reader holds the modifier the browser itself uses for zoom, and otherwise
+  // says once how to do it.
+  _onWheel(event) {
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      if (!this._map) return;
+
+      const zoom = this._map.getZoom() + (event.deltaY < 0 ? 1 : -1);
+      this._map.setZoom(zoom);
+      return;
+    }
+
+    this._showWheelHint();
+  },
+
+  _showWheelHint() {
+    if (!this._hint) return;
+
+    this._hint.hidden = false;
+    if (this._hintTimer) clearTimeout(this._hintTimer);
+    this._hintTimer = setTimeout(() => {
+      if (this._hint) this._hint.hidden = true;
+      this._hintTimer = null;
+    }, WHEEL_HINT_MS);
   },
 
   // A white case under a route-coloured dot, then the dot. Two circle markers
@@ -383,16 +805,10 @@ const ConnectionMapHook = {
       return;
     }
 
-    const lats = this._points.map((point) => point.lat);
-    const lons = this._points.map((point) => point.lon);
-
-    this._map.fitBounds(
-      this._L.latLngBounds(
-        [Math.min(...lats), Math.min(...lons)],
-        [Math.max(...lats), Math.max(...lons)],
-      ),
-      { padding: FIT_PADDING, maxZoom: FIT_MAX_ZOOM },
-    );
+    this._map.fitBounds(this._L.latLngBounds(...boundsOf(this._points)), {
+      padding: FIT_PADDING,
+      maxZoom: FIT_MAX_ZOOM,
+    });
   },
 
   _onContainerResize() {
@@ -406,7 +822,11 @@ const ConnectionMapHook = {
 
     this._wasHidden = false;
     this._map.invalidateSize();
-    this._fit();
+    if (this.el.dataset.mode === "network") {
+      this._fitNetwork();
+    } else {
+      this._fit();
+    }
   },
 };
 

@@ -1810,9 +1810,22 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       count: Enum.sum(Enum.map(filtered, &length(&1.connections))),
       total: length(connections),
       places: Connections.places(filtered),
+      place_tokens: place_tokens(filtered),
       group: Enum.find(filtered, &(&1.token == state.group)),
       chips: connections_chips(state)
     }
+  end
+
+  # Each place's groups' tokens, over the filtered set rather than the page of
+  # them, so a marker for a place whose row is on another page still names the
+  # group to open. The list's own sections come from the page, so this map never
+  # decides what the list shows; it only names what a click asks for.
+  defp place_tokens(filtered) do
+    filtered
+    |> Enum.group_by(& &1.place.id)
+    |> Map.new(fn {place_id, groups} ->
+      {place_id, groups |> Enum.map(& &1.token) |> Enum.sort()}
+    end)
   end
 
   # The filters the view applies, in the shape `Blocking.Connections.filter/2`
