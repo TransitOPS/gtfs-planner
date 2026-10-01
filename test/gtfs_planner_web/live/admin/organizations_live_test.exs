@@ -854,11 +854,12 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       assert view |> element("#member-action-feedback") |> render() =~ "pending@example.com"
     end
 
-    test "resend after the system administrator's access was revoked is refused and sends nothing", %{
-      conn: conn,
-      admin_user: admin_user,
-      organization: organization
-    } do
+    test "resend after the system administrator's access was revoked is refused and sends nothing",
+         %{
+           conn: conn,
+           admin_user: admin_user,
+           organization: organization
+         } do
       pending = member_fixture(organization, %{email: "pending@example.com", invited?: true})
       {:ok, view, _html} = live(conn, ~p"/admin/organizations/#{organization.id}")
 
