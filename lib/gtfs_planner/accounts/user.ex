@@ -105,11 +105,14 @@ defmodule GtfsPlanner.Accounts.User do
   @doc """
   A changeset for the user's default alert authoring mode.
 
-  Casts only `:form` or `:assistant`; `Ecto.Enum` refuses any other value.
+  Casts only `:form` or `:assistant`; `Ecto.Enum` refuses any other value. A
+  blank string is such a value: `cast/4` would otherwise read it as "no value"
+  and replace it with the field's default, so `empty_values` is turned off to let
+  `Ecto.Enum` see and refuse it.
   """
   def alert_authoring_mode_changeset(user, attrs) do
     user
-    |> cast(attrs, [:alert_authoring_mode])
+    |> cast(attrs, [:alert_authoring_mode], empty_values: [])
     |> validate_required([:alert_authoring_mode])
   end
 
