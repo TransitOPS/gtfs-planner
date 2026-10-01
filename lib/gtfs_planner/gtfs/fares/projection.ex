@@ -33,12 +33,24 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
   between route groups and the prices that change by time of day have no older
   format row. `GtfsPlanner.Gtfs.Fares.Checks.run/2` is what tells an operator
   that; the projection never says so itself.
+
+  ## What the export writes
+
+  `v1_rows/2` is the pair of older-format files. `export_rows/2` is everything
+  else a managed version's export takes from here: the same two files when
+  `older_format` is `derived`, the version's fare zones as `areas.txt` and
+  `stop_areas.txt`, one `calendar.txt` row per time period, and the answer that
+  `routes.txt` loses its `network_id` column. An unmanaged version replaces
+  nothing and appends nothing, so its export is unchanged (R1, AC-3).
   """
 
   import Ecto.Query, warn: false
 
   alias GtfsPlanner.Gtfs.Agency
+  alias GtfsPlanner.Gtfs.Fares
   alias GtfsPlanner.Gtfs.Fares.Interpreter
+  alias GtfsPlanner.Gtfs.FareTimePeriod
+  alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
@@ -47,6 +59,10 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
 
   @attributes_file "fare_attributes.txt"
   @rules_file "fare_rules.txt"
+  @areas_file "areas.txt"
+  @stop_areas_file "stop_areas.txt"
+  @calendar_file "calendar.txt"
+  @timeframes_file "timeframes.txt"
 
   # R3's cash medium, the only price the older format can state per fare, and R5's
   # free transfer, the only transfer policy one allowance per fare can describe.
@@ -61,6 +77,20 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
   # largest value that column allows.
   @unlimited_count -1
   @max_transfers 2
+
+  # R10's weekday bitmask, Monday through Sunday, as `calendar.txt` states it.
+  @weekday_bits %{
+    monday: 1,
+    tuesday: 2,
+    wednesday: 4,
+    thursday: 8,
+    friday: 16,
+    saturday: 32,
+    sunday: 64
+  }
+
+  # `Fares.set_older_format/2`'s own ceiling on the suffix it adds.
+  @service_suffix_limit 999
 
   @doc """
   The `fare_attributes.txt` and `fare_rules.txt` rows this version derives.
@@ -83,8 +113,223 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
   @spec v1_rows(Ecto.UUID.t(), Ecto.UUID.t()) :: %{String.t() => [map()]}
   def v1_rows(organization_id, gtfs_version_id)
       when is_binary(organization_id) and is_binary(gtfs_version_id) do
-    rows = Interpreter.load_rows(organization_id, gtfs_version_id)
+    organization_id
+    |> Interpreter.load_rows(gtfs_version_id)
+    |> v1_rows_from(organization_id, gtfs_version_id)
+  end
 
+  @doc """
+  The `fare_attributes.txt`, `fare_rules.txt`, `areas.txt` and `stop_areas.txt`
+  rows this version exports instead of streaming, the `calendar.txt` rows it
+  appends, and whether `routes.txt` loses its `network_id` column (R2, R7, R10,
+  R14).
+
+      export_rows(organization_id, gtfs_version_id)
+      #=> %{managed?: true, replaced: %{"fare_attributes.txt" => [...]}, ...}
+
+  An unmanaged version replaces nothing, appends nothing and keeps its
+  `network_id` column, so its export is the one it always was (R1, AC-3). A
+  managed version replaces the two older-format fare files with the rows
+  `v1_rows/2` derives — unless `fare_version_settings.older_format` is
+  `imported`, when the stored rows stream unchanged (R14) — and writes the
+  version's fare zones as `areas.txt`/`stop_areas.txt`.
+
+  Every row is written through the file spec of the same name by
+  `GtfsPlanner.Gtfs.Export`, and every read is scoped by `organization_id` and
+  `gtfs_version_id` together (INV-5). Nothing here writes a row: the stored
+  `fare_attributes`, `fare_rules`, `areas`, `stop_areas` and `routes.network_id`
+  values stay exactly as the import left them (INV-3).
+  """
+  @spec export_rows(Ecto.UUID.t(), Ecto.UUID.t()) :: %{
+          managed?: boolean(),
+          replaced: %{String.t() => [map()]},
+          appended: %{String.t() => [map()]},
+          drop_route_network?: boolean()
+        }
+  def export_rows(organization_id, gtfs_version_id)
+      when is_binary(organization_id) and is_binary(gtfs_version_id) do
+    if Fares.managed?(organization_id, gtfs_version_id) do
+      rows = Interpreter.load_rows(organization_id, gtfs_version_id)
+      settings = Fares.settings(organization_id, gtfs_version_id)
+
+      {appended, timeframes} = fare_calendars(rows, organization_id, gtfs_version_id)
+
+      %{
+        managed?: true,
+        replaced:
+          %{}
+          |> Map.merge(v1_replacement(rows, organization_id, gtfs_version_id, settings))
+          |> Map.merge(zone_replacement(rows, organization_id, gtfs_version_id))
+          |> Map.merge(timeframes),
+        appended: appended,
+        drop_route_network?: true
+      }
+    else
+      %{managed?: false, replaced: %{}, appended: %{}, drop_route_network?: false}
+    end
+  end
+
+  # R14: the derived rows stand in for the stored ones only while `derived` is
+  # the chosen source. An `imported` version streams what it holds.
+  defp v1_replacement(rows, organization_id, gtfs_version_id, settings) do
+    if presence(settings && settings.older_format) == "imported" do
+      %{}
+    else
+      rows
+      |> v1_rows_from(organization_id, gtfs_version_id)
+      |> Map.take([@attributes_file, @rules_file])
+    end
+  end
+
+  # R7: one `areas.txt` row per zone of the version's inventory, and one
+  # `stop_areas.txt` row per stop that names a zone. The inventory is
+  # `FareZones`' own read, so a zone no stop and no rule names is still there
+  # and a zone a leg rule names is there too.
+  defp zone_replacement(rows, organization_id, gtfs_version_id) do
+    %{zones: zones} = FareZones.inventory(organization_id, gtfs_version_id)
+
+    %{
+      @areas_file =>
+        Enum.map(zones, &%{area_id: &1.zone_id, area_name: if(&1.declared?, do: &1.name)}),
+      @stop_areas_file =>
+        rows.stop_zones
+        |> Enum.map(fn {stop_id, zone_id} -> %{area_id: zone_id, stop_id: stop_id} end)
+        |> Enum.sort_by(&{&1.area_id, &1.stop_id})
+    }
+  end
+
+  # R10: one `calendar.txt` row per time period, covering the version's own
+  # calendar date span, under a `service_id` that is unique among the version's
+  # calendar and calendar-date services and its other periods. The writer keeps
+  # that id unique when it saves; the export re-checks it, because a calendar
+  # imported after the period was saved can take the id the period holds.
+  #
+  # The second element is the `timeframes.txt` rows the re-suffix replaces, and
+  # is empty unless an id actually moved: a re-suffixed period whose
+  # `timeframes` rows kept the old id would price a different service than the
+  # calendar row the fare rule names.
+  defp fare_calendars(rows, organization_id, gtfs_version_id) do
+    periods =
+      FareTimePeriod
+      |> scoped(organization_id, gtfs_version_id)
+      |> Repo.all()
+      |> Enum.sort_by(& &1.timeframe_group_id)
+
+    case calendar_span(rows) do
+      nil ->
+        {%{}, %{}}
+
+      {start_date, end_date} ->
+        {service_ids, moved} = period_service_ids(periods, rows)
+
+        appended =
+          Enum.zip_with(periods, service_ids, &calendar_row(&1, &2, start_date, end_date))
+
+        rows =
+          case moved do
+            %{} -> %{}
+            renames -> %{@timeframes_file => timeframe_rows(rows, renames)}
+          end
+
+        {%{@calendar_file => appended}, rows}
+    end
+  end
+
+  # The span the fare-only services run over: the version's own weekly range,
+  # and otherwise the range its exception dates cover. A version with neither
+  # has no span to state, and a period with no span is left out rather than
+  # written with dates the feed never had.
+  defp calendar_span(rows) do
+    starts = Enum.map(rows.calendars, & &1.start_date) ++ Enum.map(rows.calendar_dates, & &1.date)
+    ends = Enum.map(rows.calendars, & &1.end_date) ++ Enum.map(rows.calendar_dates, & &1.date)
+
+    case {Enum.reject(starts, &is_nil/1), Enum.reject(ends, &is_nil/1)} do
+      {[], _} -> nil
+      {_, []} -> nil
+      {from, to} -> {Enum.min(from), Enum.max(to)}
+    end
+  end
+
+  # R10's re-check. A period's own stored service id is not a collision with
+  # itself, and every other period's id is taken, so two periods can never
+  # share one in the output.
+  defp period_service_ids(periods, rows) do
+    taken =
+      MapSet.new(
+        Enum.map(rows.calendars, & &1.service_id) ++
+          Enum.map(rows.calendar_dates, & &1.service_id)
+      )
+
+    {assigned, _taken, renames} =
+      Enum.reduce(periods, {[], taken, %{}}, fn period, {assigned, taken, renames} ->
+        {service_id, taken} = free_service_id(period.service_id, taken)
+
+        renames =
+          if service_id == period.service_id,
+            do: renames,
+            else: Map.put(renames, period.service_id, service_id)
+
+        {[service_id | assigned], MapSet.put(taken, service_id), renames}
+      end)
+
+    {Enum.reverse(assigned), renames}
+  end
+
+  defp free_service_id(nil, taken), do: {nil, taken}
+
+  defp free_service_id(service_id, taken) do
+    if MapSet.member?(taken, service_id) do
+      suffixed_service_id(service_id, taken, 2)
+    else
+      {service_id, taken}
+    end
+  end
+
+  defp suffixed_service_id(base, taken, suffix) when suffix <= @service_suffix_limit do
+    candidate = "#{base}_#{suffix}"
+
+    if MapSet.member?(taken, candidate) do
+      suffixed_service_id(base, taken, suffix + 1)
+    else
+      {candidate, taken}
+    end
+  end
+
+  # Past the limit the id is left as it is: a version needing 998 suffixes is a
+  # configuration problem, and a service id that collides is reported by
+  # `Fares.Checks.run/2` rather than silently rewritten here.
+  defp suffixed_service_id(base, taken, _suffix), do: {base, taken}
+
+  defp calendar_row(period, service_id, start_date, end_date) do
+    weekdays =
+      Map.new(@weekday_bits, fn {day, bit} -> {day, weekday(period.weekdays, bit)} end)
+
+    Map.merge(weekdays, %{service_id: service_id, start_date: start_date, end_date: end_date})
+  end
+
+  # A blank mask is every day, which is what `FareTimePeriod.changeset/2` says a
+  # mask of no bits means.
+  defp weekday(nil, _bit), do: 1
+  defp weekday(mask, bit), do: if(Bitwise.band(mask, bit) == bit, do: 1, else: 0)
+
+  # The version's `timeframes.txt` rows with the re-suffixed services' rows
+  # renamed, in the order `StreamBuilder` writes that file.
+  defp timeframe_rows(rows, renames) do
+    rows.timeframes
+    |> Enum.map(fn timeframe ->
+      %{
+        timeframe_group_id: timeframe.timeframe_group_id,
+        start_time: timeframe.start_time,
+        end_time: timeframe.end_time,
+        service_id: Map.get(renames, timeframe.service_id, timeframe.service_id)
+      }
+    end)
+    |> Enum.sort_by(&{&1.timeframe_group_id, &1.start_time, &1.end_time, &1.service_id})
+  end
+
+  # The rows `v1_rows/2` derives, from rows already loaded, so one export reads
+  # the version's fare rows once.
+  defp v1_rows_from(rows, organization_id, gtfs_version_id) do
     version = %{
       rows: rows,
       rules_by_product: Enum.group_by(rows.fare_leg_rules, & &1.fare_product_id),

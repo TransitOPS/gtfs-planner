@@ -68,22 +68,40 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
     %{
       filename: "routes.txt",
       schema: Gtfs.Route,
-      fields: [
-        {"route_id", :route_id},
-        {"agency_id", :agency_id},
-        {"route_short_name", :route_short_name},
-        {"route_long_name", :route_long_name},
-        {"route_desc", :route_desc},
-        {"route_type", :route_type},
-        {"route_url", :route_url},
-        {"route_color", :route_color},
-        {"route_text_color", :route_text_color},
-        {"route_sort_order", :route_sort_order},
-        {"continuous_pickup", :continuous_pickup},
-        {"continuous_drop_off", :continuous_drop_off},
-        {"network_id", :network_id}
-      ]
+      fields: routes_fields()
     }
+  end
+
+  @doc """
+  Routes as `routes.txt` without the `network_id` column, for a managed version's
+  export (R2).
+
+  A managed version states a route's network in `route_networks.txt`, which is the
+  file the fare rules address it by, so the imported `routes.network_id` values are
+  left out of `routes.txt` rather than deleted (INV-3). The values stay stored: an
+  undo of the conversion, an unmanaged version and a `staging` version all still
+  export the column.
+  """
+  def routes_spec_without_network do
+    %{routes_spec() | fields: Enum.reject(routes_fields(), &(elem(&1, 0) == "network_id"))}
+  end
+
+  defp routes_fields do
+    [
+      {"route_id", :route_id},
+      {"agency_id", :agency_id},
+      {"route_short_name", :route_short_name},
+      {"route_long_name", :route_long_name},
+      {"route_desc", :route_desc},
+      {"route_type", :route_type},
+      {"route_url", :route_url},
+      {"route_color", :route_color},
+      {"route_text_color", :route_text_color},
+      {"route_sort_order", :route_sort_order},
+      {"continuous_pickup", :continuous_pickup},
+      {"continuous_drop_off", :continuous_drop_off},
+      {"network_id", :network_id}
+    ]
   end
 
   def trips_spec do
