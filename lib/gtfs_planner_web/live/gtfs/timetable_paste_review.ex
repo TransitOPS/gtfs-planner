@@ -412,11 +412,14 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
     end
   end
 
+  # A stop between timepoints may have no scheduled time; its offsets are both
+  # nil and the cell reads as blank, never as the trip's start.
   defp absolute_pairs(rows, start) when is_list(rows) do
     Enum.map(rows, fn timing_row ->
-      arrival = start + fetch(timing_row, :arrival_offset, 0)
-      departure = start + fetch(timing_row, :departure_offset, 0)
-      {arrival, departure}
+      case {fetch(timing_row, :arrival_offset, 0), fetch(timing_row, :departure_offset, 0)} do
+        {nil, nil} -> :untimed
+        {arrival, departure} -> {start + arrival, start + departure}
+      end
     end)
   end
 
@@ -628,8 +631,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
           struck?: en.op == :remove
       }
     else
-      _missing ->
-        if is_nil(en.pairs), do: base, else: %{base | state: :not_served}
+      :untimed -> base
+      _missing -> if is_nil(en.pairs), do: base, else: %{base | state: :not_served}
     end
   end
 
