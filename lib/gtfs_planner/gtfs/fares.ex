@@ -16,6 +16,13 @@ defmodule GtfsPlanner.Gtfs.Fares do
   stored-row summary, in one scoped snapshot, so no tab queries a fare table
   itself and no two tabs can disagree about what the version holds.
 
+  `save_time_period/2` and `delete_time_period/3` are the time periods card's
+  pair (AC-22, R10). A time period is a `fare_time_periods` row carrying the
+  operator facts GTFS has no file for — the name, the weekday bitmask and the
+  fare-only `service_id` its calendar row is written under — beside the
+  `timeframes` rows that hold its ranges, and this writer replaces both halves
+  together so the group a rule names always exists.
+
   `Fares.Conversion` is the first of this package's writers: it builds a
   version's first managed fare set from the four answers of the first-use setup,
   and converts imported fares in later steps. `save_prices/2` is the writer the
@@ -77,6 +84,8 @@ defmodule GtfsPlanner.Gtfs.Fares do
 
   alias GtfsPlanner.Gtfs.Area
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.Calendar
+  alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.FareAttribute
   alias GtfsPlanner.Gtfs.FareLegJoinRule
@@ -95,10 +104,12 @@ defmodule GtfsPlanner.Gtfs.Fares do
   alias GtfsPlanner.Gtfs.FareTransferRule
   alias GtfsPlanner.Gtfs.FareVersionSetting
   alias GtfsPlanner.Gtfs.FareZones
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Network
   alias GtfsPlanner.Gtfs.RiderCategory
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RouteNetwork
+  alias GtfsPlanner.Gtfs.Timeframe
   alias GtfsPlanner.Repo
 
   # The Recent changes list, and the Prices tab's history card, show the latest
@@ -155,6 +166,27 @@ defmodule GtfsPlanner.Gtfs.Fares do
   # Its leg rules are mirrored by `Fares.Normalize` (R4), so it is the one kind
   # a rule or a cell write refuses.
   @pass_kind "pass"
+
+  # The key a time period change's inverse is named under, which is what
+  # `undo/3` matches on to tell it from a rule, a pass acceptance, a route
+  # group, a fare, a price, a definition or a conversion. It is its own key
+  # because it changes a `fare_time_periods` row and the `timeframes` rows of
+  # its group rather than a fare or a rule.
+  @time_period_inverse :time_period
+
+  @undo_time_period_summary "Restored the time period a change replaced"
+
+  # The end of a service day, which "Until end of service day" writes as a
+  # `timeframes` `end_time` (R10). GTFS carries it as hour 24 rather than as
+  # `00:00:00` of the next day, so it is formatted here rather than reduced.
+  @end_of_day_seconds 86_400
+  @end_of_day_time "24:00:00"
+
+  # The `fare_` prefix a time period's service id is built from, and how far
+  # the numeric suffix on collision is searched before the write is refused
+  # rather than silently given an id that collides with a later period.
+  @fare_service_prefix "fare_"
+  @service_suffix_limit 999
 
   @typedoc """
   The arguments every writer of this package takes: the organization and version
@@ -284,6 +316,18 @@ defmodule GtfsPlanner.Gtfs.Fares do
         operation_id,
         inverse.pass_acceptance
       )
+    end)
+  end
+
+  def undo(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        operation_id,
+        %{
+          time_period: _inverse
+        } = inverse
+      ) do
+    write(scope, @undo_time_period_summary, @time_period_inverse, fn _setting ->
+      undo_time_period(organization_id, gtfs_version_id, operation_id, inverse.time_period)
     end)
   end
 
@@ -3844,6 +3888,671 @@ defmodule GtfsPlanner.Gtfs.Fares do
          false
        ) do
     "Removed #{network_id} from the pass #{fare_display_name(organization_id, gtfs_version_id, fare_product_id)}"
+  end
+
+  # -- Editing time periods --------------------------------------------------------
+
+  @doc """
+  Creates or edits one fare time period and its `timeframes` rows (AC-22, R10).
+
+  `params` is the time periods drawer's form:
+
+      %{timeframe_group_id: String.t() | nil,
+        name: String.t(),
+        weekdays: integer() | nil,
+        ranges: [%{start_seconds: integer(), end_seconds: integer()}],
+        until_end_of_day?: boolean()}
+
+  A period with no `timeframe_group_id` is a new one, and its GTFS group id is
+  `fare_slug(name)` — refused with `{:error, :duplicate_time_period}` when this
+  version already holds it, which is the same slug rule `save_route_group/2`
+  follows. A named `timeframe_group_id` this version does not hold answers
+  `{:error, :not_found}`, so another version's period is never written through
+  this path (INV-5).
+
+  `weekdays` is the R10 bitmask (Monday `1` … Sunday `64`), and a blank one is
+  valid and means the ranges apply every day; a mask of `0` or one over `127` is
+  refused by the period's own changeset, which is also where the database's own
+  check would refuse it.
+
+  `ranges` must be non-empty, each range must start before it ends, and the
+  ranges must not overlap; each failure answers a changeset carrying an error on
+  `:ranges` rather than writing half a period. Overlap is decided after sorting
+  by start, so two ranges in any order are compared the same way.
+
+  The period's own row and the `timeframes` rows of its group are written
+  together in one transaction: a save replaces the group's ranges whole, so the
+  group a leg rule names always exists and never holds a range the save did not
+  write. Times are formatted `HH:MM:SS`, and `until_end_of_day?: true` writes the
+  last range's end as `"24:00:00"` (R10) rather than as `00:00:00` of the next
+  day.
+
+  `service_id` is `fare_<slug>`, checked against every `calendar` and
+  `calendar_dates` `service_id` of this version and against every other period's,
+  with `_2`, `_3` … added until it is free (R10). The export re-checks the id
+  and re-suffixes it if a calendar row was imported after this write (AC-22).
+
+  A version that is not managed answers `{:error, :unmanaged}`, and a pair that
+  is not a published version of that organization answers `{:error, :not_found}`
+  with nothing written (R12, R15).
+  """
+  @spec save_time_period(scope(), map()) :: write_result()
+  def save_time_period(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        params
+      )
+      when is_map(params) do
+    case trimmed_name(params) do
+      {:ok, name} ->
+        write(scope, time_period_save_summary(params, name), @time_period_inverse, fn _setting ->
+          apply_time_period(organization_id, gtfs_version_id, name, params)
+        end)
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  @doc """
+  Deletes one fare time period, its `timeframes` rows and the rules that named it
+  (AC-22).
+
+  A period its own `fare_leg_rules` reference answers
+  `{:error, :rules_reference_time_period}`: deleting it would leave rules naming
+  a group that is gone, which is not a state the rest of this package can read.
+  `expected[:remove_rules]` settles it — `true` deletes those rules, leaving the
+  cells they priced with no fare, the same shape `delete_fare/4`'s
+  `:remove_rules` and `delete_route_group/3`'s leave.
+
+  A period's own `service_id` and its group's rows go with it. The rules are
+  deleted rather than their timeframe columns blanked, because a leg rule with a
+  blank timeframe prices every time of day, which is a different fare.
+
+  `expected` is the fence and carries the `:name` the editor reviewed beside the
+  `:remove_rules` choice: a period renamed since the drawer opened answers
+  `{:error, {:stale, details}}` and deletes nothing (R15). A period of another
+  organization or another version answers `{:error, :not_found}`.
+  """
+  @spec delete_time_period(scope(), String.t(), map()) :: write_result()
+  def delete_time_period(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        timeframe_group_id,
+        expected
+      )
+      when is_binary(timeframe_group_id) and is_map(expected) do
+    summary =
+      "Deleted the time period \"#{time_period_name(organization_id, gtfs_version_id, timeframe_group_id) || timeframe_group_id}\""
+
+    write(scope, summary, @time_period_inverse, fn _setting ->
+      remove_time_period(organization_id, gtfs_version_id, timeframe_group_id, expected)
+    end)
+  end
+
+  defp apply_time_period(organization_id, gtfs_version_id, name, params) do
+    with {:ok, ranges} <- time_period_ranges(params),
+         {:ok, group_id} <-
+           time_period_group_id(organization_id, gtfs_version_id, name, params),
+         {:ok, service_id} <-
+           time_period_service_id(organization_id, gtfs_version_id, group_id, name),
+         {:ok, period} <-
+           write_time_period(organization_id, gtfs_version_id, group_id, name, service_id, params),
+         {:ok, timeframes} <-
+           write_timeframes(
+             organization_id,
+             gtfs_version_id,
+             group_id,
+             service_id,
+             ranges,
+             params
+           ) do
+      {:ok,
+       %{
+         before: time_period_log_row(period.before, timeframes.previous),
+         after: time_period_log_row(period.after, timeframes.written),
+         action: period.action,
+         inverse: %{
+           operation: :save,
+           period: period,
+           timeframes: %{added: timeframes.added, removed: timeframes.removed}
+         }
+       }}
+    end
+  end
+
+  # The drawer's ranges, sorted and checked. Every failure is a changeset error
+  # on `:ranges` rather than a refusal the drawer would have to read as a
+  # different kind of answer, because all three are the operator's own input.
+  defp time_period_ranges(params) do
+    ranges =
+      case fare_param(params, :ranges) do
+        ranges when is_list(ranges) -> ranges
+        _other -> []
+      end
+
+    case normalized_ranges(ranges) do
+      [] ->
+        {:error, ranges_changeset("can't be blank")}
+
+      ranges ->
+        with :ok <- check_range_order(ranges),
+             :ok <- check_range_overlap(ranges) do
+          {:ok, ranges}
+        end
+    end
+  end
+
+  defp normalized_ranges(ranges) do
+    ranges
+    |> Enum.map(&range_bounds/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.sort()
+  end
+
+  # One range as `{start, end}` seconds, or `nil` when the drawer sent something
+  # that is not a pair of seconds within one day. A range that ends before it
+  # starts is kept here rather than dropped, so `check_range_order/1` can name
+  # the operator's own mistake rather than reporting an empty list of ranges.
+  # A range of text the drawer already formatted is read through
+  # `GtfsTime.parse/1`, the same reader the importer uses.
+  defp range_bounds(%{start_seconds: start, end_seconds: finish}) do
+    range_bounds({start, finish})
+  end
+
+  defp range_bounds({start, finish}) do
+    with {:ok, start} <- time_seconds(start),
+         {:ok, finish} <- time_seconds(finish) do
+      {start, finish}
+    else
+      _other -> nil
+    end
+  end
+
+  defp range_bounds(_other), do: nil
+
+  defp time_seconds(seconds) when is_integer(seconds) do
+    if seconds >= 0 and seconds <= @end_of_day_seconds,
+      do: {:ok, seconds},
+      else: {:error, :out_of_range}
+  end
+
+  defp time_seconds(value) when is_binary(value), do: GtfsTime.parse(value)
+  defp time_seconds(_other), do: {:error, :invalid_time}
+
+  # A range that ends before the next one starts is a valid split; a range that
+  # ends at or after it is not, which is what an operator means by two ranges
+  # that overlap.
+  defp check_range_order(ranges) do
+    if Enum.all?(ranges, fn {start, finish} -> start < finish end) do
+      :ok
+    else
+      {:error, ranges_changeset("must start before it ends")}
+    end
+  end
+
+  defp check_range_overlap(ranges) do
+    overlaps? =
+      ranges
+      |> Enum.chunk_every(2, 1, :discard)
+      |> Enum.any?(fn [{_start, finish}, {next_start, _next_finish}] ->
+        next_start < finish
+      end)
+
+    if overlaps? do
+      {:error, ranges_changeset("can't overlap")}
+    else
+      :ok
+    end
+  end
+
+  defp ranges_changeset(message) do
+    %FareTimePeriod{}
+    |> Ecto.Changeset.change(%{name: nil})
+    |> Map.put(:action, :insert)
+    |> Ecto.Changeset.add_error(:ranges, message)
+  end
+
+  # The GTFS group id the form names: the name's slug when the form creates a
+  # period, refused when this version already holds it, and the id the form named
+  # when it edits one (INV-5).
+  defp time_period_group_id(organization_id, gtfs_version_id, name, params) do
+    periods = version_time_periods(organization_id, gtfs_version_id)
+
+    case fare_param(params, :timeframe_group_id) do
+      nil ->
+        id = fare_slug(name)
+
+        cond do
+          id == "" -> {:error, name_changeset(name, "must have a letter or a number")}
+          Enum.any?(periods, &(&1.timeframe_group_id == id)) -> {:error, :duplicate_time_period}
+          true -> {:ok, id}
+        end
+
+      "" ->
+        {:error, :not_found}
+
+      id when is_binary(id) ->
+        if Enum.any?(periods, &(&1.timeframe_group_id == id)) do
+          {:ok, id}
+        else
+          {:error, :not_found}
+        end
+
+      _other ->
+        {:error, :not_found}
+    end
+  end
+
+  # R10's `fare_<slug>`, unique among the version's calendar service ids, its
+  # calendar-date service ids and every other period's. A period's own current
+  # service id is not a collision with itself, so saving a period twice asks for
+  # the same id twice rather than the second save suffixing away from the first.
+  defp time_period_service_id(organization_id, gtfs_version_id, group_id, name) do
+    own =
+      case time_period_row(organization_id, gtfs_version_id, group_id) do
+        nil -> []
+        period -> [period.service_id]
+      end
+
+    taken = reserved_service_ids(organization_id, gtfs_version_id) -- own
+    base = @fare_service_prefix <> fare_slug(name)
+
+    if base in taken do
+      case unique_service_id(base, taken, 2) do
+        {:ok, service_id} -> {:ok, service_id}
+        {:error, changeset} -> {:error, changeset}
+      end
+    else
+      {:ok, base}
+    end
+  end
+
+  defp reserved_service_ids(organization_id, gtfs_version_id) do
+    calendar_ids =
+      Calendar
+      |> scoped(organization_id, gtfs_version_id)
+      |> select([calendar], calendar.service_id)
+      |> Repo.all()
+
+    exception_ids =
+      CalendarDate
+      |> scoped(organization_id, gtfs_version_id)
+      |> select([exception], exception.service_id)
+      |> Repo.all()
+
+    period_ids =
+      FareTimePeriod
+      |> scoped(organization_id, gtfs_version_id)
+      |> select([period], period.service_id)
+      |> Repo.all()
+
+    Enum.uniq(calendar_ids ++ exception_ids ++ period_ids)
+  end
+
+  defp unique_service_id(base, taken, suffix) when suffix <= @service_suffix_limit do
+    candidate = "#{base}_#{suffix}"
+
+    if candidate in taken do
+      unique_service_id(base, taken, suffix + 1)
+    else
+      {:ok, candidate}
+    end
+  end
+
+  defp unique_service_id(_base, _taken, _suffix) do
+    # The suffix search is bounded, and running out of ids is refused rather
+    # than answered with an id that collides with a calendar or a period.
+    {:error, name_changeset("", "has no free service id")}
+  end
+
+  defp version_time_periods(organization_id, gtfs_version_id) do
+    FareTimePeriod
+    |> scoped(organization_id, gtfs_version_id)
+    |> order_by([period], period.timeframe_group_id)
+    |> Repo.all()
+  end
+
+  defp time_period_row(organization_id, gtfs_version_id, timeframe_group_id) do
+    FareTimePeriod
+    |> scoped(organization_id, gtfs_version_id)
+    |> where([period], period.timeframe_group_id == ^timeframe_group_id)
+    |> Repo.one()
+  end
+
+  defp time_period_name(organization_id, gtfs_version_id, timeframe_group_id) do
+    case time_period_row(organization_id, gtfs_version_id, timeframe_group_id) do
+      nil -> nil
+      period -> period.name
+    end
+  end
+
+  # The one `fare_time_periods` row, written through its own changeset. The
+  # group id is what every leg rule naming this period states and never moves;
+  # the name, the weekday mask, the end-of-day flag and the service id are the
+  # drawer edit.
+  defp write_time_period(
+         organization_id,
+         gtfs_version_id,
+         group_id,
+         name,
+         service_id,
+         params
+       ) do
+    attrs = %{
+      timeframe_group_id: group_id,
+      name: name,
+      weekdays: fare_param(params, :weekdays),
+      until_end_of_day: fare_param(params, :until_end_of_day?) == true,
+      service_id: service_id
+    }
+
+    case time_period_row(organization_id, gtfs_version_id, group_id) do
+      nil ->
+        changeset =
+          %FareTimePeriod{}
+          |> struct(%{
+            organization_id: organization_id,
+            gtfs_version_id: gtfs_version_id
+          })
+          |> FareTimePeriod.changeset(attrs)
+
+        case Repo.insert(changeset) do
+          {:ok, row} ->
+            {:ok, %{id: row.id, action: "created", before: nil, after: attrs, row: row}}
+
+          {:error, changeset} ->
+            Repo.rollback(changeset)
+        end
+
+      row ->
+        case row |> FareTimePeriod.changeset(attrs) |> Repo.update() do
+          {:ok, updated} ->
+            {:ok,
+             %{
+               id: updated.id,
+               action: "updated",
+               before: time_period_attrs(row),
+               after: time_period_attrs(updated),
+               row: updated
+             }}
+
+          {:error, changeset} ->
+            Repo.rollback(changeset)
+        end
+    end
+  end
+
+  defp time_period_attrs(row) do
+    %{
+      timeframe_group_id: row.timeframe_group_id,
+      name: row.name,
+      weekdays: row.weekdays,
+      until_end_of_day: row.until_end_of_day,
+      service_id: row.service_id
+    }
+  end
+
+  # The group's `timeframes` rows, replaced whole. A range this save did not
+  # write has its row deleted and a range it did write has its row inserted, in
+  # the same transaction as the period itself, so the group never holds a stale
+  # range (persistence-integrity).
+  defp write_timeframes(
+         organization_id,
+         gtfs_version_id,
+         group_id,
+         service_id,
+         ranges,
+         params
+       ) do
+    rows = version_timeframes(organization_id, gtfs_version_id)
+    mine = Enum.filter(rows, &(&1.timeframe_group_id == group_id))
+    wanted = timeframe_rows(ranges, params, group_id, service_id)
+
+    # A row is kept only when it names this period's service id as well as the
+    # range: a rename re-derives the service id (R10), and a range left carrying
+    # the old one would name a service no calendar row exists.
+    wanted_keys = MapSet.new(Enum.map(wanted, &range_key/1))
+    kept = Enum.filter(mine, &MapSet.member?(wanted_keys, range_key(&1)))
+    removed = mine -- kept
+    named = MapSet.new(Enum.map(kept, &range_key/1))
+    added = Enum.reject(wanted, &MapSet.member?(named, range_key(&1)))
+
+    delete_rows(Timeframe, organization_id, gtfs_version_id, removed)
+    added = insert_timeframes(organization_id, gtfs_version_id, added)
+
+    {:ok, %{added: added, removed: removed, written: wanted, previous: mine}}
+  end
+
+  # The ranges as `timeframes` rows would read them, with the last range's end
+  # written as `"24:00:00"` when the drawer asked to run to the end of the
+  # service day (R10).
+  defp timeframe_rows(ranges, params, group_id, service_id) do
+    until_end_of_day? = fare_param(params, :until_end_of_day?) == true
+    count = length(ranges)
+
+    ranges
+    |> Enum.with_index()
+    |> Enum.map(fn {{start, finish}, index} ->
+      %{
+        timeframe_group_id: group_id,
+        start_time: GtfsTime.format(start),
+        end_time:
+          if(until_end_of_day? and index == count - 1,
+            do: @end_of_day_time,
+            else: GtfsTime.format(finish)
+          ),
+        service_id: service_id
+      }
+    end)
+  end
+
+  # What makes one `timeframes` row the row a save would write again: its range
+  # and the service id it is written under.
+  defp range_key(row), do: {row.start_time, row.end_time, row.service_id}
+
+  defp version_timeframes(organization_id, gtfs_version_id) do
+    Timeframe
+    |> scoped(organization_id, gtfs_version_id)
+    |> order_by([row], row.start_time)
+    |> Repo.all()
+  end
+
+  defp insert_timeframes(_organization_id, _gtfs_version_id, []), do: []
+
+  defp insert_timeframes(organization_id, gtfs_version_id, attrs) do
+    now = DateTime.utc_now()
+
+    rows =
+      Enum.map(attrs, fn attr ->
+        Map.merge(attr, %{
+          id: Ecto.UUID.generate(),
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id,
+          inserted_at: now,
+          updated_at: now
+        })
+      end)
+
+    {_count, inserted} = Repo.insert_all(Timeframe, rows, returning: true)
+    inserted
+  end
+
+  defp time_period_save_summary(params, name) do
+    if fare_param(params, :timeframe_group_id) do
+      "Updated the time period \"#{name}\""
+    else
+      "Created the time period \"#{name}\""
+    end
+  end
+
+  # The change-log row of one time period write: the period's own facts beside
+  # the ranges it now holds, as `HH:MM:SS` text, which is what the editor's
+  # history shows.
+  defp time_period_log_row(nil, _ranges), do: nil
+
+  defp time_period_log_row(attrs, ranges) do
+    Map.merge(attrs, %{
+      "ranges" =>
+        Enum.map(ranges || [], &%{"start_time" => &1.start_time, "end_time" => &1.end_time})
+    })
+  end
+
+  defp remove_time_period(organization_id, gtfs_version_id, timeframe_group_id, expected) do
+    case time_period_row(organization_id, gtfs_version_id, timeframe_group_id) do
+      nil ->
+        {:error, :not_found}
+
+      period ->
+        case name_stale(expected, period.name) do
+          [] -> settle_time_period_references(organization_id, gtfs_version_id, period, expected)
+          stale -> {:error, {:stale, stale}}
+        end
+    end
+  end
+
+  # What named this period, and what the operator asked to do about it. The rules
+  # are refused rather than left naming a group that is gone, unless the drawer
+  # asked for them to go with it.
+  defp settle_time_period_references(organization_id, gtfs_version_id, period, expected) do
+    rules = period_rules(organization_id, gtfs_version_id, period.timeframe_group_id)
+
+    if rules != [] and not remove_rules?(expected) do
+      {:error, :rules_reference_time_period}
+    else
+      delete_time_period_rows(organization_id, gtfs_version_id, period, rules)
+    end
+  end
+
+  defp period_rules(organization_id, gtfs_version_id, timeframe_group_id) do
+    FareLegRule
+    |> scoped(organization_id, gtfs_version_id)
+    |> where([rule], rule.from_timeframe_group_id == ^timeframe_group_id)
+    |> order_by([rule], rule.fare_product_id)
+    |> Repo.all()
+  end
+
+  defp delete_time_period_rows(organization_id, gtfs_version_id, period, rules) do
+    timeframes =
+      Timeframe
+      |> scoped(organization_id, gtfs_version_id)
+      |> where([row], row.timeframe_group_id == ^period.timeframe_group_id)
+      |> Repo.all()
+
+    delete_rows(FareLegRule, organization_id, gtfs_version_id, rules)
+    delete_rows(Timeframe, organization_id, gtfs_version_id, timeframes)
+    delete_rows(FareTimePeriod, organization_id, gtfs_version_id, [period])
+
+    {:ok,
+     %{
+       before: time_period_log_row(time_period_attrs(period), timeframes),
+       after: [],
+       action: "deleted",
+       inverse: %{
+         operation: :delete,
+         period: period,
+         timeframes: timeframes,
+         rules: Enum.map(rules, &row_snapshot/1)
+       }
+     }}
+  end
+
+  # Applies a `save_time_period/2` or `delete_time_period/3` inverse.
+  #
+  # A saved period's row must still be there and still hold the values that write
+  # left, the `timeframes` rows it added must still be there and the rows it
+  # deleted must still be gone. A deleted period's row, its ranges and the rules
+  # its delete settled must all still be gone. Anything else answers
+  # `{:error, :stale}` and changes nothing, so a reversal can never revert a
+  # later edit (R15, AC-26).
+  defp undo_time_period(organization_id, gtfs_version_id, operation_id, inverse) do
+    with :ok <- require_entry(operation_id, organization_id, gtfs_version_id),
+         :ok <- require_period_unchanged(organization_id, gtfs_version_id, inverse) do
+      restore_time_period(organization_id, gtfs_version_id, inverse)
+
+      {:ok,
+       %{
+         before: [],
+         after: [],
+         inverse: nil,
+         operation_id: operation_id,
+         action: "rolled_back",
+         rolled_back_to_log_id: operation_id
+       }}
+    end
+  end
+
+  defp require_period_unchanged(organization_id, gtfs_version_id, inverse) do
+    stale? =
+      case inverse do
+        %{operation: :save} = inverse ->
+          not definition_untouched?(
+            FareTimePeriod,
+            organization_id,
+            gtfs_version_id,
+            inverse.period
+          ) or
+            not Enum.all?(
+              inverse.timeframes.added,
+              &timeframe_untouched?(&1, organization_id, gtfs_version_id)
+            ) or
+            Enum.any?(
+              inverse.timeframes.removed,
+              &definition_present?(Timeframe, organization_id, gtfs_version_id, &1.id)
+            )
+
+        %{operation: :delete} = inverse ->
+          definition_present?(
+            FareTimePeriod,
+            organization_id,
+            gtfs_version_id,
+            inverse.period.id
+          ) or
+            Enum.any?(
+              inverse.timeframes,
+              &definition_present?(Timeframe, organization_id, gtfs_version_id, &1.id)
+            ) or
+            Enum.any?(inverse.rules, &rule_present?(&1, organization_id, gtfs_version_id))
+
+        _other ->
+          true
+      end
+
+    if stale?, do: {:error, :stale}, else: :ok
+  end
+
+  # A range the save added must still name its group and the times it was
+  # written with, so a period edited since is a later edit the reversal must not
+  # revert on top of.
+  defp timeframe_untouched?(row, organization_id, gtfs_version_id) do
+    current =
+      from(t in Timeframe,
+        where:
+          t.id == ^row.id and t.organization_id == ^organization_id and
+            t.gtfs_version_id == ^gtfs_version_id
+      )
+      |> Repo.one()
+
+    current != nil and
+      current.timeframe_group_id == row.timeframe_group_id and
+      current.start_time == row.start_time and current.end_time == row.end_time and
+      current.service_id == row.service_id
+  end
+
+  defp restore_time_period(organization_id, gtfs_version_id, %{operation: :save} = inverse) do
+    rows = inverse.timeframes
+
+    Enum.each(rows.removed, &Repo.insert!(Ecto.Changeset.change(&1)))
+    delete_rows(Timeframe, organization_id, gtfs_version_id, rows.added)
+    restore_saved_row(organization_id, gtfs_version_id, FareTimePeriod, inverse.period)
+
+    :ok
+  end
+
+  defp restore_time_period(_organization_id, _gtfs_version_id, %{operation: :delete} = inverse) do
+    Repo.insert!(Ecto.Changeset.change(inverse.period))
+    Enum.each(inverse.timeframes, &Repo.insert!(Ecto.Changeset.change(&1)))
+    Enum.each(inverse.rules, &Repo.insert!(Ecto.Changeset.change(&1)))
+
+    :ok
   end
 
   @doc false
