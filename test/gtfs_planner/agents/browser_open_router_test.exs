@@ -144,12 +144,29 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
           [user(@user_route_12)] ++
           draft_call() ++
           [
+            assistant_tool_call("call_search_routes", "search_routes", %{"query" => "12"}),
             tool_result("call_search_routes", %{
               "routes" => [%{"id" => "other", "route_id" => "1"}]
             })
           ]
 
-      assert final_text(post(messages)) =~ "I could not find Route 12"
+      assert final_text(post(messages)) ==
+               "I could not find Route 12 in this service version. Which route did you mean?"
+    end
+
+    test "a refused propose_changes result says nothing was prepared" do
+      messages =
+        [system(Alerts.skill())] ++
+          [user(@user_route_12)] ++
+          draft_call() ++
+          search_call() ++
+          [
+            assistant_tool_call("call_propose_changes", "propose_changes", %{}),
+            tool_result("call_propose_changes", %{"error" => "Unexpected argument: scope.nope"})
+          ]
+
+      assert final_text(post(messages)) ==
+               "I could not prepare that change. Tell me which route and dates you mean."
     end
 
     test "any other alerts request gets the interview's first question" do

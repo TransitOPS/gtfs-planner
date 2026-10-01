@@ -71,7 +71,8 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       result rather than invented, so a search that found nothing prepares
       nothing and says so;
     * the `propose_changes` result gets the prepared sentence, which says
-      "prepared" and never "saved" or "published";
+      "prepared" and never "saved" or "published", unless the result is a tool
+      error, which gets a sentence that says nothing was prepared;
     * any other `"user"` message gets the interview's first question, and any
       other tool result gets the alerts generic sentence.
 
@@ -123,7 +124,8 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   # did not return what the person meant.
   @alerts_marker "Alerts helper"
   @alerts_question "Now or planned: are riders affected right now, or on planned dates?"
-  @alerts_prepared "I prepared a detour on Route 12. Review the prepared answers in the editor and apply them when they look right."
+  @alerts_prepared "I prepared a detour on Route 12. The answers are filled in on the form. Check the preview."
+  @alerts_not_prepared "I could not prepare that change. Tell me which route and dates you mean."
   @alerts_not_found "I could not find Route 12 in this service version. Which route did you mean?"
   @alerts_generic "I can read this alert's routes, stops and departures and prepare answers for you to review."
 
@@ -346,10 +348,9 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   defp alerts_reply(messages) do
     case List.last(messages) do
       %{"role" => "user", "content" => content} when is_binary(content) ->
-        cond do
-          content =~ ~r/route\s*12/i -> tool_calls_reply("get_draft", %{})
-          true -> text_reply(@alerts_question)
-        end
+        if content =~ ~r/route\s*12/i,
+          do: tool_calls_reply("get_draft", %{}),
+          else: text_reply(@alerts_question)
 
       %{"role" => "tool"} = tool_message ->
         alerts_tool_reply(messages, tool_message)
@@ -374,7 +375,11 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
         end
 
       "propose_changes" ->
-        text_reply(@alerts_prepared)
+        # A refused call prepared nothing, so the sentence that says it did is
+        # only for a result that carries no error.
+        if tool_error?(tool_message),
+          do: text_reply(@alerts_not_prepared),
+          else: text_reply(@alerts_prepared)
 
       _other ->
         text_reply(@alerts_generic)
@@ -384,13 +389,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   defp route_12_id(%{"content" => content}) when is_binary(content) do
     case Jason.decode(content) do
       {:ok, %{"routes" => routes}} when is_list(routes) ->
-        Enum.find_value(routes, fn
-          %{"id" => id} = route when is_binary(id) ->
-            if route["route_id"] == "12" or route["short_name"] == "Route 12", do: id
-
-          _other ->
-            nil
-        end)
+        Enum.find_value(routes, &route_12_row_id/1)
 
       _other ->
         nil
@@ -398,6 +397,18 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   end
 
   defp route_12_id(_other), do: nil
+
+  defp route_12_row_id(%{"id" => id} = route) when is_binary(id) do
+    if route["route_id"] == "12" or route["short_name"] == "Route 12", do: id
+  end
+
+  defp route_12_row_id(_route), do: nil
+
+  # The turn loop reports a refused tool call as `{"error": message}`.
+  defp tool_error?(%{"content" => content}) when is_binary(content),
+    do: match?({:ok, %{"error" => _message}}, Jason.decode(content))
+
+  defp tool_error?(_tool_message), do: false
 
   defp change_arguments(messages, route_id) do
     %{
@@ -412,10 +423,8 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   # that message keeps the script off any clock of its own; a request with no
   # system message falls back to the UTC date the Calendars script already uses.
   defp today(messages) do
-    with [_all, date | _rest] <-
-           Regex.run(~r/Today is (\d{4}-\d{2}-\d{2})/, system_content(messages)) do
-      date
-    else
+    case Regex.run(~r/Today is (\d{4}-\d{2}-\d{2})/, system_content(messages)) do
+      [_all, date | _rest] -> date
       _other -> Date.to_iso8601(Date.utc_today())
     end
   end

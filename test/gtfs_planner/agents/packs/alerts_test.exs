@@ -20,11 +20,17 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
+  alias GtfsPlanner.Agents.BrowserOpenRouter
   alias GtfsPlanner.Agents.Dispatch
   alias GtfsPlanner.Agents.Packs.Alerts, as: AlertsPack
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Alerts
   alias GtfsPlanner.Alerts.Alert
+  alias GtfsPlanner.Alerts.MessageAnswer
+  alias GtfsPlanner.Alerts.ScopeAnswer
+  alias GtfsPlanner.Alerts.ScopeAnswer.RouteStopPair
+  alias GtfsPlanner.Alerts.ScopeAnswer.TripTarget
+  alias GtfsPlanner.Alerts.TimingAnswer
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Repo
 
@@ -107,6 +113,25 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       end
     end
 
+    test "propose_changes declares exactly the fields the answer changesets cast" do
+      properties = propose_changes_properties()
+
+      assert properties |> Map.keys() |> Enum.sort() ==
+               ~w(cause cause_detail message scope service_change_kind situation timing urgency)
+
+      assert declared_keys(properties["scope"]) == fields(ScopeAnswer, [])
+      assert declared_keys(properties["timing"]) == fields(TimingAnswer, [:time_zone])
+
+      assert declared_keys(properties["message"]) ==
+               fields(MessageAnswer, [:script_key, :customized, :fact_digest])
+
+      assert declared_keys(properties["scope"]["properties"]["route_stop_pairs"]["items"]) ==
+               fields(RouteStopPair, [])
+
+      assert declared_keys(properties["scope"]["properties"]["trips"]["items"]) ==
+               fields(TripTarget, [])
+    end
+
     test "the skill names the interview order and refuses to claim publication" do
       skill = AlertsPack.skill()
 
@@ -173,6 +198,14 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
 
       assert Dispatch.call(AlertsPack, scope, "get_draft", "{}") ==
                {:tool_error, "This alert is not in this service version."}
+    end
+
+    test "a tool read that loses a race with a delete answers a message, not data", context do
+      elsewhere = alert_fixture(context.sibling_audit, %{"urgency" => "planned"})
+      scope = %{context.scope | subject_id: elsewhere.id}
+
+      assert AlertsPack.call("get_draft", %{}, scope) ==
+               {:error, "This alert is not in this service version."}
     end
   end
 
@@ -269,6 +302,18 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
 
       other =
         stop_fixture(context.organization.id, context.version.id, stop_attrs("S2", "Elm Road"))
+
+      # Only Elm St is served by the route, so only it is preferred; Elm Road
+      # would sort first alphabetically.
+      trip = trip_fixture(context.organization.id, context.version.id, route.route_id)
+
+      stop_time_fixture(
+        context.organization.id,
+        context.version.id,
+        trip.trip_id,
+        served.stop_id,
+        %{stop_sequence: 1, departure_time: "08:15:00"}
+      )
 
       assert {:ok, %{"stops" => [first, second]}} =
                call(
@@ -406,7 +451,10 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       assert check["complete"] == false
       assert check["effect"] == nil
 
-      assert Enum.map(check["outstanding"], & &1["step"]) == ["situation", "message", "message"]
+      # The alert is a `now` alert: its timing is empty, so the start date, the
+      # start time and the end are still open beside the situation and message.
+      assert Enum.map(check["outstanding"], & &1["step"]) ==
+               ["situation", "timing", "timing", "timing", "message", "message"]
     end
 
     test "reports the effect and the remaining questions after answers are saved", context do
@@ -453,7 +501,7 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
                 %{"situation" => "detour", "scope" => %{"route_ids" => [route.id]}}}
 
       assert prepared.summary.title == "Update this alert"
-      assert ("Detour" in prepared.summary.lines) |> Enum.join(" ")
+      assert "Situation · Detour" in prepared.summary.lines
 
       # Preparing wrote nothing: the draft is still the one the fixture made.
       assert {:ok, draft} = call("get_draft", %{}, context.scope)
@@ -461,21 +509,111 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       assert draft["situation"] == nil
     end
 
-    test "refuses a header the editor would refuse", context do
+    test "accepts every field the answers declare", context do
+      route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
+      stop = stop_fixture(context.organization.id, context.version.id, stop_attrs("S1", "Elm St"))
+
+      arguments = %{
+        "urgency" => "planned",
+        "situation" => "stop_moved",
+        "service_change_kind" => "information",
+        "cause" => "construction",
+        "cause_detail" => "Track work",
+        "scope" => %{
+          "shape" => "route_stops",
+          "mode_route_type" => 3,
+          "route_ids" => [route.id],
+          "stop_ids" => [stop.id],
+          "route_stop_pairs" => [%{"route_id" => route.id, "stop_id" => stop.id}],
+          "trips" => [%{"trip_id" => Ecto.UUID.generate(), "service_date" => "2026-10-05"}],
+          "direction_id" => 1,
+          "all_routes_at_stops" => true,
+          "stretch_from_stop_id" => stop.id,
+          "stretch_to_stop_id" => stop.id,
+          "alternative_stop_id" => stop.id,
+          "alternative_directions" => "Board at Elm St.",
+          "facility" => "Elevator"
+        },
+        "timing" => %{
+          "start_date" => "2026-10-05",
+          "start_time" => "08:00",
+          "end_kind" => "estimated",
+          "end_date" => "2026-10-06",
+          "end_time" => "17:00",
+          "check_in_at" => "2026-10-05T10:00:00",
+          "pattern" => "weekly",
+          "first_date" => "2026-10-05",
+          "weeks" => 4,
+          "weekdays" => [1, 2, 3, 4, 5],
+          "all_day" => false,
+          "last_date" => "2026-11-02",
+          "added_dates" => ["2026-10-10"],
+          "removed_dates" => ["2026-10-12"],
+          "notice_on" => "2026-10-01",
+          "delay_minutes" => 15
+        },
+        "message" => %{
+          "header" => "Route 12 detour",
+          "description" => "Route 12 buses skip Elm St.",
+          "url" => "https://example.com/alerts/12"
+        }
+      }
+
+      assert {:prepared, prepared, %{"status" => "prepared"}} =
+               call("propose_changes", arguments, context.scope)
+
+      assert prepared.command == {:alert_changes, arguments}
+    end
+
+    test "prepares the arguments the scripted browser provider sends", context do
+      route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
+
+      arguments = scripted_propose_arguments(route.id)
+
+      assert {:prepared, prepared, %{"status" => "prepared"}} =
+               Dispatch.call(AlertsPack, context.scope, "propose_changes", arguments)
+
+      assert {:alert_changes, %{"situation" => "detour"}} = prepared.command
+    end
+
+    test "refuses a header over the length the fence declares", context do
       long_header = String.duplicate("a", 121)
 
-      assert {:tool_error, message} =
-               call("propose_changes", %{"message" => %{"header" => long_header}}, context.scope)
+      assert call("propose_changes", %{"message" => %{"header" => long_header}}, context.scope) ==
+               {:tool_error, "Argument message.header must be at most 120 characters."}
+    end
 
-      assert message =~ "header"
-      assert message =~ "120"
+    test "names the argument and fills in the limit when the changeset refuses an answer",
+         context do
+      long_header = String.duplicate("a", 121)
+
+      # The pack validates with the editor's own changeset even when the fence
+      # is not in front of it, so a nested error is a message the model can
+      # correct instead of a crash.
+      assert AlertsPack.call(
+               "propose_changes",
+               %{"message" => %{"header" => long_header}},
+               context.scope
+             ) == {:error, "message.header: should be at most 120 character(s)"}
+    end
+
+    test "names every nested answer the editor would refuse", context do
+      assert call(
+               "propose_changes",
+               %{
+                 "timing" => %{"start_date" => "tomorrow"},
+                 "message" => %{"url" => "javascript:alert(1)"}
+               },
+               context.scope
+             ) ==
+               {:tool_error,
+                "message.url: must be a full web address starting with https:// or http://; " <>
+                  "timing.start_date: is invalid"}
     end
 
     test "refuses a value outside the situations the editor offers", context do
-      assert {:tool_error, message} =
-               call("propose_changes", %{"situation" => "evacuation"}, context.scope)
-
-      assert message =~ "Situation"
+      assert call("propose_changes", %{"situation" => "evacuation"}, context.scope) ==
+               {:tool_error, "situation: is invalid"}
     end
 
     test "refuses a proposal that changes nothing", context do
@@ -483,19 +621,30 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
                {:tool_error, "Provide at least one answer to change."}
     end
 
-    test "never carries an identity into the prepared command", context do
-      assert {:prepared, _prepared, _result} =
-               call(
-                 "propose_changes",
-                 %{
-                   "situation" => "delay",
-                   "scope" => %{
-                     "shape" => "system",
-                     "organization_id" => context.foreign_organization.id
-                   }
-                 },
-                 context.scope
-               )
+    test "refuses an identity key inside an answer", context do
+      assert call(
+               "propose_changes",
+               %{
+                 "situation" => "delay",
+                 "scope" => %{
+                   "shape" => "system",
+                   "organization_id" => context.foreign_organization.id
+                 }
+               },
+               context.scope
+             ) == {:tool_error, "Unexpected argument: scope.organization_id"}
+    end
+
+    test "refuses the answer fields the editor and the version own", context do
+      for {answer, key} <- [
+            {"message", "script_key"},
+            {"message", "customized"},
+            {"message", "fact_digest"},
+            {"timing", "time_zone"}
+          ] do
+        assert call("propose_changes", %{answer => %{key => "x"}}, context.scope) ==
+                 {:tool_error, "Unexpected argument: #{answer}.#{key}"}
+      end
     end
   end
 
@@ -538,6 +687,59 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
 
   defp call(name, args, scope) do
     Dispatch.call(AlertsPack, scope, name, Jason.encode!(args))
+  end
+
+  defp propose_changes_properties do
+    tool = Enum.find(AlertsPack.tools(), &(&1.name == "propose_changes"))
+    tool.parameters["properties"]
+  end
+
+  defp declared_keys(object), do: object["properties"] |> Map.keys() |> Enum.sort()
+
+  defp fields(schema, left_out) do
+    (schema.__schema__(:fields) -- left_out) |> Enum.map(&Atom.to_string/1) |> Enum.sort()
+  end
+
+  # The `propose_changes` call the scripted browser provider makes after it has
+  # found Route 12, read out of the stand-in's own reply rather than copied.
+  defp scripted_propose_arguments(route_id) do
+    messages = [
+      %{"role" => "system", "content" => AlertsPack.skill() <> "\n\nToday is 2026-10-01."},
+      %{"role" => "user", "content" => "Route 12 is detouring"},
+      assistant_call("call_get_draft", "get_draft", %{}),
+      tool_message("call_get_draft", %{}),
+      assistant_call("call_search_routes", "search_routes", %{"query" => "12"}),
+      tool_message("call_search_routes", %{
+        "routes" => [%{"id" => route_id, "route_id" => "12", "short_name" => "12"}]
+      })
+    ]
+
+    conn =
+      :post
+      |> Plug.Test.conn("/api/v1/chat/completions", Jason.encode!(%{"messages" => messages}))
+      |> BrowserOpenRouter.call([])
+
+    %{"choices" => [%{"message" => %{"tool_calls" => [call]}}]} = Jason.decode!(conn.resp_body)
+    assert call["function"]["name"] == "propose_changes"
+    call["function"]["arguments"]
+  end
+
+  defp assistant_call(id, name, arguments) do
+    %{
+      "role" => "assistant",
+      "content" => nil,
+      "tool_calls" => [
+        %{
+          "id" => id,
+          "type" => "function",
+          "function" => %{"name" => name, "arguments" => Jason.encode!(arguments)}
+        }
+      ]
+    }
+  end
+
+  defp tool_message(id, payload) do
+    %{"role" => "tool", "tool_call_id" => id, "content" => Jason.encode!(payload)}
   end
 
   # The three row counts the pack could write: the alert itself, a script and the

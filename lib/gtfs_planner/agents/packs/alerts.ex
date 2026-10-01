@@ -46,43 +46,6 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
          |> Enum.join("\n")
          |> String.trim()
 
-  # The fields `Alert.draft_changeset/2` casts, in the order the editor asks
-  # them. The three answers are objects the changeset validates field by field,
-  # so a nested key this pack never read is ignored there rather than stored.
-  @change_properties %{
-    "urgency" => %{"type" => "string", "enum" => ["now", "planned"]},
-    "situation" => %{
-      "type" => "string",
-      "enum" => Enum.map(Alert.situations(), &Atom.to_string/1)
-    },
-    "service_change_kind" => %{
-      "type" => "string",
-      "enum" => ["fewer_trips", "extra_service", "information"]
-    },
-    "cause" => %{
-      "type" => "string",
-      "enum" => [
-        "unknown_cause",
-        "other_cause",
-        "technical_problem",
-        "strike",
-        "demonstration",
-        "accident",
-        "holiday",
-        "weather",
-        "maintenance",
-        "construction",
-        "police_activity",
-        "medical_emergency",
-        "special_event"
-      ]
-    },
-    "cause_detail" => %{"type" => "string", "maxLength" => 200},
-    "scope" => %{"type" => "object"},
-    "timing" => %{"type" => "object"},
-    "message" => %{"type" => "object"}
-  }
-
   # Panel copy for each answer `propose_changes` can carry, in step order.
   @change_labels [
     {:urgency, "Now or planned"},
@@ -211,11 +174,11 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
       %{
         name: "propose_changes",
         description:
-          "Prepare answers for this alert to review and apply. Takes only the answers themselves, never an identity, and saves nothing.",
+          "Prepare answers for the alert editor to fill into this draft. Call it once per turn with every answer you have. Takes only the answers themselves, never an identity, and saves nothing.",
         activity: "Prepared alert answers",
         parameters: %{
           "type" => "object",
-          "properties" => @change_properties,
+          "properties" => change_properties(),
           "required" => [],
           "additionalProperties" => false
         }
@@ -400,16 +363,36 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
   defp humanize(value) when is_binary(value),
     do: value |> String.replace("_", " ") |> String.replace(~r/\A./, &String.capitalize/1)
 
-  # The changeset speaks in field names; the model is told the same words the
-  # editor uses, in one sentence.
+  # The changeset nests the errors of an invalid answer under its field, so the
+  # model is told the argument path it sent and the message with its values
+  # filled in ("message.header: should be at most 120 character(s)").
   defp changeset_message(changeset) do
     changeset
-    |> Ecto.Changeset.traverse_errors(fn {message, _opts} -> message end)
-    |> Enum.map(fn {field, messages} ->
-      "#{humanize(field)}: #{Enum.join(messages, ", ")}"
-    end)
+    |> Ecto.Changeset.traverse_errors(&error_text/1)
+    |> error_lines([])
     |> Enum.sort()
-    |> Enum.join(" ")
+    |> Enum.join("; ")
+  end
+
+  defp error_text({message, opts}) do
+    Regex.replace(~r"%{(\w+)}", message, fn _match, key ->
+      opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
+    end)
+  end
+
+  defp error_lines(errors, path) when is_map(errors) do
+    Enum.flat_map(errors, fn {field, nested} -> error_lines(nested, [field | path]) end)
+  end
+
+  defp error_lines(errors, path) when is_list(errors) do
+    Enum.flat_map(errors, fn
+      message when is_binary(message) -> [error_line(path, message)]
+      nested -> error_lines(nested, path)
+    end)
+  end
+
+  defp error_line(path, message) do
+    path |> Enum.reverse() |> Enum.join(".") |> Kernel.<>(": " <> message)
   end
 
   # -- Results --------------------------------------------------------------
@@ -570,6 +553,124 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
   defp parse_direction(direction_id), do: {:error, "Invalid direction: #{direction_id}."}
 
   # -- Shared shapes --------------------------------------------------------
+
+  # What `propose_changes` takes: the fields `Alert.draft_changeset/2` casts, in
+  # the order the editor asks them. `Dispatch` enforces this schema recursively,
+  # so every nested object lists its own keys, and it has no `enum` keyword, so
+  # the allowed values of an `Ecto.Enum` field sit in its description while the
+  # changeset stays the authority that refuses an unknown one. The nested
+  # objects leave out what the editor or the version owns (`time_zone`,
+  # `script_key`, `customized`, `fact_digest`), so a model cannot name them.
+  defp change_properties do
+    %{
+      "urgency" => enum_string(Alert, :urgency),
+      "situation" => enum_string(Alert, :situation),
+      "service_change_kind" => enum_string(Alert, :service_change_kind),
+      "cause" => enum_string(Alert, :cause),
+      "cause_detail" => %{"type" => "string", "maxLength" => 200},
+      "scope" => object(scope_properties()),
+      "timing" => object(timing_properties()),
+      "message" => object(message_properties())
+    }
+  end
+
+  defp scope_properties do
+    %{
+      "shape" => enum_string(ScopeAnswer, :shape),
+      "mode_route_type" => %{"type" => "integer", "minimum" => 0},
+      "route_ids" => id_list("Route ids from the search tools. Replaces the whole list."),
+      "stop_ids" => id_list("Stop ids from the search tools. Replaces the whole list."),
+      "route_stop_pairs" => %{
+        "type" => "array",
+        "items" =>
+          object(%{"route_id" => row_id(), "stop_id" => row_id()}, ["route_id", "stop_id"]),
+        "maxItems" => 400
+      },
+      "trips" => %{
+        "type" => "array",
+        "items" =>
+          object(
+            %{"trip_id" => row_id(), "service_date" => date("The day the trip runs.")},
+            ["trip_id", "service_date"]
+          ),
+        "maxItems" => 400
+      },
+      "direction_id" => %{"type" => "integer", "minimum" => 0, "maximum" => 1},
+      "all_routes_at_stops" => %{"type" => "boolean"},
+      "stretch_from_stop_id" => row_id(),
+      "stretch_to_stop_id" => row_id(),
+      "alternative_stop_id" => row_id(),
+      "alternative_directions" => %{"type" => "string", "maxLength" => 500},
+      "facility" => %{"type" => "string", "maxLength" => 200}
+    }
+  end
+
+  defp timing_properties do
+    %{
+      "start_date" => date(),
+      "start_time" => time(),
+      "end_kind" => enum_string(TimingAnswer, :end_kind),
+      "end_date" => date(),
+      "end_time" => time(),
+      "check_in_at" => %{
+        "type" => "string",
+        "description" => "A date and time without a zone, like 2026-10-05T10:00:00."
+      },
+      "pattern" => enum_string(TimingAnswer, :pattern),
+      "first_date" => date(),
+      "weeks" => %{"type" => "integer", "minimum" => 1, "maximum" => 52},
+      "weekdays" => %{
+        "type" => "array",
+        "items" => %{"type" => "integer", "minimum" => 1, "maximum" => 7},
+        "maxItems" => 7,
+        "description" => "ISO weekdays: 1 is Monday and 7 is Sunday."
+      },
+      "all_day" => %{"type" => "boolean"},
+      "last_date" => date(),
+      "added_dates" => date_list(),
+      "removed_dates" => date_list(),
+      "notice_on" => date(),
+      "delay_minutes" => %{"type" => "integer", "minimum" => 1, "maximum" => 240}
+    }
+  end
+
+  defp message_properties do
+    %{
+      "header" => %{"type" => "string", "maxLength" => 120},
+      "description" => %{"type" => "string", "maxLength" => 2000},
+      "url" => %{"type" => "string", "description" => "An http or https address."}
+    }
+  end
+
+  defp object(properties, required \\ []) do
+    %{
+      "type" => "object",
+      "properties" => properties,
+      "required" => required,
+      "additionalProperties" => false
+    }
+  end
+
+  defp enum_string(schema, field) do
+    values = schema |> Ecto.Enum.values(field) |> Enum.map_join(", ", &Atom.to_string/1)
+
+    %{"type" => "string", "description" => "One of: #{values}."}
+  end
+
+  defp row_id, do: %{"type" => "string"}
+
+  defp id_list(description) do
+    %{"type" => "array", "items" => row_id(), "maxItems" => 200, "description" => description}
+  end
+
+  defp date(description \\ "A date like 2026-10-05."),
+    do: %{"type" => "string", "description" => description}
+
+  defp time, do: %{"type" => "string", "description" => "A 24-hour time like 08:00."}
+
+  defp date_list do
+    %{"type" => "array", "items" => date(), "maxItems" => 60}
+  end
 
   defp no_arguments do
     %{"type" => "object", "properties" => %{}, "required" => [], "additionalProperties" => false}
