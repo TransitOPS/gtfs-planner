@@ -174,7 +174,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionSaveLiveTest do
       choose(view, :stay_on_board)
 
       view |> element("#connection-save") |> render_click()
-      assert render_async(view)
+      assert render_async(view, 2_000)
 
       # R2: one row, type 4, both routes nil and no minimum time.
       assert [transfer] = stored_transfers(context, a, b)
@@ -202,7 +202,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionSaveLiveTest do
 
       choose(view, :stay_on_board)
       view |> element("#connection-save") |> render_click()
-      assert render_async(view)
+      assert render_async(view, 2_000)
 
       # R10: a later render leaves it alone; only the reader dismisses it.
       render(view)
@@ -224,7 +224,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionSaveLiveTest do
 
       choose(view, :not_stated)
       view |> element("#connection-save") |> render_click()
-      assert render_async(view)
+      assert render_async(view, 2_000)
 
       assert stored_transfers(context, a, b) == []
       assert has_element?(view, "[data-role='connection-result']", "Saved: not stated")
@@ -240,7 +240,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionSaveLiveTest do
 
       choose(view, :stay_on_board)
       view |> element("#connection-save") |> render_click()
-      assert render_async(view)
+      assert render_async(view, 2_000)
       assert [_transfer] = stored_transfers(context, a, b)
 
       view |> element("#connection-undo") |> render_click()
@@ -261,7 +261,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionSaveLiveTest do
 
       choose(view, :must_reboard)
       view |> element("#connection-save") |> render_click()
-      assert render_async(view)
+      assert render_async(view, 2_000)
       assert [transfer] = stored_transfers(context, a, b)
       assert transfer.transfer_type == 5
 
@@ -285,7 +285,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionSaveLiveTest do
 
       choose(view, :stay_on_board)
       view |> element("#connection-save") |> render_click()
-      assert render_async(view)
+      assert render_async(view, 2_000)
 
       # Someone else writes between the save and the Undo, so the guarded write's
       # `expected` — the row the save left — no longer matches (R9, INV-4).
@@ -351,7 +351,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionSaveLiveTest do
 
       choose(view, :stay_on_board)
       view |> element("#connection-save") |> render_click()
-      assert render_async(view)
+      assert render_async(view, 2_000)
 
       assert has_element?(view, "[data-role='connection-result']", "Saved:")
       refute has_element?(view, "#connection-undo")
@@ -388,7 +388,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionSaveLiveTest do
       })
 
       view |> element("#connection-save") |> render_click()
-      assert render_async(view)
+      assert render_async(view, 2_000)
 
       # The drawer stays open with the choice still checked and says nothing was
       # written (AC-15). The other editor's row is untouched.
@@ -437,7 +437,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionSaveLiveTest do
         "to" => foreign_b.trip_id
       })
 
-      assert render_async(view)
+      assert render_async(view, 2_000)
 
       assert stored_transfers(context, foreign_a, foreign_b) == []
       assert [transfer] = stored_transfers(context, a, b)
