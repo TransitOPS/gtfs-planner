@@ -39,7 +39,16 @@ defmodule GtfsPlannerWeb.Gtfs.RosterOperatorsComponents do
   use GtfsPlannerWeb, :html
 
   import GtfsPlannerWeb.PlannerComponents,
-    only: [drawer_footer: 1, drawer_scroll: 1, form_error_summary: 1]
+    only: [drawer_footer: 1, drawer_scroll: 1, form_error_summary: 1, message: 1]
+
+  # AC-22 bounds each listed row group; the remainder is reported as a count, so
+  # a 5,000-row HR export cannot turn the review into an unusable wall.
+  @note_limit 100
+
+  # The prepared refusal for an apply whose recomputed plan no longer matches the
+  # review on screen. The context hands back the fresh preview rather than
+  # writing, so the reader is told what changed and asked to look again.
+  @stale_message "Operators changed since the preview. Review the updated counts, then import again."
 
   @doc """
   The operators drawer: the organization's operators in seniority order.
@@ -83,7 +92,7 @@ defmodule GtfsPlannerWeb.Gtfs.RosterOperatorsComponents do
 
       <.drawer_scroll>
         <p id="rosters-operators-order" class="text-[13px] text-muted">
-          Most senior first; operators without a seniority number follow by name. Select a name to edit it.
+          Most senior first; operators without a seniority number follow by name. Select a name to edit or delete it.
         </p>
 
         <p :if={@operators == []} id="rosters-operators-empty" class="py-10 text-center">
@@ -91,7 +100,7 @@ defmodule GtfsPlannerWeb.Gtfs.RosterOperatorsComponents do
             No operators yet
           </span>
           <span class="mx-auto mt-2 block max-w-[400px] text-sm text-muted">
-            Add operators one at a time. Each operator needs an employee ID and a display name.
+            Add operators one at a time, or import a CSV file of employee IDs and names.
           </span>
         </p>
 
@@ -151,6 +160,18 @@ defmodule GtfsPlannerWeb.Gtfs.RosterOperatorsComponents do
       </.drawer_scroll>
 
       <.drawer_footer>
+        <%!-- Import is the second way in and stays secondary: one operator at a
+        time is the ordinary case, and a file is the larger, less common one. --%>
+        <.button
+          id="rosters-import-operators"
+          type="button"
+          variant="secondary"
+          class="min-h-11"
+          phx-click="open_operator_import"
+          phx-value-opener_id="rosters-import-operators"
+        >
+          Import operators
+        </.button>
         <.button
           id="rosters-drawer-add-operator"
           type="button"
@@ -363,6 +384,289 @@ defmodule GtfsPlannerWeb.Gtfs.RosterOperatorsComponents do
     </.confirm_dialog>
     """
   end
+
+  @doc """
+  The import view of the same drawer: a CSV file, then a review of what it says.
+
+  The page owns the upload, the parse and the apply; this component owns the
+  copy and the state derived from them. `import_state` is the map `RostersLive`
+  holds for the view, and `preview` inside it is exactly what
+  `Operations.preview_operator_import/2` returned for the file on screen, so the
+  counts, the skipped reasons and the unused columns cannot disagree with the
+  module that classified the rows.
+
+  Every outcome that leaves nothing to import — no file chosen yet, a file the
+  browser is still sending or refused, a parse that returned a message, or a
+  review with nothing to add or update — keeps the drawer open, disables the
+  primary and says why in `#rosters-import-reason`. A row with a bad value is
+  *not* one of those: it is skipped with its reason, the rest of the file still
+  imports, and the primary names how many.
+  """
+  attr :open, :boolean, default: true
+  attr :upload, Phoenix.LiveView.UploadConfig, required: true
+  attr :import_state, :map, required: true
+  attr :on_close, :string, default: "cancel_operator_import"
+  attr :on_apply, :string, default: "apply_operator_import"
+  attr :on_cancel_upload, :string, default: "cancel_operator_upload"
+
+  attr :on_validate, :string,
+    default: "validate_operator_import",
+    doc: "acknowledges the form change LiveView routes the file input's change through"
+
+  def operator_import(assigns) do
+    review = import_review(assigns.import_state, assigns.upload)
+    {apply_count, disabled_reason} = import_apply_state(review, assigns.upload)
+
+    assigns =
+      assigns
+      |> assign(review)
+      |> assign(:counts, import_counts(review))
+      |> assign(:apply_label, import_label(apply_count))
+      |> assign(:importable?, is_nil(disabled_reason))
+      |> assign(:disabled_reason, disabled_reason)
+      |> assign(:error_message, import_error_message(assigns.import_state.stale?, review))
+
+    ~H"""
+    <.drawer
+      id="rosters-operators-drawer"
+      chrome="planner"
+      open={@open}
+      on_close={@on_close}
+      title="Import operators"
+      initial_focus={if @preview?, do: :first_field, else: :heading}
+      initial_focus_id={if @preview?, do: "rosters-import-review-title", else: nil}
+      return_focus_id={@import_state.opener_id}
+      class="max-w-[640px]"
+    >
+      <:lede>
+        <span id="rosters-operator-import-lede">Operators · shared by every version</span>
+      </:lede>
+
+      <%!-- LiveView starts a file upload from the input's change event, which it
+      routes through the surrounding form, so the field needs one even though the
+      drawer holds no other form state. --%>
+      <form
+        id="rosters-import-form"
+        phx-change={@on_validate}
+        phx-submit={@on_apply}
+        class="flex min-h-0 flex-1 flex-col"
+      >
+        <.drawer_scroll>
+          <div id="rosters-operator-import" class="grid gap-5">
+            <p id="rosters-import-description" class="text-sm text-default">
+              Add or update operators from a CSV file exported by your payroll or scheduling
+              system. Nothing changes until you review the file and import it.
+            </p>
+
+            <.message
+              :if={@error_message}
+              id="rosters-import-error"
+              kind="error"
+              title="The file can't be imported."
+              tabindex="-1"
+            >
+              {@error_message}
+            </.message>
+
+            <.upload_field
+              id="rosters-import-file"
+              upload={@upload}
+              label="Operators file"
+              help={@file_help}
+              cancel_event={@on_cancel_upload}
+            />
+
+            <div :if={@preview?} id="rosters-import-review" class="grid gap-5">
+              <h3
+                id="rosters-import-review-title"
+                tabindex="-1"
+                class="text-base font-bold text-strong"
+              >
+                Review {@filename}
+              </h3>
+
+              <div class="flex flex-wrap gap-x-9 gap-y-4">
+                <div :for={count <- @counts}>
+                  <strong
+                    id={count.id}
+                    class="block font-display text-[28px] font-semibold leading-none tabular-nums text-strong"
+                  >
+                    {count.value}
+                  </strong>
+                  <span class="mt-1 block text-[13px] text-muted">{count.label}</span>
+                </div>
+              </div>
+
+              <.message id="rosters-import-scope" kind="info" title="What gets imported">
+                {operator_import_scope()}
+              </.message>
+
+              <div :if={@update_count > 0}>
+                <h4 class="text-sm font-bold text-strong">Updated ({@update_count})</h4>
+                <ul id="rosters-import-updated" class="mt-2 grid text-sm">
+                  <li
+                    :for={row <- @update_rows}
+                    class="border-t border-subtle py-2 [overflow-wrap:anywhere]"
+                  >
+                    {update_note(row)}
+                  </li>
+                </ul>
+                <p :if={@update_more > 0} class="text-[13px] text-muted">
+                  {@update_more} more
+                </p>
+              </div>
+
+              <div :if={@skipped_count > 0}>
+                <h4 class="text-sm font-bold text-strong">Skipped rows ({@skipped_count})</h4>
+                <ul id="rosters-import-skipped" class="mt-2 grid text-sm">
+                  <li
+                    :for={row <- @skipped_rows}
+                    class="border-t border-subtle py-2 [overflow-wrap:anywhere]"
+                  >
+                    {skipped_note(row)}
+                  </li>
+                </ul>
+                <p :if={@skipped_more > 0} class="text-[13px] text-muted">
+                  {@skipped_more} more
+                </p>
+              </div>
+
+              <div :if={@ignored_columns != []}>
+                <h4 class="text-[13px] font-[650] text-default">
+                  Columns not used:
+                  <span id="rosters-import-ignored" class="font-mono font-normal text-muted">
+                    {Enum.join(@ignored_columns, ", ")}
+                  </span>
+                </h4>
+                <p class="mt-0.5 text-[13px] text-muted">Those values are never stored.</p>
+              </div>
+            </div>
+          </div>
+        </.drawer_scroll>
+
+        <.drawer_footer>
+          <p
+            :if={@disabled_reason}
+            id="rosters-import-reason"
+            class="basis-full text-right text-[13px] text-muted"
+          >
+            {@disabled_reason}
+          </p>
+          <.button
+            id="rosters-import-cancel"
+            type="button"
+            variant="secondary"
+            class="min-h-11"
+            phx-click={@on_close}
+          >
+            Cancel
+          </.button>
+          <.button
+            id="rosters-import-apply"
+            type="button"
+            class="min-h-11"
+            disabled={!@importable?}
+            data-unavailable={!@importable?}
+            aria-describedby={if @disabled_reason, do: "rosters-import-reason", else: nil}
+            phx-click={@on_apply}
+            phx-disable-with="Importing…"
+          >
+            {@apply_label}
+          </.button>
+        </.drawer_footer>
+      </form>
+    </.drawer>
+    """
+  end
+
+  # What the drawer can say about the review it holds. Every count, note and the
+  # unused columns come from the reviewed preview, so the screen cannot disagree
+  # with `OperatorImport.classify/2` about what the file contained.
+  defp import_review(%{preview: preview} = state, upload) do
+    current? = is_map(preview) and upload.entries == [] and upload.errors == []
+    add = if current?, do: preview.add, else: []
+    update = if current?, do: preview.update, else: []
+    skipped = if current?, do: preview.skipped, else: []
+
+    %{
+      stale?: state.stale?,
+      preview?: current?,
+      filename: state.filename,
+      file_help: operators_file_help(),
+      add_count: length(add),
+      update_count: length(update),
+      update_rows: Enum.take(update, @note_limit),
+      update_more: max(length(update) - @note_limit, 0),
+      skipped_count: length(skipped),
+      skipped_rows: Enum.take(skipped, @note_limit),
+      skipped_more: max(length(skipped) - @note_limit, 0),
+      ignored_columns: if(current?, do: preview.ignored_columns, else: []),
+      parse_error: state.parse_error
+    }
+  end
+
+  # The primary is available only when applying this review would write
+  # something. A skipped row is not a blocker: the file's other rows still
+  # import, and the review names what was skipped.
+  defp import_apply_state(review, upload) do
+    apply_count = review.add_count + review.update_count
+
+    reason =
+      cond do
+        upload.entries != [] or upload.errors != [] ->
+          "Choose a different file to review."
+
+        not review.preview? and is_binary(review.parse_error) ->
+          "Choose a different file to review."
+
+        not review.preview? ->
+          "Choose a CSV file to review."
+
+        apply_count == 0 ->
+          "Nothing to import: every row is skipped."
+
+        true ->
+          nil
+      end
+
+    {apply_count, reason}
+  end
+
+  defp import_counts(%{add_count: add, update_count: update, skipped_count: skipped}) do
+    [
+      %{id: "rosters-import-count-add", label: "Add", value: add},
+      %{id: "rosters-import-count-update", label: "Update", value: update},
+      %{id: "rosters-import-count-skipped", label: "Skipped", value: skipped}
+    ]
+  end
+
+  defp import_label(1), do: "Import 1 operator"
+  defp import_label(0), do: "Import operators"
+  defp import_label(count), do: "Import #{count} operators"
+
+  defp import_error_message(true, _review), do: @stale_message
+  defp import_error_message(false, %{parse_error: message}) when is_binary(message), do: message
+  defp import_error_message(_stale?, _review), do: nil
+
+  # The prototype's own sentence, kept as one string so the review and a test
+  # quote the same copy.
+  @operator_import_scope "Employee ID, display name and seniority number. An operator already here is updated from the file and keeps their line. Operators the file doesn't list stay as they are."
+
+  defp operator_import_scope, do: @operator_import_scope
+
+  defp operators_file_help do
+    "One .csv or .txt file, up to 2 MB. Columns: employee_id, display_name and, if you use it, seniority_number."
+  end
+
+  # "Row 3 · E4101 · Bo Silva" for a row the file updates, and
+  # "Row 4 · E4102 · Display name is blank." for a row it skips. The row number
+  # and the ID are physical facts of the file and the last part is whatever the
+  # classifier said, so a skipped row and an updated row read the same way
+  # wherever they are quoted.
+  defp update_note(row), do: "Row #{row.row} · #{row.employee_id} · #{row.display_name}"
+
+  defp skipped_note(%{row: row, id: id, reason: reason}),
+    do: "Row #{row}#{if id, do: " · #{id}"} · #{reason}"
 
   @doc """
   What an operator's held lines are about to be, in one sentence, or `nil` when

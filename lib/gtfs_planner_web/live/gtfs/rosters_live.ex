@@ -61,11 +61,14 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   alias GtfsPlanner.Gtfs.Rosters.Candidates
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Operations.Operator
+  alias GtfsPlanner.Operations.Tods
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.RosterOperatorsComponents
   alias GtfsPlannerWeb.Gtfs.RostersComponents
   alias Plug.Conn.Query
+
+  import GtfsPlannerWeb.Gtfs.OperationsComponents, only: [tods_review_current?: 2]
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -92,6 +95,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     save_pick
     save_operator
     confirm_delete_operator
+    apply_operator_import
   )
 
   # A role revoked while the page is open is not an error the reader caused and
@@ -122,6 +126,21 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   @operator_form_id "rosters-operator-form"
   @operator_form_error_id "rosters-operator-form-errors"
   @operators_title_id "rosters-operators-drawer-title"
+
+  # The import view's own message, so the refusal the context hands back is
+  # moved to rather than scrolled past.
+  @operator_import_error_id "rosters-import-error"
+
+  # The import review with nothing in it: the drawer stays open with no file
+  # chosen, and every path into it — opening, cancelling, a new file, a refused
+  # apply's own reset — starts from here.
+  @empty_operator_import %{
+    filename: nil,
+    parsed: nil,
+    preview: nil,
+    parse_error: nil,
+    stale?: false
+  }
 
   # The full weekday name. The grid's own module has the same list for the same
   # reason: the confirmation toast names the day a planner just changed.
@@ -202,6 +221,18 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
      # picks, and an assign made during a render would cost the page its
      # streamed rows.
      |> assign(:delete_operator, nil)
+     # The import view of the same drawer, in whichever of its three states the
+     # file is in: no file, a file the browser is still sending, a parse that
+     # returned a message, or a review. It is event state like the others, and
+     # the upload that fills it is declared once here.
+     |> assign(:operator_import, nil)
+     |> allow_upload(:operators_file,
+       accept: ~w(.csv .txt),
+       max_entries: 1,
+       max_file_size: Tods.max_import_bytes(),
+       auto_upload: true,
+       progress: &handle_operators_file_progress/3
+     )
      |> stream(:roster_lines, [], dom_id: &roster_row_dom_id/1)
      |> attach_hook(:editor_access, :handle_event, &require_editor/3)}
   end
@@ -1021,6 +1052,56 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     end
   end
 
+  # ── The operator import ───────────────────────────────────────────────────
+  #
+  # Upload, then review, then apply. The page owns the file, the parse and the
+  # write; `RosterOperatorsComponents.operator_import/1` owns the copy. The apply
+  # is a write and is in `@write_events`; opening the view, acknowledging the
+  # file input's change, cancelling the upload and going back to the list are
+  # not, and each changes only what this page already holds.
+  def handle_event("open_operator_import", params, socket) do
+    opener_id = params["opener_id"] || "rosters-import-operators"
+
+    {:noreply,
+     socket
+     |> discard_operator_upload()
+     |> assign(:operator_import, Map.put(@empty_operator_import, :opener_id, opener_id))}
+  end
+
+  def handle_event("cancel_operator_import", _params, socket) do
+    {:noreply,
+     socket
+     |> discard_operator_upload()
+     |> assign(:operator_import, nil)
+     |> put_operators(load_operators(socket))}
+  end
+
+  # Cancelling an upload that has not finished, or replacing a review with a
+  # file still on its way, leaves the drawer with nothing to apply.
+  def handle_event("cancel_operator_upload", %{"ref" => ref}, socket) do
+    {:noreply, socket |> cancel_upload(:operators_file, ref) |> reset_operator_import()}
+  end
+
+  def handle_event("cancel_operator_upload", _params, socket), do: {:noreply, socket}
+
+  # LiveView routes the file input's change through the drawer's form, so the
+  # form declares a change event; the drawer holds no other form state to check.
+  def handle_event("validate_operator_import", _params, socket), do: {:noreply, socket}
+
+  def handle_event("apply_operator_import", _params, socket) do
+    state = socket.assigns.operator_import
+
+    # An apply with no reviewed file, or with a replacement still uploading, is
+    # an event this page never offered: the same rule the drawer draws the
+    # unavailable primary from, so the control and the write cannot disagree.
+    if is_map(state) and is_map(state.parsed) and
+         tods_review_current?(state.preview, socket.assigns.uploads.operators_file) do
+      apply_reviewed_operator_import(socket, state.parsed, state.preview)
+    else
+      {:noreply, socket}
+    end
+  end
+
   # ── The pick row ──────────────────────────────────────────────────────────
   #
   # The pick is a record of what a bid agreed, not a proposal the page decides
@@ -1298,8 +1379,10 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
 
   defp close_operators(socket) do
     socket
+    |> discard_operator_upload()
     |> assign(:operators, nil)
     |> assign(:operator_form, nil)
+    |> assign(:operator_import, nil)
   end
 
   defp drawn_operator(%{assigns: %{operators: %{operators: operators}}}, operator_id) do
@@ -1520,6 +1603,125 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
       "display_name" => operator.display_name,
       "seniority_number" => operator.seniority_number
     }
+  end
+
+  # The upload. A file that finished uploading is parsed and previewed at once,
+  # so the drawer always shows the plan for the file the editor chose. A file
+  # still on its way replaces the review on screen: whatever was reviewed before
+  # it must not stay applicable while this one is sent.
+  defp handle_operators_file_progress(:operators_file, entry, socket) do
+    if entry.done? do
+      {:noreply, review_operators_file(socket, entry)}
+    else
+      {:noreply, reset_operator_import(socket)}
+    end
+  end
+
+  # An upload that completes after the editor left the import view is consumed
+  # and dropped: reopening the drawer starts from no file rather than from a
+  # review of a file nobody chose in this view.
+  defp review_operators_file(%{assigns: %{operator_import: nil}} = socket, entry) do
+    _ = consume_uploaded_entry(socket, entry, & &1)
+    socket
+  end
+
+  defp review_operators_file(socket, entry) do
+    file = entry.client_name
+    organization_id = socket.assigns.current_organization.id
+
+    case consume_uploaded_entry(socket, entry, fn uploaded ->
+           {:ok, parse_operators_file(uploaded, file)}
+         end) do
+      {:ok, parsed} ->
+        put_operator_import(socket, %{
+          filename: file,
+          parsed: parsed,
+          preview: Operations.preview_operator_import(organization_id, parsed),
+          parse_error: nil,
+          stale?: false
+        })
+
+      {:error, message} ->
+        put_operator_import(socket, %{
+          filename: file,
+          parsed: nil,
+          preview: nil,
+          parse_error: message,
+          stale?: false
+        })
+    end
+  end
+
+  defp parse_operators_file(%{path: path}, file) do
+    case File.read(path) do
+      {:ok, content} -> Tods.parse(:operators, file, content)
+      {:error, _reason} -> {:error, "#{file} could not be read."}
+    end
+  end
+
+  # The write. Organization and acting user come from the socket, never from the
+  # file: a file cannot say which organization it is for, and a submitted
+  # organization is not a thing this page can be asked (domain rule 17). Only
+  # the three mapped fields reach a row, and the skipped ones never reach a row
+  # at all (`Operations.apply_operator_import/4`).
+  defp apply_reviewed_operator_import(socket, parsed, preview) do
+    organization_id = socket.assigns.current_organization.id
+
+    case Operations.apply_operator_import(
+           organization_id,
+           operator_actor(socket),
+           parsed,
+           preview
+         ) do
+      {:ok, %{added: added, updated: updated}} ->
+        # The list is re-read after the write, so the row on screen and the row
+        # in the database are the same row; the drawer goes back to the list
+        # because the import is finished and the list is what the editor came
+        # for. The counts in the toast are the ones the review just showed.
+        {:noreply,
+         socket
+         |> discard_operator_upload()
+         |> assign(:operator_import, nil)
+         |> put_operators(load_operators(socket))
+         |> put_toast(import_notice(added, updated, preview.skipped), :done)
+         |> push_event("focus_scoped_target", %{id: @operators_title_id})}
+
+      {:error, {:preview_changed, fresh}} ->
+        # Somebody else changed the organization's operators between the review
+        # and the apply. The context recomputed the plan and wrote nothing, so
+        # the fresh review replaces the old one in place — the editor sees what
+        # the file would do *now* — and the message says why the counts moved.
+        {:noreply,
+         socket
+         |> put_operator_import(%{preview: fresh, stale?: true})
+         |> push_event("focus_scoped_target", %{id: @operator_import_error_id})}
+    end
+  end
+
+  defp import_notice(added, updated, skipped) do
+    "#{added} #{if added == 1, do: "operator", else: "operators"} added, #{updated} updated. #{length(skipped)} #{if length(skipped) == 1, do: "row was", else: "rows were"} skipped."
+  end
+
+  # A new file, a cancel, a fresh review and the start of the view all leave the
+  # drawer with nothing to apply, and the opener id survives so the dialog can
+  # still return focus to the control that opened the view.
+  defp reset_operator_import(socket) do
+    case socket.assigns.operator_import do
+      nil -> socket
+      state -> assign(socket, :operator_import, Map.merge(state, @empty_operator_import))
+    end
+  end
+
+  defp put_operator_import(socket, changes) do
+    state = socket.assigns.operator_import || Map.put(@empty_operator_import, :opener_id, nil)
+
+    assign(socket, :operator_import, Map.merge(state, changes))
+  end
+
+  defp discard_operator_upload(socket) do
+    Enum.reduce(socket.assigns.uploads.operators_file.entries, socket, fn entry, acc ->
+      cancel_upload(acc, :operators_file, entry.ref)
+    end)
   end
 
   defp delete_operator(socket, operator_id) do
@@ -2131,11 +2333,18 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
         is styled by the same rules as the page's only because the drawer is
         inside that region. --%>
         <RosterOperatorsComponents.operators_drawer
-          :if={@operators && is_nil(@operator_form)}
+          :if={@operators && is_nil(@operator_form) && is_nil(@operator_import)}
           open
           operators={@operators.operators}
           lines={@operators.lines}
           on_close="close_operators"
+        />
+
+        <RosterOperatorsComponents.operator_import
+          :if={@operator_import}
+          open
+          import_state={@operator_import}
+          upload={@uploads.operators_file}
         />
 
         <RosterOperatorsComponents.operator_form
