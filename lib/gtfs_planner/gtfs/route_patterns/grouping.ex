@@ -201,17 +201,13 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Grouping do
   # A labelled child is answered by its owner, so one pattern never produces two
   # answers. The child stands in only when its owner is not on offer.
   defp answering_patterns(pattern_refs, stop_ids) do
-    owners =
-      pattern_refs
-      |> Enum.filter(&(not is_nil(&1.label_pattern_id)))
-      |> MapSet.new(& &1.label_pattern_id)
+    answering =
+      Enum.filter(pattern_refs, &(same_endpoints?(&1, stop_ids) or within?(&1, stop_ids)))
 
-    Enum.filter(pattern_refs, fn pattern ->
-      ownerless? =
-        is_nil(pattern.label_pattern_id) or
-          not MapSet.member?(owners, pattern.label_pattern_id)
+    offered = MapSet.new(answering, & &1.id)
 
-      ownerless? and (same_endpoints?(pattern, stop_ids) or within?(pattern, stop_ids))
+    Enum.reject(answering, fn pattern ->
+      not is_nil(pattern.label_pattern_id) and MapSet.member?(offered, pattern.label_pattern_id)
     end)
   end
 
@@ -261,10 +257,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Grouping do
   defp derived_rank(%{derivation_key: nil}), do: 1
   defp derived_rank(%{derivation_key: _key}), do: 0
 
+  # The group's stops appear in the pattern in the same order, gaps allowed, so
+  # a reversed stop list never reads as within the opposite direction.
   defp in_order?([], _pattern_stops), do: true
-
-  defp in_order?([stop | stops], pattern_stops),
-    do: Enum.member?(pattern_stops, stop) and in_order?(stops, pattern_stops)
+  defp in_order?(_stops, []), do: false
+  defp in_order?([stop | stops], [stop | pattern_stops]), do: in_order?(stops, pattern_stops)
+  defp in_order?(stops, [_other | pattern_stops]), do: in_order?(stops, pattern_stops)
 
   defp group_key(supplied, stop_ids) do
     sequence_hash =
