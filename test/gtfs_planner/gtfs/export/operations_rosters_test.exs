@@ -23,7 +23,10 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRostersTest do
 
   Runs are cut once per world, through the domain's own suggest-and-apply path,
   and every case reads its run IDs from that one cut. Re-cutting would renumber
-  the runs and quietly invalidate a slot written against them.
+  the runs and quietly invalidate a slot written against them. Those IDs are read
+  from the day type Monday's base week resolves to, because a run ID means nothing
+  outside the day type it was cut in — once the holiday service exists, both day
+  types derive a before-midnight run and only the base one may be named by a slot.
 
   Rows are created inside the SQL Sandbox transaction and rolled back.
 
@@ -35,6 +38,8 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRostersTest do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Export
+  alias GtfsPlanner.Gtfs.Rosters
+  alias GtfsPlanner.Gtfs.Rosters.BaseWeek
   alias GtfsPlanner.Operations.Operator
   alias GtfsPlanner.Operations.Tods
 
@@ -210,26 +215,32 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRostersTest do
     end
 
     test "an unassigned line and a stale slot warn in the singular", %{world: world} do
-      daytime = daytime_runs(world) |> Enum.drop(1) |> hd()
+      # Two DISTINCT daytime runs. A run is on at most one line per weekday, so
+      # the open line and the stale line each need their own: naming the same run
+      # on two weekdays would leave two stale slots when it was renamed, and the
+      # singular sentence this case asserts would then be the wrong one to expect.
+      [open_run, stale_run] = daytime_runs(world) |> Enum.slice(1..2)
 
       # Added on top of the two picked lines the setup made, so this case's own
       # ZIP has an open line and a stale slot at the same time as its rows.
-      line(world, @wednesday, daytime, nil)
+      line(world, @wednesday, open_run, nil)
 
-      line(world, @friday, daytime, operator(world, "E4109", "Wren Abara", 3))
+      line(world, @friday, stale_run, operator(world, "E4109", "Wren Abara", 3))
 
       assert {:ok, _} =
                Gtfs.rename_run(
                  world.organization.id,
                  world.version.id,
                  world.day_type_key,
-                 daytime,
+                 stale_run,
                  "9"
                )
 
       warnings = warnings(world)
 
-      # The sentences themselves, at 1: the prepared text, verbatim.
+      # The sentences themselves, at 1: the prepared text, verbatim. Each counts
+      # one thing — the open line, the one slot whose stored run is gone — so the
+      # fixture has to hold exactly one of each.
       assert unassigned(warnings).detail == "1 line has no operator."
       assert stale_warning(warnings).detail == "1 stale slot was skipped."
 
@@ -297,15 +308,15 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRostersTest do
 
   describe "a version with no roster lines" do
     setup %{world: world} do
-      %{world: world} = prepared(world)
+      %{world: world, early: early} = prepared(world)
 
       # The ZIP as it stands before any line exists, which the later case
       # compares against after lines have been added.
-      %{world: world, bare: zip(world)}
+      %{world: world, early: early, bare: zip(world)}
     end
 
     test "writes no employee_run_dates.txt", %{bare: bare} do
-      refute Map.has_key?(bare, @employee_run_dates),
+      refute Map.has_key?(bare.entries, @employee_run_dates),
              "a version nobody has rostered wrote a #{@employee_run_dates}"
     end
 
@@ -316,9 +327,9 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRostersTest do
 
     test "every other file is byte-identical once the version has a line", %{
       world: world,
+      early: early,
       bare: bare
     } do
-      %{early: early} = %{world: world}
       line(world, @monday, early, operator(world, "E4101", "Aurelia Nowak", 7))
 
       rostered = zip(world)
@@ -330,7 +341,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRostersTest do
       # or another TODS file would be a change a consumer cannot explain.
       assert Map.keys(rostered.entries) -- Map.keys(bare.entries) == [@employee_run_dates]
 
-      for {filename, content} <- bare do
+      for {filename, content} <- bare.entries do
         assert Map.get(rostered.entries, filename) == content,
                "#{filename} changed once the version had a roster line"
       end
@@ -353,6 +364,8 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRostersTest do
       first_departure: "00:05:00",
       last_arrival: "00:45:00"
     })
+
+    world
   end
 
   # Cuts runs for every day type, through the domain's own suggest-and-apply
@@ -373,35 +386,64 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRostersTest do
   end
 
   # The world every case starts from: the early block added, the runs cut, and
-  # the ID of the run that signs on before midnight.
+  # the ID of the run that signs on before midnight **on the day type Monday's
+  # base week resolves to**.
+  #
+  # The day type matters, and more than one day type here derives a
+  # before-midnight run. Once the other-service describe adds its holiday service,
+  # a holiday Monday runs both `WK` and `HOL`, so the early trip belongs to that
+  # day type as well as the weekday one and both of them cut it into a run whose
+  # sign-on is negative. That is correct — the trip really does run on those
+  # Mondays — and it is why this resolves through `BaseWeek` rather than filtering
+  # every run in the version: only the base day type's run is one a Monday slot
+  # may name, and `set_roster_slot/5` refuses any other.
   defp prepared(world) do
-    world |> add_early_block() |> cut_runs()
+    world = world |> add_early_block() |> cut_runs()
 
-    case Enum.filter(all_runs(world), &(&1.work.sign_on_secs < 0)) do
-      [run] -> %{world: world, early: run.run_id}
-      other -> raise "expected exactly one run signing on before midnight, got #{inspect(other)}"
+    base_key = base_day_type_key(world, @monday)
+    runs = world |> runs_of_day_type(base_key) |> Enum.filter(&(&1.work.sign_on_secs < 0))
+
+    case runs do
+      [run] ->
+        %{world: world, early: run.run_id}
+
+      other ->
+        raise "expected one before-midnight run on the base day type, got #{inspect(Enum.map(other, & &1.run_id))}"
+    end
+  end
+
+  # The day type a weekday's base week resolves to, through the same
+  # `BaseWeek.resolve/2` the roster read uses. Taken from the stored settings so
+  # the test and the export agree on which day type is the base.
+  defp base_day_type_key(world, weekday) do
+    settings = Rosters.get_roster_settings(world.organization.id, world.version.id)
+
+    {:ok, day} = Blocking.load_day(world.organization.id, world.version.id, nil)
+
+    base_week = BaseWeek.resolve(day.day_types, settings.roster_day_types)
+
+    case Map.fetch!(base_week, weekday) do
+      %{day_type: %{key: key}} -> key
+      %{day_type: nil} -> raise "weekday #{weekday} has no base day type in this fixture"
     end
   end
 
   # The ordinary daytime runs, earliest first, so a case wanting "a run that does
   # not sign on before midnight" takes a stable one rather than a fixture's
-  # ordering.
+  # ordering. Scoped to one day type for the same reason `prepared/1` is: a run ID
+  # only means something against the day type it was cut in.
   defp daytime_runs(world) do
     world
-    |> all_runs()
+    |> runs_of_day_type(base_day_type_key(world, @monday))
     |> Enum.filter(&(&1.work.sign_on_secs >= 0))
     |> Enum.sort_by(&{&1.work.sign_on_secs, &1.run_id})
     |> Enum.map(& &1.run_id)
   end
 
-  # Every derived run over every day type, as the export's own `run_days`.
-  defp all_runs(world) do
-    {:ok, day} = Blocking.load_day(world.organization.id, world.version.id, nil)
-
-    Enum.flat_map(day.day_types, fn day_type ->
-      {:ok, runs} = Gtfs.load_runs(world.organization.id, world.version.id, day_type.key)
-      runs.derived.runs
-    end)
+  # One day type's derived runs, as the export's own `run_days` for that key.
+  defp runs_of_day_type(world, key) do
+    {:ok, runs} = Gtfs.load_runs(world.organization.id, world.version.id, key)
+    runs.derived.runs
   end
 
   defp operator(world, employee_id, display_name, seniority_number) do
