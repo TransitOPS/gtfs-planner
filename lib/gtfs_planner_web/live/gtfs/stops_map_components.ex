@@ -747,56 +747,739 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
   end
 
   @doc """
-  The add-mode panel shell: the caption's counterpart in the panel, the optional
-  address search, and the way back out. The form itself arrives with the add
-  flow.
+  The add-mode panel: the caption's counterpart, the optional address search,
+  the location the editor has chosen, and the form that names it.
 
-  The address field is optional on purpose — the caption above it already says
-  to click the curb, and a field that read as required would send an editor
-  looking for an address to place a stop that is visible from the window.
+  The panel is the whole create flow rather than a shell with the form behind
+  it, because a form the server has to be asked for is a form that arrives after
+  the editor has started typing. Everything here is the server's own state: the
+  draft, its errors, the placement, the suggestions and what the placement
+  deserves to be told.
+
+  Before a placement the form's fields are dimmed rather than hidden. The
+  prototype shows a paragraph in their place, and a paragraph that is replaced
+  by fields is a layout jump; dimmed fields say the same thing — "they come
+  next" — and keep the panel from moving when the pin lands.
   """
   attr :id, :string, required: true
-  attr :form, :any, required: true
+  attr :kind, :atom, required: true
+  attr :version_name, :string, required: true
+  attr :search_form, :any, required: true
   attr :query, :string, required: true
   attr :places, :list, default: []
   attr :unavailable?, :boolean, default: false
+  attr :form, :any, required: true
+  attr :placement, :any, required: true
+  attr :where, :string, default: nil
+  attr :warnings, :list, default: []
+  attr :suggestion, :any, default: nil
+  attr :reverse_error, :any, default: nil
+  attr :errors, :map, default: %{}
+  attr :advice, :list, default: []
+  attr :code_issue, :string, default: nil
+  attr :zone_note, :string, default: nil
+  attr :saving?, :boolean, default: false
+  attr :coords_open?, :boolean, default: false
+  attr :tech_open?, :boolean, default: false
+  attr :failure, :string, default: nil
 
   def add_panel(assigns) do
     ~H"""
-    <div id={@id} class="px-5 py-5">
-      <h2 class="font-display text-[22px] font-semibold text-strong">New stop</h2>
-      <p class="mt-1 text-sm text-muted">Click the curb where riders wait.</p>
+    <aside
+      id={@id}
+      aria-label={if @kind == :station, do: "Add a station", else: "Add a stop"}
+      phx-hook="FormErrorFocus"
+      class="flex min-h-0 flex-col border-t border-subtle bg-white lg:border-l lg:border-t-0"
+    >
+      <%!-- The form is taller than the workspace at 900px, so it scrolls in the
+             same shell the browse panel scrolls in. A create button below the
+             fold of a panel that cannot scroll is a stop nobody can make. --%>
+      <div class="min-h-0 flex-1 overflow-y-auto">
+        <div class="px-5 py-5">
+          <h2 class="font-display text-[22px] font-semibold text-strong">
+            {if @kind == :station, do: "New station", else: "New stop"}
+          </h2>
+          <p class="mt-1 text-sm text-muted">
+            Adds a {if @kind == :station, do: "station", else: "stop"} to {@version_name}.
+          </p>
 
-      <.search_field
-        id="stops-map-address-search"
-        form={@form}
-        label="Find an address or intersection (optional)"
-        placeholder="For example, 9th &amp; US 101"
-      />
+          <.search_field
+            id="stops-map-address-search"
+            form={@search_form}
+            label="Find an address or intersection (optional)"
+            placeholder="For example, 9th & US 101"
+          />
 
-      <p :if={@query == ""} id="stops-map-address-hint" class="m-0 mt-1.5 text-[13px] text-muted">
-        Results favour places near your stops.
+          <p :if={@query == ""} id="stops-map-address-hint" class="m-0 mt-1.5 text-[13px] text-muted">
+            Results favour places near your stops.
+          </p>
+
+          <.search_results
+            :if={@query != ""}
+            id="stops-map-address-results"
+            query={@query}
+            places={@places}
+            unavailable?={@unavailable?}
+            empty_text="No match near this version's stops. Try a street name."
+          />
+
+          <div :if={@failure} id="stops-map-add-failure" class="mt-5">
+            <.message
+              kind="error"
+              title="We couldn’t save this stop"
+              id="stops-map-add-failure-message"
+            >
+              {@failure} Your draft is still here. Try again.
+            </.message>
+          </div>
+
+          <div :if={@errors != %{}} id="stops-map-add-errors" class="mt-5">
+            <.message
+              kind="error"
+              title={error_summary_title(@errors)}
+              id="stops-map-add-errors-message"
+            >
+              <ul class="m-0 list-disc pl-5">
+                <li :for={{field, error} <- summary_errors(@errors)}>
+                  <a href={"#stops-map-add-#{field}"} class="font-semibold text-error-fg underline">
+                    {error.short}
+                  </a>
+                </li>
+              </ul>
+            </.message>
+          </div>
+
+          <.form
+            for={@form}
+            id="stops-map-add-form"
+            phx-change="add_field"
+            phx-submit="create_stop"
+            class="mt-5"
+          >
+            <fieldset class="m-0 min-w-0 border-0 p-0">
+              <legend class="mb-2 p-0 text-[15px] font-bold text-strong">Location</legend>
+              <.add_location
+                placement={@placement}
+                form={@form}
+                where={@where}
+                warnings={@warnings}
+                coords_open?={@coords_open?}
+                errors={@errors}
+              />
+            </fieldset>
+
+            <p
+              :if={@kind == :stop and @placement == nil}
+              id="stops-map-add-switch"
+              class="m-0 mt-5 text-[13px] text-muted"
+            >
+              Adding a station, like a transit center with several bays?
+              <button
+                id="stops-map-add-kind-station"
+                type="button"
+                phx-click="add_kind"
+                phx-value-kind="station"
+                class="inline-flex min-h-11 items-center font-semibold text-action underline underline-offset-4"
+              >
+                Add a station
+              </button>
+            </p>
+
+            <div class={["mt-7 grid gap-5", @placement == nil && "opacity-60"]}>
+              <.add_fields
+                kind={@kind}
+                form={@form}
+                errors={@errors}
+                suggestion={@suggestion}
+                reverse_error={@reverse_error}
+                advice={@advice}
+                code_issue={@code_issue}
+                zone_note={@zone_note}
+              />
+            </div>
+
+            <div :if={@placement != nil} class="mt-7">
+              <.add_tech
+                form={@form}
+                errors={@errors}
+                kind={@kind}
+                tech_open?={@tech_open?}
+              />
+            </div>
+
+            <div class="mt-7 flex flex-wrap items-center gap-3">
+              <p
+                id="stops-map-add-status"
+                role="status"
+                class="m-0 mr-auto text-[13px] text-muted"
+              >
+                {if @saving?, do: "Creating…"}
+              </p>
+              <button
+                id="stops-map-add-cancel"
+                type="button"
+                class="inline-flex min-h-11 items-center rounded-control border border-control bg-white px-4 text-sm font-semibold text-strong hover:bg-canvas disabled:opacity-70"
+                phx-click="cancel_add"
+                disabled={@saving?}
+              >
+                Cancel
+              </button>
+              <.button
+                id="stops-map-add-create"
+                type="submit"
+                class="min-h-11"
+                disabled={@saving?}
+              >
+                {if @saving?,
+                  do: "Creating…",
+                  else: if(@kind == :station, do: "Create station", else: "Create stop")}
+              </.button>
+            </div>
+          </.form>
+        </div>
+      </div>
+    </aside>
+    """
+  end
+
+  @doc """
+  The Location fieldset: either the instruction and the ways in, or the point
+  that was placed, its sentence, its coordinates and what it deserves to be told.
+
+  The warnings are advisory and each carries one action. "Move it across the
+  street" posts the line the finding is about rather than a point, so the
+  reflection is made by the server from the line it holds: a client-chosen
+  point would be a position the geometry never agreed to.
+  """
+  attr :placement, :any, required: true
+  attr :form, :any, required: true
+  attr :where, :string, default: nil
+  attr :warnings, :list, default: []
+  attr :coords_open?, :boolean, default: false
+  attr :errors, :map, default: %{}
+
+  def add_location(assigns) do
+    ~H"""
+    <div :if={@placement == nil}>
+      <p class="m-0 text-[15px] text-strong">
+        Click the map where riders wait, on the side of the street the bus stops on.
       </p>
 
-      <.search_results
-        :if={@query != ""}
-        id="stops-map-address-results"
-        query={@query}
-        places={@places}
-        unavailable?={@unavailable?}
-        empty_text="No match near this version's stops. Try a street name."
-      />
-
       <button
-        id="stops-map-add-cancel"
+        id="stops-map-add-coords-toggle"
         type="button"
-        class="mt-4 inline-flex min-h-11 items-center text-sm font-semibold text-action no-underline hover:underline"
-        phx-click="cancel_add"
+        phx-click="toggle_coords"
+        aria-expanded={to_string(@coords_open?)}
+        class="mt-2 inline-flex min-h-11 items-center gap-1.5 text-sm font-semibold text-action no-underline hover:underline"
       >
-        Cancel
+        <.icon name="hero-crosshair" class="size-4" /> Enter coordinates instead
       </button>
+
+      <div :if={@coords_open?} class="mt-3">
+        <.coord_fields form={@form} errors={@errors} />
+      </div>
+    </div>
+
+    <div :if={@placement != nil}>
+      <p id="stops-map-add-where" class="m-0 text-[15px] font-semibold text-strong">
+        {@where}
+      </p>
+      <p class="m-0 mt-1 text-[13px] text-muted">
+        Drag the pin to adjust. The stop is not saved until you create it.
+      </p>
+
+      <.coord_fields form={@form} errors={@errors} />
+
+      <div id="stops-map-add-warnings" class="mt-3 grid gap-3">
+        <.add_warning :for={warning <- @warnings} warning={warning} />
+      </div>
     </div>
     """
+  end
+
+  @doc """
+  One thing the placed draft deserves to be told: a warning with an action, or
+  a line of context. The row is a `<p>` for the copy and the action is a button
+  in the same voice as the checks list, so a reader who has learned one panel's
+  actions has learned the other's.
+  """
+  attr :warning, :map, required: true
+
+  def add_warning(%{warning: %{kind: kind}} = assigns)
+      when kind in [:nearby, :passing, :no_pattern] do
+    ~H"""
+    <p
+      id={"stops-map-#{@warning.dom_id}"}
+      data-add-warning={@warning.kind}
+      class="m-0 text-[13px] text-muted"
+    >
+      {@warning.text}
+    </p>
+    """
+  end
+
+  def add_warning(assigns) do
+    ~H"""
+    <div
+      id={"stops-map-#{@warning.dom_id}"}
+      data-add-warning={@warning.kind}
+      role="status"
+      class="rounded-card border border-warning-line bg-warning-bg px-4 py-3 text-[13px] text-warning-fg"
+    >
+      <p class="m-0 flex items-start gap-2 font-bold">
+        <.icon name="hero-exclamation-triangle" class="mt-0.5 size-4 shrink-0" />
+        {@warning.title}
+      </p>
+      <p class="m-0 mt-1">{@warning.text}</p>
+      <p :if={@warning.action} class="m-0 mt-1">
+        <button
+          id={"stops-map-#{@warning.dom_id}-action"}
+          type="button"
+          phx-click={warning_action(@warning)}
+          phx-value-key={@warning.action_key}
+          class="inline-flex min-h-11 items-center font-semibold text-action underline underline-offset-4"
+        >
+          {@warning.action_label}
+        </button>
+      </p>
+    </div>
+    """
+  end
+
+  @doc """
+  The two coordinate fields, and the note that a pasted pair fills both.
+
+  They are the same two numbers the pin is at, in a form an editor can type
+  into: a stop placed from a gazetteer or a survey sheet arrives as a pair of
+  numbers and nobody should have to drag a pin to it.
+  """
+  attr :form, :any, required: true
+  attr :errors, :map, default: %{}
+
+  def coord_fields(assigns) do
+    ~H"""
+    <div class="mt-3 grid grid-cols-2 gap-3">
+      <div>
+        <label for="stops-map-add-lat" class="block text-sm font-semibold text-strong">
+          Latitude
+        </label>
+        <.input
+          field={@form[:lat]}
+          id="stops-map-add-lat"
+          errors={field_errors(@errors, "lat")}
+          type="text"
+          inputmode="decimal"
+          autocomplete="off"
+          class={coord_input_class(Map.has_key?(@errors, "lat"))}
+        />
+      </div>
+
+      <div>
+        <label for="stops-map-add-lon" class="block text-sm font-semibold text-strong">
+          Longitude
+        </label>
+        <.input
+          field={@form[:lon]}
+          id="stops-map-add-lon"
+          errors={field_errors(@errors, "lon")}
+          type="text"
+          inputmode="decimal"
+          autocomplete="off"
+          class={coord_input_class(Map.has_key?(@errors, "lon"))}
+        />
+      </div>
+    </div>
+    <p class="m-0 mt-1 text-[13px] text-muted">
+      Pasting &ldquo;44.6376, -124.0530&rdquo; into Latitude fills both and moves the pin.
+    </p>
+    """
+  end
+
+  # A map form's fields carry no "was this used" flag, so `<.input>` would keep
+  # `aria-invalid` false on a field the server has just refused. The messages go
+  # to the control instead, which is what makes it announce its own state.
+  defp field_errors(errors, field) do
+    case Map.get(errors, field) do
+      %{long: message} -> [message]
+      _ -> []
+    end
+  end
+
+  defp coord_input_class(invalid?) do
+    [
+      "h-11 w-full rounded-control border px-3 text-[15px]",
+      invalid? && "border-error-line text-error-fg",
+      !invalid? && "border-control"
+    ]
+  end
+
+  @doc """
+  The fields a placed stop is named by: name, description, sign number,
+  wheelchair access, and the fare zone as a read-only line.
+
+  The zone is a line rather than a select because production has no zone editor
+  on this surface: the nearest stops' zone is stated, and the rule that zones
+  are managed in Settings is the instruction. A select here would offer a choice
+  this page cannot honour.
+  """
+  attr :kind, :atom, required: true
+  attr :form, :any, required: true
+  attr :errors, :map, default: %{}
+  attr :suggestion, :any, default: nil
+  attr :reverse_error, :any, default: nil
+  attr :advice, :list, default: []
+  attr :code_issue, :string, default: nil
+  attr :zone_note, :string, default: nil
+
+  def add_fields(assigns) do
+    ~H"""
+    <div>
+      <label for="stops-map-add-name" class="block text-sm font-semibold text-strong">Name</label>
+      <.input
+        field={@form[:name]}
+        id="stops-map-add-name"
+        errors={field_errors(@errors, "name")}
+        type="text"
+        autocomplete="off"
+        class={text_input_class(Map.has_key?(@errors, "name"))}
+      />
+
+      <div
+        :if={@suggestion && @suggestion != :loading && @suggestion.alternatives != []}
+        id="stops-map-add-suggestions"
+        class="mt-1 flex flex-wrap items-center gap-x-3 text-[13px] text-muted"
+      >
+        <span>Other options:</span>
+        <button
+          :for={name <- @suggestion.alternatives}
+          id={"stops-map-add-suggestion-#{slug(name)}"}
+          type="button"
+          phx-click="add_suggestion"
+          phx-value-field="name"
+          phx-value-text={name}
+          class="inline-flex min-h-11 items-center font-semibold text-action underline underline-offset-4"
+        >
+          {name}
+        </button>
+      </div>
+
+      <ul :if={@advice != []} id="stops-map-add-advice" class="m-0 mt-1.5 grid list-none gap-1 p-0">
+        <li
+          :for={advice <- @advice}
+          class="flex gap-1.5 text-[13px] font-semibold text-warning-fg"
+        >
+          <.icon name="hero-exclamation-triangle" class="mt-0.5 size-4 shrink-0" />
+          {advice}
+        </li>
+      </ul>
+
+      <p
+        :if={@reverse_error}
+        id="stops-map-add-reverse-error"
+        class="m-0 mt-1.5 text-[13px] text-muted"
+      >
+        We couldn&rsquo;t look up the streets here. Type a name riders will recognise.
+      </p>
+
+      <p class="m-0 mt-1 text-[13px] text-muted">
+        Riders see this on signs and in trip planners: the street the bus is on, then the cross
+        street or a landmark people know.
+      </p>
+    </div>
+
+    <div :if={@kind == :stop}>
+      <label for="stops-map-add-desc" class="block text-sm font-semibold text-strong">
+        Description <span class="font-normal text-muted">(optional)</span>
+      </label>
+      <.input
+        field={@form[:desc]}
+        id="stops-map-add-desc"
+        type="text"
+        autocomplete="off"
+        class="h-11 w-full rounded-control border border-control px-3 text-[15px]"
+      />
+
+      <div
+        :if={@suggestion && @suggestion != :loading && @suggestion.description}
+        id="stops-map-add-desc-suggestion"
+        class="mt-1 text-[13px] text-muted"
+      >
+        This side of the street:
+        <button
+          id="stops-map-add-desc-suggestion-action"
+          type="button"
+          phx-click="add_suggestion"
+          phx-value-field="desc"
+          phx-value-text={@suggestion.description}
+          class="inline-flex min-h-11 items-center font-semibold text-action underline underline-offset-4"
+        >
+          {@suggestion.description}
+        </button>
+      </div>
+
+      <p class="m-0 mt-1 text-[13px] text-muted">
+        Tells apart stops with the same name, such as the two sides of a street.
+      </p>
+
+      <div>
+        <label for="stops-map-add-code" class="mt-5 block text-sm font-semibold text-strong">
+          Sign number <span class="font-normal text-muted">(optional)</span>
+        </label>
+        <.input
+          field={@form[:code]}
+          id="stops-map-add-code"
+          type="text"
+          inputmode="numeric"
+          autocomplete="off"
+          class="h-11 max-w-[180px] rounded-control border border-control px-3 font-mono text-[15px]"
+        />
+        <p
+          :if={@code_issue}
+          id="stops-map-add-code-issue"
+          class="m-0 mt-1.5 text-[13px] font-semibold text-warning-fg"
+        >
+          {@code_issue}
+        </p>
+        <p class="m-0 mt-1 text-[13px] text-muted">
+          The number on the sign riders use to look up arrivals.
+        </p>
+      </div>
+    </div>
+
+    <fieldset class="m-0 min-w-0 border-0 p-0">
+      <legend class="p-0 text-sm font-semibold text-strong">Wheelchair access</legend>
+      <div class="mt-1.5 flex flex-wrap gap-x-5">
+        <label
+          :for={{value, label} <- wheelchair_choices()}
+          class="inline-flex min-h-11 cursor-pointer items-center gap-2 text-[15px] text-strong"
+        >
+          <input
+            type="radio"
+            id={"stops-map-add-wb-#{value}"}
+            name="stop[wheelchair_boarding]"
+            value={value}
+            checked={@form[:wheelchair_boarding].value == value}
+            class="size-4 accent-action"
+          />
+          {label}
+        </label>
+      </div>
+      <p class="m-0 mt-1 text-[13px] text-muted">
+        Leave Not recorded until someone has checked the stop, its landing pad and its route to
+        the curb.
+      </p>
+    </fieldset>
+
+    <div :if={@kind == :stop}>
+      <p id="stops-map-add-zone" class="m-0 text-[13px] text-muted">
+        {@zone_note} Zones are managed in Settings &rsaquo; Fares.
+      </p>
+    </div>
+
+    <p :if={@kind == :station} id="stops-map-add-station-note" class="m-0 text-sm text-muted">
+      Add its bays or platforms after you create it, on the station page. Trips stop at bays, not
+      at the station itself.
+    </p>
+    """
+  end
+
+  @doc """
+  The collapsed "Stop ID and feed details" block: the ID, the spoken name and
+  the stop's web page.
+
+  It is a button and a region rather than a `<details>` element for step 27's
+  reason: a native disclosure's open state is not the server's, and a re-render
+  would snap it shut under the reader while they are typing an ID into it.
+
+  For a new stop the ID is editable and prefilled with the version's next one.
+  It cannot change after the stop exists, so this is the only place an editor
+  gets to choose it.
+  """
+  attr :form, :any, required: true
+  attr :errors, :map, default: %{}
+  attr :kind, :atom, required: true
+  attr :tech_open?, :boolean, default: false
+
+  def add_tech(assigns) do
+    ~H"""
+    <div id="stops-map-add-tech" class="rounded-card border border-subtle">
+      <button
+        id="stops-map-add-tech-toggle"
+        type="button"
+        phx-click="toggle_tech"
+        aria-expanded={to_string(@tech_open?)}
+        aria-controls="stops-map-add-tech-items"
+        class="flex min-h-11 w-full cursor-pointer items-center gap-2 rounded-card px-4 py-2 text-left text-sm font-bold text-strong"
+      >
+        <.icon name="hero-chevron-right" class="size-4 text-muted" /> Stop ID and feed details
+        <span class="ml-auto text-[13px] font-semibold text-muted">
+          {if @tech_open?, do: "Hide", else: "Show"}
+        </span>
+      </button>
+
+      <div
+        :if={@tech_open?}
+        id="stops-map-add-tech-items"
+        class="grid gap-4 border-t border-subtle px-4 py-4"
+      >
+        <div>
+          <label for="stops-map-add-stop-id" class="block text-sm font-semibold text-strong">
+            Stop ID
+          </label>
+          <.input
+            field={@form[:stop_id]}
+            id="stops-map-add-stop-id"
+            errors={field_errors(@errors, "stop_id")}
+            type="text"
+            autocomplete="off"
+            class={[
+              "h-11 max-w-[180px] rounded-control px-3 font-mono text-[15px]",
+              Map.has_key?(@errors, "stop_id") && "border-error-line text-error-fg",
+              !Map.has_key?(@errors, "stop_id") && "border-control"
+            ]}
+          />
+          <p class="m-0 mt-1 text-[13px] text-muted">
+            The next number after your highest stop ID. It can&rsquo;t change once the stop
+            exists, so this is the only place to choose it.
+          </p>
+        </div>
+
+        <div>
+          <label for="stops-map-add-tts" class="block text-sm font-semibold text-strong">
+            Spoken name <span class="font-normal text-muted">(optional)</span>
+          </label>
+          <.input
+            field={@form[:tts_stop_name]}
+            id="stops-map-add-tts"
+            type="text"
+            autocomplete="off"
+            placeholder="Southeast First Street and U S one oh one"
+            class="h-11 w-full rounded-control border border-control px-3 text-[15px]"
+          />
+          <p class="m-0 mt-1 text-[13px] text-muted">
+            How screen readers and announcements should say the name, when abbreviations would be
+            read wrong.
+          </p>
+        </div>
+
+        <div>
+          <label for="stops-map-add-url" class="block text-sm font-semibold text-strong">
+            Stop web page <span class="font-normal text-muted">(optional)</span>
+          </label>
+          <.input
+            field={@form[:stop_url]}
+            id="stops-map-add-url"
+            type="url"
+            autocomplete="off"
+            class="h-11 w-full rounded-control border border-control px-3 text-[15px]"
+          />
+        </div>
+
+        <p class="m-0 text-[13px] text-muted">
+          GTFS: <span class="font-mono">stop_id</span>, <span class="font-mono">stop_code</span>
+          is the sign number, <span class="font-mono">stop_desc</span>
+          the description, <span class="font-mono">tts_stop_name</span>
+          the spoken name.
+        </p>
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
+  The panel after a stop is created: what was made, and the way to make the next
+  one. The pattern list step 29 adds hangs under the same heading.
+  """
+  attr :id, :string, required: true
+  attr :stop, :map, required: true
+  attr :version_name, :string, required: true
+
+  def created_panel(assigns) do
+    ~H"""
+    <aside
+      id={@id}
+      aria-label="Stop created"
+      class="flex min-h-0 flex-col border-t border-subtle bg-white lg:border-l lg:border-t-0"
+    >
+      <div class="min-h-0 flex-1 overflow-y-auto">
+        <div class="px-5 py-5">
+          <h2 class="font-display text-[22px] font-semibold text-strong">
+            {if @stop.kind == "station", do: "Station created", else: "Stop created"}
+          </h2>
+          <p class="mt-1 text-sm text-muted">
+            {@stop.name} &middot; ID {@stop.stop_id}
+          </p>
+
+          <div class="mt-5" id="stops-map-created-message">
+            <.message
+              kind="success"
+              title={"#{@stop.name} is in #{@version_name}"}
+              id="stops-map-created-success"
+            >
+              {Enum.reject([@stop.desc, @stop.wheelchair, @stop.zone], &(&1 in [nil, ""]))
+              |> Enum.join(" · ")}
+            </.message>
+          </div>
+
+          <div class="mt-6 flex flex-wrap items-center gap-3">
+            <button
+              id="stops-map-created-another"
+              type="button"
+              phx-click="add_another"
+              class="inline-flex min-h-11 items-center gap-2 rounded-control bg-action px-4 text-sm font-semibold text-white hover:opacity-90"
+            >
+              <.icon name="hero-plus" class="size-4" /> Add another stop
+            </button>
+          </div>
+        </div>
+      </div>
+    </aside>
+    """
+  end
+
+  # An action names what it acts on rather than carrying it: the panel looks the
+  # key up among the warnings it is rendering and refuses anything else, so a
+  # forged key cannot move a draft somewhere the geometry did not agree to.
+  defp warning_action(%{action: :open_duplicate}), do: "open_duplicate"
+  defp warning_action(%{action: :move_across}), do: "move_across"
+  defp warning_action(_warning), do: nil
+
+  defp text_input_class(invalid?) do
+    [
+      "h-11 w-full rounded-control border px-3 text-[15px]",
+      invalid? && "border-error-line text-error-fg",
+      !invalid? && "border-control"
+    ]
+  end
+
+  defp wheelchair_choices,
+    do: [{"1", "Wheelchair accessible"}, {"2", "Not accessible"}, {"0", "Not recorded"}]
+
+  defp error_summary_title(errors) do
+    count = map_size(errors)
+
+    "Fix #{count} #{if count == 1, do: "thing", else: "things"} to create this stop"
+  end
+
+  # The summary lists errors in the order the fields appear on the form, so the
+  # first link is the first field the reader reaches going down the panel.
+  defp summary_errors(errors) do
+    Enum.flat_map(~w(location name desc stop_id lat lon), fn field ->
+      case Map.fetch(errors, field) do
+        {:ok, error} -> [{field, error}]
+        :error -> []
+      end
+    end)
+  end
+
+  # A DOM id cannot carry a suggestion's own words, so it carries a slug of them.
+  # Two suggestions that slug alike are the same words, and the browser keeps the
+  # first, which is the same row rendered twice.
+  defp slug(text) do
+    text
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9]+/, "-")
+    |> String.trim("-")
   end
 
   @doc """

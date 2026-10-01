@@ -48,6 +48,7 @@ defmodule GtfsPlanner.Gtfs.StopsMap do
           required(:point) => point() | nil,
           required(:location_type) => integer(),
           required(:parent_station) => String.t() | nil,
+          optional(:zone_id) => String.t() | nil,
           required(:served?) => boolean(),
           required(:pattern_ids) => [Ecto.UUID.t()]
         }
@@ -141,7 +142,8 @@ defmodule GtfsPlanner.Gtfs.StopsMap do
         lat: stop.stop_lat,
         lon: stop.stop_lon,
         location_type: stop.location_type,
-        parent_station: stop.parent_station
+        parent_station: stop.parent_station,
+        zone_id: stop.zone_id
       }
     )
     |> Repo.all()
@@ -307,6 +309,7 @@ defmodule GtfsPlanner.Gtfs.StopsMap do
         point: point(stop.lat, stop.lon),
         location_type: stop.location_type,
         parent_station: stop.parent_station,
+        zone_id: stop.zone_id,
         served?: MapSet.member?(served_by_time, stop.stop_id) or visitors != [],
         pattern_ids: visitors |> Enum.uniq() |> Enum.sort()
       }

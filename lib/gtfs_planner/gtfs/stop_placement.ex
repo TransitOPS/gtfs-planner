@@ -57,6 +57,7 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
   @type classification :: :duplicate | :nearby | :distinct
   @type warning :: :wrong_side | :middle_of_street | :off_line
   @type move_band :: :correction | :review | :far
+  @type travel_direction :: :northbound | :southbound | :eastbound | :westbound
 
   # The shapes `version_checks/1` reads. They are the `StopsMap` row maps, named
   # here rather than referenced as `StopsMap.stop_row()`: `StopsMap` calls into
@@ -66,6 +67,29 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
   # and `:pattern_id`, `:source` and `:points` on a line.
   @type checked_stop :: map()
   @type checked_line :: map()
+
+  # One thing an editor should be told about a point they just placed. The
+  # shape is the same as `version_checks/1`'s findings, because the panel
+  # renders both: a `dom_id` to address the row, a `kind` to style and test it,
+  # copy an editor can act on, an `action` and whatever that action needs. The
+  # action never carries a point — it names a stop or a line, and the caller
+  # re-derives the point from what the server holds (INV-4).
+  @type finding :: %{
+          required(:kind) => atom(),
+          required(:dom_id) => String.t(),
+          required(:title) => String.t(),
+          required(:text) => String.t(),
+          required(:action) => nil | :open_duplicate | :move_across,
+          required(:action_key) => String.t() | nil,
+          required(:action_label) => String.t() | nil,
+          required(:stop_id) => String.t() | nil,
+          required(:line) => map() | nil
+        }
+
+  # How close a shape has to be for the panel to say which routes pass here.
+  # A route a block away does not serve a stop on this street corner, and a
+  # panel that named it would be offering a pattern the stop is not on.
+  @passing_metres 30.0
 
   # The width of one bucket in the duplicate scan, in metres. A cell has to be
   # wider than the duplicate threshold or a pair either side of a boundary would
@@ -336,6 +360,387 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
   # two-point line, so this is the same geometry every other function here
   # uses rather than a second projection of the same question.
   defp deviation(point, first, last), do: offset_m(point, [first, last]) |> elem(0)
+
+  @doc """
+  Which way a line runs, in the word a stop's description uses.
+
+  The comparison is made in the same local metre grid every other measurement
+  here uses, so the axis a line is "mostly" running along is the axis a reader
+  would call it running along, rather than an artefact of how wide a degree of
+  longitude is at this latitude. A line with no extent answers `nil`: there is
+  no direction to name, and "Northbound" for a stopped line is a lie.
+  """
+  @spec travel_direction(line()) :: travel_direction() | nil
+  def travel_direction([]), do: nil
+  def travel_direction([_only]), do: nil
+
+  def travel_direction([first | _rest] = line) do
+    {east, north} = local(List.last(line), first)
+
+    cond do
+      abs(north) >= abs(east) and north > 0 -> :northbound
+      abs(north) >= abs(east) -> :southbound
+      east > 0 -> :eastbound
+      true -> :westbound
+    end
+  end
+
+  @doc """
+  Every placement problem a point an editor just dropped deserves, in the order
+  the editor meets them.
+
+  Takes the same `StopsMap.load/2` model `version_checks/1` takes and answers
+  with a list of findings, each already carrying its copy, its DOM id and the
+  action it offers:
+
+    * `:middle_of_street` — the point is within `@wrong_side_metres` of a shape's
+      centreline, so it is on the right side of the road and in the wrong place
+      in it. Nothing else is said: a point in the middle of the street is not
+      also a duplicate.
+    * `:duplicate` — a stop within `@duplicate_metres` that shares no station,
+      with "Open …" naming that stop.
+    * `:wrong_side` — the point is on the far pavement of a shape it can reach,
+      with "Move it across the street"; the reflection is the server's to make.
+    * `:nearby` — the two next stops out to `@nearby_metres`, in one line.
+    * `:passing` — which routes run past on the served side, and the promise
+      that the stop can be added to one of them; or the absence of any.
+
+  `:duplicate` and `:wrong_side` are suppressed for a point in the middle of the
+  street, because both of them are about which kerb the stop is on and the
+  middle of the street is on neither. A stop in the middle of a road with a
+  duplicate 4 m away is told to move to the kerb first, and is told about the
+  duplicate next.
+
+  The actions carry a stop ID and a line rather than a point, so the caller
+  cannot be talked into moving the draft somewhere the server would not have
+  put it.
+  """
+  @spec warnings(point(), %{
+          required(:stops) => [checked_stop()],
+          required(:lines) => [checked_line()],
+          required(:routes) => map()
+        }) :: [finding()]
+  def warnings(point, model) do
+    shapes = Enum.filter(model.lines || [], &(&1.source == :shape))
+    middle? = Enum.any?(shapes, &(warn(point, &1.points, :shape) == :middle_of_street))
+
+    middle_finding(middle?) ++
+      duplicate_finding(point, model, middle?) ++
+      wrong_side_finding(point, model, shapes, middle?) ++
+      nearby_finding(point, model, middle?) ++
+      passing_finding(point, model, shapes, middle?)
+  end
+
+  defp middle_finding(true) do
+    [
+      %{
+        kind: :middle_of_street,
+        dom_id: "add-warning-middle",
+        title: "This is the middle of the street",
+        text:
+          "Drag the pin to the curb where riders wait. The side decides which buses can use it.",
+        action: nil,
+        action_key: nil,
+        action_label: nil,
+        stop_id: nil,
+        line: nil
+      }
+    ]
+  end
+
+  defp middle_finding(false), do: []
+
+  defp duplicate_finding(point, model, middle?) do
+    if middle? do
+      []
+    else
+      case nearest_stops(point, model.stops, @duplicate_metres, 1) do
+        [{stop, _metres}] ->
+          [
+            %{
+              kind: :duplicate,
+              dom_id: "add-warning-duplicate-#{dom_id(stop.stop_id)}",
+              title:
+                "#{stop_label(stop)} is #{format_distance(distance(point, stop.point))} away",
+              text:
+                "#{presence(stop.desc)}ID #{stop.stop_id}. If riders wait at the same sign, use that stop instead of adding another.",
+              action: :open_duplicate,
+              action_key: stop.stop_id,
+              action_label: "Open #{stop_label(stop)}",
+              stop_id: stop.stop_id,
+              line: nil
+            }
+          ]
+
+        _none ->
+          []
+      end
+    end
+  end
+
+  defp wrong_side_finding(point, model, shapes, middle?) do
+    if middle? do
+      []
+    else
+      case Enum.find(shapes, &(warn(point, &1.points, :shape) == :wrong_side)) do
+        nil ->
+          []
+
+        line ->
+          [
+            %{
+              kind: :wrong_side,
+              dom_id: "add-warning-wrong-side-#{dom_id(line.pattern_id)}",
+              title: "Buses pass on the far side of the street",
+              text:
+                "#{route_label(model, line)} runs #{direction_phrase(line.points)} here, so riders board from the other curb.",
+              action: :move_across,
+              action_key: line.pattern_id,
+              action_label: "Move it across the street",
+              stop_id: nil,
+              line: line
+            }
+          ]
+      end
+    end
+  end
+
+  defp nearby_finding(point, model, middle?),
+    do: if(middle?, do: [], else: nearby_names_finding(point, model))
+
+  defp nearby_names_finding(point, model) do
+    case nearest_stops(point, model.stops, @nearby_metres, 3) do
+      [] ->
+        []
+
+      nearby ->
+        names = Enum.map_join(nearby, "; ", &nearby_label/1)
+
+        [
+          %{
+            kind: :nearby,
+            dom_id: "add-warning-nearby",
+            title: "Nearby",
+            text: "#{names}.",
+            action: nil,
+            action_key: nil,
+            action_label: nil,
+            stop_id: nil,
+            line: nil
+          }
+        ]
+    end
+  end
+
+  defp nearby_label({stop, metres}),
+    do: "#{stop_label(stop)}#{desc_suffix(stop)} (#{format_distance(metres)})"
+
+  defp passing_finding(point, model, shapes, middle?),
+    do: if(middle?, do: [], else: passing_lines_finding(point, model, shapes))
+
+  defp passing_lines_finding(point, model, shapes) do
+    case passing_lines(point, shapes) do
+      [] -> [no_pattern_finding()]
+      lines -> [passing_finding_row(model, lines)]
+    end
+  end
+
+  defp no_pattern_finding do
+    %{
+      kind: :no_pattern,
+      dom_id: "add-warning-no-pattern",
+      title: "No pattern passes here yet",
+      text: "The stop can still be added to one later.",
+      action: nil,
+      action_key: nil,
+      action_label: nil,
+      stop_id: nil,
+      line: nil
+    }
+  end
+
+  defp passing_finding_row(model, lines) do
+    names = lines |> Enum.map(&route_label(model, &1)) |> Enum.uniq()
+
+    text =
+      case names do
+        [one] ->
+          "#{one} passes on this side. You can add the stop to it after creating it."
+
+        many ->
+          "#{length(many)} patterns pass on this side: #{Enum.join(many, ", ")}. You can add the stop to them after creating it."
+      end
+
+    %{
+      kind: :passing,
+      dom_id: "add-warning-passing",
+      title: "Routes on this side",
+      text: text,
+      action: nil,
+      action_key: nil,
+      action_label: nil,
+      stop_id: nil,
+      line: nil
+    }
+  end
+
+  # The shapes close enough to serve this point, on the kerb a vehicle on them
+  # actually stops at. `:west` is the far pavement for a shape's own direction
+  # of travel, and a point in the middle of the road is not on a kerb at all —
+  # which is why the caller has already answered that case.
+  defp passing_lines(point, shapes) do
+    Enum.filter(shapes, fn line ->
+      {metres, side} = offset_m(point, line.points)
+      metres <= @passing_metres and side in [:east, :on]
+    end)
+  end
+
+  # The stops nearest this point, each with its distance. Stations are skipped
+  # because a station is a container for bays rather than a place riders wait,
+  # and this list is read as places. A bay is not skipped: a bay three metres
+  # from a new stop is the same sign, and the same-station exemption
+  # `version_checks/1` takes does not apply, because a draft belongs to no
+  # station.
+  defp nearest_stops(point, stops, max_metres, limit) do
+    stops
+    |> Enum.filter(fn stop ->
+      is_map(stop) and not is_nil(stop.point) and stop.location_type == 0
+    end)
+    |> Enum.map(fn stop -> {stop, distance(point, stop.point)} end)
+    |> Enum.filter(fn {_stop, metres} -> metres <= max_metres end)
+    |> Enum.sort_by(fn {_stop, metres} -> metres end)
+    |> Enum.take(limit)
+  end
+
+  defp desc_suffix(%{desc: nil}), do: nil
+  defp desc_suffix(%{desc: desc}), do: ", #{String.downcase(desc)}"
+
+  defp presence(nil), do: ""
+  defp presence(""), do: ""
+  defp presence(text), do: "#{text}, "
+
+  # A row's DOM id is its key with everything that is not a letter, a digit or a
+  # dash replaced. GTFS stop IDs are free text, so `A|B` in an element id reads
+  # as a CSS combinator in every selector that names it.
+  defp dom_id(value), do: String.replace(to_string(value), ~r/[^A-Za-z0-9]+/, "-")
+
+  defp stop_label(stop), do: "#{stop.name || stop.stop_id}"
+
+  defp route_label(model, line) do
+    case Map.get(model.routes || %{}, line.route_id) do
+      %{short_name: short} when is_binary(short) and short != "" -> "Route #{short}"
+      %{long_name: long} when is_binary(long) and long != "" -> long
+      _other -> "Its pattern"
+    end
+  end
+
+  defp direction_phrase(points) do
+    case travel_direction(points) do
+      nil -> "along this street"
+      direction -> to_string(direction)
+    end
+  end
+
+  @doc """
+  How far apart two places are, in the units a reader of a stop list uses.
+
+  Feet to the nearest five under a thousand of them, and miles with two decimals
+  beyond. "1.5 m" is not a distance an editor can act on at a kerb; "5 ft" is
+  the coarsest one they can, and past a thousand feet a decimal is noise.
+  """
+  @spec format_distance(float()) :: String.t()
+  def format_distance(metres) do
+    feet = metres / 0.3048
+
+    if feet < 1000 do
+      "#{round(feet / 5) * 5} ft"
+    else
+      "#{Float.round(metres / 1609.344, 2)} mi"
+    end
+  end
+
+  @doc """
+  Which way the nearest line a point is on the served kerb of runs, for a
+  stop's description.
+  """
+  @spec kerb_direction(point(), [checked_line()]) :: travel_direction() | nil
+  def kerb_direction(point, lines) do
+    shapes = Enum.filter(lines || [], &(&1.source == :shape))
+
+    case passing_lines(point, shapes) do
+      [] -> nil
+      [line | _rest] -> travel_direction(line.points)
+    end
+  end
+
+  @doc """
+  Where a placed point is, in the one sentence the panel puts above its fields.
+
+  Production has coordinates and no street names, so the sentence is made of the
+  two things the loaded model does know: which line runs past this point, and
+  which side of it the point is on. A point with no shape within
+  `@passing_metres` says so rather than naming a line it is nowhere near.
+
+  Returns `%{text:, route:, direction:, side:, metres:}`, and the caller renders
+  `text`. `direction` is what a description would say ("Northbound") and is nil
+  where `text` is already the whole answer.
+  """
+  @spec describe_point(point(), %{
+          required(:lines) => [checked_line()],
+          required(:routes) => map()
+        }) :: %{
+          text: String.t(),
+          route: String.t() | nil,
+          direction: travel_direction() | nil,
+          side: atom() | nil,
+          metres: float() | nil
+        }
+  def describe_point(point, model) do
+    shapes = Enum.filter(model.lines || [], &(&1.source == :shape))
+
+    nearest =
+      shapes
+      |> Enum.map(fn line -> {line, offset_m(point, line.points)} end)
+      |> Enum.filter(fn {_line, {metres, _side}} -> metres <= @passing_metres end)
+      |> Enum.min_by(fn {_line, {metres, _side}} -> metres end, fn -> nil end)
+
+    case nearest do
+      nil ->
+        %{
+          text:
+            "About #{format_distance(distance_to_nearest_stop(point, model))} from the nearest stop.",
+          route: nil,
+          direction: nil,
+          side: nil,
+          metres: nil
+        }
+
+      {line, {metres, side}} ->
+        route = route_label(model, line)
+
+        %{
+          text: "#{side_phrase(side, route)}, #{format_distance(metres)} from it.",
+          route: route,
+          direction: travel_direction(line.points),
+          side: side,
+          metres: metres
+        }
+    end
+  end
+
+  defp side_phrase(:on, route), do: "On the #{route} line"
+  defp side_phrase(:east, route), do: "East side of the #{route} line"
+  defp side_phrase(:west, route), do: "West side of the #{route} line"
+
+  # The fallback sentence needs a distance it can name, and "from nothing" is
+  # not one. The model's own stops are the only landmarks it holds; with no
+  # located stop at all the sentence says that instead of inventing a number.
+  defp distance_to_nearest_stop(point, model) do
+    case nearest_stops(point, Map.get(model, :stops, []), 1_000_000.0, 1) do
+      [{_stop, metres}] -> metres
+      [] -> 0.0
+    end
+  end
 
   @doc """
   The three placement problems a whole version has, for the map's checks list.

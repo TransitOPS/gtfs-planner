@@ -53,6 +53,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       browse_panel_loading: 1,
       first_use_panel: 1,
       add_panel: 1,
+      created_panel: 1,
       map_stage: 1,
       page_header: 1,
       search_field: 1,
@@ -64,6 +65,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
   alias GtfsPlanner.Geocoding
+  alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.StopEditing
+  alias GtfsPlanner.Gtfs.StopNaming
   alias GtfsPlanner.Gtfs.StopPlacement
   alias GtfsPlanner.Gtfs.StopsMap
   alias GtfsPlannerWeb.Gtfs.StopsMapComponents
@@ -94,6 +98,21 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # The form name the search field's params arrive under.
   @search_as :search
 
+  # The form name the add form's params arrive under, and the draft's own fields.
+  # The list is a whitelist: a param the draft does not name is not a field, so a
+  # forged one cannot become an attribute of the stop that gets created.
+  @add_as :stop
+  @add_fields ~w(name desc code stop_id tts_stop_name stop_url wheelchair_boarding lat lon)
+
+  # How close a stop has to be to the draft for its name to be worth offering as
+  # an alternative to the streets. `StopNaming.suggestions/3` takes the names
+  # rather than the coordinates on purpose, so the radius that finds them lives
+  # with the query that finds them — here.
+  @suggestion_neighbour_metres 30.0
+
+  # How many of the nearest stops the fare zone line speaks for.
+  @zone_neighbour_count 5
+
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
@@ -112,7 +131,62 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
      |> assign(:checks, nil)
      |> assign(:checks_open, false)
      |> assign(:dismissed_checks, MapSet.new())
+     |> assign_add_state()
      |> assign_search("", [], [], false)}
+  end
+
+  # Everything the add flow owns, in one place, so every way into it — the
+  # header's button, the first-use panel, the created panel's "add another" —
+  # starts from the same empty draft rather than from whatever the last one left.
+  defp assign_add_state(socket) do
+    socket
+    |> assign(:add_kind, :stop)
+    |> assign(:name_touched?, false)
+    |> assign(:desc_touched?, false)
+    |> assign(:add_saving, false)
+    |> assign(:coords_open?, false)
+    |> assign(:tech_open?, false)
+    |> assign(:created_stop, nil)
+    |> assign(:add_suggestion, nil)
+    |> assign(:add_reverse_error, nil)
+    |> assign(:add_failure, nil)
+    |> assign(:add_errors, %{})
+    |> assign(:place_token, 0)
+    |> assign_draft(blank_draft())
+  end
+
+  defp blank_draft do
+    %{
+      "name" => "",
+      "desc" => "",
+      "code" => "",
+      "wheelchair_boarding" => "0",
+      "stop_id" => "",
+      "tts_stop_name" => "",
+      "stop_url" => "",
+      "lat" => "",
+      "lon" => ""
+    }
+  end
+
+  # The form is rebuilt from the draft on every change rather than carried
+  # through, so a refused write, a slow reverse geocode or a re-render cannot
+  # take a half-typed name back out of the field.
+  #
+  # The errors go on the form rather than beside it, which is what makes
+  # `<.input>` mark the control `aria-invalid` and describe it: the focus hook
+  # looks for exactly that attribute when it moves the reader to the first
+  # thing they have to fix.
+  defp assign_draft(socket, draft), do: assign_draft(socket, draft, socket.assigns.add_errors)
+
+  defp assign_draft(socket, draft, errors) do
+    socket
+    |> assign(:add_draft, draft)
+    |> assign(:add_form, to_form(draft, as: @add_as, errors: form_errors(errors)))
+  end
+
+  defp form_errors(errors) do
+    for {field, %{long: message}} <- Enum.sort_by(errors, &elem(&1, 0)), do: {field, message}
   end
 
   @impl true
@@ -161,6 +235,98 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # never waiting on this.
   def handle_async(:checks, _result, socket), do: {:noreply, assign(socket, :checks, nil)}
 
+  # The reverse geocode's answer belongs to the placement that asked for it. The
+  # task is named for the placement's token rather than for the placement
+  # itself, and a reply whose token is not the current one is dropped: a slower
+  # first answer arriving after a faster second one must not replace the
+  # suggestion the editor is looking at.
+  def handle_async({:reverse, token}, {:ok, {:ok, places}}, socket) do
+    if socket.assigns.place_token == token do
+      {:noreply, apply_suggestion(socket, places)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_async({:reverse, token}, {:ok, {:error, reason}}, socket) do
+    if socket.assigns.place_token == token do
+      Logger.error("Geocoding reverse failed: #{inspect(reason)}")
+
+      # The address service is not the form. The placement stands, the fields
+      # stay editable, and the panel says the streets could not be looked up so
+      # an empty name is the editor's to fill rather than a blank that looks
+      # like a failure to read.
+      {:noreply,
+       socket
+       |> assign(:add_suggestion, nil)
+       |> assign(:add_reverse_error, reason)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_async({:reverse, token}, {:exit, reason}, socket) do
+    Logger.error("Geocoding reverse exited: #{inspect(reason)}")
+
+    if socket.assigns.place_token == token do
+      {:noreply,
+       socket |> assign(:add_suggestion, nil) |> assign(:add_reverse_error, :unavailable)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_async(:create, {:ok, {:ok, stop}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:add_saving, false)
+     |> assign(:panel, :created)
+     |> assign(:created_stop, created_row(stop, socket.assigns))
+     |> assign(:add_errors, %{})
+     |> assign(:placement, nil)
+     |> push_map_mode()
+     |> start_load()}
+  end
+
+  # A changeset came back with the fields it refused. They are the form's own
+  # errors, so the summary and the focus are the create flow's, not a message
+  # about the command having failed.
+  def handle_async(:create, {:ok, {:error, %Ecto.Changeset{} = changeset}}, socket) do
+    {errors, message} = changeset_errors(changeset)
+
+    {:noreply,
+     socket
+     |> assign(:add_saving, false)
+     |> assign(:add_failure, message)
+     |> assign_add_errors(socket, errors)
+     |> focus_first_error(errors)}
+  end
+
+  def handle_async(:create, {:ok, {:error, reason}}, socket) do
+    Logger.error("Creating a stop failed: #{inspect(reason)}")
+
+    {:noreply,
+     socket
+     |> assign(:add_saving, false)
+     |> assign(
+       :add_failure,
+       "We couldn’t save this stop. Nothing was changed, and your draft is still here."
+     )}
+  end
+
+  def handle_async(:create, {:exit, reason}, socket) do
+    Logger.error("Creating a stop exited: #{inspect(reason)}")
+
+    {:noreply,
+     socket
+     |> assign(:add_saving, false)
+     |> assign(
+       :add_failure,
+       "We couldn’t save this stop. Nothing was changed, and your draft is still here."
+     )}
+  end
+
   @impl true
   def handle_event("stop_map_ready", _params, socket) do
     {:noreply, socket |> assign(:map_state, :ready) |> then(&push_scene/1)}
@@ -186,21 +352,143 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     {:noreply, socket |> assign(:map_state, :loading) |> then(&push_scene/1)}
   end
 
-  def handle_event("start_add", _params, socket),
-    do: {:noreply, socket |> assign(:panel, :add) |> assign(:placement, nil) |> push_map_mode()}
+  def handle_event("start_add", params, socket) do
+    kind = if params["kind"] == "station", do: :station, else: :stop
 
-  def handle_event("cancel_add", _params, socket),
-    do:
-      {:noreply, socket |> assign(:panel, :browse) |> assign(:placement, nil) |> push_map_mode()}
+    {:noreply, socket |> begin_add(kind) |> push_map_mode()}
+  end
+
+  def handle_event("cancel_add", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:panel, :browse)
+     |> assign(:placement, nil)
+     |> assign_add_state()
+     |> push_map_mode()}
+  end
+
+  # "Add another stop" from the created panel is the header's button with the
+  # draft that was just created thrown away, which is what "another" means.
+  def handle_event("add_another", _params, socket) do
+    {:noreply, socket |> begin_add(:stop) |> push_map_mode()}
+  end
+
+  # The switch from a stop to a station is a new draft rather than a toggle on
+  # the old one: a station and a stop are different fields, so a half-filled
+  # stop draft cannot become a station draft by accident.
+  def handle_event("add_kind", %{"kind" => "station"}, socket),
+    do: {:noreply, socket |> begin_add(:station) |> push_map_mode()}
+
+  def handle_event("add_kind", _params, socket), do: {:noreply, socket}
+
+  def handle_event("toggle_coords", _params, socket),
+    do: {:noreply, assign(socket, :coords_open?, not socket.assigns.coords_open?)}
+
+  def handle_event("toggle_tech", _params, socket),
+    do: {:noreply, assign(socket, :tech_open?, not socket.assigns.tech_open?)}
 
   # A point the editor chose on the map. It is the draft's position and nothing
   # else: nothing is written until the add flow is submitted, so a placement
   # that is abandoned leaves no row behind.
-  def handle_event("place", params, socket),
-    do: {:noreply, assign_placement(socket, params)}
+  def handle_event("place", params, socket) do
+    {:noreply, socket |> assign_placement(params) |> maybe_start_reverse()}
+  end
 
-  def handle_event("pin_moved", params, socket),
-    do: {:noreply, assign_placement(socket, params)}
+  def handle_event("pin_moved", params, socket) do
+    {:noreply, socket |> assign_placement(params) |> maybe_start_reverse()}
+  end
+
+  # Every keystroke in the add form. The draft is the server's, so the panel
+  # answers a change with the whole form rather than with the field that
+  # changed — which is what keeps a draft that has been typed into from being
+  # taken back out of the field by a re-render.
+  def handle_event("add_field", %{"stop" => params}, socket),
+    do: {:noreply, change_add_field(socket, params)}
+
+  def handle_event("add_field", _params, socket), do: {:noreply, socket}
+
+  # Taking a suggestion is taking one of the suggestions the server offered. The
+  # text arrives from the browser, so it is checked against what is on offer: a
+  # forged value is a value the server never derived, and a button that can post
+  # arbitrary text is not a suggestion.
+  def handle_event("add_suggestion", %{"field" => field, "text" => text}, socket) do
+    if suggested?(socket.assigns.add_suggestion, field, text) do
+      {:noreply,
+       socket
+       |> assign_draft(Map.put(socket.assigns.add_draft, field, text))
+       |> touch_suggested_field(field)
+       |> drop_error(field)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("add_suggestion", _params, socket), do: {:noreply, socket}
+
+  # "Open <stop>" puts the editor in front of the stop the draft duplicates,
+  # without throwing the draft away: the decision is whether this is a second
+  # copy of that stop, and that decision needs both stops in view at once.
+  # Step 30 turns the selection into that stop's edit panel.
+  def handle_event("open_duplicate", %{"key" => key}, socket) do
+    with warning when not is_nil(warning) <-
+           Enum.find(add_warnings(socket.assigns), &duplicate_action?(&1, key)),
+         {_lat, _lon} = point <- stop_point(socket.assigns.model, warning.stop_id) do
+      {:noreply, socket |> assign(:selected_stop_id, warning.stop_id) |> push_focus(point)}
+    else
+      _no_such_finding -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("open_duplicate", _params, socket), do: {:noreply, socket}
+
+  # "Move it across the street" is the server's reflection, made from the line
+  # the finding is about and the draft's own point. The browser names the line
+  # and nothing else: a point it chose would be a position the geometry never
+  # agreed to.
+  def handle_event("move_across", %{"key" => key}, socket) do
+    with warning when not is_nil(warning) <-
+           Enum.find(add_warnings(socket.assigns), &across_action?(&1, key)),
+         {lat, lon} when not is_nil(lat) <- socket.assigns.placement,
+         {_lon, _lat} = point when is_tuple(point) <-
+           across_point(socket.assigns.model, warning, {lat, lon}) do
+      {:noreply,
+       socket
+       |> assign_placement(%{"lat" => elem(point, 1), "lon" => elem(point, 0)})
+       |> maybe_start_reverse()}
+    else
+      _nothing_to_reflect -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("move_across", _params, socket), do: {:noreply, socket}
+
+  # Creating a stop is a write, so it is a command: authorized, audited and run
+  # in one transaction by `StopEditing.create_stop/2`. It runs asynchronously so
+  # the "Creating…" state is a real state rather than a label on a button the
+  # server is not answering yet, and so a second submit while it is in flight is
+  # refused rather than queued.
+  def handle_event("create_stop", %{"stop" => params}, socket) do
+    if socket.assigns.add_saving do
+      {:noreply, socket}
+    else
+      draft = merge_draft(socket.assigns.add_draft, params)
+
+      case add_errors(socket.assigns, draft) do
+        errors when map_size(errors) == 0 ->
+          {:noreply,
+           socket
+           |> assign_draft(draft)
+           |> assign(:add_saving, true)
+           |> assign(:add_failure, nil)
+           |> start_create(draft)}
+
+        errors ->
+          {:noreply, focus_first_error(assign_add_errors(socket, draft, errors), errors)}
+      end
+    end
+  end
+
+  def handle_event("create_stop", _params, socket), do: {:noreply, socket}
 
   # Search answers two questions at once, and the field is one field: "is this
   # stop in my feed" (this version's own rows) and "where do I put the new one"
@@ -241,8 +529,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # Choosing a place is a placement. It writes the same `placement` a click on
   # the map writes, so the pin, the caption and the map's mode are unchanged by
   # how the editor got there — one draft, one position.
-  def handle_event("choose_place", params, socket),
-    do: {:noreply, assign_placement(socket, params)}
+  def handle_event("choose_place", params, socket) do
+    {:noreply, socket |> assign_placement(params) |> maybe_start_reverse()}
+  end
 
   # --- version checks -------------------------------------------------------
 
@@ -398,6 +687,599 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     end
   end
 
+  # --- the add flow ----------------------------------------------------------
+
+  # Every way into the add panel starts from an empty draft and no placement, so
+  # the header's button, the first-use panel and the created panel's "add
+  # another" cannot inherit a draft from the one before them.
+  defp begin_add(socket, kind) do
+    socket
+    |> assign(:panel, :add)
+    |> assign(:placement, nil)
+    |> assign(:add_kind, kind)
+    |> assign(:name_touched?, false)
+    |> assign(:desc_touched?, false)
+    |> assign(:add_saving, false)
+    |> assign(:coords_open?, false)
+    |> assign(:tech_open?, false)
+    |> assign(:created_stop, nil)
+    |> assign(:add_suggestion, nil)
+    |> assign(:add_reverse_error, nil)
+    |> assign(:add_failure, nil)
+    |> assign(:add_errors, %{})
+    # The token moves on here too, so a reverse still in flight for the draft
+    # that was just abandoned cannot land on the new one.
+    |> assign(:place_token, socket.assigns.place_token + 1)
+    |> assign_draft(blank_draft())
+  end
+
+  # The reverse geocode is asked for only while a draft is being added, and only
+  # for a placement there is one. In the browse panel a pin is a selection, not
+  # something to name, and reverse geocoding it would spend Geoapify credits on
+  # a stop the editor is not creating.
+  # The head matches the socket's assigns rather than the socket, because a
+  # socket is a struct: a pattern written against its keys would never match it,
+  # and the reverse geocode would silently never be asked for.
+  defp maybe_start_reverse(%{assigns: %{panel: :add, placement: {lat, lon}}} = socket) do
+    token = socket.assigns.place_token + 1
+
+    socket
+    |> assign(:place_token, token)
+    |> assign(:add_suggestion, :loading)
+    |> assign(:add_reverse_error, nil)
+    |> start_async({:reverse, token}, fn -> Geocoding.reverse(lat, lon, amenities: true) end)
+  end
+
+  defp maybe_start_reverse(socket), do: socket
+
+  # The answer becomes the name field, the alternatives beside it, and the
+  # description the side of the street suggests. The name and the description
+  # are only filled while the editor has not typed in them: a name somebody
+  # wrote is theirs, and a suggestion over the top of it is a suggestion nobody
+  # asked for.
+  defp apply_suggestion(socket, places) do
+    %{name: name, alternatives: alternatives} =
+      StopNaming.suggestions(places, neighbour_names(socket.assigns), connector(socket.assigns))
+
+    suggestion = %{
+      name: name,
+      alternatives: alternatives,
+      description: description_suggestion(socket.assigns)
+    }
+
+    socket
+    |> assign(:add_suggestion, suggestion)
+    |> assign(:add_reverse_error, nil)
+    |> fill_suggested(suggestion)
+  end
+
+  defp fill_suggested(socket, %{name: name, description: description}) do
+    draft = socket.assigns.add_draft
+
+    draft =
+      if not socket.assigns.name_touched? and is_binary(name) and name != "" do
+        Map.put(draft, "name", name)
+      else
+        draft
+      end
+
+    draft =
+      if not socket.assigns.desc_touched? and is_binary(description) and
+           socket.assigns.add_kind == :stop and draft["desc"] in [nil, ""] do
+        Map.put(draft, "desc", description)
+      else
+        draft
+      end
+
+    assign_draft(socket, draft)
+  end
+
+  # The connector is this version's own: "Main St & 3rd Ave" and "Main St at 3rd
+  # Ave" are both correct, and a version's existing stops are the only evidence
+  # of which one it uses.
+  defp connector(%{model: nil}), do: StopNaming.connector([])
+
+  defp connector(assigns), do: assigns.model |> stop_names() |> StopNaming.connector()
+
+  defp stop_names(%{stops: stops}) do
+    stops
+    |> Enum.map(& &1.name)
+    |> Enum.reject(&(&1 in [nil, ""]))
+  end
+
+  # The names of the stops next to the draft. The radius lives here rather than
+  # in `StopNaming.suggestions/3`, which takes the names it is given precisely
+  # so that one place decides how far is near.
+  defp neighbour_names(assigns) do
+    case assigns.placement do
+      nil ->
+        []
+
+      {lat, lon} ->
+        assigns.model
+        |> located_stops()
+        |> Enum.map(fn stop -> {stop, StopPlacement.distance({lon, lat}, stop.point)} end)
+        |> Enum.filter(fn {_stop, metres} -> metres <= @suggestion_neighbour_metres end)
+        |> Enum.map(fn {stop, _metres} -> stop.name end)
+        |> Enum.reject(&(&1 in [nil, ""]))
+    end
+  end
+
+  # Which way the buses run at the draft's point, which is what a stop's
+  # description is for: "Northbound" and "Southbound" are the two stops on one
+  # street, and the description is what tells them apart.
+  defp description_suggestion(assigns) do
+    case assigns.placement do
+      nil ->
+        nil
+
+      {lat, lon} ->
+        assigns.model
+        |> Map.get(:lines, [])
+        |> then(&StopPlacement.kerb_direction({lon, lat}, &1))
+        |> case do
+          nil -> nil
+          # A description is a sentence's worth of words, not a GTFS enum: the
+          # seed's own descriptions read "Northbound", and a rider reads this one
+          # on the same sign.
+          direction -> direction |> to_string() |> String.capitalize()
+        end
+    end
+  end
+
+  defp assign_add_errors(socket, draft, errors) do
+    socket
+    |> assign(:add_errors, errors)
+    |> assign_draft(draft, errors)
+  end
+
+  defp focus_first_error(socket, errors) do
+    if map_size(errors) > 0 and connected?(socket) do
+      push_event(socket, "focus_form_error", %{
+        form_id: "stops-map-add-form",
+        fallback_id: "stops-map-add-errors"
+      })
+    else
+      socket
+    end
+  end
+
+  # A change to the form: the draft is the merge of what was there and what
+  # arrived, and only the fields the draft names are read. A paste that carries
+  # both numbers into the latitude field places the draft, because that is how a
+  # coordinate arrives from a gazetteer or a survey sheet.
+  defp change_add_field(socket, params) do
+    draft = merge_draft(socket.assigns.add_draft, params)
+    socket = socket |> assign_draft(draft) |> touch_fields(params)
+    before = socket.assigns.placement
+
+    socket =
+      case pasted_point(draft) do
+        {:ok, lat, lon} -> assign_placement(socket, %{"lat" => lat, "lon" => lon})
+        :error -> socket
+      end
+
+    # A keystroke in the name is not a new placement, and a reverse geocode is a
+    # call to a service that costs money: one is asked for when the draft moves,
+    # not every time a field changes. Asking on every change would also refill a
+    # name the editor has just cleared, because an empty field is not a name
+    # they have claimed.
+    socket =
+      if socket.assigns.placement == before, do: socket, else: maybe_start_reverse(socket)
+
+    drop_resolved_errors(socket, params)
+  end
+
+  # Only the draft's own fields are read, and only as strings. Everything the
+  # create command uses is decided server-side from this map, so a forged
+  # attribute is not one the create command can see.
+  defp merge_draft(draft, params) do
+    Enum.reduce(@add_fields, draft, fn field, acc ->
+      case Map.fetch(params, field) do
+        {:ok, value} when is_binary(value) -> Map.put(acc, field, value)
+        _absent -> acc
+      end
+    end)
+  end
+
+  # A typed name is the editor's from then on, and so is a typed description.
+  # A name the server filled is not: the next placement replaces it.
+  defp touch_fields(socket, params) do
+    socket
+    |> touch_field(params, "name", :name_touched?)
+    |> touch_field(params, "desc", :desc_touched?)
+  end
+
+  defp touch_field(socket, params, "name", :name_touched?) do
+    if typed?(params, "name"), do: assign(socket, :name_touched?, true), else: socket
+  end
+
+  defp touch_field(socket, params, "desc", :desc_touched?) do
+    if typed?(params, "desc"), do: assign(socket, :desc_touched?, true), else: socket
+  end
+
+  defp touch_field(socket, _params, _field, _key), do: socket
+
+  defp typed?(params, field) do
+    case Map.get(params, field) do
+      value when is_binary(value) and value != "" -> true
+      _blank -> false
+    end
+  end
+
+  # Taking a suggestion is typing: a name the editor pressed a button to accept is
+  # theirs, so the next placement does not overwrite it.
+  defp touch_suggested_field(socket, "name"), do: assign(socket, :name_touched?, true)
+  defp touch_suggested_field(socket, "desc"), do: assign(socket, :desc_touched?, true)
+  defp touch_suggested_field(socket, _field), do: socket
+
+  # An error the editor has just answered is dropped as they answer it, so a
+  # summary that names a field somebody has since filled in is not a claim the
+  # panel cannot back up. Errors nobody has touched stay.
+  defp drop_resolved_errors(socket, params) do
+    Enum.reduce(params, socket, fn {field, value}, acc ->
+      if is_binary(value) and value != "", do: drop_error(acc, field), else: acc
+    end)
+  end
+
+  defp drop_error(socket, field),
+    do: assign(socket, :add_errors, Map.delete(socket.assigns.add_errors, field))
+
+  # "44.6376, -124.0530" in one field is a coordinate pair, and it is the way
+  # coordinates are copied out of almost everything that holds them. A field
+  # holding one number is a latitude or a longitude and nothing more.
+  defp pasted_point(draft) do
+    with [lat, lon] <- String.split(draft["lat"] || "", ",", parts: 2),
+         {:ok, lat} <- number(String.trim(lat)),
+         {:ok, lon} <- number(String.trim(lon)),
+         true <- abs(lat) <= 90.0,
+         true <- abs(lon) <= 180.0 do
+      {:ok, lat, lon}
+    else
+      _other -> :error
+    end
+  end
+
+  defp suggested?(:loading, _field, _text), do: false
+
+  defp suggested?(%{name: name}, "name", text), do: is_binary(name) and name == text
+
+  defp suggested?(%{description: description}, "desc", text),
+    do: is_binary(description) and description == text
+
+  defp suggested?(_suggestion, _field, _text), do: false
+
+  defp duplicate_action?(finding, key),
+    do: finding.action == :open_duplicate and finding.action_key == key
+
+  defp across_action?(finding, key),
+    do: finding.action == :move_across and finding.action_key == key
+
+  defp stop_point(nil, _stop_id), do: nil
+
+  defp stop_point(model, stop_id) do
+    case Enum.find(model.stops, &(&1.stop_id == stop_id)) do
+      %{point: point} -> point
+      _missing -> nil
+    end
+  end
+
+  # The reflection is made from the line the server holds, named by the pattern
+  # the finding came from. A browser that named a different line, or named the
+  # points itself, would be asking the panel to place a stop somewhere the
+  # geometry does not put it.
+  defp across_point(nil, _finding, _point), do: nil
+
+  defp across_point(model, finding, {lat, lon}) do
+    case Enum.find(model.lines || [], &(&1.pattern_id == finding.action_key)) do
+      nil -> nil
+      line -> StopPlacement.across_street({lon, lat}, line.points)
+    end
+  end
+
+  defp add_warnings(%{panel: :add, placement: {lat, lon}, model: model}) do
+    StopPlacement.warnings({lon, lat}, model)
+  end
+
+  defp add_warnings(_assigns), do: []
+
+  # The one sentence above the fields that says where the draft is. It changes
+  # on every placement, which is the point: an editor who cannot see that the
+  # sentence moved when the pin did has no way to tell the two apart.
+  defp add_where(%{panel: :add, placement: {lat, lon}, model: model}) do
+    lat
+    |> place_point(lon)
+    |> then(&StopPlacement.describe_point(&1, model))
+    |> Map.fetch!(:text)
+  end
+
+  defp add_where(_assigns), do: nil
+
+  # The placement assign holds `{lat, lon}` because that is what the hook reports
+  # and what the coordinate fields show; the geometry takes `{lon, lat}`.
+  defp place_point(lat, lon), do: {lon, lat}
+
+  # What is worth saying about a name that has problems. It is advice, not a
+  # refusal: every one of these names is publishable, and a name somebody
+  # deliberately wrote is never blocked for being unusual.
+  defp add_advice(%{panel: :add, add_draft: draft} = assigns) do
+    StopNaming.advice(
+      draft["name"] || "",
+      presence(draft["code"]),
+      presence(draft["desc"]),
+      connector(assigns)
+    )
+  end
+
+  defp add_advice(_assigns), do: []
+
+  # A sign number is how a rider looks up arrivals, so two stops sharing one is
+  # worse than no sign number at all. The conflict is read from the model the
+  # panel already holds rather than by asking the database about every keystroke.
+  defp add_code_issue(%{panel: :add, add_draft: draft, model: model}) do
+    stops = Enum.map((model && model.stops) || [], &sign_row/1)
+
+    case StopNaming.sign_conflict(draft["code"], stops, draft["stop_id"]) do
+      nil ->
+        nil
+
+      other ->
+        "#{other} already has sign number #{String.trim(draft["code"])}. Riders who look it up would get that stop."
+    end
+  end
+
+  defp add_code_issue(_assigns), do: nil
+
+  # `StopNaming.sign_conflict/3` reads the stop table's own field names, and the
+  # map model names the same fields the panel reads them by.
+  defp sign_row(stop),
+    do: %{stop_id: stop.stop_id, stop_name: stop.name, stop_code: stop.code}
+
+  # The fare zone is stated, not chosen: production has no zone editor on this
+  # surface, so the line says which zone the nearest stops are in and where
+  # zones are managed, rather than offering a select this page cannot honour.
+  defp add_zone_note(%{panel: :add, placement: {lat, lon}, model: model}) do
+    case nearest_zoned_stop(model, {lon, lat}) do
+      nil ->
+        "No stop near here is in a fare zone."
+
+      {stop, _metres} ->
+        zone_stops =
+          model.stops
+          |> Enum.filter(fn other -> other.zone_id == stop.zone_id and other.point end)
+          |> length()
+
+        "The #{zone_stops} nearest #{if zone_stops == 1, do: "stop is", else: "stops are"} in #{stop.zone_id}."
+    end
+  end
+
+  defp add_zone_note(_assigns), do: nil
+
+  # What the panel refuses to create, in the form's own words. A stop with no
+  # placement has no coordinates, a stop with no name has nothing a rider can
+  # be told, a stop whose typed ID is taken would collide with a live row, and
+  # coordinates that disagree with the pin are two different places on a page
+  # that draws only one of them.
+  defp add_errors(assigns, draft) do
+    %{}
+    |> put_error(
+      is_nil(assigns.placement),
+      "location",
+      %{
+        short: "Place the stop on the map",
+        long: "Click the curb where riders wait, or paste a pair of coordinates into Latitude."
+      }
+    )
+    |> put_error(
+      blank?(draft["name"]),
+      "name",
+      %{
+        short: "Enter a name",
+        long: "Enter a name riders will recognise, such as the cross street."
+      }
+    )
+    |> put_error(
+      coordinates_disagree?(assigns, draft),
+      "lat",
+      %{
+        short: "These coordinates don’t match the pin",
+        long: "Paste them into Latitude again to move the pin, or drag the pin back to them."
+      }
+    )
+    |> put_error(
+      stop_id_taken?(assigns, draft),
+      "stop_id",
+      %{
+        short: "That stop ID is already used",
+        long: "Stop IDs are unique within a version. Leave it blank to take the next one."
+      }
+    )
+  end
+
+  defp put_error(errors, true, field, error), do: Map.put(errors, field, error)
+  defp put_error(errors, false, _field, _error), do: errors
+
+  defp blank?(value), do: value in [nil, ""]
+
+  # A blank optional field is `nil` rather than an empty string: GTFS says "this
+  # stop has no description", which is not the same claim as "its description is
+  # the empty string".
+  defp presence(value) do
+    case String.trim(value || "") do
+      "" -> nil
+      text -> text
+    end
+  end
+
+  # The fields say one thing and the pin says another. Nothing is guessed about
+  # which one is right: the panel asks, because only the editor knows.
+  defp coordinates_disagree?(assigns, draft) do
+    case assigns.placement do
+      nil ->
+        false
+
+      {lat, lon} ->
+        # A field that is not a number at all is a half-typed paste or a
+        # half-typed coordinate, and the pin is still the draft's position.
+        with {:ok, typed_lat} <- number(draft["lat"]),
+             {:ok, typed_lon} <- number(draft["lon"]) do
+          abs(typed_lat - lat) > 0.00001 or abs(typed_lon - lon) > 0.00001
+        else
+          _not_a_number -> false
+        end
+    end
+  end
+
+  # The uniqueness index on `(organization, version, stop_id)` is the real
+  # authority and `create_stop/2` enforces it; this is the panel saying so
+  # before the round trip, from the same rows the panel is already holding.
+  defp stop_id_taken?(%{model: nil}, _draft), do: false
+
+  defp stop_id_taken?(assigns, draft) do
+    id = String.trim(draft["stop_id"] || "")
+
+    id != "" and Enum.any?(assigns.model.stops, &(&1.stop_id == id))
+  end
+
+  defp start_create(socket, draft) do
+    attrs = create_attrs(socket.assigns, draft)
+    audit = audit_context(socket.assigns)
+
+    start_async(socket, :create, fn -> StopEditing.create_stop(attrs, audit) end)
+  end
+
+  # The identity the command is scoped and audited by comes from the socket, not
+  # from the form: a browser that posted its own organization or version would be
+  # writing into a feed the editor is not looking at.
+  defp audit_context(assigns) do
+    %AuditContext{
+      organization_id: assigns.current_organization.id,
+      gtfs_version_id: assigns.current_gtfs_version.id,
+      station_stop_id: nil,
+      actor_id: assigns.current_user.id,
+      actor_email: assigns.current_user.email
+    }
+  end
+
+  defp create_attrs(assigns, draft) do
+    {lat, lon} = assigns.placement
+
+    %{
+      "stop_name" => draft["name"],
+      "stop_desc" => presence(draft["desc"]),
+      "stop_code" => presence(draft["code"]),
+      "wheelchair_boarding" => wheelchair_value(draft["wheelchair_boarding"]),
+      "location_type" => location_type(assigns.add_kind),
+      "stop_lat" => lat,
+      "stop_lon" => lon,
+      "stop_id" => presence(draft["stop_id"]),
+      "tts_stop_name" => presence(draft["tts_stop_name"]),
+      "stop_url" => presence(draft["stop_url"])
+    }
+  end
+
+  # GTFS defines wheelchair boarding as 0 (no information), 1 (accessible) and
+  # 2 (not accessible). Anything the browser posts that is not one of the three
+  # is "no information" rather than a fourth value.
+  defp wheelchair_value(value) do
+    case Integer.parse(String.trim(value || "")) do
+      {1, _rest} -> 1
+      {2, _rest} -> 2
+      _other -> 0
+    end
+  end
+
+  defp location_type(:station), do: 1
+  defp location_type(_stop), do: 0
+
+  defp created_row(stop, assigns) do
+    %{
+      kind: if(stop.location_type == 1, do: "station", else: "stop"),
+      stop_id: stop.stop_id,
+      name: stop.stop_name,
+      desc: stop.stop_desc,
+      wheelchair: wheelchair_label(stop.wheelchair_boarding),
+      zone: zone_name(assigns.model, stop_point_of(stop))
+    }
+  end
+
+  # The stop row's own coordinates as the map's `{lon, lat}` pair. The model is
+  # not reloaded yet at this point, so the created stop is not in it, and this is
+  # the one place that says where the stop it just wrote actually is.
+  defp stop_point_of(%{stop_lat: nil}), do: nil
+
+  defp stop_point_of(stop) do
+    {Decimal.to_float(stop.stop_lon), Decimal.to_float(stop.stop_lat)}
+  end
+
+  defp wheelchair_label(1), do: "Wheelchair accessible"
+  defp wheelchair_label(2), do: "Not wheelchair accessible"
+  defp wheelchair_label(_other), do: "Wheelchair access not recorded"
+
+  # The fare zone a created stop is in is the one its neighbours are in, which
+  # is what the form said before it was created. A stop with no neighbours has no
+  # zone to inherit and is not given one.
+  defp zone_name(nil, _point), do: nil
+
+  defp zone_name(_model, nil), do: nil
+
+  # The point is the map's `{lon, lat}`, the order every other call in this
+  # module passes coordinates in.
+  defp zone_name(model, point) do
+    case nearest_zoned_stop(model, point) do
+      nil ->
+        "No zone"
+
+      {stop, metres} ->
+        "#{stop.zone_id} · #{format_distance(metres)} away"
+    end
+  end
+
+  defp nearest_zoned_stop(model, point) do
+    model.stops
+    |> Enum.filter(fn stop ->
+      stop.location_type == 0 and not blank?(stop.zone_id) and stop.point
+    end)
+    |> Enum.map(fn stop -> {stop, StopPlacement.distance(point, stop.point)} end)
+    |> Enum.sort_by(fn {_stop, metres} -> metres end)
+    |> Enum.take(@zone_neighbour_count)
+    |> List.first()
+  end
+
+  # A refused create says which field it refused, in the form's own words, so
+  # the summary and the focus are the create flow's rather than a message about
+  # a command having failed.
+  defp changeset_errors(changeset) do
+    fields =
+      Ecto.Changeset.traverse_errors(changeset, fn {message, opts} ->
+        Regex.replace(~r"%{(\w+)}", message, fn _whole, key ->
+          opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
+        end)
+      end)
+
+    {mapped, unclaimed} =
+      Enum.split_with(fields, fn {field, _messages} ->
+        field in [:stop_name, :stop_id, :stop_url]
+      end)
+
+    errors =
+      Map.new(mapped, fn {field, messages} ->
+        {draft_field(field), %{short: List.first(messages), long: Enum.join(messages, " ")}}
+      end)
+
+    message =
+      if unclaimed == [] do
+        nil
+      else
+        "We couldn’t save this stop. Nothing was changed, and your draft is still here."
+      end
+
+    {errors, message}
+  end
+
+  defp draft_field(:stop_name), do: "name"
+  defp draft_field(field), do: to_string(field)
+
   defp find_check(assigns, key), do: Enum.find(check_rows(assigns), &(&1.key == key))
 
   defp push_focus(socket, {lon, lat}) do
@@ -539,59 +1421,83 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
           <%= if @panel == :add do %>
             <.add_panel
               id="stops-map-add-panel"
-              form={@search_form}
+              kind={@add_kind}
+              version_name={@current_gtfs_version.name}
+              search_form={@search_form}
               query={@search_query}
               places={@search_places}
               unavailable?={@search_unavailable?}
+              form={@add_form}
+              placement={@placement}
+              where={add_where(assigns)}
+              warnings={add_warnings(assigns)}
+              suggestion={@add_suggestion}
+              reverse_error={@add_reverse_error}
+              errors={@add_errors}
+              advice={add_advice(assigns)}
+              code_issue={add_code_issue(assigns)}
+              zone_note={add_zone_note(assigns)}
+              saving?={@add_saving}
+              coords_open?={@coords_open?}
+              tech_open?={@tech_open?}
+              failure={@add_failure}
             />
           <% else %>
-            <.browse_panel
-              id="stops-map-panel"
-              title={panel_title(assigns)}
-              subtitle={panel_subtitle(assigns)}
-            >
-              <div class="px-5">
-                <.search_field
-                  id="stops-map-search"
-                  form={@search_form}
-                  label="Find a stop, street or place"
-                  placeholder="Name, stop ID or cross street"
-                />
-              </div>
-
-              <%= if @stops_state == :loading do %>
-                <div id="stops-map-panel-loading" role="status">
-                  <span class="sr-only">Loading stops&hellip;</span>
-                  <.browse_panel_loading id="stops-map-skeleton" />
+            <%= if @panel == :created do %>
+              <.created_panel
+                id="stops-map-created-panel"
+                stop={@created_stop}
+                version_name={@current_gtfs_version.name}
+              />
+            <% else %>
+              <.browse_panel
+                id="stops-map-panel"
+                title={panel_title(assigns)}
+                subtitle={panel_subtitle(assigns)}
+              >
+                <div class="px-5">
+                  <.search_field
+                    id="stops-map-search"
+                    form={@search_form}
+                    label="Find a stop, street or place"
+                    placeholder="Name, stop ID or cross street"
+                  />
                 </div>
-              <% else %>
-                <%= if @model == nil or @model.stops == [] do %>
-                  <.first_use_panel id="stops-map-first-use" version={@current_gtfs_version} />
+
+                <%= if @stops_state == :loading do %>
+                  <div id="stops-map-panel-loading" role="status">
+                    <span class="sr-only">Loading stops&hellip;</span>
+                    <.browse_panel_loading id="stops-map-skeleton" />
+                  </div>
                 <% else %>
-                  <%!-- A search replaces the list rather than sitting above it:
+                  <%= if @model == nil or @model.stops == [] do %>
+                    <.first_use_panel id="stops-map-first-use" version={@current_gtfs_version} />
+                  <% else %>
+                    <%!-- A search replaces the list rather than sitting above it:
                         forty rows under a result set is a page an editor has to
                         scroll past to see what they searched for. --%>
-                  <%= if @search_query == "" do %>
-                    <%= if panel_checks(assigns) != [] do %>
-                      <.checks_disclosure
-                        id="stops-map-checks"
-                        checks={panel_checks(assigns)}
-                        open?={@checks_open}
+                    <%= if @search_query == "" do %>
+                      <%= if panel_checks(assigns) != [] do %>
+                        <.checks_disclosure
+                          id="stops-map-checks"
+                          checks={panel_checks(assigns)}
+                          open?={@checks_open}
+                        />
+                      <% end %>
+                      <.stop_list id="stops-map-list" stops={panel_rows(assigns)} />
+                    <% else %>
+                      <.search_results
+                        id="stops-map-search-results"
+                        query={@search_query}
+                        stops={@search_stops}
+                        places={@search_places}
+                        unavailable?={@search_unavailable?}
                       />
                     <% end %>
-                    <.stop_list id="stops-map-list" stops={panel_rows(assigns)} />
-                  <% else %>
-                    <.search_results
-                      id="stops-map-search-results"
-                      query={@search_query}
-                      stops={@search_stops}
-                      places={@search_places}
-                      unavailable?={@search_unavailable?}
-                    />
                   <% end %>
                 <% end %>
-              <% end %>
-            </.browse_panel>
+              </.browse_panel>
+            <% end %>
           <% end %>
         </div>
       </div>
@@ -611,13 +1517,17 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
   # A version with no stops opens the first-use panel rather than an empty list.
   # An empty list would read as a broken read; this reads as a version nobody has
-  # added stops to yet.
-  defp assign_new_panel(socket) do
+  # added stops to yet. A create in flight is not disturbed by the reload that
+  # follows it: the created stop is in the feed now, so the panel that is about
+  # to answer is the created one.
+  defp assign_new_panel(%{panel: :browse} = socket) do
     case socket.assigns.model do
       %{stops: []} -> assign(socket, :panel, :first_use)
       _model -> socket
     end
   end
+
+  defp assign_new_panel(socket), do: socket
 
   defp push_scene(socket) do
     case socket.assigns.model do
@@ -805,11 +1715,29 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       {:ok, {lat, lon}} ->
         socket
         |> assign(:placement, {lat, lon})
+        |> seed_coordinates(lat, lon)
         |> push_map_mode()
 
       :error ->
         socket
     end
+  end
+
+  # The two coordinate fields are the pin's own numbers, so a pin that moved
+  # takes them with it. An editor who then types a pair into them has said
+  # something different, and the create flow asks about the disagreement rather
+  # than resolving it silently.
+  defp seed_coordinates(socket, lat, lon) do
+    draft =
+      socket.assigns.add_draft
+      |> Map.put("lat", coordinate_text(lat))
+      |> Map.put("lon", coordinate_text(lon))
+
+    assign_draft(socket, draft)
+  end
+
+  defp coordinate_text(value) do
+    value |> Float.round(5) |> to_string()
   end
 
   defp parse_point(%{"lat" => lat, "lon" => lon}) do

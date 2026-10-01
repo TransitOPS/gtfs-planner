@@ -876,3 +876,362 @@ test("the version checks @checks", async ({ page }, testInfo) => {
 async function countDisclosureRows(page) {
   return page.locator("#stops-map-checks-items li").count();
 }
+
+// ── add a stop (step 28) ───────────────────────────────────────────────────
+
+// Adding a stop, end to end: a point on the map, a name from the streets, the
+// warnings the placement deserves, a refusal the reader can act on, and the
+// stop that exists afterwards.
+//
+// What is asserted here is the round trip the browser actually has — the pin's
+// event, the reverse geocode, the panel's copy, the created panel. The rules
+// behind the copy (which side of a line is the far side, when two stops are
+// duplicates) are the LiveView test's job, because a click on a map cannot
+// name a metre.
+test("the add panel @add", async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+  await openMap(page, versionId);
+  await waitForMapReady(page);
+
+  // Closed in first, like a person who can see the street edge: at the fitted
+  // zoom a click cannot land within thirty metres of a route's shape, and the
+  // panel has nothing to say about a side from that far away.
+  await zoom(page, 3);
+  await waitForMapReady(page);
+
+  // The panel offers the ways in, and says what the next click does before it
+  // is asked for it.
+  await page.locator("#stops-map-add-stop").click();
+  await expect(page.locator("#stops-map-add-panel")).toBeAttached();
+  await expect(page.locator("#stops-map-add-coords-toggle")).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+  await expect(page.locator("#stops-map-add-name")).toBeAttached();
+
+  await captureBoth(page, testInfo, "panel", "add-");
+
+  // A click on the line the map drew places the pin on it, which is the
+  // placement the panel has the most to say about: the side it landed on, the
+  // name the streets give it and the description a rider reads on the sign.
+  await clickOnLine(page);
+  await expect(page.locator("[data-stop-map-pin]")).toBeAttached();
+  await expect(page.locator("#stops-map-add-where")).not.toHaveText("");
+  await expect(page.locator("#stops-map-add-lat")).not.toHaveValue("");
+  await expect(page.locator("#stops-map-add-lon")).not.toHaveValue("");
+
+  await expect(page.locator("#stops-map-add-name")).toHaveValue("Depot Road", {
+    timeout: 30_000,
+  });
+
+  // Beside a line the description is not empty: it is the side of the line the
+  // pin is on, which is the thing the name cannot say.
+  await expect(page.locator("#stops-map-add-where")).toContainText(
+    "side of the",
+  );
+  await expect(page.locator("#stops-map-add-desc")).toHaveValue(/./);
+
+  await captureBoth(page, testInfo, "suggested", "add-");
+
+  // A pasted pair is the other way in: both numbers arrive at once, and the pin
+  // follows them rather than the editor hunting for them on the map.
+  await page.locator("#stops-map-add-cancel").click();
+  await page.locator("#stops-map-add-stop").click();
+  await page.locator("#stops-map-add-coords-toggle").click();
+  await expect(page.locator("#stops-map-add-coords-toggle")).toHaveAttribute(
+    "aria-expanded",
+    "true",
+  );
+  await page.locator("#stops-map-add-lat").fill("44.6358, -124.0531");
+  await expect(page.locator("#stops-map-add-lon")).toHaveValue("-124.0531");
+  await expect(page.locator("[data-stop-map-pin]")).toBeAttached();
+
+  await capture(page, testInfo, "add-pasted-desktop");
+
+  // Creating without a name is refused, and the refusal survives the render:
+  // the summary, the field marked for assistive technology, and nothing
+  // written. The name the streets suggested is cleared the way an editor clears
+  // it, so what is refused is the draft as it stands.
+  await page.locator("#stops-map-add-name").fill("");
+  await page.locator("#stops-map-add-create").click();
+  await expect(page.locator("#stops-map-add-errors")).toBeAttached();
+  await expect(page.locator("#stops-map-add-name")).toHaveAttribute(
+    "aria-invalid",
+    "true",
+  );
+
+  await captureBoth(page, testInfo, "refused", "add-");
+
+  // The draft is still a draft: fixing the name and creating it works without
+  // placing it again.
+  await page.locator("#stops-map-add-name").fill("Cedar Valley Depot");
+  await expect(page.locator("#stops-map-add-name")).toHaveAttribute(
+    "aria-invalid",
+    "false",
+  );
+  await page.locator("#stops-map-add-create").click();
+
+  await expect(page.locator("#stops-map-created-panel")).toBeAttached();
+  await expect(page.locator("#stops-map-created-panel")).toContainText(
+    "Stop created",
+  );
+  await expect(page.locator("#stops-map-created-panel")).toContainText(
+    "Cedar Valley Depot",
+  );
+
+  await captureBoth(page, testInfo, "created", "add-");
+
+  // "Add another stop" opens a fresh draft rather than a second copy of this
+  // one: the created panel is a confirmation, not a form.
+  await page.locator("#stops-map-created-another").click();
+  await expect(page.locator("#stops-map-add-panel")).toBeAttached();
+  await expect(page.locator("#stops-map-add-name")).toHaveValue("");
+  await expect(page.locator("[data-stop-map-pin]")).toHaveCount(0);
+
+  // Cancelling that draft brings the version's list back, and the stop the
+  // created panel named is in it: the write went to this version.
+  await page.locator("#stops-map-add-cancel").click();
+  await expect(page.locator("#stops-map-list")).toBeAttached();
+
+  const inList = await page
+    .locator("#stops-map-list li")
+    .filter({ hasText: "Cedar Valley Depot" })
+    .count();
+  expect(inList).toBe(1);
+});
+
+// A station is the other kind of stop: it needs no line and no pattern, and the
+// panel says so instead of asking for them.
+test("adding a station @add", async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+  await openMap(page, versionId);
+  await waitForMapReady(page);
+
+  await page.locator("#stops-map-add-stop").click();
+  await page.locator("#stops-map-add-kind-station").click();
+
+  // The heading says what is being made, and the create button follows it.
+  await expect(page.locator("#stops-map-add-panel h2")).toHaveText(
+    "New station",
+  );
+  await expect(page.locator("#stops-map-add-create")).toContainText(
+    "Create station",
+  );
+
+  await capture(page, testInfo, "add-station-panel-desktop");
+
+  await clickCentre(page);
+  await expect(page.locator("#stops-map-add-name")).toHaveValue("Depot Road", {
+    timeout: 30_000,
+  });
+
+  await page.locator("#stops-map-add-create").click();
+  await expect(page.locator("#stops-map-created-panel")).toContainText(
+    "Station created",
+  );
+
+  await captureBoth(page, testInfo, "station-created", "add-");
+});
+
+// A placement that lands on top of what is already there is told so, with the
+// two answers the finding allows, before anything is written.
+test("what a placement is told @add", async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+  await openMap(page, versionId);
+  await waitForMapReady(page);
+
+  // Closed in so that a few pixels are a few metres, which is what makes a
+  // click "the same place as a stop" rather than "somewhere near it".
+  await zoom(page, 3);
+  await waitForMapReady(page);
+
+  await page.locator("#stops-map-add-stop").click();
+
+  // A click beside a stop rather than on it: the mark itself opens the stop's
+  // row, and the placement is what is being measured.
+  const box = await onMapMarkerBox(page);
+
+  for (const [dx, dy] of [
+    [16, 16],
+    [-16, 16],
+    [16, -16],
+    [-16, -16],
+    [24, 0],
+    [0, 24],
+  ]) {
+    await page.mouse.click(
+      box.x + box.width / 2 + dx,
+      box.y + box.height / 2 + dy,
+    );
+    if ((await page.locator("[data-stop-map-pin]").count()) > 0) break;
+
+    // A click that landed on the mark opened that stop's row instead of placing
+    // a draft. Back to add mode, and on to the next point.
+    if ((await page.locator("#stops-map-add-panel").count()) === 0) {
+      await page.locator("#stops-map-add-stop").click();
+      await expect(page.locator("#stops-map-add-panel")).toBeAttached();
+    }
+  }
+
+  await expect(page.locator("[data-stop-map-pin]")).toBeAttached();
+
+  // The stop a few tens of feet away is named, with the distance a rider would
+  // use. This placement is too far to be a duplicate, so the row is a sentence
+  // and not a warning with a button.
+  const nearby = page.locator('[data-add-warning="nearby"]').first();
+  await expect(nearby).toBeVisible({ timeout: 30_000 });
+  await expect(nearby).toHaveText(/.+ \(\d+ (ft|mi)\)\./);
+  await expect(nearby.getByRole("button")).toHaveCount(0);
+
+  await captureBoth(page, testInfo, "nearby", "add-");
+
+  // On the line itself, the panel has a side to describe and says so. The click
+  // is made at a point on the stroke itself, read from the SVG rather than
+  // guessed from a box: a point a few pixels off a route is not "on" it.
+  await clickOnLine(page);
+  await expect(page.locator("#stops-map-add-where")).toContainText(
+    "side of the",
+  );
+  await expect(page.locator("#stops-map-add-desc")).toHaveValue(/./);
+
+  await captureBoth(page, testInfo, "on-the-line", "add-");
+
+  // Every advisory row carries at most one action, and an action names what it
+  // does. The rows themselves are the server's findings: which one appears is
+  // the geometry's answer, and the LiveView test is what proves each action.
+  const actions = await page
+    .locator("#stops-map-add-warnings button")
+    .allTextContents();
+
+  for (const label of actions.map((text) => text.trim())) {
+    expect(["Move it across the street"]).toContain(label);
+  }
+});
+
+// The capture of the create in flight. The button's own label is the state, and
+// it is asserted rather than photographed: the write is one round trip and the
+// window in which the button says "Creating…" is narrower than a screenshot.
+test("the creating state @add", async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+  await openMap(page, versionId);
+  await waitForMapReady(page);
+
+  await page.locator("#stops-map-add-stop").click();
+  await clickCentre(page);
+  await expect(page.locator("#stops-map-add-name")).toHaveValue("Depot Road", {
+    timeout: 30_000,
+  });
+
+  await page.locator("#stops-map-add-create").click();
+  await expect(page.locator("#stops-map-created-panel")).toBeAttached();
+
+  await capture(page, testInfo, "add-saving-desktop");
+});
+
+// A click on the canvas in the middle of the map, the way a person places a
+// stop: the middle is a point the assertions and the capture can both name.
+async function clickCentre(page) {
+  const canvas = await page.locator("#stop-map").boundingBox();
+  await page.mouse.click(
+    canvas.x + canvas.width / 2,
+    canvas.y + canvas.height / 2,
+  );
+}
+// A click on the line the map drew, at a point on the stroke itself: the
+// placement is then on a route's shape, which is what gives the panel a side to
+// describe. The point comes from the SVG's own geometry, because a route's
+// bounding box is not the route and a click in the middle of one is somewhere
+// along it at best.
+async function clickOnLine(page) {
+  const points = await page.evaluate(() => {
+    const map = document.querySelector("#stop-map").getBoundingClientRect();
+
+    return [
+      ...document.querySelectorAll("#stop-map .leaflet-overlay-pane path"),
+    ]
+      .map((path) => {
+        const length = path.getTotalLength();
+        if (!length) return null;
+
+        const matrix = path.getScreenCTM();
+        if (!matrix) return null;
+
+        return [0.5, 0.35, 0.65, 0.2, 0.8]
+          .map((fraction) => path.getPointAtLength(length * fraction))
+          .map((point) => ({
+            x: matrix.a * point.x + matrix.c * point.y + matrix.e,
+            y: matrix.b * point.x + matrix.d * point.y + matrix.f,
+          }))
+          .filter(
+            (point) =>
+              point.x > map.left &&
+              point.x < map.right &&
+              point.y > map.top &&
+              point.y < map.bottom,
+          );
+      })
+      .filter(Boolean)
+      .flat();
+  });
+
+  if (points.length === 0) {
+    throw new Error("the map drew no line point inside the window to place on");
+  }
+
+  for (const point of points) {
+    await page.mouse.click(point.x, point.y);
+
+    const where = await page.locator("#stops-map-add-where").textContent();
+    if (where && where.includes("side of the")) return;
+  }
+
+  throw new Error(
+    "no point on a drawn line placed a draft the panel could give a side",
+  );
+}
+
+// A mark the reader can see. Leaflet keeps a marker for every stop in the
+// version, including the ones outside the window, so the first in the DOM is
+// often somewhere a click cannot reach: this is the first one whose own box is
+// inside the map's box.
+async function onMapMarkerBox(page) {
+  return page.evaluate(() => {
+    const map = document.querySelector("#stop-map").getBoundingClientRect();
+    const marks = [
+      ...document.querySelectorAll("#stop-map .stop-map-marker"),
+    ].map((mark) => mark.getBoundingClientRect());
+
+    const rect = marks.find(
+      (candidate) =>
+        candidate.width > 0 &&
+        candidate.left >= map.left &&
+        candidate.right <= map.right &&
+        candidate.top >= map.top &&
+        candidate.bottom <= map.bottom,
+    );
+
+    if (!rect) throw new Error("the map drew no stop mark inside the window");
+
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  });
+}
