@@ -33,6 +33,13 @@ defmodule GtfsPlanner.Gtfs.Fares do
   creating, renaming, pricing, re-selling and removing a fare is one write here
   rather than a sequence of price cells.
 
+  `save_route_group/2` and `delete_route_group/3` are the route group drawer's
+  pair (AC-19). A route group is a GTFS `networks` row and the
+  `route_networks` rows naming the routes in it, and this writer is what keeps
+  a route in at most one group: adding a route to one group deletes the row it
+  had in another and answers which route came from which group, so the drawer
+  can state what it moved rather than leave the operator to notice.
+
   ## How a write is fenced
 
   Every writer in this module runs through the private `write/4` helper, so
@@ -79,6 +86,8 @@ defmodule GtfsPlanner.Gtfs.Fares do
   alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Gtfs.Network
   alias GtfsPlanner.Gtfs.RiderCategory
+  alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.RouteNetwork
   alias GtfsPlanner.Repo
 
   # The Recent changes list, and the Prices tab's history card, show the latest
@@ -107,6 +116,14 @@ defmodule GtfsPlanner.Gtfs.Fares do
   @definition_inverse :definition
 
   @undo_definition_summary "Restored the rider type or payment method a change replaced"
+
+  # The key a route group change's inverse is named under, which is what `undo/3`
+  # matches on to tell it from a fare, a price, a definition or a conversion. It
+  # is its own key because a route group changes `networks` and `route_networks`
+  # rather than a `fare_products` row.
+  @group_inverse :route_group
+
+  @undo_route_group_summary "Restored the route group a change replaced"
 
   @typedoc """
   The arguments every writer of this package takes: the organization and version
@@ -195,6 +212,18 @@ defmodule GtfsPlanner.Gtfs.Fares do
       ) do
     write(scope, @undo_definition_summary, @definition_inverse, fn _setting ->
       undo_definition(organization_id, gtfs_version_id, operation_id, inverse.definition)
+    end)
+  end
+
+  def undo(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        operation_id,
+        %{
+          route_group: _inverse
+        } = inverse
+      ) do
+    write(scope, @undo_route_group_summary, @group_inverse, fn _setting ->
+      undo_route_group(organization_id, gtfs_version_id, operation_id, inverse.route_group)
     end)
   end
 
@@ -884,13 +913,16 @@ defmodule GtfsPlanner.Gtfs.Fares do
   #
   #     %{before: rows, after: rows, inverse: term(),
   #       operation_id: uuid, entry_id: uuid, action: String.t(),
-  #       rolled_back_to_log_id: uuid}
+  #       rolled_back_to_log_id: uuid, reported: map()}
   #
-  # where all four trailing fields are optional. A write reports the id of the
-  # entry it records, which is the id `undo/3` finds that entry by, so the two
-  # name each other by construction. An undo reports the operation it reverses
-  # and gives its own entry an id of its own, since a reversal is a second entry
-  # pointing at the first through `rolled_back_to_log_id`.
+  # where all five trailing fields are optional. `reported` is for a fact the
+  # caller needs beyond the operation id and the inverse — which routes a route
+  # group save took out of another group (AC-19) — and its keys are merged into
+  # the answer. A write reports the id of the entry it records, which is the id
+  # `undo/3` finds that entry by, so the two name each other by construction. An
+  # undo reports the operation it reverses and gives its own entry an id of its
+  # own, since a reversal is a second entry pointing at the first through
+  # `rolled_back_to_log_id`.
   #
   # `Normalize.run!/2` runs inside this transaction before it commits, so a
   # version is never left with rules this package has not normalized (INV-1),
@@ -911,6 +943,7 @@ defmodule GtfsPlanner.Gtfs.Fares do
         record_entry(scope, setting, summary, result, entry_id, operation_id)
 
         %{operation_id: operation_id, inverse: wrap_inverse(inverse_key, result.inverse)}
+        |> Map.merge(Map.get(result, :reported, %{}))
       else
         {:error, reason} -> Repo.rollback(reason)
       end
@@ -2211,6 +2244,518 @@ defmodule GtfsPlanner.Gtfs.Fares do
     end
   end
 
+  # -- Writing one route group ----------------------------------------------------
+
+  @doc """
+  Creates or updates one route group: its name and the routes in it (AC-19).
+
+  `params` is the route group drawer's own form:
+
+      %{name: String.t(),
+        network_id: String.t() | nil,
+        route_ids: [String.t()]}
+
+  A form with no `network_id` creates a route group, whose GTFS id is its name
+  as an id — `Coast routes` is `coast_routes` — and a name whose id this version
+  already holds answers `{:error, :duplicate_route_group}`. A form naming a
+  `network_id` updates that group and answers `{:error, :not_found}` when this
+  version holds no such group, which is what another organization's or
+  version's id is here (INV-5).
+
+  A blank name answers `{:error, changeset}` with an error on `:name`, because a
+  route group the drawer cannot name is not one an operator can find again —
+  the same refusal a fare, a rider type and a payment method give.
+
+  `route_ids` is the whole set of routes in the group, and a route the form does
+  not name is removed from it, because a group is the routes it holds rather
+  than a list an editor adds to. A `route_id` this version does not hold answers
+  `{:error, :not_found}`: the drawer offers this version's routes, and a route of
+  another version is never written into this one's `route_networks` (INV-5).
+
+  A route is in at most one group (AC-19), so a route this group takes is
+  deleted from whatever group held it, and the answer carries
+  `moved: [%{route_id, from_network_id}]` naming each one, which is what the
+  drawer's "moving routes" warning states. The stored `routes.network_id` column
+  of an imported version is not touched (INV-3): a managed version exports
+  `route_networks.txt` and drops that column, so this writer is where a managed
+  version's route-to-group map lives.
+
+  Rules are not this writer's to change. A leg rule, a transfer rule and a
+  pass's `accepted_network_ids` name a group by its id, and a group's id does not
+  move when the group is renamed — only `networks.network_name` is written here.
+  """
+  @spec save_route_group(scope(), map()) :: write_result()
+  def save_route_group(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        params
+      )
+      when is_map(params) do
+    case trimmed_name(params) do
+      {:ok, name} ->
+        write(scope, route_group_save_summary(params, name), @group_inverse, fn _setting ->
+          apply_route_group(organization_id, gtfs_version_id, name, params)
+        end)
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  @doc """
+  Deletes one route group with the rules and passes that named it (AC-19).
+
+  A group its own `fare_leg_rules` or `fare_transfer_rules` reference answers
+  `{:error, :rules_reference_group}`, and a group a pass accepts through its
+  `accepted_network_ids` answers `{:error, :group_accepted_by_pass}`: deleting
+  either would leave rows naming a group that is gone, which is not a state the
+  rest of this package can read. Both are settled by `expected[:remove_rules]`:
+
+  - `true` deletes the leg rules of that group and the transfer rules naming it
+    in either direction, which leaves the cells they priced with no fare — the
+    Where tab's gap, the same shape `delete_fare/4`'s `:remove_rules` leaves;
+  - the group's id is dropped from the `accepted_network_ids` of every pass that
+    accepted it, so no pass is left accepting a group that is not there.
+
+  A group named by nothing is deleted with either. The group's own
+  `route_networks` rows and its `networks` row are deleted with it and go into
+  the inverse whole — with the ids they had, beside the rules and the pass
+  acceptances the write settled — so `undo/3` puts all of it back as it was.
+
+  `expected` is the fence, and carries the `:name` the editor reviewed beside
+  the `:remove_rules` choice: a group renamed since the drawer opened answers
+  `{:error, {:stale, details}}` and deletes nothing (R15).
+
+  A group of another organization or another version answers
+  `{:error, :not_found}`, a version that is not published answers the same, and
+  an unmanaged version answers `{:error, :unmanaged}` (R12).
+  """
+  @spec delete_route_group(scope(), String.t(), map()) :: write_result()
+  def delete_route_group(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
+        network_id,
+        expected
+      )
+      when is_binary(network_id) and is_map(expected) do
+    summary =
+      "Deleted the route group \"#{route_group_name(organization_id, gtfs_version_id, network_id) || network_id}\""
+
+    write(scope, summary, @group_inverse, fn _setting ->
+      remove_route_group(organization_id, gtfs_version_id, network_id, expected)
+    end)
+  end
+
+  defp apply_route_group(organization_id, gtfs_version_id, name, params) do
+    networks = version_networks(organization_id, gtfs_version_id)
+
+    with {:ok, network_id} <- route_group_id(networks, name, params),
+         {:ok, network} <- write_network(organization_id, gtfs_version_id, network_id, name),
+         {:ok, routes} <- route_group_routes(organization_id, gtfs_version_id, params),
+         {:ok, membership} <-
+           write_route_membership(organization_id, gtfs_version_id, network_id, routes) do
+      {:ok,
+       %{
+         before:
+           route_group_log_row(
+             network.before,
+             Enum.map(membership.removed, & &1.route_id),
+             Enum.map(membership.moved, &moved_log_row/1)
+           ),
+         after:
+           route_group_log_row(
+             network.after,
+             membership.route_ids,
+             Enum.map(membership.moved, &moved_log_row/1)
+           ),
+         action: network.action,
+         reported: %{moved: Enum.map(membership.moved, &moved_report(&1))},
+         inverse: %{
+           operation: :save,
+           network: network,
+           route_networks: %{
+             added: membership.added,
+             removed: membership.removed,
+             moved: membership.moved
+           }
+         }
+       }}
+    end
+  end
+
+  # The GTFS id of the route group the form names: its name as an id when the form
+  # creates one, refused when this version already holds it, and the id the form
+  # named when it edits one. An id of another version is `:not_found` (INV-5),
+  # the same answer a fare, a rider type and a payment method give.
+  defp route_group_id(networks, name, params) do
+    case fare_param(params, :network_id) do
+      nil ->
+        id = fare_slug(name)
+
+        cond do
+          id == "" -> {:error, name_changeset(name, "must have a letter or a number")}
+          Enum.any?(networks, &(&1.network_id == id)) -> {:error, :duplicate_route_group}
+          true -> {:ok, id}
+        end
+
+      "" ->
+        {:error, :not_found}
+
+      id when is_binary(id) ->
+        if Enum.any?(networks, &(&1.network_id == id)) do
+          {:ok, id}
+        else
+          {:error, :not_found}
+        end
+
+      _other ->
+        {:error, :not_found}
+    end
+  end
+
+  defp version_networks(organization_id, gtfs_version_id) do
+    Network
+    |> scoped(organization_id, gtfs_version_id)
+    |> order_by([network], network.network_id)
+    |> Repo.all()
+  end
+
+  defp network_row(organization_id, gtfs_version_id, network_id) do
+    Network
+    |> scoped(organization_id, gtfs_version_id)
+    |> where([network], network.network_id == ^network_id)
+    |> Repo.one()
+  end
+
+  defp route_group_name(organization_id, gtfs_version_id, network_id) do
+    case network_row(organization_id, gtfs_version_id, network_id) do
+      nil -> nil
+      network -> network.network_name
+    end
+  end
+
+  # The one `networks` row, written through its own changeset. Only the name is an
+  # operator's to edit here: the id is what every leg rule, transfer rule and
+  # accepted pass names, and renaming a group leaves those naming the same group.
+  defp write_network(organization_id, gtfs_version_id, network_id, name) do
+    attrs = %{network_id: network_id, network_name: name}
+
+    case network_row(organization_id, gtfs_version_id, network_id) do
+      nil ->
+        changeset =
+          %Network{}
+          |> Network.changeset(
+            Map.merge(attrs, %{
+              organization_id: organization_id,
+              gtfs_version_id: gtfs_version_id
+            })
+          )
+
+        case Repo.insert(changeset) do
+          {:ok, row} ->
+            {:ok, %{id: row.id, action: "created", before: nil, after: attrs, row: row}}
+
+          {:error, changeset} ->
+            Repo.rollback(changeset)
+        end
+
+      row ->
+        case row |> Network.changeset(%{network_name: name}) |> Repo.update() do
+          {:ok, updated} ->
+            {:ok,
+             %{
+               id: updated.id,
+               action: "updated",
+               before: network_attrs(row),
+               after: network_attrs(updated),
+               row: updated
+             }}
+
+          {:error, changeset} ->
+            Repo.rollback(changeset)
+        end
+    end
+  end
+
+  defp network_attrs(row) do
+    %{network_id: row.network_id, network_name: row.network_name}
+  end
+
+  # The routes the drawer put in the group, checked against the version's own
+  # routes. A `route_id` this version does not hold is `:not_found`, which is
+  # what another version's route is here (INV-5).
+  defp route_group_routes(organization_id, gtfs_version_id, params) do
+    named =
+      case fare_param(params, :route_ids) do
+        ids when is_list(ids) -> ids
+        _other -> []
+      end
+
+    routes =
+      named
+      |> Enum.filter(&is_binary/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    known = version_route_ids(organization_id, gtfs_version_id)
+
+    if Enum.all?(routes, &MapSet.member?(known, &1)) do
+      {:ok, routes}
+    else
+      {:error, :not_found}
+    end
+  end
+
+  defp version_route_ids(organization_id, gtfs_version_id) do
+    Route
+    |> scoped(organization_id, gtfs_version_id)
+    |> select([route], route.route_id)
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
+  # The `route_networks` rows this group holds, and the routes it takes out of
+  # another group. AC-19: a route is in at most one group, so a route this group
+  # takes has the row it had elsewhere deleted in the same transaction, and the
+  # answer says which route came from which group.
+  defp write_route_membership(organization_id, gtfs_version_id, network_id, routes) do
+    rows = version_route_networks(organization_id, gtfs_version_id)
+    mine = Enum.filter(rows, &(&1.network_id == network_id))
+    elsewhere = Enum.filter(rows, &(&1.network_id != network_id))
+    wanted = MapSet.new(routes)
+
+    removed = Enum.reject(mine, &MapSet.member?(wanted, &1.route_id))
+    added = Enum.reject(routes, &Enum.any?(mine, fn row -> row.route_id == &1 end))
+    moved = Enum.filter(elsewhere, &MapSet.member?(wanted, &1.route_id))
+
+    delete_rows(RouteNetwork, organization_id, gtfs_version_id, removed ++ moved)
+    added = insert_route_networks(organization_id, gtfs_version_id, network_id, added)
+
+    {:ok,
+     %{
+       added: added,
+       removed: removed,
+       moved: moved,
+       route_ids: routes
+     }}
+  end
+
+  defp version_route_networks(organization_id, gtfs_version_id) do
+    RouteNetwork
+    |> scoped(organization_id, gtfs_version_id)
+    |> order_by([row], row.route_id)
+    |> Repo.all()
+  end
+
+  # `insert_all/3` answers `{count, rows}`; the rows themselves are what the
+  # inverse restores, with the ids they were given.
+  defp insert_route_networks(_organization_id, _gtfs_version_id, _network_id, []), do: []
+
+  defp insert_route_networks(organization_id, gtfs_version_id, network_id, route_ids) do
+    now = DateTime.utc_now()
+
+    rows =
+      Enum.map(route_ids, fn route_id ->
+        %{
+          id: Ecto.UUID.generate(),
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id,
+          network_id: network_id,
+          route_id: route_id,
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    {_count, inserted} = Repo.insert_all(RouteNetwork, rows, returning: true)
+    inserted
+  end
+
+  # Deleting by the rows' own ids, re-asserting the version pair, so a row that
+  # moved between versions is never deleted through this path (INV-5).
+  defp delete_rows(schema, organization_id, gtfs_version_id, rows) do
+    case Enum.map(rows, & &1.id) do
+      [] ->
+        :ok
+
+      ids ->
+        Repo.delete_all(
+          from(row in schema,
+            where:
+              row.organization_id == ^organization_id and
+                row.gtfs_version_id == ^gtfs_version_id and row.id in ^ids
+          )
+        )
+    end
+  end
+
+  defp moved_report(row), do: %{route_id: row.route_id, from_network_id: row.network_id}
+
+  defp moved_log_row(row) do
+    %{"route_id" => row.route_id, "from_network_id" => row.network_id}
+  end
+
+  # The change-log rows of one route group write: the group's own id and name
+  # beside the routes it holds now and the routes it moved. A group the version
+  # did not hold has no before, because there was nothing to state.
+  defp route_group_log_row(nil, _route_ids, _moved), do: nil
+
+  defp route_group_log_row(attrs, route_ids, moved) do
+    %{
+      "network_id" => attrs.network_id,
+      "network_name" => attrs.network_name,
+      "routes" => route_ids,
+      "moved" => moved
+    }
+  end
+
+  defp route_group_save_summary(params, name) do
+    if fare_param(params, :network_id) do
+      "Updated the route group \"#{name}\""
+    else
+      "Created the route group \"#{name}\""
+    end
+  end
+
+  # -- Deleting one route group ----------------------------------------------------
+
+  # The `fare_product_details.kind` of a pass, which is what a route group a pass
+  # still accepts is read out of.
+  @pass_kind "pass"
+
+  defp remove_route_group(organization_id, gtfs_version_id, network_id, expected) do
+    case network_row(organization_id, gtfs_version_id, network_id) do
+      nil ->
+        {:error, :not_found}
+
+      network ->
+        case name_stale(expected, network.network_name) do
+          [] -> settle_route_group_references(organization_id, gtfs_version_id, network, expected)
+          stale -> {:error, {:stale, stale}}
+        end
+    end
+  end
+
+  # What named this group, and what the operator asked to do about it. A group a
+  # rule or a pass names is refused unless the drawer asked for the references to
+  # be settled, because deleting a group out from under them leaves rows naming
+  # something that is gone.
+  defp settle_route_group_references(organization_id, gtfs_version_id, network, expected) do
+    rules = group_rules(organization_id, gtfs_version_id, network.network_id)
+    passes = accepting_passes(organization_id, gtfs_version_id, network.network_id)
+
+    cond do
+      rules != [] and not remove_rules?(expected) -> {:error, :rules_reference_group}
+      passes != [] and not remove_rules?(expected) -> {:error, :group_accepted_by_pass}
+      true -> delete_group_rows(organization_id, gtfs_version_id, network, rules, passes)
+    end
+  end
+
+  defp remove_rules?(expected) do
+    fare_param(expected, :remove_rules) == true
+  end
+
+  # The rules of a delete, split by the table they live in: a `fare_leg_rules`
+  # row and a `fare_transfer_rules` row are different rows that happen to name
+  # the same group, and each is deleted from its own table.
+  defp leg_rule_rows(rules), do: Enum.filter(rules, &match?(%FareLegRule{}, &1))
+
+  defp transfer_rule_rows(rules), do: Enum.filter(rules, &match?(%FareTransferRule{}, &1))
+
+  # The version's own rules naming this group: a leg rule through the network the
+  # operator chose, and a transfer rule through either leg group. `leg_group_id`
+  # is not read here because it is Normalize's column (INV-4) and says the same
+  # thing about a leg rule.
+  defp group_rules(organization_id, gtfs_version_id, network_id) do
+    leg_rules =
+      FareLegRule
+      |> scoped(organization_id, gtfs_version_id)
+      |> where([rule], rule.network_id == ^network_id)
+      |> Repo.all()
+
+    transfer_rules =
+      FareTransferRule
+      |> scoped(organization_id, gtfs_version_id)
+      |> where(
+        [rule],
+        rule.from_leg_group_id == ^network_id or rule.to_leg_group_id == ^network_id
+      )
+      |> Repo.all()
+
+    leg_rules ++ transfer_rules
+  end
+
+  defp accepting_passes(organization_id, gtfs_version_id, network_id) do
+    FareProductDetail
+    |> scoped(organization_id, gtfs_version_id)
+    |> where([detail], detail.kind == ^@pass_kind)
+    |> Repo.all()
+    |> Enum.filter(fn detail ->
+      network_id in (detail.accepted_network_ids || [])
+    end)
+  end
+
+  defp delete_group_rows(organization_id, gtfs_version_id, network, rules, passes) do
+    membership =
+      Enum.filter(
+        version_route_networks(organization_id, gtfs_version_id),
+        &(&1.network_id == network.network_id)
+      )
+
+    delete_rows(FareLegRule, organization_id, gtfs_version_id, leg_rule_rows(rules))
+    delete_rows(FareTransferRule, organization_id, gtfs_version_id, transfer_rule_rows(rules))
+    delete_rows(RouteNetwork, organization_id, gtfs_version_id, membership)
+    delete_rows(Network, organization_id, gtfs_version_id, [network])
+    states = unaccept_route_group(organization_id, gtfs_version_id, passes, network.network_id)
+
+    {:ok,
+     %{
+       before:
+         route_group_log_row(
+           network_attrs(network),
+           Enum.map(membership, & &1.route_id),
+           []
+         )
+         |> Map.merge(%{
+           "rules_removed" => Enum.map(rules, & &1.id),
+           "passes_updated" => Enum.map(states, & &1.fare_product_id)
+         }),
+       after: [],
+       action: "deleted",
+       inverse: %{
+         operation: :delete,
+         network: network,
+         route_networks: membership,
+         rules: rules,
+         passes: states
+       }
+     }}
+  end
+
+  # A pass no longer accepts a group that is gone. R4's mirror is rebuilt by the
+  # `Normalize.run!/2` this transaction runs, so dropping the id is enough: no
+  # pass row of a group that no longer exists is written back.
+  defp unaccept_route_group(organization_id, gtfs_version_id, passes, network_id) do
+    now = DateTime.utc_now()
+
+    Enum.map(passes, fn pass ->
+      accepted = pass.accepted_network_ids -- [network_id]
+
+      from(detail in FareProductDetail,
+        where:
+          detail.id == ^pass.id and detail.organization_id == ^organization_id and
+            detail.gtfs_version_id == ^gtfs_version_id
+      )
+      |> Repo.update_all(set: [accepted_network_ids: accepted, updated_at: now])
+
+      %{
+        id: pass.id,
+        fare_product_id: pass.fare_product_id,
+        before: pass.accepted_network_ids,
+        after: accepted
+      }
+    end)
+  end
+
   defp blank_to_nil(value) when is_binary(value) do
     case String.trim(value) do
       "" -> nil
@@ -3352,7 +3897,7 @@ defmodule GtfsPlanner.Gtfs.Fares do
     case inverse do
       %{operation: :save} = inverse ->
         restore_prices(organization_id, gtfs_version_id, inverse.fare_products)
-        restore_saved_definition(organization_id, gtfs_version_id, inverse.schema, inverse.row)
+        restore_saved_row(organization_id, gtfs_version_id, inverse.schema, inverse.row)
         restore_default(organization_id, gtfs_version_id, inverse)
 
       %{operation: :delete} = inverse ->
@@ -3366,8 +3911,9 @@ defmodule GtfsPlanner.Gtfs.Fares do
   # A definition row this write created is deleted again, and a row it changed
   # goes back to the values it held. Both statements re-assert the version pair,
   # so a row that moved between versions is never written through this path
-  # (INV-5).
-  defp restore_saved_definition(
+  # (INV-5). The same two statements restore a saved route group row, which is
+  # why this reads a row rather than one entity type.
+  defp restore_saved_row(
          organization_id,
          gtfs_version_id,
          schema,
@@ -3383,7 +3929,7 @@ defmodule GtfsPlanner.Gtfs.Fares do
     )
   end
 
-  defp restore_saved_definition(
+  defp restore_saved_row(
          organization_id,
          gtfs_version_id,
          schema,
@@ -3421,6 +3967,156 @@ defmodule GtfsPlanner.Gtfs.Fares do
 
         :ok
     end
+  end
+
+  # -- Undoing a route group change -----------------------------------------------
+
+  # Applies a `save_route_group/2` or `delete_route_group/3` inverse.
+  #
+  # A saved group's row must still be there and still hold the name and routes
+  # that write left, the rows it added must still be in it and the rows it
+  # deleted — its own and those it took from another group — must still be gone.
+  # A deleted group's own rows and the rules its delete settled must still be
+  # gone, and each pass it stopped accepting must still hold the acceptance list
+  # the delete left. Anything else answers `{:error, :stale}` and changes
+  # nothing, so a reversal can never revert a later edit (R15, AC-26).
+  defp undo_route_group(organization_id, gtfs_version_id, operation_id, inverse) do
+    with :ok <- require_entry(operation_id, organization_id, gtfs_version_id),
+         :ok <- require_group_unchanged(organization_id, gtfs_version_id, inverse) do
+      restore_route_group(organization_id, gtfs_version_id, inverse)
+
+      {:ok,
+       %{
+         before: [],
+         after: [],
+         inverse: nil,
+         operation_id: operation_id,
+         action: "rolled_back",
+         rolled_back_to_log_id: operation_id
+       }}
+    end
+  end
+
+  defp require_group_unchanged(organization_id, gtfs_version_id, inverse) do
+    stale? =
+      case inverse do
+        %{operation: :save} = inverse ->
+          saved_group_stale?(organization_id, gtfs_version_id, inverse)
+
+        %{operation: :delete} = inverse ->
+          deleted_group_stale?(organization_id, gtfs_version_id, inverse)
+
+        _other ->
+          true
+      end
+
+    if stale?, do: {:error, :stale}, else: :ok
+  end
+
+  defp saved_group_stale?(organization_id, gtfs_version_id, inverse) do
+    network = inverse.network
+    rows = inverse.route_networks
+
+    not definition_untouched?(Network, organization_id, gtfs_version_id, network) or
+      Enum.any?(
+        rows.removed ++ rows.moved,
+        &definition_present?(RouteNetwork, organization_id, gtfs_version_id, &1.id)
+      ) or
+      not Enum.all?(
+        rows.added,
+        &route_network_untouched?(&1, organization_id, gtfs_version_id)
+      )
+  end
+
+  defp deleted_group_stale?(organization_id, gtfs_version_id, inverse) do
+    definition_present?(Network, organization_id, gtfs_version_id, inverse.network.id) or
+      Enum.any?(
+        inverse.route_networks,
+        &definition_present?(RouteNetwork, organization_id, gtfs_version_id, &1.id)
+      ) or
+      Enum.any?(inverse.rules, &rule_present?(&1, organization_id, gtfs_version_id)) or
+      not Enum.all?(
+        inverse.passes,
+        &pass_acceptance_untouched?(&1, organization_id, gtfs_version_id)
+      )
+  end
+
+  # The membership row the save added must still name the group and the route it
+  # added for, and no other row may hold that route: a route that has since been
+  # moved to another group is a later edit this reversal must not revert.
+  defp route_network_untouched?(row, organization_id, gtfs_version_id) do
+    current =
+      from(m in RouteNetwork,
+        where:
+          m.id == ^row.id and m.organization_id == ^organization_id and
+            m.gtfs_version_id == ^gtfs_version_id
+      )
+      |> Repo.one()
+
+    current != nil and current.network_id == row.network_id and current.route_id == row.route_id
+  end
+
+  defp rule_present?(%FareLegRule{} = rule, organization_id, gtfs_version_id) do
+    Repo.exists?(
+      from(r in FareLegRule,
+        where:
+          r.id == ^rule.id and r.organization_id == ^organization_id and
+            r.gtfs_version_id == ^gtfs_version_id
+      )
+    )
+  end
+
+  defp rule_present?(%FareTransferRule{} = rule, organization_id, gtfs_version_id) do
+    Repo.exists?(
+      from(r in FareTransferRule,
+        where:
+          r.id == ^rule.id and r.organization_id == ^organization_id and
+            r.gtfs_version_id == ^gtfs_version_id
+      )
+    )
+  end
+
+  # The pass must still accept exactly the groups the delete left it accepting.
+  defp pass_acceptance_untouched?(state, organization_id, gtfs_version_id) do
+    current =
+      from(detail in FareProductDetail,
+        where:
+          detail.id == ^state.id and detail.organization_id == ^organization_id and
+            detail.gtfs_version_id == ^gtfs_version_id,
+        select: detail.accepted_network_ids
+      )
+      |> Repo.one()
+
+    current == state.after
+  end
+
+  defp restore_route_group(organization_id, gtfs_version_id, %{operation: :save} = inverse) do
+    rows = inverse.route_networks
+
+    Enum.each(rows.removed ++ rows.moved, &Repo.insert!(Ecto.Changeset.change(&1)))
+    delete_rows(RouteNetwork, organization_id, gtfs_version_id, rows.added)
+    restore_saved_row(organization_id, gtfs_version_id, Network, inverse.network)
+
+    :ok
+  end
+
+  defp restore_route_group(organization_id, gtfs_version_id, %{operation: :delete} = inverse) do
+    Repo.insert!(Ecto.Changeset.change(inverse.network))
+    Enum.each(inverse.route_networks, &Repo.insert!(Ecto.Changeset.change(&1)))
+    Enum.each(inverse.rules, &Repo.insert!(Ecto.Changeset.change(&1)))
+
+    now = DateTime.utc_now()
+
+    Enum.each(inverse.passes, fn pass ->
+      from(detail in FareProductDetail,
+        where:
+          detail.id == ^pass.id and detail.organization_id == ^organization_id and
+            detail.gtfs_version_id == ^gtfs_version_id
+      )
+      |> Repo.update_all(set: [accepted_network_ids: pass.before, updated_at: now])
+    end)
+
+    :ok
   end
 
   # Applies a `save_fare/2` or `delete_fare/4` inverse.
