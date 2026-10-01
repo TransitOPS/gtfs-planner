@@ -50,7 +50,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
+  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Repo
 
   describe "StationDiagramLive - server-owned destructive confirmations" do
@@ -3759,7 +3761,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       }
 
       assert {:ok, restored} =
-               GtfsPlanner.Gtfs.Stations.rollback_entity(
+               Stations.rollback_entity(
                  audit_ctx,
                  stop_log.id,
                  persisted_entity_revision(stop_log)
@@ -11611,7 +11613,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Renamed Platform"
         })
 
@@ -11650,7 +11652,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :pathway, pathway, "updated", %{
+        Audit.record_change_in_transaction(ctx, :pathway, pathway, "updated", %{
           pathway_mode: 2
         })
 
@@ -11675,7 +11677,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :level, level, "updated", %{
+        Audit.record_change_in_transaction(ctx, :level, level, "updated", %{
           level_name: "Mezzanine"
         })
 
@@ -11744,7 +11746,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_lat: 1.5,
           stop_name: "Error Platform"
         })
@@ -11792,12 +11794,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop_a, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop_a, "updated", %{
           stop_name: "Alpha Only"
         })
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop_b, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop_b, "updated", %{
           stop_name: "Bravo Only"
         })
 
@@ -11839,7 +11841,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Ghost Entry"
         })
 
@@ -11875,7 +11877,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Generation One"
         })
 
@@ -11938,7 +11940,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Refresh Platform"
         })
 
@@ -11984,7 +11986,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Filter Platform"
         })
 
@@ -12015,7 +12017,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Spoof Platform"
         })
 
@@ -12040,7 +12042,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: %{"from" => "Old", "to" => "New"}
         })
 
@@ -12072,12 +12074,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Late UTC"
         })
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Early UTC"
         })
 
@@ -12128,7 +12130,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Conflicted"
         })
 
@@ -12165,7 +12167,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = lifecycle_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Tabbed"
         })
 
@@ -12296,12 +12298,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = history_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "First Edit"
         })
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Second Edit"
         })
 
@@ -12358,7 +12360,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = history_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :pathway, pathway, "updated", %{
+        Audit.record_change_in_transaction(ctx, :pathway, pathway, "updated", %{
           length: 50.0
         })
 
@@ -12390,7 +12392,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = history_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :level, level, "updated", %{
+        Audit.record_change_in_transaction(ctx, :level, level, "updated", %{
           level_name: "Renamed"
         })
 
@@ -12494,7 +12496,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = history_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Edited"
         })
 
@@ -12539,7 +12541,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = history_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Edited"
         })
 
@@ -12581,7 +12583,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = history_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Edited"
         })
 
@@ -12622,7 +12624,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = history_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Edited"
         })
 
@@ -12730,7 +12732,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = preview_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Changed Name"
         })
 
@@ -12862,7 +12864,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = preview_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           diagram_coordinate: %{"x" => 30.0, "y" => 40.0}
         })
 
@@ -12909,7 +12911,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = preview_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Would Change"
         })
 
@@ -12952,7 +12954,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = preview_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Later"
         })
 
@@ -13009,7 +13011,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = preview_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Updated"
         })
 
@@ -13110,7 +13112,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Changed Name"
         })
 
@@ -13225,7 +13227,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           diagram_coordinate: moved_coordinate
         })
 
@@ -13313,7 +13315,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :pathway, pathway, "updated", %{
+        Audit.record_change_in_transaction(ctx, :pathway, pathway, "updated", %{
           traversal_time: 99
         })
 
@@ -13351,7 +13353,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :level, level, "updated", %{
+        Audit.record_change_in_transaction(ctx, :level, level, "updated", %{
           level_name: "Renamed Level"
         })
 
@@ -13399,7 +13401,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Changed Name"
         })
 
@@ -13457,7 +13459,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Changed Name"
         })
 
@@ -13561,7 +13563,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "created", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "created", %{
           stop_id: stop.stop_id
         })
 
@@ -13639,7 +13641,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Changed Name"
         })
 
@@ -13711,7 +13713,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Changed Name"
         })
 
@@ -13788,7 +13790,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           diagram_coordinate: moved_coordinate
         })
 
@@ -13859,7 +13861,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Changed Name"
         })
 
@@ -13946,7 +13948,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       ctx = confirm_audit_ctx(organization, gtfs_version, station, user)
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Changed Name"
         })
 
@@ -14738,7 +14740,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       }
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop_in_b, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop_in_b, "updated", %{
           stop_name: "Renamed B"
         })
 
@@ -14834,7 +14836,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       }
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: "Renamed"
         })
 
@@ -14863,7 +14865,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       preview = state.socket.assigns.rollback_preview
       assert is_map(preview)
 
-      assert {:ok, target} = GtfsPlanner.Gtfs.Stations.rollback_target_snapshot(pruned_log)
+      assert {:ok, target} = Stations.rollback_target_snapshot(pruned_log)
       refute Map.has_key?(target, "wheelchair_boarding")
       refute Enum.any?(preview.field_changes, &(&1.field == "wheelchair_boarding"))
     end
@@ -15898,7 +15900,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       }
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
+        Audit.record_change_in_transaction(ctx, :stop, stop, "updated", %{
           stop_name: @long_name,
           stop_desc: nil,
           wheelchair_boarding: 0
@@ -16162,7 +16164,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       }
 
       {:ok, _audit_log} =
-        GtfsPlanner.Gtfs.Audit.record_change_in_transaction(audit, :stop, stop, "created", %{
+        Audit.record_change_in_transaction(audit, :stop, stop, "created", %{
           stop_id: stop.stop_id
         })
 
