@@ -320,10 +320,16 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   The control renders its own `<form>`, so it must stay outside the editor's
   draft form: a nested form is not valid HTML and the browser drops the inner
   one together with its change event.
+
+  `unavailable?` is what the assistant's own failure looks like from here: a
+  turn that failed at the provider leaves the form working and the draft intact,
+  so the control says so rather than the editor pretending the assistant is
+  there.
   """
   attr :id, :string, required: true
   attr :mode, :atom, required: true, doc: ":form or :assistant"
   attr :preferred, :atom, required: true, doc: "the reader's stored preference"
+  attr :unavailable?, :boolean, default: false, doc: "a turn failed at the provider"
   attr :class, :any, default: nil
 
   def mode_control(assigns) do
@@ -356,6 +362,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
         class="text-[13px] font-semibold text-muted"
       >
         Default
+      </span>
+      <span
+        :if={@unavailable?}
+        id="alert-assistant-unavailable"
+        class="basis-full text-[13px] font-semibold text-warning"
+      >
+        The assistant is unavailable right now. Your draft is kept and the form still saves.
       </span>
     </div>
     """
@@ -510,6 +523,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   attr :where, :string, default: nil, doc: "the `Where riders see it` sentence"
   attr :what, :string, default: nil, doc: "the `What's happening` sentence"
 
+  attr :assistant?, :boolean,
+    default: false,
+    doc: "the last change to this draft came from the assistant"
+
   def rider_preview(assigns) do
     ~H"""
     <aside id="alert-preview" class="grid gap-4 lg:sticky lg:top-4">
@@ -527,6 +544,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
               routes={@routes}
               header={@header}
               description={description(@alert)}
+              assistant?={@assistant?}
             />
           </div>
           <dl id="alert-preview-facts" class="mt-4">
@@ -558,6 +576,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
         <.all_routes_badge :if={@routes == [] and @effect} />
         <span :if={@routes != []} class="flex flex-wrap items-center gap-1">
           <RouteIdentity.route_badge :for={route <- @routes} route={route} />
+        </span>
+        <span
+          :if={@assistant?}
+          id="alert-preview-assistant"
+          class="ml-auto inline-flex items-center gap-1 rounded-badge bg-soft px-1.5 py-0.5 text-[12px] font-semibold text-cyan-800"
+        >
+          <.icon name="hero-sparkles" class="size-3.5" /> Filled in by the assistant
         </span>
       </div>
       <p id="alert-preview-header" class="mt-1.5 text-[15px] font-bold leading-snug text-strong">
@@ -2676,6 +2701,89 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
         </.button>
       </div>
     </.callout>
+    """
+  end
+
+  @doc """
+  The **Describe the situation** card `/alerts/new` shows in Assistant mode.
+
+  There is no draft and no alert yet, so there is no conversation to open and no
+  row for the session's subject: this is the one place the assistant is asked
+  for something before the editor has a record of it. The note is the editor's
+  own field, and submitting it creates the draft, opens that draft's
+  conversation and sends the note.
+
+  The sample situations come from the pack as data and fill the note rather than
+  sending it, so a reader can rewrite an example in their own words before the
+  interview starts. The subtitle says the assistant prepares a draft and the
+  operator checks it before **saving**, because saving is the end of this
+  package: nothing here publishes.
+  """
+  attr :form, :any, required: true, doc: "the `to_form/2` assign for the start note"
+  attr :examples, :list, default: [], doc: "the pack's sample situations"
+
+  def assistant_start(assigns) do
+    ~H"""
+    <section id="alert-assistant-start" class="rounded-card border border-subtle bg-white">
+      <div class="border-b border-subtle px-4 py-3.5 sm:px-5">
+        <h2 id="alert-assistant-start-title" class="text-base font-bold tracking-normal text-strong">
+          Describe the situation
+        </h2>
+        <p id="alert-assistant-start-subtitle" class="mt-1 text-[13px] text-muted">
+          The assistant prepares a draft. You check it before saving.
+        </p>
+      </div>
+
+      <div class="grid gap-5 px-4 py-4 sm:px-5">
+        <div>
+          <p id="alert-assistant-start-intro" class="text-base font-bold text-strong">
+            Paste a dispatch note, or tell me what happened.
+          </p>
+          <p id="alert-assistant-start-hint" class="mt-1 text-sm text-default">
+            Include the place or route, the service change, and what riders can do. Unknown end
+            time? That's fine.
+          </p>
+        </div>
+
+        <div :if={@examples != []} id="alert-assistant-examples" class="grid gap-2">
+          <p class="text-[13px] font-semibold text-muted">Try a sample situation</p>
+          <div class="grid gap-2 sm:grid-cols-2">
+            <button
+              :for={{example, offset} <- Enum.with_index(@examples)}
+              type="button"
+              id={"alert-assistant-example-#{offset + 1}"}
+              phx-click="assistant_example"
+              phx-value-text={example}
+              class="min-h-11 rounded-control border border-control p-3 text-left text-[13px] text-strong hover:bg-selection"
+            >
+              {example}
+            </button>
+          </div>
+        </div>
+
+        <.form for={@form} id="alert-assistant-form" phx-submit="assistant_start">
+          <.input
+            field={@form[:note]}
+            type="textarea"
+            id="alert-assistant-note"
+            label="Your note"
+            rows="3"
+            maxlength="2000"
+            placeholder="Describe the disruption"
+            phx-debounce="300"
+            help="The assistant asks one question at a time and fills this same draft."
+          />
+          <div class="mt-2 flex flex-wrap items-center justify-between gap-2">
+            <p id="alert-assistant-start-note" class="text-[12px] text-muted">
+              Your draft is kept either way.
+            </p>
+            <.button id="alert-assistant-start" type="submit" variant="primary" class="min-h-11">
+              Send note
+            </.button>
+          </div>
+        </.form>
+      </div>
+    </section>
     """
   end
 

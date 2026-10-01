@@ -127,6 +127,37 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   Publish, Schedule or feed copy here or anywhere else in this LiveView,
   because saving an alert never publishes one in this package (R2, CR-1).
 
+  ## Assistant mode is the same draft, interviewed
+
+  Assistant mode is a second frame over the same row, not a second editor. On
+  `/alerts/new` it shows the **Describe the situation** start card, because
+  there is no draft to talk about yet and no alert to hold a conversation: the
+  first note the reader sends is what creates the draft, through
+  `Alerts.create_alert/2`, and the editor then navigates to that row's own
+  assistant URL, where `AgentPanel.open/1` attaches to the conversation the
+  start card already began.
+
+  Every edit route in assistant mode mounts `AgentPanel` with the `alerts` pack,
+  `auto_apply: true` and this alert's own id as the session's subject, and opens
+  it. Each settled prepared change arrives as
+  `{:agent_prepared, conversation_id, entry_id}`; a message naming another
+  conversation, or another alert's session, changes nothing. The change itself
+  is applied here and nowhere else: `Agents.prepared/3` returns the model's own
+  draft-shaped parameters, they go through `Alerts.save_draft/4` at the revision
+  this editor holds, and the entry is recorded applied with the exact command
+  that was written (CR-6, INV-1).
+
+  A change prepared against a revision this editor has since replaced is not
+  dropped and not forced either: the editor keeps it as a candidate and offers
+  **Apply changes**, which re-reads the alert and applies the same parameters at
+  whatever revision the row is at then.
+
+  The assistant is a convenience, never a dependency. When the provider cannot
+  answer, the panel reports it and the mode control says so, while Form mode
+  keeps every answer and every save. **Draft with assistant** on the message
+  step asks for wording and puts the request in the composer, so nothing is
+  sent that the operator did not read first.
+
   ## What this frame does not do
 
   It carries no publication state and no publication action: saving an alert
@@ -134,15 +165,18 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   copy is absent by construction (R2, CR-1). The question bodies belong to the
   steps that own them; this step builds the frame they render inside, creation on
   the first answer, the version check, the preference, the autosave form with its
-  save status and conflict banner, and **Delete alert**. The assistant mode
-  renders a placeholder region its own step fills.
+  save status and conflict banner, **Delete alert**, and the assistant frame the
+  interview runs in.
   """
 
   use GtfsPlannerWeb, :live_view
 
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
+
   import GtfsPlannerWeb.Gtfs.AlertComponents,
     only: [
       alternative_question: 1,
+      assistant_start: 1,
       change_question: 1,
       conflict_banner: 1,
       departures_question: 1,
@@ -169,6 +203,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1]
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Agents
   alias GtfsPlanner.Alerts
   alias GtfsPlanner.Alerts.Alert
   alias GtfsPlanner.Alerts.Completion
@@ -178,6 +213,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   alias GtfsPlanner.Alerts.Recurrence
   alias GtfsPlanner.Alerts.TimingAnswer
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.Gtfs.AlertComponents
   alias LiveSelect.Component, as: LiveSelectComponent
 
@@ -242,6 +278,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # prototype offers and they are resolved against the agency's own clock, so a
   # reminder is a civil time rather than a count of seconds (CR-7).
   @check_in_offsets [15, 30, 60, 120, 240]
+
+  # The request the message step's **Draft with assistant** puts in the composer,
+  # so the operator sends it, reads it and changes it rather than having a
+  # request they never wrote start a turn on its own.
+  @draft_request "Draft the rider message from the answers so far."
 
   # What `Recurrence` says when a pattern would expand past its own bound, in
   # the editor's words rather than the module's (AC-20).
@@ -315,13 +356,84 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
      |> assign(:message_guidelines, "")
      |> assign(:review_errors, [])
      |> assign(:review_checks, [])
-     |> assign(:form, draft_form(%Alert{}))}
+     |> assign(:assistant_note_form, assistant_note_form())
+     |> assign(:assistant_candidate, nil)
+     |> assign(:assistant_filled?, false)
+     |> assign(:form, draft_form(%Alert{}))
+     |> AgentPanel.mount("alerts", auto_apply: true)}
   end
 
   @impl true
   def handle_params(params, _uri, socket) do
     {:noreply, load_editor(socket, params)}
   end
+
+  # A settled assistant entry carrying a prepared change belongs to the
+  # conversation this editor opened. A message from any other conversation - the
+  # alert this editor was showing a moment ago, or another editor's session -
+  # changes nothing here, because the id the panel hands over is the only thing
+  # that says whose change this is (R11, FH-28).
+  @impl true
+  def handle_info({:agent_prepared, conversation_id, entry_id}, socket) do
+    {:noreply, apply_prepared(socket, conversation_id, entry_id)}
+  end
+
+  def handle_info(_message, socket), do: {:noreply, socket}
+
+  # -- The assistant ------------------------------------------------------
+
+  # The first note is what creates the draft: `/alerts/new` has no row and no
+  # conversation to open, so the editor creates the row, opens that row's
+  # session, sends the note and navigates to the row's own assistant URL. The
+  # conversation is keyed by the alert, so the URL the navigation lands on
+  # attaches to the turn the start card began rather than starting a second one.
+  def handle_event("assistant_start", %{"assistant" => %{"note" => note}}, socket)
+      when is_binary(note) do
+    case String.trim(note) do
+      "" ->
+        {:noreply, socket}
+
+      text ->
+        {:noreply, start_interview(socket, text)}
+    end
+  end
+
+  def handle_event("assistant_start", _params, socket), do: {:noreply, socket}
+
+  # A sample situation fills the note rather than sending it: the reader can
+  # change the example into their own words before the interview begins.
+  def handle_event("assistant_example", %{"text" => text}, socket) when is_binary(text) do
+    {:noreply, assign(socket, :assistant_note_form, assistant_note_form(text))}
+  end
+
+  def handle_event("assistant_example", _params, socket), do: {:noreply, socket}
+
+  # **Draft with assistant** asks for wording in the reader's own composer. The
+  # request is typed into the form, not sent, so the turn starts only when the
+  # reader sends it.
+  def handle_event("draft_with_assistant", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:mode, :assistant)
+     |> assign(:agent_form, to_form(%{"message" => @draft_request}, as: :agent))
+     |> push_patch(to: editor_path(socket, mode: :assistant))}
+  end
+
+  # A candidate the editor could not apply because the row moved under it is
+  # applied here, against whatever revision the row is at now.
+  def handle_event("apply_assistant_changes", %{"entry" => entry}, socket)
+      when is_binary(entry) do
+    case socket.assigns.assistant_candidate do
+      %{entry_id: entry_id} = candidate ->
+        {:noreply,
+         if(to_string(entry_id) == entry, do: apply_candidate(socket, candidate), else: socket)}
+
+      nil ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("apply_assistant_changes", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("set_mode", %{"mode" => mode}, socket) when is_binary(mode) do
@@ -2106,6 +2218,149 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> prepare_questions(alert)
   end
 
+  # -- The assistant -------------------------------------------------------
+
+  # Assistant mode opens the conversation this alert's own session holds, keyed
+  # by the alert's id. The subject is taken from the row this editor loaded,
+  # never from the URL, so a forged id cannot open a conversation about another
+  # alert (CR-2).
+  defp prepare_assistant(socket, alert) do
+    socket = assign(socket, :agent_subject_id, alert && alert.id)
+
+    if socket.assigns.mode == :assistant and not is_nil(alert) do
+      AgentPanel.open(socket)
+    else
+      socket
+    end
+  end
+
+  defp start_interview(socket, text) do
+    case Alerts.create_alert(audit_context(socket), %{}) do
+      {:ok, alert} ->
+        socket =
+          socket
+          |> assign(:alert, alert)
+          |> prepare_assistant(alert)
+
+        # The conversation is already open at this point because assistant mode
+        # is what the reader was in; the send is what turns the note into a turn.
+        :ok = send_assistant_message(socket, text)
+
+        push_navigate(socket, to: saved_path(socket, alert, socket.assigns.step))
+
+      {:error, reason} ->
+        socket
+        |> put_flash(:error, write_error_message(reason))
+    end
+  end
+
+  defp send_assistant_message(socket, text) do
+    case Agents.send_message(socket.assigns.agent_session, text) do
+      :ok -> :ok
+      # The draft exists either way, so a refused send only loses the turn the
+      # reader asked for, not their alert.
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp apply_prepared(socket, conversation_id, entry_id) do
+    case prepared_change(socket, conversation_id, entry_id) do
+      {:ok, alert, params} -> write_prepared(socket, alert, conversation_id, entry_id, params)
+      :foreign -> socket
+    end
+  end
+
+  # The handoff is only acted on when it names the conversation this editor is
+  # attached to and the session still holds that proposal.
+  defp prepared_change(socket, conversation_id, entry_id) do
+    with true <- conversation_id == socket.assigns.agent_conversation_id,
+         alert when not is_nil(alert) <- socket.assigns.alert,
+         {:ok, %{command: {:alert_changes, params}}} <-
+           Agents.prepared(socket.assigns.agent_session, conversation_id, entry_id) do
+      {:ok, alert, params}
+    else
+      _other -> :foreign
+    end
+  end
+
+  defp write_prepared(socket, alert, conversation_id, entry_id, params) do
+    case Alerts.save_draft(audit_context(socket), alert.id, alert.revision, params) do
+      {:ok, saved} ->
+        socket
+        |> assign(:alert, saved)
+        |> assign(:form, draft_form(saved))
+        |> assign(:save_state, :saved)
+        |> assign(:assistant_filled?, true)
+        |> rebuild(saved)
+        |> record_applied(conversation_id, entry_id, params)
+
+      # A proposal made against an older revision is kept, not forced and not
+      # dropped: the row keeps the newer answers and the operator is offered the
+      # change as **Apply changes** (AC-28).
+      {:error, :stale, current} ->
+        socket
+        |> assign(:assistant_candidate, %{
+          entry_id: entry_id,
+          conversation_id: conversation_id,
+          params: params
+        })
+        |> assign(:conflict, current)
+        |> assign(:save_state, :error)
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        socket
+        |> assign(:form, draft_form(changeset))
+        |> assign(:save_state, :error)
+
+      {:error, reason} ->
+        socket
+        |> put_flash(:error, write_error_message(reason))
+        |> assign(:save_state, :error)
+    end
+  end
+
+  # Applying the kept candidate reads the row first, so the write is made at the
+  # revision the row actually holds rather than the one this editor remembers.
+  defp apply_candidate(socket, candidate) do
+    case Alerts.get_alert(audit_context(socket), socket.assigns.alert.id) do
+      {:ok, latest} ->
+        socket
+        |> write_prepared(
+          latest,
+          candidate.conversation_id,
+          candidate.entry_id,
+          candidate.params
+        )
+        |> assign(:conflict, nil)
+        |> assign(:assistant_candidate, nil)
+
+      {:error, reason} ->
+        socket
+        |> put_flash(:error, write_error_message(reason))
+        |> assign(:assistant_candidate, nil)
+    end
+  end
+
+  defp record_applied(socket, conversation_id, entry_id, params) do
+    # The receipt names the command that was actually written, so the session
+    # can refuse it if anything changed it in between. A conversation that has
+    # ended leaves the row written and the card unconfirmed, which is the same
+    # outcome every other apply path in this package has.
+    _ =
+      Agents.record_applied(
+        socket.assigns.agent_session,
+        conversation_id,
+        entry_id,
+        {:alert_changes, params}
+      )
+
+    socket
+  end
+
+  defp assistant_note_form(note \\ "") do
+    to_form(%{"note" => note}, as: :assistant_note)
+  end
+
   # -- Loading ------------------------------------------------------------
 
   defp load_editor(socket, params) do
@@ -2177,6 +2432,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> assign(:chosen_timing_date, socket.assigns[:chosen_timing_date] || nil)
     |> assign(:form, draft_form(alert || %Alert{}))
     |> prepare_questions(alert)
+    |> prepare_assistant(alert)
   end
 
   # The reads the questions that need more than the alert's own answers take,
@@ -2789,23 +3045,82 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
             Choose what you know. We'll help with the rest.
           </:subtitle>
           <:actions>
-            <.mode_control id="alert-mode" mode={@mode} preferred={@preferred} class="sm:mt-1" />
+            <.mode_control
+              id="alert-mode"
+              mode={@mode}
+              preferred={@preferred}
+              unavailable?={@agent_unavailable?}
+              class="sm:mt-1"
+            />
           </:actions>
         </.header>
 
         <%= if @mode == :assistant do %>
-          <%!-- Step 27 fills this region with the real interview. Until then it
-                 exists, so switching modes moves between two frames of the same
-                 shape rather than between a page and a placeholder page. --%>
+          <%!-- Assistant mode is the same draft in a second frame: the start card
+                 before there is a row, then the conversation card beside the same
+                 Rider preview the form shows. --%>
           <div
             id="alert-assistant"
-            class="mt-5 rounded-card border border-subtle bg-white p-4 sm:p-6"
+            class="mt-5 grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]"
           >
-            <h2 class="text-base font-bold text-strong">Describe the situation</h2>
-            <p class="mt-1 text-sm text-muted">
-              Tell the assistant what happened and it will prepare a draft you can check and
-              change. Your draft is kept either way.
-            </p>
+            <div class="min-w-0">
+              <.assistant_start
+                :if={is_nil(@alert)}
+                form={@assistant_note_form}
+                examples={@agent_examples}
+              />
+
+              <.agent_panel
+                :if={not is_nil(@alert) and @agent_open?}
+                id="alert-assistant-panel"
+                layout={:main}
+                title={@agent_title}
+                intro={@agent_intro}
+                examples={@agent_examples}
+                scope_line={"Alerts · " <> @current_gtfs_version.name}
+                status={@agent_status}
+                entries={@streams.agent_entries}
+                form={@agent_form}
+                notice={@agent_notice}
+                entries_empty?={@agent_entries_empty?}
+              />
+
+              <.callout
+                :if={@assistant_candidate}
+                id="alert-assistant-stale"
+                kind="warning"
+                title="This alert changed after the assistant prepared these answers."
+                class="mt-4 rounded-card"
+              >
+                <p id="alert-assistant-stale-body">
+                  Your own answers stay as they are. Applying these answers writes the assistant's
+                  change on top of them at the version this alert is at now.
+                </p>
+                <div class="mt-3">
+                  <.button
+                    id={"apply-changes-#{@assistant_candidate.entry_id}"}
+                    type="button"
+                    variant="primary"
+                    phx-click="apply_assistant_changes"
+                    phx-value-entry={@assistant_candidate.entry_id}
+                    class="min-h-11"
+                  >
+                    Apply changes
+                  </.button>
+                </div>
+              </.callout>
+            </div>
+
+            <.rider_preview
+              alert={@preview.alert}
+              header={@preview.header}
+              when_summary={@preview.when_summary}
+              effect={@preview.effect}
+              routes={@preview.routes}
+              where={@preview.where}
+              what={@preview.what}
+              assistant?={@assistant_filled?}
+            />
           </div>
         <% else %>
           <div class="mt-5 grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -3045,6 +3360,20 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
                       phx-click="continue_message"
                     >
                       Continue
+                    </.button>
+
+                    <%!-- Drafting wording with the assistant is the one action on
+                         this step that leaves the form. It puts the request in
+                         the assistant's own composer, so the turn starts when the
+                         operator sends it. --%>
+                    <.button
+                      :if={@step == :message}
+                      id="draft-with-assistant"
+                      type="button"
+                      variant="secondary"
+                      phx-click="draft_with_assistant"
+                    >
+                      <.icon name="hero-sparkles" class="size-4" /> Draft with assistant
                     </.button>
                   </:actions>
                 </.question_card>

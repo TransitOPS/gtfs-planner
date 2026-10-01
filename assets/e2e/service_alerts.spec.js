@@ -117,6 +117,20 @@ async function captureReferenceState(page, testInfo, state, width) {
   });
 }
 
+// The assistant states' reference capture, for the same side-by-side reading as
+// the editor's own.
+async function captureAssistantReference(page, testInfo, state, width) {
+  if (!fs.existsSync(REFERENCE_PATH)) return;
+
+  await page.goto(`file://${REFERENCE_PATH}?state=${state}`);
+  await page.waitForLoadState("load");
+
+  await page.screenshot({
+    path: capturePath(testInfo, `assistant-start-ref-${state}-${width}.png`),
+    fullPage: false,
+  });
+}
+
 test.describe("alerts list", () => {
   test("the seeded current tab lists alerts with counts at both widths @list", async ({
     page,
@@ -2290,5 +2304,81 @@ test.describe("alert settings", () => {
       path: capturePath(testInfo, "settings-overview-1440.png"),
       fullPage: false,
     });
+  });
+});
+
+// The assistant frame the editor opens in Assistant mode: the "Describe the
+// situation" card `/alerts/new` shows before there is a draft to talk about
+// (AC-28). The unavailable state that card also has to carry is a provider
+// failure, and the provider is scripted in step 28; until then this journey
+// observes the card itself at both widths.
+test.describe("alert editor assistant", () => {
+  test.describe.configure({ timeout: 120_000 });
+
+  test("the new alert start card matches the prototype layout @assistant-start", async ({
+    page,
+  }, testInfo) => {
+    const versionId = await editorVersionId(page);
+
+    for (const viewport of [DESKTOP, NARROW]) {
+      await page.setViewportSize(viewport);
+      await page.goto(`/gtfs/${versionId}/alerts/new?mode=assistant`);
+      await page.waitForSelector("#alert-assistant-start", { timeout: 15_000 });
+
+      await expect(page.locator("#alert-editor")).toBeVisible();
+      await expect(page.locator("#alert-mode")).toBeVisible();
+      await expect(page.locator("#alert-assistant-start-title")).toHaveText(
+        "Describe the situation",
+      );
+
+      // "Saving", not "publishing": nothing in this package publishes.
+      await expect(page.locator("#alert-assistant-start-subtitle")).toContainText(
+        "You check it before saving.",
+      );
+      await expect(page.locator("#alert-assistant-start-intro")).toContainText(
+        "tell me what happened",
+      );
+      await expect(page.locator("#alert-assistant-note")).toBeVisible();
+      await expect(page.locator("#alert-assistant-start")).toBeEnabled();
+      await expect(page.locator("#alert-assistant-example-1")).toBeVisible();
+      await expect(page.locator("#alert-save-bar")).toBeVisible();
+
+      const body = await page.locator("#alert-editor").innerText();
+      expect(body).not.toContain("review before publishing");
+      expect(body).not.toContain("Data sent to apps");
+      for (const word of ["Live", "Scheduled", "Ended", "End alert"]) {
+        expect(body).not.toContain(word);
+      }
+
+      expect(await fitsViewport(page)).toBe(true);
+
+      await page.screenshot({
+        path: capturePath(testInfo, `assistant-start-${viewport.label}.png`),
+        fullPage: false,
+      });
+
+      if (viewport === DESKTOP) {
+        await captureAssistantReference(page, testInfo, "asst-start", viewport.label);
+      }
+    }
+  });
+
+  test("a sample situation fills the note rather than sending it @assistant-start", async ({
+    page,
+  }) => {
+    const versionId = await editorVersionId(page);
+    await page.setViewportSize(DESKTOP);
+    await page.goto(`/gtfs/${versionId}/alerts/new?mode=assistant`);
+    await page.waitForSelector("#alert-assistant-start", { timeout: 15_000 });
+
+    await page.locator("#alert-assistant-example-1").click();
+
+    await expect(page.locator("#alert-assistant-note")).toHaveValue(
+      /Route 12 is detouring/,
+    );
+
+    // Nothing was created: the note is still the reader's to change.
+    await expect(page.locator("#alert-save-bar")).toContainText("No alert saved yet.");
+    await expect(page).toHaveURL(/\/alerts\/new\?mode=assistant/);
   });
 });

@@ -49,6 +49,11 @@ defmodule GtfsPlannerWeb.AgentPanel do
   entry_id}`; the panel still prepares nothing and writes nothing (CR-6) — the
   host applies it. `open/1` lets a host open the panel the way the open button
   does.
+
+  `agent_unavailable?` is the one thing a host cannot work out for itself: the
+  transcript is a stream it does not enumerate, so a turn that failed at the
+  provider is reported here instead. It is true once a turn settles as `:failed`
+  or `:incomplete` and false again when a new or replaced conversation opens.
   """
 
   import Phoenix.Component, only: [assign: 3, to_form: 2]
@@ -121,6 +126,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
     |> assign(:agent_session_monitor, nil)
     |> assign(:agent_status, :idle)
     |> assign(:agent_notice, nil)
+    |> assign(:agent_unavailable?, false)
     |> assign(:agent_entries_empty?, true)
     |> assign(:agent_form, empty_form())
     |> assign(:agent_last_message, nil)
@@ -290,6 +296,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
          socket
          |> stream_insert(@entries, resolve_entry_evidence(entry, socket))
          |> assign(:agent_entries_empty?, false)
+         |> track_unavailable(entry)
          |> forward_prepared(entry)}
 
       {:status, status} ->
@@ -424,6 +431,16 @@ defmodule GtfsPlannerWeb.AgentPanel do
 
   ## Handoff to the host
 
+  # The transcript is a stream, so a host watching the panel cannot see an entry
+  # settle at `:failed` or `:incomplete` — the two statuses a provider failure
+  # produces. The flag is what lets that host say the helper is unavailable
+  # without reading entries it does not own.
+  defp track_unavailable(socket, %{role: :assistant, status: status})
+       when status in [:failed, :incomplete],
+       do: assign(socket, :agent_unavailable?, true)
+
+  defp track_unavailable(socket, _entry), do: socket
+
   # A settled assistant entry carrying a prepared change is offered to the host
   # once per conversation. The session re-broadcasts an entry whenever its state
   # changes — a working state, a retry, the applied mark — so the forwarded set is
@@ -507,6 +524,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
     |> assign(:agent_status, snapshot.status)
     |> assign(:agent_entries_empty?, snapshot.entries == [])
     |> assign(:agent_notice, nil)
+    |> assign(:agent_unavailable?, false)
     # A new or replaced conversation numbers its entries from one, so ids from the
     # previous conversation must not suppress this one's first handoff.
     |> assign(:agent_forwarded, MapSet.new())
@@ -520,6 +538,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
     |> assign(:agent_conversation_id, conversation_id)
     |> assign(:agent_status, :idle)
     |> assign(:agent_notice, nil)
+    |> assign(:agent_unavailable?, false)
     |> assign(:agent_forwarded, MapSet.new())
     |> assign(:agent_entries_empty?, true)
     |> assign(:agent_form, empty_form())
