@@ -102,6 +102,7 @@ curl -s https://example.com/api/v1/versions \
 | Resource | Document |
 | --- | --- |
 | Login, bearer tokens, organization selection, logout | this document |
+| Station bundle, revision-aware pathway and journal sync | [Station Sync API](api-station-sync.md) |
 | Pathways export request, status, download and recovery | [Pathways Export API](api-pathways-export.md) |
 
 ## Logout

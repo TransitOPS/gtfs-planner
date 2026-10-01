@@ -98,7 +98,9 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
         conn
         |> authed_conn(user)
         |> post(sync_url(version.id, station.id), %{
-          "pathways" => [%{"id" => pathway.id, "traversal_time" => 45}]
+          "pathways" => [
+            %{"id" => pathway.id, "revision" => pathway.lock_version, "traversal_time" => 45}
+          ]
         })
 
       assert %{"error" => %{"code" => "forbidden"}} = json_response(conn, 403)
@@ -134,6 +136,7 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
         "pathways" => [
           %{
             "id" => pathway.id,
+            "revision" => pathway.lock_version,
             "traversal_time" => 45,
             "signposted_as" => "To Exit",
             "field_notes" => "Handrail broken",
@@ -158,7 +161,7 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
       assert %DateTime{} = updated.field_completed_at
     end
 
-    test "applies duplicate pathway updates in request order", %{conn: conn, user: user, org: org} do
+    test "rejects duplicate pathway IDs before any write", %{conn: conn, user: user, org: org} do
       version = gtfs_version_fixture(org.id)
       %{station: station, pathway: pathway} = build_station_with_pathway(org.id, version.id)
 
@@ -167,13 +170,22 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
         |> authed_conn(user)
         |> post(sync_url(version.id, station.id), %{
           "pathways" => [
-            %{"id" => pathway.id, "traversal_time" => 10},
-            %{"id" => pathway.id, "traversal_time" => pathway.traversal_time}
+            %{"id" => pathway.id, "revision" => pathway.lock_version, "traversal_time" => 10},
+            %{
+              "id" => pathway.id,
+              "revision" => pathway.lock_version,
+              "traversal_time" => pathway.traversal_time
+            }
           ]
         })
 
-      assert %{"data" => %{"synced_count" => 2} = data} = json_response(conn, 200)
-      refute Map.has_key?(data, "errors")
+      assert %{
+               "error" => %{
+                 "code" => "bad_request",
+                 "message" => "Each pathway may appear once per request."
+               }
+             } = json_response(conn, 400)
+
       assert Repo.get!(Pathway, pathway.id).traversal_time == pathway.traversal_time
     end
 
@@ -190,6 +202,7 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
         "pathways" => [
           %{
             "id" => pathway.id,
+            "revision" => pathway.lock_version,
             "pathway_mode" => 7
           }
         ]
@@ -218,6 +231,7 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
         "pathways" => [
           %{
             "id" => pathway.id,
+            "revision" => pathway.lock_version,
             "from_stop_id" => child1.stop_id,
             "to_stop_id" => child2.stop_id,
             "field_notes" => "unchanged endpoints"
@@ -251,6 +265,7 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
         "pathways" => [
           %{
             "id" => pathway.id,
+            "revision" => pathway.lock_version,
             "from_stop_id" => child2.stop_id,
             "to_stop_id" => child1.stop_id,
             "signposted_as" => "Now the other way",
@@ -286,6 +301,7 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
         "pathways" => [
           %{
             "id" => pathway.id,
+            "revision" => pathway.lock_version,
             "from_stop_id" => "somewhere_else",
             "to_stop_id" => child2.stop_id,
             "field_notes" => "must not be applied"
@@ -317,7 +333,11 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
 
       payload = %{
         "pathways" => [
-          %{"id" => pathway.id, "from_stop_id" => child2.stop_id}
+          %{
+            "id" => pathway.id,
+            "revision" => pathway.lock_version,
+            "from_stop_id" => child2.stop_id
+          }
         ]
       }
 
@@ -362,7 +382,11 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
 
       payload = %{
         "pathways" => [
-          %{"id" => other_pathway.id, "traversal_time" => 30}
+          %{
+            "id" => other_pathway.id,
+            "revision" => other_pathway.lock_version,
+            "traversal_time" => 30
+          }
         ]
       }
 
@@ -428,7 +452,11 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
 
       payload = %{
         "pathways" => [
-          %{"id" => good_pathway.id, "traversal_time" => 90},
+          %{
+            "id" => good_pathway.id,
+            "revision" => good_pathway.lock_version,
+            "traversal_time" => 90
+          },
           %{"id" => "not-a-uuid", "traversal_time" => 30},
           %{"id" => Ecto.UUID.generate(), "traversal_time" => 15}
         ]
@@ -459,7 +487,9 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
         conn
         |> authed_conn(user)
         |> post(sync_url("not-a-uuid", station.id), %{
-          "pathways" => [%{"id" => pathway.id, "traversal_time" => 77}]
+          "pathways" => [
+            %{"id" => pathway.id, "revision" => pathway.lock_version, "traversal_time" => 77}
+          ]
         })
 
       assert %{"error" => %{"code" => "bad_request"}} = json_response(malformed_url_conn, 400)
@@ -490,7 +520,9 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
         conn
         |> authed_conn(user)
         |> post(sync_url(version.id, Ecto.UUID.generate()), %{
-          "pathways" => [%{"id" => pathway.id, "traversal_time" => 77}]
+          "pathways" => [
+            %{"id" => pathway.id, "revision" => pathway.lock_version, "traversal_time" => 77}
+          ]
         })
 
       assert %{"error" => %{"code" => "not_found"}} = json_response(conn, 404)
@@ -512,7 +544,9 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
         conn
         |> authed_conn(user)
         |> post(sync_url(version.id, station.id), %{
-          "pathways" => [%{"id" => pathway.id, "traversal_time" => 31}],
+          "pathways" => [
+            %{"id" => pathway.id, "revision" => pathway.lock_version, "traversal_time" => 31}
+          ],
           "journal_entries" => [
             %{
               "id" => journal_id,
@@ -602,7 +636,13 @@ defmodule GtfsPlannerWeb.Api.V1.SyncControllerTest do
         conn
         |> authed_conn(user)
         |> post(sync_url(version.id, station.id), %{
-          "pathways" => [%{"id" => outside_pathway.id, "traversal_time" => 81}],
+          "pathways" => [
+            %{
+              "id" => outside_pathway.id,
+              "revision" => outside_pathway.lock_version,
+              "traversal_time" => 81
+            }
+          ],
           "journal_entries" => [
             %{
               "id" => valid_journal_id,
