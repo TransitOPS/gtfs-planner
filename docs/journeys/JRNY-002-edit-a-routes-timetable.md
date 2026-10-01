@@ -220,12 +220,12 @@ anything is written, and nothing is written until the editor commits. The three 
 different things, and the sheet states them: `Enter` saves and moves later stops, `Alt+Enter` saves
 only the edited stop, and `⌘Enter` saves by moving the whole trip.
 
-With the cursor in the timetable the arrow keys move between cells and `]` / `[` shift the cursor
-row's trip (or the selection) by one minute, `}` / `{` by five. `Space` selects a trip, `⌘A` selects
-every trip in view, and `⌘Z` undoes the last change. The `Keyboard shortcuts` button opens the same
-list as a dialog, headed `Move around`, `Change times`, `Trips` and `Copy and undo`, and states that
-these work while the cursor is in the timetable and that typing in a field, a drawer or a menu works
-as usual.
+With a cell focused in the timetable the arrow keys move between cells and `]` / `[` shift the
+focused cell's trip (or the selection) by one minute, `}` / `{` by five. `Space` selects a trip, `⌘A`
+selects every trip in view, and `⌘Z` undoes the last change. The `Keyboard shortcuts` button opens
+the same list as a dialog, headed `Move around`, `Change times`, `Trips` and `Copy and undo`, and
+states that these work while a cell is focused in the timetable and that typing in a field, a drawer
+or a menu works as usual.
 
 Rows the change touched take a just-changed tint for one load. Selecting trips replaces the bar's
 idle line — "Select trips to shift, copy or change them. Press ? for keyboard shortcuts." — with
@@ -331,7 +331,7 @@ sentence on the seed's mutation route; the `timetable-add-trip` check is the gat
 the literal times.
 
 #### EX-0203 A whole-trip move before 00:00 is refused (boundary)
-**Given** the same organization and route, with the editor's cursor in the timetable on the trip
+**Given** the same organization and route, with a cell focused in the timetable on the trip
 that departs Amargosa Valley (Demo) at `00:05`
 **When** the editor presses `[` nine times, or types a whole-trip commit that lands before `00:00`
 **Then** the page reads "Nothing was shifted. A trip can't start before 00:00."
@@ -347,7 +347,7 @@ proves the nudge write and its undo on the grid's own fixture; the refusal copy 
 |---|---|---|---|
 | 4.1 Locate | e2e lane | `assets/e2e/route_schedules.spec.js` | Asserts the route tab bar and that `Schedules` carries `aria-current="page"` |
 | 4.2 Prepare | e2e lane | `assets/e2e/route_schedules.spec.js`, `assets/e2e/route_schedules_grid.spec.js` | The URL canonicalization and restore case, the stops-view parameter, the pinned-columns cases at 1440 and 1280 |
-| 4.2 Prepare | e2e lane | `assets/e2e/route_schedules_grid.spec.js` | Grid geometry at two viewports, the sticky-bar clearance case and the cursor-cell focus chain |
+| 4.2 Prepare | e2e lane | `assets/e2e/route_schedules_grid.spec.js` | Grid geometry at two viewports, the sticky-bar clearance case and the focused-cell focus chain |
 | 4.3 Confirm, 4.4 Execute | e2e lane | `assets/e2e/route_schedules.spec.js` | The Add drawer's preview sentence and primary label, the keyboard-only series save, the Edit and Duplicate drawers, and the return of focus to the control that opened the drawer |
 | 4.5 Monitor | e2e lane | `assets/e2e/route_schedules_grid.spec.js` | The nudge outcome and `#undo-action`, and `Control+z` restoring the original time |
 | 4.6 Modify | e2e lane | `assets/e2e/route_schedules_grid.spec.js` | The `Reads as` preview, `Enter` moving later stops, `Alt+Enter` moving only the edited stop, and the bracket key leaving the Add drawer's field alone |
