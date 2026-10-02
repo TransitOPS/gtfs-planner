@@ -813,6 +813,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
   attr :form, Phoenix.HTML.Form, required: true
   attr :prefix, :string, required: true, doc: "namespace for the stable control ids"
   attr :route_id, :string, required: true, doc: "the saved natural ID, rendered read-only"
+  attr :managed_fares?, :boolean, default: false
+  attr :route_group, :map, default: nil
+  attr :gtfs_version_id, :string, default: nil
   attr :open?, :boolean, default: false
 
   attr :boarding_warning, :map,
@@ -823,7 +826,18 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
     """
 
   def additional_details(assigns) do
-    assigns = assign(assigns, :summary, additional_summary(assigns.form, assigns.route_id))
+    assigns =
+      assign(
+        assigns,
+        :summary,
+        additional_summary(
+          assigns.form,
+          assigns.route_id,
+          assigns.managed_fares?,
+          assigns.route_group
+        )
+      )
+
     assigns = assign(assigns, :sort_errors, field_errors(assigns.form[:route_sort_order]))
     assigns = assign(assigns, :pickup_errors, field_errors(assigns.form[:continuous_pickup]))
     assigns = assign(assigns, :drop_errors, field_errors(assigns.form[:continuous_drop_off]))
@@ -930,28 +944,45 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
           </.field_warning>
         </fieldset>
 
-        <div class="grid gap-1.5">
-          <label for={"#{@prefix}-network"} class={label_class()}>
-            Fare network <span class="font-normal text-muted">(optional)</span>
-          </label>
-          <input
-            type="text"
-            id={"#{@prefix}-network"}
-            name={@form[:network_id].name}
-            value={@form[:network_id].value}
-            autocomplete="off"
-            spellcheck="false"
-            aria-invalid={to_string(@network_errors != [])}
-            aria-describedby={
-              described_by(@network_errors, "#{@prefix}-network-error", "#{@prefix}-network-help")
-            }
-            class={[control_class(), "max-w-[240px] font-mono"]}
-          />
-          <.error_line id={"#{@prefix}-network-error"} messages={@network_errors} />
-          <p id={"#{@prefix}-network-help"} class={help_class()}>
-            Only if your fares group routes into networks. Leave blank otherwise.
-          </p>
-        </div>
+        <%= if @managed_fares? do %>
+          <div id={"#{@prefix}-network-readonly"} class="grid gap-1.5">
+            <p class={label_class()}>Route group</p>
+            <p id={"#{@prefix}-network-value"} class="text-sm text-strong">
+              {(@route_group && (@route_group.name || @route_group.network_id)) || "No route group"}
+            </p>
+            <.link
+              :if={@gtfs_version_id}
+              id={"#{@prefix}-network-edit-fares"}
+              navigate={"/gtfs/#{@gtfs_version_id}/settings/fares/where"}
+              class="min-h-11 justify-self-start inline-flex items-center text-sm font-[650] text-action underline underline-offset-2 hover:text-action-hover"
+            >
+              Edit route groups in Fares
+            </.link>
+          </div>
+        <% else %>
+          <div class="grid gap-1.5">
+            <label for={"#{@prefix}-network"} class={label_class()}>
+              Fare network <span class="font-normal text-muted">(optional)</span>
+            </label>
+            <input
+              type="text"
+              id={"#{@prefix}-network"}
+              name={@form[:network_id].name}
+              value={@form[:network_id].value}
+              autocomplete="off"
+              spellcheck="false"
+              aria-invalid={to_string(@network_errors != [])}
+              aria-describedby={
+                described_by(@network_errors, "#{@prefix}-network-error", "#{@prefix}-network-help")
+              }
+              class={[control_class(), "max-w-[240px] font-mono"]}
+            />
+            <.error_line id={"#{@prefix}-network-error"} messages={@network_errors} />
+            <p id={"#{@prefix}-network-help"} class={help_class()}>
+              Only if your fares group routes into networks. Leave blank otherwise.
+            </p>
+          </div>
+        <% end %>
 
         <div class="grid gap-1">
           <p class={label_class()}>Route ID</p>
@@ -968,16 +999,23 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
   # The closed disclosure still states every value it holds: the display order,
   # the two boarding defaults, the fare network when the route has one, and the
   # read-only route ID. A value the route does not have is named as not set.
-  defp additional_summary(form, route_id) do
+  defp additional_summary(form, route_id, managed_fares?, route_group) do
     boarding = boarding_option_label(form[:continuous_pickup].value)
+
+    network_summary =
+      if managed_fares? do
+        "Route group #{(route_group && (route_group.name || route_group.network_id)) || "none"}"
+      else
+        if(blank_value?(form[:network_id].value),
+          do: nil,
+          else: "Network #{form[:network_id].value}"
+        )
+      end
 
     [
       "Display order #{form[:route_sort_order].value || "not set"}",
       "Boarding between stops: #{boarding}",
-      if(blank_value?(form[:network_id].value),
-        do: nil,
-        else: "Network #{form[:network_id].value}"
-      ),
+      network_summary,
       "Route ID #{route_id}"
     ]
     |> Enum.reject(&is_nil/1)

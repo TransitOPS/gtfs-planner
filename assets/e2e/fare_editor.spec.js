@@ -1330,6 +1330,47 @@ test("where", async ({ page }, testInfo) => {
   await captureReference(page, testInfo, "?state=group-edit", "ref-where-group-edit");
 });
 
+// Route Details reads the fare editor's version-scoped workspace. The page
+// shows route group membership as read-only for managed fares and leaves the
+// imported network input available on an unmanaged version.
+test("route", async ({ page }, testInfo) => {
+  await routeBlankTiles(page);
+  await logIn(page);
+
+  const managedVersion = await versionIdByName(page, VERSIONS.managed);
+  const unmanagedVersion = await versionIdByName(page, VERSIONS.unmanaged);
+
+  await page.setViewportSize(DESKTOP);
+  await page.goto(`/gtfs/${managedVersion}/routes/4`);
+  await waitForLiveView(page);
+  await expect(page.locator("#route-fares")).toBeVisible();
+  await expect(page.locator("#route-fares-provisional")).toContainText("Local routes");
+  await expect(page.locator("#route-fares-rides")).toContainText("Within Toledo and valley");
+  await expect(page.locator("#route-fares-rides")).toContainText("Newport local ↔ Toledo and valley");
+  await expect(page.locator("#route-fares-rides")).toContainText("$1.50");
+  await expect(page.locator("#route-fares-rides")).toContainText("$2.50");
+  await expect(page.locator("#route-fares-passes")).toContainText("Day pass");
+  await expect(page.locator("#route-fares-transfers")).toContainText("Pay the difference to Intercity");
+  await expect(page.locator("#route-details-network")).toHaveCount(0);
+  await page.locator("#route-fares").scrollIntoViewIfNeeded();
+  await capture(page, testInfo, "route-managed-1440");
+  await captureReference(page, testInfo, "?state=route", "ref-route-1440");
+
+  await page.setViewportSize(PHONE);
+  await page.goto(`/gtfs/${managedVersion}/routes/4`);
+  await waitForLiveView(page);
+  await expect(page.locator("#route-fares")).toBeVisible();
+  expect(await bodyFitsViewport(page)).toBe(true);
+  await page.locator("#route-fares").scrollIntoViewIfNeeded();
+  await capture(page, testInfo, "route-managed-390");
+  await captureReference(page, testInfo, "?state=route", "ref-route-390");
+
+  await page.goto(`/gtfs/${unmanagedVersion}/routes/4`);
+  await waitForLiveView(page);
+  await expect(page.locator("#route-fares")).toHaveCount(0);
+  await expect(page.locator("#route-details-network")).toBeVisible();
+});
+
 // The Where tab's time periods and complete fare-rule list. The interaction
 // reaches the production writer; captures keep the transient drawers in view.
 test("rules", async ({ page }, testInfo) => {

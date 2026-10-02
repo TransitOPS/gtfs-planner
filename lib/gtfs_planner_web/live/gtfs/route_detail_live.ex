@@ -60,6 +60,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.Fares
+  alias GtfsPlanner.Gtfs.Fares.Money
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Versions
@@ -247,7 +249,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   # the changed fields drive the sticky save bar, and nothing is written.
   @impl true
   def handle_event("validate_route_details", params, socket) do
-    {:noreply, assign_details_draft(socket, detail_attrs(params), :validate)}
+    socket = refresh_route_fares_status(socket)
+
+    {:noreply,
+     assign_details_draft(socket, trusted_detail_attrs(socket, detail_attrs(params)), :validate)}
   end
 
   # Save is the audited update command the form's Ctrl/Cmd+S shortcut emits as
@@ -257,7 +262,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   @impl true
   def handle_event("save_route_details", params, socket) do
     if socket.assigns.route_state == :ready and not socket.assigns.details_blocked? do
-      attrs = detail_attrs(params)
+      socket = refresh_route_fares_status(socket)
+      attrs = trusted_detail_attrs(socket, detail_attrs(params))
       socket = assign_details_draft(socket, attrs, :validate)
       run_details_save(socket, attrs, params)
     else
@@ -792,6 +798,19 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         route_map_data =
           Gtfs.route_map(organization_id, gtfs_version_id, workspace.route.route_id)
 
+        route_fares =
+          case load_route_fare_workspace(organization_id, gtfs_version_id) do
+            {:ok, fare_workspace} ->
+              route_fare_summary(
+                fare_workspace,
+                workspace.route.route_id,
+                route_fare_zone_ids(route_map_data, organization_id, gtfs_version_id)
+              )
+
+            {:error, :unavailable} ->
+              :unavailable
+          end
+
         socket
         |> assign(:route, workspace.route)
         |> assign(:source, workspace.source)
@@ -802,6 +821,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         |> assign(:route_map_data, route_map_data)
         |> assign(:last_saved, workspace.last_saved)
         |> assign(:route_form, route_form(workspace.route))
+        |> assign(:route_fares, route_fares)
         |> assign(:draft_route, workspace.route)
         |> assign(:route_text_mode, nil)
         |> assign(:changed_fields, [])
@@ -1647,6 +1667,197 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
 
   defp detail_attrs(payload), do: payload
 
+  # The managed-version decision and route group come from the scoped fare
+  # workspace, never from a client field. The old routes.network_id input is
+  # retained for unmanaged feeds, but it cannot override a managed route's
+  # route_networks membership through a forged LiveView event.
+  defp trusted_detail_attrs(%{assigns: %{route_fares: %{managed?: true}}}, attrs),
+    do: Map.drop(attrs, [:network_id, "network_id"])
+
+  defp trusted_detail_attrs(_socket, attrs), do: attrs
+
+  defp route_fare_summary(%{managed?: false}, _route_id, _route_zone_ids),
+    do: %{managed?: false}
+
+  defp route_fare_summary(workspace, route_id, route_zone_ids) do
+    case Enum.find(workspace.groups, &(route_id in &1.route_ids)) do
+      nil ->
+        %{
+          managed?: true,
+          route_specific?: not is_nil(route_zone_ids),
+          currency: workspace.currency,
+          group: nil,
+          rides: [],
+          passes: [],
+          transfers: []
+        }
+
+      group ->
+        zones =
+          workspace.matrices
+          |> Enum.filter(&(&1.network_id == group.network_id))
+          |> Enum.flat_map(& &1.zones)
+          |> Map.new(&{&1.area_id, &1.name})
+
+        rides =
+          workspace.fares
+          |> Enum.filter(&(&1.kind == "single"))
+          |> Enum.flat_map(fn fare ->
+            fare.rules
+            |> Enum.filter(&(&1.network_id == group.network_id))
+            |> Enum.filter(&fare_rule_applies_to_route?(&1, route_zone_ids))
+            |> Enum.map(fn rule ->
+              [from_id, to_id] = Enum.sort([rule.from_area_id, rule.to_area_id])
+
+              %{
+                fare: fare,
+                from_id: from_id,
+                to_id: to_id,
+                from: Map.get(zones, from_id),
+                to: Map.get(zones, to_id)
+              }
+            end)
+          end)
+          |> Enum.uniq_by(&{Enum.sort(&1.fare.product_ids), &1.from_id, &1.to_id})
+
+        default_rider =
+          Enum.find(workspace.riders, &(String.downcase(&1.name || "") == "adult")) ||
+            Enum.find(workspace.riders, & &1.default?)
+
+        rides =
+          Enum.map(rides, fn ride ->
+            Map.put(
+              ride,
+              :price,
+              Map.get(ride.fare.prices, default_rider && default_rider.rider_category_id)
+            )
+          end)
+
+        passes =
+          workspace.fares
+          |> Enum.filter(&(&1.kind == "pass" and group.network_id in &1.accepted_network_ids))
+          |> Enum.map(& &1.name)
+
+        transfers =
+          workspace.transfers
+          |> Enum.filter(&(&1.from_leg_group_id == group.network_id and not is_nil(&1.policy)))
+          |> Enum.map(fn transfer ->
+            to_group = Enum.find(workspace.groups, &(&1.network_id == transfer.to_leg_group_id))
+
+            %{
+              group: (to_group && to_group.name) || transfer.to_leg_group_id,
+              policy: transfer.policy
+            }
+          end)
+
+        %{
+          managed?: true,
+          route_specific?: not is_nil(route_zone_ids),
+          currency: workspace.currency,
+          group: group,
+          rides: rides,
+          passes: passes,
+          transfers: transfers
+        }
+    end
+  end
+
+  # Conversion can manage a version while a route page is still open. Recheck
+  # the version-scoped setting on each draft event; rebuild the presentation
+  # only when that trusted persisted state differs from the mounted state.
+  defp refresh_route_fares_status(socket) do
+    managed? =
+      Fares.managed?(
+        socket.assigns.current_organization.id,
+        socket.assigns.current_gtfs_version.id
+      )
+
+    mounted_managed? =
+      is_map(socket.assigns.route_fares) and
+        Map.get(socket.assigns.route_fares, :managed?) == true
+
+    if managed? == mounted_managed? do
+      socket
+    else
+      route_fares =
+        case load_route_fare_workspace(
+               socket.assigns.current_organization.id,
+               socket.assigns.current_gtfs_version.id
+             ) do
+          {:ok, workspace} ->
+            route_fare_summary(
+              workspace,
+              socket.assigns.route.route_id,
+              route_fare_zone_ids(
+                socket.assigns.route_map_data,
+                socket.assigns.current_organization.id,
+                socket.assigns.current_gtfs_version.id
+              )
+            )
+
+          {:error, :unavailable} ->
+            :unavailable
+        end
+
+      assign(socket, :route_fares, route_fares)
+    end
+  end
+
+  defp load_route_fare_workspace(organization_id, gtfs_version_id) do
+    Fares.load_workspace(organization_id, gtfs_version_id)
+  rescue
+    DBConnection.ConnectionError -> {:error, :unavailable}
+  end
+
+  defp route_fare_zone_ids({:ok, %{patterns: patterns}}, organization_id, gtfs_version_id)
+       when is_list(patterns) do
+    case patterns do
+      [] ->
+        nil
+
+      patterns ->
+        patterns
+        |> Enum.flat_map(& &1.visits)
+        |> Enum.map(& &1.stop_id)
+        |> Enum.uniq()
+        |> Enum.map(&Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, &1))
+        |> Enum.map(&(&1 && &1.zone_id))
+        |> Enum.reject(&(&1 in [nil, ""]))
+        |> Enum.uniq()
+    end
+  end
+
+  defp route_fare_zone_ids(_route_map_data, _organization_id, _gtfs_version_id), do: nil
+
+  defp fare_rule_applies_to_route?(_rule, nil), do: true
+
+  defp fare_rule_applies_to_route?(rule, route_zone_ids) do
+    (is_nil(rule.from_area_id) or rule.from_area_id in route_zone_ids) and
+      (is_nil(rule.to_area_id) or rule.to_area_id in route_zone_ids)
+  end
+
+  defp fare_zone_pair(%{from: nil, to: nil}), do: "Any zone"
+  defp fare_zone_pair(%{from: from, to: to}) when from == to, do: "Within #{from}"
+  defp fare_zone_pair(%{from: from, to: to}), do: "#{from || "Any zone"} ↔ #{to || "Any zone"}"
+
+  defp fare_transfer_text(%{group: group, policy: %{pay: :free, minutes: minutes}}, _currency),
+    do: "Free to #{group}#{transfer_minutes(minutes)}"
+
+  defp fare_transfer_text(
+         %{group: group, policy: %{pay: :difference, minutes: minutes}},
+         _currency
+       ),
+       do: "Pay the difference to #{group}#{transfer_minutes(minutes)}"
+
+  defp fare_transfer_text(
+         %{group: group, policy: %{pay: :fee, fee_amount: amount, minutes: minutes}},
+         currency
+       ),
+       do: "#{Money.format(amount, currency)} to #{group}#{transfer_minutes(minutes)}"
+
+  defp transfer_minutes(nil), do: ""
+  defp transfer_minutes(minutes), do: ", within #{minutes} min"
+
   # One draft, four projections of it: the form the operator keeps editing, the
   # saved row with the valid changes applied (the header/chip preview), the
   # fields a save would change (the save bar), and the advisories the changed
@@ -2063,6 +2274,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                             form={@route_form}
                             prefix="route-details"
                             route_id={@route.route_id}
+                            managed_fares?={is_map(@route_fares) and @route_fares.managed?}
+                            route_group={if(is_map(@route_fares), do: @route_fares[:group])}
+                            gtfs_version_id={@current_gtfs_version.id}
                             boarding_warning={
                               boarding_href(
                                 @field_warnings[:boarding],
@@ -2116,6 +2330,128 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                           </div>
                         </div>
                       </.form>
+
+                      <.message
+                        :if={@route_fares == :unavailable}
+                        id="route-fares-unavailable"
+                        kind="error"
+                        title="Fares couldn’t load"
+                        class="mt-6"
+                      >
+                        The route details are still available. Retry the page to load this route’s fare summary.
+                      </.message>
+
+                      <section
+                        :if={is_map(@route_fares) and @route_fares.managed?}
+                        id="route-fares"
+                        aria-labelledby="route-fares-title"
+                        class="mt-6 overflow-clip rounded-card border border-subtle bg-white"
+                      >
+                        <div class="flex flex-wrap items-start gap-3 border-b border-subtle px-4 py-3 sm:px-5">
+                          <div class="min-w-0 flex-1">
+                            <h2 id="route-fares-title" class="text-base font-bold text-strong">
+                              Fares on Route {@route.route_id}
+                            </h2>
+                            <p
+                              :if={@route_fares.route_specific?}
+                              class="mt-1 text-[13px] text-muted"
+                            >
+                              What riders pay on this route. Fares are edited in Settings, where every route’s fares are set together.
+                            </p>
+                            <p
+                              :if={!@route_fares.route_specific? and @route_fares.group}
+                              id="route-fares-provisional"
+                              class="mt-1 text-[13px] text-muted"
+                            >
+                              Route patterns aren’t set yet. Showing fares for {@route_fares.group.name ||
+                                @route_fares.group.network_id}.
+                            </p>
+                            <p
+                              :if={!@route_fares.route_specific? and !@route_fares.group}
+                              id="route-fares-provisional"
+                              class="mt-1 text-[13px] text-muted"
+                            >
+                              Route patterns aren’t set yet, so fares for this route can’t be narrowed to its stops.
+                            </p>
+                          </div>
+                          <.link
+                            id="route-fares-edit"
+                            navigate={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares/where"}
+                            class="inline-flex min-h-11 shrink-0 items-center rounded-control border border-control px-3 text-sm font-[650] text-action no-underline hover:bg-canvas"
+                          >
+                            Edit fares
+                          </.link>
+                        </div>
+                        <dl class="px-4 sm:px-5">
+                          <div class="grid gap-x-6 gap-y-1 border-b border-subtle py-3 last:border-b-0 sm:grid-cols-[150px_minmax(0,1fr)]">
+                            <div>
+                              <dt class="text-sm font-[650] text-strong">Route group</dt>
+                              <dd class="text-[13px] text-muted">
+                                Routes that charge the same fares
+                              </dd>
+                            </div>
+                            <dd id="route-fares-group" class="text-sm text-strong">
+                              {(@route_fares.group &&
+                                  (@route_fares.group.name || @route_fares.group.network_id)) ||
+                                "No route group"}
+                              <span :if={@route_fares.group} class="text-muted">
+                                · {length(@route_fares.group.route_ids)} {ngettext(
+                                  "route",
+                                  "routes",
+                                  length(@route_fares.group.route_ids)
+                                )}
+                              </span>
+                            </dd>
+                          </div>
+                          <div class="grid gap-x-6 gap-y-1 border-b border-subtle py-3 last:border-b-0 sm:grid-cols-[150px_minmax(0,1fr)]">
+                            <div>
+                              <dt class="text-sm font-[650] text-strong">Rides</dt>
+                              <dd class="text-[13px] text-muted">
+                                Adult prices; reduced and youth fares are on the Prices tab
+                              </dd>
+                            </div>
+                            <dd class="min-w-0 text-sm text-strong">
+                              <ul id="route-fares-rides" class="grid gap-1">
+                                <li
+                                  :for={ride <- @route_fares.rides}
+                                  class="flex min-w-0 flex-wrap gap-x-3"
+                                >
+                                  <span class="min-w-0 flex-1">{fare_zone_pair(ride)}</span>
+                                  <span class="text-muted">{ride.fare.name}</span>
+                                  <span class="w-14 shrink-0 text-right font-semibold tabular-nums">
+                                    {Money.format(ride.price, @route_fares.currency) || "Not sold"}
+                                  </span>
+                                </li>
+                                <li :if={@route_fares.rides == []}>
+                                  No single-ride fares are set for this route group.
+                                </li>
+                              </ul>
+                            </dd>
+                          </div>
+                          <div class="grid gap-x-6 gap-y-1 border-b border-subtle py-3 last:border-b-0 sm:grid-cols-[150px_minmax(0,1fr)]">
+                            <div>
+                              <dt class="text-sm font-[650] text-strong">Passes accepted</dt>
+                            </div>
+                            <dd id="route-fares-passes" class="text-sm text-strong">
+                              {Enum.join(@route_fares.passes, ", ")
+                              |> then(&if(&1 == "", do: "None", else: &1))}
+                            </dd>
+                          </div>
+                          <div class="grid gap-x-6 gap-y-1 py-3 sm:grid-cols-[150px_minmax(0,1fr)]">
+                            <div>
+                              <dt class="text-sm font-[650] text-strong">Transfers</dt>
+                            </div>
+                            <dd id="route-fares-transfers" class="grid gap-1 text-sm text-strong">
+                              <span :for={transfer <- @route_fares.transfers}>
+                                {fare_transfer_text(transfer, @route_fares.currency)}
+                              </span>
+                              <span :if={@route_fares.transfers == []}>
+                                No transfers set for this route group.
+                              </span>
+                            </dd>
+                          </div>
+                        </dl>
+                      </section>
 
                       <%!-- The design system's lifecycle card, last in reading order:
                            row one is the saved eligibility with its one next
