@@ -48,18 +48,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
   describe "the page as an editor" do
     setup :editor_conn
 
-    test "renders the page with Create alert and Alerts first in the navigation", context do
+    test "renders the page with Create alert and Alerts current in the navigation", context do
       {:ok, view, _html} = live(context.conn, alerts_path(context.version))
 
       assert has_element?(view, "#alerts-page")
       assert has_element?(view, "#create-alert-first-use", "Create alert")
-
-      assert ["nav-alerts" | _rest] =
-               view
-               |> render()
-               |> LazyHTML.from_fragment()
-               |> LazyHTML.query("#main-navigation a")
-               |> Enum.map(&List.first(LazyHTML.attribute(&1, "id")))
+      assert has_element?(view, "#main-navigation #nav-alerts[aria-current='page']")
     end
 
     test "the four tabs carry the counts the read model derived", context do
