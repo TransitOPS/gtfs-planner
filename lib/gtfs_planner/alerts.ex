@@ -142,7 +142,7 @@ defmodule GtfsPlanner.Alerts do
   defp version_name(organization_id, alert_id) do
     from(a in Alert,
       join: v in GtfsPlanner.Versions.GtfsVersion,
-      on: v.id == a.gtfs_version_id,
+      on: v.id == a.source_gtfs_version_id,
       where: a.organization_id == ^organization_id and a.id == ^alert_id,
       select: v.name
     )
@@ -166,7 +166,7 @@ defmodule GtfsPlanner.Alerts do
         from(a in Alert,
           where:
             a.organization_id == ^audit_context.organization_id and
-              a.gtfs_version_id == ^audit_context.gtfs_version_id
+              a.source_gtfs_version_id == ^audit_context.gtfs_version_id
         )
         |> Repo.all()
 
@@ -359,7 +359,7 @@ defmodule GtfsPlanner.Alerts do
       |> Alert.draft_changeset(attrs)
       |> validate_targets(audit_context)
       |> put_change(:organization_id, audit_context.organization_id)
-      |> put_change(:gtfs_version_id, audit_context.gtfs_version_id)
+      |> put_change(:source_gtfs_version_id, audit_context.gtfs_version_id)
       |> put_change(:created_by_id, audit_context.actor_id)
       |> put_change(:updated_by_id, audit_context.actor_id)
       |> put_timing_zone(agency_time_zone(audit_context))
@@ -645,7 +645,7 @@ defmodule GtfsPlanner.Alerts do
       from(a in Alert,
         where:
           a.organization_id == ^organization_id and
-            a.gtfs_version_id == ^gtfs_version_id and
+            a.source_gtfs_version_id == ^gtfs_version_id and
             a.id == ^alert_id
       )
       |> Repo.one()
@@ -666,7 +666,7 @@ defmodule GtfsPlanner.Alerts do
         from(a in Alert,
           where:
             a.organization_id == ^organization_id and
-              a.gtfs_version_id == ^gtfs_version_id and
+              a.source_gtfs_version_id == ^gtfs_version_id and
               a.id == ^alert_id,
           lock: "FOR UPDATE"
         )

@@ -61,11 +61,17 @@ defmodule GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraintsTest do
     assert :ok == Migration.validate_all!(Repo)
 
     assert %{rows: rows} = Repo.query!(constraint_status_sql(), [])
-    # Every original `*_owner_fkey`: 68 from upstream, four from rosters
-    # and one from service alerts. The four later fare keys remain NOT VALID.
-    # `roster_lines` and `roster_line_days` join the same
-    # version-owner catalog and carry the same scoped constraint, and two more
-    # keep a day under its own line and a line's operator in its own organization.
+    # Every `*_owner_fkey` in the schema, not a subset: the upstream set, the
+    # rosters, the export publication pin, the three feed publication keys from
+    # feed publishing and the two alert keys. `roster_lines` and `roster_line_days`
+    # join the same version-owner catalog and carry the same scoped constraint,
+    # and two more keep a day under its own line and a line's operator in its own
+    # organization. The alert keys are a retained provenance source that clears
+    # only `source_gtfs_version_id`, and an `alert_publications` row that may only
+    # name an alert of its own organization; neither is a version owner, because an
+    # alert outlives its source version. The four later fare keys are the one set
+    # the shared migration leaves NOT VALID, so they are asserted apart from the
+    # rest rather than as part of the validated whole.
     fare_constraints =
       ~w(fare_product_details fare_saved_journeys fare_time_periods fare_version_settings)
       |> Enum.map(&"#{&1}_version_owner_fkey")

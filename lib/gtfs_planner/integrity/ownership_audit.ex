@@ -5,6 +5,13 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
   A cleaned import run is a historical receipt: its target version may have
   been deleted during cleanup. Other import runs still require a matching
   version owned by their organization.
+
+  `service_alerts` is deliberately absent from the version-owner list. An alert
+  is owned by its organization and keeps only optional provenance in
+  `source_gtfs_version_id`, which the composite key clears when the version is
+  deleted, so "no such version" is a supported state there rather than an
+  anomaly. Its publication row is checked instead, against the alert's own
+  organization.
   """
 
   alias GtfsPlanner.Repo
@@ -18,7 +25,7 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
     gtfs_change_runs gtfs_export_runs gtfs_validation_runs journal_entries levels
     locations networks pathway_evolutions pathways relief_points rider_categories route_networks
     roster_line_days roster_lines
-    route_operating_settings route_pattern_stops route_patterns routes service_alerts shapes
+    route_operating_settings route_pattern_stops route_patterns routes shapes
     station_editing_statuses
     stop_areas stop_levels stop_times stops timed_patterns timeframes transfers
     translations trip_runs trips walkability_tests
@@ -54,7 +61,9 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
      "garages"},
     {"vehicles.garage_id→garages", "vehicles", "garage_id", "garages"},
     {"vehicles.vehicle_type_id→vehicle_types", "vehicles", "vehicle_type_id", "vehicle_types"},
-    {"roster_lines.operator_id→operators", "roster_lines", "operator_id", "operators"}
+    {"roster_lines.operator_id→operators", "roster_lines", "operator_id", "operators"},
+    {"alert_publications.alert_id→service_alerts", "alert_publications", "alert_id",
+     "service_alerts"}
   ]
 
   @doc "Lists the tables whose rows must belong to their named GTFS version."

@@ -226,7 +226,7 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
     %{
       audit_context
       | organization_id: alert.organization_id,
-        gtfs_version_id: alert.gtfs_version_id
+        gtfs_version_id: alert.source_gtfs_version_id
     }
   end
 

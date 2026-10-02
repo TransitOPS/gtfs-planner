@@ -34,7 +34,7 @@ defmodule GtfsPlanner.AlertsTest do
 
       assert alert.revision == 1
       assert alert.organization_id == context.organization.id
-      assert alert.gtfs_version_id == context.version.id
+      assert alert.source_gtfs_version_id == context.version.id
       assert alert.created_by_id == context.actor.id
       assert alert.updated_by_id == context.actor.id
       assert alert.urgency == :now
@@ -55,7 +55,7 @@ defmodule GtfsPlanner.AlertsTest do
       attrs = %{
         "urgency" => "now",
         "organization_id" => other_organization.id,
-        "gtfs_version_id" => other_version.id,
+        "source_gtfs_version_id" => other_version.id,
         "revision" => 99,
         "complete" => true,
         "effect" => "no_service",
@@ -68,7 +68,7 @@ defmodule GtfsPlanner.AlertsTest do
       assert {:ok, alert} = Alerts.create_alert(context.audit, attrs)
 
       assert alert.organization_id == context.organization.id
-      assert alert.gtfs_version_id == context.version.id
+      assert alert.source_gtfs_version_id == context.version.id
       assert alert.revision == 1
       assert alert.complete == false
       assert alert.effect == nil
