@@ -488,6 +488,192 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   end
 
   @doc """
+  Renders the dated change planning form and its acceptance state.
+
+  The form is planning only: it describes an inclusive date range, a signed
+  whole-second shift and the approval note a planner supplied, for the trips the
+  page's own selection names. Nothing here writes a calendar, trip, stop time,
+  block, transfer or run, and there is no Apply control (INV-1, CR-1).
+
+  The selected trips are a server-owned summary rather than a field: the editor
+  selects them with the timetable's own controls, and the server re-resolves
+  that selection against the loaded scope on every submit (AC-1).
+
+  Its accept control is labelled "Review inputs", never "Save changes", because
+  accepting an interpretation is not an operating approval: it records that a
+  planner confirmed what the dates, shift and note mean.
+
+  Three stable ids carry the states callers assert on: `dated-change-form`,
+  `dated-change-accept` and `dated-change-input-errors`, plus
+  `dated-change-helper-unavailable` for the visible refusal the host renders when
+  the accepted source does not fit the helper's whole-context byte ceiling.
+  """
+  attr :form, :map, required: true, doc: "the intent form built with `to_form/2`"
+  attr :errors, :map, default: %{}, doc: "field-keyed messages from the domain's refusal"
+  attr :selected_count, :integer, required: true
+  attr :accepted, :map, default: nil, doc: "the accepted source, when one is attached"
+  attr :notice, :string, default: nil
+  attr :helper_refusal, :string, default: nil
+
+  def dated_change_form(assigns) do
+    ~H"""
+    <section
+      id="dated-change-planner"
+      aria-labelledby="dated-change-planner-title"
+      class="mt-5 rounded-card border border-subtle bg-white p-4 sm:p-5"
+    >
+      <h2 id="dated-change-planner-title" class="text-base font-bold text-strong">
+        Plan a dated change
+      </h2>
+      <p class="mt-1 text-[13px] text-muted">
+        Planning only — no changes saved. Describe the shift a planner approved; the page reports
+        which dates and times it would touch, and nothing here applies anything.
+      </p>
+
+      <.message
+        :if={@notice}
+        id="dated-change-notice"
+        kind="success"
+        title={@notice}
+      />
+
+      <.message
+        :if={@helper_refusal}
+        id="dated-change-helper-unavailable"
+        kind="warning"
+        title="The helper can't take this one yet"
+      >
+        {@helper_refusal} The plan below, your edits and the timetables are unaffected.
+      </.message>
+
+      <div id="dated-change-selected" class="mt-3 flex flex-wrap items-baseline gap-x-2 text-sm">
+        <span class="font-semibold text-strong">Selected trips</span>
+        <span id="dated-change-selected-count" class="tabular-nums text-default">
+          {@selected_count}
+        </span>
+        <span class="text-[13px] text-muted">
+          — chosen with the timetable's own selection, not typed here.
+        </span>
+      </div>
+
+      <div
+        :if={@errors != %{}}
+        id="dated-change-input-errors"
+        role="alert"
+        tabindex="-1"
+        class="mt-3 grid gap-1 rounded-control bg-error-bg px-4 py-3 text-sm text-error-fg"
+      >
+        <p class="font-bold">Fix these before reviewing the inputs.</p>
+        <p :for={{field, messages} <- error_lines(@errors)} class="flex gap-2">
+          <.icon name="hero-exclamation-triangle" class="mt-0.5 size-4 shrink-0" />
+          <span>{Enum.join(messages, " ")}</span>
+        </p>
+      </div>
+
+      <.form
+        for={@form}
+        id="dated-change-form"
+        phx-hook="FormErrorFocus"
+        phx-change="dated_change_params"
+        phx-submit="dated_change_accept"
+        class="mt-4 grid gap-4 sm:max-w-[620px]"
+      >
+        <div class="grid gap-4 sm:grid-cols-2">
+          <.input
+            id="dated-change-first-date"
+            field={@form[:first_date]}
+            type="date"
+            label="First date (inclusive)"
+            errors={List.wrap(@errors[:first_date])}
+          />
+          <.input
+            id="dated-change-last-date"
+            field={@form[:last_date]}
+            type="date"
+            label="Last date (inclusive)"
+            errors={List.wrap(@errors[:last_date])}
+          />
+        </div>
+
+        <.input
+          id="dated-change-delta-seconds"
+          field={@form[:delta_seconds]}
+          type="text"
+          label="Shift (seconds)"
+          inputmode="numeric"
+          placeholder="300"
+          help="Later with 300, earlier with -300."
+          errors={List.wrap(@errors[:delta_seconds])}
+          class="input input-lg w-full max-w-[220px] tabular-nums"
+        />
+
+        <.input
+          id="dated-change-approval-note"
+          field={@form[:approval_note]}
+          type="textarea"
+          label="Approval note"
+          maxlength="2000"
+          class="textarea min-h-20 w-full"
+          errors={List.wrap(@errors[:approval_note])}
+        />
+
+        <.input
+          id="dated-change-source-label"
+          field={@form[:source_label]}
+          type="text"
+          label="Source label (optional)"
+          placeholder="Board memo 2026-14"
+          errors={List.wrap(@errors[:source_label])}
+        />
+
+        <div class="flex flex-wrap items-center gap-3">
+          <.button id="dated-change-accept" type="submit" class="min-h-11">
+            Review inputs
+          </.button>
+          <p class="text-[13px] text-muted">
+            Records what you confirmed for the helper. It saves no service and changes no trip.
+          </p>
+        </div>
+      </.form>
+
+      <div
+        :if={@accepted}
+        id="dated-change-accepted"
+        class="mt-4 border-t border-subtle pt-3 text-[13px] text-muted"
+      >
+        <p class="font-semibold text-strong">Reviewed inputs</p>
+        <p id="dated-change-accepted-summary">
+          {@accepted.first_date} to {@accepted.last_date}, {@accepted.delta_seconds} seconds, {length(
+            @accepted.trip_ids
+          )} trips.
+        </p>
+      </div>
+    </section>
+    """
+  end
+
+  # Field errors render in the order the form lists its fields, with the
+  # selection and any base refusal last, so the summary reads in the same order
+  # the editor filled the form in.
+  @dated_change_error_order [
+    :first_date,
+    :last_date,
+    :delta_seconds,
+    :approval_note,
+    :source_label,
+    :selected_trip_ids,
+    :base
+  ]
+
+  defp error_lines(errors) do
+    errors
+    |> Enum.sort_by(fn {field, _messages} ->
+      Enum.find_index(@dated_change_error_order, &(&1 == field))
+    end)
+    |> Enum.map(fn {field, messages} -> {field, List.wrap(messages)} end)
+  end
+
+  @doc """
   Renders the block notice a Schedules save can leave behind.
 
   A D2 clear names the calendar that took the trip off its block; a block problem
