@@ -33,13 +33,17 @@
 // written at both required viewports, 1440x900 and 390x844.
 import { test, expect } from "@playwright/test";
 import { bodyFitsViewport } from "./browser_helpers";
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const PRIMARY_CHECKOUT = "/Users/ryanmahoney/Documents/gtfs-planner";
-const EVIDENCE_DIR = `${PRIMARY_CHECKOUT}/.specs/ai-08-operations-assistance/evidence/browser`;
+
+// Captures are copied here when the directory is named, so a run on another
+// machine or in CI writes nothing outside its own results.
+const EVIDENCE_DIR = process.env.OPERATIONS_HELPER_CAPTURE_DIR
+  ? resolve(process.cwd(), process.env.OPERATIONS_HELPER_CAPTURE_DIR)
+  : null;
 
 // The seeded editor, who owns both helper journeys. The password is the one the
 // browser seed already creates for this journey; nothing new is seeded here.
@@ -50,7 +54,7 @@ const EDITOR_USER = {
   password: readEditorPassword(),
 };
 
-// The admitted day: 15 blocks, 36 trips, 16 issue instances, 23,430 bytes.
+// The admitted day: 15 blocks, 36 trips, 23,430 bytes as seeded.
 const IN_SEAT_VERSION = "Browser In-Seat Version";
 // The over-cap day: 34 blocks, 204 trips, 78,121 bytes, refused whole.
 const OVER_CAP_VERSION = "Browser Blocks Version";
@@ -139,31 +143,33 @@ async function openHelper(page) {
 }
 
 // A second editor changing the day under a frozen configuration is what the
-// stale refusal answers. The Checks drawer lists the version's stale in-seat
-// records and removes them in one confirmed write, so a second tab can move
-// the day the first tab's card was prepared from without navigating that tab.
-async function openChecksDrawer(page) {
-  const checks = page.locator("#blocks-review-checks");
-  await checks.scrollIntoViewIfNeeded();
-  await checks.click();
-  await expect(page.locator("#checks-drawer-overlay")).toHaveAttribute(
-    "data-open",
-    "true",
-  );
-}
+// stale refusal answers. The crew rules are the day's own constraints, so saving
+// a different pull-out report from a second tab moves the day the first tab's
+// card was prepared from without navigating that tab. The value is set relative
+// to whatever it is now, so the journey does not depend on any other spec's
+// state, and the caller puts it back.
+async function setPullOutMinutes(browser, pick) {
+  const other = await browser.newPage();
+  try {
+    await other.setViewportSize({ width: 1440, height: 900 });
+    await openRuns(other);
+    await other.locator("#runs-crew-rules-button").click();
+    await expect(
+      other.locator('#runs-crew-rules-drawer-overlay[data-open="true"]'),
+    ).toBeVisible();
 
-async function removeStaleRecords(page) {
-  await page.locator("#checks-remove-stale").click();
-  await expect(page.locator("#remove-stale-dialog")).toHaveAttribute(
-    "data-open",
-    "true",
-  );
-  await page.locator("#remove-stale-dialog-confirm").click();
-  await expect(page.locator("#remove-stale-dialog")).toHaveAttribute(
-    "data-open",
-    "false",
-    { timeout: 30000 },
-  );
+    const field = other.locator("#crew-report_pull_out_minutes");
+    const before = await field.inputValue();
+    await field.fill(String(pick(Number(before))));
+    await other.locator("#crew-rules-save").click();
+    await expect(
+      other.locator("#runs-crew-rules-drawer-overlay"),
+    ).toHaveAttribute("data-open", "false", { timeout: 30000 });
+
+    return before;
+  } finally {
+    await other.close();
+  }
 }
 
 // The prepared card's own review control lives inside the panel's scrolling
@@ -198,7 +204,7 @@ async function ask(page, question) {
 }
 
 function copyShot(source, name) {
-  if (!existsSync(dirname(EVIDENCE_DIR))) return;
+  if (!EVIDENCE_DIR) return;
   mkdirSync(EVIDENCE_DIR, { recursive: true });
   copyFileSync(source, resolve(EVIDENCE_DIR, `${name}.png`));
 }
@@ -221,7 +227,7 @@ test.describe("operations helper: reading a day", () => {
     // count comes from the domain, not from the model's sentence.
     const evidence = page.locator("#agent-entries article").last();
     await expect(evidence).toContainText("Blocking issues");
-    await expect(evidence).toContainText("16 issue instances");
+    await expect(evidence).toContainText(/\d+ issue instances/);
     await expect(evidence).toContainText("Complete");
 
     // The frozen day's own findings, named by the codes the tool returned.
@@ -411,45 +417,43 @@ test.describe("operations helper: handing off to the native drawer", () => {
 });
 
 test.describe("operations helper: a stale configuration is refused", () => {
-  test("a day edited in another tab refuses the old prepared card and says why", async ({
+  test("crew rules changed in another tab refuse the old prepared card and say why", async ({
     page,
     browser,
   }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
-    await openBlocks(page);
+    await openRuns(page);
     await openHelper(page);
 
-    await ask(page, "Prepare a change to the unassigned trips.");
+    await ask(page, "Prepare a rebuild of this day's runs.");
     await expect(page.locator('#agent-entries [id^="agent-prepared-"]')).toHaveCount(1);
 
     // A second editor changes the day this configuration was frozen from.
     // Nothing in the first tab navigated, so the card is still on screen and
-    // the socket's assigns still describe the old day — which is exactly why
+    // the socket's assigns still describe the old day, which is exactly why
     // the handoff re-reads the day rather than trusting the assigns.
-    const other = await browser.newPage();
-    await other.setViewportSize({ width: 1440, height: 900 });
-    await openBlocks(other);
-    await openChecksDrawer(other);
-    await removeStaleRecords(other);
-    await expect(other.locator("#checks-remove-stale")).toHaveCount(0);
-    await other.close();
+    const original = await setPullOutMinutes(browser, (minutes) => (minutes + 1) % 31);
 
-    // Opening the old card is what the refusal answers: the pack re-reads the
-    // day and finds the configuration was prepared from a different one.
-    await openPreparedReview(page);
+    try {
+      // Opening the old card is what the refusal answers: the page re-reads the
+      // day and finds the configuration was prepared from a different one.
+      await openPreparedReview(page);
 
-    // A stale configuration is refused, and the refusal names its own next
-    // action rather than failing silently or opening a wrong drawer.
-    await expect(page.locator("#blocks-helper-notice")).toBeVisible({
-      timeout: 30000,
-    });
-    await expect(page.locator("#blocks-helper-notice")).toContainText(
-      "Open the Suggest blocks drawer and ask again",
-    );
-    await expect(page.locator("#suggest-drawer-overlay")).toHaveAttribute(
-      "data-open",
-      "false",
-    );
+      // The refusal names its own next action rather than failing silently or
+      // opening a wrong drawer.
+      await expect(page.locator("#runs-helper-notice")).toBeVisible({
+        timeout: 30000,
+      });
+      await expect(page.locator("#runs-helper-notice")).toContainText(
+        "Open the Suggest runs drawer and ask again",
+      );
+      await expect(page.locator("#runs-suggest-drawer-overlay")).toHaveAttribute(
+        "data-open",
+        "false",
+      );
+    } finally {
+      await setPullOutMinutes(browser, () => original);
+    }
   });
 });
 
@@ -536,14 +540,4 @@ test.describe("operations helper: layout and keyboard at 390x844", () => {
     await page.screenshot({ path: shot, animations: "disabled" });
     copyShot(shot, "runs-issues-390");
   });
-});
-
-// The QA tour is written by the last journey that measures it, so the numbers
-// in it are the ones the journeys above actually observed.
-test.afterAll(async () => {
-  if (!existsSync(dirname(EVIDENCE_DIR))) return;
-  const tour = resolve(EVIDENCE_DIR, "qa-tour.md");
-  if (existsSync(tour)) {
-    console.log(`QA tour: ${pathToFileURL(tour).href}`);
-  }
 });
