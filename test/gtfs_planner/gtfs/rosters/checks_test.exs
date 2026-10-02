@@ -195,4 +195,19 @@ defmodule GtfsPlanner.Gtfs.Rosters.ChecksTest do
       refute Checks.weekly_hours(172_800, 60).warn?
     end
   end
+
+  describe "next_weekday/1 and previous_weekday/1" do
+    test "steps forward one day and wraps Sunday to Monday" do
+      assert Enum.map(1..7, &Checks.next_weekday/1) == [2, 3, 4, 5, 6, 7, 1]
+    end
+
+    test "steps back one day and wraps Monday to Sunday" do
+      assert Enum.map(1..7, &Checks.previous_weekday/1) == [7, 1, 2, 3, 4, 5, 6]
+    end
+
+    test "round-trips every weekday across the wrap" do
+      assert Enum.all?(1..7, &(Checks.next_weekday(Checks.previous_weekday(&1)) == &1))
+      assert Enum.all?(1..7, &(Checks.previous_weekday(Checks.next_weekday(&1)) == &1))
+    end
+  end
 end

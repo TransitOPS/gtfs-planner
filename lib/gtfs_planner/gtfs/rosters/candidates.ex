@@ -357,8 +357,8 @@ defmodule GtfsPlanner.Gtfs.Rosters.Candidates do
   defp slots(line), do: Map.to_list(line.slots)
 
   defp candidate(roster, line, weekday, run) do
-    before_secs = rest_before(line, previous_weekday(weekday), run)
-    after_secs = rest_after(line, next_weekday(weekday), run)
+    before_secs = rest_before(line, Checks.previous_weekday(weekday), run)
+    after_secs = rest_after(line, Checks.next_weekday(weekday), run)
     min_secs = roster.rules.min_rest_minutes * @seconds_per_minute
 
     %{
@@ -419,10 +419,4 @@ defmodule GtfsPlanner.Gtfs.Rosters.Candidates do
 
   defp sort_candidates(candidates, median),
     do: Enum.sort_by(candidates, &{abs(&1.run.work.sign_on_secs - median), &1.run_id})
-
-  defp next_weekday(7), do: 1
-  defp next_weekday(weekday), do: weekday + 1
-
-  defp previous_weekday(1), do: 7
-  defp previous_weekday(weekday), do: weekday - 1
 end
