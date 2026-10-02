@@ -102,6 +102,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
     ]
 
   alias GtfsPlanner.Agents
+  alias GtfsPlanner.Agents.Pack
   alias GtfsPlanner.Agents.Scope
 
   use GtfsPlannerWeb, :verified_routes
@@ -265,6 +266,26 @@ defmodule GtfsPlannerWeb.AgentPanel do
   """
   @spec context_digest(Phoenix.LiveView.Socket.t()) :: String.t()
   def context_digest(socket), do: Scope.context_digest(scope(socket))
+
+  @doc """
+  Whether the pack `pack_id` would open a conversation for `context`.
+
+  It makes the two checks every boundary makes: the person's access to the
+  context, then the pack's own `authorize_context/1`. A host that admits a source
+  calls it first, so an approval the helper would refuse on first use is refused
+  where the person can still correct it.
+  """
+  @spec admits?(Phoenix.LiveView.Socket.t(), String.t(), Scope.resource_context()) :: boolean()
+  def admits?(socket, pack_id, context) do
+    scope = %{scope(socket) | pack_id: pack_id, resource_context: context}
+
+    with {:ok, pack} <- Map.fetch(Agents.packs(), pack_id),
+         :ok <- Scope.authorized_context(scope) do
+      Pack.authorize_context(pack, scope) == :ok
+    else
+      _refused -> false
+    end
+  end
 
   @doc """
   The newest server evidence this panel has delivered for `kind`, or `nil`.

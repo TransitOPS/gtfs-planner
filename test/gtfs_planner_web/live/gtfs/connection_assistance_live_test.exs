@@ -261,6 +261,7 @@ defmodule GtfsPlannerWeb.Gtfs.ConnectionAssistanceLiveTest do
 
   defp approved_view(ctx, pairs) do
     {:ok, view, _html} = live(ctx.conn, schedules_path(ctx))
+    view |> element("#schedule-helper-mode-connections") |> render_click()
 
     submit(view, pairs)
 

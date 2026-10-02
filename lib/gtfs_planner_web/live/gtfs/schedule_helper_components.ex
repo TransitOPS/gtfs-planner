@@ -248,11 +248,11 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleHelperComponents do
             id="connection-pair-add"
             type="button"
             phx-click="connection_pair_add"
-            variant="secondary"
+            variant="quiet"
           >
             Add another pair
           </.button>
-          <.button id="connection-approve" type="submit" variant="primary">
+          <.button id="connection-approve" type="submit" variant="secondary">
             Approve for the helper
           </.button>
         </div>
