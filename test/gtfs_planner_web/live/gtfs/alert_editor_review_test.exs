@@ -30,7 +30,6 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Alerts
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
 
   # The rider message this fixture's planned delay carries, written by an
