@@ -120,7 +120,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
     route_type = parse_route_type(params["route_type"])
-    agency_id = parse_string(params["agency_id"])
+    agency_id = Values.presence(params["agency_id"])
     # Status presentation follows the same effective predicate as the shared
     # list/count filters (only explicit false is inactive), so an unknown value
     # presents as All statuses instead of drifting from the query.
@@ -287,7 +287,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
     opts = [
       route_type: parse_route_type(socket.assigns.filter_form.params["route_type"]),
-      agency_id: parse_string(socket.assigns.filter_form.params["agency_id"]),
+      agency_id: Values.presence(socket.assigns.filter_form.params["agency_id"]),
       active: socket.assigns.filter_form.params["active"],
       search: socket.assigns.search,
       sort_by: socket.assigns.sort_by,
@@ -1035,18 +1035,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     # the chip shows — the chosen value, not the raw param.
     filters = [
       {"search", assigns.search != "", "\"" <> assigns.search <> "\""},
-      {"route_type", present?(params["route_type"]),
+      {"route_type", Values.present?(params["route_type"]),
        Route.route_type_label(parse_route_type(params["route_type"]))},
       {"active", params["active"] in ~w(true false), status_label(params["active"])},
-      {"agency_id", present?(params["agency_id"]), params["agency_id"]}
+      {"agency_id", Values.present?(params["agency_id"]), params["agency_id"]}
     ]
 
     for {key, true, label} <- filters, do: %{key: key, label: label}
   end
-
-  defp present?(nil), do: false
-  defp present?(""), do: false
-  defp present?(_value), do: true
 
   defp status_label("true"), do: "Active"
   defp status_label("false"), do: "Inactive"
@@ -1862,7 +1858,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
         String.trim(to_string(attrs[field] || "")) != ""
       end)
 
-    text_entered? or present?(attrs["route_type"]) or present?(attrs["route_id"]) or
+    text_entered? or Values.present?(attrs["route_type"]) or Values.present?(attrs["route_id"]) or
       text_mode == "custom"
   end
 
@@ -2219,10 +2215,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       _ -> nil
     end
   end
-
-  defp parse_string(nil), do: nil
-  defp parse_string(""), do: nil
-  defp parse_string(value) when is_binary(value), do: value
 
   defp parse_atom(nil, default), do: default
   defp parse_atom("", default), do: default

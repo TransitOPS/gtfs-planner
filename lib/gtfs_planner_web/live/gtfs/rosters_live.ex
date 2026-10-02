@@ -68,6 +68,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Operations.Operator
   alias GtfsPlanner.Operations.Tods
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.RosterOperatorsComponents
@@ -1421,7 +1422,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     case Gtfs.assign_roster_operator(
            audit_context(socket),
            line_id,
-           pick_operator_id(operator)
+           Values.presence(operator)
          ) do
       {:ok, _result} ->
         # The roster is re-read first and the focus target read off the result:
@@ -1536,13 +1537,6 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     |> Operations.list_operators()
     |> Enum.reject(&MapSet.member?(holders, &1.id))
   end
-
-  # An empty value is the row's clearing answer and `nil` is the writer's
-  # clearing answer. Anything else is a submitted id, and the writer is what
-  # casts it inside the caller's organization before it is used.
-  defp pick_operator_id(""), do: nil
-  defp pick_operator_id(operator) when is_binary(operator), do: operator
-  defp pick_operator_id(_not_a_value), do: nil
 
   # What the pick did, in the words the grid draws it with: the operator is read
   # off the reloaded composition's own line rather than off what was submitted,

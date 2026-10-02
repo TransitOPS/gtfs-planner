@@ -168,6 +168,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareZone
   alias GtfsPlanner.Gtfs.FareZones
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -857,7 +858,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   # and page come from the URL. `filter=unassigned` is its own key so a zone
   # literally named "unassigned" cannot collide with the unassigned filter.
   defp zones_params(:zones, params) do
-    {stop_filter(params), normalize_query(params["q"]), parse_page(params["page"])}
+    {stop_filter(params), Values.presence(params["q"]), parse_page(params["page"])}
   end
 
   defp zones_params(_action, _params), do: {:all, nil, 1}
@@ -865,9 +866,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   defp stop_filter(%{"zone" => zone}) when is_binary(zone) and zone != "", do: {:zone, zone}
   defp stop_filter(%{"filter" => "unassigned"}), do: :unassigned
   defp stop_filter(_params), do: :all
-
-  defp normalize_query(value) when is_binary(value) and value != "", do: value
-  defp normalize_query(_value), do: nil
 
   defp parse_page(value) when is_binary(value) do
     case Integer.parse(value) do

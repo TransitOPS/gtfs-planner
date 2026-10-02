@@ -1332,8 +1332,10 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
               data-label="Label"
               class="px-4 py-2 max-md:col-start-3 max-md:row-start-1 max-md:p-0 max-md:pl-1 max-md:text-[13px] max-md:text-muted"
             >
-              <span :if={blank?(vehicle.vehicle_label)} class="text-muted max-md:hidden">—</span>
-              <span :if={!blank?(vehicle.vehicle_label)}>{vehicle.vehicle_label}</span>
+              <span :if={Values.blank?(vehicle.vehicle_label)} class="text-muted max-md:hidden">
+                —
+              </span>
+              <span :if={!Values.blank?(vehicle.vehicle_label)}>{vehicle.vehicle_label}</span>
             </td>
             <td
               data-label="Type"
@@ -1353,8 +1355,10 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
               data-label="License plate"
               class="px-4 py-2 tabular-nums md:max-lg:hidden max-md:col-span-2 max-md:col-start-2 max-md:row-start-4 max-md:p-0 max-md:pb-1 max-md:text-[13px] max-md:text-muted"
             >
-              <span :if={blank?(vehicle.license_plate)} class="text-muted max-md:hidden">—</span>
-              <span :if={!blank?(vehicle.license_plate)}>{vehicle.license_plate}</span>
+              <span :if={Values.blank?(vehicle.license_plate)} class="text-muted max-md:hidden">
+                —
+              </span>
+              <span :if={!Values.blank?(vehicle.license_plate)}>{vehicle.license_plate}</span>
             </td>
           </tr>
         </tbody>
@@ -2525,8 +2529,6 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
 
   defp bulk_field_noun(:garage_id), do: "garage"
   defp bulk_field_noun(_field), do: "type"
-
-  defp blank?(value), do: value in [nil, ""]
 
   # The Fleet query string carries its filters, so a version switch keeps it in
   # the URL instead of dropping the operator's current view.

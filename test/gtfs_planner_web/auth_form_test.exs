@@ -61,6 +61,11 @@ defmodule GtfsPlannerWeb.AuthFormTest do
                "Enter the password again."
     end
 
+    test "treats a forged confirmation list as a mismatch" do
+      assert AuthForm.confirmation_error(@mismatch, %{"password_confirmation" => []}) ==
+               "Passwords don't match. Type the same password in both fields."
+    end
+
     test "treats missing params as a blank confirmation" do
       assert AuthForm.confirmation_error(@mismatch, nil) == "Enter the password again."
     end

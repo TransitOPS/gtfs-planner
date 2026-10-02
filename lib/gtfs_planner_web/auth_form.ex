@@ -11,6 +11,8 @@ defmodule GtfsPlannerWeb.AuthForm do
 
   import GtfsPlannerWeb.CoreComponents, only: [translate_error: 1]
 
+  alias GtfsPlanner.Values
+
   # A failed submit must not return secrets to the browser: both password keys
   # (string and atom) are dropped from params and changes.
   @secret_keys ["password", "password_confirmation", :password, :password_confirmation]
@@ -43,7 +45,7 @@ defmodule GtfsPlannerWeb.AuthForm do
       opts[:validation] != :confirmation ->
         translate_error(error)
 
-      blank?((params || %{})["password_confirmation"]) ->
+      Values.blank?((params || %{})["password_confirmation"]) ->
         "Enter the password again."
 
       true ->
@@ -77,7 +79,7 @@ defmodule GtfsPlannerWeb.AuthForm do
   end
 
   defp mark_if_blank(params, field, value) do
-    if blank?(value), do: Map.put(params, "_unused_" <> field, ""), else: params
+    if Values.blank?(value), do: Map.put(params, "_unused_" <> field, ""), else: params
   end
 
   @doc """
@@ -93,6 +95,4 @@ defmodule GtfsPlannerWeb.AuthForm do
         changes: Map.drop(changeset.changes, @secret_changes)
     }
   end
-
-  defp blank?(value), do: value |> to_string() |> String.trim() == ""
 end

@@ -38,6 +38,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
     only: [drawer_footer: 1, drawer_scroll: 1, form_error_summary: 1, message: 1]
 
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Values
 
   @form_id "report-stop-edit-form"
   @error_summary_id "report-stop-form-error"
@@ -106,16 +107,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
   end
 
   defp drawer_title(%{stop_name: stop_name, stop_id: stop_id}),
-    do: presence(stop_name) || stop_id
+    do: Values.presence(stop_name) || stop_id
 
   defp drawer_title(_entity), do: "Stop not found"
 
   defp drawer_open?(drawer_entity, drawer_error),
     do: not is_nil(drawer_entity) or not is_nil(drawer_error)
-
-  defp presence(nil), do: nil
-  defp presence(""), do: nil
-  defp presence(value), do: value
 
   # -- Lookup recovery --------------------------------------------------------
 
@@ -291,7 +288,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
             <.identity_row
               label="Parent station"
               gtfs_key="parent_station"
-              value={presence(@entity.parent_station) || "None"}
+              value={Values.presence(@entity.parent_station) || "None"}
             />
           </dl>
         </section>
@@ -336,7 +333,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
   defp level_options(levels, current, required?) do
     options =
       levels
-      |> Enum.sort_by(&{presence(&1.level_name) || &1.level_id, &1.level_id})
+      |> Enum.sort_by(&{Values.presence(&1.level_name) || &1.level_id, &1.level_id})
       |> Enum.map(&{level_label(&1), &1.level_id})
 
     options = if required?, do: options, else: [{"No level", ""} | options]
@@ -347,7 +344,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
   end
 
   defp level_label(%{level_name: level_name, level_id: level_id}) do
-    case presence(level_name) do
+    case Values.presence(level_name) do
       nil -> level_id
       name -> "#{name} (#{level_id})"
     end
@@ -355,7 +352,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
 
   # The level stored on the stop when the version has no such level.
   defp stale_level_id(%{entity: %{level_id: level_id}, levels: levels}) do
-    if presence(level_id) && not Enum.any?(levels, &(&1.level_id == level_id)),
+    if Values.presence(level_id) && not Enum.any?(levels, &(&1.level_id == level_id)),
       do: level_id
   end
 
@@ -371,7 +368,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
   end
 
   defp level_required?(%{parent_station: parent_station}),
-    do: not is_nil(presence(parent_station))
+    do: not is_nil(Values.presence(parent_station))
 
   defp level_required?(_entity), do: false
 

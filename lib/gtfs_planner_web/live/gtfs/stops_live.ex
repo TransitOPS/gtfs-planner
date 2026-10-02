@@ -1007,20 +1007,16 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
 
     [
       {"search", "Search", assigns.search != "", "“#{assigns.search}”"},
-      {"route_id", "Route", present?(params["route_id"]),
+      {"route_id", "Route", Values.present?(params["route_id"]),
        route_label(assigns.available_routes, params["route_id"])},
-      {"direction_id", "Direction", present?(params["direction_id"]),
+      {"direction_id", "Direction", Values.present?(params["direction_id"]),
        direction_filter_label(params["direction_id"])},
-      {"wheelchair_boarding", "Wheelchair access", present?(params["wheelchair_boarding"]),
+      {"wheelchair_boarding", "Wheelchair access", Values.present?(params["wheelchair_boarding"]),
        access_filter_label(params["wheelchair_boarding"])}
     ]
     |> Enum.filter(fn {_key, _kind, active?, _value} -> active? end)
     |> Enum.map(fn {key, kind, _active?, value} -> %{key: key, kind: kind, value: value} end)
   end
-
-  defp present?(nil), do: false
-  defp present?(""), do: false
-  defp present?(_value), do: true
 
   defp route_label(available_routes, route_id) do
     case Enum.find(available_routes, &(&1.route_id == route_id)) do

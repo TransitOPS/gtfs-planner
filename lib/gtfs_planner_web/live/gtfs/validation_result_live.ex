@@ -23,6 +23,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     only: [result_details: 1, result_section: 1, result_summary: 1, tone_badge: 1]
 
   alias GtfsPlanner.Validations
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Layouts
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -1644,15 +1645,11 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   defp map_has_entries?(_map), do: false
 
   defp pathways_case_origin(row) do
-    row
-    |> pathways_walkability_test_address()
-    |> normalize_text()
+    Values.presence(pathways_walkability_test_address(row)) || "-"
   end
 
   defp pathways_case_destination(row) do
-    row
-    |> pathways_walkability_test_stop_id()
-    |> normalize_text()
+    Values.presence(pathways_walkability_test_stop_id(row)) || "-"
   end
 
   defp pathways_walkability_test_address(%{walkability_test: walkability_test})
@@ -1686,9 +1683,9 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     |> Enum.with_index()
     |> Enum.flat_map(fn {leg, leg_position} ->
       leg_index = normalize_index(pathways_map_value(leg, :index), leg_position)
-      leg_mode = normalize_text(pathways_map_value(leg, :mode))
-      from_name = normalize_text(pathways_map_value(leg, :from_name))
-      to_name = normalize_text(pathways_map_value(leg, :to_name))
+      leg_mode = Values.presence(pathways_map_value(leg, :mode)) || "-"
+      from_name = Values.presence(pathways_map_value(leg, :from_name)) || "-"
+      to_name = Values.presence(pathways_map_value(leg, :to_name)) || "-"
 
       leg
       |> pathways_map_value(:steps)
@@ -1699,9 +1696,11 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
           leg_index: leg_index,
           step_index: normalize_index(pathways_map_value(step, :index), step_position),
           mode: leg_mode,
-          street_name: normalize_text(pathways_map_value(step, :street_name)),
-          relative_direction: normalize_text(pathways_map_value(step, :relative_direction)),
-          absolute_direction: normalize_text(pathways_map_value(step, :absolute_direction)),
+          street_name: Values.presence(pathways_map_value(step, :street_name)) || "-",
+          relative_direction:
+            Values.presence(pathways_map_value(step, :relative_direction)) || "-",
+          absolute_direction:
+            Values.presence(pathways_map_value(step, :absolute_direction)) || "-",
           distance_meters: normalize_distance(pathways_map_value(step, :distance_meters)),
           from_name: from_name,
           to_name: to_name
@@ -1729,9 +1728,6 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
   defp normalize_index(value, _fallback) when is_integer(value) and value >= 0, do: value
   defp normalize_index(_value, fallback), do: fallback
-
-  defp normalize_text(value) when is_binary(value) and value != "", do: value
-  defp normalize_text(_value), do: "-"
 
   defp normalize_distance(value) when is_float(value), do: value
   defp normalize_distance(value) when is_integer(value), do: value * 1.0

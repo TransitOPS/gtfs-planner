@@ -43,6 +43,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Flex
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Gtfs.FlexComponents
   alias GtfsPlannerWeb.Layouts
@@ -395,7 +396,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
         do: {"create_name", @create_messages.name},
         else: nil
       ),
-      if(kind == "detour" and blank?(values["route_id"]),
+      if(kind == "detour" and Values.blank?(values["route_id"]),
         do: {"create_route_id", @create_messages.route_id},
         else: nil
       )
@@ -546,6 +547,4 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
   end
 
   defp copy_form, do: to_form(%{"source_version_id" => ""}, as: :copy)
-
-  defp blank?(value), do: is_nil(value) or value == ""
 end

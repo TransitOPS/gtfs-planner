@@ -29,6 +29,7 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.ServiceQueries
+  alias GtfsPlanner.Values
 
   @list_limit 50
   @range_limit_days 62
@@ -219,7 +220,7 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
     do: prepare_calendar_extension(args, scope)
 
   defp list_calendars(args, scope) do
-    query = normalize_query(args["query"])
+    query = Values.presence(args["query"]) || ""
     offset = args["offset"] || 0
     fingerprint = args["catalog_fingerprint"]
 
@@ -1078,7 +1079,4 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   defp prepare_error(:unavailable), do: "Calendars are temporarily unavailable."
   defp prepare_error(:stale_review), do: "These calendars changed in another session. Try again."
   defp prepare_error(_reason), do: "This change could not be prepared."
-
-  defp normalize_query(nil), do: ""
-  defp normalize_query(query), do: String.trim(query)
 end

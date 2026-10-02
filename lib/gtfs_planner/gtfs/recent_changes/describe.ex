@@ -32,6 +32,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
 
   @weekday_fields ~w(monday tuesday wednesday thursday friday saturday sunday)
   @position_fields ~w(stop_lat stop_lon)
@@ -393,8 +394,8 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
 
   defp route_title(route, fallback) do
     cond do
-      present?(route.route_long_name) -> route.route_long_name
-      present?(route.route_short_name) -> route.route_short_name
+      Values.present?(route.route_long_name) -> route.route_long_name
+      Values.present?(route.route_short_name) -> route.route_short_name
       is_binary(route.route_id) -> route.route_id
       true -> fallback || "Unknown"
     end
@@ -421,8 +422,6 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
       _ -> service_id
     end
   end
-
-  defp present?(value), do: is_binary(value) and value != ""
 
   # -- Bounded description vocabulary --
 

@@ -54,6 +54,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Operations.Garage
   alias GtfsPlanner.Operations.Tods
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias LiveSelect.Component, as: LiveSelectComponent
 
@@ -1037,7 +1038,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   # An operator can submit straight from the name field, before the derived
   # value reached the browser, so the same rule applies to the submitted ID.
   defp submitted_garage_id(%{assigns: %{garage_entity: nil}} = socket, params) do
-    if socket.assigns.garage_id_touched? or present?(params[@garage_id_field]) do
+    if socket.assigns.garage_id_touched? or Values.present?(params[@garage_id_field]) do
       params
     else
       Map.put(params, @garage_id_field, Operations.default_garage_id(params["name"]))
@@ -1045,8 +1046,6 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   end
 
   defp submitted_garage_id(_socket, params), do: params
-
-  defp present?(value), do: is_binary(value) and String.trim(value) != ""
 
   defp garage_id_target?(@garage_id_target), do: true
   defp garage_id_target?(_target), do: false

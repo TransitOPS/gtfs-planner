@@ -975,7 +975,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
     [
       "Display order #{form[:route_sort_order].value || "not set"}",
       "Boarding between stops: #{boarding}",
-      if(blank_value?(form[:network_id].value),
+      if(Values.blank?(form[:network_id].value),
         do: nil,
         else: "Network #{form[:network_id].value}"
       ),
@@ -1009,8 +1009,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
   defp option_value(value) when is_integer(value), do: to_string(value)
   defp option_value(value) when is_binary(value), do: value
   defp option_value(_value), do: ""
-
-  defp blank_value?(value), do: is_nil(value) or String.trim(to_string(value)) == ""
 
   # The chevron the reference draws with an inline `use` reference. It is
   # absolutely positioned over the select's own `h-11` box rather than over the

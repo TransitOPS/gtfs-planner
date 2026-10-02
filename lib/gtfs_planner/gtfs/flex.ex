@@ -352,7 +352,7 @@ defmodule GtfsPlanner.Gtfs.Flex do
   # The name riders read in the create drawer's select. A version that carries
   # only one of the two names (or neither) still gets one label per route.
   defp route_name(route_id, short_name, long_name) do
-    case Enum.reject([short_name, long_name], &blank?/1) do
+    case Enum.reject([short_name, long_name], &Values.blank?/1) do
       [] -> route_id
       names -> Enum.join(names, " ")
     end
@@ -1187,6 +1187,4 @@ defmodule GtfsPlanner.Gtfs.Flex do
   defp attr(attrs, key) do
     Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
   end
-
-  defp blank?(value), do: is_nil(value) or value == ""
 end

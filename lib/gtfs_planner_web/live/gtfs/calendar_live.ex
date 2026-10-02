@@ -34,6 +34,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendars.ServiceDates
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Gtfs.CalendarComponents
   alias GtfsPlannerWeb.Gtfs.CalendarEditorComponents, as: Editor
@@ -1068,7 +1069,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
   defp save_name(socket, params) do
     if socket.assigns.live_action == :show and params["name"] == socket.assigns.baseline["name"],
-      do: {:ok, blank_to_nil(params["name"])},
+      do: {:ok, Values.presence(params["name"])},
       else: required_name(params)
   end
 
@@ -1177,20 +1178,13 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
       true ->
         {:ok,
          %{
-           service_schedule_name: blank_to_nil(params["service_schedule_name"]),
+           service_schedule_name: Values.presence(params["service_schedule_name"]),
            service_schedule_type: type,
            service_schedule_typicality: String.to_integer(params["service_schedule_typicality"]),
            rating_start_date: rating_start,
            rating_end_date: rating_end,
-           rating_description: blank_to_nil(params["rating_description"])
+           rating_description: Values.presence(params["rating_description"])
          }}
-    end
-  end
-
-  defp blank_to_nil(value) do
-    case String.trim(value || "") do
-      "" -> nil
-      trimmed -> trimmed
     end
   end
 
@@ -1472,7 +1466,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   defp parse_optional_date(value) do
     case parse_date(value) do
       {:ok, date} -> date
-      :error -> if blank?(value), do: nil, else: :error
+      :error -> if Values.blank?(value), do: nil, else: :error
     end
   end
 
@@ -1492,8 +1486,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   end
 
   defp parse_dates(_value), do: :error
-
-  defp blank?(value), do: String.trim(to_string(value || "")) == ""
 
   defp ordered_range(first_date, last_date) do
     if Date.compare(last_date, first_date) == :lt do

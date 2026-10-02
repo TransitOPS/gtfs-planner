@@ -8,6 +8,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.DescribeTest do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.RecentChanges.Describe
+  alias GtfsPlanner.Gtfs.Route
 
   setup do
     organization = organization_fixture()
@@ -61,6 +62,33 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.DescribeTest do
     assert item.actor_email == "editor@example.test"
     assert item.local_at == ~N[2026-09-20 12:00:00.000000]
     assert item.same_day_count == 1
+  end
+
+  test "a whitespace-only long name leaves the short name as the title", context do
+    # Import keeps raw column bytes, so a whitespace-only long name is stored
+    # as given; the route changeset would have trimmed it to nil.
+    Repo.insert!(%Route{
+      organization_id: context.organization.id,
+      gtfs_version_id: context.gtfs_version.id,
+      route_id: "12",
+      route_short_name: "12",
+      route_long_name: "  ",
+      route_type: 3
+    })
+
+    calendar_fixture(context.organization.id, context.gtfs_version.id, %{service_id: "WKDY"})
+
+    calendar_attribute_fixture(context.organization.id, context.gtfs_version.id, %{
+      service_id: "WKDY",
+      service_description: "Weekday"
+    })
+
+    operation_id = Ecto.UUID.generate()
+    rows = for index <- 1..2, do: trip_log(operation_id, index)
+
+    assert [item] = describe_groups(context, [group({:schedules, "12", "WKDY"}, [rows])])
+
+    assert item.title == "12"
   end
 
   test "a calendar end-date change reads the moved date", context do

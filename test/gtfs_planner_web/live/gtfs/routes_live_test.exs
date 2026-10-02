@@ -652,6 +652,24 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLiveTest do
       assert_patched(view, "/gtfs/#{version.id}/routes?route_type=3")
     end
 
+    test "a whitespace-only agency filter shows no chip", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      route = route_fixture(organization.id, version.id, %{route_id: "WSCHIP"})
+
+      stub_catalog(fn _opts -> {:ok, route_page([route], 1, 1, [route.route_type], [])} end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes?agency_id=%20%20")
+
+      assert has_element?(view, "a", "WSCHIP")
+      refute has_element?(view, "#routes-chip-agency_id")
+    end
+
     test "searches routes by name", %{
       conn: conn,
       user: user,

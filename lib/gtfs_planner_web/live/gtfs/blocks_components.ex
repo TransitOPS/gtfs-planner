@@ -8588,22 +8588,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # “1 · Coast Highway” when the route has both names, so the picker says what
   # each number is.
   defp route_option_label(route_id, route) do
-    case {present(route.short_name), present(route.long_name)} do
+    case {Values.presence(route.short_name), Values.presence(route.long_name)} do
       {nil, nil} -> route_id
       {short, nil} -> short
       {nil, long} -> long
       {short, long} -> "#{short} · #{long}"
     end
   end
-
-  defp present(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      _trimmed -> value
-    end
-  end
-
-  defp present(_value), do: nil
 
   # The suffix rule for the Driving times link: the count is printed only when the
   # day has an estimate to review, and the label starts with a separator so the
@@ -9119,7 +9110,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # what an operator calls it; a trip with no departure time falls back to its
   # headsign or its ID.
   defp trip_title(trip) do
-    case {is_integer(trip.first_departure), present(trip.trip_headsign)} do
+    case {is_integer(trip.first_departure), Values.presence(trip.trip_headsign)} do
       {true, nil} -> clock(trip.first_departure)
       {true, headsign} -> clock(trip.first_departure) <> " to " <> headsign
       {false, nil} -> "Trip " <> trip.trip_id

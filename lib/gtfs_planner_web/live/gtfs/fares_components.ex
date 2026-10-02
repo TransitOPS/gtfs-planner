@@ -100,6 +100,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
     only: [drawer_footer: 1, drawer_scroll: 1, first_use: 1, form_section: 1, message: 1]
 
   alias GtfsPlanner.Gtfs.FareZone
+  alias GtfsPlanner.Values
 
   @doc """
   Renders the workspace's first-paint skeleton.
@@ -1275,8 +1276,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   end
 
   defp rule_route(assigns) do
-    assigns = assign(assigns, :short, present(assigns.rule.route.short_name))
-    assigns = assign(assigns, :long, present(assigns.rule.route.long_name))
+    assigns = assign(assigns, :short, Values.presence(assigns.rule.route.short_name))
+    assigns = assign(assigns, :long, Values.presence(assigns.rule.route.long_name))
 
     ~H"""
     <span class="inline-flex items-center gap-2">
@@ -1860,7 +1861,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
                 type="select"
                 label="Charge this fare"
                 options={@fare_options}
-                prompt={if summary_value(@form[:fare_id].value), do: nil, else: "Choose a fare"}
+                prompt={if Values.presence(@form[:fare_id].value), do: nil, else: "Choose a fare"}
                 errors={@fare_errors}
                 help="Prices come from this version’s fare list."
               />
@@ -2814,9 +2815,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
     end
   end
 
-  defp present(value) when value in [nil, ""], do: nil
-  defp present(value), do: value
-
   # The name of the first zone the rule references that has no boardable stops:
   # the rule keeps the reference, so the row says which one instead of hiding it.
   # Every referenced zone is in the inventory, which reads its IDs from the rules
@@ -2932,21 +2930,18 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   # so they are normalized before the sentence is built.
   defp rule_summary(form, zone_lookup, fares, routes, reviewed) do
     "Riders pay " <>
-      fare_summary(summary_value(form[:fare_id].value), fares, reviewed) <>
+      fare_summary(Values.presence(form[:fare_id].value), fares, reviewed) <>
       " for " <>
       trip_phrase(
-        summary_value(form[:origin_id].value),
-        summary_value(form[:destination_id].value),
+        Values.presence(form[:origin_id].value),
+        Values.presence(form[:destination_id].value),
         zone_lookup
       ) <>
       " on " <>
-      route_summary(summary_value(form[:route_id].value), routes, reviewed) <>
+      route_summary(Values.presence(form[:route_id].value), routes, reviewed) <>
       rule_summary_visits(summary_contains(form[:contains].value), zone_lookup) <>
       "."
   end
-
-  defp summary_value(value) when value in [nil, ""], do: nil
-  defp summary_value(value), do: value
 
   defp summary_contains(values) when is_list(values), do: Enum.reject(values, &(&1 in [nil, ""]))
   defp summary_contains(_values), do: []
@@ -3014,7 +3009,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
       end
 
     "#{rule.fare_id} will no longer apply to " <>
-      trip_phrase(present(rule.origin_id), present(rule.destination_id), zone_lookup) <>
+      trip_phrase(
+        Values.presence(rule.origin_id),
+        Values.presence(rule.destination_id),
+        zone_lookup
+      ) <>
       rule_summary_visits(rule.contains, zone_lookup) <>
       route <> ". The fare stays in this version’s fare list."
   end

@@ -1290,11 +1290,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # uncaught — `false` is not `:ok` and not one of the refusals — and take the
   # whole LiveView down on an ordinary unchosen select.
   defp both_chosen?(gap, to) do
-    if chosen?(gap) and chosen?(to), do: :ok, else: :nothing_chosen
+    if Values.present?(gap) and Values.present?(to), do: :ok, else: :nothing_chosen
   end
-
-  defp chosen?(""), do: false
-  defp chosen?(_value), do: true
 
   defp split_position(socket, piece, gap) do
     with position when is_integer(position) and position >= 1 <- position(gap),
