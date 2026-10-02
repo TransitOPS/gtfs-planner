@@ -24,7 +24,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RulesTest do
 
   The version enters rows through the production importer and the production v2
   conversion, and every write runs inside
-  `GtfsPlanner.Gtfs.Fares.VersionLock.transact/3` with
+  `GtfsPlanner.Gtfs.Fares.VersionLock.transact/2` with
   `Fares.Normalize.run!/2` before the commit, which is the path every writer of
   this package takes and what rebuilds a pass's mirrored rows after its accepted
   networks change (R4).
@@ -32,7 +32,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RulesTest do
   use GtfsPlanner.DataCase, async: true
 
   import Ecto.Query
-  import GtfsPlanner.AccountsFixtures, only: [user_fixture: 1]
+  import GtfsPlanner.AccountsFixtures, only: [editor_fixture: 2]
   import GtfsPlanner.FaresFixtures, only: [import!: 3]
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 2]
@@ -59,7 +59,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RulesTest do
       organization_fixture(%{alias: "fares-rules-#{System.unique_integer([:positive])}"})
 
     actor =
-      user_fixture(%{
+      editor_fixture(organization, %{
         email: "fares-rules-#{System.unique_integer([:positive])}@example.com"
       })
 
@@ -566,9 +566,8 @@ defmodule GtfsPlanner.Gtfs.Fares.RulesTest do
   end
 
   defp other_actor(organization) do
-    user_fixture(%{
-      email: "fares-rules-other-#{System.unique_integer([:positive])}@example.com",
-      organization_memberships: [%{organization_id: organization.id}]
+    editor_fixture(organization, %{
+      email: "fares-rules-other-#{System.unique_integer([:positive])}@example.com"
     })
   end
 end

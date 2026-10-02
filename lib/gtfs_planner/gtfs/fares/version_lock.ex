@@ -3,7 +3,7 @@ defmodule GtfsPlanner.Gtfs.Fares.VersionLock do
   The one write transaction of a managed version's fare rows (R15).
 
   Every write of `GtfsPlanner.Gtfs.Fares` and of `GtfsPlanner.Gtfs.FareZones`
-  runs inside `transact/3`, so all writers of one version's fares serialize on
+  runs inside `transact/2`, so all writers of one version's fares serialize on
   the same row instead of each holding a lock of their own.
 
   Every transaction locks the actor's active editor membership before locking

@@ -80,7 +80,7 @@ defmodule GtfsPlanner.Gtfs.Fares do
   Every writer in this module runs through the private `write/4` helper, so
   they all share one shape (R15, INV-1):
 
-  - `Fares.VersionLock.transact/3` holds the organization's published version
+  - `Fares.VersionLock.transact/2` checks membership before holding the organization's published version
     row `FOR UPDATE`, so writers of one version's fares serialize and a pair
     that is not a published version of that organization answers
     `{:error, :not_found}` with nothing written;
@@ -1194,7 +1194,7 @@ defmodule GtfsPlanner.Gtfs.Fares do
          inverse_key,
          fun
        ) do
-    VersionLock.transact(organization_id, gtfs_version_id, fn ->
+    VersionLock.transact(scope, fn ->
       with {:ok, setting} <- managed_setting(organization_id, gtfs_version_id),
            {:ok, result} <- fun.(setting) do
         :ok = Normalize.run!(organization_id, gtfs_version_id)

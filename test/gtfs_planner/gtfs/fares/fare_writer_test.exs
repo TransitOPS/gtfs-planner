@@ -28,14 +28,14 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
 
   The version enters rows through the production importer and the production v2
   conversion, and every write runs inside
-  `GtfsPlanner.Gtfs.Fares.VersionLock.transact/3` with
+  `GtfsPlanner.Gtfs.Fares.VersionLock.transact/2` with
   `Fares.Normalize.run!/2` before the commit, which is the path every writer of
   this package takes.
   """
   use GtfsPlanner.DataCase, async: true
 
   import Ecto.Query
-  import GtfsPlanner.AccountsFixtures, only: [user_fixture: 0]
+  import GtfsPlanner.AccountsFixtures, only: [editor_fixture: 1]
   import GtfsPlanner.FaresFixtures, only: [import!: 3]
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 2]
@@ -53,7 +53,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
     organization =
       organization_fixture(%{alias: "fares-fare-writer-#{System.unique_integer([:positive])}"})
 
-    actor = user_fixture()
+    actor = editor_fixture(organization)
     version = gtfs_version_fixture(organization.id, %{name: "North Coast fares editor"})
     import!(organization, version, "north_coast_v2")
 

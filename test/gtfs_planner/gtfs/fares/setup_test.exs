@@ -13,12 +13,12 @@ defmodule GtfsPlanner.Gtfs.Fares.SetupTest do
   The version enters rows the way a user's version does — through the production
   importer of `test/fixtures/gtfs/fares/no_fare`, which is the sample feed with no
   fare files — and the write itself runs through
-  `GtfsPlanner.Gtfs.Fares.VersionLock.transact/3`, the same transaction every
+  `GtfsPlanner.Gtfs.Fares.VersionLock.transact/2`, the same transaction every
   later writer uses.
   """
   use GtfsPlanner.DataCase, async: true
 
-  import GtfsPlanner.AccountsFixtures, only: [user_fixture: 0]
+  import GtfsPlanner.AccountsFixtures, only: [editor_fixture: 1]
   import GtfsPlanner.FaresFixtures, only: [import!: 3]
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 1, gtfs_version_fixture: 2]
@@ -58,7 +58,7 @@ defmodule GtfsPlanner.Gtfs.Fares.SetupTest do
 
   setup do
     organization = organization_fixture(%{alias: "fares-setup-#{unique_alias()}"})
-    actor = user_fixture()
+    actor = editor_fixture(organization)
     version = gtfs_version_fixture(organization.id, %{name: "Fare setup version"})
     import!(organization, version, "no_fare")
 
@@ -77,6 +77,28 @@ defmodule GtfsPlanner.Gtfs.Fares.SetupTest do
         }
       }
     }
+  end
+
+  test "setup refuses an actor without editor membership before writing fares", context do
+    outsider = GtfsPlanner.AccountsFixtures.user_fixture()
+
+    audit = context.scope.audit
+
+    scope = %{
+      context.scope
+      | audit: %{audit | actor_id: outsider.id, actor_email: outsider.email}
+    }
+
+    assert {:error, :forbidden} = Fares.Conversion.setup(scope, flat_answers())
+
+    assert {:error, :forbidden} =
+             Fares.Conversion.setup(
+               %{context.scope | organization_id: Ecto.UUID.generate()},
+               flat_answers()
+             )
+
+    refute Fares.managed?(context.organization.id, context.version.id)
+    assert [] = scoped!(FareProduct, context)
   end
 
   describe "a flat structure" do

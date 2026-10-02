@@ -18,12 +18,12 @@ defmodule GtfsPlanner.Gtfs.Fares.PriceChangeTest do
   The version enters rows the way a user's version does — through the production
   importer of `test/fixtures/gtfs/fares/no_fare` and `north_coast_v1` and then the
   production first-use setup and v1 conversion — and every write runs inside
-  `GtfsPlanner.Gtfs.Fares.VersionLock.transact/3`, the one transaction every
+  `GtfsPlanner.Gtfs.Fares.VersionLock.transact/2`, the one transaction every
   writer of this package uses.
   """
   use GtfsPlanner.DataCase, async: true
 
-  import GtfsPlanner.AccountsFixtures, only: [user_fixture: 0]
+  import GtfsPlanner.AccountsFixtures, only: [editor_fixture: 1]
   import GtfsPlanner.FaresFixtures, only: [import!: 3]
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 2]
@@ -37,7 +37,7 @@ defmodule GtfsPlanner.Gtfs.Fares.PriceChangeTest do
 
   setup do
     organization = organization_fixture(%{alias: "fares-change-#{unique_alias()}"})
-    actor = user_fixture()
+    actor = editor_fixture(organization)
     version = gtfs_version_fixture(organization.id, %{name: "Fare change version"})
     import!(organization, version, "no_fare")
 

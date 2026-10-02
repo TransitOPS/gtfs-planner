@@ -32,13 +32,13 @@ defmodule GtfsPlanner.Gtfs.FareZones.ManagedCarryTest do
   The version enters rows through the production importer and the production v2
   conversion, the pass through `Fares.save_fare/2` as an operator creates one, and
   every zone write runs inside
-  `GtfsPlanner.Gtfs.Fares.VersionLock.transact/3`, which is where
+  `GtfsPlanner.Gtfs.Fares.VersionLock.transact/2`, which is where
   `Fares.Normalize.run!/2` runs for a managed version (R7, INV-1).
   """
   use GtfsPlanner.DataCase, async: true
 
   import Ecto.Query
-  import GtfsPlanner.AccountsFixtures, only: [user_fixture: 1]
+  import GtfsPlanner.AccountsFixtures, only: [editor_fixture: 2]
   import GtfsPlanner.FaresFixtures, only: [import!: 3]
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 2]
@@ -58,7 +58,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ManagedCarryTest do
     # An explicit email: the smokes on this shared partition commit
     # `user-1@example.com`, and `System.unique_integer/1` restarts per BEAM.
     actor =
-      user_fixture(%{
+      editor_fixture(organization, %{
         email: "fares-zones-carry-#{System.unique_integer([:positive])}@example.com"
       })
 
@@ -81,7 +81,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ManagedCarryTest do
       assert leg_rule_count(organization, version) == 46
 
       assert {:ok, zone} =
-               FareZones.update_zone(organization.id, version.id, "NPT", %{"zone_id" => " NEW "})
+               FareZones.update_zone(context.scope.audit, "NPT", %{"zone_id" => " NEW "})
 
       assert zone.zone_id == "NEW"
       assert zone.name == "Newport local"
@@ -164,7 +164,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ManagedCarryTest do
       assert leg_rule_count(organization, version) == 56
 
       assert {:ok, %{moved_stops: 2, rewritten_rows: 0, removed_duplicate_rows: 0}} =
-               FareZones.delete_zone(organization.id, version.id, "TOL", "NPT", %{
+               FareZones.delete_zone(context.scope.audit, "TOL", "NPT", %{
                  stop_count: 2,
                  rule_count: 0
                })
@@ -223,7 +223,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ManagedCarryTest do
       # No fare rule of this version names `CST`, so the zone is unreferenced and
       # the workspace may delete it without naming a replacement.
       assert {:ok, %{moved_stops: 5}} =
-               FareZones.delete_zone(organization.id, version.id, "CST", nil, %{
+               FareZones.delete_zone(context.scope.audit, "CST", nil, %{
                  stop_count: 5,
                  rule_count: 0
                })
@@ -269,7 +269,11 @@ defmodule GtfsPlanner.Gtfs.FareZones.ManagedCarryTest do
       rule_id = insert_fare_rule(organization, version, "F-1", "NPT", "CST")
 
       assert {:ok, zone} =
-               FareZones.update_zone(organization.id, version.id, "NPT", %{"zone_id" => "NEW"})
+               FareZones.update_zone(
+                 %{context.scope.audit | gtfs_version_id: version.id},
+                 "NPT",
+                 %{"zone_id" => "NEW"}
+               )
 
       assert zone == %{
                zone_id: "NEW",

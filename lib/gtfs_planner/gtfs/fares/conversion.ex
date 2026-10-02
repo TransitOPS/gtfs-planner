@@ -43,7 +43,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
 
   ## How the write is fenced
 
-  The whole write is one `GtfsPlanner.Gtfs.Fares.VersionLock.transact/3`
+  The whole write is one `GtfsPlanner.Gtfs.Fares.VersionLock.transact/2`
   transaction, so it serializes on the same published version row as every other
   writer of the version's fares, and a pair that is not a published version of the
   organization answers `{:error, :not_found}` without touching anything (R15).
@@ -287,7 +287,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
         %{organization_id: organization_id, gtfs_version_id: gtfs_version_id} = scope,
         answers
       ) do
-    VersionLock.transact(organization_id, gtfs_version_id, fn ->
+    VersionLock.transact(scope, fn ->
       with :ok <- refuse_stored_fares(organization_id, gtfs_version_id),
            {:ok, plan} <- plan(answers) do
         write_setup(organization_id, gtfs_version_id, scope, plan)
@@ -311,7 +311,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
         operation_id,
         %{setup: inverse}
       ) do
-    VersionLock.transact(organization_id, gtfs_version_id, fn ->
+    VersionLock.transact(scope, fn ->
       case undoable_setting(organization_id, gtfs_version_id, operation_id) do
         {:ok, setting, entry} ->
           delete_created(organization_id, gtfs_version_id, inverse)
@@ -380,7 +380,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
   `{:refused, [%{code: :stale}]}` and writes nothing (AC-13). `opts` is this
   writer's option list and carries nothing today.
 
-  Everything else is one `VersionLock.transact/3` transaction: the plan is
+  Everything else is one `VersionLock.transact/2` transaction: the plan is
   rebuilt and refused on `:price_mismatch` before a row is written, the rows are
   written, `Fares.Normalize.run!/2` runs before the transaction commits (INV-1),
   one `fare_version` change-log entry is recorded, the `fare_version_settings` row
@@ -397,7 +397,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
       ) do
     _opts = opts
 
-    case VersionLock.transact(organization_id, gtfs_version_id, fn ->
+    case VersionLock.transact(scope, fn ->
            rows = Interpreter.load_rows(organization_id, gtfs_version_id)
            write_or_refuse(scope, rows, fingerprint)
          end) do
@@ -421,7 +421,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
         operation_id,
         %{conversion: inverse}
       ) do
-    VersionLock.transact(organization_id, gtfs_version_id, fn ->
+    VersionLock.transact(scope, fn ->
       case undoable_setting(organization_id, gtfs_version_id, operation_id) do
         {:ok, setting, entry} ->
           undo_conversion_rows(scope, operation_id, setting, entry, inverse)

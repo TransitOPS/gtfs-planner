@@ -6,7 +6,7 @@ defmodule GtfsPlanner.Gtfs.Fares.ChangeLogTest do
   row, carrying the shared operation id, the summary the editor shows and the
   rows the operation read and wrote (R15, AC-26). These cases pin that record
   through `Gtfs.record_change_in_transaction/5` — the same entrypoint the writers
-  call inside `Fares.VersionLock.transact/3` — and the path it takes from Recent
+  call inside `Fares.VersionLock.transact/2` — and the path it takes from Recent
   changes to the Fares page.
 
   The expected values are literals: the four `changed_fields` keys R15 names, the

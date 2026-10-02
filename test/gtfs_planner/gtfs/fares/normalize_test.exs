@@ -10,17 +10,19 @@ defmodule GtfsPlanner.Gtfs.Fares.NormalizeTest do
   directions, and the counts are literals.
 
   Each case runs the function the way a writer runs it — inside
-  `Fares.VersionLock.transact/3` — so the version-row lock and the rollback case
+  `Fares.VersionLock.transact/2` — so the membership and version-row locks and the rollback case
   are the production path.
   """
   use GtfsPlanner.DataCase, async: true
 
+  import GtfsPlanner.AccountsFixtures, only: [editor_fixture: 1]
   import Ecto.Query
   import GtfsPlanner.FaresFixtures, only: [import!: 3]
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 1]
 
   alias GtfsPlanner.Gtfs.FareLegRule
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareProductDetail
   alias GtfsPlanner.Gtfs.Fares.InvariantError
   alias GtfsPlanner.Gtfs.Fares.Normalize
@@ -34,6 +36,7 @@ defmodule GtfsPlanner.Gtfs.Fares.NormalizeTest do
 
   setup do
     organization = organization_fixture(%{alias: alias()})
+    editor = editor_fixture(organization)
     version = gtfs_version_fixture(organization.id)
 
     import!(organization, version, "north_coast_v2")
@@ -44,7 +47,18 @@ defmodule GtfsPlanner.Gtfs.Fares.NormalizeTest do
       organization_id: organization.id,
       gtfs_version_id: version.id,
       organization: organization,
-      version: version
+      version: version,
+      scope: %{
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        audit: %AuditContext{
+          organization_id: organization.id,
+          gtfs_version_id: version.id,
+          station_stop_id: nil,
+          actor_id: editor.id,
+          actor_email: editor.email
+        }
+      }
     }
 
     add_peak_rule!(context)
@@ -341,7 +355,7 @@ defmodule GtfsPlanner.Gtfs.Fares.NormalizeTest do
 
   defp normalize!(context) do
     assert {:ok, :ok} =
-             VersionLock.transact(context.organization_id, context.gtfs_version_id, fn ->
+             VersionLock.transact(context.scope, fn ->
                Normalize.run!(context.organization_id, context.gtfs_version_id)
              end)
   end

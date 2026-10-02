@@ -2,8 +2,8 @@ defmodule GtfsPlanner.Gtfs.Fares.VersionLockTest do
   @moduledoc """
   Merge evidence (EV-5) for the write lock shared by `Fares` and `FareZones`.
 
-  `Fares.VersionLock.transact/3` is `FareZones` `transact/3` moved out
-  unchanged (R15), so these cases pin both halves of that contract: which scope
+  `Fares.VersionLock.transact/2` checks current membership before taking the
+  published-version lock (R15), so these cases pin its authorization and scope contract:
   pairs may write at all, and that a second writer waits for the version row
   instead of writing beside the first.
 
@@ -75,13 +75,21 @@ defmodule GtfsPlanner.Gtfs.Fares.VersionLockTest do
        %{organization: organization, version: version, audit: audit} do
     assert {:error, :forbidden} =
              VersionLock.transact(
-               %{organization_id: Ecto.UUID.generate(), gtfs_version_id: version.id, audit: audit},
+               %{
+                 organization_id: Ecto.UUID.generate(),
+                 gtfs_version_id: version.id,
+                 audit: audit
+               },
                fn -> must_not_run() end
              )
 
     assert {:error, :forbidden} =
              VersionLock.transact(
-               %{organization_id: organization.id, gtfs_version_id: Ecto.UUID.generate(), audit: audit},
+               %{
+                 organization_id: organization.id,
+                 gtfs_version_id: Ecto.UUID.generate(),
+                 audit: audit
+               },
                fn -> must_not_run() end
              )
   end
@@ -95,10 +103,13 @@ defmodule GtfsPlanner.Gtfs.Fares.VersionLockTest do
   end
 
   test "a revoked editor cannot write", %{audit: audit, organization: organization} do
-    membership = unboxed(fn -> GtfsPlanner.Repo.get_by!(GtfsPlanner.Accounts.UserOrgMembership,
-      user_id: audit.actor_id,
-      organization_id: organization.id
-    ) end)
+    membership =
+      unboxed(fn ->
+        GtfsPlanner.Repo.get_by!(GtfsPlanner.Accounts.UserOrgMembership,
+          user_id: audit.actor_id,
+          organization_id: organization.id
+        )
+      end)
 
     unboxed(fn -> GtfsPlanner.AccountsFixtures.deactivate_membership_fixture(membership) end)
 
@@ -166,7 +177,7 @@ defmodule GtfsPlanner.Gtfs.Fares.VersionLockTest do
         send(parent, {:writer_started, System.monotonic_time()})
 
         unboxed(fn ->
-               VersionLock.transact(fixture.audit, fn -> :written end)
+          VersionLock.transact(fixture.audit, fn -> :written end)
         end)
       end)
 

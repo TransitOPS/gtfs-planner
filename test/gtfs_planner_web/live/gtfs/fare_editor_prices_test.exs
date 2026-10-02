@@ -8,7 +8,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorPricesTest do
   for the fare workspace — so what is proved is what an operator gets. The
   version enters rows the way a user's version does, through the production
   importer of `north_coast_v2` and the production conversion that manages it,
-  and every save runs inside `Fares.VersionLock.transact/3` like every other
+  and every save runs inside `Fares.VersionLock.transact/2` like every other
   write of this package.
 
   Expected values are literals worked by hand from the sample feed, not read

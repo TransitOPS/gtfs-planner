@@ -21,7 +21,7 @@ defmodule GtfsPlanner.Gtfs.Fares.SavedJourneysTest do
 
   The version enters rows through the production importer and the production v2
   conversion, and every write runs inside
-  `GtfsPlanner.Gtfs.Fares.VersionLock.transact/3` with `Fares.Normalize.run!/2`
+  `GtfsPlanner.Gtfs.Fares.VersionLock.transact/2` with `Fares.Normalize.run!/2`
   before the commit, which is the path every writer of this package takes
   (INV-1). Every read here filters by `organization_id` and `gtfs_version_id`
   together (INV-5).
@@ -29,7 +29,7 @@ defmodule GtfsPlanner.Gtfs.Fares.SavedJourneysTest do
   use GtfsPlanner.DataCase, async: true
 
   import Ecto.Query
-  import GtfsPlanner.AccountsFixtures, only: [user_fixture: 1]
+  import GtfsPlanner.AccountsFixtures, only: [editor_fixture: 2]
   import GtfsPlanner.FaresFixtures, only: [import!: 3]
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 2]
@@ -59,7 +59,7 @@ defmodule GtfsPlanner.Gtfs.Fares.SavedJourneysTest do
     # partition commit a `user-1@example.com`, and `System.unique_integer/1`
     # restarts per BEAM, so the default email collides on the second run.
     actor =
-      user_fixture(%{
+      editor_fixture(organization, %{
         email: "fares-journeys-#{System.unique_integer([:positive])}@example.com"
       })
 

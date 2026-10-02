@@ -8,7 +8,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Normalize do
   (INV-4): `Fares.Interpreter` reads the same columns and never writes them, and
   no `Fares` writer or LiveView sets them directly.
 
-  `run!/2` must be called inside `GtfsPlanner.Gtfs.Fares.VersionLock.transact/3`,
+  `run!/2` must be called inside `GtfsPlanner.Gtfs.Fares.VersionLock.transact/2`,
   by every writer that changed the version's rules, products or rider categories.
   It is deliberately not wrapped in a transaction of its own: the writes belong to
   the caller's one write, and a caller that ran Normalize outside the lock would

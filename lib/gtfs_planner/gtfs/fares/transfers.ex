@@ -39,7 +39,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Transfers do
 
   ## How a write is fenced
 
-  `save/5` is one `Fares.VersionLock.transact/3` transaction, the path every writer
+  `save/5` is one `Fares.VersionLock.transact/2` transaction, the path every writer
   of this package takes (R15, INV-1): the version must be managed, the pair's leg
   groups must be route groups of this version, the pair's reviewed row must still
   be the stored one, `Fares.Normalize.run!/2` runs before the commit, one
@@ -174,7 +174,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Transfers do
         inverse
       )
       when is_map(inverse) do
-    VersionLock.transact(organization_id, gtfs_version_id, fn ->
+    VersionLock.transact(scope, fn ->
       with {:ok, setting} <- managed_setting(organization_id, gtfs_version_id),
            {:ok, entry} <- undoable_entry(operation_id, organization_id, gtfs_version_id),
            :ok <- require_pair_restorable(organization_id, gtfs_version_id, inverse) do
@@ -192,7 +192,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Transfers do
     organization_id = scope.organization_id
     gtfs_version_id = scope.gtfs_version_id
 
-    VersionLock.transact(organization_id, gtfs_version_id, fn ->
+    VersionLock.transact(scope, fn ->
       with {:ok, setting} <- managed_setting(organization_id, gtfs_version_id),
            :ok <- require_leg_groups(organization_id, gtfs_version_id, [from_network, to_network]),
            :ok <-

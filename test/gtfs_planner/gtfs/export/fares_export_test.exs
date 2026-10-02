@@ -42,7 +42,7 @@ defmodule GtfsPlanner.Gtfs.Export.FaresExportTest do
   use GtfsPlanner.DataCase, async: true
 
   import Ecto.Query
-  import GtfsPlanner.AccountsFixtures, only: [user_fixture: 1]
+  import GtfsPlanner.AccountsFixtures, only: [editor_fixture: 2]
   import GtfsPlanner.FaresFixtures, only: [import!: 3]
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 2]
@@ -136,7 +136,7 @@ defmodule GtfsPlanner.Gtfs.Export.FaresExportTest do
     # partition commit a `user-1@example.com`, and `System.unique_integer/1`
     # restarts per BEAM, so the default email collides on the second run.
     actor =
-      user_fixture(%{
+      editor_fixture(organization, %{
         email: "fares-export-#{System.unique_integer([:positive])}@example.com"
       })
 
@@ -275,8 +275,7 @@ defmodule GtfsPlanner.Gtfs.Export.FaresExportTest do
       # `from_area_id`/`to_area_id` present in `areas.txt` (AC-24).
       assert {:ok, _zone} =
                FareZones.update_zone(
-                 context.organization.id,
-                 context.version.id,
+                 context.scope.audit,
                  "NPT",
                  %{zone_id: "NEW"}
                )

@@ -45,7 +45,7 @@ defmodule GtfsPlanner.Gtfs.Fares.ProjectionV1Test do
   """
   use GtfsPlanner.DataCase, async: true
 
-  import GtfsPlanner.AccountsFixtures, only: [user_fixture: 1]
+  import GtfsPlanner.AccountsFixtures, only: [editor_fixture: 2]
   import GtfsPlanner.FaresFixtures, only: [import!: 3]
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 2]
@@ -88,7 +88,7 @@ defmodule GtfsPlanner.Gtfs.Fares.ProjectionV1Test do
     # partition commit a `user-1@example.com`, and `System.unique_integer/1`
     # restarts per BEAM, so the default email collides on the second run.
     actor =
-      user_fixture(%{
+      editor_fixture(organization, %{
         email: "fares-projection-#{System.unique_integer([:positive])}@example.com"
       })
 

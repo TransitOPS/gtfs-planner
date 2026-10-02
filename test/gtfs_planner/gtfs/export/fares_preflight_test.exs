@@ -28,7 +28,7 @@ defmodule GtfsPlanner.Gtfs.Export.FaresPreflightTest do
   The version enters rows through the production importer and the production v2
   conversion, and the gaps are opened through the production writers
   `Fares.set_zone_fare/7` and `Fares.save_route_group/2`, which run inside
-  `Fares.VersionLock.transact/3` and end with `Fares.Normalize.run!/2` (INV-1).
+  `Fares.VersionLock.transact/2` and end with `Fares.Normalize.run!/2` (INV-1).
   The warnings are read back from a run the production `Export.Worker` built with
   the configured `:otp_preflight_module`, so the path under test is the one an
   export takes (EV-30).
@@ -37,7 +37,7 @@ defmodule GtfsPlanner.Gtfs.Export.FaresPreflightTest do
 
   import Ecto.Query
 
-  import GtfsPlanner.AccountsFixtures, only: [user_fixture: 1]
+  import GtfsPlanner.AccountsFixtures, only: [editor_fixture: 1]
   import GtfsPlanner.FaresFixtures, only: [import!: 3]
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 2]
@@ -72,7 +72,9 @@ defmodule GtfsPlanner.Gtfs.Export.FaresPreflightTest do
     # partition commit a `user-1@example.com`, and `System.unique_integer/1`
     # restarts per BEAM, so the default email collides on the second run.
     actor =
-      user_fixture(%{email: "fares-preflight-#{System.unique_integer([:positive])}@example.com"})
+      editor_fixture(organization, %{
+        email: "fares-preflight-#{System.unique_integer([:positive])}@example.com"
+      })
 
     version = gtfs_version_fixture(organization.id, %{name: "North Coast fares preflight"})
     import!(organization, version, "north_coast_v2")

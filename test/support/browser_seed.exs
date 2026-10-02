@@ -3633,7 +3633,7 @@ case Accounts.register_first_admin(%{
     #     the `CST -> TOL` cell and `Fares.save_route_group/2` drops route 40
     #     from Local routes.
     #
-    # Every write runs inside `Fares.VersionLock.transact/3` with
+    # Every write runs inside `Fares.VersionLock.transact/2` with
     # `Fares.Normalize.run!/2` before it commits (INV-1) and records its own
     # `fare_version` change-log entry (AC-26), so the seeded versions carry the
     # history the editor's Recent changes reads. Every read is scoped by the
