@@ -353,6 +353,38 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveTest do
     end
   end
 
+  describe "list pagination" do
+    setup :editor_setup
+
+    test "a forged paginate event with integer page 3 shows page 3", %{
+      conn: conn,
+      organization: organization,
+      version: version
+    } do
+      transfers =
+        for index <- 1..101 do
+          transfer_fixture(organization.id, version.id, %{
+            from_stop_id: "P" <> String.pad_leading(Integer.to_string(index), 3, "0"),
+            to_stop_id: "P000"
+          })
+        end
+
+      first = List.first(transfers)
+      last = List.last(transfers)
+
+      {:ok, view, _html} = live(conn, transfers_path(version))
+
+      assert has_element?(view, "#transfer-select-#{first.id}")
+      refute has_element?(view, "#transfer-select-#{last.id}")
+
+      view |> render_hook("paginate", %{"page" => 3})
+
+      assert_patched(view, transfers_path(version) <> "?page=3")
+      assert has_element?(view, "#transfer-select-#{last.id}")
+      refute has_element?(view, "#transfer-select-#{first.id}")
+    end
+  end
+
   describe "access" do
     setup :editor_setup
 

@@ -128,7 +128,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     search = params["search"] || ""
     sort_by = parse_atom(params["sort_by"], :route_id)
     sort_dir = parse_atom(params["sort_dir"], :asc)
-    page = parse_integer(params["page"], 1)
+    page = Values.positive_integer(params["page"], 1)
     per_page = socket.assigns.per_page
 
     opts = [
@@ -210,10 +210,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
     query_params =
       %{}
-      |> maybe_put("route_type", route_type)
-      |> maybe_put("agency_id", agency_id)
-      |> maybe_put("active", active)
-      |> maybe_put("search", socket.assigns.search)
+      |> Values.put_present("route_type", route_type)
+      |> Values.put_present("agency_id", agency_id)
+      |> Values.put_present("active", active)
+      |> Values.put_present("search", socket.assigns.search)
       |> maybe_put_sort(socket.assigns.sort_by, socket.assigns.sort_dir)
 
     {:noreply,
@@ -226,10 +226,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   def handle_event("search", %{"search" => term}, socket) do
     query_params =
       %{}
-      |> maybe_put("search", term)
-      |> maybe_put("route_type", socket.assigns.filter_form.params["route_type"])
-      |> maybe_put("agency_id", socket.assigns.filter_form.params["agency_id"])
-      |> maybe_put("active", socket.assigns.filter_form.params["active"])
+      |> Values.put_present("search", term)
+      |> Values.put_present("route_type", socket.assigns.filter_form.params["route_type"])
+      |> Values.put_present("agency_id", socket.assigns.filter_form.params["agency_id"])
+      |> Values.put_present("active", socket.assigns.filter_form.params["active"])
       |> maybe_put_sort(socket.assigns.sort_by, socket.assigns.sort_dir)
 
     {:noreply,
@@ -256,10 +256,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
     query_params =
       %{}
-      |> maybe_put("route_type", socket.assigns.filter_form.params["route_type"])
-      |> maybe_put("agency_id", socket.assigns.filter_form.params["agency_id"])
-      |> maybe_put("active", socket.assigns.filter_form.params["active"])
-      |> maybe_put("search", socket.assigns.search)
+      |> Values.put_present("route_type", socket.assigns.filter_form.params["route_type"])
+      |> Values.put_present("agency_id", socket.assigns.filter_form.params["agency_id"])
+      |> Values.put_present("active", socket.assigns.filter_form.params["active"])
+      |> Values.put_present("search", socket.assigns.search)
       |> maybe_put_sort(new_sort_by, new_sort_dir)
 
     {:noreply,
@@ -270,7 +270,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
   @impl true
   def handle_event("paginate", %{"page" => page}, socket) do
-    page_num = parse_integer(page, 1)
+    page_num = Values.positive_integer(page, 1)
 
     query_params = build_query_params(socket, page_num)
 
@@ -338,7 +338,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
         |> Map.put(key, "")
         |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
         |> Map.new()
-        |> maybe_put("search", socket.assigns.search)
+        |> Values.put_present("search", socket.assigns.search)
         |> maybe_put_sort(socket.assigns.sort_by, socket.assigns.sort_dir)
       else
         build_query_params(socket, socket.assigns.page)
@@ -427,7 +427,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     else
       # The Automatic/Custom radios post `text_mode` beside the `route` fields,
       # as `save_new_route` reads it, so the chip survives a validate reply.
-      params = maybe_put(params, "text_mode", event["text_mode"])
+      params = Values.put_present(params, "text_mode", event["text_mode"])
 
       {:noreply, assign_new_route_draft(socket, params, :validate)}
     end
@@ -2197,12 +2197,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
   defp build_query_params(socket, page) do
     %{}
-    |> maybe_put("route_type", socket.assigns.filter_form.params["route_type"])
-    |> maybe_put("agency_id", socket.assigns.filter_form.params["agency_id"])
-    |> maybe_put("active", socket.assigns.filter_form.params["active"])
-    |> maybe_put("search", socket.assigns.search)
-    |> maybe_put("sort_by", socket.assigns.sort_by)
-    |> maybe_put("sort_dir", socket.assigns.sort_dir)
+    |> Values.put_present("route_type", socket.assigns.filter_form.params["route_type"])
+    |> Values.put_present("agency_id", socket.assigns.filter_form.params["agency_id"])
+    |> Values.put_present("active", socket.assigns.filter_form.params["active"])
+    |> Values.put_present("search", socket.assigns.search)
+    |> Values.put_present("sort_by", socket.assigns.sort_by)
+    |> Values.put_present("sort_dir", socket.assigns.sort_dir)
     |> Map.put("page", page)
   end
 
@@ -2226,20 +2226,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       ArgumentError -> :route_id
     end
   end
-
-  defp parse_integer(nil, default), do: default
-  defp parse_integer("", default), do: default
-
-  defp parse_integer(value, default) when is_binary(value) do
-    case Integer.parse(value) do
-      {int, ""} when int > 0 -> int
-      _ -> default
-    end
-  end
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, _key, ""), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp maybe_put_sort(map, :route_id, :asc), do: map
 

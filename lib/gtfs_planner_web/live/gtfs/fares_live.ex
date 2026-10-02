@@ -308,7 +308,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   # page of the same list instead of the next page of everything.
   @impl true
   def handle_event("paginate", %{"page" => page}, socket) do
-    {:noreply, push_patch(socket, to: zones_url(socket, page: parse_page(page)))}
+    {:noreply, push_patch(socket, to: zones_url(socket, page: Values.positive_integer(page, 1)))}
   end
 
   # One checkbox. The ID arrives from the browser, so it is validated against
@@ -858,7 +858,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   # and page come from the URL. `filter=unassigned` is its own key so a zone
   # literally named "unassigned" cannot collide with the unassigned filter.
   defp zones_params(:zones, params) do
-    {stop_filter(params), Values.presence(params["q"]), parse_page(params["page"])}
+    {stop_filter(params), Values.presence(params["q"]),
+     Values.positive_integer(params["page"], 1)}
   end
 
   defp zones_params(_action, _params), do: {:all, nil, 1}
@@ -866,15 +867,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   defp stop_filter(%{"zone" => zone}) when is_binary(zone) and zone != "", do: {:zone, zone}
   defp stop_filter(%{"filter" => "unassigned"}), do: :unassigned
   defp stop_filter(_params), do: :all
-
-  defp parse_page(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {page, ""} when page > 0 -> page
-      _other -> 1
-    end
-  end
-
-  defp parse_page(_value), do: 1
 
   # The stop list's search and pagination both patch the Zones path, carrying the
   # filter that is currently selected. The filter's value is byte-exact and the

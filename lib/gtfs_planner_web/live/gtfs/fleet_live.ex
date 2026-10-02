@@ -2051,14 +2051,10 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
 
   defp filter_query_params(params) do
     %{}
-    |> put_present("q", params["q"])
-    |> put_present("type", params["type"])
-    |> put_present("garage", params["garage"])
+    |> Values.put_present("q", params["q"])
+    |> Values.put_present("type", params["type"])
+    |> Values.put_present("garage", params["garage"])
   end
-
-  defp put_present(query, _key, value) when value in [nil, ""], do: query
-  defp put_present(query, key, value) when is_binary(value), do: Map.put(query, key, value)
-  defp put_present(query, _key, _value), do: query
 
   defp fleet_url(socket, query) do
     case URI.encode_query(query) do

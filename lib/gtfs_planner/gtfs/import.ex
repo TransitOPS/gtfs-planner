@@ -54,6 +54,7 @@ defmodule GtfsPlanner.Gtfs.Import do
   alias GtfsPlanner.Gtfs.PathwayEvolutions
   alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
 
   import Ecto.Query, only: [from: 2]
@@ -1132,20 +1133,9 @@ defmodule GtfsPlanner.Gtfs.Import do
 
   defp zip_entry_uncompressed_size(_), do: 0
 
+  # The zip limit is a config value; the parse itself is Values.positive_integer/2.
   defp configured_zip_limit(key, default) do
-    case Application.get_env(:gtfs_planner, key, default) do
-      value when is_integer(value) and value > 0 ->
-        value
-
-      value when is_binary(value) ->
-        case Integer.parse(value) do
-          {parsed, ""} when parsed > 0 -> parsed
-          _ -> default
-        end
-
-      _ ->
-        default
-    end
+    Values.positive_integer(Application.get_env(:gtfs_planner, key, default), default)
   end
 
   defp normalize_uploaded_filename(filename) when is_binary(filename) do

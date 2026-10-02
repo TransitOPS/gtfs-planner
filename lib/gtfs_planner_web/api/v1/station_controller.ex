@@ -20,7 +20,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
     with {:ok, _} <- Ecto.UUID.cast(version_id),
          %{} = _version <- Versions.get_published_gtfs_version_for_org(org_id, version_id) do
       search = params["search"]
-      page = parse_page(params)
+      page = Values.positive_integer(params["page"], @default_page)
       per_page = parse_per_page(params)
 
       list_opts = [search: search, page: page, per_page: per_page, location_type: 1]
@@ -245,20 +245,6 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
   defp serialize_coordinates(nil, _lon), do: {nil, nil}
   defp serialize_coordinates(_lat, nil), do: {nil, nil}
   defp serialize_coordinates(lat, lon), do: {Values.to_float(lat), Values.to_float(lon)}
-
-  defp parse_page(params) do
-    case params["page"] do
-      val when is_binary(val) ->
-        case Integer.parse(val) do
-          {n, ""} when n >= 1 -> n
-          {n, ""} when n < 1 -> @default_page
-          _ -> @default_page
-        end
-
-      _ ->
-        @default_page
-    end
-  end
 
   defp parse_per_page(params) do
     case params["per_page"] do

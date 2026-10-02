@@ -1743,14 +1743,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp toggled_dir(%{sort: sort, dir: :asc}, sort), do: :desc
   defp toggled_dir(_state, _sort), do: :asc
 
-  defp page_number(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {page, ""} when page >= 1 -> min(page, @max_page)
-      _other -> 1
-    end
-  end
-
-  defp page_number(_value), do: 1
+  # The parse is Values.positive_integer/2; the @max_page crafted-URL guard stays here.
+  defp page_number(value), do: min(Values.positive_integer(value, 1), @max_page)
 
   # The two trip UUIDs of a gap, in the one URL parameter the drawer reads back.
   # UUIDs hold no `|`, so the separator cannot be ambiguous; anything else closes

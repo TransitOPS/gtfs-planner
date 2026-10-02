@@ -217,7 +217,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   @impl true
   def handle_event("paginate", %{"page" => page}, socket) do
     {:noreply,
-     push_patch(clear_checked(socket), to: list_path(socket, page: parse_page(page), rule: nil))}
+     push_patch(clear_checked(socket),
+       to: list_path(socket, page: Values.positive_integer(page, 1), rule: nil)
+     )}
   end
 
   @impl true
@@ -1518,7 +1520,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     filters = parse_filters(url_params, view)
     sort_by = Map.get(@sort_keys, url_params["sort_by"]) || :from
     sort_dir = Map.get(@sort_dirs, url_params["sort_dir"]) || :asc
-    page = parse_page(url_params["page"])
+    page = Values.positive_integer(url_params["page"], 1)
     rule = parse_rule(url_params["rule"])
 
     opts = [
@@ -1701,6 +1703,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   defp attention_param(true), do: 1
   defp attention_param(_attention), do: nil
 
+  # An ordered keyword list, not a map: this stays local, not Values.put_present/3.
   defp put_param(params, _key, nil), do: params
   defp put_param(params, key, value), do: params ++ [{key, value}]
 
@@ -1716,17 +1719,6 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
 
   defp rule_params(params, nil), do: params
   defp rule_params(params, rule), do: params ++ [rule: rule]
-
-  defp parse_page(nil), do: 1
-
-  defp parse_page(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {page, ""} when page > 0 -> page
-      _other -> 1
-    end
-  end
-
-  defp parse_page(_value), do: 1
 
   defp parse_rule(value) do
     case Ecto.UUID.cast(value) do

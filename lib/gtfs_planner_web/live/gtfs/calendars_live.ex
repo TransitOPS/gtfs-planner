@@ -2441,11 +2441,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
   defp to_query(assigns, params, sort_by \\ nil, sort_dir \\ nil) do
     %{}
-    |> put_param("search", params["search"] || assigns.search, "")
-    |> put_param("status", params["status"] || assigns.status, "all")
-    |> put_param("range", params["range"] || assigns.range, "whole")
-    |> put_param("sort_by", sort_by || assigns.sort_by, "name")
-    |> put_param("sort_dir", sort_dir || assigns.sort_dir, "asc")
+    |> put_unless_default("search", params["search"] || assigns.search, "")
+    |> put_unless_default("status", params["status"] || assigns.status, "all")
+    |> put_unless_default("range", params["range"] || assigns.range, "whole")
+    |> put_unless_default("sort_by", sort_by || assigns.sort_by, "name")
+    |> put_unless_default("sort_dir", sort_dir || assigns.sort_dir, "asc")
   end
 
   # The timeline range is a view of the same snapshot, not a filter, so it survives
@@ -2462,9 +2462,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     end
   end
 
-  defp put_param(query, _key, nil, _default), do: query
-  defp put_param(query, _key, value, value), do: query
-  defp put_param(query, key, value, _default), do: Map.put(query, key, value)
+  # A value equal to its default is left out of the URL, unlike Values.put_present/3's test.
+  defp put_unless_default(query, _key, nil, _default), do: query
+  defp put_unless_default(query, _key, value, value), do: query
+  defp put_unless_default(query, key, value, _default), do: Map.put(query, key, value)
 
   defp next_sort_dir(current_key, current_dir, key) do
     case {current_key, current_dir, key} do

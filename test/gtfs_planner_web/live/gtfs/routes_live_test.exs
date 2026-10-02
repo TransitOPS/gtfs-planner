@@ -670,6 +670,34 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLiveTest do
       refute has_element?(view, "#routes-chip-agency_id")
     end
 
+    test "a whitespace-only search patches a URL without search and lists every row", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      route = route_fixture(organization.id, version.id, %{route_id: "WSSRCH"})
+
+      stub_catalog(fn opts ->
+        case Keyword.get(opts, :search) do
+          "" -> {:ok, route_page([route], 1, 1, [route.route_type], [])}
+          _blank -> {:ok, route_page([], 0, 1, [], [])}
+        end
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+
+      html =
+        view
+        |> form("#route-search-form", %{"search" => " "})
+        |> render_change()
+
+      assert_patched(view, "/gtfs/#{version.id}/routes")
+      assert html =~ route.route_id
+    end
+
     test "searches routes by name", %{
       conn: conn,
       user: user,

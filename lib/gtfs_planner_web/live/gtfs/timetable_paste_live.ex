@@ -106,6 +106,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.TimetablePaste
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.ScheduleComponents
@@ -1635,13 +1636,10 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
   defp canonical_scope_params(scope) do
     %{}
-    |> put_param("service_id", scope.calendar && scope.calendar.service_id)
-    |> put_param("direction", direction_param(scope.direction_id))
-    |> put_param("pattern", scope.pattern_id)
+    |> Values.put_present("service_id", scope.calendar && scope.calendar.service_id)
+    |> Values.put_present("direction", direction_param(scope.direction_id))
+    |> Values.put_present("pattern", scope.pattern_id)
   end
-
-  defp put_param(query, _key, nil), do: query
-  defp put_param(query, key, value), do: Map.put(query, key, value)
 
   defp direction_param(0), do: "0"
   defp direction_param(1), do: "1"
@@ -2086,9 +2084,15 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
   defp schedule_query(params) do
     %{}
-    |> put_param("service_id", exact_id_param(params["service_id"] || params[:service_id]))
-    |> put_param("direction", schedule_direction(params["direction"] || params[:direction]))
-    |> put_param("pattern", exact_id_param(params["pattern"] || params[:pattern]))
+    |> Values.put_present(
+      "service_id",
+      exact_id_param(params["service_id"] || params[:service_id])
+    )
+    |> Values.put_present(
+      "direction",
+      schedule_direction(params["direction"] || params[:direction])
+    )
+    |> Values.put_present("pattern", exact_id_param(params["pattern"] || params[:pattern]))
   end
 
   defp schedule_direction(direction) when direction in ["0", "1"], do: direction

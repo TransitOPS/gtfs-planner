@@ -3598,10 +3598,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     filters = socket.assigns.filters
 
     %{}
-    |> put_param("service_id", trip.service_id, nil)
-    |> put_param("direction", direction_param(trip.direction_id), "0")
-    |> put_param("pattern", pattern_id, "all")
-    |> put_param("stops", stops_param(filters.stops), "timepoints")
+    |> put_unless_default("service_id", trip.service_id, nil)
+    |> put_unless_default("direction", direction_param(trip.direction_id), "0")
+    |> put_unless_default("pattern", pattern_id, "all")
+    |> put_unless_default("stops", stops_param(filters.stops), "timepoints")
   end
 
   defp pattern_id_for_trip(socket, trip) do
@@ -4345,10 +4345,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # post the field carries the current view's filter forward.
   defp merged_filters(filters, params, custom?) do
     %{}
-    |> put_param("service_id", params["service_id"] || filters.service_id, nil)
-    |> put_param("direction", params["direction"] || direction_param(filters.direction_id), "0")
-    |> put_param("pattern", params["pattern"] || pattern_param(filters.pattern), "all")
-    |> put_param("stops", params["stops"] || stops_param(filters.stops), "timepoints")
+    |> put_unless_default("service_id", params["service_id"] || filters.service_id, nil)
+    |> put_unless_default(
+      "direction",
+      params["direction"] || direction_param(filters.direction_id),
+      "0"
+    )
+    |> put_unless_default("pattern", params["pattern"] || pattern_param(filters.pattern), "all")
+    |> put_unless_default("stops", params["stops"] || stops_param(filters.stops), "timepoints")
     |> put_custom_param(merged_custom(params["custom"], custom?))
   end
 
@@ -4363,10 +4367,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   defp canonical_filters(filters, custom?) do
     %{}
-    |> put_param("service_id", filters.service_id, nil)
-    |> put_param("direction", direction_param(filters.direction_id), "0")
-    |> put_param("pattern", pattern_param(filters.pattern), "all")
-    |> put_param("stops", stops_param(filters.stops), "timepoints")
+    |> put_unless_default("service_id", filters.service_id, nil)
+    |> put_unless_default("direction", direction_param(filters.direction_id), "0")
+    |> put_unless_default("pattern", pattern_param(filters.pattern), "all")
+    |> put_unless_default("stops", stops_param(filters.stops), "timepoints")
     |> put_custom_param(custom?)
   end
 
@@ -4377,9 +4381,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   defp custom_filter?(params), do: params["custom"] == "1"
 
-  defp put_param(query, _key, nil, _default), do: query
-  defp put_param(query, _key, value, value), do: query
-  defp put_param(query, key, value, _default), do: Map.put(query, key, value)
+  # A value equal to its default is left out of the URL, unlike Values.put_present/3's test.
+  defp put_unless_default(query, _key, nil, _default), do: query
+  defp put_unless_default(query, _key, value, value), do: query
+  defp put_unless_default(query, key, value, _default), do: Map.put(query, key, value)
 
   defp direction_param(0), do: "0"
   defp direction_param(1), do: "1"
@@ -4411,9 +4416,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp paste_path(version_id, route_id, filters) do
     query =
       %{}
-      |> put_param("service_id", filters.service_id, nil)
-      |> put_param("direction", direction_param(filters.direction_id), nil)
-      |> put_param("pattern", pattern_param(filters.pattern), "all")
+      |> put_unless_default("service_id", filters.service_id, nil)
+      |> put_unless_default("direction", direction_param(filters.direction_id), nil)
+      |> put_unless_default("pattern", pattern_param(filters.pattern), "all")
 
     path = ~p"/gtfs/#{version_id}/routes/#{route_id}/schedules/paste"
 
