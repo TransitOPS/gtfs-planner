@@ -2095,10 +2095,14 @@ test.describe("alert review", () => {
     await expect(page.locator("#review-guidelines")).toBeVisible();
     await expect(page.locator("#review-check-short")).toBeVisible();
 
-    // Saving an alert never publishes one in this package, so the editor's own
-    // frame carries no publication state and no publication action.
-    await expect(page.locator("#alert-editor")).not.toContainText(/Schedule/);
-    await expect(page.locator("#alert-editor")).not.toContainText(/Publish/);
+    // Saving an alert publishes one only when the operator accepts the revision,
+    // so the review carries the publication card: the state it reports, and
+    // either the consent control or the read-only notice for an installation with
+    // publishing turned off. Nothing here schedules a notice.
+    await expect(page.locator("#alert-publication-status")).toBeVisible();
+    await expect(
+      page.locator("#alert-publish-checkbox").or(page.locator("#alert-publication-disabled")),
+    ).toBeVisible();
 
     await page.screenshot({
       path: capturePath(testInfo, "review-1440.png"),

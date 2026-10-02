@@ -12343,6 +12343,257 @@ case Accounts.register_first_admin(%{
         "#{alerts_needs_attention.id} needing attention"
     )
 
+    # ── Feed publishing journeys (spec 24, step 21) ──
+    #
+    # The browser journeys drive the real publication surfaces: the Export page's
+    # review, the alert editor's publication card and the organization's
+    # published-feeds page. They read real pinned artifacts and real durable rows,
+    # so the seed creates one ready export run per reviewed file, the completed
+    # artifact check each review reports, a claimed namespace with its channel
+    # rows and their frozen attempts, and the accepted alert publications the
+    # editor shows.
+    #
+    # Every seeded attempt is already `current` and matches its channel's desired
+    # revision, which is how the periodic publisher tells settled state from work
+    # it still owes: it leaves these rows exactly as seeded while a journey runs.
+    pub_zip = fn members ->
+      dir = Path.join(System.tmp_dir!(), "pub-seed-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      path = Path.join(dir, "archive.zip")
+
+      {:ok, _created} =
+        :zip.create(
+          String.to_charlist(path),
+          Enum.map(members, fn {name, body} -> {String.to_charlist(name), body} end)
+        )
+
+      bytes = File.read!(path)
+      File.rm_rf!(dir)
+      bytes
+    end
+
+    pub_full_members = [
+      {"agency.txt",
+       "agency_id,agency_name,agency_url,agency_timezone\n" <>
+         "BROWSER,Browser Test Transit,https://example.test,America/Los_Angeles\n"},
+      {"routes.txt",
+       "route_id,agency_id,route_short_name,route_type\nPUB_R1,BROWSER,1,3\nPUB_R2,BROWSER,2,1\n"},
+      {"trips.txt", "trip_id,route_id,service_id\nPUB_T1,PUB_R1,PUB_S1\nPUB_T2,PUB_R2,PUB_S1\n"},
+      {"stops.txt", "stop_id,stop_name\nPUB_A1,Alpha\nPUB_B1,Bravo\n"},
+      {"stop_times.txt",
+       "trip_id,arrival_time,departure_time,stop_id\n" <>
+         "PUB_T1,06:00:00,06:00:00,PUB_A1\nPUB_T1,06:10:00,06:10:00,PUB_B1\n" <>
+         "PUB_T2,07:00:00,07:00:00,PUB_A1\n"},
+      {"route_patterns.txt", "route_pattern_id,route_id\nPUB_RP1,PUB_R1\n"}
+    ]
+
+    pub_pathways_members =
+      [
+        {"stops.txt",
+         "stop_id,stop_name,location_type,parent_station\n" <>
+           "PUB_PS1,Central,1,\nPUB_PS1_A,Platform A,0,PUB_PS1\n"},
+        {"pathways.txt",
+         "pathway_id,from_stop_id,to_stop_id,pathway_mode,is_bidirectional\n" <>
+           "PUB_PW1,PUB_PS1_A,PUB_PS1,1,1\n"},
+        {"levels.txt", "level_id,level_index,level_name\nPUB_L1,0,Ground\n"}
+      ] ++ pub_full_members
+
+    pub_actor = %{id: editor.id, email: editor.email}
+
+    pub_ready_run = fn export_type, members ->
+      {:ok, run} = ExportRuns.create_pending(org.id, diagram_version.id, pub_actor, export_type)
+      {:ok, _building, generation, token} = ExportRuns.claim(org.id, run.id, :build)
+
+      {:ok, main} =
+        ArtifactStorage.publish(
+          org.id,
+          diagram_version.id,
+          run.id,
+          "browser-#{export_type}.zip",
+          pub_zip.(members)
+        )
+
+      {:ok, ready} =
+        ExportRuns.mark_ready(org.id, run.id, generation, token, %{main: main, flex: nil})
+
+      ready
+    end
+
+    # The completed artifact check a review reports. The journeys read these
+    # instead of running the validator, so the reviewed file is the only variable.
+    pub_review = fn run, errors ->
+      Repo.insert!(%ValidationRun{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        run_type: "mobility_data_artifact",
+        status: "completed",
+        errors_count: errors,
+        warnings_count: 2,
+        infos_count: 5,
+        artifact_sha256: run.artifact_sha256,
+        artifact_slot: :main,
+        artifact_export_run_id: run.id,
+        started_at: DateTime.utc_now(),
+        completed_at: DateTime.utc_now()
+      })
+    end
+
+    pub_full_run = pub_ready_run.(:full, pub_full_members)
+    pub_review.(pub_full_run, 0)
+
+    # A second reviewed file whose check reported errors, so the consent step has
+    # one to require on the same version through a different export type.
+    pub_pathways_run = pub_ready_run.(:pathways, pub_pathways_members)
+    pub_review.(pub_pathways_run, 3)
+
+    pub_namespace =
+      Repo.insert!(%GtfsPlanner.FeedPublishing.Namespace{
+        organization_id: org.id,
+        prefix: org.alias,
+        public_claim: Ecto.UUID.generate()
+      })
+
+    pub_channel = fn channel, status, opts ->
+      publication =
+        Repo.insert!(%GtfsPlanner.FeedPublishing.Publication{
+          organization_id: org.id,
+          namespace_id: pub_namespace.id,
+          channel: channel,
+          status: :never_published
+        })
+
+      run = Keyword.fetch!(opts, :run)
+
+      attempt =
+        Repo.insert!(%GtfsPlanner.FeedPublishing.Attempt{
+          publication_id: publication.id,
+          organization_id: org.id,
+          sequence: 1,
+          generation: Ecto.UUID.generate(),
+          desired_revision: 1,
+          state: "current",
+          actor_id: editor.id,
+          provenance: "export-run:#{run.id}",
+          manifest_body: ~s({"schema":1,"channel":"#{channel}"}),
+          manifest_sha256: String.duplicate("a", 64),
+          object_receipts: %{
+            "zip" => %{"sha256" => run.artifact_sha256, "bytes" => run.artifact_size_bytes}
+          },
+          private_snapshot: %{
+            "source" => %{
+              "run_id" => run.id,
+              "slot" => "main",
+              "filename" => run.artifact_filename,
+              "export_type" => Atom.to_string(run.export_type)
+            }
+          }
+        })
+
+      publication
+      |> Ecto.Changeset.change(%{
+        active_attempt_id: attempt.id,
+        status: status,
+        desired_revision: 1,
+        next_sequence: 2,
+        manifest_bytes: attempt.manifest_body,
+        manifest_sha256: attempt.manifest_sha256,
+        manifest_generation: attempt.generation,
+        manifest_sequence: 1,
+        manifest_last_modified: ~U[2026-10-02 09:00:00.000000Z],
+        last_refresh_at: ~U[2026-10-02 09:05:00.000000Z],
+        last_error: Keyword.get(opts, :last_error)
+      })
+      |> Repo.update!()
+    end
+
+    pub_channel.(:full, :current, run: pub_full_run)
+
+    pub_channel.(:pathways, :failed,
+      run: pub_pathways_run,
+      last_error: "the public manifest belongs to another owner"
+    )
+
+    # The alert editor's publication card, written through the command the editor
+    # itself uses: one alert accepted and waiting to be served, and one accepted
+    # and confirmed by the served manifest, which is the only state that carries a
+    # publication date.
+    pub_accept = fn alert ->
+      # Read the row back first: finishing an alert writes a new revision, and
+      # accepting one is a revision-checked write.
+      alert = Repo.get!(GtfsPlanner.Alerts.Alert, alert.id)
+
+      case GtfsPlanner.Alerts.save_review(
+             alerts_audit,
+             alert.id,
+             alert.revision,
+             %{
+               "message" => %{
+                 "header" => alert.message.header,
+                 "description" => alert.message.description
+               }
+             },
+             publish?: true
+           ) do
+        {:ok, %{alert: _accepted, publication: {:refused, field_errors}}} ->
+          raise "Browser seed: alert publication refused: #{inspect(field_errors)}"
+
+        {:ok, %{alert: accepted, publication: _outcome}} ->
+          accepted
+
+        other ->
+          raise "Browser seed: alert acceptance failed: #{inspect(other)}"
+      end
+    end
+
+    # A current alert accepted and confirmed by the served manifest: the only
+    # state that carries a publication date.
+    pub_accepted_current = pub_accept.(alerts_current)
+
+    Repo.update_all(
+      from(p in GtfsPlanner.Alerts.Publication, where: p.alert_id == ^pub_accepted_current.id),
+      set: [confirmed_revision: 1, last_published_at: ~U[2026-10-01 12:00:00.000000Z]]
+    )
+
+    # A planned alert accepted for a notice that has not begun: accepted, and
+    # still without a served date.
+    _pub_scheduled_upcoming = pub_accept.(alerts_upcoming)
+
+    # An alert whose removal the realtime feed still owes, created only for this:
+    # accepting it gives it something to withdraw, and deleting it persists the
+    # intent and its tombstone. It leaves every list the moment it is deleted.
+    pub_withdrawn =
+      alerts_new.(%{
+        "urgency" => "now",
+        "situation" => "delay",
+        "cause" => "weather",
+        "scope" => %{"shape" => "routes", "route_ids" => [alerts_route_12.id]},
+        "message" => %{
+          "header" => "Route 12 rerouted for the harvest fair",
+          "description" => "Route 12 is detouring around the fair until Sunday evening."
+        }
+      })
+
+    pub_withdrawn =
+      alerts_finish.(pub_withdrawn, %{
+        "start_date" => Date.to_iso8601(alerts_today),
+        "start_time" => "08:00:00",
+        "end_kind" => "estimated",
+        "check_in_at" => NaiveDateTime.to_iso8601(alerts_check_in)
+      })
+
+    pub_withdrawn = pub_accept.(pub_withdrawn)
+
+    {:ok, _deleted} =
+      GtfsPlanner.Alerts.delete_alert(alerts_audit, pub_withdrawn.id, pub_withdrawn.revision)
+
+    IO.puts(
+      "Browser seed: publishing version #{diagram_version.name} " <>
+        "(ready runs full=#{pub_full_run.id} pathways=#{pub_pathways_run.id}, " <>
+        "channels full current / pathways failed, alert accepted " <>
+        "#{pub_accepted_current.id}, " <>
+        "#{pub_withdrawn.id} pending removal)"
+    )
+
     # The seed bulk-loads its rows, and a new database has no planner statistics
     # until autovacuum's first pass. A query planned before then estimates one row
     # per table and nests its joins, so the Stops page's routes-serving-stations

@@ -896,7 +896,10 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
                "/gtfs/42/routes",
                "/gtfs/42/stops",
                "/gtfs/42/calendars",
-               "/gtfs/42/alerts",
+               # Alerts is organization-owned, so its task link carries no version;
+               # the versioned `/gtfs/:version/alerts` route is only a redirect for
+               # old bookmarks.
+               "/alerts",
                "/gtfs/42/flex",
                "/gtfs/42/blocks",
                "/gtfs/42/export"

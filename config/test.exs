@@ -217,7 +217,21 @@ config :gtfs_planner, :task_artifact_maintenance_enabled, false
 # case that installs a loopback storage boundary opts in explicitly below; the fixture
 # is a raw settings map because this file is compiled before
 # `GtfsPlanner.FeedPublishing.Config` exists, and `current/0` normalizes it on read.
-if System.get_env("GTFS_PUBLISH_TEST_LOOPBACK") == "true" do
+# Public feed publishing is configured for the browser stack only: `bin/test-browser`
+# runs the ordinary application, and its journeys assert real addresses, receipts
+# and states, so the capability has to be on. The credentials below are loopback
+# placeholders that can only reach the local HTTP boundary, and no ambient
+# environment value is read. Ordinary ExUnit runs leave the settings unset, which
+# is the absent-configuration state EV-1 proves, and a focused run still opts in
+# with `GTFS_PUBLISH_TEST_LOOPBACK=true`. `GTFS_PUBLISH_TEST_DISABLED=true` boots
+# the same browser stack with nothing configured, which is the disabled state the
+# journeys compare against.
+publishing_configured? =
+  (System.get_env("BROWSER_E2E") == "true" or
+     System.get_env("GTFS_PUBLISH_TEST_LOOPBACK") == "true") and
+    System.get_env("GTFS_PUBLISH_TEST_DISABLED") != "true"
+
+if publishing_configured? do
   config :gtfs_planner, :feed_publishing_settings, %{
     "GTFS_PUBLISH_BUCKET" => "gtfs-planner-loopback",
     "GTFS_PUBLISH_ENDPOINT" => "https://storage.loopback.invalid",
