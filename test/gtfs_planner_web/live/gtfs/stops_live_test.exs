@@ -560,8 +560,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
 
       stub_catalog(fn opts ->
         case Keyword.get(opts, :search) do
-          "" -> {:ok, stop_page([stop], 1, 1, [], %{})}
-          _blank -> {:ok, stop_page([], 0, 1, [], %{})}
+          "" -> {:ok, stop_page([stop], 1, 1, %{})}
+          _blank -> {:ok, stop_page([], 0, 1, %{})}
         end
       end)
 
