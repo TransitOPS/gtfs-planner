@@ -641,8 +641,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # the rest of the change. The field it writes is named for the question rather
   # than for the answer, because the identity still has to be checked against the
   # version before it is stored (R7, R1).
+  #
+  # The combobox's hidden field is part of the form even when nothing was picked,
+  # so every other change on the question carries an empty `stop_id`. Only a
+  # chosen identity is a pick; an empty one falls through to the generic write,
+  # which stores whatever else the change carried (a written direction, the
+  # facility).
   def handle_event("autosave", %{"place" => %{"stop_id" => id}} = params, socket)
-      when is_binary(id) do
+      when is_binary(id) and id != "" do
     case socket.assigns.alert do
       nil -> {:noreply, socket}
       alert -> pick_place(socket, alert, id, params)
@@ -650,7 +656,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   end
 
   def handle_event("autosave", %{"alternative" => %{"stop_id" => id}} = params, socket)
-      when is_binary(id) do
+      when is_binary(id) and id != "" do
     case socket.assigns.alert do
       nil -> {:noreply, socket}
       alert -> pick_alternative(socket, alert, id, params)
@@ -996,9 +1002,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
         {:noreply, assign(socket, :departure_error, "Choose a date to add.")}
 
       date ->
+        # The list starts from the dates it is showing, so the agency's own
+        # today, which it offers when nothing else is named, stays beside the
+        # date that was added instead of being replaced by it.
+        shown = working_dates(socket, socket.assigns.alert)
+
         {:noreply,
          socket
-         |> assign(:added_dates, Enum.uniq(socket.assigns.added_dates ++ [date]))
+         |> assign(:added_dates, Enum.uniq(shown ++ [date]))
          |> assign(:departure_error, nil)
          |> load_departure_dates()}
     end

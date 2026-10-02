@@ -199,7 +199,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
         <.link
           id={"alert-link-#{@row.alert.id}"}
           navigate={@row.alert_path}
-          class="font-semibold text-strong no-underline hover:text-action hover:underline"
+          class="font-semibold text-strong no-underline [overflow-wrap:anywhere] hover:text-action hover:underline"
         >
           {@row.title}
         </.link>
@@ -255,7 +255,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
       <.link
         id={"alert-card-link-#{@row.alert.id}"}
         navigate={@row.alert_path}
-        class="font-semibold text-strong no-underline hover:underline"
+        class="font-semibold text-strong no-underline [overflow-wrap:anywhere] hover:underline"
       >
         {@row.title}
       </.link>
@@ -586,10 +586,16 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
           <.icon name="hero-sparkles" class="size-3.5" /> Filled in by the assistant
         </span>
       </div>
-      <p id="alert-preview-header" class="mt-1.5 text-[15px] font-bold leading-snug text-strong">
+      <p
+        id="alert-preview-header"
+        class="mt-1.5 text-[15px] font-bold leading-snug text-strong [overflow-wrap:anywhere]"
+      >
         {if blank?(@header), do: "Short message", else: @header}
       </p>
-      <p :if={not blank?(@description)} class="mt-1 text-sm leading-6 text-default">
+      <p
+        :if={not blank?(@description)}
+        class="mt-1 text-sm leading-6 text-default [overflow-wrap:anywhere]"
+      >
         {@description}
       </p>
     </div>
@@ -1197,9 +1203,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
         </p>
       </fieldset>
 
+      <%!-- The panel stays as the editor left it: a patch redraws the element
+             without `open`, and choosing the first end would otherwise close the
+             panel the second end is in. --%>
       <details
         :if={@options != []}
         id="alert-stops-stretch"
+        phx-mounted={JS.ignore_attributes("open")}
         class="rounded-control border border-subtle p-3"
       >
         <summary class="cursor-pointer text-sm font-semibold text-strong">
@@ -2597,13 +2607,16 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
                 <RouteIdentity.route_badge :for={route <- @routes} route={route} />
               </span>
             </div>
-            <p id="review-header" class="mt-1.5 text-[15px] font-bold leading-snug text-strong">
+            <p
+              id="review-header"
+              class="mt-1.5 text-[15px] font-bold leading-snug text-strong [overflow-wrap:anywhere]"
+            >
               {if blank?(@header), do: "Short message", else: @header}
             </p>
             <p
               :if={not blank?(description(@alert))}
               id="review-description"
-              class="mt-1 text-sm leading-6 text-default"
+              class="mt-1 text-sm leading-6 text-default [overflow-wrap:anywhere]"
             >
               {description(@alert)}
             </p>
