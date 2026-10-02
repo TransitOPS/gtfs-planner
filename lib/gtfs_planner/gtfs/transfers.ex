@@ -121,6 +121,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Versions.GtfsVersion
 
   @general_types [0, 1, 2, 3]
   @in_seat_types [4, 5]
@@ -718,6 +719,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   defp apply_reviewed_policy_change_transaction(review, command, audit) do
     Authorization.lock_editor!(audit)
     Versions.lock_for_exclusive_write!(audit.organization_id, audit.gtfs_version_id)
+    touch_version!(audit)
 
     general = load_general_rules(audit)
 
@@ -726,6 +728,20 @@ defmodule GtfsPlanner.Gtfs.Transfers do
     else
       Repo.rollback(:stale)
     end
+  end
+
+  # A write, unlike a lock, makes a SERIALIZABLE writer that waited on this fence fail 40001 and retry.
+  defp touch_version!(audit) do
+    {1, _} =
+      Repo.update_all(
+        from(v in GtfsVersion,
+          where: v.id == ^audit.gtfs_version_id and v.organization_id == ^audit.organization_id,
+          update: [set: [updated_at: v.updated_at]]
+        ),
+        []
+      )
+
+    :ok
   end
 
   # The same scoped target load and freshness check the review made, re-read under

@@ -8,8 +8,10 @@ defmodule GtfsPlanner.Gtfs.TransferPolicyConcurrencyTest do
   moved one, then write through the same editor changeset, reference checks and
   prospective rule set the review used. A committed competitor between the review
   and the save is `:stale` and writes nothing; a competitor that starts while the
-  apply holds the fence waits on that fence; and a competitor that commits first
-  turns the reviewed decision `:stale` rather than applying it.
+  apply holds the fence waits on that fence; a competitor that commits first
+  turns the reviewed decision `:stale` rather than applying it; and a SERIALIZABLE
+  native writer that began before the apply committed and then waited on the fence
+  retries on a fresh snapshot instead of resuming on one that cannot see the apply.
 
   Every case runs the production transaction module on its own connection through
   `Ecto.Adapters.SQL.Sandbox.unboxed_run/2` with a message barrier immediately
@@ -391,6 +393,72 @@ defmodule GtfsPlanner.Gtfs.TransferPolicyConcurrencyTest do
         refute trip_exists?(scope)
         assert transfer_count(scope) == 0
         assert change_log_count(scope) == 0
+      end)
+    end
+
+    test "a native deleter that began before the apply committed cannot leave a rule naming its deleted trip",
+         %{supervisor: supervisor} do
+      unboxed(fn ->
+        scope = seed_scope("fence-deleter")
+        on_exit(fn -> unboxed(fn -> cleanup([scope]) end) end)
+
+        command =
+          create_command(%{
+            "from_stop_id" => "CEN",
+            "to_stop_id" => "HBR",
+            "from_route_id" => @route,
+            "from_trip_id" => scope.trip.trip_id,
+            "transfer_type" => "0"
+          })
+
+        assert {:ok, review} = Transfers.review_policy_change(scope.scope, command, scope.audit)
+
+        parent = self()
+
+        apply_task =
+          Task.Supervisor.async_nolink(supervisor, fn ->
+            Process.put(@barrier, parent)
+
+            owned_connection(fn ->
+              Transfers.apply_reviewed_policy_change(review, scope.audit)
+            end)
+          end)
+
+        assert_receive {:before_commit, apply_pid}, @collect_timeout
+        on_exit(fn -> send(apply_pid, :commit) end)
+
+        # The apply holds the version `FOR UPDATE` with its rule, which names trip X,
+        # uncommitted. The native deleter opens its SERIALIZABLE snapshot at its first
+        # statement and then waits for that fence, so the snapshot predates the rule.
+        deleter =
+          Task.Supervisor.async_nolink(supervisor, fn ->
+            owned_connection(fn ->
+              send(parent, {:deleter_backend, self(), current_backend_pid()})
+              Gtfs.delete_trips(@route, @service, [scope.trip.id], scope.audit)
+            end)
+          end)
+
+        assert_receive {:deleter_backend, deleter_pid, deleter_backend}, @collect_timeout
+        assert deleter_pid == deleter.pid
+
+        refute Task.yield(deleter, @lock_wait)
+        assert_postgres_lock_wait!(deleter_backend)
+
+        send(apply_pid, :commit)
+
+        assert {:ok, %Transfer{from_trip_id: from_trip_id}} =
+                 await_task(apply_task, @collect_timeout)
+
+        assert from_trip_id == scope.trip.trip_id
+
+        # The deleter must not resume on its pre-apply snapshot: that would delete
+        # trip X without seeing the rule that names it. It retries on a fresh snapshot,
+        # sees the committed rule and removes it with the trip.
+        assert {:ok, %{trips: 1, transfers: 1}} = await_task(deleter, @collect_timeout)
+
+        refute trip_exists?(scope)
+        refute transfer_names_trip?(scope)
+        assert transfer_count(scope) == 0
       end)
     end
   end
