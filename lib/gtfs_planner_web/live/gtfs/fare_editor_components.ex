@@ -43,8 +43,9 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
 
   import GtfsPlannerWeb.RouteWorkspace, only: [badge: 1]
 
+  alias GtfsPlanner.Gtfs.Fares.Identifier
   alias GtfsPlanner.Gtfs.Fares.Money
-  alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.Fares.Transfers
   alias GtfsPlannerWeb.Components.RouteIdentity
 
   @doc """
@@ -914,7 +915,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
   defp fare_slug(fare) do
     case fare.name do
       name when is_binary(name) ->
-        case Stop.slugify(name) do
+        case Identifier.normalize(name) do
           "" -> List.first(fare.product_ids)
           slug -> slug
         end
@@ -2888,7 +2889,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
               </th>
               <td class="border-b border-subtle bg-warning-bg px-4 py-2.5">
                 <div class="flex flex-wrap gap-1">
-                  <.route_badges :for={route <- @workspace.routes} route={route} />
+                  <.route_badges :for={route <- loose_routes(@workspace)} route={route} />
                 </div>
               </td>
               <td class="border-b border-subtle bg-warning-bg px-4 py-2.5 text-sm text-warning-fg">
@@ -3505,7 +3506,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
 
   def transfers_tab(assigns) do
     ~H"""
-    <div class="grid gap-4" id="transfers-tab">
+    <div class="grid min-w-0 grid-cols-1 gap-4" id="transfers-tab">
       <section :if={@has_rules?} class="rounded-card border border-subtle bg-white px-4 py-3 sm:px-5">
         <h2 class="text-base font-bold text-strong">Transfers in plain words</h2>
         <ul class="mt-1 grid gap-1 text-sm text-default">
@@ -3962,7 +3963,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
       assign(
         assigns,
         :difference_allowed?,
-        GtfsPlanner.Gtfs.Fares.Transfers.difference_allowed?(
+        Transfers.difference_allowed?(
           assigns.scope,
           assigns.draft.from,
           assigns.draft.to
@@ -4116,7 +4117,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
   end
 
   defp older_allowance(rows, fare_name) do
-    fare_id = Stop.slugify(fare_name)
+    fare_id = Identifier.normalize(fare_name)
 
     case Enum.find(rows, &(&1.fare_id == fare_id)) do
       %{transfers: 0} ->
@@ -4753,8 +4754,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
   defp cell_fare_names(cell, workspace) do
     cell
     |> cell_fares(workspace)
-    |> Enum.map(& &1.name)
-    |> Enum.join(", ")
+    |> Enum.map_join(", ", & &1.name)
   end
 
   # The distinct fares a cell's rules name. A cell holding every rider type of
@@ -4872,9 +4872,8 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
   defp format_period_time(value) when is_binary(value) do
     normalized = if String.length(value) == 5, do: value <> ":00", else: value
 
-    with {:ok, time} <- Time.from_iso8601(normalized) do
-      Calendar.strftime(time, "%-I:%M %p")
-    else
+    case Time.from_iso8601(normalized) do
+      {:ok, time} -> Calendar.strftime(time, "%-I:%M %p")
       _ -> value
     end
   end
@@ -5707,7 +5706,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
 
   # A fare being created has no id yet, so the disclosure shows the id its name
   # will produce — which is what the writer will use.
-  defp fare_id_text(%{key: nil, name: name}) when is_binary(name), do: Stop.slugify(name)
+  defp fare_id_text(%{key: nil, name: name}) when is_binary(name), do: Identifier.normalize(name)
   defp fare_id_text(%{key: id}), do: id
 
   defp fare_rule_sentence(rule, workspace) do

@@ -15,9 +15,9 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorChecksTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.FaresFixtures
   alias GtfsPlanner.Gtfs.AuditContext
-  alias GtfsPlanner.Gtfs.FareSavedJourney
   alias GtfsPlanner.Gtfs.Fares
   alias GtfsPlanner.Gtfs.Fares.Conversion
+  alias GtfsPlanner.Gtfs.FareSavedJourney
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Support.StagedImport
 

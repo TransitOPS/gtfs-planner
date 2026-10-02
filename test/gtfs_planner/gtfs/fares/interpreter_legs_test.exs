@@ -52,7 +52,7 @@ defmodule GtfsPlanner.Gtfs.Fares.InterpreterLegsTest do
       rows =
         rows([leg("n1", nil, nil, "peak", nil, "p_peak"), leg("n1", nil, nil, nil, nil, "p_any")])
 
-      assert Interpreter.leg_products(rows, "n1", "A", "B", ["peak"]) == ["p_peak"]
+      assert Interpreter.leg_products(rows, "n1", "A", "B", ["peak"]) == ["p_peak", "p_any"]
       assert Interpreter.leg_products(rows, "n1", "A", "B", []) == ["p_any"]
     end
   end

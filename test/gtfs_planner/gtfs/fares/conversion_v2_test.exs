@@ -45,9 +45,9 @@ defmodule GtfsPlanner.Gtfs.Fares.ConversionV2Test do
   alias GtfsPlanner.Gtfs.FareLegRule
   alias GtfsPlanner.Gtfs.FareProduct
   alias GtfsPlanner.Gtfs.FareProductDetail
-  alias GtfsPlanner.Gtfs.FareTransferRule
   alias GtfsPlanner.Gtfs.Fares
   alias GtfsPlanner.Gtfs.Fares.Conversion
+  alias GtfsPlanner.Gtfs.FareTransferRule
   alias GtfsPlanner.Gtfs.FareVersionSetting
   alias GtfsPlanner.Gtfs.FareZone
   alias GtfsPlanner.Gtfs.Network
@@ -169,8 +169,14 @@ defmodule GtfsPlanner.Gtfs.Fares.ConversionV2Test do
                {"N_LOCAL", "N_LOCAL"}
              ]
 
-      assert Enum.sort(context.applied.inverse.conversion.transfer_groups) ==
-               [{"LG_INTERCITY", "N_INTERCITY"}, {"LG_LOCAL", "N_LOCAL"}]
+      assert context.applied.inverse.conversion.fare_transfer_rules
+             |> Enum.map(&{&1.from_leg_group_id, &1.to_leg_group_id})
+             |> Enum.sort() ==
+               [
+                 {"LG_INTERCITY", "LG_LOCAL"},
+                 {"LG_LOCAL", "LG_INTERCITY"},
+                 {"LG_LOCAL", "LG_LOCAL"}
+               ]
     end
 
     test "records one change-log entry naming the settings row", context do

@@ -17,14 +17,15 @@ defmodule GtfsPlanner.Gtfs.Fares.VersionLockTest do
   """
   use ExUnit.Case, async: false
 
-  import GtfsPlanner.AccountsFixtures, only: [editor_fixture: 1]
+  import GtfsPlanner.AccountsFixtures, only: [editor_fixture: 2]
   import Ecto.Query
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
   alias Ecto.Adapters.SQL.Sandbox
-  alias GtfsPlanner.Gtfs.Fares.VersionLock
+  alias GtfsPlanner.Accounts.User
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.Fares.VersionLock
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
@@ -34,7 +35,12 @@ defmodule GtfsPlanner.Gtfs.Fares.VersionLockTest do
     {organization, version, staging, audit} =
       unboxed(fn ->
         organization = organization_fixture()
-        editor = editor_fixture(organization)
+
+        editor =
+          editor_fixture(organization, %{
+            email: "fares-version-lock-#{Ecto.UUID.generate()}@example.com"
+          })
+
         version = gtfs_version_fixture(organization.id)
         staging = staging_version(organization.id)
 
@@ -43,7 +49,7 @@ defmodule GtfsPlanner.Gtfs.Fares.VersionLockTest do
         {organization, version, staging, audit}
       end)
 
-    on_exit(fn -> cleanup(organization.id) end)
+    on_exit(fn -> cleanup(organization.id, audit.actor_id) end)
 
     %{organization: organization, version: version, staging: staging, audit: audit}
   end
@@ -95,8 +101,18 @@ defmodule GtfsPlanner.Gtfs.Fares.VersionLockTest do
   end
 
   test "a non-editor cannot write", %{audit: audit, organization: organization} do
-    non_editor = unboxed(fn -> GtfsPlanner.AccountsFixtures.user_fixture() end)
+    non_editor =
+      unboxed(fn ->
+        GtfsPlanner.AccountsFixtures.user_fixture(%{
+          email: "fares-version-lock-non-editor-#{Ecto.UUID.generate()}@example.com"
+        })
+      end)
+
     denied_audit = audit(organization, %{id: audit.gtfs_version_id}, non_editor)
+
+    on_exit(fn ->
+      unboxed(fn -> Repo.delete_all(from(u in User, where: u.id == ^non_editor.id)) end)
+    end)
 
     assert {:error, :forbidden} =
              unboxed(fn -> VersionLock.transact(denied_audit, fn -> must_not_run() end) end)
@@ -142,7 +158,7 @@ defmodule GtfsPlanner.Gtfs.Fares.VersionLockTest do
   test "a session holding the version row blocks transact until it commits" do
     supervisor = start_supervised!({Task.Supervisor, name: __MODULE__.TaskSupervisor})
     fixture = committed_fixture("lock")
-    on_exit(fn -> cleanup(fixture.organization.id) end)
+    on_exit(fn -> cleanup(fixture.organization.id, fixture.editor.id) end)
 
     parent = self()
 
@@ -214,7 +230,10 @@ defmodule GtfsPlanner.Gtfs.Fares.VersionLockTest do
       %{
         organization: organization,
         version: gtfs_version_fixture(organization.id),
-        editor: editor_fixture(organization)
+        editor:
+          editor_fixture(organization, %{
+            email: "fares-version-lock-committed-#{Ecto.UUID.generate()}@example.com"
+          })
       }
       |> then(fn fixture ->
         Map.put(fixture, :audit, audit(fixture.organization, fixture.version, fixture.editor))
@@ -232,10 +251,11 @@ defmodule GtfsPlanner.Gtfs.Fares.VersionLockTest do
     }
   end
 
-  defp cleanup(organization_id) do
+  defp cleanup(organization_id, actor_id \\ nil) do
     unboxed(fn ->
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
       Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
+      if actor_id, do: Repo.delete_all(from(u in User, where: u.id == ^actor_id))
     end)
   end
 

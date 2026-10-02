@@ -55,15 +55,20 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   """
   use GtfsPlannerWeb, :live_view
   require Logger
+  import Ecto.Query
   alias Ecto.Changeset
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Fares
+  alias GtfsPlanner.Gtfs.Fares.Interpreter
+  alias GtfsPlanner.Gtfs.Fares.Interpreter.Rows
   alias GtfsPlanner.Gtfs.Fares.Money
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias GtfsPlannerWeb.Gtfs.RouteFormComponents
@@ -1680,86 +1685,86 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
     do: %{managed?: false}
 
   defp route_fare_summary(workspace, route_id, route_zone_ids) do
-    case Enum.find(workspace.groups, &(route_id in &1.route_ids)) do
-      nil ->
-        %{
-          managed?: true,
-          route_specific?: not is_nil(route_zone_ids),
-          currency: workspace.currency,
-          group: nil,
-          rides: [],
-          passes: [],
-          transfers: []
-        }
+    group = Enum.find(workspace.groups, &(route_id in &1.route_ids))
+    network_id = group && group.network_id
+    zones = workspace.matrices |> Enum.flat_map(& &1.zones) |> Map.new(&{&1.area_id, &1.name})
+    products = applicable_route_products(workspace, network_id, route_zone_ids)
+    default = Enum.find(workspace.riders, & &1.default?)
 
-      group ->
-        zones =
-          workspace.matrices
-          |> Enum.filter(&(&1.network_id == group.network_id))
-          |> Enum.flat_map(& &1.zones)
-          |> Map.new(&{&1.area_id, &1.name})
+    rides =
+      workspace.fares
+      |> Enum.filter(&(&1.kind == "single"))
+      |> Enum.flat_map(
+        &route_fare_rides(&1, products, network_id, route_zone_ids, zones, default)
+      )
+      |> Enum.uniq_by(&{Enum.sort(&1.fare.product_ids), &1.from_id, &1.to_id})
 
-        rides =
-          workspace.fares
-          |> Enum.filter(&(&1.kind == "single"))
-          |> Enum.flat_map(fn fare ->
-            fare.rules
-            |> Enum.filter(&(&1.network_id == group.network_id))
-            |> Enum.filter(&fare_rule_applies_to_route?(&1, route_zone_ids))
-            |> Enum.map(fn rule ->
-              [from_id, to_id] = Enum.sort([rule.from_area_id, rule.to_area_id])
+    passes =
+      Enum.filter(
+        workspace.fares,
+        &(&1.kind == "pass" and
+            (network_id in &1.accepted_network_ids or "all_routes" in &1.accepted_network_ids))
+      )
+      |> Enum.map(& &1.name)
 
-              %{
-                fare: fare,
-                from_id: from_id,
-                to_id: to_id,
-                from: Map.get(zones, from_id),
-                to: Map.get(zones, to_id)
-              }
-            end)
-          end)
-          |> Enum.uniq_by(&{Enum.sort(&1.fare.product_ids), &1.from_id, &1.to_id})
+    transfers =
+      workspace.transfers
+      |> Enum.filter(&(&1.from_leg_group_id == network_id and not is_nil(&1.policy)))
+      |> Enum.map(&route_transfer_summary(&1, workspace.groups))
 
-        default_rider =
-          Enum.find(workspace.riders, &(String.downcase(&1.name || "") == "adult")) ||
-            Enum.find(workspace.riders, & &1.default?)
+    %{
+      managed?: true,
+      route_specific?: not is_nil(route_zone_ids),
+      currency: workspace.currency,
+      group: group,
+      rides: rides,
+      passes: passes,
+      transfers: transfers
+    }
+  end
 
-        rides =
-          Enum.map(rides, fn ride ->
-            Map.put(
-              ride,
-              :price,
-              Map.get(ride.fare.prices, default_rider && default_rider.rider_category_id)
-            )
-          end)
+  defp applicable_route_products(workspace, network_id, route_zone_ids) do
+    rules = Map.get(workspace, :matching_rules, [])
+    rows = %Rows{fare_leg_rules: rules}
+    zones = route_zone_ids || Enum.flat_map(rules, &[&1.from_area_id, &1.to_area_id])
 
-        passes =
-          workspace.fares
-          |> Enum.filter(&(&1.kind == "pass" and group.network_id in &1.accepted_network_ids))
-          |> Enum.map(& &1.name)
+    periods =
+      Enum.flat_map(rules, &[&1.from_timeframe_group_id, &1.to_timeframe_group_id])
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
 
-        transfers =
-          workspace.transfers
-          |> Enum.filter(&(&1.from_leg_group_id == group.network_id and not is_nil(&1.policy)))
-          |> Enum.map(fn transfer ->
-            to_group = Enum.find(workspace.groups, &(&1.network_id == transfer.to_leg_group_id))
+    for from <- Enum.uniq([nil | zones]),
+        to <- Enum.uniq([nil | zones]),
+        active <- [[], periods] ++ Enum.map(periods, &[&1]),
+        product <- Interpreter.leg_products(rows, network_id, from, to, active),
+        into: MapSet.new(),
+        do: product
+  end
 
-            %{
-              group: (to_group && to_group.name) || transfer.to_leg_group_id,
-              policy: transfer.policy
-            }
-          end)
+  defp route_fare_rides(fare, products, network_id, route_zone_ids, zones, default) do
+    fare.rules
+    |> Enum.filter(
+      &(&1.network_id in [nil, network_id] and
+          Enum.any?(&1.product_ids, fn id -> MapSet.member?(products, id) end) and
+          fare_rule_applies_to_route?(&1, route_zone_ids))
+    )
+    |> Enum.map(fn rule ->
+      [from, to] = Enum.sort([rule.from_area_id, rule.to_area_id])
 
-        %{
-          managed?: true,
-          route_specific?: not is_nil(route_zone_ids),
-          currency: workspace.currency,
-          group: group,
-          rides: rides,
-          passes: passes,
-          transfers: transfers
-        }
-    end
+      %{
+        fare: fare,
+        from_id: from,
+        to_id: to,
+        from: Map.get(zones, from),
+        to: Map.get(zones, to),
+        price: Map.get(fare.prices, default && default.rider_category_id)
+      }
+    end)
+  end
+
+  defp route_transfer_summary(transfer, groups) do
+    group = Enum.find(groups, &(&1.network_id == transfer.to_leg_group_id))
+    %{group: (group && group.name) || transfer.to_leg_group_id, policy: transfer.policy}
   end
 
   # Conversion can manage a version while a route page is still open. Recheck
@@ -1820,8 +1825,15 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         |> Enum.flat_map(& &1.visits)
         |> Enum.map(& &1.stop_id)
         |> Enum.uniq()
-        |> Enum.map(&Gtfs.get_stop_by_stop_id(organization_id, gtfs_version_id, &1))
-        |> Enum.map(&(&1 && &1.zone_id))
+        |> then(fn ids ->
+          Repo.all(
+            from stop in Stop,
+              where:
+                stop.organization_id == ^organization_id and
+                  stop.gtfs_version_id == ^gtfs_version_id and stop.stop_id in ^ids,
+              select: stop.zone_id
+          )
+        end)
         |> Enum.reject(&(&1 in [nil, ""]))
         |> Enum.uniq()
     end

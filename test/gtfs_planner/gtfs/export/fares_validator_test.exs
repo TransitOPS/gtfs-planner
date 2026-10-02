@@ -14,16 +14,19 @@ defmodule GtfsPlanner.Gtfs.Export.FaresValidatorTest do
 
   use GtfsPlanner.DataCase, async: false
 
+  import Ecto.Query
+
   import GtfsPlanner.AccountsFixtures, only: [editor_fixture: 2]
   import GtfsPlanner.FaresFixtures, only: [import!: 3]
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 2]
 
+  alias GtfsPlanner.FaresFixtures
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Export
-  alias GtfsPlanner.Gtfs.FareTransferRule
-  alias GtfsPlanner.Gtfs.Fares
   alias GtfsPlanner.Gtfs.Fares.Conversion
+  alias GtfsPlanner.Gtfs.FareTransferRule
+  alias GtfsPlanner.Gtfs.RiderCategory
   alias GtfsPlanner.GtfsValidatorCli
   alias GtfsPlanner.Repo
 
@@ -46,7 +49,7 @@ defmodule GtfsPlanner.Gtfs.Export.FaresValidatorTest do
     assert {:ok, _setup} = Conversion.setup(managed.scope, flat_answers())
 
     assert {:ok, _saved} =
-             Fares.save_fare(managed.scope, %{
+             FaresFixtures.save_fare(managed.scope, %{
                fare_product_id: "local_ride",
                name: "Local ride",
                kind: "single",
@@ -128,6 +131,17 @@ defmodule GtfsPlanner.Gtfs.Export.FaresValidatorTest do
 
   defp converted_version!(organization, scope_for, name, fixture) do
     result = new_version!(organization, scope_for, name, fixture)
+
+    # The source excerpt uses a reserved .example URL. Clean validator cases
+    # need a syntactically valid eligibility URL; price and rule rows stay intact.
+    RiderCategory
+    |> where(
+      [r],
+      r.organization_id == ^organization.id and r.gtfs_version_id == ^result.version.id
+    )
+    |> where([r], not is_nil(r.eligibility_url))
+    |> Repo.update_all(set: [eligibility_url: "https://example.com/reduced-fare"])
+
     {:ok, plan} = Conversion.preview(organization.id, result.version.id)
     assert {:ok, _converted} = Conversion.apply(result.scope, plan.fingerprint, [])
     result
@@ -220,7 +234,7 @@ defmodule GtfsPlanner.Gtfs.Export.FaresValidatorTest do
     codes = Enum.map(notices, & &1["code"]) |> Enum.sort()
 
     IO.puts(
-      "EV-43 #{label} validator=#{report_version(report)} fare ERROR codes=#{inspect(codes)}"
+      "EV-43 #{label} validator=#{report_version(report)} fare ERROR codes=#{inspect(codes)} notices=#{inspect(notices, limit: :infinity)}"
     )
   end
 
@@ -238,9 +252,10 @@ defmodule GtfsPlanner.Gtfs.Export.FaresValidatorTest do
   end
 
   defp tmp_dir! do
-    path = Path.join(System.tmp_dir!(), "fares_validator_#{System.unique_integer([:positive])}")
+    capture_dir = System.get_env("FARES_VALIDATOR_CAPTURE_DIR")
+    path = Path.join(capture_dir || System.tmp_dir!(), "fares_validator_#{Ecto.UUID.generate()}")
     File.mkdir_p!(path)
-    on_exit(fn -> File.rm_rf(path) end)
+    if is_nil(capture_dir), do: on_exit(fn -> File.rm_rf(path) end)
     path
   end
 

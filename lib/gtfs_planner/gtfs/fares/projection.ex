@@ -48,7 +48,9 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
 
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.Fares
+  alias GtfsPlanner.Gtfs.Fares.Identifier
   alias GtfsPlanner.Gtfs.Fares.Interpreter
+  alias GtfsPlanner.Gtfs.Fares.PeriodCalendar
   alias GtfsPlanner.Gtfs.FareTimePeriod
   alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Gtfs.Route
@@ -77,20 +79,6 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
   # largest value that column allows.
   @unlimited_count -1
   @max_transfers 2
-
-  # R10's weekday bitmask, Monday through Sunday, as `calendar.txt` states it.
-  @weekday_bits %{
-    monday: 1,
-    tuesday: 2,
-    wednesday: 4,
-    thursday: 8,
-    friday: 16,
-    saturday: 32,
-    sunday: 64
-  }
-
-  # `Fares.set_older_format/2`'s own ceiling on the suffix it adds.
-  @service_suffix_limit 999
 
   @doc """
   The `fare_attributes.txt` and `fare_rules.txt` rows this version derives.
@@ -242,102 +230,16 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
       |> Repo.all()
       |> Enum.sort_by(& &1.timeframe_group_id)
 
-    case calendar_span(rows) do
-      nil ->
-        {%{}, %{}}
+    {calendars, renames} = PeriodCalendar.build(periods, rows)
+    appended = if calendars == [], do: %{}, else: %{@calendar_file => calendars}
 
-      {start_date, end_date} ->
-        {service_ids, moved} = period_service_ids(periods, rows)
+    replaced =
+      if map_size(renames) == 0,
+        do: %{},
+        else: %{@timeframes_file => timeframe_rows(rows, renames)}
 
-        appended =
-          Enum.zip_with(periods, service_ids, &calendar_row(&1, &2, start_date, end_date))
-
-        rows =
-          case moved do
-            %{} -> %{}
-            renames -> %{@timeframes_file => timeframe_rows(rows, renames)}
-          end
-
-        {%{@calendar_file => appended}, rows}
-    end
+    {appended, replaced}
   end
-
-  # The span the fare-only services run over: the version's own weekly range,
-  # and otherwise the range its exception dates cover. A version with neither
-  # has no span to state, and a period with no span is left out rather than
-  # written with dates the feed never had.
-  defp calendar_span(rows) do
-    starts = Enum.map(rows.calendars, & &1.start_date) ++ Enum.map(rows.calendar_dates, & &1.date)
-    ends = Enum.map(rows.calendars, & &1.end_date) ++ Enum.map(rows.calendar_dates, & &1.date)
-
-    case {Enum.reject(starts, &is_nil/1), Enum.reject(ends, &is_nil/1)} do
-      {[], _} -> nil
-      {_, []} -> nil
-      {from, to} -> {Enum.min(from), Enum.max(to)}
-    end
-  end
-
-  # R10's re-check. A period's own stored service id is not a collision with
-  # itself, and every other period's id is taken, so two periods can never
-  # share one in the output.
-  defp period_service_ids(periods, rows) do
-    taken =
-      MapSet.new(
-        Enum.map(rows.calendars, & &1.service_id) ++
-          Enum.map(rows.calendar_dates, & &1.service_id)
-      )
-
-    {assigned, _taken, renames} =
-      Enum.reduce(periods, {[], taken, %{}}, fn period, {assigned, taken, renames} ->
-        {service_id, taken} = free_service_id(period.service_id, taken)
-
-        renames =
-          if service_id == period.service_id,
-            do: renames,
-            else: Map.put(renames, period.service_id, service_id)
-
-        {[service_id | assigned], MapSet.put(taken, service_id), renames}
-      end)
-
-    {Enum.reverse(assigned), renames}
-  end
-
-  defp free_service_id(nil, taken), do: {nil, taken}
-
-  defp free_service_id(service_id, taken) do
-    if MapSet.member?(taken, service_id) do
-      suffixed_service_id(service_id, taken, 2)
-    else
-      {service_id, taken}
-    end
-  end
-
-  defp suffixed_service_id(base, taken, suffix) when suffix <= @service_suffix_limit do
-    candidate = "#{base}_#{suffix}"
-
-    if MapSet.member?(taken, candidate) do
-      suffixed_service_id(base, taken, suffix + 1)
-    else
-      {candidate, taken}
-    end
-  end
-
-  # Past the limit the id is left as it is: a version needing 998 suffixes is a
-  # configuration problem, and a service id that collides is reported by
-  # `Fares.Checks.run/2` rather than silently rewritten here.
-  defp suffixed_service_id(base, taken, _suffix), do: {base, taken}
-
-  defp calendar_row(period, service_id, start_date, end_date) do
-    weekdays =
-      Map.new(@weekday_bits, fn {day, bit} -> {day, weekday(period.weekdays, bit)} end)
-
-    Map.merge(weekdays, %{service_id: service_id, start_date: start_date, end_date: end_date})
-  end
-
-  # A blank mask is every day, which is what `FareTimePeriod.changeset/2` says a
-  # mask of no bits means.
-  defp weekday(nil, _bit), do: 1
-  defp weekday(mask, bit), do: if(Bitwise.band(mask, bit) == bit, do: 1, else: 0)
 
   # The version's `timeframes.txt` rows with the re-suffixed services' rows
   # renamed, in the order `StreamBuilder` writes that file.
@@ -461,18 +363,24 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
   end
 
   # The products a leg rule charges. A leg is in one of the version's networks and
-  # runs between two of the version's fare areas, and every timeframe group counts
-  # as active: which of them is running is a question about a date and a time, and
+  # runs between two of the version's fare areas. Discovery includes the base
+  # state and each named timeframe, because
   # a fare a rule prices at some hour of some day is charged. The combinations are
   # the version's own rather than the stops its routes happen to serve, because a
   # fare no route serves today is still the fare a feed states for those areas.
-  defp charged_products(%{rows: rows}) do
+  defp charged_products(%{rows: rows} = version) do
     timeframe_ids = rows.timeframes |> Enum.map(& &1.timeframe_group_id) |> Enum.uniq()
-    version_areas = areas(rows)
+    timeframe_states = [[], timeframe_ids] ++ Enum.map(timeframe_ids, &[&1])
 
-    for network_id <- networks(rows),
+    memberships = Map.merge(rows.route_network_ids, rows.route_networks)
+    ungrouped? = Enum.any?(Map.keys(version.route_agencies), &(not Map.has_key?(memberships, &1)))
+    version_networks = include_absent(networks(rows), ungrouped?)
+
+    for network_id <- version_networks,
+        version_areas = include_absent(areas(rows), unzoned_network?(version, network_id)),
         from_area_id <- version_areas,
         to_area_id <- version_areas,
+        timeframe_ids <- timeframe_states,
         reduce: MapSet.new() do
       charged ->
         rows
@@ -480,6 +388,19 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
         |> Enum.reduce(charged, &MapSet.put(&2, &1))
     end
   end
+
+  defp unzoned_network?(version, network_id) do
+    routes = Map.get(version.network_routes, network_id, [])
+
+    version.stops
+    |> Enum.filter(fn {route, _stops} -> route in routes end)
+    |> Enum.flat_map(&elem(&1, 1))
+    |> Enum.any?(fn {_stop, zone} -> is_nil(zone) end)
+  end
+
+  defp include_absent([], _needed?), do: [nil]
+  defp include_absent(values, true), do: [nil | values]
+  defp include_absent(values, false), do: values
 
   defp networks(rows) do
     rows.networks
@@ -570,7 +491,8 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
   defp free_policy(rows, group) do
     rows.fare_transfer_rules
     |> Enum.filter(
-      &(&1.fare_transfer_type == @free_transfer and presence(&1.from_leg_group_id) == group and
+      &(&1.fare_transfer_type == @free_transfer and is_nil(presence(&1.fare_product_id)) and
+          presence(&1.from_leg_group_id) == group and
           presence(&1.to_leg_group_id) == group)
     )
     # A bounded count is read before an open one: a fare that allows two changes
@@ -584,9 +506,10 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
   defp count_rank(_count), do: 0
 
   defp transfers(counts) do
-    if Enum.any?(counts, &(is_nil(&1) or &1 == @unlimited_count)),
-      do: nil,
-      else: counts |> Enum.min() |> min(@max_transfers)
+    case Enum.reject(counts, &(is_nil(&1) or &1 == @unlimited_count)) do
+      [] -> nil
+      bounded -> bounded |> Enum.min() |> min(@max_transfers)
+    end
   end
 
   defp duration(policies) do
@@ -633,6 +556,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
 
       cell_rows(cell, fare_id(priced), version)
     end)
+    |> Enum.uniq()
   end
 
   # R11: `route_id` is blank for a cell in no network. For a network it is blank
@@ -779,8 +703,8 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
   # `route_networks.txt` answers when the version has it, because a route belongs to
   # at most one network; otherwise `routes.network_id` does.
   defp network_routes(rows) do
-    rows.route_networks
-    |> Map.merge(rows.route_network_ids)
+    rows.route_network_ids
+    |> Map.merge(rows.route_networks)
     |> Enum.group_by(
       fn {_route_id, network_id} -> network_id end,
       fn {route_id, _network_id} -> route_id end
@@ -805,7 +729,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
   end
 
   defp default_rider_id(rows) do
-    case Enum.find(rows.rider_categories, & &1.is_default_fare_category) do
+    case Enum.find(rows.rider_categories, &(&1.is_default_fare_category == 1)) do
       nil -> nil
       rider -> rider.rider_category_id
     end
@@ -814,7 +738,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
   # A fare's older-format id is its name the way `Fares.save_fare/2` writes one:
   # lower case, with every run of other characters one underscore.
   defp slug(name) do
-    name |> String.downcase() |> String.replace(~r/[^a-z0-9]+/, "_") |> String.trim("_")
+    Identifier.normalize(name)
   end
 
   defp presence(nil), do: nil

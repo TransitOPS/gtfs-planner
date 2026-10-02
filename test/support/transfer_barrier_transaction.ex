@@ -21,8 +21,9 @@ defmodule GtfsPlanner.Gtfs.TransferBarrierTransaction do
   connection to the session process for its whole run. The production connection
   pool replaces the disconnected connection, so the production retry loop's next
   attempt gets a live one; the sandbox's pinned ownership checkout does not, and
-  the next attempt exits `:noproc` from `DBConnection.Holder.checkout/2` before it
-  issues any SQL. This module therefore performs the replacement the sandbox omits
+  the next attempt exits from `DBConnection.Holder.checkout/2` with `:noproc` or
+  the retryable PostgreSQL error that shut down the connection, before issuing SQL.
+  This module therefore performs the replacement the sandbox omits
   — `Sandbox.unboxed_run/2` checks the dead connection in and checks a live one out
   — and re-enters the same transaction, so the case still exercises the production
   retry loop and its attempt budget instead of failing on a harness artifact.
@@ -52,6 +53,14 @@ defmodule GtfsPlanner.Gtfs.TransferBarrierTransaction do
       maybe_wait()
       result
     end)
+  rescue
+    error in Postgrex.Error ->
+      if error.postgres && error.postgres.code in [:serialization_failure, :deadlock_detected],
+        do: replace_connection()
+
+      # A failed COMMIT may remove the ownership mapping before the next retry.
+      # Restore it while the actual server failure still identifies the cause.
+      reraise error, __STACKTRACE__
   catch
     # The sandbox's pinned ownership connection died with the failed COMMIT. Check
     # it in, take a live one, and re-enter the same transaction; the transaction
@@ -59,6 +68,15 @@ defmodule GtfsPlanner.Gtfs.TransferBarrierTransaction do
     :exit, {:noproc, {DBConnection.Holder, :checkout, _opts}} when attempts > 0 ->
       replace_connection()
       run_with_retries(transaction, attempts - 1)
+
+    :exit,
+    {{:shutdown, %Postgrex.Error{postgres: %{code: code}} = error},
+     {DBConnection.Holder, :checkout, _opts}}
+    when code in [:serialization_failure, :deadlock_detected] ->
+      replace_connection()
+      # Return the server failure to the production retry loop so its attempt
+      # budget remains responsible for this retry.
+      raise error
   end
 
   defp replace_connection(attempts \\ @replacement_attempts) do
@@ -71,6 +89,12 @@ defmodule GtfsPlanner.Gtfs.TransferBarrierTransaction do
     :ok = Sandbox.checkout(Repo, sandbox: false)
   catch
     :exit, {:noproc, {DBConnection.Holder, :checkout, _opts}} when attempts > 1 ->
+      replace_connection(attempts - 1)
+
+    :exit,
+    {{:shutdown, %Postgrex.Error{postgres: %{code: code}}},
+     {DBConnection.Holder, :checkout, _opts}}
+    when attempts > 1 and code in [:serialization_failure, :deadlock_detected] ->
       replace_connection(attempts - 1)
   end
 

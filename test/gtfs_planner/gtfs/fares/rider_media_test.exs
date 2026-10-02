@@ -45,6 +45,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 2]
 
+  alias GtfsPlanner.FaresFixtures
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.FareMedia
@@ -84,7 +85,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
   describe "creating a rider type" do
     test "starts every fare at half the adult price, rounded to the nickel", context do
       assert {:ok, _result} =
-               Fares.save_rider_type(context.scope, %{
+               FaresFixtures.save_rider_type(context.scope, %{
                  name: "Students",
                  starting: :half
                })
@@ -130,13 +131,13 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
 
     test "`:same` copies the adult price and `:free` is a zero row for every fare", context do
       assert {:ok, _result} =
-               Fares.save_rider_type(context.scope, %{name: "Seniors", starting: :same})
+               FaresFixtures.save_rider_type(context.scope, %{name: "Seniors", starting: :same})
 
       assert amount(context, "intercity_ride_adult_cash", "seniors", "cash") ==
                Decimal.new("6.00")
 
       assert {:ok, _result} =
-               Fares.save_rider_type(context.scope, %{name: "Toddlers", starting: :free})
+               FaresFixtures.save_rider_type(context.scope, %{name: "Toddlers", starting: :free})
 
       for {product_id, medium} <- [
             {"local_ride_adult_cash", "cash"},
@@ -150,7 +151,10 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
 
     test "`:blank` writes no price at all, because blank means not sold", context do
       assert {:ok, _result} =
-               Fares.save_rider_type(context.scope, %{name: "Companions", starting: :blank})
+               FaresFixtures.save_rider_type(context.scope, %{
+                 name: "Companions",
+                 starting: :blank
+               })
 
       assert rider_ids(context) == ["adult", "child", "companions", "reduced", "youth"]
       assert price_cells(context, "companions") == []
@@ -158,7 +162,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
 
     test "names its rows, gives the id its name asks for and records one entry", context do
       assert {:ok, result} =
-               Fares.save_rider_type(context.scope, %{
+               FaresFixtures.save_rider_type(context.scope, %{
                  name: "Students (18-25)",
                  eligibility_url: "https://northcoast.example/students",
                  starting: :blank
@@ -181,17 +185,17 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
       # The rider type's GTFS id is its name as an id, so an operator naming
       # `Adult` again is creating a second `adult` row rather than editing one.
       assert {:error, :duplicate_rider_type} =
-               Fares.save_rider_type(context.scope, %{name: "Adult", starting: :blank})
+               FaresFixtures.save_rider_type(context.scope, %{name: "Adult", starting: :blank})
 
       # A name already used for a save, whose id the first create took.
       assert {:ok, _created} =
-               Fares.save_rider_type(context.scope, %{name: "Students", starting: :blank})
+               FaresFixtures.save_rider_type(context.scope, %{name: "Students", starting: :blank})
 
       assert {:error, :duplicate_rider_type} =
-               Fares.save_rider_type(context.scope, %{name: "Students", starting: :blank})
+               FaresFixtures.save_rider_type(context.scope, %{name: "Students", starting: :blank})
 
       assert {:error, changeset} =
-               Fares.save_rider_type(context.scope, %{name: "   ", starting: :blank})
+               FaresFixtures.save_rider_type(context.scope, %{name: "   ", starting: :blank})
 
       assert "can't be blank" in errors_on(changeset).name
 
@@ -200,19 +204,22 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
 
     test "an unknown starting choice and a rider type of another version are refused", context do
       assert {:error, :invalid_starting_prices} =
-               Fares.save_rider_type(context.scope, %{name: "Students", starting: :quarter})
+               FaresFixtures.save_rider_type(context.scope, %{
+                 name: "Students",
+                 starting: :quarter
+               })
 
       assert {:error, :not_found} =
-               Fares.save_rider_type(context.scope, %{
+               FaresFixtures.save_rider_type(context.scope, %{
                  rider_category_id: "no_such_rider",
                  name: "Students"
                })
 
       assert {:error, :unmanaged} =
-               Fares.save_rider_type(unmanaged_scope(context), %{name: "Students"})
+               FaresFixtures.save_rider_type(unmanaged_scope(context), %{name: "Students"})
 
       assert {:error, :not_found} =
-               Fares.save_rider_type(staging_scope(context), %{name: "Students"})
+               FaresFixtures.save_rider_type(staging_scope(context), %{name: "Students"})
 
       assert rider_ids(context) == ["adult", "child", "reduced", "youth"]
     end
@@ -221,7 +228,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
   describe "moving the default" do
     test "clears the old rider type's flag in the same transaction", context do
       assert {:ok, _result} =
-               Fares.save_rider_type(context.scope, %{
+               FaresFixtures.save_rider_type(context.scope, %{
                  rider_category_id: "reduced",
                  name: "Reduced fare",
                  default?: true
@@ -234,7 +241,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
       assert default_riders(context) == ["reduced"]
 
       assert {:ok, _moved} =
-               Fares.save_rider_type(context.scope, %{
+               FaresFixtures.save_rider_type(context.scope, %{
                  rider_category_id: "adult",
                  name: "Adult",
                  default?: true
@@ -247,7 +254,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
 
     test "an update that says nothing about the default leaves the flag alone", context do
       assert {:ok, _result} =
-               Fares.save_rider_type(context.scope, %{
+               FaresFixtures.save_rider_type(context.scope, %{
                  rider_category_id: "adult",
                  name: "Adult rider",
                  starting: :half
@@ -271,7 +278,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
 
     test "a create can be the default, and it clears the flag it takes", context do
       assert {:ok, _result} =
-               Fares.save_rider_type(context.scope, %{
+               FaresFixtures.save_rider_type(context.scope, %{
                  name: "First riders",
                  default?: true,
                  starting: :blank
@@ -338,7 +345,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
   describe "creating a payment method" do
     test "adds a row per rider type of every fare that accepts it, at the cash price", context do
       assert {:ok, _result} =
-               Fares.save_payment_method(context.scope, %{
+               FaresFixtures.save_payment_method(context.scope, %{
                  name: "Hop card",
                  fare_media_type: 2,
                  fare_product_ids: all_fares(context)
@@ -377,7 +384,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
 
     test "a fare that does not accept it gets no row", context do
       assert {:ok, _result} =
-               Fares.save_payment_method(context.scope, %{
+               FaresFixtures.save_payment_method(context.scope, %{
                  name: "Hop card",
                  fare_media_type: 2,
                  fare_product_ids: ["local_ride_adult_cash", "coast_ride_adult_cash"]
@@ -394,7 +401,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
 
     test "unticking a fare deletes its rows rather than storing a zero", context do
       assert {:ok, _first} =
-               Fares.save_payment_method(context.scope, %{
+               FaresFixtures.save_payment_method(context.scope, %{
                  name: "Hop card",
                  fare_media_type: 2,
                  fare_product_ids: all_fares(context)
@@ -408,7 +415,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
       # is the whole set, so every row it created goes: a method a fare does not
       # accept is a missing row rather than a zero (R9).
       assert {:ok, _second} =
-               Fares.save_payment_method(context.scope, %{
+               FaresFixtures.save_payment_method(context.scope, %{
                  fare_media_id: "hop_card",
                  name: "Hop card",
                  fare_media_type: 2,
@@ -436,7 +443,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
       # row on a medium the version already sells. A new method is added at the
       # cash price; an existing per-medium row is not re-priced by this writer.
       assert {:ok, _result} =
-               Fares.save_payment_method(context.scope, %{
+               FaresFixtures.save_payment_method(context.scope, %{
                  name: "Hop card",
                  fare_media_type: 2,
                  fare_product_ids: ["local_ride_adult_cash"]
@@ -452,7 +459,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
       # Unticking the fare removes the row this writer made and leaves the one
       # the fare drawer made.
       assert {:ok, _second} =
-               Fares.save_payment_method(context.scope, %{
+               FaresFixtures.save_payment_method(context.scope, %{
                  fare_media_id: "hop_card",
                  name: "Hop card",
                  fare_media_type: 2,
@@ -467,7 +474,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
 
     test "records one entry naming the method it created", context do
       assert {:ok, result} =
-               Fares.save_payment_method(context.scope, %{
+               FaresFixtures.save_payment_method(context.scope, %{
                  name: "Hop card",
                  fare_media_type: 2,
                  fare_product_ids: ["local_ride_adult_cash"]
@@ -481,21 +488,21 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
 
     test "refuses a duplicate name, a blank name and a kind outside 0-4", context do
       assert {:ok, _created} =
-               Fares.save_payment_method(context.scope, %{
+               FaresFixtures.save_payment_method(context.scope, %{
                  name: "Hop card",
                  fare_media_type: 2,
                  fare_product_ids: []
                })
 
       assert {:error, :duplicate_payment_method} =
-               Fares.save_payment_method(context.scope, %{
+               FaresFixtures.save_payment_method(context.scope, %{
                  name: "Hop card",
                  fare_media_type: 4,
                  fare_product_ids: []
                })
 
       assert {:error, changeset} =
-               Fares.save_payment_method(context.scope, %{
+               FaresFixtures.save_payment_method(context.scope, %{
                  name: "",
                  fare_media_type: 0,
                  fare_product_ids: []
@@ -504,14 +511,14 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
       assert "can't be blank" in errors_on(changeset).name
 
       assert {:error, :invalid_media_type} =
-               Fares.save_payment_method(context.scope, %{
+               FaresFixtures.save_payment_method(context.scope, %{
                  name: "Ferry ticket",
                  fare_media_type: 5,
                  fare_product_ids: []
                })
 
       assert {:error, :invalid_media_type} =
-               Fares.save_payment_method(context.scope, %{
+               FaresFixtures.save_payment_method(context.scope, %{
                  name: "Ferry ticket",
                  fare_media_type: "two",
                  fare_product_ids: []
@@ -522,14 +529,14 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
 
     test "a fare of another version and a version that is not managed are refused", context do
       assert {:error, :not_found} =
-               Fares.save_payment_method(context.scope, %{
+               FaresFixtures.save_payment_method(context.scope, %{
                  name: "Ferry ticket",
                  fare_media_type: 2,
                  fare_product_ids: ["no_such_fare"]
                })
 
       assert {:error, :not_found} =
-               Fares.save_payment_method(context.scope, %{
+               FaresFixtures.save_payment_method(context.scope, %{
                  fare_media_id: "no_such_method",
                  name: "Ferry ticket",
                  fare_media_type: 2,
@@ -537,14 +544,14 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
                })
 
       assert {:error, :unmanaged} =
-               Fares.save_payment_method(unmanaged_scope(context), %{
+               FaresFixtures.save_payment_method(unmanaged_scope(context), %{
                  name: "Ferry ticket",
                  fare_media_type: 2,
                  fare_product_ids: []
                })
 
       assert {:error, :not_found} =
-               Fares.save_payment_method(staging_scope(context), %{
+               FaresFixtures.save_payment_method(staging_scope(context), %{
                  name: "Ferry ticket",
                  fare_media_type: 2,
                  fare_product_ids: []
@@ -557,7 +564,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
   describe "deleting a payment method" do
     test "takes its prices with it", context do
       assert {:ok, _created} =
-               Fares.save_payment_method(context.scope, %{
+               FaresFixtures.save_payment_method(context.scope, %{
                  name: "Hop card",
                  fare_media_type: 2,
                  fare_product_ids: all_fares(context)
@@ -618,7 +625,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
   describe "undo" do
     test "a created rider type goes away again with its prices", context do
       assert {:ok, created} =
-               Fares.save_rider_type(context.scope, %{name: "Students", starting: :half})
+               FaresFixtures.save_rider_type(context.scope, %{name: "Students", starting: :half})
 
       assert rider_names(context) |> Map.has_key?("students")
       assert price_cells(context, "students") != []
@@ -635,7 +642,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
 
     test "an edited rider type goes back to the name and default flag it held", context do
       assert {:ok, saved} =
-               Fares.save_rider_type(context.scope, %{
+               FaresFixtures.save_rider_type(context.scope, %{
                  rider_category_id: "youth",
                  name: "Young riders",
                  default?: true,
@@ -683,7 +690,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
 
     test "a created payment method goes away again with its rows", context do
       assert {:ok, created} =
-               Fares.save_payment_method(context.scope, %{
+               FaresFixtures.save_payment_method(context.scope, %{
                  name: "Hop card",
                  fare_media_type: 2,
                  fare_product_ids: all_fares(context)
@@ -698,7 +705,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
 
     test "a deleted payment method comes back with the rows it had", context do
       assert {:ok, _created} =
-               Fares.save_payment_method(context.scope, %{
+               FaresFixtures.save_payment_method(context.scope, %{
                  name: "Hop card",
                  fare_media_type: 2,
                  fare_product_ids: ["local_ride_adult_cash"]
@@ -717,10 +724,10 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
 
     test "a later change makes the reversal stale", context do
       assert {:ok, first} =
-               Fares.save_rider_type(context.scope, %{name: "Students", starting: :half})
+               FaresFixtures.save_rider_type(context.scope, %{name: "Students", starting: :half})
 
       assert {:ok, _second} =
-               Fares.save_rider_type(context.scope, %{
+               FaresFixtures.save_rider_type(context.scope, %{
                  rider_category_id: "students",
                  name: "College students"
                })
@@ -737,7 +744,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RiderMediaTest do
 
     test "an operation this version never recorded is stale", context do
       assert {:ok, created} =
-               Fares.save_rider_type(context.scope, %{name: "Students", starting: :blank})
+               FaresFixtures.save_rider_type(context.scope, %{name: "Students", starting: :blank})
 
       assert {:error, :stale} =
                Fares.undo(context.scope, Ecto.UUID.generate(), created.inverse)

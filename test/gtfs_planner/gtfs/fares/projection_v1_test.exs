@@ -50,6 +50,7 @@ defmodule GtfsPlanner.Gtfs.Fares.ProjectionV1Test do
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 2]
 
+  alias GtfsPlanner.FaresFixtures
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareRule
   alias GtfsPlanner.Gtfs.Fares
@@ -251,10 +252,10 @@ defmodule GtfsPlanner.Gtfs.Fares.ProjectionV1Test do
     end
 
     test "a dearer weekday peak takes the cell from the all-day fare", context do
-      assert {:ok, _period} = Fares.save_time_period(context.scope, weekday_peak_form())
+      assert {:ok, _period} = FaresFixtures.save_time_period(context.scope, weekday_peak_form())
 
       assert {:ok, _fare} =
-               Fares.save_fare(context.scope, %{
+               FaresFixtures.save_fare(context.scope, %{
                  name: "Intercity peak",
                  kind: "single",
                  media_ids: ["cash"],

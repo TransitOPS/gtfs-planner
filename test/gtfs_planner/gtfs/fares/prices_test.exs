@@ -90,14 +90,19 @@ defmodule GtfsPlanner.Gtfs.Fares.PricesTest do
     end
 
     test "reads what an operator typed and rounds to the currency's minor units", context do
-      # R9 accepts 1.5, 1.50, $1.50, .5 and Free, and stores the amount in the
-      # currency's minor units, so $2.005 is $2.01 and "Free" is a stored zero
-      # rather than a missing row.
-      assert {:ok, _result} = save(context, [adult_cell(Decimal.new("1.50"), "$2.005")])
+      # R9 accepts 1.5, 1.50, $1.50, .5 and Free. Typed currency text keeps its
+      # two-decimal grammar; a higher-precision Decimal amount rounds to the
+      # currency's minor units.
+      assert {:ok, _result} = save(context, [adult_cell(Decimal.new("1.50"), "$2.00")])
+      assert amount(context, "adult") == Decimal.new("2.00")
+
+      assert {:ok, _result} =
+               save(context, [adult_cell(Decimal.new("2.00"), Decimal.new("2.005"))])
+
       assert amount(context, "adult") == Decimal.new("2.01")
 
       assert {:ok, _result} = save(context, [adult_cell(Decimal.new("2.01"), "Free")])
-      assert amount(context, "adult") == Decimal.new("0")
+      assert Decimal.equal?(amount(context, "adult"), Decimal.new("0"))
     end
 
     test "refuses a mistyped or negative cell and writes nothing", context do

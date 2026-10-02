@@ -65,6 +65,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Interpreter.Rows do
             fare_product_details: [],
             rider_categories: [],
             fare_media: [],
+            fare_calendars: [],
             calendars: [],
             calendar_dates: []
 end

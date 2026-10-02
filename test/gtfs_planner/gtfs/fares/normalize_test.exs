@@ -21,8 +21,8 @@ defmodule GtfsPlanner.Gtfs.Fares.NormalizeTest do
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 1]
 
-  alias GtfsPlanner.Gtfs.FareLegRule
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.FareLegRule
   alias GtfsPlanner.Gtfs.FareProductDetail
   alias GtfsPlanner.Gtfs.Fares.InvariantError
   alias GtfsPlanner.Gtfs.Fares.Normalize

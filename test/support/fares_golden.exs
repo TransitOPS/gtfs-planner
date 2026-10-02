@@ -17,6 +17,8 @@ defmodule GtfsPlanner.FaresGolden do
   alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.FaresFixtures
   alias GtfsPlanner.Gtfs.Export
+  alias GtfsPlanner.Gtfs.Export.CsvWriter
+  alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
@@ -76,9 +78,19 @@ defmodule GtfsPlanner.FaresGolden do
     directory = Path.join(@golden_path, name)
     recorded = recorded_entries(directory)
 
+    # AC-3 permits only the added default-rider column; its literal values are
+    # asserted separately by FaresUnmanagedGoldenTest and DefaultRiderRoundTripTest.
+    compared = Map.new(entries, fn {file, bytes} -> {file, baseline_bytes(file, bytes)} end)
+
     missing = Map.keys(recorded) -- Map.keys(entries)
     added = Map.keys(entries) -- Map.keys(recorded)
-    changed = for {file, bytes} <- entries, recorded[file] != bytes, do: file
+    changed = for {file, _bytes} <- entries, recorded[file] != compared[file], do: file
+
+    if directory = System.get_env("FARES_GOLDEN_CAPTURE_DIR") do
+      target = Path.join(directory, name)
+      File.mkdir_p!(target)
+      Enum.each(entries, fn {file, bytes} -> File.write!(Path.join(target, file), bytes) end)
+    end
 
     if missing == [] and added == [] and changed == [] do
       IO.puts("ok #{name} (#{map_size(entries)} entries)")
@@ -104,13 +116,39 @@ defmodule GtfsPlanner.FaresGolden do
     []
   end
 
+  defp baseline_bytes("rider_categories.txt", bytes) do
+    [header | rows] =
+      bytes
+      |> String.split("\n", trim: true)
+      |> Enum.map(fn line ->
+        {:ok, fields} = Import.parse_csv_line(line)
+        fields
+      end)
+
+    case Enum.find_index(header, &(&1 == "is_default_fare_category")) do
+      nil ->
+        bytes
+
+      index ->
+        [header | rows]
+        |> Enum.map_join("\n", fn fields ->
+          fields |> List.delete_at(index) |> Enum.map_join(",", &CsvWriter.escape_field/1)
+        end)
+        |> Kernel.<>("\n")
+    end
+  end
+
+  defp baseline_bytes(_file, bytes), do: bytes
+
   defp report_unimportable(name, reason) do
     IO.puts("skipped #{name}: the importer refused this fixture (#{reason})")
     []
   end
 
   defp export(name) do
-    {:ok, organization} = Organizations.create_organization(%{alias: alias_for(name), name: name})
+    {:ok, organization} =
+      Organizations.create_organization_unchecked(%{alias: alias_for(name), name: name})
+
     {:ok, version} = Versions.create_staging_gtfs_version(organization.id, %{name: name})
     {:ok, _version} = Versions.claim_staging_gtfs_version(organization.id, version.id)
 

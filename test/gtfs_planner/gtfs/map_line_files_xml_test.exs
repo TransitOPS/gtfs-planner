@@ -1,5 +1,7 @@
 defmodule GtfsPlanner.Gtfs.MapLineFilesXmlTest do
-  use ExUnit.Case, async: true
+  # The bounded-inflate test measures VM-wide memory, which includes concurrent
+  # tests. Run this module after async cases so that measurement names this parse.
+  use ExUnit.Case, async: false
 
   alias GtfsPlanner.Gtfs.MapLineFiles
 

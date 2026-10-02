@@ -84,6 +84,27 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailFaresTest do
     assert has_element?(view, "#route-details-network")
   end
 
+  test "an ungrouped route shows a managed blanket fare", ctx do
+    version = gtfs_version_fixture(ctx.organization.id, %{name: "Flat fare"})
+    FaresFixtures.import!(ctx.organization, version, "no_fare")
+
+    assert {:ok, _} =
+             Conversion.setup(scope(ctx, version), %{kind: :flat, adult: Decimal.new("2.00")})
+
+    pattern =
+      route_pattern_fixture(ctx.organization.id, version.id, %{
+        route_id: "4",
+        route_pattern_id: "blanket-route-4"
+      })
+
+    route_pattern_stop_fixture(pattern, "NTC", 1)
+    route_pattern_stop_fixture(pattern, "TOLEDO", 2)
+
+    {:ok, view, _html} = live(ctx.conn, ~p"/gtfs/#{version.id}/routes/4")
+    assert has_element?(view, "#route-fares-rides", "$2.00")
+    assert has_element?(view, "#route-fares-group", "No route group")
+  end
+
   test "a managed route without patterns labels its group fares as provisional", ctx do
     version = imported(ctx)
     {:ok, plan} = Conversion.preview(ctx.organization.id, version.id)

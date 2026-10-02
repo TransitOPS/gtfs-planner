@@ -51,10 +51,12 @@ defmodule GtfsPlanner.Gtfs.Fares.ChecksTest do
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 2]
 
+  alias GtfsPlanner.FaresFixtures
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.FareProduct
+  alias GtfsPlanner.Gtfs.FareProductDetail
   alias GtfsPlanner.Gtfs.Fares
   alias GtfsPlanner.Gtfs.Fares.Checks
   alias GtfsPlanner.Gtfs.Fares.Conversion
@@ -112,17 +114,24 @@ defmodule GtfsPlanner.Gtfs.Fares.ChecksTest do
       # period, so R11's fifth sentence has nothing to say.
       assert note.body =~ "Passes: Day pass and 31-day pass"
       assert note.body =~ "NCT Ride app"
-      # The sample's own transfer rows name the pre-conversion leg groups
-      # `LG_LOCAL`/`LG_INTERCITY`, which R3's leg groups do not, so the note names
-      # them by their stored ids.
-      assert note.body =~ "Transfers between route groups (LG_INTERCITY to LG_LOCAL"
+      # The note names the normalized route groups by their editor-facing names.
+      assert note.body =~ "Transfers between route groups (Intercity to Local routes"
     end
 
     test "passes what it found right, in the tab's own sentences", context do
       %{passed: passed} = run(context)
 
       assert "Every ride between zones on Local routes has a fare" in passed
-      assert "Every route is in a route group" in passed
+
+      assert passed == [
+               "Every ride between zones on Local routes has a fare",
+               "Every route is in a route group",
+               "Every stop on a zone-priced route is in a zone (1 stops outside every fare zone need none: only Intercity serves them)",
+               "Adult is the rider type trip planners show first",
+               "No ride has two single-ride fares",
+               "Every fare is charged somewhere"
+             ]
+
       assert "No ride has two single-ride fares" in passed
       assert "Every fare is charged somewhere" in passed
       assert "Adult is the rider type trip planners show first" in passed
@@ -157,8 +166,10 @@ defmodule GtfsPlanner.Gtfs.Fares.ChecksTest do
 
   describe "a route in no route group" do
     test "removing route 40 from Local routes reports it", context do
+      classify_blanket_month_passes(context)
+
       assert {:ok, _saved} =
-               Fares.save_route_group(context.scope, %{
+               FaresFixtures.save_route_group(context.scope, %{
                  network_id: "N_LOCAL",
                  name: "Local routes",
                  route_ids: Enum.reject(local_routes(context), &(&1 == "40"))
@@ -190,13 +201,15 @@ defmodule GtfsPlanner.Gtfs.Fares.ChecksTest do
                )
 
       assert {:ok, _saved} =
-               Fares.save_route_group(context.scope, %{
+               FaresFixtures.save_route_group(context.scope, %{
                  network_id: "N_LOCAL",
                  name: "Local routes",
                  route_ids: Enum.reject(local_routes(context), &(&1 == "40"))
                })
 
-      assert run(context).repair == []
+      checks = run(context)
+      assert checks.repair == []
+      refute "Every route is in a route group" in checks.passed
     end
   end
 
@@ -231,7 +244,7 @@ defmodule GtfsPlanner.Gtfs.Fares.ChecksTest do
   describe "a fare nothing charges" do
     test "a fare created with no rule is reported", context do
       assert {:ok, _saved} =
-               Fares.save_fare(context.scope, %{
+               FaresFixtures.save_fare(context.scope, %{
                  name: "Shuttle fare",
                  kind: "single",
                  media_ids: ["cash"],
@@ -340,7 +353,7 @@ defmodule GtfsPlanner.Gtfs.Fares.ChecksTest do
   describe "time periods" do
     test "a period ending at 23:59:00 leaves the last minute unpriced", context do
       assert {:ok, _saved} =
-               Fares.save_time_period(
+               FaresFixtures.save_time_period(
                  context.scope,
                  period_form("Evening peak", 18 * 3_600, 23 * 3_600 + 59 * 60)
                )
@@ -354,13 +367,16 @@ defmodule GtfsPlanner.Gtfs.Fares.ChecksTest do
 
     test "two periods over the same weekday minutes overlap", context do
       assert {:ok, _first} =
-               Fares.save_time_period(
+               FaresFixtures.save_time_period(
                  context.scope,
                  period_form("Morning peak", 6 * 3_600, 9 * 3_600)
                )
 
       assert {:ok, _second} =
-               Fares.save_time_period(context.scope, period_form("Midday", 8 * 3_600, 12 * 3_600))
+               FaresFixtures.save_time_period(
+                 context.scope,
+                 period_form("Midday", 8 * 3_600, 12 * 3_600)
+               )
 
       assert [review] = run(context).review
 
@@ -371,7 +387,7 @@ defmodule GtfsPlanner.Gtfs.Fares.ChecksTest do
 
     test "a period ending at the end of the service day is not reported", context do
       assert {:ok, _saved} =
-               Fares.save_time_period(context.scope, %{
+               FaresFixtures.save_time_period(context.scope, %{
                  name: "Evening peak",
                  weekdays: @weekdays,
                  until_end_of_day?: true,
@@ -387,7 +403,7 @@ defmodule GtfsPlanner.Gtfs.Fares.ChecksTest do
   describe "a period sharing a calendar service id" do
     test "an imported calendar row holding the period's id is reported", context do
       assert {:ok, _saved} =
-               Fares.save_time_period(
+               FaresFixtures.save_time_period(
                  context.scope,
                  period_form("Weekday peak", 6 * 3_600, 9 * 3_600)
                )
@@ -453,7 +469,7 @@ defmodule GtfsPlanner.Gtfs.Fares.ChecksTest do
       insert_agency(context, "OTHER")
 
       assert {:ok, _saved} =
-               Fares.save_route_group(context.scope, %{
+               FaresFixtures.save_route_group(context.scope, %{
                  network_id: "N_LOCAL",
                  name: "Local routes",
                  route_ids: local_routes(context)
@@ -511,7 +527,7 @@ defmodule GtfsPlanner.Gtfs.Fares.ChecksTest do
   describe "a fare sold at two methods" do
     test "a rider type priced on one method only is reported", context do
       assert {:ok, _saved} =
-               Fares.save_fare(context.scope, %{
+               FaresFixtures.save_fare(context.scope, %{
                  name: "Harbor shuttle",
                  kind: "single",
                  media_ids: ["cash", "app"],
@@ -701,6 +717,21 @@ defmodule GtfsPlanner.Gtfs.Fares.ChecksTest do
       end)
     end)
     |> Enum.sort()
+  end
+
+  defp classify_blanket_month_passes(context) do
+    month_pass_ids = ~w(month_pass_adult_app month_pass_reduced_app month_pass_youth_app)
+
+    assert {3, nil} =
+             Repo.update_all(
+               from(detail in FareProductDetail,
+                 where:
+                   detail.organization_id == ^context.organization.id and
+                     detail.gtfs_version_id == ^context.version.id and
+                     detail.fare_product_id in ^month_pass_ids
+               ),
+               set: [kind: "pass"]
+             )
   end
 
   defp period_form(name, start_seconds, end_seconds) do

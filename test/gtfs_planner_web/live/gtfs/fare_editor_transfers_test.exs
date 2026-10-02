@@ -15,10 +15,10 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorTransfersTest do
   alias GtfsPlanner.FaresFixtures
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareProductDetail
-  alias GtfsPlanner.Gtfs.FareTransferRule
   alias GtfsPlanner.Gtfs.Fares
   alias GtfsPlanner.Gtfs.Fares.Conversion
   alias GtfsPlanner.Gtfs.Fares.Transfers
+  alias GtfsPlanner.Gtfs.FareTransferRule
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Support.StagedImport
 

@@ -652,7 +652,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       {:error, reason} ->
         {:noreply,
          assign(socket, :price_note, %{
-           text: "The imported format couldn’t be kept (#{reason})."
+           text: "The imported format couldn’t be kept (#{write_reason(reason)})."
          })}
     end
   end
@@ -719,6 +719,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       fare ->
         {:noreply,
          assign(socket, :fare_delete, %{
+           reviewed_snapshot: socket.assigns.workspace.reviewed_snapshot,
            fare: fare,
            rules: fare.rules,
            replacement: nil,
@@ -854,7 +855,9 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
             {:noreply,
              socket
              |> assign(:rider_delete, nil)
-             |> assign(:price_note, %{text: "That rider type couldn’t be deleted (#{reason})."})}
+             |> assign(:price_note, %{
+               text: "That rider type couldn’t be deleted (#{write_reason(reason)})."
+             })}
         end
     end
   end
@@ -953,7 +956,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
              socket
              |> assign(:media_delete, nil)
              |> assign(:price_note, %{
-               text: "That payment method couldn’t be deleted (#{reason})."
+               text: "That payment method couldn’t be deleted (#{write_reason(reason)})."
              })}
         end
     end
@@ -1379,7 +1382,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
     socket
     |> assign(:time_period_draft, draft)
     |> assign(:time_period_focus, focus_id || socket.assigns.time_period_focus)
-    |> assign(:time_period_form, to_form(%{name: draft.name}, as: :time_period))
+    |> assign(:time_period_form, to_form(%{"name" => draft.name}, as: :time_period))
   end
 
   defp new_time_period_draft do
@@ -1402,23 +1405,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       |> Enum.reject(&is_nil/1)
       |> Enum.uniq()
 
-    ranges =
-      case params["ranges"] do
-        values when is_map(values) ->
-          values
-          |> Enum.sort_by(fn {index, _range} ->
-            case Integer.parse(index) do
-              {n, ""} -> n
-              _ -> 0
-            end
-          end)
-          |> Enum.map(fn {_index, range} ->
-            %{start_time: range["start_time"] || "", end_time: range["end_time"] || ""}
-          end)
-
-        _ ->
-          draft.ranges
-      end
+    ranges = period_draft_ranges(params["ranges"], draft.ranges)
 
     %{
       draft
@@ -1429,6 +1416,21 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
         failures: []
     }
   end
+
+  defp period_draft_ranges(values, _previous) when is_map(values) do
+    values
+    |> Enum.sort_by(fn {index, _range} ->
+      case Integer.parse(index) do
+        {n, ""} -> n
+        _ -> 0
+      end
+    end)
+    |> Enum.map(fn {_index, range} ->
+      %{start_time: range["start_time"] || "", end_time: range["end_time"] || ""}
+    end)
+  end
+
+  defp period_draft_ranges(_values, previous), do: previous
 
   defp parse_weekday(day) when day in 0..6, do: day
 
@@ -1670,67 +1672,70 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
           []
       end
 
-    if failures != [] do
-      {:noreply, put_rule(socket, %{draft | failures: failures}, socket.assigns.rule_focus)}
-    else
-      socket = assign(socket, :drawer_pending?, true)
+    case failures do
+      [] -> persist_rule(socket, draft, overlaps)
+      _ -> {:noreply, put_rule(socket, %{draft | failures: failures}, socket.assigns.rule_focus)}
+    end
+  end
 
-      write_params = %{
-        rule_id: draft.rule_id,
-        network_id: draft.network_id,
-        from_area_id: draft.from_area_id,
-        to_area_id: draft.to_area_id,
-        from_timeframe_group_id: draft.from_timeframe_group_id,
-        fare_product_id: draft.fare_product_id,
-        both?: draft.both?,
-        reviewed: rule_reviewed(socket.assigns.workspace, draft)
-      }
+  defp persist_rule(socket, draft, overlaps) do
+    socket = assign(socket, :drawer_pending?, true)
 
-      case Fares.save_rule(
-             fare_scope(socket),
-             write_params,
-             if(overlaps == [], do: nil, else: draft.overlap)
-           ) do
-        {:ok, %{operation_id: operation_id, inverse: inverse}} ->
-          {:noreply,
-           socket
-           |> load_workspace()
-           |> assign(:rule_draft, nil)
-           |> assign(:rule_focus, nil)
-           |> assign(:drawer_pending?, false)
-           |> assign(:price_note, %{
-             text: "Fare rule saved to #{socket.assigns.current_gtfs_version.name} service.",
-             undo: [{operation_id, inverse}]
-           })}
+    write_params = %{
+      rule_id: draft.rule_id,
+      network_id: draft.network_id,
+      from_area_id: draft.from_area_id,
+      to_area_id: draft.to_area_id,
+      from_timeframe_group_id: draft.from_timeframe_group_id,
+      fare_product_id: draft.fare_product_id,
+      both?: draft.both?,
+      reviewed: rule_reviewed(socket.assigns.workspace, draft)
+    }
 
-        {:error, {:overlap, _rule}} ->
-          {:noreply,
-           put_rule(
-             assign(socket, :drawer_pending?, false),
-             %{
-               draft
-               | failures: [
-                   %{
-                     href: "#rule-overlap",
-                     msg:
-                       "Overlap: These rides now have another fare. Review the choice and save again."
-                   }
-                 ]
-             },
-             socket.assigns.rule_focus
-           )}
+    case Fares.save_rule(
+           fare_scope(socket),
+           write_params,
+           if(overlaps == [], do: nil, else: draft.overlap)
+         ) do
+      {:ok, %{operation_id: operation_id, inverse: inverse}} ->
+        {:noreply,
+         socket
+         |> load_workspace()
+         |> assign(:rule_draft, nil)
+         |> assign(:rule_focus, nil)
+         |> assign(:drawer_pending?, false)
+         |> assign(:price_note, %{
+           text: "Fare rule saved to #{socket.assigns.current_gtfs_version.name} service.",
+           undo: [{operation_id, inverse}]
+         })}
 
-        {:error, reason} ->
-          {:noreply,
-           put_rule(
-             assign(socket, :drawer_pending?, false),
-             %{
-               draft
-               | failures: [%{href: "#rule-fares", msg: "Fare rule: #{rule_error(reason)}"}]
-             },
-             socket.assigns.rule_focus
-           )}
-      end
+      {:error, {:overlap, _rule}} ->
+        {:noreply,
+         put_rule(
+           assign(socket, :drawer_pending?, false),
+           %{
+             draft
+             | failures: [
+                 %{
+                   href: "#rule-overlap",
+                   msg:
+                     "Overlap: These rides now have another fare. Review the choice and save again."
+                 }
+               ]
+           },
+           socket.assigns.rule_focus
+         )}
+
+      {:error, reason} ->
+        {:noreply,
+         put_rule(
+           assign(socket, :drawer_pending?, false),
+           %{
+             draft
+             | failures: [%{href: "#rule-fares", msg: "Fare rule: #{rule_error(reason)}"}]
+           },
+           socket.assigns.rule_focus
+         )}
     end
   end
 
@@ -1932,7 +1937,10 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
         })
 
       {:error, reason} ->
-        assign(socket, :price_change, %{change | error: "Prices couldn't be changed (#{reason})."})
+        assign(socket, :price_change, %{
+          change
+          | error: "Prices couldn't be changed (#{write_reason(reason)})."
+        })
     end
   end
 
@@ -1967,7 +1975,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       state: state,
       plan: plan,
       reasons: [],
-      error: "These fares couldn’t be converted (#{reason})."
+      error: "These fares couldn’t be converted (#{write_reason(reason)})."
     }
   end
 
@@ -1978,6 +1986,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
 
       group ->
         group_draft_edit(group)
+        |> Map.put(:reviewed_snapshot, socket.assigns.workspace.reviewed_snapshot)
     end
   end
 
@@ -2034,7 +2043,11 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
     version_name = socket.assigns.current_gtfs_version.name
 
     params =
-      %{name: name, route_ids: draft.route_ids}
+      %{
+        name: name,
+        route_ids: draft.route_ids,
+        reviewed_snapshot: Map.get(draft, :reviewed_snapshot)
+      }
       |> then(fn params ->
         if draft.key, do: Map.put(params, :network_id, draft.key), else: params
       end)
@@ -2084,6 +2097,12 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
 
   defp group_failure_label("#group-routes"), do: "Routes"
   defp group_failure_label(_href), do: "Name"
+
+  defp write_reason(:stale),
+    do: "Fares changed since this dialog opened. Review them and try again"
+
+  defp write_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp write_reason(_reason), do: "Nothing changed. Review the form and try again"
 
   defp group_reason_message(:duplicate_route_group),
     do: "This version already holds a group with that name."
@@ -2205,7 +2224,10 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       {:error, reason} ->
         {:noreply,
          assign(socket, :drawer_pending?, false)
-         |> assign(:cell, %{cell | error: "That fare could not be saved (#{reason})."})}
+         |> assign(:cell, %{
+           cell
+           | error: "That fare could not be saved (#{write_reason(reason)})."
+         })}
     end
   end
 
@@ -2265,7 +2287,9 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
 
       {:error, reason} ->
         {:noreply,
-         assign(socket, :price_note, %{text: "That acceptance could not be saved (#{reason})."})}
+         assign(socket, :price_note, %{
+           text: "That acceptance could not be saved (#{write_reason(reason)})."
+         })}
     end
   end
 
@@ -2514,6 +2538,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
     app = app_media_id(fare, workspace, base)
 
     %{
+      reviewed_snapshot: workspace.reviewed_snapshot,
       key: List.first(fare.product_ids),
       name: fare.name,
       kind: fare.kind,
@@ -2725,7 +2750,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
   # -- Writing a fare ----------------------------------------------------------
 
   defp save_fare(socket, draft) do
-    socket = assign(socket, :drawer_pending?, true)
+    socket = socket |> assign(:fare_draft, draft) |> assign(:drawer_pending?, true)
     name = draft.name
     version_name = socket.assigns.current_gtfs_version.name
 
@@ -2747,7 +2772,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
         {:noreply,
          socket
          |> assign(:drawer_pending?, false)
-         |> assign(:price_note, %{text: "#{name} couldn’t be saved (#{reason})."})}
+         |> assign(:price_note, %{text: "#{name} couldn’t be saved (#{write_reason(reason)})."})}
     end
   end
 
@@ -2786,6 +2811,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       prices: cell_prices(draft, cells),
       media_prices: %{},
       accepted_network_ids: draft.group_ids,
+      reviewed_snapshot: Map.get(draft, :reviewed_snapshot),
       position: fare && fare.position
     }
   end
@@ -2870,7 +2896,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
 
     case write_each(
            fare_scope(socket),
-           delete_fare_calls(fare, replacement),
+           delete_fare_calls(fare, replacement, Map.get(state, :reviewed_snapshot)),
            &Fares.delete_fare/4
          ) do
       {:ok, undos} ->
@@ -2913,12 +2939,13 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
   # reduced rider's cash price belongs on the reduced rider's cash price. A row
   # the replacement does not mirror falls back to the replacement's own first
   # row, and choosing "no fare" removes the rules instead.
-  defp delete_fare_calls(fare, replacement) do
+  defp delete_fare_calls(fare, replacement, snapshot) do
     for product_id <- fare.product_ids do
       cells = Enum.filter(fare.cells, &(&1.fare_product_id == product_id))
 
       {product_id, replacement_product(fare, replacement, product_id),
        %{
+         reviewed_snapshot: snapshot,
          name: fare.name,
          kind: fare.kind,
          prices:
@@ -2966,8 +2993,12 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
 
   defp open_rider_draft(socket, %{"rider_category_id" => rider_id}) do
     case Enum.find(socket.assigns.workspace.riders, &(&1.rider_category_id == rider_id)) do
-      nil -> new_rider_draft(socket)
-      rider -> edit_rider_draft(rider)
+      nil ->
+        new_rider_draft(socket)
+
+      rider ->
+        edit_rider_draft(rider)
+        |> Map.put(:reviewed_snapshot, socket.assigns.workspace.reviewed_snapshot)
     end
   end
 
@@ -3024,12 +3055,13 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
 
   defp save_rider_type(socket, draft) do
     scope = fare_scope(socket)
-    socket = assign(socket, :drawer_pending?, true)
+    socket = socket |> assign(:rider_draft, draft) |> assign(:drawer_pending?, true)
     name = draft.name
     version_name = socket.assigns.current_gtfs_version.name
 
     params = %{
       name: name,
+      reviewed_snapshot: Map.get(draft, :reviewed_snapshot),
       rider_category_id: draft.key,
       eligibility_url: blank_to_nil(draft.eligibility_url),
       default?: draft.default?
@@ -3057,7 +3089,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
         {:noreply,
          socket
          |> assign(:drawer_pending?, false)
-         |> assign(:price_note, %{text: "#{name} couldn’t be saved (#{reason})."})}
+         |> assign(:price_note, %{text: "#{name} couldn’t be saved (#{write_reason(reason)})."})}
     end
   end
 
@@ -3099,6 +3131,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
 
   defp edit_media_draft(socket, medium) do
     %{
+      reviewed_snapshot: socket.assigns.workspace.reviewed_snapshot,
       key: medium.fare_media_id,
       name: medium.name || "",
       fare_media_type: medium.fare_media_type || 0,
@@ -3146,12 +3179,13 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
 
   defp save_payment_method(socket, draft) do
     scope = fare_scope(socket)
-    socket = assign(socket, :drawer_pending?, true)
+    socket = socket |> assign(:media_draft, draft) |> assign(:drawer_pending?, true)
     name = draft.name
     version_name = socket.assigns.current_gtfs_version.name
 
     params = %{
       name: name,
+      reviewed_snapshot: Map.get(draft, :reviewed_snapshot),
       fare_media_id: draft.key,
       fare_media_type: draft.fare_media_type,
       fare_product_ids: draft.accepted_products
@@ -3174,7 +3208,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
         {:noreply,
          socket
          |> assign(:drawer_pending?, false)
-         |> assign(:price_note, %{text: "#{name} couldn’t be saved (#{reason})."})}
+         |> assign(:price_note, %{text: "#{name} couldn’t be saved (#{write_reason(reason)})."})}
     end
   end
 
@@ -3189,15 +3223,21 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
   # with a half-written fare. The undos come back in the order they were written,
   # which is the order they have to be reversed in.
   defp write_each(scope, calls, writer) do
-    Enum.reduce_while(calls, {:ok, []}, fn args, {:ok, undos} ->
-      case apply(writer, [scope | Tuple.to_list(args)]) do
-        {:ok, %{operation_id: operation_id, inverse: inverse}} ->
-          {:cont, {:ok, undos ++ [{operation_id, inverse}]}}
+    result =
+      if writer == (&Fares.save_fare/2) do
+        params = Enum.map(calls, &elem(&1, 0))
 
-        {:error, reason} ->
-          {:halt, {:error, reason}}
+        if length(params) == 1 and is_nil(hd(params).fare_product_id),
+          do: Fares.save_fare(scope, hd(params)),
+          else: Fares.save_fares(scope, params)
+      else
+        Fares.delete_fares(scope, calls)
       end
-    end)
+
+    case result do
+      {:ok, %{operation_id: id, inverse: inverse}} -> {:ok, [{id, inverse}]}
+      error -> error
+    end
   end
 
   defp undo_writes(scope, undos) do
@@ -3550,6 +3590,14 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
 
     case Gtfs.load_fare_editor(organization_id, gtfs_version_id, []) do
       {:ok, workspace} ->
+        workspace =
+          Map.put(
+            workspace,
+            :reviewed_snapshot,
+            Map.get(workspace, :reviewed_snapshot) ||
+              Fares.reviewed_snapshot(organization_id, gtfs_version_id)
+          )
+
         socket = assign(socket, :workspace, workspace)
 
         routes = Gtfs.list_routes(organization_id, gtfs_version_id, page: 1, per_page: 1_000)
@@ -3626,27 +3674,29 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
           Enum.any?(areas, &(&1 in Map.get(rows.stop_areas, to.stop_id, []))),
           do: {from, to}
 
-    Enum.find_value(routes, fn route ->
-      Enum.find_value(pairs, fn {from, to} ->
-        Enum.find_value(workspace.riders, fn rider ->
-          params =
-            Map.put(defaults, "rider_category_id", rider.rider_category_id)
-            |> Map.put("legs", [
-              %{
-                "route_id" => route.route_id,
-                "from_stop_id" => from.stop_id,
-                "to_stop_id" => to.stop_id,
-                "departs" => "07:40"
-              }
-            ])
+    for route <- routes, {from, to} <- pairs, rider <- workspace.riders do
+      {route, from, to, rider}
+    end
+    |> Enum.find_value(&priced_journey_choice(&1, defaults, workspace, routes, stops, rows))
+  end
 
-          case journey_result(params, routes, stops, workspace, rows) do
-            %{total: %Decimal{}} -> params
-            _ -> nil
-          end
-        end)
-      end)
-    end)
+  defp priced_journey_choice({route, from, to, rider}, defaults, workspace, routes, stops, rows) do
+    params =
+      defaults
+      |> Map.put("rider_category_id", rider.rider_category_id)
+      |> Map.put("legs", [
+        %{
+          "route_id" => route.route_id,
+          "from_stop_id" => from.stop_id,
+          "to_stop_id" => to.stop_id,
+          "departs" => "07:40"
+        }
+      ])
+
+    case journey_result(params, routes, stops, workspace, rows) do
+      %{total: %Decimal{}} -> params
+      _ -> nil
+    end
   end
 
   defp valid_journey_params?(params, workspace, routes, stops) when is_map(params) do
@@ -3673,19 +3723,20 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
   end
 
   defp default_journey_leg(routes, stops, existing) do
+    first = List.first(existing)
+
     %{
-      "route_id" =>
-        existing |> List.first() |> map_value("route_id") ||
-          routes |> List.first() |> then(&(&1 && &1.route_id)) || "",
-      "from_stop_id" =>
-        existing |> List.first() |> map_value("from_stop_id") ||
-          stops |> List.first() |> then(&(&1 && &1.stop_id)) || "",
+      "route_id" => journey_initial_id(first, "route_id", List.first(routes)),
+      "from_stop_id" => journey_initial_id(first, "from_stop_id", List.first(stops)),
       "to_stop_id" =>
-        existing |> List.first() |> map_value("to_stop_id") ||
-          stops |> Enum.at(1) |> then(&(&1 && &1.stop_id)) ||
-          stops |> List.first() |> then(&(&1 && &1.stop_id)) || "",
+        journey_initial_id(first, "to_stop_id", Enum.at(stops, 1) || List.first(stops)),
       "departs" => "07:40"
     }
+  end
+
+  defp journey_initial_id(existing, key, row) do
+    map_value(existing, key) ||
+      if(row, do: Map.get(row, if(key == "route_id", do: :route_id, else: :stop_id)), else: "")
   end
 
   defp map_value(map, key) when is_map(map),
@@ -4039,7 +4090,10 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
          assign(socket, :price_note, %{text: "That price couldn’t be read. Nothing was saved."})}
 
       {:error, reason} ->
-        {:noreply, assign(socket, :price_note, %{text: "Prices couldn’t be saved (#{reason})."})}
+        {:noreply,
+         assign(socket, :price_note, %{
+           text: "Prices couldn’t be saved (#{write_reason(reason)})."
+         })}
     end
   end
 

@@ -17,7 +17,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorDrawersTest do
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Ecto.Query
-  import GtfsPlanner.AccountsFixtures, only: [user_fixture: 0]
+  import GtfsPlanner.AccountsFixtures, only: [user_fixture: 1]
   import GtfsPlanner.FaresFixtures, only: [import!: 3]
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 2]
@@ -27,6 +27,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorDrawersTest do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareLegRule
   alias GtfsPlanner.Gtfs.FareProduct
+  alias GtfsPlanner.Gtfs.Fares
   alias GtfsPlanner.Gtfs.Fares.Conversion
   alias GtfsPlanner.Repo
 
@@ -34,7 +35,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorDrawersTest do
     organization =
       organization_fixture(%{alias: "fare-drawers-#{System.unique_integer([:positive])}"})
 
-    user = user_fixture()
+    user = user_fixture(%{email: "fare-drawers-#{Ecto.UUID.generate()}@example.com"})
     version = gtfs_version_fixture(organization.id, %{name: "Fare drawers version"})
 
     Accounts.create_user_org_membership(%{
@@ -163,6 +164,44 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorDrawersTest do
 
       assert html =~ ~s(href="#fare-media")
       assert fare_products(ctx, "Summer beach shuttle") == []
+    end
+
+    test "an intervening price edit refuses the drawer save and keeps its draft", ctx do
+      view = open_prices(ctx)
+      view |> element("#fare-open-local_ride") |> render_click()
+
+      assert {:ok, _} =
+               Fares.save_prices(scope(ctx.organization, ctx.version, ctx.user), [
+                 %{
+                   fare_product_id: "local_ride_adult_cash",
+                   rider_category_id: "adult",
+                   fare_media_id: "cash",
+                   reviewed: Decimal.new("1.50"),
+                   amount: "2.00"
+                 }
+               ])
+
+      view
+      |> element("#fare-form")
+      |> render_submit(%{
+        "fare" => %{
+          "name" => "My unsaved name",
+          "kind" => "single",
+          "media_ids" => ["cash", "app"],
+          "prices" => %{"adult" => "1.60"},
+          "reviewed_snapshot" => Fares.reviewed_snapshot(ctx.organization.id, ctx.version.id)
+        }
+      })
+
+      assert has_element?(view, "#fare-drawer")
+      assert has_element?(view, "#fare-name[value='My unsaved name']")
+      assert has_element?(view, "#fare-note", "changed since this dialog opened")
+      refute fare_products(ctx, "Local ride") == []
+
+      assert fare_product_amount(fare_products(ctx, "Local ride"), "local_ride_adult_cash") ==
+               "2.00"
+
+      assert fare_products(ctx, "My unsaved name") == []
     end
 
     test "editing a fare keeps each price on the row it already wrote", ctx do

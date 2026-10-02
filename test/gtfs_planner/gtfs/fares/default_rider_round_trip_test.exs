@@ -22,7 +22,7 @@ defmodule GtfsPlanner.Gtfs.Fares.DefaultRiderRoundTripTest do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Export
-  alias GtfsPlanner.Gtfs.Import
+  alias GtfsPlanner.Support.StagedImport
 
   # The importer stores 1, 0 and nil for a literal 1, a literal 0 and a blank field.
   @rider_categories_csv """
@@ -71,7 +71,7 @@ defmodule GtfsPlanner.Gtfs.Fares.DefaultRiderRoundTripTest do
       version: version
     } do
       assert {:ok, result} =
-               Import.import_files(organization.id, version.id, [
+               StagedImport.import_files(organization.id, version.id, [
                  %{filename: "rider_categories.txt", content: @rider_categories_csv}
                ])
 
@@ -101,7 +101,7 @@ defmodule GtfsPlanner.Gtfs.Fares.DefaultRiderRoundTripTest do
       second_version = gtfs_version_fixture(organization.id)
 
       assert {:ok, reimport} =
-               Import.import_files(organization.id, second_version.id, [
+               StagedImport.import_files(organization.id, second_version.id, [
                  %{filename: "rider_categories.txt", content: text}
                ])
 

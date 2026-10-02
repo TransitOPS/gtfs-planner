@@ -192,7 +192,7 @@ test("settings entry", async ({ page }, testInfo) => {
     });
 
     await entryLink.click();
-    await page.waitForURL(new RegExp(`/gtfs/${versionId}/settings/fares/zones$`));
+    await page.waitForURL(new RegExp(`/gtfs/${versionId}/settings/fares$`));
     await waitForLiveView(page);
 
     await expect(page.locator("h1")).toHaveText("Fares");

@@ -101,7 +101,7 @@ defmodule GtfsPlanner.Gtfs.Fares.ChangeLogTest do
            }
 
     # The stored entry is what a later reader sees, not what the writer passed.
-    assert {:ok, stored} = Repo.reload(log)
+    stored = Repo.reload(log)
     assert stored.changed_fields == log.changed_fields
 
     assert [row] =

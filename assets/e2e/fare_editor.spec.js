@@ -16,6 +16,9 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bodyFitsViewport } from "./browser_helpers.js";
 
+// Each journey checks desktop and phone states and captures both views.
+test.setTimeout(120_000);
+
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 const EDITOR = {
@@ -68,6 +71,8 @@ const REFERENCE_PATH = resolve(
 const CAPTURE_DIR =
   process.env.FARE_EDITOR_CAPTURE_DIR ||
   resolve(dirname(REFERENCE_PATH), "../evidence/captures");
+
+let priceVersionIdForRecovery;
 
 // ── shared helpers ────────────────────────────────────────────────────────
 
@@ -156,17 +161,35 @@ async function captureDrawer(page, testInfo, name) {
 async function captureReference(page, testInfo, query, name) {
   if (!existsSync(REFERENCE_PATH)) return;
 
-  await page.goto(`file://${REFERENCE_PATH}${query}`);
-  await page.waitForLoadState("networkidle");
-  await assertFareLayout(page);
-  mkdirSync(CAPTURE_DIR, { recursive: true });
-  await page.screenshot({ path: resolve(CAPTURE_DIR, `${name}.png`), fullPage: false });
+  const reference = await page.context().newPage();
+  try {
+    await reference.setViewportSize(page.viewportSize());
+    await reference.goto(`file://${REFERENCE_PATH}${query}`);
+    await reference.waitForLoadState("networkidle");
+    // Keep the production page and its draft intact while capturing its paired
+    // immutable prototype at the same viewport.
+    mkdirSync(CAPTURE_DIR, { recursive: true });
+    await reference.screenshot({ path: resolve(CAPTURE_DIR, `${name}.png`), fullPage: false });
+  } finally {
+    await reference.close();
+  }
 }
 
 // Each layout-tagged journey calls this at the state it captures. Keep the
 // measurements in the browser so device-pixel scaling cannot hide CSS overflow
 // or undersized controls.
 async function assertFareLayout(page) {
+  expect(page.url(), "production metrics must never measure the prototype").not.toMatch(/^file:/);
+  await expect(page.locator("#fare-editor-page, #route-fares")).toHaveCount(1);
+  // Measure the settled drawer before checking targets; screenshot animation
+  // handling happens after these assertions. Infinite decorative animations
+  // have no completed state and must not block a capture.
+  await page.evaluate(async () => {
+    const finite = document.getAnimations().filter((animation) =>
+      animation.effect?.getComputedTiming().iterations !== Infinity,
+    );
+    await Promise.all(finite.map((animation) => animation.finished.catch(() => {})));
+  });
   const measurements = await page.evaluate(() => {
     const visible = (element) => {
       const rect = element.getBoundingClientRect();
@@ -214,16 +237,60 @@ async function assertFareLayout(page) {
   expect(measurements.shortControls, `controls below 44px: ${JSON.stringify(measurements.shortControls)}`)
     .toEqual([]);
 
+  // Start each capture's keyboard check at a visible control in the active
+  // dialog or page. A refused submit can replace the previously focused
+  // control, and a modal makes background controls inert.
+  await page.evaluate(() => {
+    const scope = Array.from(document.querySelectorAll('dialog[open]')).at(-1) || document;
+    const candidates = Array.from(
+      scope.querySelectorAll(
+        'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    const firstVisible = candidates.find((element) => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        style.visibility !== "hidden" &&
+        style.display !== "none" &&
+        !element.closest('[aria-hidden="true"], [inert]')
+      );
+    });
+
+    firstVisible?.focus();
+  });
   await page.keyboard.press("Tab");
   const focus = await page.evaluate(() => {
     const element = document.activeElement;
-    if (!element || element === document.body) return { visible: false };
+    if (!element || element === document.body) {
+      return {
+        visible: false,
+        tag: element?.tagName ?? null,
+        id: element?.id ?? null,
+        focusVisible: false,
+        outline: null,
+        boxShadow: null,
+      };
+    }
     const style = getComputedStyle(element);
     const outline = style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0;
     const shadow = style.boxShadow !== "none";
-    return { visible: element.matches(":focus-visible") && (outline || shadow) };
+    return {
+      visible: element.matches(":focus-visible") && (outline || shadow),
+      tag: element.tagName,
+      id: element.id,
+      focusVisible: element.matches(":focus-visible"),
+      outlineStyle: style.outlineStyle,
+      outlineWidth: style.outlineWidth,
+      boxShadow: style.boxShadow,
+    };
   });
-  expect(focus.visible, "Tab must land on a visible control with a visible focus treatment").toBe(true);
+  expect(
+    focus.visible,
+    `Tab focus must be visible and treated: ${JSON.stringify(focus)}`,
+  ).toBe(true);
 }
 
 // ── shell ─────────────────────────────────────────────────────────────────
@@ -234,6 +301,34 @@ async function assertFareLayout(page) {
 // retired Fare rules path redirects to Where fares apply, and the header carries
 // exactly one primary per tab. Every later journey block builds on this.
 test.describe("layout", () => {
+test.afterEach(async ({ page }, testInfo) => {
+  if (testInfo.title !== "prices" || !priceVersionIdForRecovery) return;
+
+  // The conflict journey uses a second editor tab. Close it even when the
+  // journey fails so a later run can recover the shared fixture deterministically.
+  for (const otherPage of page.context().pages()) {
+    if (otherPage !== page) await otherPage.close();
+  }
+
+  await page.goto(`/gtfs/${priceVersionIdForRecovery}/settings/fares`);
+  await waitForLiveView(page);
+  await page.reload();
+  await waitForLiveView(page);
+
+  const amount = page.locator("#price-local_ride-adult");
+  if ((await amount.inputValue()) !== "$1.50") {
+    await amount.fill("1.50");
+    await amount.blur();
+    await page.locator("#save-prices").click();
+    await expect(page.locator("#fare-note")).toContainText("1 price saved");
+    await page.reload();
+    await waitForLiveView(page);
+  }
+
+  await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
+  priceVersionIdForRecovery = undefined;
+});
+
 test("shell", async ({ page }, testInfo) => {
   await routeBlankTiles(page);
   await logIn(page);
@@ -402,6 +497,7 @@ test("prices", async ({ page }, testInfo) => {
   await logIn(page);
 
   const versionId = await versionIdByName(page, VERSIONS.managed);
+  priceVersionIdForRecovery = versionId;
 
   // The grid itself: one row per fare, one column per rider type, and the
   // payment method sub-row for a fare the app prices differently.
@@ -562,10 +658,9 @@ test("prices", async ({ page }, testInfo) => {
     await page.locator("#fares-conflict").evaluate((panel) => {
       panel.scrollIntoView({ block: "start" });
     });
-    await page
-      .locator('#fares-conflict input[value="mine"]')
-      .first()
-      .check();
+    const keepMine = page.locator('#fares-conflict input[value="mine"]').first();
+    await keepMine.locator("xpath=ancestor::label").click({ noWaitAfter: true });
+    await expect(page.locator("#fares-conflict")).toContainText("Yours is kept");
     await page.locator("#save-prices").click();
     await expect(page.locator("#fares-conflict")).toHaveCount(0);
     await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.75");
@@ -581,6 +676,9 @@ test("prices", async ({ page }, testInfo) => {
     await page.locator("#price-local_ride-adult").fill("1.50");
     await page.locator("#price-local_ride-adult").blur();
     await page.locator("#save-prices").click();
+    await expect(page.locator("#fare-note")).toContainText("1 price saved");
+    await page.reload();
+    await waitForLiveView(page);
     await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
 
     // The older-format lens.
@@ -879,9 +977,9 @@ await captureDrawer(page, testInfo, `drawers-fare-create-${viewport.label}`);
 // The Change prices dialog. The journey proves the preview is computed and
 // never written, that Update writes exactly what the preview listed, that Undo
 // reverses it, and that choices moving nothing leave Update disabled with the
-// reason on screen. The seeded North Coast version prices Local ride at $1.50
-// adult on the cash method and $1.25 in the NCT Ride app, so the default
-// +$0.25 preview lists both of those.
+// reason on screen. Five single-ride fares have six adult prices because Local
+// ride is sold on both cash and the NCT Ride app; adult-only Update therefore
+// changes six prices.
 test("bulk", async ({ page }, testInfo) => {
   await routeBlankTiles(page);
   await logIn(page);
@@ -982,11 +1080,11 @@ test("bulk", async ({ page }, testInfo) => {
   await page.locator("#price-change-rider-adult").check();
 
   await expect(page.locator("#price-change-dialog-confirm")).toHaveText(
-    "Update 8 prices",
+    "Update 6 prices",
   );
   await page.locator("#price-change-dialog-confirm").click();
   await expect(page.locator("#price-change-dialog")).toHaveCount(0);
-  await expect(page.locator("#fare-note")).toContainText("8 prices changed");
+  await expect(page.locator("#fare-note")).toContainText("6 prices changed");
   await expect(page.locator("#undo-prices")).toBeAttached();
   await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.75");
 
@@ -1011,6 +1109,8 @@ test("setup", async ({ page }, testInfo) => {
   for (const [key, name] of Object.entries(VERSIONS)) {
     found[key] = await versionIdByName(page, name);
   }
+
+  const conversionId = await versionIdByName(page, "Browser Unmanaged V1 Conversion Fares Version");
 
   const openVersion = async (versionId) => {
     await page.goto(`/gtfs/${versionId}/settings/fares`);
@@ -1140,7 +1240,7 @@ test("setup", async ({ page }, testInfo) => {
 
   // ── an imported version ────────────────────────────────────────────────
   // The stored fares are drawn, and none of them can be typed into.
-  await openVersion(found.unmanaged);
+  await openVersion(conversionId);
 
   await expect(page.locator("#unmanaged-fares")).toBeAttached();
   await expect(page.locator("#edit-fares")).toBeAttached();
@@ -1161,7 +1261,7 @@ test("setup", async ({ page }, testInfo) => {
 
   for (const viewport of [DESKTOP, PHONE]) {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
-    await openVersion(found.unmanaged);
+    await openVersion(conversionId);
     await page.locator("#edit-fares").click();
     await expect(page.locator("#conversion-review")).toBeAttached();
     await expect(bodyFitsViewport(page)).resolves.toBe(true);
@@ -1171,7 +1271,7 @@ test("setup", async ({ page }, testInfo) => {
 
   // Convert makes the grid editable, and the imported rows are left as they
   // were: the version exports what it imported until somebody changes a price.
-  await openVersion(found.unmanaged);
+  await openVersion(conversionId);
   await page.locator("#edit-fares").click();
   await page.locator("#conversion-review-confirm").click();
 
@@ -1234,8 +1334,7 @@ test("where", async ({ page }, testInfo) => {
   // holds. The sample's `CST → TOL` cell is the gap: it says so in words, not by
   // colour alone.
   await expect(page.locator("#route-group-N_LOCAL")).toContainText("Local routes");
-  // The gaps version is the sample after route 40 left `N_LOCAL`, so its group
-  // is one route smaller than the sample's own thirteen.
+  // The gaps fixture removes route 40 from the sample's thirteen Local routes.
   await expect(page.locator("#route-group-N_LOCAL")).toContainText("12 routes");
   await expect(page.locator("#route-group-N_LOCAL")).toContainText("By zone");
   await expect(page.locator("#route-group-N_INTERCITY")).toContainText("Intercity");
@@ -1252,7 +1351,8 @@ test("where", async ({ page }, testInfo) => {
 
   // The gaps version's group is the fixture that dropped route 40, so the table
   // offers the version's own answer to the route it left behind.
-  await expect(page.locator("#route-groups-unassigned")).toContainText("Route 40");
+  await expect(page.locator("#route-groups-unassigned [data-group-badge]")).toHaveCount(1);
+  await expect(page.locator("#route-groups-unassigned [data-group-badge='40']")).toHaveText("40");
   await expect(page.locator("#add-unassigned-to-group")).toBeAttached();
 
   // ── case 1: the gap, filled with both directions ──────────────────────────
@@ -1316,13 +1416,13 @@ test("where", async ({ page }, testInfo) => {
   // The route is in the group it was moved to and the group it came from is one
   // route smaller.
   await expect(page.locator("[data-group-badge='10']")).toBeAttached();
-  await expect(page.locator("#route-group-N_INTERCITY")).toContainText("1 route");
-  // The gaps version is the sample after route 40 left `N_LOCAL`, so its group
-  // is one route smaller than the sample's own thirteen.
-  await expect(page.locator("#route-group-N_LOCAL")).toContainText("12 routes");
+  await expect(page.locator("#route-group-N_INTERCITY")).toContainText("0 routes");
+  // Moving route 10 adds one route to the gaps fixture's twelve.
+  await expect(page.locator("#route-group-N_LOCAL")).toContainText("13 routes");
 
   await page.locator("#undo-prices").click();
   await expect(page.locator("#route-group-N_INTERCITY")).toContainText("Intercity");
+  await expect(page.locator("#route-group-N_INTERCITY")).toContainText("1 route");
   await expect(page.locator("#route-group-N_LOCAL")).toContainText("12 routes");
 
   // ── case 3: a pass's acceptance of a group, and Undo ──────────────────────
@@ -1374,12 +1474,12 @@ test("where", async ({ page }, testInfo) => {
     await expect(bodyFitsViewport(page)).resolves.toBe(true);
     await captureDrawer(page, testInfo, `where-group-moving-${viewport.label}`);
 
-    // And its own refusal: a name the version already holds.
+    // And its own refusal: the required name has not been supplied.
     await page.locator("#group-route-10").uncheck();
     await page.locator("#cancel-route-group").click();
 
     await page.locator("#create-route-group").click();
-    await page.locator("#group-name").fill("Local routes");
+    await page.locator("#group-name").fill("");
     await page.locator("#save-route-group").click();
     await expect(page.locator("#error-summary")).toBeAttached();
     await captureDrawer(page, testInfo, `where-group-refused-${viewport.label}`);
@@ -1436,6 +1536,7 @@ test("route", async ({ page }, testInfo) => {
   await page.goto(`/gtfs/${unmanagedVersion}/routes/4`);
   await waitForLiveView(page);
   await expect(page.locator("#route-fares")).toHaveCount(0);
+  await page.locator("#route-details-network").locator("xpath=ancestor::details").locator("summary").click();
   await expect(page.locator("#route-details-network")).toBeVisible();
 });
 
@@ -1461,16 +1562,18 @@ test("rules", async ({ page }, testInfo) => {
     await expect(bodyFitsViewport(page)).resolves.toBe(true);
     await captureDrawer(page, testInfo, `rules-time-create-${viewport.label}`);
 
-    await page.locator("#time-period-name").fill("Weekday peak");
-    await page.locator("#time-period-day-1").check();
-    await page.locator("#time-period-day-2").check();
-    await page.locator("#time-period-day-3").check();
-    await page.locator("#time-period-day-4").check();
-    await page.locator("#time-period-day-5").check();
+    const periodName = `Weekday peak ${viewport.label}`;
+    await page.locator("#time-period-name").fill(periodName);
+    for (const day of [1, 2, 3, 4, 5]) {
+      const checkbox = page.locator(`#time-period-day-${day}`);
+      await page.locator(`label[for="time-period-day-${day}"]`).click();
+      await expect(checkbox).toBeChecked();
+    }
     await page.locator("#time-period-range-0-start").fill("07:00");
     await page.locator("#time-period-range-0-end").fill("09:00");
     await page.locator("#save-time-period").click();
-    await expect(page.locator("#time-periods-list")).toContainText("Weekday peak");
+    await expect(page.locator("#time-period-drawer")).toHaveCount(0);
+    await expect(page.locator("#time-periods-list")).toContainText(periodName);
 
     await page.locator("#add-fare-rule").click();
     await expect(page.locator("#rule-drawer")).toBeAttached();
@@ -1478,12 +1581,14 @@ test("rules", async ({ page }, testInfo) => {
     await expect(bodyFitsViewport(page)).resolves.toBe(true);
     await captureDrawer(page, testInfo, `rules-create-${viewport.label}`);
 
-    await page.locator("#rule-network").selectOption("N_INTERCITY");
+    await page.locator("#rule-network").selectOption("N_LOCAL");
     await page.locator("#rule-from-area").selectOption("TOL");
     await page.locator("#rule-to-area").selectOption("CST");
     await page.locator("#rule-fare-coast_ride_adult_cash").check();
-    await expect(page.locator("#rule-overlap")).toContainText("Valley–coast ride");
-    await expect(page.locator("#save-rule")).toContainText("Replace Valley–coast ride");
+    await expect(page.locator("#rule-overlap")).toContainText("Valley-coast ride");
+    await page.locator("#rule-overlap-replace").check();
+    await expect(page.locator("#rule-overlap-replace")).toBeChecked();
+    await expect(page.locator("#save-rule")).toContainText("Replace Valley-coast ride");
     await expect(bodyFitsViewport(page)).resolves.toBe(true);
     await captureDrawer(page, testInfo, `rules-overlap-${viewport.label}`);
     await page.locator("#cancel-rule").click();
@@ -1523,9 +1628,16 @@ test("transfers", async ({ page }, testInfo) => {
       .locator('#transfer-matrix button[phx-value-from="N_LOCAL"][phx-value-to="N_INTERCITY"]')
       .click();
     await expect(page.locator("#transfer-drawer")).toBeAttached();
+    await page.locator("#transfer-drawer").evaluate(async (drawer) => {
+      await Promise.all(
+        drawer
+          .getAnimations({ subtree: true })
+          .map((animation) => animation.finished.catch(() => {})),
+      );
+    });
     await expect(page.locator("#transfer-pay")).toContainText("The difference");
     await expect(page.locator("#transfer-form select[name='transfer[count]']")).toHaveCount(0);
-    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await expect.poll(() => bodyFitsViewport(page)).toBe(true);
     await captureDrawer(page, testInfo, `transfers-edit-${viewport.label}`);
 
     await page.locator("#transfer-form input[name='transfer[minutes]']").fill("75");

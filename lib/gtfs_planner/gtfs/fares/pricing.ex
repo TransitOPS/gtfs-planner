@@ -465,19 +465,25 @@ defmodule GtfsPlanner.Gtfs.Fares.Pricing do
   end
 
   # `0` adds the transfer product to the fare already paid, `1` adds this ride's
-  # own fare, and `2` leaves the transfer product as the whole fare.
+  # own fare plus the transfer product, and `2` leaves the product as the whole fare.
   defp change_charge(leg, rule, chain, catalog) do
     product = transfer_product(rule, catalog)
 
     case {rule.fare_transfer_type, product} do
+      {_type, :unpriced} ->
+        {:unpriced,
+         own_fare_reason(rule, chain, catalog) <> ", because its product is not priced"}
+
       {@a_plus_transfer, nil} ->
         {:ok, @zero, free_transfer_reason(rule, chain, catalog)}
 
       {@a_plus_transfer, product} ->
         {:ok, product.amount, transfer_fee_reason(rule, product, catalog)}
 
-      {@a_plus_transfer_and_ride, _product} ->
-        {:ok, leg.full,
+      {@a_plus_transfer_and_ride, product} ->
+        fee = if product, do: product.amount, else: @zero
+
+        {:ok, Decimal.add(leg.full, fee),
          own_fare_reason(rule, chain, catalog) <> ". " <> ride_reason(leg, catalog)}
 
       {@transfer_product, nil} ->
@@ -490,12 +496,12 @@ defmodule GtfsPlanner.Gtfs.Fares.Pricing do
     end
   end
 
-  defp transfer_product(%{fare_product_id: nil}, _catalog), do: nil
+  defp transfer_product(%{fare_product_id: id}, _catalog) when id in [nil, ""], do: nil
 
   defp transfer_product(rule, catalog) do
     case fare_row(rule.fare_product_id, catalog) do
       {:ok, product} -> product
-      :none -> nil
+      :none -> :unpriced
     end
   end
 

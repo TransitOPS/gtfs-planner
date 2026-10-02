@@ -296,7 +296,16 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLiveTest do
     } do
       # A version holding one transfer rule, which is what the Transfers tab's
       # own primary needs beside it.
-      stub_workspace(%{empty_workspace() | transfers: [%{from_leg_group_id: "A"}]})
+      stub_workspace(%{
+        empty_workspace()
+        | transfers: [
+            %{
+              from_leg_group_id: "A",
+              to_leg_group_id: "B",
+              policy: %{pay: :free, minutes: 90, count: 2}
+            }
+          ]
+      })
 
       conn = log_in_user(conn, user, organization: organization)
 

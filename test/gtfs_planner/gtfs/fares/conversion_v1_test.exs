@@ -277,7 +277,8 @@ defmodule GtfsPlanner.Gtfs.Fares.ConversionV1Test do
 
       # A fingerprint from a different stored row set, as a fare edited after the
       # review would produce.
-      stale = String.replace(plan.fingerprint, ~r/^./, "0")
+      <<first, rest::binary>> = plan.fingerprint
+      stale = <<if(first == ?0, do: ?1, else: ?0)>> <> rest
 
       assert {:refused, [reason]} = Conversion.apply(context.scope, stale, [])
 

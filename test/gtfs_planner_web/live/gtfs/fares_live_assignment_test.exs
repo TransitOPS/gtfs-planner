@@ -223,7 +223,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       select_stop(view, stop_ids["BAY_1"])
       view |> element("#fare-zone-assign-selection") |> render_click()
@@ -300,7 +300,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       select_stop(view, stop_ids["BAY_1"])
       view |> element("#fare-zone-assign-selection") |> render_click()

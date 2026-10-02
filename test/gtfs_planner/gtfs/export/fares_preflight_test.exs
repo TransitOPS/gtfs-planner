@@ -37,16 +37,18 @@ defmodule GtfsPlanner.Gtfs.Export.FaresPreflightTest do
 
   import Ecto.Query
 
-  import GtfsPlanner.AccountsFixtures, only: [editor_fixture: 1]
+  import GtfsPlanner.AccountsFixtures, only: [editor_fixture: 2]
   import GtfsPlanner.FaresFixtures, only: [import!: 3]
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 2]
 
+  alias GtfsPlanner.FaresFixtures
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Export.Preflight
   alias GtfsPlanner.Gtfs.Export.Run
   alias GtfsPlanner.Gtfs.Export.Worker
   alias GtfsPlanner.Gtfs.ExportRuns, as: Runs
+  alias GtfsPlanner.Gtfs.FareProductDetail
   alias GtfsPlanner.Gtfs.Fares
   alias GtfsPlanner.Gtfs.Fares.Conversion
   alias GtfsPlanner.Gtfs.RouteNetwork
@@ -184,12 +186,31 @@ defmodule GtfsPlanner.Gtfs.Export.FaresPreflightTest do
         reviewed_cell(context, "CST", "TOL")
       )
 
+    :ok = classify_blanket_month_passes(context)
+
     {:ok, _saved} =
-      Fares.save_route_group(context.scope, %{
+      FaresFixtures.save_route_group(context.scope, %{
         network_id: "N_LOCAL",
         name: "Local routes",
         route_ids: Enum.reject(local_routes(context), &(&1 == "40"))
       })
+  end
+
+  defp classify_blanket_month_passes(context) do
+    month_pass_ids = ~w(month_pass_adult_app month_pass_reduced_app month_pass_youth_app)
+
+    assert {3, nil} =
+             Repo.update_all(
+               from(detail in FareProductDetail,
+                 where:
+                   detail.organization_id == ^context.organization.id and
+                     detail.gtfs_version_id == ^context.version.id and
+                     detail.fare_product_id in ^month_pass_ids
+               ),
+               set: [kind: "pass"]
+             )
+
+    :ok
   end
 
   # The product ids `CST → TOL` holds as the matrix shows it, which is the fence

@@ -194,7 +194,9 @@ defmodule GtfsPlanner.Gtfs.Fares.Workspace do
           unmanaged: unmanaged() | nil
         }
 
-  defstruct managed?: false,
+  defstruct reviewed_snapshot: nil,
+            matching_rules: [],
+            managed?: false,
             older_format: nil,
             currency: "USD",
             fares: [],

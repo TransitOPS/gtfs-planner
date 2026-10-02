@@ -200,25 +200,27 @@ defmodule GtfsPlanner.Gtfs.Fares.Checks do
   # (R3). While such a rule exists every route is priced by it, so the routes in
   # no group are not missing a fare and are left out.
   defp routes_without_fare(facts) do
-    # A rule that names no group and no zone either prices nothing a rider rides:
-    # it is the blanket row a pass accepting every group carries, not an "any route
-    # group" fare, so it does not cover a route in no group.
-    any_group_rule? =
-      Enum.any?(facts.rules, fn rule ->
-        is_nil(rule.network_id) and
-          not is_nil(rule.from_area_id) and not is_nil(rule.to_area_id)
-      end)
+    single_products =
+      facts.fares
+      |> Enum.filter(&(&1.kind == "single"))
+      |> Enum.flat_map(& &1.product_ids)
+      |> MapSet.new()
 
-    loose =
-      if any_group_rule? do
-        []
-      else
-        grouped = facts.groups |> Enum.flat_map(& &1.route_ids) |> MapSet.new()
-        facts.routes |> Enum.filter(&(not MapSet.member?(grouped, &1.route_id))) |> Enum.sort()
-      end
+    any_group_rule? =
+      Enum.any?(
+        facts.rules,
+        &(is_nil(&1.network_id) and MapSet.member?(single_products, &1.fare_product_id))
+      )
+
+    grouped = facts.groups |> Enum.flat_map(& &1.route_ids) |> MapSet.new()
+
+    ungrouped =
+      facts.routes |> Enum.filter(&(not MapSet.member?(grouped, &1.route_id))) |> Enum.sort()
+
+    loose = if any_group_rule?, do: [], else: ungrouped
 
     passed =
-      if loose == [] and not any_group_rule? do
+      if ungrouped == [] do
         ["Every route is in a route group"]
       else
         []

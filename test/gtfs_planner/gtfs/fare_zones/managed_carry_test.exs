@@ -20,8 +20,9 @@ defmodule GtfsPlanner.Gtfs.FareZones.ManagedCarryTest do
     three rows naming no network for the 31-day pass.
   - R3's priority is `8·[from_timeframe] + 4·[network] + 2·[from_area] +
     1·[to_area]`, so a `N_LOCAL` rule naming two zones is 7, one naming a single
-    zone 6, one naming only a network 4, one naming a pair in either direction 3
-    and one naming nothing 0. A zone that moves under these rows changes those
+    zone is 6 or 5 depending on whether it names the origin or destination, a
+    `N_LOCAL` rule naming no zones is 4, a zone pair with no network is 3, and a
+    rule naming nothing is 0. A zone that moves under these rows changes those
     numbers, which is what makes a refreshed implied column observable rather
     than a copy of the row's input. R4's leg group is the rule's network, or
     `"all_routes"` when it names none.
@@ -148,6 +149,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ManagedCarryTest do
                })
 
       assert pass_conditions(organization, version) == [
+               {"N_LOCAL", nil, nil},
                {"N_LOCAL", "CST", "CST"},
                {"N_LOCAL", "CST", "NPT"},
                {"N_LOCAL", "CST", "TOL"},
@@ -156,8 +158,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ManagedCarryTest do
                {"N_LOCAL", "NPT", "TOL"},
                {"N_LOCAL", "TOL", "CST"},
                {"N_LOCAL", "TOL", "NPT"},
-               {"N_LOCAL", "TOL", "TOL"},
-               {"N_LOCAL", nil, nil}
+               {"N_LOCAL", "TOL", "TOL"}
              ]
 
       # 46 rows from the fixture and 10 pass rows.
@@ -195,11 +196,11 @@ defmodule GtfsPlanner.Gtfs.FareZones.ManagedCarryTest do
       # R4: the pass mirrors exactly the condition sets of the single rides it
       # stands in for, and nothing else.
       assert pass_conditions(organization, version) == [
+               {"N_LOCAL", nil, nil},
                {"N_LOCAL", "CST", "CST"},
                {"N_LOCAL", "CST", "NPT"},
                {"N_LOCAL", "NPT", "CST"},
-               {"N_LOCAL", "NPT", "NPT"},
-               {"N_LOCAL", nil, nil}
+               {"N_LOCAL", "NPT", "NPT"}
              ]
 
       # INV-4: only `Fares.Normalize` writes these, and it ran here. The valley
@@ -240,16 +241,16 @@ defmodule GtfsPlanner.Gtfs.FareZones.ManagedCarryTest do
       # `CST,TOL` from 7 to 5, and the rows that never named `CST` keep theirs.
       assert priorities_by_conditions(organization, version) == [
                {{nil, nil, nil}, 0},
-               {{nil, "NPT"}, 5},
-               {{nil, "TOL"}, 5},
+               {{"N_INTERCITY", nil, nil}, 4},
                {{"N_LOCAL", nil, nil}, 4},
+               {{"N_LOCAL", nil, "NPT"}, 5},
+               {{"N_LOCAL", nil, "TOL"}, 5},
                {{"N_LOCAL", "NPT", nil}, 6},
                {{"N_LOCAL", "NPT", "NPT"}, 7},
-               {{"N_LOCAL", "NPT", "TOL"}, 3},
+               {{"N_LOCAL", "NPT", "TOL"}, 7},
                {{"N_LOCAL", "TOL", nil}, 6},
-               {{"N_LOCAL", "TOL", "NPT"}, 3},
-               {{"N_LOCAL", "TOL", "TOL"}, 7},
-               {{"N_INTERCITY", nil, nil}, 4}
+               {{"N_LOCAL", "TOL", "NPT"}, 7},
+               {{"N_LOCAL", "TOL", "TOL"}, 7}
              ]
 
       assert implied_columns_agree?(organization, version)

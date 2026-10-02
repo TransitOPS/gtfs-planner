@@ -9,9 +9,10 @@ defmodule GtfsPlanner.FaresFixtures do
   `public/*` are trimmed excerpts of published agency feeds.
   """
 
-  alias GtfsPlanner.Gtfs.Import
+  alias GtfsPlanner.Gtfs.Fares
   alias GtfsPlanner.Gtfs.Import.Failure
   alias GtfsPlanner.Gtfs.Import.Result
+  alias GtfsPlanner.Support.StagedImport
 
   @fixtures_path Path.expand("../fixtures/gtfs/fares", __DIR__)
 
@@ -43,7 +44,7 @@ defmodule GtfsPlanner.FaresFixtures do
   def import!(organization, version, fixture_dir) do
     files = read_files!(fixture_dir)
 
-    case Import.import_files(organization.id, version.id, files) do
+    case StagedImport.import_files(organization.id, version.id, files) do
       {:ok, result} ->
         result
 
@@ -51,6 +52,29 @@ defmodule GtfsPlanner.FaresFixtures do
         raise "fare fixture #{fixture_dir} did not import: #{failure.reason_code}" <>
                 " in #{failure.failed_file}#{row(failure)}"
     end
+  end
+
+  def save_fare(scope, params),
+    do: Fares.save_fare(scope, with_reviewed_snapshot(scope, params))
+
+  def save_rider_type(scope, params),
+    do: Fares.save_rider_type(scope, with_reviewed_snapshot(scope, params))
+
+  def save_payment_method(scope, params),
+    do: Fares.save_payment_method(scope, with_reviewed_snapshot(scope, params))
+
+  def save_route_group(scope, params),
+    do: Fares.save_route_group(scope, with_reviewed_snapshot(scope, params))
+
+  def save_time_period(scope, params),
+    do: Fares.save_time_period(scope, with_reviewed_snapshot(scope, params))
+
+  defp with_reviewed_snapshot(scope, params) do
+    Map.put_new(
+      params,
+      :reviewed_snapshot,
+      Fares.reviewed_snapshot(scope.organization_id, scope.gtfs_version_id)
+    )
   end
 
   defp row(%{failed_row: nil}), do: ""

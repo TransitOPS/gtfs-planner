@@ -40,6 +40,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 2]
 
+  alias GtfsPlanner.FaresFixtures
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.FareLegRule
@@ -78,7 +79,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
         prices: %{"adult" => "1.00", "reduced" => "0.50"}
       }
 
-      assert {:ok, result} = Fares.save_fare(context.scope, params)
+      assert {:ok, result} = FaresFixtures.save_fare(context.scope, params)
 
       # The id is the name as a GTFS id, the way a route group's is.
       assert rows = fare_rows(context, "summer_beach_shuttle")
@@ -123,7 +124,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
         media_prices: %{"app" => %{"adult" => "1.60"}}
       }
 
-      assert {:ok, _result} = Fares.save_fare(context.scope, params)
+      assert {:ok, _result} = FaresFixtures.save_fare(context.scope, params)
 
       assert amounts =
                context
@@ -138,7 +139,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
 
     test "refuses a blank name", context do
       assert {:error, changeset} =
-               Fares.save_fare(context.scope, %{
+               FaresFixtures.save_fare(context.scope, %{
                  name: "   ",
                  kind: "single",
                  media_ids: ["cash"],
@@ -155,7 +156,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
       # that id is an edit of it. Creating a fare whose id collides would be a
       # second fare the editor cannot tell apart.
       assert {:ok, _result} =
-               Fares.save_fare(context.scope, %{
+               FaresFixtures.save_fare(context.scope, %{
                  name: "Valley ride adult",
                  kind: "single",
                  media_ids: ["cash"],
@@ -163,7 +164,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
                })
 
       assert {:error, :duplicate_fare} =
-               Fares.save_fare(context.scope, %{
+               FaresFixtures.save_fare(context.scope, %{
                  name: "Valley ride adult",
                  kind: "single",
                  media_ids: ["cash"],
@@ -183,21 +184,21 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
 
       # R9's counterexample: a mistyped price never reaches a row.
       assert {:error, :invalid_price} =
-               Fares.save_fare(context.scope, refused.(%{prices: %{"adult" => "1.5.0"}}))
+               FaresFixtures.save_fare(context.scope, refused.(%{prices: %{"adult" => "1.5.0"}}))
 
       assert {:error, :not_found} =
-               Fares.save_fare(context.scope, refused.(%{media_ids: ["coin"]}))
+               FaresFixtures.save_fare(context.scope, refused.(%{media_ids: ["coin"]}))
 
       assert {:error, :not_found} =
-               Fares.save_fare(context.scope, refused.(%{prices: %{"senior" => "1.00"}}))
+               FaresFixtures.save_fare(context.scope, refused.(%{prices: %{"senior" => "1.00"}}))
 
       assert {:error, :no_payment_methods} =
-               Fares.save_fare(context.scope, refused.(%{media_ids: []}))
+               FaresFixtures.save_fare(context.scope, refused.(%{media_ids: []}))
 
       # A transfer fee is `Fares.Transfers`' own row (R5), so it is refused here
       # rather than written by two writers.
       assert {:error, :invalid_kind} =
-               Fares.save_fare(context.scope, refused.(%{kind: "transfer_fee"}))
+               FaresFixtures.save_fare(context.scope, refused.(%{kind: "transfer_fee"}))
 
       assert fare_rows(context, "refused_shuttle") == []
       assert detail_rows(context, "refused_shuttle") == []
@@ -224,7 +225,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
         ]
       }
 
-      assert {:ok, result} = Fares.save_fare(context.scope, params)
+      assert {:ok, result} = FaresFixtures.save_fare(context.scope, params)
 
       # The fare keeps its own price on cash and gains a separate app row at the
       # price the drawer named, which is one `fare_products` row per method.
@@ -260,7 +261,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
         position: 1
       }
 
-      assert {:ok, _result} = Fares.save_fare(context.scope, params)
+      assert {:ok, _result} = FaresFixtures.save_fare(context.scope, params)
 
       assert [row] = fare_rows(context, "coast_ride_adult_cash")
       assert row.fare_product_name == "Coast shuttle"
@@ -280,13 +281,13 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
         prices: %{"adult" => "2.50", "reduced" => ""}
       }
 
-      assert {:ok, _result} = Fares.save_fare(context.scope, params)
+      assert {:ok, _result} = FaresFixtures.save_fare(context.scope, params)
 
       assert fare_rows(context, "valley_ride_adult_cash") |> Enum.map(& &1.rider_category_id) ==
                ["adult"]
 
       assert {:ok, _undone} =
-               Fares.save_fare(context.scope, %{
+               FaresFixtures.save_fare(context.scope, %{
                  fare_product_id: "valley_ride_adult_cash",
                  name: "Valley ride",
                  kind: "single",
@@ -319,7 +320,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
         reviewed: stale
       }
 
-      assert {:error, {:stale, [cell]}} = Fares.save_fare(context.scope, params)
+      assert {:error, {:stale, [cell]}} = FaresFixtures.save_fare(context.scope, params)
       assert cell.fare_product_id == "valley_ride_adult_cash"
       assert Decimal.equal?(cell.reviewed, Decimal.new("2.00"))
       assert Decimal.equal?(cell.stored, Decimal.new("2.50"))
@@ -344,7 +345,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
       # `coast_ride_adult_cash` is a product of the other version, and the fare
       # this version holds under that id must not be edited by naming it.
       assert {:error, :not_found} =
-               Fares.save_fare(other_scope, %{
+               FaresFixtures.save_fare(other_scope, %{
                  fare_product_id: "no_such_fare",
                  name: "Ghost ride",
                  kind: "single",
@@ -367,7 +368,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
         accepted_network_ids: ["N_LOCAL"]
       }
 
-      assert {:ok, _result} = Fares.save_fare(context.scope, params)
+      assert {:ok, _result} = FaresFixtures.save_fare(context.scope, params)
 
       # R4: the pass's rows are Normalize's, mirroring each of the nine
       # single-ride condition sets its accepted leg group holds, and each tying
@@ -408,7 +409,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
         accepted_network_ids: ["N_LOCAL", "N_INTERCITY"]
       }
 
-      assert {:ok, _result} = Fares.save_fare(context.scope, wide)
+      assert {:ok, _result} = FaresFixtures.save_fare(context.scope, wide)
 
       # The ten local sets plus `N_INTERCITY`'s one, which names no areas either.
       assert length(leg_rules(context, "day_pass")) == 11
@@ -422,7 +423,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
         accepted_network_ids: ["N_LOCAL"]
       }
 
-      assert {:ok, _result} = Fares.save_fare(context.scope, narrow)
+      assert {:ok, _result} = FaresFixtures.save_fare(context.scope, narrow)
 
       assert length(leg_rules(context, "day_pass")) == 10
       assert Enum.all?(leg_rules(context, "day_pass"), &(&1.network_id == "N_LOCAL"))
@@ -430,7 +431,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
 
     test "refuses a network this version does not hold", context do
       assert {:error, :not_found} =
-               Fares.save_fare(context.scope, %{
+               FaresFixtures.save_fare(context.scope, %{
                  name: "Day pass",
                  kind: "pass",
                  media_ids: ["cash"],
@@ -513,7 +514,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
       # `intercity_ride_child_cash` is a price of a fare the editor is about to
       # split out; a fare nothing points at can simply go.
       assert {:ok, _result} =
-               Fares.save_fare(context.scope, %{
+               FaresFixtures.save_fare(context.scope, %{
                  name: "Spare shuttle",
                  kind: "single",
                  media_ids: ["cash"],
@@ -624,7 +625,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
         prices: %{"adult" => "1.00", "reduced" => "0.50"}
       }
 
-      assert {:ok, created} = Fares.save_fare(context.scope, params)
+      assert {:ok, created} = FaresFixtures.save_fare(context.scope, params)
       assert {:ok, undone} = Fares.undo(context.scope, created.operation_id, created.inverse)
       assert undone.inverse == nil
       assert undone.operation_id == created.operation_id
@@ -638,7 +639,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
 
     test "an edited fare goes back to the prices and name it held", context do
       assert {:ok, saved} =
-               Fares.save_fare(context.scope, %{
+               FaresFixtures.save_fare(context.scope, %{
                  fare_product_id: "valley_ride_adult_cash",
                  name: "Valley shuttle",
                  kind: "single",
@@ -699,7 +700,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
 
     test "a later change makes the reversal stale", context do
       assert {:ok, first} =
-               Fares.save_fare(context.scope, %{
+               FaresFixtures.save_fare(context.scope, %{
                  fare_product_id: "valley_ride_adult_cash",
                  name: "Valley ride",
                  kind: "single",
@@ -708,7 +709,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
                })
 
       assert {:ok, _second} =
-               Fares.save_fare(context.scope, %{
+               FaresFixtures.save_fare(context.scope, %{
                  fare_product_id: "valley_ride_adult_cash",
                  name: "Valley ride",
                  kind: "single",
@@ -768,7 +769,7 @@ defmodule GtfsPlanner.Gtfs.Fares.FareWriterTest do
 
     test "an operation this version never recorded is stale", context do
       assert {:ok, created} =
-               Fares.save_fare(context.scope, %{
+               FaresFixtures.save_fare(context.scope, %{
                  name: "Summer beach shuttle",
                  kind: "single",
                  media_ids: ["cash"],

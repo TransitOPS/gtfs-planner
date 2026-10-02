@@ -47,6 +47,7 @@ defmodule GtfsPlanner.Gtfs.Export.FaresExportTest do
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 2]
 
+  alias GtfsPlanner.FaresFixtures
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.Export
@@ -262,12 +263,11 @@ defmodule GtfsPlanner.Gtfs.Export.FaresExportTest do
     test "are the inventory's zones and the stops that name one", context do
       exported = full(context)
 
-      assert rows(exported, "areas.txt") == [
-               ["area_id", "area_name"] ++ Enum.map(@areas, &Tuple.to_list/1)
-             ]
+      assert rows(exported, "areas.txt") ==
+               [["area_id", "area_name"]] ++ Enum.map(@areas, &Tuple.to_list/1)
 
       assert rows(exported, "stop_areas.txt") ==
-               [["area_id", "stop_id"] ++ Enum.map(@stop_areas, &Tuple.to_list/1)]
+               [["area_id", "stop_id"]] ++ Enum.map(@stop_areas, &Tuple.to_list/1)
     end
 
     test "follow a zone rename onto the areas the leg rules reference", context do
@@ -310,7 +310,7 @@ defmodule GtfsPlanner.Gtfs.Export.FaresExportTest do
       # Before a period exists, the sample's own calendar is the whole file.
       assert rows(exported, "calendar.txt") == [@calendar_header, @weekday_row]
 
-      assert {:ok, _period} = Fares.save_time_period(context.scope, weekday_peak_form())
+      assert {:ok, _period} = FaresFixtures.save_time_period(context.scope, weekday_peak_form())
       exported = full(context)
 
       assert rows(exported, "calendar.txt") == [
@@ -326,7 +326,7 @@ defmodule GtfsPlanner.Gtfs.Export.FaresExportTest do
     end
 
     test "re-suffix a period's service id when a calendar already holds it", context do
-      assert {:ok, _period} = Fares.save_time_period(context.scope, weekday_peak_form())
+      assert {:ok, _period} = FaresFixtures.save_time_period(context.scope, weekday_peak_form())
 
       # A calendar imported after the period was saved can take the id the
       # writer made unique, so the export re-checks it (R10). The period's own
@@ -348,11 +348,13 @@ defmodule GtfsPlanner.Gtfs.Export.FaresExportTest do
 
   describe "the other builds of a managed version" do
     test "carry the same fare files as the full export", context do
-      assert {:ok, _period} = Fares.save_time_period(context.scope, weekday_peak_form())
+      assert {:ok, _period} = FaresFixtures.save_time_period(context.scope, weekday_peak_form())
       main = full(context)
 
       assert {:ok, operations, _warnings} =
                Export.build_zip(context.organization.id, context.version.id, :operations)
+
+      operations = entries(operations)
 
       shared =
         [
@@ -373,7 +375,7 @@ defmodule GtfsPlanner.Gtfs.Export.FaresExportTest do
       # appended, so every fare file beside `routes.txt` is the same bytes.
       area_flex_service(context)
 
-      assert {:ok, %{flex: flex}} =
+      assert {:ok, %{flex: flex}, _warnings} =
                Export.build_zips(context.organization.id, context.version.id, :full,
                  include_flex: true
                )
@@ -470,15 +472,14 @@ defmodule GtfsPlanner.Gtfs.Export.FaresExportTest do
   # built and its fare files can be compared with the main build's.
   defp area_flex_service(context) do
     assert {:ok, service} =
-             Flex.create_service(context.organization.id, context.version.id, %{
+             Flex.create_service(context.scope.audit, %{
                name: "Newport Dial-a-Ride",
                kind: :area
              })
 
     assert {:ok, _service} =
              Flex.save_service(
-               context.organization.id,
-               context.version.id,
+               context.scope.audit,
                service,
                %{
                  phone: "(541) 555-0142",
@@ -538,9 +539,15 @@ defmodule GtfsPlanner.Gtfs.Export.FaresExportTest do
       })
 
     version = gtfs_version_fixture(organization.id, %{name: "North Coast older format"})
+
+    actor =
+      editor_fixture(organization, %{
+        email: "fares-export-v1-#{Ecto.UUID.generate()}@example.com"
+      })
+
     import!(organization, version, "north_coast_v1")
 
-    scope = scope(organization, version, context.actor)
+    scope = scope(organization, version, actor)
     {:ok, plan} = Conversion.preview(organization.id, version.id)
     {:ok, _converted} = Conversion.apply(scope, plan.fingerprint, [])
 

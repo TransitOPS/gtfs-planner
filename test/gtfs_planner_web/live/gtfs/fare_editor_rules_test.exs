@@ -68,7 +68,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorRulesTest do
     view |> element("#add-fare-rule") |> render_click()
     assert has_element?(view, "#rule-drawer")
     assert view |> element("#rule-time-period") |> render() =~ "Weekday peak"
-    refute view |> element("#rule-time-period") |> render() =~ "disabled"
+    refute has_element?(view, "#rule-time-period[disabled]")
   end
 
   test "a conflicting zone rule offers the current fare as an overlap choice", ctx do
@@ -81,7 +81,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorRulesTest do
     |> element("#rule-form")
     |> render_change(%{
       "rule" => %{
-        "network_id" => "N_INTERCITY",
+        "network_id" => "N_LOCAL",
         "from_area_id" => "TOL",
         "to_area_id" => "CST",
         "fare_product_id" => "coast_ride_adult_cash"
@@ -91,13 +91,27 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorRulesTest do
     assert has_element?(view, "#rule-overlap")
     assert has_element?(view, "#rule-overlap-replace")
     assert has_element?(view, "#rule-overlap-keep")
-    assert view |> element("#save-rule") |> render() =~ "Replace Valley–coast ride"
+
+    view
+    |> element("#rule-form")
+    |> render_change(%{
+      "rule" => %{
+        "network_id" => "N_LOCAL",
+        "from_area_id" => "TOL",
+        "to_area_id" => "CST",
+        "fare_product_id" => "coast_ride_adult_cash",
+        "overlap" => "replace"
+      }
+    })
+
+    assert has_element?(view, "#rule-overlap-replace[checked]")
+    assert has_element?(view, "#save-rule", "Replace Valley-coast ride")
 
     view
     |> element("#rule-form")
     |> render_submit(%{
       "rule" => %{
-        "network_id" => "N_INTERCITY",
+        "network_id" => "N_LOCAL",
         "from_area_id" => "TOL",
         "to_area_id" => "CST",
         "fare_product_id" => "coast_ride_adult_cash",
@@ -111,7 +125,6 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorRulesTest do
     assert coast_rule.to_area_id == "CST"
     refute workspace_rule(ctx, version, "Valley–coast ride")
 
-    view |> element("#rule-list summary") |> render_click()
     view |> element("#edit-fare-rule-#{coast_rule.id}") |> render_click()
     assert has_element?(view, "#delete-fare-rule")
     view |> element("#delete-fare-rule") |> render_click()

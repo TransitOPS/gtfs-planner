@@ -56,11 +56,10 @@ alias GtfsPlanner.Gtfs.Export.ArtifactStorage
 alias GtfsPlanner.Gtfs.Export.Run, as: ExportRun
 alias GtfsPlanner.Gtfs.ExportRuns
 alias GtfsPlanner.Gtfs.FareAttribute
+alias GtfsPlanner.Gtfs.FareProductDetail
 alias GtfsPlanner.Gtfs.FareRule
 alias GtfsPlanner.Gtfs.Fares
-alias GtfsPlanner.Gtfs.FareProductDetail
 alias GtfsPlanner.Gtfs.Fares.Conversion
-alias GtfsPlanner.Gtfs.Fares.Interpreter
 alias GtfsPlanner.Gtfs.Fares.Transfers
 alias GtfsPlanner.Gtfs.FareSavedJourney
 alias GtfsPlanner.Gtfs.FareZones
@@ -3672,6 +3671,13 @@ case Accounts.register_first_admin(%{
     {:ok, fares_unmanaged_version} =
       Versions.create_gtfs_version(org.id, %{name: "Browser Unmanaged V1 Fares Version"})
 
+    # Conversion changes its input version. Keep the read-only journey's
+    # unmanaged fixture separate from the setup journey's writable review.
+    {:ok, fares_conversion_version} =
+      Versions.create_gtfs_version(org.id, %{
+        name: "Browser Unmanaged V1 Conversion Fares Version"
+      })
+
     {:ok, fares_mismatch_version} =
       Versions.create_gtfs_version(org.id, %{name: "Browser Fares Mismatch Version"})
 
@@ -3683,6 +3689,7 @@ case Accounts.register_first_admin(%{
     FaresFixtures.import!(org, fares_managed_version, "north_coast_v2")
     FaresFixtures.import!(org, fares_blank_version, "no_fare")
     FaresFixtures.import!(org, fares_unmanaged_version, "north_coast_v1")
+    FaresFixtures.import!(org, fares_conversion_version, "north_coast_v1")
     FaresFixtures.import!(org, fares_mismatch_version, "north_coast_v1")
     FaresFixtures.import!(org, fares_gaps_version, "north_coast_v2")
 
@@ -3805,7 +3812,7 @@ case Accounts.register_first_admin(%{
       |> Enum.sort()
 
     {:ok, _fares_group_without_40} =
-      Fares.save_route_group(gaps_scope, %{
+      FaresFixtures.save_route_group(gaps_scope, %{
         network_id: "N_LOCAL",
         name: "Local routes",
         route_ids: Enum.reject(gaps_local_routes, &(&1 == "40"))

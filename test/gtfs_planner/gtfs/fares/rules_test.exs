@@ -37,6 +37,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RulesTest do
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 2]
 
+  alias GtfsPlanner.FaresFixtures
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.FareLegRule
@@ -425,7 +426,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RulesTest do
   # the only way its rows become `Normalize`'s to write.
   defp with_day_pass(context) do
     {:ok, _saved} =
-      Fares.save_fare(context.scope, %{
+      FaresFixtures.save_fare(context.scope, %{
         fare_product_id: "day_pass_adult_cash",
         name: "Day pass",
         kind: "pass",

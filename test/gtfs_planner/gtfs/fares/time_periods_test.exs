@@ -35,6 +35,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 2]
 
+  alias GtfsPlanner.FaresFixtures
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarDate
@@ -95,7 +96,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
 
   describe "saving a new time period" do
     test "writes the period, both ranges and the fare-only service id", context do
-      assert {:ok, _result} = Fares.save_time_period(context.scope, weekday_peak_form())
+      assert {:ok, _result} = FaresFixtures.save_time_period(context.scope, weekday_peak_form())
 
       assert [period] = period_rows(context)
       assert period.timeframe_group_id == "weekday_peak"
@@ -125,7 +126,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
     end
 
     test "records one change-log entry with the before and after rows", context do
-      assert {:ok, saved} = Fares.save_time_period(context.scope, weekday_peak_form())
+      assert {:ok, saved} = FaresFixtures.save_time_period(context.scope, weekday_peak_form())
 
       assert [entry] = period_entries(context, saved.operation_id)
       assert entry.action == "created"
@@ -149,7 +150,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
         ])
         |> Map.put(:until_end_of_day?, true)
 
-      assert {:ok, _result} = Fares.save_time_period(context.scope, form)
+      assert {:ok, _result} = FaresFixtures.save_time_period(context.scope, form)
 
       assert [%{until_end_of_day: true}] = period_rows(context)
 
@@ -169,7 +170,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
 
       insert_calendar!(context, "fare_weekday_peak")
 
-      assert {:ok, _result} = Fares.save_time_period(context.scope, weekday_peak_form())
+      assert {:ok, _result} = FaresFixtures.save_time_period(context.scope, weekday_peak_form())
 
       assert [%{service_id: "fare_weekday_peak_2"}] = period_rows(context)
 
@@ -184,17 +185,17 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
     test "a calendar_dates service id is a collision too", context do
       insert_calendar_date!(context, "fare_weekday_peak")
 
-      assert {:ok, _result} = Fares.save_time_period(context.scope, weekday_peak_form())
+      assert {:ok, _result} = FaresFixtures.save_time_period(context.scope, weekday_peak_form())
 
       assert [%{service_id: "fare_weekday_peak_2"}] = period_rows(context)
     end
 
     test "saving the same period twice keeps one service id and one set of ranges", context do
-      assert {:ok, _first} = Fares.save_time_period(context.scope, weekday_peak_form([]))
+      assert {:ok, _first} = FaresFixtures.save_time_period(context.scope, weekday_peak_form([]))
 
       # The second save edits the period it just wrote, the way the drawer does.
       assert {:ok, _second} =
-               Fares.save_time_period(
+               FaresFixtures.save_time_period(
                  context.scope,
                  weekday_peak_form(timeframe_group_id: "weekday_peak")
                )
@@ -208,7 +209,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
 
     test "a name no slug can be made from is refused, and nothing is written", context do
       assert {:error, changeset} =
-               Fares.save_time_period(context.scope, weekday_peak_form(name: "***"))
+               FaresFixtures.save_time_period(context.scope, weekday_peak_form(name: "***"))
 
       assert %{name: ["must have a letter or a number"]} = errors_on(changeset)
       assert period_rows(context) == []
@@ -217,7 +218,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
 
     test "a blank name is refused, and nothing is written", context do
       assert {:error, changeset} =
-               Fares.save_time_period(context.scope, weekday_peak_form(name: "   "))
+               FaresFixtures.save_time_period(context.scope, weekday_peak_form(name: "   "))
 
       assert %{name: ["can't be blank"]} = errors_on(changeset)
       assert period_rows(context) == []
@@ -225,10 +226,13 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
     end
 
     test "two periods with one slug are refused as duplicates", context do
-      assert {:ok, _first} = Fares.save_time_period(context.scope, weekday_peak_form())
+      assert {:ok, _first} = FaresFixtures.save_time_period(context.scope, weekday_peak_form())
 
       assert {:error, :duplicate_time_period} =
-               Fares.save_time_period(context.scope, weekday_peak_form(name: "weekday PEAK"))
+               FaresFixtures.save_time_period(
+                 context.scope,
+                 weekday_peak_form(name: "weekday PEAK")
+               )
 
       assert [%{name: "Weekday peak"}] = period_rows(context)
     end
@@ -243,7 +247,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
           %{start_seconds: 28_800, end_seconds: 54_000}
         ])
 
-      assert {:error, changeset} = Fares.save_time_period(context.scope, form)
+      assert {:error, changeset} = FaresFixtures.save_time_period(context.scope, form)
 
       assert %{ranges: ["can't overlap"]} = errors_on(changeset)
       assert period_rows(context) == []
@@ -258,7 +262,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
           %{start_seconds: 21_600, end_seconds: 32_400}
         ])
 
-      assert {:error, changeset} = Fares.save_time_period(context.scope, form)
+      assert {:error, changeset} = FaresFixtures.save_time_period(context.scope, form)
       assert %{ranges: ["can't overlap"]} = errors_on(changeset)
       assert timeframe_rows(context) == []
     end
@@ -268,7 +272,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
         weekday_peak_form()
         |> Map.put(:ranges, [%{start_seconds: 32_400, end_seconds: 21_600}])
 
-      assert {:error, changeset} = Fares.save_time_period(context.scope, form)
+      assert {:error, changeset} = FaresFixtures.save_time_period(context.scope, form)
       assert %{ranges: ["must start before it ends"]} = errors_on(changeset)
       assert period_rows(context) == []
     end
@@ -276,7 +280,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
     test "no ranges at all is refused", context do
       form = weekday_peak_form() |> Map.put(:ranges, [])
 
-      assert {:error, changeset} = Fares.save_time_period(context.scope, form)
+      assert {:error, changeset} = FaresFixtures.save_time_period(context.scope, form)
       assert %{ranges: ["can't be blank"]} = errors_on(changeset)
       assert period_rows(context) == []
     end
@@ -289,7 +293,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
           %{start_seconds: 32_400, end_seconds: 54_000}
         ])
 
-      assert {:ok, _result} = Fares.save_time_period(context.scope, form)
+      assert {:ok, _result} = FaresFixtures.save_time_period(context.scope, form)
 
       assert timeframe_rows(context) == [
                {"06:00:00", "09:00:00", "fare_weekday_peak"},
@@ -300,7 +304,10 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
     test "a weekday mask the period's own changeset refuses writes nothing", context do
       for weekdays <- [0, 128] do
         assert {:error, changeset} =
-                 Fares.save_time_period(context.scope, weekday_peak_form(weekdays: weekdays))
+                 FaresFixtures.save_time_period(
+                   context.scope,
+                   weekday_peak_form(weekdays: weekdays)
+                 )
 
         assert %{weekdays: [_message]} = errors_on(changeset)
       end
@@ -311,14 +318,17 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
 
     test "a blank weekday mask is valid and means every day", context do
       assert {:ok, _result} =
-               Fares.save_time_period(context.scope, weekday_peak_form(weekdays: nil))
+               FaresFixtures.save_time_period(context.scope, weekday_peak_form(weekdays: nil))
 
       assert [%{weekdays: nil}] = period_rows(context)
     end
 
     test "every day is the full mask, 127", context do
       assert {:ok, _result} =
-               Fares.save_time_period(context.scope, weekday_peak_form(weekdays: @all_weekdays))
+               FaresFixtures.save_time_period(
+                 context.scope,
+                 weekday_peak_form(weekdays: @all_weekdays)
+               )
 
       assert [%{weekdays: @all_weekdays}] = period_rows(context)
     end
@@ -326,7 +336,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
 
   describe "editing a saved period" do
     setup context do
-      {:ok, saved} = Fares.save_time_period(context.scope, weekday_peak_form())
+      {:ok, saved} = FaresFixtures.save_time_period(context.scope, weekday_peak_form())
       {:ok, context} = with_time_rule(context)
 
       {:ok, context: context, saved: saved}
@@ -334,7 +344,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
 
     test "replaces the ranges whole, keeping the group and the service id", context do
       assert {:ok, _result} =
-               Fares.save_time_period(
+               FaresFixtures.save_time_period(
                  context.scope,
                  weekday_peak_form(
                    timeframe_group_id: "weekday_peak",
@@ -351,7 +361,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
 
     test "a renamed period keeps its id and the service id it already holds", context do
       assert {:ok, _result} =
-               Fares.save_time_period(
+               FaresFixtures.save_time_period(
                  context.scope,
                  weekday_peak_form(
                    timeframe_group_id: "weekday_peak",
@@ -379,7 +389,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
 
     test "a period this version does not hold is not found", context do
       assert {:error, :not_found} =
-               Fares.save_time_period(
+               FaresFixtures.save_time_period(
                  context.scope,
                  weekday_peak_form(timeframe_group_id: "evening_peak")
                )
@@ -390,13 +400,13 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
 
     test "an unmanaged version is refused", context do
       assert {:error, :unmanaged} =
-               Fares.save_time_period(unmanaged_scope(context), weekday_peak_form())
+               FaresFixtures.save_time_period(unmanaged_scope(context), weekday_peak_form())
     end
   end
 
   describe "deleting a time period" do
     setup context do
-      {:ok, saved} = Fares.save_time_period(context.scope, weekday_peak_form())
+      {:ok, saved} = FaresFixtures.save_time_period(context.scope, weekday_peak_form())
       {:ok, context} = with_time_rule(context)
 
       {:ok, context: context, saved: saved}
@@ -441,7 +451,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
       # A second period, which nothing names, so the refusal above is about the
       # rule rather than about the delete itself.
       assert {:ok, _saved} =
-               Fares.save_time_period(
+               FaresFixtures.save_time_period(
                  context.scope,
                  weekday_peak_form(name: "Evening peak", ranges: weekday_peak_ranges())
                )
@@ -483,7 +493,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
 
   describe "undoing a time period change" do
     setup context do
-      {:ok, saved} = Fares.save_time_period(context.scope, weekday_peak_form())
+      {:ok, saved} = FaresFixtures.save_time_period(context.scope, weekday_peak_form())
       {:ok, context} = with_time_rule(context)
 
       {:ok, context: context, saved: saved}
@@ -513,7 +523,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
 
     test "restores the ranges a save replaced", context do
       assert {:ok, saved} =
-               Fares.save_time_period(
+               FaresFixtures.save_time_period(
                  context.scope,
                  weekday_peak_form(
                    timeframe_group_id: "weekday_peak",
@@ -533,7 +543,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
 
     test "deletes a period a save created, and restores one a save changed", context do
       assert {:ok, saved} =
-               Fares.save_time_period(
+               FaresFixtures.save_time_period(
                  context.scope,
                  weekday_peak_form(
                    timeframe_group_id: "weekday_peak",
@@ -551,7 +561,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TimePeriodsTest do
 
     test "a later edit of the same period makes the reversal stale", context do
       assert {:ok, _saved} =
-               Fares.save_time_period(
+               FaresFixtures.save_time_period(
                  context.scope,
                  weekday_peak_form(
                    timeframe_group_id: "weekday_peak",

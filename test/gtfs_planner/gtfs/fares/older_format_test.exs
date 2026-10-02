@@ -50,9 +50,8 @@ defmodule GtfsPlanner.Gtfs.Fares.OlderFormatTest do
     organization =
       organization_fixture(%{alias: "fares-older-format-#{System.unique_integer([:positive])}"})
 
-    # An explicit email rather than `user_fixture/0`: the smokes on this shared
-    # partition commit a `user-1@example.com`, and `System.unique_integer/1`
-    # restarts per BEAM, so the default email collides on the second run.
+    # A unique email keeps this editor distinct from committed test fixtures
+    # that share the isolated partition.
     actor =
       editor_fixture(organization, %{
         email: "fares-older-format-#{System.unique_integer([:positive])}@example.com"
@@ -134,8 +133,9 @@ defmodule GtfsPlanner.Gtfs.Fares.OlderFormatTest do
       assert undone.operation_id == operation_id
       assert setting(v1).older_format == "derived"
 
-      assert [entry] = entries(v1, operation_id)
-      assert entry.action == "updated"
+      assert entries = entries(v1, operation_id)
+      assert Enum.sort(Enum.map(entries, & &1.action)) == ["rolled_back", "updated"]
+      assert Enum.any?(entries, &(&1.rolled_back_to_log_id == operation_id))
     end
   end
 
@@ -147,9 +147,14 @@ defmodule GtfsPlanner.Gtfs.Fares.OlderFormatTest do
       version =
         gtfs_version_fixture(organization.id, %{name: "North Coast first-use setup"})
 
+      actor =
+        editor_fixture(organization, %{
+          email: "fares-older-format-setup-#{unique_alias(context)}@example.com"
+        })
+
       import!(organization, version, "no_fare")
 
-      scope = scope(organization, version, context.actor)
+      scope = scope(organization, version, actor)
       assert {:ok, _setup} = Conversion.setup(scope, flat_answers())
 
       Map.put(context, :setup, %{
@@ -203,9 +208,15 @@ defmodule GtfsPlanner.Gtfs.Fares.OlderFormatTest do
       organization_fixture(%{alias: "fares-older-format-v1-#{unique_alias(context)}"})
 
     version = gtfs_version_fixture(organization.id, %{name: "North Coast older format"})
+
+    actor =
+      editor_fixture(organization, %{
+        email: "fares-older-format-v1-#{unique_alias(context)}@example.com"
+      })
+
     import!(organization, version, "north_coast_v1")
 
-    scope = scope(organization, version, context.actor)
+    scope = scope(organization, version, actor)
     {:ok, plan} = Conversion.preview(organization.id, version.id)
     {:ok, _converted} = Conversion.apply(scope, plan.fingerprint, [])
 
@@ -271,7 +282,7 @@ defmodule GtfsPlanner.Gtfs.Fares.OlderFormatTest do
     |> Repo.aggregate(:count)
   end
 
-  defp scoped(queryable, context) do
+  defp scoped(context, queryable) do
     where(
       queryable,
       [row],

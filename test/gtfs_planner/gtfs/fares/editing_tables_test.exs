@@ -126,7 +126,7 @@ defmodule GtfsPlanner.Gtfs.Fares.EditingTablesTest do
 
       {:ok, detail} =
         %FareProductDetail{}
-        |> struct!(%{context | gtfs_version_id: other_version.id})
+        |> struct!(Map.put(scope(context), :gtfs_version_id, other_version.id))
         |> FareProductDetail.changeset(%{fare_product_id: "adult_ride"})
         |> Repo.insert()
 
@@ -400,17 +400,30 @@ defmodule GtfsPlanner.Gtfs.Fares.EditingTablesTest do
   end
 
   defp index_exists?(table, first, second) do
-    %{rows: rows} =
+    %{rows: [[exists?]]} =
       Repo.query!(
         """
-        SELECT 1 FROM pg_indexes
-        WHERE tablename = $1
-          AND indexdef LIKE '%(' || $2 || ', ' || $3 || ')%'
+        SELECT EXISTS (
+          SELECT 1
+          FROM pg_index AS indexes
+          JOIN pg_class AS tables ON tables.oid = indexes.indrelid
+          JOIN pg_attribute AS first_column
+            ON first_column.attrelid = tables.oid
+           AND first_column.attnum = indexes.indkey[0]
+          JOIN pg_attribute AS second_column
+            ON second_column.attrelid = tables.oid
+           AND second_column.attnum = indexes.indkey[1]
+          WHERE tables.relname = $1
+            AND indexes.indisvalid
+            AND indexes.indisready
+            AND first_column.attname = $2
+            AND second_column.attname = $3
+        )
         """,
         [table, first, second]
       )
 
-    rows != []
+    exists?
   end
 
   defp constraint_exists?(name) do

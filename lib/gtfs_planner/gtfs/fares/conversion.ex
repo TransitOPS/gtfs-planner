@@ -156,11 +156,13 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
   alias GtfsPlanner.Gtfs.FareProduct
   alias GtfsPlanner.Gtfs.FareProductDetail
   alias GtfsPlanner.Gtfs.Fares
+  alias GtfsPlanner.Gtfs.Fares.Identifier
   alias GtfsPlanner.Gtfs.Fares.Interpreter
   alias GtfsPlanner.Gtfs.Fares.Interpreter.Rows
   alias GtfsPlanner.Gtfs.Fares.Money
   alias GtfsPlanner.Gtfs.Fares.Normalize
   alias GtfsPlanner.Gtfs.Fares.Pricing
+  alias GtfsPlanner.Gtfs.Fares.Snapshot
   alias GtfsPlanner.Gtfs.Fares.VersionLock
   alias GtfsPlanner.Gtfs.FareTransferRule
   alias GtfsPlanner.Gtfs.FareVersionSetting
@@ -312,7 +314,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
         %{setup: inverse}
       ) do
     VersionLock.transact(scope, fn ->
-      case undoable_setting(organization_id, gtfs_version_id, operation_id) do
+      case undoable_setting(organization_id, gtfs_version_id, operation_id, inverse) do
         {:ok, setting, entry} ->
           delete_created(organization_id, gtfs_version_id, inverse)
           :ok = Normalize.run!(organization_id, gtfs_version_id)
@@ -422,7 +424,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
         %{conversion: inverse}
       ) do
     VersionLock.transact(scope, fn ->
-      case undoable_setting(organization_id, gtfs_version_id, operation_id) do
+      case undoable_setting(organization_id, gtfs_version_id, operation_id, inverse) do
         {:ok, setting, entry} ->
           undo_conversion_rows(scope, operation_id, setting, entry, inverse)
 
@@ -602,6 +604,14 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
   # whichever check happened to run last.
   defp v2_refusal(%Rows{} = rows, areas) do
     cond do
+      rows.rider_categories != [] and
+          Enum.count(rows.rider_categories, &(&1.is_default_fare_category == 1)) != 1 ->
+        refusal(
+          :default_rider,
+          "Choose exactly one default rider type before converting fares",
+          []
+        )
+
       multi_area_stops(rows) != [] ->
         refusal(
           :multi_area_stop,
@@ -855,11 +865,11 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
   # this application, so a feed that uses only the column loses it the moment the
   # version is managed. Copying it is the only write that keeps it.
   defp copied_route_networks(%Rows{route_networks: route_networks, route_network_ids: by_route}) do
-    if route_networks == [] do
+    if map_size(route_networks) == 0 do
       by_route
-      |> Enum.reject(&(is_nil(&1) or &1 == ""))
+      |> Enum.reject(fn {_route_id, network_id} -> is_nil(network_id) or network_id == "" end)
       |> Enum.sort()
-      |> Enum.map(&%{route_id: &1.route_id, network_id: &1.network_id})
+      |> Enum.map(fn {route_id, network_id} -> %{route_id: route_id, network_id: network_id} end)
     else
       []
     end
@@ -1234,7 +1244,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
   defp slug(""), do: {:error, :invalid_group}
 
   defp slug(name) do
-    case name |> String.downcase() |> String.replace(~r/[^a-z0-9]+/, "_") |> String.trim("_") do
+    case Identifier.normalize(name) do
       "" -> {:error, :invalid_group}
       slug -> {:ok, slug}
     end
@@ -1308,7 +1318,18 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
     operation = record_setup(scope, plan, inverse)
     setting = insert_settings(organization_id, gtfs_version_id, operation.id)
 
-    %{operation_id: operation.id, inverse: %{setup: Map.put(inverse, :setting, setting.id)}}
+    %{
+      operation_id: operation.id,
+      inverse: %{
+        setup:
+          inverse
+          |> Map.put(:setting, setting.id)
+          |> Map.put(
+            :after_snapshot,
+            Snapshot.capture(organization_id, gtfs_version_id)
+          )
+      }
+    }
   end
 
   defp insert_rider_categories(organization_id, gtfs_version_id, riders) do
@@ -1573,10 +1594,16 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
   # The settings row's `conversion_operation_id` is the id of the change-log
   # entry this operation wrote, so the two name each other: the entry is the undo
   # target and the settings row is the fence.
-  defp undoable_setting(organization_id, gtfs_version_id, operation_id) do
+  defp undoable_setting(organization_id, gtfs_version_id, operation_id, inverse) do
     with %FareVersionSetting{conversion_operation_id: ^operation_id} = setting <-
            Fares.settings(organization_id, gtfs_version_id),
-         {:ok, entry} <- fetch_entry(operation_id, organization_id, gtfs_version_id) do
+         {:ok, entry} <- fetch_entry(operation_id, organization_id, gtfs_version_id),
+         :ok <-
+           Snapshot.require_current(
+             organization_id,
+             gtfs_version_id,
+             Map.get(inverse, :after_snapshot)
+           ) do
       {:ok, setting, entry}
     else
       _other -> {:error, :stale}
@@ -1941,7 +1968,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
   end
 
   defp network_slug(name) do
-    case name |> String.downcase() |> String.replace(~r/[^a-z0-9]+/, "_") |> String.trim("_") do
+    case Identifier.normalize(name) do
       "" -> "network"
       slug -> slug
     end
@@ -2004,12 +2031,17 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
   # it, so a conversion never makes a change cheaper than the older format
   # charged, and a fare allowing no change leaves the group with no rule.
   defp transfer_rules_for(networks, leg_rules, attributes) do
-    terms = Map.new(attributes, &{&1.fare_id, {&1.transfers || 0, &1.transfer_duration}})
+    terms =
+      Map.new(
+        attributes,
+        &{&1.fare_id,
+         {if(is_nil(&1.transfers), do: -1, else: &1.transfers), &1.transfer_duration}}
+      )
 
     for network <- networks, reduce: [] do
       rules ->
         case group_terms(network.network_id, leg_rules, terms) do
-          {transfers, duration} when transfers > 0 ->
+          {transfers, duration} when transfers > 0 or transfers == -1 ->
             [transfer_rule(network.network_id, transfers, duration) | rules]
 
           _no_free_change ->
@@ -2026,8 +2058,15 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
           do: Map.get(terms, rule.fare_product_id, {0, nil})
 
     case candidates do
-      [] -> nil
-      _many -> Enum.min_by(candidates, fn {transfers, duration} -> {transfers, duration || 0} end)
+      [] ->
+        nil
+
+      _many ->
+        counts = Enum.map(candidates, &elem(&1, 0)) |> Enum.reject(&(&1 == -1))
+        durations = Enum.map(candidates, &elem(&1, 1)) |> Enum.reject(&is_nil/1)
+
+        {if(counts == [], do: -1, else: Enum.min(counts)),
+         if(durations == [], do: nil, else: Enum.min(durations))}
     end
   end
 
@@ -2421,7 +2460,18 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
     operation = record_operation(scope, v2_summary(plan), plan.creates)
     setting = insert_settings(organization_id, gtfs_version_id, operation.id)
 
-    %{operation_id: operation.id, inverse: %{conversion: Map.put(inverse, :setting, setting.id)}}
+    %{
+      operation_id: operation.id,
+      inverse: %{
+        conversion:
+          inverse
+          |> Map.put(:setting, setting.id)
+          |> Map.put(
+            :after_snapshot,
+            Snapshot.capture(organization_id, gtfs_version_id)
+          )
+      }
+    }
   end
 
   defp v2_summary(plan) do
@@ -2479,22 +2529,17 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
   defp rewrite_transfer_groups(organization_id, gtfs_version_id, groups) do
     now = DateTime.utc_now()
 
-    Enum.each(groups, fn {imported_group, normalized_group} ->
-      from(transfer in FareTransferRule,
-        where:
-          transfer.organization_id == ^organization_id and
-            transfer.gtfs_version_id == ^gtfs_version_id and
-            transfer.from_leg_group_id == ^imported_group
+    rows_in(FareTransferRule, organization_id, gtfs_version_id)
+    |> Enum.each(fn transfer ->
+      from(row in FareTransferRule, where: row.id == ^transfer.id)
+      |> Repo.update_all(
+        set: [
+          from_leg_group_id:
+            Map.get(groups, transfer.from_leg_group_id, transfer.from_leg_group_id),
+          to_leg_group_id: Map.get(groups, transfer.to_leg_group_id, transfer.to_leg_group_id),
+          updated_at: now
+        ]
       )
-      |> Repo.update_all(set: [from_leg_group_id: normalized_group, updated_at: now])
-
-      from(transfer in FareTransferRule,
-        where:
-          transfer.organization_id == ^organization_id and
-            transfer.gtfs_version_id == ^gtfs_version_id and
-            transfer.to_leg_group_id == ^imported_group
-      )
-      |> Repo.update_all(set: [to_leg_group_id: normalized_group, updated_at: now])
     end)
 
     :ok
@@ -2547,7 +2592,18 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
     operation = record_operation(scope, conversion_summary(plan), plan.creates)
     setting = insert_settings(organization_id, gtfs_version_id, operation.id)
 
-    %{operation_id: operation.id, inverse: %{conversion: Map.put(inverse, :setting, setting.id)}}
+    %{
+      operation_id: operation.id,
+      inverse: %{
+        conversion:
+          inverse
+          |> Map.put(:setting, setting.id)
+          |> Map.put(
+            :after_snapshot,
+            Snapshot.capture(organization_id, gtfs_version_id)
+          )
+      }
+    }
   end
 
   defp conversion_summary(plan) do

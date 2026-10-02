@@ -38,6 +38,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TransfersTest do
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 2]
 
+  alias GtfsPlanner.FaresFixtures
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.FareProduct
@@ -86,11 +87,12 @@ defmodule GtfsPlanner.Gtfs.Fares.TransfersTest do
 
   describe "a free policy between two groups" do
     test "writes the pair's type 0 row, and the count only where both groups are one", context do
+      before = transfer_rows(context, "N_LOCAL", "N_LOCAL")
       assert {:ok, saved} = Transfers.save(context.scope, "N_LOCAL", "N_LOCAL", @local_free, nil)
 
       assert saved.inverse.transfer.from == "N_LOCAL"
       assert saved.inverse.transfer.to == "N_LOCAL"
-      assert saved.inverse.transfer.removed == []
+      assert Enum.map(saved.inverse.transfer.removed, &rule_fields/1) == before
 
       # The prepared case: `local -> local`, no product, two free changes, 90
       # minutes as 5400 seconds, basis 1, and type 0.
@@ -248,6 +250,8 @@ defmodule GtfsPlanner.Gtfs.Fares.TransfersTest do
     end
 
     test "a fee with no readable amount is refused and writes no product", context do
+      before = transfer_rows(context, "N_LOCAL", "N_INTERCITY")
+
       assert {:error, :invalid_price} =
                Transfers.save(
                  context.scope,
@@ -258,7 +262,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TransfersTest do
                )
 
       assert fee_products(context) == []
-      assert transfer_rows(context, "N_LOCAL", "N_INTERCITY") == []
+      assert transfer_rows(context, "N_LOCAL", "N_INTERCITY") == before
 
       assert {:error, :invalid_price} =
                Transfers.save(
@@ -412,7 +416,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TransfersTest do
                  %{
                    pay: :fee,
                    minutes: 60,
-                   fee: "fee_N_LOCAL_N_INTERCITY"
+                   fee: Decimal.new("0.25")
                  }
                )
 
@@ -427,20 +431,24 @@ defmodule GtfsPlanner.Gtfs.Fares.TransfersTest do
 
       assert fee.field == :fee
       assert fee.reviewed == Decimal.new("1.00")
-      assert fee.stored == "fee_N_LOCAL_N_INTERCITY"
+      assert fee.stored == Decimal.new("0.50")
     end
 
     test "an unmanaged version and a version that is not published are refused", context do
+      before = transfer_rows(context, "N_LOCAL", "N_LOCAL")
+
       assert {:error, :unmanaged} =
                Transfers.save(unmanaged_scope(context), "N_LOCAL", "N_LOCAL", @local_free, nil)
 
       assert {:error, :not_found} =
                Transfers.save(staging_scope(context), "N_LOCAL", "N_LOCAL", @local_free, nil)
 
-      assert transfer_rows(context, "N_LOCAL", "N_LOCAL") == []
+      assert transfer_rows(context, "N_LOCAL", "N_LOCAL") == before
     end
 
     test "a leg group this version does not hold is refused", context do
+      before = transfer_rows(context, "N_LOCAL", "N_LOCAL")
+
       # Another version's group, or an id no version of this organization holds,
       # is never written through this writer (AC-26, INV-5).
       assert {:error, :not_found} =
@@ -450,7 +458,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TransfersTest do
                Transfers.save(context.scope, "N_NOWHERE", "N_LOCAL", @local_free, nil)
 
       assert transfer_rows(context, "N_LOCAL", "N_NOWHERE") == []
-      assert transfer_rows(context, "N_LOCAL", "N_LOCAL") == []
+      assert transfer_rows(context, "N_LOCAL", "N_LOCAL") == before
 
       # The fixture's imported transfer rules name `LG_LOCAL` and `LG_INTERCITY`,
       # which the conversion does not carry into this version's leg groups, so a
@@ -460,6 +468,8 @@ defmodule GtfsPlanner.Gtfs.Fares.TransfersTest do
     end
 
     test "a choice, a time limit and a basis the reference does not allow are refused", context do
+      before = transfer_rows(context, "N_LOCAL", "N_LOCAL")
+
       assert {:error, :invalid_policy} =
                Transfers.save(context.scope, "N_LOCAL", "N_LOCAL", %{pay: :halved}, nil)
 
@@ -493,17 +503,18 @@ defmodule GtfsPlanner.Gtfs.Fares.TransfersTest do
                  nil
                )
 
-      assert transfer_rows(context, "N_LOCAL", "N_LOCAL") == []
+      assert transfer_rows(context, "N_LOCAL", "N_LOCAL") == before
     end
   end
 
   describe "the change-log entry" do
     test "one entry per save, naming the pair and the choice", context do
+      before = transfer_rows(context, "N_LOCAL", "N_LOCAL")
       assert {:ok, saved} = Transfers.save(context.scope, "N_LOCAL", "N_LOCAL", @local_free, nil)
 
       assert [entry] = transfer_writes(context)
       assert entry.id == saved.operation_id
-      assert entry.action == "created"
+      assert entry.action == "updated"
       assert entry.entity_type == "fare_version"
       assert entry.entity_external_id == "fares"
 
@@ -513,10 +524,12 @@ defmodule GtfsPlanner.Gtfs.Fares.TransfersTest do
       assert [after_row] = entry.changed_fields["after"]
       assert after_row["duration_limit"] == 5400
       assert after_row["transfer_count"] == 2
-      assert entry.changed_fields["before"] == []
+      assert length(entry.changed_fields["before"]) == length(before)
     end
 
     test "a fee entry names the amount, a full entry is a deletion", context do
+      before = transfer_rows(context, "N_LOCAL", "N_INTERCITY")
+
       assert {:ok, _fee} =
                Transfers.save(
                  context.scope,
@@ -527,7 +540,8 @@ defmodule GtfsPlanner.Gtfs.Fares.TransfersTest do
                )
 
       assert [entry] = transfer_writes(context)
-      assert entry.action == "created"
+      assert entry.action == "updated"
+      assert length(entry.changed_fields["before"]) == length(before)
 
       assert entry.changed_fields["summary"] ==
                "Set the Local routes to Intercity transfer to charge $0.25"
@@ -590,6 +604,8 @@ defmodule GtfsPlanner.Gtfs.Fares.TransfersTest do
     end
 
     test "a fee reversal puts the pair's rule and fee back", context do
+      before = transfer_rows(context, "N_LOCAL", "N_INTERCITY")
+
       assert {:ok, saved} =
                Transfers.save(
                  context.scope,
@@ -601,12 +617,14 @@ defmodule GtfsPlanner.Gtfs.Fares.TransfersTest do
 
       assert {:ok, _undone} = Fares.undo(context.scope, saved.operation_id, saved.inverse)
 
-      assert transfer_rows(context, "N_LOCAL", "N_INTERCITY") == []
+      assert transfer_rows(context, "N_LOCAL", "N_INTERCITY") == before
       assert fee_products(context) == []
       assert fee_details(context) == []
     end
 
     test "a fee reversal restores the amount the write replaced", context do
+      before = transfer_rows(context, "N_LOCAL", "N_INTERCITY")
+
       assert {:ok, first} =
                Transfers.save(
                  context.scope,
@@ -635,7 +653,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TransfersTest do
       # The first save's own reversal is still available after it.
       assert {:ok, _undone_first} = Fares.undo(context.scope, first.operation_id, first.inverse)
 
-      assert transfer_rows(context, "N_LOCAL", "N_INTERCITY") == []
+      assert transfer_rows(context, "N_LOCAL", "N_INTERCITY") == before
       assert fee_products(context) == []
     end
 
@@ -813,7 +831,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TransfersTest do
   end
 
   defp group_with_fares(context, name, fares) do
-    {:ok, saved} = Fares.save_route_group(context.scope, %{name: name, route_ids: []})
+    {:ok, saved} = FaresFixtures.save_route_group(context.scope, %{name: name, route_ids: []})
     network_id = saved.inverse.route_group.network.after.network_id
 
     product_ids =
@@ -836,7 +854,7 @@ defmodule GtfsPlanner.Gtfs.Fares.TransfersTest do
 
   defp add_fare(context, name, amount) do
     {:ok, saved} =
-      Fares.save_fare(context.scope, %{
+      FaresFixtures.save_fare(context.scope, %{
         name: name,
         kind: "single",
         media_ids: ["cash"],

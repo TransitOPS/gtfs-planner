@@ -5641,6 +5641,32 @@ html:has(#schedules-grid) {
   color: var(--color-muted);
 }
 
+/* Fare workspaces use a 44px minimum for every control the operator can reach.
+   A few compact fields intentionally use Tailwind's 40px `min-h-10`; the
+   workspace contract raises those fields and disclosure triggers together. */
+#fare-prices-panel {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+body:has(#fare-editor-page) :is(button, input:not([type="hidden"], [type="checkbox"], [type="radio"]), select, textarea, summary, a.btn, [role="button"]),
+body:has(#route-fares) :is(button, input:not([type="hidden"], [type="checkbox"], [type="radio"]), select, textarea, summary, a.btn, [role="button"]) {
+  min-height: 44px;
+}
+
+body:has(#fare-editor-page) label:has(> input:is([type="checkbox"], [type="radio"])),
+body:has(#route-fares) label:has(> input:is([type="checkbox"], [type="radio"])) {
+  min-height: 44px;
+}
+
+/* The fare editor shell is rendered in more than one LiveView and several
+   buttons are deliberately unstyled. The dialog and drawer portals are
+   siblings of the page root, so scope through the owning fare page instead. */
+body:has(#fare-editor-page) :is(a, button, input, select, textarea, summary, [role="button"], [tabindex]:not([tabindex="-1"])):focus-visible,
+body:has(#route-fares) :is(a, button, input, select, textarea, summary, [role="button"], [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
 /* The keycaps the grid reading line, the grid bar's idle hint and the shortcut
    sheet share. */
 #cell-reading kbd,

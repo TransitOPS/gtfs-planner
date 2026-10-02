@@ -9,7 +9,10 @@ defmodule GtfsPlanner.Gtfs.Fares.SchemaCorrectionsTest do
   alias GtfsPlanner.Gtfs.FareProduct
   alias GtfsPlanner.Gtfs.RiderCategory
 
-  @migration_path "../../../../../priv/repo/migrations/*_fare_schema_corrections.exs"
+  @migration_path Path.expand(
+                    "../../../../priv/repo/migrations/*_fare_schema_corrections.exs",
+                    __DIR__
+                  )
                   |> Path.expand(__DIR__)
                   |> Path.wildcard()
                   |> List.first()
@@ -61,23 +64,23 @@ defmodule GtfsPlanner.Gtfs.Fares.SchemaCorrectionsTest do
   end
 
   describe "FareAttribute.changeset/2" do
-    test "a price of zero is valid" do
-      changeset = fare_attribute_changeset(context(), price: Decimal.new("0"))
+    test "a price of zero is valid", context do
+      changeset = fare_attribute_changeset(fare_scope(context), price: Decimal.new("0"))
 
       assert changeset.valid?
       assert {:ok, fare} = Repo.insert(changeset)
       assert Decimal.equal?(fare.price, 0)
     end
 
-    test "a negative price is still refused" do
-      refute fare_attribute_changeset(context(), price: Decimal.new("-0.01")).valid?
+    test "a negative price is still refused", context do
+      refute fare_attribute_changeset(fare_scope(context), price: Decimal.new("-0.01")).valid?
     end
   end
 
   describe "FareProduct.changeset/2" do
-    test "a negative amount and a missing name are valid" do
+    test "a negative amount and a missing name are valid", context do
       changeset =
-        fare_product_changeset(context(), %{
+        fare_product_changeset(fare_scope(context), %{
           fare_product_id: "p_adult_cash",
           fare_media_id: "cash",
           amount: Decimal.new("-0.50"),
@@ -90,20 +93,21 @@ defmodule GtfsPlanner.Gtfs.Fares.SchemaCorrectionsTest do
       assert Decimal.equal?(product.amount, Decimal.new("-0.50"))
     end
 
-    test "two products differing only by rider category both insert" do
-      adult = insert_product!(context(), "p_cash", "adult")
-      reduced = insert_product!(context(), "p_cash", "reduced")
+    test "two products differing only by rider category both insert", context do
+      adult = insert_product!(fare_scope(context), "p_cash", "adult")
+      reduced = insert_product!(fare_scope(context), "p_cash", "reduced")
 
       assert adult.id != reduced.id
       assert Repo.aggregate(FareProduct, :count) == 2
     end
 
-    test "two products sharing the widened key still conflict" do
-      insert_product!(context(), "p_cash", "adult")
+    test "two products sharing the widened key still conflict", context do
+      insert_product!(fare_scope(context), "p_cash", "adult")
 
       duplicate =
-        fare_product_changeset(context(), %{
+        fare_product_changeset(fare_scope(context), %{
           fare_product_id: "p_cash",
+          fare_media_id: "cash",
           rider_category_id: "adult",
           amount: "0"
         })
@@ -115,19 +119,19 @@ defmodule GtfsPlanner.Gtfs.Fares.SchemaCorrectionsTest do
   end
 
   describe "FareLegRule.changeset/2" do
-    test "two rules differing only by from_timeframe_group_id both insert" do
-      morning = insert_leg_rule!(context(), "T_AM")
-      evening = insert_leg_rule!(context(), "T_PM")
+    test "two rules differing only by from_timeframe_group_id both insert", context do
+      morning = insert_leg_rule!(fare_scope(context), "T_AM")
+      evening = insert_leg_rule!(fare_scope(context), "T_PM")
 
       assert morning.id != evening.id
       assert Repo.aggregate(FareLegRule, :count) == 2
     end
 
-    test "two rules sharing the widened key still conflict" do
-      insert_leg_rule!(context(), "T_AM")
+    test "two rules sharing the widened key still conflict", context do
+      insert_leg_rule!(fare_scope(context), "T_AM")
 
       duplicate =
-        fare_leg_rule_changeset(context(), %{
+        fare_leg_rule_changeset(fare_scope(context), %{
           leg_group_id: "LG_LOCAL",
           network_id: "local",
           from_area_id: "NPT",
@@ -144,29 +148,31 @@ defmodule GtfsPlanner.Gtfs.Fares.SchemaCorrectionsTest do
   end
 
   describe "RiderCategory.changeset/2" do
-    test "is_default_fare_category outside 0 or 1 is invalid" do
-      changeset = rider_category_changeset(context(), is_default_fare_category: 2)
+    test "is_default_fare_category outside 0 or 1 is invalid", context do
+      changeset = rider_category_changeset(fare_scope(context), is_default_fare_category: 2)
 
       refute changeset.valid?
       assert %{is_default_fare_category: ["is invalid"]} = errors_on(changeset)
     end
 
-    test "0 and 1 are valid and stored" do
+    test "0 and 1 are valid and stored", context do
       for value <- [0, 1] do
-        changeset = rider_category_changeset(context(), is_default_fare_category: value)
+        changeset = rider_category_changeset(fare_scope(context), is_default_fare_category: value)
         assert changeset.valid?
         assert {:ok, category} = Repo.insert(changeset)
         assert category.is_default_fare_category == value
       end
     end
 
-    test "an absent default is stored as null" do
-      changeset = rider_category_changeset(context(), %{})
+    test "an absent default is stored as null", context do
+      changeset = rider_category_changeset(fare_scope(context), %{})
       assert changeset.valid?
       assert {:ok, category} = Repo.insert(changeset)
       assert category.is_default_fare_category == nil
     end
   end
+
+  defp fare_scope(context), do: Map.take(context, [:organization_id, :gtfs_version_id])
 
   defp fare_attribute_changeset(context, overrides) do
     FareAttribute.changeset(
@@ -249,14 +255,14 @@ defmodule GtfsPlanner.Gtfs.Fares.SchemaCorrectionsTest do
   defp rider_category_changeset(context, overrides) do
     RiderCategory.changeset(
       %RiderCategory{},
-      Map.new(
+      Map.merge(
         %{
           rider_category_id: "rc_#{System.unique_integer()}",
           rider_category_name: "Adult",
           organization_id: context.organization_id,
           gtfs_version_id: context.gtfs_version_id
         },
-        overrides
+        Map.new(overrides)
       )
     )
   end

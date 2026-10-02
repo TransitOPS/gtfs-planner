@@ -64,7 +64,10 @@ defmodule GtfsPlanner.Gtfs.Fares.Interpreter do
   alias GtfsPlanner.Gtfs.FareRule
   alias GtfsPlanner.Gtfs.Fares
   alias GtfsPlanner.Gtfs.Fares.Interpreter.Rows
+  alias GtfsPlanner.Gtfs.Fares.PeriodCalendar
+  alias GtfsPlanner.Gtfs.FareTimePeriod
   alias GtfsPlanner.Gtfs.FareTransferRule
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Network
   alias GtfsPlanner.Gtfs.RiderCategory
   alias GtfsPlanner.Gtfs.Route
@@ -105,7 +108,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Interpreter do
       when is_binary(organization_id) and is_binary(gtfs_version_id) do
     managed? = Fares.managed?(organization_id, gtfs_version_id)
 
-    %Rows{
+    rows = %Rows{
       organization_id: organization_id,
       gtfs_version_id: gtfs_version_id,
       managed?: managed?,
@@ -126,6 +129,17 @@ defmodule GtfsPlanner.Gtfs.Fares.Interpreter do
       calendars: scoped(ServiceCalendar, organization_id, gtfs_version_id),
       calendar_dates: scoped(CalendarDate, organization_id, gtfs_version_id)
     }
+
+    periods = if managed?, do: scoped(FareTimePeriod, organization_id, gtfs_version_id), else: []
+
+    {calendars, renames} = PeriodCalendar.build(periods, rows)
+
+    timeframes =
+      Enum.map(rows.timeframes, fn timeframe ->
+        %{timeframe | service_id: Map.get(renames, timeframe.service_id, timeframe.service_id)}
+      end)
+
+    %{rows | fare_calendars: calendars, timeframes: timeframes}
   end
 
   @doc """
@@ -200,7 +214,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Interpreter do
   fare covers is reported as `unknown` and leaves `total` as `nil`, because a journey
   nobody can price must not read as a free ride.
 
-  A fare with no `transfers` value covers a single ride and a `transfer_duration` that
+  A fare with no `transfers` value covers unlimited changes and a `transfer_duration` that
   cannot be measured — a leg with no departure or arrival — is not read as a limit that
   has passed. A fare with `transfers` of `-1` spans every change.
   """
@@ -346,9 +360,9 @@ defmodule GtfsPlanner.Gtfs.Fares.Interpreter do
   end
 
   # `transfers` of `-1` spans every change, a value is the number of changes allowed,
-  # and no value at all covers a single ride.
+  # and no value at all also spans every change.
   defp v1_allows_changes?(_fare, 0), do: true
-  defp v1_allows_changes?(%{transfers: -1}, _changes), do: true
+  defp v1_allows_changes?(%{transfers: transfers}, _changes) when transfers in [nil, -1], do: true
 
   defp v1_allows_changes?(%{transfers: transfers}, changes) when is_integer(transfers),
     do: changes <= transfers
@@ -543,7 +557,9 @@ defmodule GtfsPlanner.Gtfs.Fares.Interpreter do
       |> Map.new(&{&1.service_id, &1.exception_type})
 
     running =
-      rows.calendars
+      (rows.calendars ++ rows.fare_calendars)
+      |> Map.new(&{&1.service_id, &1})
+      |> Map.values()
       |> Enum.filter(&calendar_runs?(&1, date))
       |> Enum.map(& &1.service_id)
       |> MapSet.new()
@@ -579,13 +595,9 @@ defmodule GtfsPlanner.Gtfs.Fares.Interpreter do
   # `timeframes.txt` stores local wall-clock times as text, and the reference allows
   # `H:MM:SS` through `HH:MM:SS` and hours above 24.
   defp time_seconds(value) do
-    with [hours, minutes, seconds] <- value |> presence() |> String.split(":"),
-         {hour_value, ""} <- Integer.parse(hours),
-         {minute_value, ""} <- Integer.parse(minutes),
-         {second_value, ""} <- Integer.parse(seconds) do
-      hour_value * 3600 + minute_value * 60 + second_value
-    else
-      _other -> nil
+    case GtfsTime.parse(presence(value)) do
+      {:ok, seconds} -> seconds
+      {:error, :invalid_time} -> nil
     end
   end
 

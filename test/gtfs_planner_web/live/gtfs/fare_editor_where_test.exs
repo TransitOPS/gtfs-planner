@@ -30,6 +30,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorWhereTest do
   import Phoenix.LiveViewTest
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.FaresFixtures
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareProductDetail
   alias GtfsPlanner.Gtfs.Fares
@@ -100,7 +101,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorWhereTest do
       version = managed(ctx)
 
       {:ok, _saved} =
-        Fares.save_route_group(scope(ctx, version), %{
+        FaresFixtures.save_route_group(scope(ctx, version), %{
           network_id: "N_LOCAL",
           name: "Local routes",
           route_ids: Enum.reject(local_route_ids(ctx, version), &(&1 == "40"))
@@ -109,6 +110,9 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorWhereTest do
       view = open_where(ctx, version)
 
       assert has_element?(view, "#route-groups-unassigned")
+      assert has_element?(view, "#route-groups-unassigned [data-group-badge='40']")
+      refute has_element?(view, "#route-groups-unassigned [data-group-badge='1']")
+      refute has_element?(view, "#route-groups-unassigned [data-group-badge='10']")
       unassigned = view |> element("#route-groups-unassigned") |> render()
       assert unassigned =~ "In no group"
       assert unassigned =~ "No fare"
@@ -370,6 +374,12 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorWhereTest do
       assert cell_products(ctx, version, "CST", "TOL") == @valley_coast
       assert cell_products(ctx, version, "TOL", "CST") == @valley_coast
       assert has_element?(view, "[data-cell='CST-TOL']", "Valley-coast ride")
+
+      view |> element("#undo-prices") |> render_click()
+      assert has_element?(view, "#fare-note", "Change undone.")
+      assert has_element?(view, "[data-cell='CST-TOL'][data-gap='true']", "No fare")
+      assert cell_products(ctx, version, "CST", "TOL") == []
+      assert cell_products(ctx, version, "TOL", "CST") == []
     end
 
     test "a cell can be given a different fare and its reverse left alone", ctx do

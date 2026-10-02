@@ -100,6 +100,7 @@ defmodule GtfsPlanner.Gtfs.Fares do
 
   import Ecto.Query, warn: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Gtfs.Area
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendar
@@ -113,10 +114,12 @@ defmodule GtfsPlanner.Gtfs.Fares do
   alias GtfsPlanner.Gtfs.FareProductDetail
   alias GtfsPlanner.Gtfs.FareRule
   alias GtfsPlanner.Gtfs.Fares.Conversion
+  alias GtfsPlanner.Gtfs.Fares.Identifier
   alias GtfsPlanner.Gtfs.Fares.Interpreter
   alias GtfsPlanner.Gtfs.Fares.Money
   alias GtfsPlanner.Gtfs.Fares.Normalize
   alias GtfsPlanner.Gtfs.Fares.Pricing
+  alias GtfsPlanner.Gtfs.Fares.Snapshot
   alias GtfsPlanner.Gtfs.Fares.Transfers
   alias GtfsPlanner.Gtfs.Fares.VersionLock
   alias GtfsPlanner.Gtfs.Fares.Workspace
@@ -266,6 +269,32 @@ defmodule GtfsPlanner.Gtfs.Fares do
     {:fare_time_periods, FareTimePeriod}
   ]
 
+  @doc "The persisted fare facts a drawer reviews before editing."
+  def reviewed_snapshot(organization_id, gtfs_version_id),
+    do: Snapshot.capture(organization_id, gtfs_version_id)
+
+  defp reviewed_edit(organization_id, gtfs_version_id, schema, field, params) do
+    id = fare_param(params, field)
+
+    existing? =
+      not is_nil(id) and
+        Repo.exists?(
+          from row in schema,
+            where:
+              row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id and
+                field(row, ^field) == ^id
+        )
+
+    if existing?,
+      do:
+        Snapshot.require_current(
+          organization_id,
+          gtfs_version_id,
+          fare_param(params, :reviewed_snapshot)
+        ),
+      else: :ok
+  end
+
   @doc """
   Applies the inverse of a write while the rows it created are still the
   version's own (R15).
@@ -290,6 +319,33 @@ defmodule GtfsPlanner.Gtfs.Fares do
 
   def undo(scope, operation_id, %{conversion: _inverse} = inverse) do
     Conversion.undo_conversion(scope, operation_id, inverse)
+  end
+
+  def undo(scope, operation_id, %{fares: inverse}) do
+    write(scope, "Undid fare change", :fares, fn _setting ->
+      with :ok <- require_entry(operation_id, scope.organization_id, scope.gtfs_version_id),
+           :ok <-
+             Snapshot.require_current(
+               scope.organization_id,
+               scope.gtfs_version_id,
+               inverse.after_snapshot
+             ) do
+        Enum.each(
+          Enum.reverse(inverse.inverses),
+          &restore_fare(scope.organization_id, scope.gtfs_version_id, &1)
+        )
+
+        {:ok,
+         %{
+           before: [],
+           after: [],
+           inverse: nil,
+           operation_id: operation_id,
+           action: "rolled_back",
+           rolled_back_to_log_id: operation_id
+         }}
+      end
+    end)
   end
 
   def undo(
@@ -621,7 +677,14 @@ defmodule GtfsPlanner.Gtfs.Fares do
   @spec load_workspace(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, Workspace.t()}
   def load_workspace(organization_id, gtfs_version_id)
       when is_binary(organization_id) and is_binary(gtfs_version_id) do
-    {:ok, build_workspace(organization_id, gtfs_version_id)}
+    if Repo.in_transaction?() or Repo.config()[:pool] == Sandbox do
+      {:ok, build_workspace(organization_id, gtfs_version_id)}
+    else
+      Repo.transaction(fn ->
+        Repo.query!("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        build_workspace(organization_id, gtfs_version_id)
+      end)
+    end
   end
 
   defp build_workspace(organization_id, gtfs_version_id) do
@@ -638,6 +701,8 @@ defmodule GtfsPlanner.Gtfs.Fares do
     names = zone_names(organization_id, gtfs_version_id, rows)
 
     %Workspace{
+      reviewed_snapshot: reviewed_snapshot(organization_id, gtfs_version_id),
+      matching_rules: rows.fare_leg_rules,
       managed?: rows.managed?,
       older_format: setting && setting.older_format,
       currency: currency(rows.fare_products),
@@ -1040,7 +1105,11 @@ defmodule GtfsPlanner.Gtfs.Fares do
 
       rule ->
         %{
-          pay: pay(rule.fare_transfer_type),
+          pay:
+            if(rule.fare_transfer_type == 0 and rule.fare_product_id not in [nil, ""],
+              do: :fee,
+              else: pay(rule.fare_transfer_type)
+            ),
           minutes: minutes(rule),
           count: rule.transfer_count,
           fee: fee(rule),
@@ -1232,13 +1301,25 @@ defmodule GtfsPlanner.Gtfs.Fares do
         operation_id = Map.get(result, :operation_id) || entry_id
         record_entry(scope, setting, summary, result, entry_id, operation_id)
 
-        %{operation_id: operation_id, inverse: wrap_inverse(inverse_key, result.inverse)}
+        %{
+          operation_id: operation_id,
+          inverse:
+            wrap_inverse(
+              inverse_key,
+              bind_group_inverse(inverse_key, result.inverse, organization_id, gtfs_version_id)
+            )
+        }
         |> Map.merge(Map.get(result, :reported, %{}))
       else
         {:error, reason} -> Repo.rollback(reason)
       end
     end)
   end
+
+  defp bind_group_inverse(:fares, inverse, organization_id, gtfs_version_id) when is_map(inverse),
+    do: Map.put(inverse, :after_snapshot, reviewed_snapshot(organization_id, gtfs_version_id))
+
+  defp bind_group_inverse(_key, inverse, _organization_id, _gtfs_version_id), do: inverse
 
   # The one `fare_version` change-log entry of an operation (R15). The entry
   # addresses the version's Fares section rather than a GTFS natural key: an
@@ -1579,6 +1660,72 @@ defmodule GtfsPlanner.Gtfs.Fares do
     end
   end
 
+  @doc "Saves every product owned by one displayed fare as one operation."
+  def save_fares(scope, params) when is_list(params) and params != [] do
+    write(scope, "Saved fare", :fares, fn _setting ->
+      with :ok <-
+             require_group_snapshot(scope, Enum.map(params, &fare_param(&1, :reviewed_snapshot))),
+           {:ok, results} <-
+             collect_fare_results(params, &save_grouped_product(scope, &1)) do
+        grouped_fare_result(results)
+      end
+    end)
+  end
+
+  @doc "Deletes every product owned by one displayed fare as one operation."
+  def delete_fares(scope, calls) when is_list(calls) and calls != [] do
+    write(scope, "Deleted fare", :fares, fn _setting ->
+      with :ok <-
+             require_group_snapshot(
+               scope,
+               Enum.map(calls, &fare_param(elem(&1, 2), :reviewed_snapshot))
+             ),
+           {:ok, results} <-
+             collect_fare_results(calls, &delete_grouped_product(scope, &1)) do
+        grouped_fare_result(results)
+      end
+    end)
+  end
+
+  defp save_grouped_product(scope, attrs) do
+    with {:ok, name} <- trimmed_name(attrs) do
+      attrs =
+        Map.put(
+          attrs,
+          :reviewed_snapshot,
+          reviewed_snapshot(scope.organization_id, scope.gtfs_version_id)
+        )
+
+      apply_fare(scope.organization_id, scope.gtfs_version_id, name, attrs)
+    end
+  end
+
+  defp delete_grouped_product(scope, {id, replacement, expected}),
+    do: remove_fare(scope.organization_id, scope.gtfs_version_id, id, replacement, expected)
+
+  defp require_group_snapshot(scope, snapshots) do
+    current = reviewed_snapshot(scope.organization_id, scope.gtfs_version_id)
+    if Enum.all?(snapshots, &(is_binary(&1) and &1 == current)), do: :ok, else: {:error, :stale}
+  end
+
+  defp collect_fare_results(items, fun) do
+    Enum.reduce_while(items, {:ok, []}, fn item, {:ok, results} ->
+      case fun.(item) do
+        {:ok, result} -> {:cont, {:ok, results ++ [result]}}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp grouped_fare_result(results) do
+    {:ok,
+     %{
+       before: Enum.flat_map(results, & &1.before),
+       after: Enum.flat_map(results, & &1.after),
+       inverse: %{inverses: Enum.map(results, & &1.inverse)}
+     }}
+  end
+
   @doc """
   Deletes one fare and settles the rules that named it (AC-16).
 
@@ -1816,7 +1963,15 @@ defmodule GtfsPlanner.Gtfs.Fares do
   defp apply_rider_type(organization_id, gtfs_version_id, name, params) do
     categories = version_rider_categories(organization_id, gtfs_version_id)
 
-    with {:ok, rider_id} <- rider_category_id(categories, name, params),
+    with :ok <-
+           reviewed_edit(
+             organization_id,
+             gtfs_version_id,
+             RiderCategory,
+             :rider_category_id,
+             params
+           ),
+         {:ok, rider_id} <- rider_category_id(categories, name, params),
          {:ok, category} <-
            write_rider_category(organization_id, gtfs_version_id, rider_id, name, params),
          {:ok, cleared} <-
@@ -2219,7 +2374,8 @@ defmodule GtfsPlanner.Gtfs.Fares do
   # -- Writing one payment method --------------------------------------------------
 
   defp apply_payment_method(organization_id, gtfs_version_id, name, params) do
-    with {:ok, media_id} <- fare_media_id(organization_id, gtfs_version_id, name, params),
+    with :ok <- reviewed_edit(organization_id, gtfs_version_id, FareMedia, :fare_media_id, params),
+         {:ok, media_id} <- fare_media_id(organization_id, gtfs_version_id, name, params),
          {:ok, media_type} <- media_type(params),
          {:ok, medium} <-
            write_fare_media(organization_id, gtfs_version_id, media_id, name, media_type),
@@ -2637,7 +2793,8 @@ defmodule GtfsPlanner.Gtfs.Fares do
   defp apply_route_group(organization_id, gtfs_version_id, name, params) do
     networks = version_networks(organization_id, gtfs_version_id)
 
-    with {:ok, network_id} <- route_group_id(networks, name, params),
+    with :ok <- reviewed_edit(organization_id, gtfs_version_id, Network, :network_id, params),
+         {:ok, network_id} <- route_group_id(networks, name, params),
          {:ok, network} <- write_network(organization_id, gtfs_version_id, network_id, name),
          {:ok, routes} <- route_group_routes(organization_id, gtfs_version_id, params),
          {:ok, membership} <-
@@ -4601,7 +4758,15 @@ defmodule GtfsPlanner.Gtfs.Fares do
   end
 
   defp apply_time_period(organization_id, gtfs_version_id, name, params) do
-    with {:ok, ranges} <- time_period_ranges(params),
+    with :ok <-
+           reviewed_edit(
+             organization_id,
+             gtfs_version_id,
+             FareTimePeriod,
+             :timeframe_group_id,
+             params
+           ),
+         {:ok, ranges} <- time_period_ranges(params),
          {:ok, group_id} <-
            time_period_group_id(organization_id, gtfs_version_id, name, params),
          {:ok, service_id} <-
@@ -5223,7 +5388,7 @@ defmodule GtfsPlanner.Gtfs.Fares do
       case inverse do
         %{operation: :save, rules: %{removed: removed, added: added}} ->
           Enum.any?(removed, &rule_present?(&1, organization_id, gtfs_version_id)) or
-            not Enum.all?(added, &(not rule_present?(&1, organization_id, gtfs_version_id)))
+            not Enum.all?(added, &added_rule_unchanged?(&1, organization_id, gtfs_version_id))
 
         %{operation: :delete, rules: removed} ->
           Enum.any?(removed, &rule_present?(&1, organization_id, gtfs_version_id))
@@ -5246,6 +5411,17 @@ defmodule GtfsPlanner.Gtfs.Fares do
     Enum.each(rules, &Repo.insert!(Ecto.Changeset.change(&1)))
 
     :ok
+  end
+
+  defp added_rule_unchanged?(rule, organization_id, gtfs_version_id) do
+    current =
+      FareLegRule
+      |> scoped(organization_id, gtfs_version_id)
+      |> where([r], r.id == ^rule.id)
+      |> Repo.one()
+
+    fields = [:network_id, :from_area_id, :to_area_id, :from_timeframe_group_id, :fare_product_id]
+    current != nil and Map.take(current, fields) == Map.take(rule, fields)
   end
 
   # The pass must still hold exactly the accepted list the write left, which is
@@ -5337,7 +5513,9 @@ defmodule GtfsPlanner.Gtfs.Fares do
   defp apply_fare(organization_id, gtfs_version_id, name, params) do
     products = version_products(organization_id, gtfs_version_id)
 
-    with {:ok, product_id} <- fare_product_id(products, name, params),
+    with :ok <-
+           reviewed_edit(organization_id, gtfs_version_id, FareProduct, :fare_product_id, params),
+         {:ok, product_id} <- fare_product_id(products, name, params),
          {:ok, media_ids} <- fare_media_ids(organization_id, gtfs_version_id, params),
          {:ok, riders} <-
            fare_rider_ids(organization_id, gtfs_version_id, products, product_id, params),
@@ -5597,12 +5775,7 @@ defmodule GtfsPlanner.Gtfs.Fares do
 
   # A fare's GTFS id is its name the way `Fares.Conversion` writes a route
   # group's: lower case, with every run of other characters one underscore.
-  defp fare_slug(name) do
-    name
-    |> String.downcase()
-    |> String.replace(~r/[^a-z0-9]+/, "_")
-    |> String.trim("_")
-  end
+  defp fare_slug(name), do: Identifier.normalize(name)
 
   # Every row of one fare carries its name, so a rename writes all of them and
   # the inverse carries the name they held.
@@ -6140,7 +6313,8 @@ defmodule GtfsPlanner.Gtfs.Fares do
   defp price_change(cell, products, code) do
     key = cell_key(cell)
 
-    with {:ok, product} <- fetch_product(products, key),
+    with true <- Map.has_key?(cell, :amount),
+         {:ok, product} <- fetch_product(products, key),
          {:ok, amount} <- parse_amount(cell, code) do
       {:ok,
        %{
@@ -6150,6 +6324,9 @@ defmodule GtfsPlanner.Gtfs.Fares do
          name: product.fare_product_name,
          currency: product.currency || code
        }}
+    else
+      false -> {:error, :invalid_price}
+      error -> error
     end
   end
 
@@ -6200,6 +6377,7 @@ defmodule GtfsPlanner.Gtfs.Fares do
   # `apply_price_change/3` — which is already a price and needs only the
   # currency's minor units below. A `Decimal` is never read from a person, so
   # `Money.parse/1` is not asked to parse one.
+  defp money_amount(nil), do: {:ok, nil}
   defp money_amount(%Decimal{} = amount), do: {:ok, amount}
   defp money_amount(amount), do: Money.parse(amount)
 

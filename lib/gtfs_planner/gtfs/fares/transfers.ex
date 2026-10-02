@@ -328,7 +328,11 @@ defmodule GtfsPlanner.Gtfs.Fares.Transfers do
   # A fee is compared as a decimal, so an amount written and read back is the same
   # fact however either side spells it.
   defp same_policy_value(:fee, reviewed, stored) do
-    decimal_amount(reviewed) == decimal_amount(stored)
+    case {decimal_amount(reviewed), decimal_amount(stored)} do
+      {nil, nil} -> true
+      {%Decimal{} = left, %Decimal{} = right} -> Decimal.equal?(left, right)
+      _ -> false
+    end
   end
 
   defp same_policy_value(_field, reviewed, stored), do: reviewed == stored
@@ -904,7 +908,14 @@ defmodule GtfsPlanner.Gtfs.Fares.Transfers do
 
   defp decimal_amount(%Decimal{} = amount), do: amount
   defp decimal_amount(""), do: nil
-  defp decimal_amount(value) when is_binary(value), do: Decimal.parse(value)
+
+  defp decimal_amount(value) when is_binary(value) do
+    case Decimal.parse(value) do
+      {amount, ""} -> amount
+      _ -> :invalid
+    end
+  end
+
   defp decimal_amount(_value), do: nil
 
   # -- The change-log entry ------------------------------------------------------

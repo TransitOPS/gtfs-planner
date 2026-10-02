@@ -250,6 +250,21 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
     }
   end
 
+  @doc "Formats managed fare amounts with the currency's minor units, including free rides."
+  def managed_fare_money_spec(spec) do
+    currency_field = if spec.filename == "fare_products.txt", do: :currency, else: :currency_type
+
+    Map.update!(spec, :fields, fn fields ->
+      Enum.map(fields, fn
+        {name, field} when field in [:amount, :price] ->
+          {name, {:currency_amount, field, currency_field}}
+
+        field ->
+          field
+      end)
+    end)
+  end
+
   def shapes_spec do
     %{
       filename: "shapes.txt",

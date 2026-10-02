@@ -40,6 +40,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RouteGroupsTest do
   import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 1]
   import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 2]
 
+  alias GtfsPlanner.FaresFixtures
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.FareLegRule
@@ -85,7 +86,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RouteGroupsTest do
   describe "adding a route to a route group" do
     test "moves it out of the group that held it and answers which one", context do
       assert {:ok, result} =
-               Fares.save_route_group(context.scope, local_form(@local_routes ++ ["10"]))
+               FaresFixtures.save_route_group(context.scope, local_form(@local_routes ++ ["10"]))
 
       # AC-19: the routes it moved, and the group each came from.
       assert result.moved == [%{route_id: "10", from_network_id: "N_INTERCITY"}]
@@ -103,7 +104,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RouteGroupsTest do
     end
 
     test "a route the form leaves out is removed from the group", context do
-      assert {:ok, result} = Fares.save_route_group(context.scope, local_form(["1", "2"]))
+      assert {:ok, result} = FaresFixtures.save_route_group(context.scope, local_form(["1", "2"]))
 
       assert result.moved == []
       assert group_routes(context, "N_LOCAL") == ["1", "2"]
@@ -116,7 +117,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RouteGroupsTest do
 
     test "renaming leaves the id every rule names alone, and records one entry", context do
       assert {:ok, result} =
-               Fares.save_route_group(context.scope, %{
+               FaresFixtures.save_route_group(context.scope, %{
                  network_id: "N_LOCAL",
                  name: "Local and near",
                  route_ids: @local_routes
@@ -133,7 +134,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RouteGroupsTest do
       # A repeated save of what is already stored is still one operation, with
       # no route moved and nothing written.
       assert {:ok, repeat} =
-               Fares.save_route_group(context.scope, %{
+               FaresFixtures.save_route_group(context.scope, %{
                  network_id: "N_LOCAL",
                  name: "Local and near",
                  route_ids: @local_routes
@@ -148,18 +149,18 @@ defmodule GtfsPlanner.Gtfs.Fares.RouteGroupsTest do
       # A group's GTFS id is its name as an id, so an operator naming
       # "Coast runs" again is creating a second group with the first's id.
       assert {:ok, _created} =
-               Fares.save_route_group(context.scope, %{name: "Coast runs", route_ids: []})
+               FaresFixtures.save_route_group(context.scope, %{name: "Coast runs", route_ids: []})
 
       assert {:error, :duplicate_route_group} =
-               Fares.save_route_group(context.scope, %{name: "Coast runs", route_ids: []})
+               FaresFixtures.save_route_group(context.scope, %{name: "Coast runs", route_ids: []})
 
       assert {:error, changeset} =
-               Fares.save_route_group(context.scope, %{name: "   ", route_ids: []})
+               FaresFixtures.save_route_group(context.scope, %{name: "   ", route_ids: []})
 
       assert "can't be blank" in errors_on(changeset).name
 
       assert {:error, :not_found} =
-               Fares.save_route_group(context.scope, %{
+               FaresFixtures.save_route_group(context.scope, %{
                  network_id: "N_NOWHERE",
                  name: "Nowhere",
                  route_ids: []
@@ -168,13 +169,16 @@ defmodule GtfsPlanner.Gtfs.Fares.RouteGroupsTest do
       # A route this version does not hold is another version's route, which is
       # never written into this one's `route_networks` (INV-5).
       assert {:error, :not_found} =
-               Fares.save_route_group(context.scope, local_form(@local_routes ++ ["9999"]))
+               FaresFixtures.save_route_group(
+                 context.scope,
+                 local_form(@local_routes ++ ["9999"])
+               )
 
       assert {:error, :unmanaged} =
-               Fares.save_route_group(unmanaged_scope(context), %{name: "Somewhere"})
+               FaresFixtures.save_route_group(unmanaged_scope(context), %{name: "Somewhere"})
 
       assert {:error, :not_found} =
-               Fares.save_route_group(staging_scope(context), %{name: "Somewhere"})
+               FaresFixtures.save_route_group(staging_scope(context), %{name: "Somewhere"})
 
       assert group_names(context) == [
                {"N_INTERCITY", "Intercity"},
@@ -225,10 +229,13 @@ defmodule GtfsPlanner.Gtfs.Fares.RouteGroupsTest do
 
     test "a group nothing names is deleted whole, and one a pass accepts is not", context do
       assert {:ok, _created} =
-               Fares.save_route_group(context.scope, %{name: "Coast runs", route_ids: ["1", "2"]})
+               FaresFixtures.save_route_group(context.scope, %{
+                 name: "Coast runs",
+                 route_ids: ["1", "2"]
+               })
 
       assert {:ok, _pass} =
-               Fares.save_fare(context.scope, %{
+               FaresFixtures.save_fare(context.scope, %{
                  fare_product_id: "day_pass_adult_cash",
                  name: "Day pass",
                  kind: "pass",
@@ -277,7 +284,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RouteGroupsTest do
   describe "undoing a route group change" do
     test "a move goes back where it came from, and its rename with it", context do
       assert {:ok, moved} =
-               Fares.save_route_group(context.scope, local_form(@local_routes ++ ["10"]))
+               FaresFixtures.save_route_group(context.scope, local_form(@local_routes ++ ["10"]))
 
       assert {:ok, _undone} = Fares.undo(context.scope, moved.operation_id, moved.inverse)
 
@@ -293,10 +300,10 @@ defmodule GtfsPlanner.Gtfs.Fares.RouteGroupsTest do
 
     test "a move whose route has been moved since is stale", context do
       assert {:ok, moved} =
-               Fares.save_route_group(context.scope, local_form(@local_routes ++ ["10"]))
+               FaresFixtures.save_route_group(context.scope, local_form(@local_routes ++ ["10"]))
 
       assert {:ok, _back} =
-               Fares.save_route_group(context.scope, %{
+               FaresFixtures.save_route_group(context.scope, %{
                  network_id: "N_INTERCITY",
                  name: "Intercity",
                  route_ids: ["10"]
@@ -309,7 +316,10 @@ defmodule GtfsPlanner.Gtfs.Fares.RouteGroupsTest do
 
     test "a created group is deleted again by its own inverse", context do
       assert {:ok, created} =
-               Fares.save_route_group(context.scope, %{name: "Coast runs", route_ids: ["1"]})
+               FaresFixtures.save_route_group(context.scope, %{
+                 name: "Coast runs",
+                 route_ids: ["1"]
+               })
 
       assert {:ok, _undone} = Fares.undo(context.scope, created.operation_id, created.inverse)
 
@@ -321,7 +331,7 @@ defmodule GtfsPlanner.Gtfs.Fares.RouteGroupsTest do
     test "a deleted group comes back with its routes, its rules and its pass acceptance",
          context do
       {:ok, _pass} =
-        Fares.save_fare(context.scope, %{
+        FaresFixtures.save_fare(context.scope, %{
           fare_product_id: "day_pass_adult_cash",
           name: "Day pass",
           kind: "pass",
@@ -355,7 +365,10 @@ defmodule GtfsPlanner.Gtfs.Fares.RouteGroupsTest do
 
     test "an operation id this version does not hold is stale", context do
       assert {:ok, created} =
-               Fares.save_route_group(context.scope, %{name: "Coast runs", route_ids: ["1"]})
+               FaresFixtures.save_route_group(context.scope, %{
+                 name: "Coast runs",
+                 route_ids: ["1"]
+               })
 
       assert {:error, :stale} =
                Fares.undo(context.scope, Ecto.UUID.generate(), created.inverse)

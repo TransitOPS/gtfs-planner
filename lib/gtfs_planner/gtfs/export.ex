@@ -533,8 +533,15 @@ defmodule GtfsPlanner.Gtfs.Export do
   # every unmanaged version, keeps the column it always wrote.
   defp fare_specs(specs, %{drop_route_network?: true}) do
     Enum.map(specs, fn
-      %{filename: "routes.txt"} -> FileSpec.routes_spec_without_network()
-      spec -> spec
+      %{filename: "routes.txt"} ->
+        FileSpec.routes_spec_without_network()
+
+      %{filename: filename} = spec
+      when filename in ["fare_products.txt", "fare_attributes.txt"] ->
+        FileSpec.managed_fare_money_spec(spec)
+
+      spec ->
+        spec
     end)
   end
 
