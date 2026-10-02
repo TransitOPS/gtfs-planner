@@ -187,7 +187,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapChecksTest do
 
       row = view |> element("#stops-map-checks-not-served-1531") |> render()
 
-      assert words(row) =~ "No pattern stops here, so the export leaves it out"
+      assert words(row) =~ "No pattern stops here. It still exports"
       assert has_element?(view, "#stops-map-checks-not-served-1531 button", "Show stop")
     end
 

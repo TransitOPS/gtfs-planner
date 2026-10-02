@@ -2037,8 +2037,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
         dom_id: "not-served-#{dom_stop_id(stop)}",
         kind: :not_served,
         title: "#{stop_label(stop)} isn’t served",
-        text:
-          "No pattern stops here, so the export leaves it out. Delete it if it’s gone for good.",
+        text: "No pattern stops here. It still exports; delete it if it’s gone for good.",
         action: "Show stop",
         stop_id: stop.stop_id,
         point: stop.point

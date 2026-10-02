@@ -2651,8 +2651,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
               of the stop.
             </p>
             <p class="m-0 mt-2 text-sm">
-              Closed only for a season? Keep it instead. With no trips it&rsquo;s already left out of
-              the export, and when service returns it comes back with the same ID and sign number.
+              Closed only for a season? Keep it instead. A stop with no trips still exports, and
+              when service returns it is there with the same ID and sign number.
             </p>
           <% end %>
         </div>
