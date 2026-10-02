@@ -46,6 +46,8 @@ defmodule GtfsPlanner.Agents.Packs.Transfers do
   @max_selection_id_length 64
   @max_reference_length 200
   @max_sequence 50
+  # One page that holds every rule `load_catalog/3` returns, for the read that must see them all.
+  @all_rules 1_000_000
   @max_min_time_seconds 2_147_483_647
   @general_types [0, 1, 2, 3]
   @in_seat_message "Types 4 and 5 are in-seat rules, which are not available here."
@@ -169,8 +171,9 @@ defmodule GtfsPlanner.Agents.Packs.Transfers do
 
   defp inspect_transfer_policy(selection_id, scope) do
     with {:ok, selection} <- selection(selection_id, scope) do
-      stored = stored_rules(selection, scope)
-      result = policy_result(selection, stored, scope)
+      rules = stop_rules(selection, scope)
+      stored = Enum.filter(rules, &rule_matches?(&1.transfer, selection))
+      result = policy_result(selection, stored, reverse_count(rules, selection))
 
       {:ok, result, policy_evidence(selection, stored, scope, result)}
     end
@@ -477,12 +480,17 @@ defmodule GtfsPlanner.Agents.Packs.Transfers do
 
   # -- stored rules ---------------------------------------------------------
 
-  defp stored_rules(selection, scope) do
+  # Every general rule that names the selection's from-stop on either side, in one
+  # read: the stored pair in the selection's direction and the reverse direction's
+  # rules both do, so one read answers both. `load_catalog/3` reads the whole version
+  # before it pages, so asking for one page that holds every row costs nothing extra
+  # and leaves no rule on a page the pack never reads.
+  defp stop_rules(selection, scope) do
     Transfers.load_catalog(scope.organization_id, scope.gtfs_version_id,
       view: :general,
-      per_page: @max_sequence
+      stop: selection.from.stop_id,
+      per_page: @all_rules
     ).rows
-    |> Enum.filter(&rule_matches?(&1.transfer, selection))
   end
 
   # The stored pair is the selection's pair in the selection's order. A rule stored
@@ -496,12 +504,8 @@ defmodule GtfsPlanner.Agents.Packs.Transfers do
       transfer.to_trip_id == selection.to.trip_id
   end
 
-  defp reverse_count(selection, scope) do
-    Transfers.load_catalog(scope.organization_id, scope.gtfs_version_id,
-      view: :general,
-      per_page: @max_sequence
-    ).rows
-    |> Enum.count(fn row ->
+  defp reverse_count(rules, selection) do
+    Enum.count(rules, fn row ->
       row.transfer.from_stop_id == selection.to.stop_id and
         row.transfer.to_stop_id == selection.from.stop_id
     end)
@@ -509,7 +513,7 @@ defmodule GtfsPlanner.Agents.Packs.Transfers do
 
   # -- results --------------------------------------------------------------
 
-  defp policy_result(selection, stored, scope) do
+  defp policy_result(selection, stored, reverse_count) do
     %{
       "selection_id" => selection.id,
       "from_stop_id" => selection.from.stop_id,
@@ -517,7 +521,7 @@ defmodule GtfsPlanner.Agents.Packs.Transfers do
       "direction" => direction_label(selection),
       "rules" => Enum.map(stored, &rule_row/1),
       "total" => length(stored),
-      "reverse_direction_rules" => reverse_count(selection, scope),
+      "reverse_direction_rules" => reverse_count,
       "stored_minimum_seconds" => stored_minimum(stored)
     }
   end
@@ -774,7 +778,15 @@ defmodule GtfsPlanner.Agents.Packs.Transfers do
 
   defp review_message(_reason), do: "That transfer rule could not be prepared."
 
+  # A witness names the stop pair and, when a rule selects one, its trips: the
+  # concrete connection the two rules disagree about.
   defp conflict_label(witness) do
-    inspect(Map.get(witness, :from, nil)) <> " and " <> inspect(Map.get(witness, :to, nil))
+    trips =
+      [Map.get(witness, :from_trip_id), Map.get(witness, :to_trip_id)]
+      |> Enum.reject(&is_nil/1)
+
+    stops = "#{Map.get(witness, :from_stop_id)} to #{Map.get(witness, :to_stop_id)}"
+
+    if trips == [], do: stops, else: stops <> " (trips " <> Enum.join(trips, " and ") <> ")"
   end
 end
