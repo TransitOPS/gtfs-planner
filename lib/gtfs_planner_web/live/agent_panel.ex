@@ -414,13 +414,13 @@ defmodule GtfsPlannerWeb.AgentPanel do
 
   # A calendar link is the verified route the calendar components use, so the
   # version comes from this panel's own assigns and an imported service ID is
-  # percent-encoded rather than able to escape the query parameter.
-  defp resolve_path(:calendar_show, id, socket) when is_binary(id) do
-    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/calendars/show?#{[service_id: id]}"
-  end
+  # percent-encoded rather than able to escape the query parameter. A panel that
+  # binds no version resolves no link at all, which the card states rather than
+  # guesses.
+  defp resolve_path(:calendar_show, id, socket) when is_binary(id),
+    do: calendar_path(socket, id)
 
-  defp resolve_path(:calendars_index, _id, socket),
-    do: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/calendars"
+  defp resolve_path(:calendars_index, _id, socket), do: calendars_path(socket)
 
   defp resolve_path(:route_schedules, id, socket) when is_binary(id),
     do: route_schedules_path(socket, id)

@@ -396,8 +396,4 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
   end
 
   defp version_target(_socket, version_id), do: ~p"/gtfs/#{version_id}/settings"
-
-  defp settings_path(version_id), do: ~p"/gtfs/#{version_id}/settings"
-
-  defp section_path(version_id, slug), do: ~p"/gtfs/#{version_id}/settings/#{slug}"
 end
