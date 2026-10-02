@@ -179,10 +179,12 @@ defmodule GtfsPlannerWeb.Gtfs.TimetableSourceLiveTest do
       assert has_element?(view, "#paste-source-summary")
     end
 
-    test "the reviewed source is only offered once the columns step resolved the paste",
-         context do
+    test "there is no mapping to review while the columns step is unresolved", context do
       # Column B does not name a stop, so the native review keeps its column
-      # issues and there is no accepted mapping to review yet.
+      # issues. The reviewed-source card is mounted beside the native steps
+      # once a review exists, and it is the Columns step that owns the
+      # mapping: until those issues are settled the card says so instead of
+      # claiming a mapping it does not have.
       {view, _route} =
         open_paste(
           context,
@@ -190,7 +192,17 @@ defmodule GtfsPlannerWeb.Gtfs.TimetableSourceLiveTest do
         )
 
       assert has_element?(view, "#paste-columns")
-      refute has_element?(view, "#timetable-source-form")
+      assert has_element?(view, "#timetable-source-form")
+
+      assert has_element?(
+               view,
+               "#timetable-source-form",
+               "this form never maps it again"
+             )
+
+      # Nothing is accepted and nothing is claimed about the pasted table.
+      refute has_element?(view, "#timetable-source-accepted")
+      refute has_element?(view, "#timetable-helper-too-large")
     end
 
     test "editing the notes releases the accepted source and keeps the pasted timetable",
@@ -236,7 +248,13 @@ defmodule GtfsPlannerWeb.Gtfs.TimetableSourceLiveTest do
         "notes" => "School starts after Thanksgiving."
       })
 
-      assert has_element?(view, "#timetable-source-unresolved", "No school dates were supplied")
+      assert has_element?(
+               view,
+               "#timetable-source-unresolved",
+               "The school dates between #{@first_date} and #{@last_date} were not supplied"
+             )
+
+      assert has_element?(view, "#timetable-source-unresolved", "nothing was assumed")
       refute has_element?(view, "#timetable-source-accepted")
 
       # The refused write keeps what was typed.
