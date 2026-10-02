@@ -54,6 +54,39 @@ defmodule GtfsPlannerWeb.UserAuthTest do
              )
     end
 
+    test "puts the organization a system administrator also edits in the session" do
+      user = AccountsFixtures.user_fixture()
+      organization = GtfsPlanner.OrganizationsFixtures.organization_fixture()
+
+      {:ok, _membership} =
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: organization.id,
+          roles: ["administrator", "pathways_studio_editor"]
+        })
+
+      conn = build_conn() |> init_test_session(%{}) |> UserAuth.log_in_user(user)
+
+      assert get_session(conn, :organization_id) == organization.id
+      assert redirected_to(conn) == ~p"/admin/organizations"
+    end
+
+    test "leaves a system administrator with no organization role without an organization" do
+      user = AccountsFixtures.user_fixture()
+      organization = GtfsPlanner.OrganizationsFixtures.organization_fixture()
+
+      {:ok, _membership} =
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: organization.id,
+          roles: ["administrator"]
+        })
+
+      conn = build_conn() |> init_test_session(%{}) |> UserAuth.log_in_user(user)
+
+      assert get_session(conn, :organization_id) == nil
+    end
+
     test "stores user token in that session" do
       %{conn: conn, user: user} =
         register_and_log_in_user(%{password: "valid password"})
