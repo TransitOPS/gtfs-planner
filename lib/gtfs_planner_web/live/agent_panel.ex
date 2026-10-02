@@ -239,6 +239,30 @@ defmodule GtfsPlannerWeb.AgentPanel do
   end
 
   @doc """
+  The `%Scope{}` this panel's current context describes.
+
+  A host that has to run a server-side read **against the same context** it
+  installs - normalizing a measurement against the station and run its snapshot
+  names, before the conversation opens - builds it here rather than assembling a
+  second copy of the panel's own identity fields. The result is exactly the scope
+  `agent_open` would use, so a host can never read through a context the
+  conversation would not open.
+  """
+  @spec scope(Phoenix.LiveView.Socket.t()) :: Scope.t()
+  def scope(socket),
+    do: %Scope{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: scope_version_id(socket),
+      user_id: socket.assigns.current_user.id,
+      user_email: socket.assigns.current_user.email,
+      pack_id: socket.assigns.agent_pack_id,
+      version_name: scope_version_name(socket),
+      subject_id: socket.assigns.agent_subject_id,
+      alert_schedule_token: socket.assigns.agent_schedule_token,
+      resource_context: socket.assigns.agent_context
+    }
+
+  @doc """
   Replaces this panel's resource context on ordinary host navigation.
 
   The panel detaches from the session it held, drops that session's monitor and
@@ -1034,21 +1058,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
     |> assign(:agent_notice, message)
   end
 
-  defp scope(socket) do
-    %Scope{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: scope_version_id(socket),
-      user_id: socket.assigns.current_user.id,
-      user_email: socket.assigns.current_user.email,
-      pack_id: socket.assigns.agent_pack_id,
-      version_name: scope_version_name(socket),
-      subject_id: socket.assigns.agent_subject_id,
-      alert_schedule_token: socket.assigns.agent_schedule_token,
-      resource_context: socket.assigns.agent_context
-    }
-  end
-
-  # The version the host's navbar currently names, or nil when it names none. An
+# The version the host's navbar currently names, or nil when it names none. An
   # organization-scoped panel keeps no version even when the navbar has one: the
   # record its conversation is about is the organization's, so the selected
   # version is neither that record's identity nor the context its tools read
