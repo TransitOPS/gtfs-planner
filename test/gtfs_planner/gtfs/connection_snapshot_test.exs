@@ -445,7 +445,7 @@ defmodule GtfsPlanner.Gtfs.ConnectionSnapshotTest do
   end
 
   describe "load/3 snapshot boundary (AC-6)" do
-    test "reads a controlled writer's committed change wholly before or wholly after", %{
+    test "reads a writer's change committed after its first query wholly from the old state", %{
       supervisor: supervisor
     } do
       scope = in_task(supervisor, fn -> connection_scope() end)
@@ -476,12 +476,13 @@ defmodule GtfsPlanner.Gtfs.ConnectionSnapshotTest do
       assert {:ok, during_change} = await_worker(reader)
 
       # The writer committed the stored minimum and the calendar exception
-      # together, so a repeatable-read reader sees both or neither: the old
-      # minimum with the exception's service, or the new minimum with the
-      # calendar's removal. One of each is the mixed read this transaction
-      # prevents.
+      # together after the reader's first query. A repeatable-read snapshot is taken
+      # at that first query, so the reader finishes on the old state throughout;
+      # a reader that took a fresh snapshot per statement would see the writer's
+      # commit on the policy and calendar reads it makes after the pause.
       assert old_state?(before_change)
-      assert old_state?(during_change) or new_state?(during_change)
+      assert old_state?(during_change)
+      assert during_change.digest == before_change.digest
 
       assert {:ok, after_change} =
                in_task(supervisor, fn -> load(scope, request, @service_date) end)
@@ -494,8 +495,7 @@ defmodule GtfsPlanner.Gtfs.ConnectionSnapshotTest do
       assert [%{reason: :no_recorded_service, minimum: %{seconds: @new_minimum}}] =
                after_change.rows
 
-      # Two whole states, never one of each.
-      assert during_change.digest in [before_change.digest, after_change.digest]
+      assert during_change.digest != after_change.digest
 
       # The queries read only: the only changed rows are the writer's own.
       assert row_counts(scope) == seeded
