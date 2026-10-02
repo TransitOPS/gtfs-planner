@@ -330,6 +330,21 @@ defmodule GtfsPlannerWeb.Gtfs.TransferAssistanceLiveTest do
       assert socket_assigns(view).policy_counts.skipped == 1
     end
 
+    test "reopening a proposal starts its own outcome rather than adding to the last one", ctx do
+      {view, _pid} = prepared_view(ctx, [forward_draft()])
+      view |> element("#agent-review-prepared-2") |> render_click()
+      view |> element("#transfer-policy-skip") |> render_click()
+      assert socket_assigns(view).policy_counts.skipped == 1
+
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      assigns = socket_assigns(view)
+      assert assigns.policy_counts == %{saved: 0, skipped: 0, conflict: 0, not_applied: 0}
+      assert assigns.policy_status == nil
+      assert has_element?(view, "#transfer-policy-drawer")
+      refute has_element?(view, "#transfer-policy-outcome")
+    end
+
     test "the review drawer is on the page only while a review is open", ctx do
       {view, _pid} = prepared_view(ctx, [forward_draft()])
 

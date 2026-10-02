@@ -1056,6 +1056,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
         |> assign(:policy_pending?, false)
         |> assign(:policy_generation, socket.assigns.policy_generation + 1)
         |> assign(:policy_return_focus, "agent-prepared-#{entry_id}")
+        # The outcome shown is this proposal's, not a running total of earlier ones.
+        |> assign(:policy_status, nil)
+        |> assign(:policy_counts, @empty_policy_counts)
         |> count_refused(refused)
 
       {:none, refused} ->
