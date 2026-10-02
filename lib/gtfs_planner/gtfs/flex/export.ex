@@ -62,6 +62,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
 
   # AC-25's Transit hold rule: a feed is held when 75% of its routes, or 25% of
   # its routes with more than 40 trips on their busiest service day, lose every
@@ -484,7 +485,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
       {"booking_url", row.booking_url},
       {"info_url", row.info_url}
     ]
-    |> Enum.filter(fn {_column, value} -> present?(value) end)
+    |> Enum.filter(fn {_column, value} -> Values.present?(value) end)
     |> Enum.map_join(" · ", &elem(&1, 0))
   end
 
@@ -495,9 +496,6 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
 
   defp field_text(_name, nil), do: nil
   defp field_text(name, value), do: "#{name} #{value}"
-
-  defp present?(value) when is_binary(value), do: String.trim(value) != ""
-  defp present?(_value), do: false
 
   defp area_text(km2) when is_number(km2), do: "#{Float.round(km2 * 1.0, 1)} km²"
   defp area_text(_km2), do: nil

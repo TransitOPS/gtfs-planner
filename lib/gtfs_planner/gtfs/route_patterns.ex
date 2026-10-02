@@ -2666,8 +2666,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       Enum.map(rows, fn row ->
         %{
           route_pattern_stop_id: map_value(row, :route_pattern_stop_id),
-          arrival_offset: blank_to_nil(map_value(row, :arrival_offset)),
-          departure_offset: blank_to_nil(map_value(row, :departure_offset)),
+          arrival_offset: blank_offset_to_nil(map_value(row, :arrival_offset)),
+          departure_offset: blank_offset_to_nil(map_value(row, :departure_offset)),
           timepoint: map_value(row, :timepoint),
           pickup_type: map_value(row, :pickup_type),
           drop_off_type: map_value(row, :drop_off_type),
@@ -2726,14 +2726,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   # A blank input is the absence of a time. Anything else is left alone so the
   # shape check below still refuses a string, a float or an out-of-range value.
-  defp blank_to_nil(value) when is_binary(value) do
+  # Named exception: integer offsets must pass through; canonical presence/1 would nil them.
+  defp blank_offset_to_nil(value) when is_binary(value) do
     case String.trim(value) do
       "" -> nil
       _ -> value
     end
   end
 
-  defp blank_to_nil(value), do: value
+  defp blank_offset_to_nil(value), do: value
 
   defp valid_service_row?(row) do
     row.timepoint in [nil, 0, 1] and row.pickup_type in [nil, 0, 1, 2, 3] and

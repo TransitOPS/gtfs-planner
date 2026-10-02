@@ -4,7 +4,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
   """
 
   alias GtfsPlanner.Gtfs.Graph
-  alias GtfsPlanner.Gtfs.StationReport2.Helpers
+  alias GtfsPlanner.Values
 
   @spec build(%{station: map(), child_stops: [map()], pathways: [map()]}) :: [map()]
   def build(%{station: station, child_stops: child_stops, pathways: pathways}) do
@@ -339,7 +339,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
   defp wheelchair_contradicts_context_item(child_stops, _stop_index) do
     by_level =
       child_stops
-      |> Enum.filter(&Helpers.present?(&1.level_id))
+      |> Enum.filter(&Values.present?(&1.level_id))
       |> Enum.group_by(& &1.level_id)
 
     flagged =

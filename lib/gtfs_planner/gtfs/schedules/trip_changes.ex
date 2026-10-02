@@ -432,12 +432,13 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
     Enum.map(rows, fn row ->
       {clock_secs(value(row, :arrival_time)), clock_secs(value(row, :departure_time)),
        value(row, :pickup_type) || 0, value(row, :drop_off_type) || 0,
-       blank_to_nil(value(row, :stop_headsign))}
+       empty_headsign_to_nil(value(row, :stop_headsign))}
     end)
   end
 
-  defp blank_to_nil(""), do: nil
-  defp blank_to_nil(value), do: value
+  # Named exception: timing_rows_match?/3 compares exact headsign bytes, so only "" becomes nil.
+  defp empty_headsign_to_nil(""), do: nil
+  defp empty_headsign_to_nil(value), do: value
 
   @doc """
   Allocates one unique `trip_id` per departure start.
@@ -550,6 +551,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
   defp validate_from_position(position) when is_integer(position) and position >= 1, do: :ok
   defp validate_from_position(_position), do: {:error, :invalid_command}
 
+  # Identifier exception: whitespace is legal service_id data, so only "" is invalid.
   defp valid_service?(service_id), do: is_binary(service_id) and service_id != ""
 
   defp valid_windows?(windows) when is_list(windows), do: Enum.all?(windows, &valid_window?/1)

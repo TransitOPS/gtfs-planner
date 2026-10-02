@@ -32,6 +32,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Export.Areas do
   alias GtfsPlanner.Gtfs.FlexArea
   alias GtfsPlanner.Gtfs.FlexBookingRule
   alias GtfsPlanner.Gtfs.FlexService
+  alias GtfsPlanner.Values
 
   @minutes_per_day 1_440
 
@@ -397,7 +398,8 @@ defmodule GtfsPlanner.Gtfs.Flex.Export.Areas do
 
   defp scoped_rule(_service, _calendar_id), do: nil
 
-  defp main_rule(service), do: Enum.find(service.booking_rules, &(not present?(&1.service_id)))
+  defp main_rule(service),
+    do: Enum.find(service.booking_rules, &(not Values.present?(&1.service_id)))
 
   defp rule_id(service, %FlexBookingRule{service_id: calendar_id})
        when is_binary(calendar_id) and calendar_id != "" do
@@ -444,6 +446,4 @@ defmodule GtfsPlanner.Gtfs.Flex.Export.Areas do
   defp areas_in_position_order(areas) do
     Enum.sort_by(areas, fn %{area: area} -> {area.position || 0, area.key || ""} end)
   end
-
-  defp present?(value), do: is_binary(value) and String.trim(value) != ""
 end

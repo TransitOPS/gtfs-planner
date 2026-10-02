@@ -124,28 +124,6 @@ defmodule GtfsPlanner.Gtfs.StationReport2.HelpersTest do
     end
   end
 
-  describe "present?/1" do
-    test "returns false for nil" do
-      refute Helpers.present?(nil)
-    end
-
-    test "returns false for empty string" do
-      refute Helpers.present?("")
-    end
-
-    test "returns false for whitespace-only string" do
-      refute Helpers.present?("   ")
-    end
-
-    test "returns true for non-empty string" do
-      assert Helpers.present?("x")
-    end
-
-    test "returns true for integer" do
-      assert Helpers.present?(0)
-    end
-  end
-
   describe "item/6" do
     test "returns a map with all 6 keys including category" do
       result = Helpers.item("test_id", "Test Label", :pass, :error, 42, ["detail"])

@@ -31,6 +31,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Connections do
 
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Blocking.Checks
+  alias GtfsPlanner.Values
 
   # The group's key parts are joined by the ASCII unit separator, which no GTFS
   # id, route id or direction carries, so one part can never be read as two.
@@ -147,7 +148,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Connections do
   @spec filter([group()], filter()) :: [group()]
   def filter(groups, params) do
     setting = Map.get(params, :setting)
-    route = presence(Map.get(params, :route))
+    route = Values.presence(Map.get(params, :route))
     q = Map.get(params, :q) |> search_term()
 
     Enum.flat_map(groups, &filter_group(&1, setting, route, q))
@@ -317,7 +318,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Connections do
   end
 
   defp place_id(stop_ref) when is_map(stop_ref),
-    do: presence(Map.get(stop_ref, :parent_station)) || Map.get(stop_ref, :stop_id)
+    do: Values.presence(Map.get(stop_ref, :parent_station)) || Map.get(stop_ref, :stop_id)
 
   defp place_id(_stop_ref), do: nil
 
@@ -435,24 +436,15 @@ defmodule GtfsPlanner.Gtfs.Blocking.Connections do
   defp stop_id(_stop_ref), do: nil
 
   defp name(stop_ref) when is_map(stop_ref),
-    do: presence(Map.get(stop_ref, :parent_name) || Map.get(stop_ref, :name))
+    do: Values.presence(Map.get(stop_ref, :parent_name) || Map.get(stop_ref, :name))
 
   defp name(_stop_ref), do: nil
 
   defp part(nil), do: ""
   defp part(value), do: to_string(value)
 
-  defp search_term(q), do: q |> presence() |> search_downcase()
+  defp search_term(q), do: q |> Values.presence() |> search_downcase()
 
   defp search_downcase(nil), do: nil
   defp search_downcase(q), do: String.downcase(q)
-
-  defp presence(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp presence(_value), do: nil
 end

@@ -30,6 +30,7 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
   alias GtfsPlanner.Gtfs.FlexArea
   alias GtfsPlanner.Gtfs.FlexBookingRule
   alias GtfsPlanner.Gtfs.FlexService
+  alias GtfsPlanner.Values
 
   @registered_suffix " (registered riders)"
   @qualified ~r/registered|paratransit|\bADA\b|senior|eligib/i
@@ -528,12 +529,12 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
     if saved.phone == draft.phone do
       []
     else
-      ["Phone: #{if(present?(draft.phone), do: draft.phone, else: "removed")}"]
+      ["Phone: #{if(Values.present?(draft.phone), do: draft.phone, else: "removed")}"]
     end
   end
 
   defp booking_link_change(saved, draft) do
-    case {present?(saved.booking_url), present?(draft.booking_url)} do
+    case {Values.present?(saved.booking_url), Values.present?(draft.booking_url)} do
       {before, after_} when before == after_ -> []
       {false, true} -> ["Booking link added"]
       {true, false} -> ["Booking link removed"]
@@ -547,7 +548,7 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
     if message(saved, calendars) == message(draft, calendars) do
       []
     else
-      if not present?(saved.note) and present?(draft.note) do
+      if not Values.present?(saved.note) and Values.present?(draft.note) do
         ["Note for riders added"]
       else
         ["Text for riders changed"]
@@ -579,7 +580,7 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
 
   defp how_to_book(service) do
     how =
-      [call_line(service), if(present?(service.booking_url), do: "book online")]
+      [call_line(service), if(Values.present?(service.booking_url), do: "book online")]
       |> Enum.reject(&is_nil/1)
 
     case how do
@@ -734,20 +735,20 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
   defp calendar_entry(calendars, service_id), do: Map.get(calendars, service_id, %{})
 
   defp calendar_name(calendars, service_id) do
-    calendars |> calendar_entry(service_id) |> Map.get(:name) |> blank_to(service_id)
+    calendars |> calendar_entry(service_id) |> Map.get(:name) |> non_empty_or(service_id)
   end
 
   defp calendar_plural(calendars, service_id) do
     calendars
     |> calendar_entry(service_id)
     |> Map.get(:plural)
-    |> blank_to(calendar_name(calendars, service_id))
+    |> non_empty_or(calendar_name(calendars, service_id))
   end
 
-  defp blank_to(value, _fallback) when is_binary(value) and value != "", do: value
-  defp blank_to(_value, fallback), do: fallback
-
-  defp present?(value), do: is_binary(value) and value != ""
+  # Named exception: calendar names feed exported booking_rules.message text, so padded or
+  # whitespace-only names must export unchanged.
+  defp non_empty_or(value, _fallback) when is_binary(value) and value != "", do: value
+  defp non_empty_or(_value, fallback), do: fallback
 
   defp capitalize_first(""), do: ""
   defp capitalize_first(<<first::utf8, rest::binary>>), do: String.upcase(<<first::utf8>>) <> rest

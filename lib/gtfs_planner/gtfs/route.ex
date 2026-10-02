@@ -4,6 +4,7 @@ defmodule GtfsPlanner.Gtfs.Route do
   import GtfsPlanner.ChangesetHelpers
 
   alias GtfsPlanner.Color
+  alias GtfsPlanner.Values
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -253,7 +254,7 @@ defmodule GtfsPlanner.Gtfs.Route do
     route_short_name = get_field(changeset, :route_short_name)
     route_long_name = get_field(changeset, :route_long_name)
 
-    if blank_value?(route_short_name) && blank_value?(route_long_name) do
+    if Values.blank?(route_short_name) && Values.blank?(route_long_name) do
       missing_route_name_error(changeset)
     else
       changeset
@@ -274,12 +275,10 @@ defmodule GtfsPlanner.Gtfs.Route do
     end
   end
 
-  defp blank_value?(value), do: is_nil(value) or String.trim(value) == ""
-
   # Editor-only rule: an optional URL is blank or an HTTP(S) URL with a host.
   defp validate_route_url(changeset) do
     validate_change(changeset, :route_url, fn :route_url, url ->
-      if blank_value?(url) or valid_route_url?(url) do
+      if Values.blank?(url) or valid_route_url?(url) do
         []
       else
         [route_url: @url_message]

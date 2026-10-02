@@ -1079,6 +1079,7 @@ defmodule GtfsPlanner.Gtfs.Rosters do
     end
   end
 
+  # Named exception: a roster day-type key must be a string.
   defp usable_key?(key), do: is_binary(key) and String.trim(key) != ""
 
   # Only the three roster columns, in the shape `get_roster_settings/2` answers

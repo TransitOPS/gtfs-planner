@@ -15,6 +15,8 @@ defmodule GtfsPlanner.Gtfs.FareZone do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias GtfsPlanner.Values
+
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
@@ -97,8 +99,8 @@ defmodule GtfsPlanner.Gtfs.FareZone do
   def changeset(zone, attrs, :new) do
     zone
     |> cast(attrs, [:zone_id, :name, :color])
-    |> update_change(:zone_id, &trim/1)
-    |> update_change(:name, &trim/1)
+    |> update_change(:zone_id, &Values.presence/1)
+    |> update_change(:name, &Values.presence/1)
     |> validate_format(:zone_id, @zone_id_format,
       message: "Use 1–64 letters, numbers, hyphens or underscores."
     )
@@ -108,7 +110,7 @@ defmodule GtfsPlanner.Gtfs.FareZone do
   def changeset(zone, attrs, :keep) do
     zone
     |> cast(attrs, [:name, :color])
-    |> update_change(:name, &trim/1)
+    |> update_change(:name, &Values.presence/1)
     |> validate_metadata()
   end
 
@@ -122,7 +124,4 @@ defmodule GtfsPlanner.Gtfs.FareZone do
       message: @zone_id_in_use_message
     )
   end
-
-  defp trim(value) when is_binary(value), do: String.trim(value)
-  defp trim(value), do: value
 end

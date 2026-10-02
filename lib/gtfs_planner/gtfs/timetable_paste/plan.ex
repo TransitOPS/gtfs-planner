@@ -136,6 +136,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
 
   alias GtfsPlanner.Gtfs.Blocking.Checks
   alias GtfsPlanner.Gtfs.Schedules.Summary
+  alias GtfsPlanner.Values
 
   @type change_op ::
           :add | :change | :unchanged | :remove | :duplicate | :skipped | :needs_decision
@@ -1505,6 +1506,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   # Blank (nil, empty or whitespace-only) normalizes to `nil` so a
   # blank cell never writes an empty value (INV-4); other binaries are
   # trimmed, anything else passes through untouched.
+  # Named exception: the change-detection input map may carry non-strings.
   @spec clean_meta(term()) :: term()
   defp clean_meta(nil), do: nil
 
@@ -1516,10 +1518,6 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   end
 
   defp clean_meta(value), do: value
-
-  @spec blank_choice?(term()) :: boolean()
-  defp blank_choice?(value) when is_binary(value), do: String.trim(value) == ""
-  defp blank_choice?(_value), do: false
 
   # --- Decision validation (critique S2 / PM-10) ---
   #
@@ -1756,7 +1754,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
       raw = Map.get(decision, :pair)
 
       cond do
-        is_nil(raw) or blank_choice?(raw) or neither_choice?(raw) ->
+        is_nil(raw) or Values.blank?(raw) or neither_choice?(raw) ->
           acc
 
         MapSet.member?(accepted_nums, num) ->
@@ -1781,7 +1779,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
       raw = Map.get(decision, :pair)
 
       cond do
-        is_nil(raw) or blank_choice?(raw) or neither_choice?(raw) ->
+        is_nil(raw) or Values.blank?(raw) or neither_choice?(raw) ->
           acc
 
         not MapSet.member?(known, num) ->
@@ -1831,14 +1829,9 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   @spec writes_blocks?([change()]) :: boolean()
   defp writes_blocks?(changes) do
     Enum.any?(changes, fn change ->
-      change.op in [:add, :change] and present?(change.block_id)
+      change.op in [:add, :change] and Values.present?(change.block_id)
     end)
   end
-
-  @spec present?(term()) :: boolean()
-  defp present?(value) when is_binary(value), do: String.trim(value) != ""
-  defp present?(nil), do: false
-  defp present?(_value), do: true
 
   # --- Vehicles (step 10, R17 / AC-18) ---
   #
@@ -2082,7 +2075,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   end
 
   defp planned_block_entry({change, idx}, service_id) do
-    if change.op in [:add, :change] and present?(change.block_id) and is_map(change.row) do
+    if change.op in [:add, :change] and Values.present?(change.block_id) and is_map(change.row) do
       case planned_trip_row(change, idx, service_id) do
         nil -> []
         planned -> [{idx, change.block_id, planned}]

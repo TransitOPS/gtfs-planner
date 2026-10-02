@@ -45,6 +45,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
 
   @typedoc """
   One readiness finding: `:error` excludes the service from the flex file (R4),
@@ -240,7 +241,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
 
   defp area_name_checks(areas) do
     areas
-    |> Enum.filter(&(present?(&1.name) and Regex.match?(@code_like_area_name, &1.name)))
+    |> Enum.filter(&(Values.present?(&1.name) and Regex.match?(@code_like_area_name, &1.name)))
     |> Enum.map(
       &check(
         :warning,
@@ -301,7 +302,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
 
   defp route_checks(%FlexService{route_id: route_id} = service, version_facts) do
     choice =
-      if present?(route_id) do
+      if Values.present?(route_id) do
         []
       else
         [check(:error, :where, :route, "Choose the route that detours.")]
@@ -316,7 +317,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   # An inactive route leaves the export with its trips, so a detour on it, or
   # an area that follows it, would describe service the feed does not carry.
   defp inactive_route_check(route_id, version_facts) do
-    if present?(route_id) and inactive_route?(route_id, version_facts) do
+    if Values.present?(route_id) and inactive_route?(route_id, version_facts) do
       [check(:error, :where, :route, inactive_route_text(route_id))]
     else
       []
@@ -333,7 +334,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   end
 
   defp missing_route_check(route_id, version_facts) do
-    if present?(route_id) and not Map.has_key?(version_facts.routes, route_id) do
+    if Values.present?(route_id) and not Map.has_key?(version_facts.routes, route_id) do
       [
         check(
           :error,
@@ -386,7 +387,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
       end
 
     wording =
-      if present?(service.wording) do
+      if Values.present?(service.wording) do
         []
       else
         [
@@ -472,7 +473,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   end
 
   defp zone_hours_check(hours) do
-    if Enum.any?(hours, &present?(&1.area_key)) do
+    if Enum.any?(hours, &Values.present?(&1.area_key)) do
       [
         check(
           :warning,
@@ -521,7 +522,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   end
 
   defp contact_missing_check(phone, booking_url) do
-    if blank?(phone) and blank?(booking_url) do
+    if Values.blank?(phone) and Values.blank?(booking_url) do
       [
         check(
           :error,
@@ -536,7 +537,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   end
 
   defp phone_check(phone) do
-    if present?(phone) and not Regex.match?(@phone_format, String.trim(phone)) do
+    if Values.present?(phone) and not Regex.match?(@phone_format, String.trim(phone)) do
       [
         check(
           :error,
@@ -551,7 +552,8 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   end
 
   defp url_check(booking_url) do
-    if present?(booking_url) and not Regex.match?(@booking_url_format, String.trim(booking_url)) do
+    if Values.present?(booking_url) and
+         not Regex.match?(@booking_url_format, String.trim(booking_url)) do
       [check(:error, :booking, :url, "Enter the full booking link, starting with https://")]
     else
       []
@@ -562,7 +564,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   defp rule_shape_checks(%FlexService{kind: :detour} = service) do
     rules = service.booking_rules
 
-    if length(rules) == 1 and not Enum.any?(rules, &present?(&1.service_id)) do
+    if length(rules) == 1 and not Enum.any?(rules, &Values.present?(&1.service_id)) do
       []
     else
       [
@@ -599,7 +601,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
       end
 
     by =
-      if present?(rule.by) do
+      if Values.present?(rule.by) do
         []
       else
         [check(:error, :booking, :by, "Enter the time riders must book by.")]
@@ -685,7 +687,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   defp days_contradiction(_sentence, _rule), do: []
 
   defp app_mention_check(note, %FlexService{booking_url: booking_url}) do
-    if Regex.match?(@note_app_mention, note) and blank?(booking_url) do
+    if Regex.match?(@note_app_mention, note) and Values.blank?(booking_url) do
       [
         check(
           :warning,
@@ -743,7 +745,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
 
   # R5: an exported registered-riders service needs a page about who can ride.
   defp info_url_checks(%FlexService{include_registered: true} = service) do
-    if present?(service.info_url) do
+    if Values.present?(service.info_url) do
       []
     else
       [
@@ -761,7 +763,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   defp info_url_checks(%FlexService{}), do: []
 
   defp eligibility_checks(service) do
-    if present?(service.eligibility) do
+    if Values.present?(service.eligibility) do
       []
     else
       [
@@ -1006,13 +1008,13 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
 
   defp missing_ids(ids, known) do
     ids
-    |> Enum.filter(&present?/1)
+    |> Enum.filter(&Values.present?/1)
     |> Enum.uniq()
     |> Enum.reject(&MapSet.member?(known, &1))
   end
 
   defp main_rule(service) do
-    Enum.find(service.booking_rules, &(not present?(&1.service_id)))
+    Enum.find(service.booking_rules, &(not Values.present?(&1.service_id)))
   end
 
   defp area_name(areas, key) do
@@ -1050,10 +1052,6 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
 
   defp round1(number) when is_float(number), do: :erlang.float_to_binary(number, decimals: 1)
   defp round1(number), do: to_string(number)
-
-  defp present?(value), do: is_binary(value) and String.trim(value) != ""
-
-  defp blank?(value), do: not present?(value)
 
   defp trimmed(value), do: value |> to_string() |> String.trim()
 

@@ -7,6 +7,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.NamingChecks do
   """
 
   alias GtfsPlanner.Gtfs.StationReport2.Helpers
+  alias GtfsPlanner.Values
 
   @test_tokens ~w[test temp placeholder dummy todo tbd delete sample]
 
@@ -62,7 +63,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.NamingChecks do
   defp title_case_check(stops) do
     flagged =
       stops
-      |> Enum.filter(&Helpers.present?(&1.stop_name))
+      |> Enum.filter(&Values.present?(&1.stop_name))
       |> Enum.map(fn stop ->
         expected = Helpers.title_case(stop.stop_name)
         {stop.stop_id, stop.stop_name, expected}
@@ -85,7 +86,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.NamingChecks do
   defp jargon_check(stops) do
     flagged =
       stops
-      |> Enum.filter(&Helpers.present?(&1.stop_name))
+      |> Enum.filter(&Values.present?(&1.stop_name))
       |> Enum.map(fn stop ->
         normalized = normalize_name(stop.stop_name)
 
@@ -236,7 +237,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.NamingChecks do
   defp direction_mismatch_check(stops) do
     flagged =
       stops
-      |> Enum.filter(&(Helpers.present?(&1.stop_id) and Helpers.present?(&1.stop_name)))
+      |> Enum.filter(&(Values.present?(&1.stop_id) and Values.present?(&1.stop_name)))
       |> Enum.flat_map(fn stop ->
         id_dirs = Helpers.extract_direction_tokens(stop.stop_id)
         name_dirs = Helpers.extract_direction_tokens(stop.stop_name)
@@ -299,7 +300,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.NamingChecks do
     flagged =
       stops
       |> Enum.filter(
-        &(Helpers.present?(&1.stop_name) and Helpers.present?(&1.stop_id) and
+        &(Values.present?(&1.stop_name) and Values.present?(&1.stop_id) and
             &1.location_type != 1)
       )
       |> Enum.filter(fn stop ->
@@ -331,7 +332,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.NamingChecks do
         []
       else
         child_stops
-        |> Enum.filter(&(&1.location_type in [0, 2] and Helpers.present?(&1.stop_name)))
+        |> Enum.filter(&(&1.location_type in [0, 2] and Values.present?(&1.stop_name)))
         |> Enum.filter(fn stop ->
           child_tokens = meaningful_name_tokens(stop.stop_name)
 

@@ -837,10 +837,6 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   def change_rule_group(reviewed, attrs) do
     {rule_group_data(reviewed), @rule_group_fields}
     |> Ecto.Changeset.cast(attrs, @rule_group_field_names)
-    |> Ecto.Changeset.update_change(:fare_id, &empty_to_nil/1)
-    |> Ecto.Changeset.update_change(:route_id, &empty_to_nil/1)
-    |> Ecto.Changeset.update_change(:origin_id, &empty_to_nil/1)
-    |> Ecto.Changeset.update_change(:destination_id, &empty_to_nil/1)
     |> Ecto.Changeset.update_change(:contains, &contains_list/1)
     |> Ecto.Changeset.validate_required([:fare_id])
   end
@@ -1618,9 +1614,6 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     {data.fare_id, data.route_id, data.origin_id, data.destination_id,
      contains_list(data.contains) != []}
   end
-
-  defp empty_to_nil(""), do: nil
-  defp empty_to_nil(value), do: value
 
   defp contains_list(values) when is_list(values) do
     values |> Enum.reject(&(&1 in [nil, ""])) |> Enum.uniq()

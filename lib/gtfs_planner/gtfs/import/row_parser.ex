@@ -1884,6 +1884,7 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
     * `nil` - If input is empty string or nil
     * `value` - Original value otherwise
   """
+  # Import exception: only an empty column becomes NULL; every other byte is data.
   def empty_to_nil(""), do: nil
   def empty_to_nil(nil), do: nil
   def empty_to_nil(value), do: value

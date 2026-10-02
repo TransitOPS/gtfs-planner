@@ -41,6 +41,7 @@ defmodule GtfsPlanner.Operations do
   alias GtfsPlanner.Operations.Vehicle
   alias GtfsPlanner.Operations.VehicleType
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
 
   @type actor :: %{required(:id) => Ecto.UUID.t()}
 
@@ -1672,7 +1673,7 @@ defmodule GtfsPlanner.Operations do
 
   defp put_present(attrs, fields, key) do
     case Map.fetch(fields, key) do
-      {:ok, value} -> Map.put(attrs, key, blank_to_nil(value))
+      {:ok, value} -> Map.put(attrs, key, Values.presence(value))
       :error -> attrs
     end
   end
@@ -1752,13 +1753,10 @@ defmodule GtfsPlanner.Operations do
 
   defp present_value(fields, key) do
     case Map.fetch(fields, key) do
-      {:ok, value} -> blank_to_nil(value)
+      {:ok, value} -> Values.presence(value)
       :error -> nil
     end
   end
-
-  defp blank_to_nil(""), do: nil
-  defp blank_to_nil(value), do: value
 
   defp load_existing(_organization_id, _kind, [], _lock?), do: %{}
 

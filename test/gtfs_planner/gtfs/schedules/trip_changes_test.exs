@@ -481,6 +481,17 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChangesTest do
     end
   end
 
+  describe "timing_rows_match?/3" do
+    test "keeps a padded stop headsign distinct from the timing's headsign" do
+      [first, second, third] = @cedar_match
+      stored = [first, %{second | stop_headsign: " Downtown"}, third]
+      [timing_first, timing_second, timing_third] = @cedar_rows
+      timing_rows = [timing_first, %{timing_second | stop_headsign: "Downtown"}, timing_third]
+
+      refute TripChanges.timing_rows_match?(stored, @occurrences, timing_rows)
+    end
+  end
+
   describe "allocate_trip_ids/5" do
     test "uses the service and start stamp for a free ID" do
       assert TripChanges.allocate_trip_ids("12", 0, "SAT", [61_200], []) ==

@@ -86,6 +86,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   alias GtfsPlanner.Gtfs.Transfers.Overlaps
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
 
   @general_types [0, 1, 2, 3]
@@ -257,8 +258,8 @@ defmodule GtfsPlanner.Gtfs.Transfers do
     in_seat_rows = view_rows(in_seat, data, competitor_ids)
     all_view_rows = if view == :in_seat, do: in_seat_rows, else: general_rows
 
-    route_id = string_option(opts[:route])
-    stop_ids = stop_filter(organization_id, gtfs_version_id, string_option(opts[:stop]))
+    route_id = Values.presence(opts[:route])
+    stop_ids = stop_filter(organization_id, gtfs_version_id, Values.presence(opts[:stop]))
     trip_routes = trip_route_index(trips)
 
     filtered =
@@ -266,7 +267,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
       |> filter_type(opts[:type], view)
       |> filter_attention(opts[:attention], view)
       |> Enum.filter(&matches_filters?(&1.transfer, stop_ids, route_id, trip_routes))
-      |> filter_search(string_option(opts[:search]))
+      |> filter_search(Values.presence(opts[:search]))
       |> sort_rows(requested_sort_by(opts), requested_sort_dir(opts))
 
     per_page = requested_per_page(opts)
@@ -302,7 +303,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
       load_transfers(organization_id, gtfs_version_id)
       |> Enum.reject(&in_seat?/1)
 
-    route_id = string_option(opts[:route])
+    route_id = Values.presence(opts[:route])
 
     trip_routes =
       if route_id do
@@ -313,7 +314,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
         %{}
       end
 
-    stop_ids = stop_filter(organization_id, gtfs_version_id, string_option(opts[:stop]))
+    stop_ids = stop_filter(organization_id, gtfs_version_id, Values.presence(opts[:stop]))
 
     general
     |> Enum.filter(&matches_filters?(&1, stop_ids, route_id, trip_routes))
@@ -456,8 +457,8 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   """
   @spec map_payload(Ecto.UUID.t(), Ecto.UUID.t(), map()) :: map_payload()
   def map_payload(organization_id, gtfs_version_id, endpoints) do
-    from_id = map_stop_id(Map.get(endpoints, :from_stop_id))
-    to_id = map_stop_id(Map.get(endpoints, :to_stop_id))
+    from_id = Values.presence(Map.get(endpoints, :from_stop_id))
+    to_id = Values.presence(Map.get(endpoints, :to_stop_id))
 
     stops =
       [from_id, to_id]
@@ -1183,17 +1184,6 @@ defmodule GtfsPlanner.Gtfs.Transfers do
 
   defp rule_index(_rows, _rule), do: nil
 
-  # A typed option is used only when it is a non-blank string; anything else is
-  # treated as absent rather than coerced. The LiveView canonicalizes the URL.
-  defp string_option(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp string_option(_value), do: nil
-
   defp max_page(rows, per_page), do: max(1, div(length(rows) + per_page - 1, per_page))
 
   defp requested_page(opts) do
@@ -1230,8 +1220,8 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   # its station — with no name, so the control can still show it selected.
   defp filter_options(rows, view, opts) do
     %{
-      stops: rows |> stop_options() |> put_missing_stop(string_option(opts[:stop])),
-      routes: rows |> route_options() |> put_missing_route(string_option(opts[:route])),
+      stops: rows |> stop_options() |> put_missing_stop(Values.presence(opts[:stop])),
+      routes: rows |> route_options() |> put_missing_route(Values.presence(opts[:route])),
       types: if(view == :in_seat, do: @in_seat_types, else: @general_types)
     }
   end
@@ -1569,14 +1559,6 @@ defmodule GtfsPlanner.Gtfs.Transfers do
 
   # A hook payload value names a stop only when it is a non-blank string; anything
   # else is treated as no endpoint rather than cast (CR-6 untrusted input).
-  defp map_stop_id(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp map_stop_id(_value), do: nil
 
   defp map_point(%Stop{} = stop) do
     %{

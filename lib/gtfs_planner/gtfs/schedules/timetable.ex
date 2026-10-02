@@ -47,6 +47,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Headsigns
   alias GtfsPlanner.Gtfs.Schedules.Summary
+  alias GtfsPlanner.Values
 
   @seconds_per_day 86_400
   @seconds_per_hour 3_600
@@ -364,13 +365,9 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
   end
 
   defp blank_record?(record) do
-    blank_value?(Map.get(record, :arrival_time)) or
-      blank_value?(Map.get(record, :departure_time))
+    Values.blank?(Map.get(record, :arrival_time)) or
+      Values.blank?(Map.get(record, :departure_time))
   end
-
-  defp blank_value?(nil), do: true
-  defp blank_value?(value) when is_binary(value), do: String.trim(value) == ""
-  defp blank_value?(_value), do: false
 
   # A filled position is estimated only when its stored row had neither time
   # and the fill wrote one: kept rows (including the R1 one-sided copy) and
@@ -387,8 +384,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
   end
 
   defp both_blank?(record) do
-    blank_value?(Map.get(record, :arrival_time)) and
-      blank_value?(Map.get(record, :departure_time))
+    Values.blank?(Map.get(record, :arrival_time)) and
+      Values.blank?(Map.get(record, :departure_time))
   end
 
   defp has_time?(record) do

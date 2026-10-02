@@ -104,6 +104,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
   alias GtfsPlanner.Gtfs.Translation
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions.GtfsVersion
 
   @edit_fields [
@@ -402,7 +403,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
     taken = MapSet.new(taken_ids)
     attrs = normalize_keys(attrs)
 
-    case trimmed(Map.get(attrs, :route_id)) do
+    case Values.presence(Map.get(attrs, :route_id)) do
       nil ->
         {candidate, reason} = generated_candidate(candidates, attrs)
         {:ok, %{route_id: dedupe(candidate, taken), reason: reason, mode: :generated}}
@@ -819,8 +820,8 @@ defmodule GtfsPlanner.Gtfs.Routes do
   # --- identifier inference internals -------------------------------------
 
   defp generated_candidate(candidates, attrs) do
-    number = trimmed(Map.get(attrs, :route_short_name))
-    name = trimmed(Map.get(attrs, :route_long_name))
+    number = Values.presence(Map.get(attrs, :route_short_name))
+    name = Values.presence(Map.get(attrs, :route_long_name))
 
     case inferred_prefix(candidates, number) do
       prefix when is_binary(prefix) ->
@@ -847,8 +848,8 @@ defmodule GtfsPlanner.Gtfs.Routes do
     examples =
       Enum.flat_map(candidates, fn candidate ->
         candidate = normalize_keys(candidate)
-        id = trimmed(Map.get(candidate, :route_id))
-        example_number = trimmed(Map.get(candidate, :route_short_name))
+        id = Values.presence(Map.get(candidate, :route_id))
+        example_number = Values.presence(Map.get(candidate, :route_short_name))
 
         with true <- is_binary(id),
              true <- is_binary(example_number),
@@ -889,17 +890,6 @@ defmodule GtfsPlanner.Gtfs.Routes do
     |> String.replace(~r/[^a-z0-9]+/u, "-")
     |> String.trim("-")
   end
-
-  defp trimmed(nil), do: nil
-
-  defp trimmed(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp trimmed(_value), do: nil
 
   # --- creation and replay internals ---------------------------------------
 
@@ -1065,7 +1055,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
   # agency resolves automatically (read-only assignment) and multiple agencies
   # require a selected scoped agency (AC-5).
   defp resolve_agency(attrs, audit) do
-    submitted = trimmed(Map.get(attrs, "agency_id") || Map.get(attrs, :agency_id))
+    submitted = Values.presence(Map.get(attrs, "agency_id") || Map.get(attrs, :agency_id))
     count = Gtfs.count_agencies(audit.organization_id, audit.gtfs_version_id)
 
     cond do

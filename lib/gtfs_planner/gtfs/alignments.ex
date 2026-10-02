@@ -299,7 +299,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
       fn {_route_pattern_id, shape} -> shape end
     )
     |> Map.new(fn {route_pattern_id, shapes} ->
-      {route_pattern_id, Enum.any?(shapes, &present?/1)}
+      {route_pattern_id, Enum.any?(shapes, &shape_id?/1)}
     end)
   end
 
@@ -337,7 +337,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
         pattern_label: first.pattern_name || first.route_pattern_id,
         visit_positions: Enum.map(plain, fn row -> row.position end),
         custom_positions: Enum.map(custom, fn row -> row.position end),
-        owns_shape?: present?(first.shape_id),
+        owns_shape?: shape_id?(first.shape_id),
         linked_trip_count: Map.get(trip_counts, {first.route_id, first.route_pattern_id}, 0)
       }
     end)
@@ -482,7 +482,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     previous = previous_vectors(linked, visit_vectors)
     blockers = materialization_blockers(pattern, visit_count, linked, stop_counts)
 
-    if present?(pattern.shape_id) do
+    if shape_id?(pattern.shape_id) do
       %{
         shape_id: pattern.shape_id,
         mode: :existing,
@@ -1153,7 +1153,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
       &copy_pattern_segment!(&1, source_occurrences, copied_by_position, copy, audit_context)
     )
 
-    if present?(source.shape_id) do
+    if shape_id?(source.shape_id) do
       resolved = resolve(copy)
 
       if resolved.status.missing == 0 and resolved.status.blocked == 0 do
@@ -2231,7 +2231,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
   defp export_state(%RoutePattern{} = pattern, summary, digest, imported?) do
     cond do
-      present?(pattern.shape_id) ->
+      shape_id?(pattern.shape_id) ->
         if summary.missing == 0 and summary.blocked == 0 and not is_nil(digest) and
              digest == pattern.alignment_digest do
           :current
@@ -2247,8 +2247,10 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     end
   end
 
-  defp present?(value) when is_binary(value) and value != "", do: true
-  defp present?(_), do: false
+  # Named exception: a whitespace-only shape_id stored raw by import is still a reference, so
+  # canonical trimming would flip the copy and materialize branches.
+  defp shape_id?(value) when is_binary(value) and value != "", do: true
+  defp shape_id?(_), do: false
 
   defp has_imported_shape?(%RoutePattern{} = pattern) do
     from(t in Trip,

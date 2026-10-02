@@ -17,6 +17,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
 
   alias GtfsPlanner.Gtfs.StationJournal.{PhotoStorage, Scope}
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
 
   require Logger
 
@@ -524,17 +525,17 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   end
 
   defp valid_station_target?(attrs) do
-    blank?(attr(attrs, :target_id)) and blank?(attr(attrs, :stop_level_id)) and
-      blank?(attr(attrs, :diagram_x)) and blank?(attr(attrs, :diagram_y))
+    Values.blank?(attr(attrs, :target_id)) and Values.blank?(attr(attrs, :stop_level_id)) and
+      Values.blank?(attr(attrs, :diagram_x)) and Values.blank?(attr(attrs, :diagram_y))
   end
 
   defp valid_reference_target?(ids, attrs) do
-    member_target?(ids, attr(attrs, :target_id)) and blank?(attr(attrs, :stop_level_id)) and
-      blank?(attr(attrs, :diagram_x)) and blank?(attr(attrs, :diagram_y))
+    member_target?(ids, attr(attrs, :target_id)) and Values.blank?(attr(attrs, :stop_level_id)) and
+      Values.blank?(attr(attrs, :diagram_x)) and Values.blank?(attr(attrs, :diagram_y))
   end
 
   defp valid_pin_target?(ids, attrs) do
-    blank?(attr(attrs, :target_id)) and member_target?(ids, attr(attrs, :stop_level_id)) and
+    Values.blank?(attr(attrs, :target_id)) and member_target?(ids, attr(attrs, :stop_level_id)) and
       finite_non_negative?(attr(attrs, :diagram_x)) and
       finite_non_negative?(attr(attrs, :diagram_y))
   end
@@ -549,7 +550,6 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   defp finite_non_negative?(value) when is_integer(value), do: value >= 0
   defp finite_non_negative?(value) when is_float(value), do: value >= 0
   defp finite_non_negative?(_value), do: false
-  defp blank?(value), do: is_nil(value)
   defp attr(attrs, key), do: Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
   defp error_id(attrs) when is_map(attrs), do: attr(attrs, :id)
   defp error_id(_attrs), do: nil

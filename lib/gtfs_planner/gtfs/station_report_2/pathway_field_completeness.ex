@@ -4,7 +4,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.PathwayFieldCompleteness do
   """
 
   alias GtfsPlanner.Gtfs.Pathway
-  alias GtfsPlanner.Gtfs.StationReport2.Helpers
+  alias GtfsPlanner.Values
 
   @type status :: :pass | :warn | :fail
 
@@ -58,7 +58,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.PathwayFieldCompleteness do
 
   defp field_stat(field, pathways) do
     total = length(pathways)
-    present = Enum.count(pathways, &Helpers.present?(Map.get(&1, field)))
+    present = Enum.count(pathways, &Values.present?(Map.get(&1, field)))
 
     %{
       field: field,

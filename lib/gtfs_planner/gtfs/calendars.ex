@@ -3810,6 +3810,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   defp fingerprint_key(key) when is_binary(key), do: key
   defp fingerprint_key(_key), do: :invalid
 
+  # Identifier exception: whitespace is legal fingerprint data, so only "" is invalid.
   defp valid_fingerprint?(value), do: is_binary(value) and value != ""
 
   defp validate_review_fingerprint(fingerprint) when is_binary(fingerprint) do

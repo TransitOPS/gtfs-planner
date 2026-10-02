@@ -29,6 +29,7 @@ defmodule GtfsPlanner.Operations.Tods do
   alias GtfsPlanner.Gtfs.Import.{CsvParser, ParseError}
   alias GtfsPlanner.Operations.Garage
   alias GtfsPlanner.Operations.Vehicle
+  alias GtfsPlanner.Values
 
   @max_import_bytes 2_000_000
   @max_value_length 255
@@ -457,17 +458,14 @@ defmodule GtfsPlanner.Operations.Tods do
     {accepted, [note(row, id, reason) | skipped], errors, first_rows}
   end
 
-  defp note(row, id, reason), do: %{row: row, id: id_or_nil(id), reason: reason}
-
-  defp id_or_nil(""), do: nil
-  defp id_or_nil(id), do: id
+  defp note(row, id, reason), do: %{row: row, id: Values.presence(id), reason: reason}
 
   defp value(values, column) do
-    values |> Map.get(column) |> trim()
+    values |> Map.get(column) |> cell_text()
   end
 
-  defp trim(nil), do: ""
-  defp trim(value) when is_binary(value), do: String.trim(value)
+  # Named exception: callers match "" and measure length, so this returns trimmed text and never nil.
+  defp cell_text(value), do: Values.presence(value) || ""
 
   defp validate_header(kind, file, headers) do
     id_header = @id_headers[kind]

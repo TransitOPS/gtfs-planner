@@ -10,6 +10,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
   alias GtfsPlanner.Gtfs.{Graph, Pathway, Stop}
   alias GtfsPlanner.Gtfs.StationReport2.Helpers
   alias GtfsPlanner.Routing.PathwayTraversal
+  alias GtfsPlanner.Values
 
   @long_route_threshold 300
   @elevator_step_threshold 120
@@ -516,7 +517,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
       end)
 
     hops = [start_enriched | enriched_hops]
-    pathway_hops = Enum.filter(hops, &present?(&1.pathway_id))
+    pathway_hops = Enum.filter(hops, &Values.present?(&1.pathway_id))
     totals = path_totals(hops, pathway_hops)
 
     %{
@@ -719,7 +720,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
   defp build_level_path(hops) do
     hops
     |> Enum.map(& &1.level_name)
-    |> Enum.filter(&present?/1)
+    |> Enum.filter(&Values.present?/1)
     |> Enum.dedup()
     |> case do
       [] -> nil
@@ -908,26 +909,13 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
   Forward traversals use `signposted_as`.
   """
   def effective_signposted_as(%{traversed_reverse?: true} = hop) do
-    normalize_signposted_as(hop.reversed_signposted_as)
+    Values.presence(hop.reversed_signposted_as)
   end
 
   def effective_signposted_as(hop) do
-    normalize_signposted_as(hop.signposted_as)
+    Values.presence(hop.signposted_as)
   end
-
-  defp normalize_signposted_as(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp normalize_signposted_as(value), do: value
 
   defp normalize_location_type(location_type) when is_integer(location_type), do: location_type
   defp normalize_location_type(_), do: -1
-
-  defp present?(value) when is_binary(value), do: String.trim(value) != ""
-  defp present?(nil), do: false
-  defp present?(_), do: true
 end

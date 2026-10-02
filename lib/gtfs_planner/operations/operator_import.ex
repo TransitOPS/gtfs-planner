@@ -15,6 +15,7 @@ defmodule GtfsPlanner.Operations.OperatorImport do
   """
 
   alias GtfsPlanner.Operations.Tods
+  alias GtfsPlanner.Values
 
   @employee_id_max 64
   @display_name_max 120
@@ -160,15 +161,12 @@ defmodule GtfsPlanner.Operations.OperatorImport do
     {add, update, [note(row, id, reason) | skipped], first_rows}
   end
 
-  defp note(row, id, reason), do: %{row: row, id: id_or_nil(id), reason: reason}
-
-  defp id_or_nil(""), do: nil
-  defp id_or_nil(id), do: id
+  defp note(row, id, reason), do: %{row: row, id: Values.presence(id), reason: reason}
 
   defp value(values, column) do
-    values |> Map.get(column) |> trim()
+    values |> Map.get(column) |> cell_text()
   end
 
-  defp trim(nil), do: ""
-  defp trim(value) when is_binary(value), do: String.trim(value)
+  # Named exception: callers match "" and measure length, so this returns trimmed text and never nil.
+  defp cell_text(value), do: Values.presence(value) || ""
 end

@@ -79,6 +79,7 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Translation
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions.GtfsVersion
 
   @published_status "published"
@@ -1159,7 +1160,7 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
       target == nil -> {:error, :invalid_target}
       target.id == agency.id -> {:error, :invalid_target}
       routes == [] -> {:ok, nil}
-      blank_agency_reference?(target.agency_id) -> {:error, :invalid_target}
+      Values.blank?(target.agency_id) -> {:error, :invalid_target}
       true -> {:ok, target}
     end
   end
@@ -1263,7 +1264,7 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
   # A blank choice means "the only agency", so a version with one agency resolves without
   # asking the caller to know its ID (R4).
   defp resolve_reference_agency!([%Agency{} = agency], agency_id) do
-    if blank_agency_reference?(agency_id) do
+    if Values.blank?(agency_id) do
       agency.agency_id
     else
       listed_agency_reference!([agency], agency_id)
@@ -1282,16 +1283,6 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
       nil -> Repo.rollback(:agency_not_found)
     end
   end
-
-  # Blank is nil or a whitespace-only string, the classification the route counts' `btrim`
-  # and the editor changesets' trim use, so a padded reference is neither blank nor an exact
-  # match (R5).
-  defp blank_agency_reference?(nil), do: true
-
-  defp blank_agency_reference?(agency_id) when is_binary(agency_id),
-    do: String.trim(agency_id) == ""
-
-  defp blank_agency_reference?(_agency_id), do: false
 
   defp insert_or_rollback!(changeset) do
     case Repo.insert(changeset) do

@@ -22,6 +22,7 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
   alias GtfsPlanner.Gtfs.StopTimeEstimator
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
 
   @max_warnings 100
 
@@ -206,12 +207,9 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
   end
 
   defp complete?(record) do
-    present?(Map.get(record, :arrival_time)) and present?(Map.get(record, :departure_time))
+    Values.present?(Map.get(record, :arrival_time)) and
+      Values.present?(Map.get(record, :departure_time))
   end
-
-  defp present?(nil), do: false
-  defp present?(value) when is_binary(value), do: String.trim(value) != ""
-  defp present?(_value), do: true
 
   defp estimator_row(record, coords) do
     %{
@@ -259,7 +257,7 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
   end
 
   defp keep_or_copy(stored, seconds) do
-    if present?(stored), do: stored, else: format_or_nil(seconds)
+    if Values.present?(stored), do: stored, else: format_or_nil(seconds)
   end
 
   defp format_or_nil(nil), do: nil
@@ -461,15 +459,15 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
   defp blank_cells(records) do
     Enum.sum(
       Enum.map(records, fn record ->
-        if(present?(Map.get(record, :arrival_time)), do: 0, else: 1) +
-          if present?(Map.get(record, :departure_time)), do: 0, else: 1
+        if(Values.present?(Map.get(record, :arrival_time)), do: 0, else: 1) +
+          if Values.present?(Map.get(record, :departure_time)), do: 0, else: 1
       end)
     )
   end
 
   defp blank_without_distance?(record) do
-    (not present?(Map.get(record, :arrival_time)) or
-       not present?(Map.get(record, :departure_time))) and
+    (not Values.present?(Map.get(record, :arrival_time)) or
+       not Values.present?(Map.get(record, :departure_time))) and
       is_nil(Map.get(record, :shape_dist_traveled))
   end
 

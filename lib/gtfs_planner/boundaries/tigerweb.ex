@@ -132,7 +132,7 @@ defmodule GtfsPlanner.Boundaries.Tigerweb do
     name = properties["NAME"]
     geoid = properties["GEOID"]
 
-    if present?(name) and present?(geoid) do
+    if string_present?(name) and string_present?(geoid) do
       [
         %{
           name: name,
@@ -150,7 +150,9 @@ defmodule GtfsPlanner.Boundaries.Tigerweb do
 
   defp place(_layer, _feature), do: []
 
-  defp present?(value), do: is_binary(value) and String.trim(value) != ""
+  # Named exception: external TIGERweb JSON may carry a non-string NAME or GEOID, and such a
+  # feature must keep being dropped rather than listed as a dead option.
+  defp string_present?(value), do: is_binary(value) and String.trim(value) != ""
 
   defp sort_places({:ok, places}), do: {:ok, Enum.sort_by(places, &{&1.name, &1.geoid})}
   defp sort_places({:error, reason}), do: {:error, reason}

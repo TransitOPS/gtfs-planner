@@ -101,14 +101,6 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Helpers do
   end
 
   @doc """
-  Returns `true` if the value is non-nil and non-empty-string.
-  """
-  @spec present?(term()) :: boolean()
-  def present?(nil), do: false
-  def present?(value) when is_binary(value), do: String.trim(value) != ""
-  def present?(_), do: true
-
-  @doc """
   Computes the Levenshtein edit distance between two strings.
   """
   @spec levenshtein(String.t(), String.t()) :: non_neg_integer()

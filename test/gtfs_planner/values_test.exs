@@ -28,6 +28,26 @@ defmodule GtfsPlanner.ValuesTest do
       assert Values.present?(0)
       assert Values.present?([])
     end
+
+    test "returns false for nil" do
+      refute Values.present?(nil)
+    end
+
+    test "returns false for empty string" do
+      refute Values.present?("")
+    end
+
+    test "returns false for whitespace-only string" do
+      refute Values.present?("   ")
+    end
+
+    test "returns true for non-empty string" do
+      assert Values.present?("x")
+    end
+
+    test "returns true for integer" do
+      assert Values.present?(0)
+    end
   end
 
   describe "presence/1" do
