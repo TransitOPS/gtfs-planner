@@ -31,8 +31,11 @@ defmodule GtfsPlanner.FeedPublishing do
   import Ecto.Query, warn: false
 
   alias GtfsPlanner.Authorization
+  alias GtfsPlanner.FeedPublishing.Attempt
+  alias GtfsPlanner.FeedPublishing.Config
   alias GtfsPlanner.FeedPublishing.Namespace
   alias GtfsPlanner.FeedPublishing.Publication
+  alias GtfsPlanner.FeedPublishing.Publisher
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
 
@@ -127,6 +130,57 @@ defmodule GtfsPlanner.FeedPublishing do
         order_by: [asc: publication.channel]
       )
     )
+  end
+
+  @doc """
+  Advances one channel's active attempt through staging and the conditional
+  manifest switch, returning the truth about what is now served.
+
+  This is the system delivery entry point: it needs no browser, reads the
+  durable attempt the channel command froze, and runs only when publishing is
+  configured. It never allocates a generation, never rebases an attempt and
+  never acknowledges a newer desired revision using an older attempt.
+
+  ## Examples
+
+      iex> advance(publication_id)
+      {:ok, :current}
+
+      iex> advance(publication_id)
+      {:error, :disabled}
+
+      iex> advance(publication_id)
+      {:error, :no_attempt}
+  """
+  @spec advance(Ecto.UUID.t()) ::
+          {:ok, :current | :pending | :superseded} | {:error, atom()}
+  def advance(publication_id) do
+    case Config.current() do
+      {:enabled, config} -> advance(publication_id, config)
+      :disabled -> {:error, :disabled}
+    end
+  end
+
+  defp advance(publication_id, config) do
+    case Ecto.UUID.cast(publication_id) do
+      {:ok, id} ->
+        case Repo.get(Publication, id, preload: [:namespace]) do
+          nil -> {:error, :not_found}
+          publication -> advance_attempt(config, publication)
+        end
+
+      :error ->
+        {:error, :not_found}
+    end
+  end
+
+  defp advance_attempt(_config, %Publication{active_attempt_id: nil}), do: {:error, :no_attempt}
+
+  defp advance_attempt(config, %Publication{active_attempt_id: attempt_id} = publication) do
+    case Repo.get(Attempt, attempt_id) do
+      nil -> {:error, :no_attempt}
+      attempt -> Publisher.advance(config, publication, attempt)
+    end
   end
 
   defp claim(organization_id, alias) do
