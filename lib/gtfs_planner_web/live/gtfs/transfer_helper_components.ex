@@ -58,6 +58,31 @@ defmodule GtfsPlannerWeb.Gtfs.TransferHelperComponents do
     """
   end
 
+  @doc """
+  What the reviewed proposals did so far: the latest status line and the counts a
+  reviewer reads after a partly applied sequence. The page renders it inside the
+  review drawer while that is open and on the page itself once it closes.
+  """
+  attr :status, :string, default: nil
+  attr :counts, :map, required: true
+
+  def policy_outcome(assigns) do
+    ~H"""
+    <div class="grid gap-1 text-[13px] text-muted">
+      <p :if={@status} id="transfer-policy-status" role="status">{@status}</p>
+      <p id="transfer-policy-counts">{policy_counts_text(@counts)}</p>
+    </div>
+    """
+  end
+
+  @doc "Whether there is an outcome to show: a status line, or any count above zero."
+  def policy_outcome?(status, counts),
+    do: not is_nil(status) or Enum.any?(counts, fn {_kind, count} -> count > 0 end)
+
+  defp policy_counts_text(counts) do
+    "Saved #{counts.saved} · Skipped #{counts.skipped} · Conflicts #{counts.conflict} · Not applied #{counts.not_applied}"
+  end
+
   defp policy_time_text(value) when is_integer(value), do: "#{value} seconds"
   defp policy_time_text(value) when is_binary(value) and value != "", do: "#{value} seconds"
   defp policy_time_text(_empty), do: "None"
