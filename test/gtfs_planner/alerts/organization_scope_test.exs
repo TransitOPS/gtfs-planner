@@ -296,12 +296,15 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
       # The alert being retargeted still holds a route of the version it was
       # written in, so the fall version refuses both the route it does not hold
       # and the stop it cannot resolve from there.
-      assert %{
-               scope: [
+      # Both messages are reported; the order a changeset holds them in is not
+      # part of the contract, and a map-backed scope presents them either way.
+      assert %{scope: scope_errors} = errors_on(changeset)
+
+      assert Enum.sort(scope_errors) ==
+               Enum.sort([
                  "Choose routes from this version.",
                  "Choose stops from this version."
-               ]
-             } = errors_on(changeset)
+               ])
 
       assert {:ok, unchanged} = Alerts.get_alert(context.audit, context.alert.id)
 
