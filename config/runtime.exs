@@ -141,7 +141,9 @@ config :gtfs_planner,
 # Test configuration is never replaced from here, so no ordinary run can reach a live
 # bucket through ambient publishing secrets; `config/test.exs` owns the test value.
 if config_env() != :test do
-  config :gtfs_planner, :feed_publishing_config, GtfsPlanner.FeedPublishing.Config.load(System.get_env())
+  config :gtfs_planner,
+         :feed_publishing_config,
+         GtfsPlanner.FeedPublishing.Config.load(System.get_env())
 end
 
 if config_env() != :test do

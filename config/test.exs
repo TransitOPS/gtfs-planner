@@ -218,15 +218,14 @@ config :gtfs_planner, :task_artifact_maintenance_enabled, false
 # is a raw settings map because this file is compiled before
 # `GtfsPlanner.FeedPublishing.Config` exists, and `current/0` normalizes it on read.
 if System.get_env("GTFS_PUBLISH_TEST_LOOPBACK") == "true" do
-  config :gtfs_planner, :feed_publishing_settings,
-    %{
-      "GTFS_PUBLISH_BUCKET" => "gtfs-planner-loopback",
-      "GTFS_PUBLISH_ENDPOINT" => "https://storage.loopback.invalid",
-      "GTFS_PUBLISH_REGION" => "us-east-1",
-      "GTFS_PUBLISH_ACCESS_KEY_ID" => "loopback-access-key",
-      "GTFS_PUBLISH_SECRET_ACCESS_KEY" => "loopback-secret-access-key",
-      "GTFS_PUBLISH_PUBLIC_BASE_URL" => "https://feeds.loopback.invalid"
-    }
+  config :gtfs_planner, :feed_publishing_settings, %{
+    "GTFS_PUBLISH_BUCKET" => "gtfs-planner-loopback",
+    "GTFS_PUBLISH_ENDPOINT" => "https://storage.loopback.invalid",
+    "GTFS_PUBLISH_REGION" => "us-east-1",
+    "GTFS_PUBLISH_ACCESS_KEY_ID" => "loopback-access-key",
+    "GTFS_PUBLISH_SECRET_ACCESS_KEY" => "loopback-secret-access-key",
+    "GTFS_PUBLISH_PUBLIC_BASE_URL" => "https://feeds.loopback.invalid"
+  }
 end
 
 # Print only warnings and errors during test
