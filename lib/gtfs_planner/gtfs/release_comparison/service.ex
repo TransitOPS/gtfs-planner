@@ -126,7 +126,8 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Service do
           required(:service_dates) => [Date.t()],
           required(:pattern) => pattern(),
           required(:time_vector) => [{term(), term()}],
-          required(:frequencies) => [map()]
+          required(:frequencies) => [map()],
+          required(:source) => map() | nil
         }
 
   @doc """
@@ -292,6 +293,9 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Service do
     end
   end
 
+  # The trip's own physical row travels with the evaluation, because step 4
+  # builds every trip reference from the selected bytes rather than from an
+  # identifier alone.
   defp evaluated_trip(trip, occurrences, frequencies, dates) do
     %{
       trip_id: trip.trip_id,
@@ -300,7 +304,8 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Service do
       service_dates: dates,
       pattern: pattern_of(occurrences),
       time_vector: Enum.map(occurrences, &{&1.arrival_secs, &1.departure_secs}),
-      frequencies: Enum.map(frequencies, &frequency_entry/1)
+      frequencies: Enum.map(frequencies, &frequency_entry/1),
+      source: Map.get(trip, :source)
     }
   end
 

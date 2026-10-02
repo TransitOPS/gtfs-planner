@@ -125,7 +125,8 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Matching do
             %{required(:stop_id) => String.t(), required(:sequence) => term()}
           ],
           required(:time_vector) => [{term(), term()}],
-          required(:frequencies) => [map()]
+          required(:frequencies) => [map()],
+          required(:source) => map() | nil
         }
 
   @doc """
