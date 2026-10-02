@@ -185,18 +185,18 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
 
       assert Enum.empty?(account_link(doc))
       assert html =~ "Routes"
-      assert "Stops & stations" in nav_link_texts(html)
-      refute html =~ "Organizations"
+      assert "Stops" in nav_link_texts(html)
+      refute "Admin" in nav_link_texts(html)
     end
 
-    test "organization admin sees no task link and no Organizations link" do
+    test "organization admin sees no task link and no Admin link" do
       html = render_nav(org_admin_assigns("/"))
       doc = LazyHTML.from_fragment(html)
 
       assert Enum.empty?(account_link(doc))
       assert nav_link_texts(html) == []
       refute html =~ "Users"
-      refute html =~ "Organizations"
+      refute "Admin" in nav_link_texts(html)
     end
 
     test "no-task role sees an empty task nav" do
@@ -205,20 +205,20 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       assert nav_link_texts(html) == []
     end
 
-    test "declared visual order lists the seven task links and then Organizations" do
+    test "declared visual order lists Admin and then the seven task links" do
       texts = nav_link_texts(render_nav(editor_assigns("/")))
 
       assert texts == [
-               "Alerts",
                "Routes",
+               "Stops",
                "Calendars",
-               "Operations",
-               "Stops & stations",
+               "Alerts",
                "Flex",
+               "Operations",
                "GTFS"
              ]
 
-      assert nav_link_texts(render_nav(admin_assigns("/"))) == texts ++ ["Organizations"]
+      assert nav_link_texts(render_nav(admin_assigns("/"))) == ["Admin" | texts]
     end
 
     test "task links are labels only, without icons or the retired pills" do
@@ -240,7 +240,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
              ]
     end
 
-    test "Organizations follows a divider after the task links" do
+    test "Admin precedes a divider before the task links" do
       doc = LazyHTML.from_fragment(render_nav(admin_assigns("/")))
       nav = LazyHTML.query(doc, "#main-navigation")
 
@@ -248,8 +248,8 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
                LazyHTML.query(doc, "#main-navigation span[aria-hidden='true'].bg-subtle")
              )
 
-      # The divider is the element immediately before Organizations.
-      assert String.trim(LazyHTML.text(LazyHTML.query(nav, "a:last-of-type"))) == "Organizations"
+      # The divider is the element immediately after Admin.
+      assert String.trim(LazyHTML.text(LazyHTML.query(nav, "a:first-of-type"))) == "Admin"
     end
 
     test "an editor without the administrator role has no divider" do
@@ -354,20 +354,20 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
   end
 
   describe "path-family matching — admin links and account-menu Settings" do
-    test "Organizations activates on /admin/organizations" do
+    test "Admin activates on /admin/organizations" do
       html = render_nav(admin_assigns("/admin/organizations"))
       doc = LazyHTML.from_fragment(html)
 
       link = LazyHTML.query(doc, ~s(a[aria-current="page"]))
-      assert LazyHTML.text(link) =~ "Organizations"
+      assert LazyHTML.text(link) =~ "Admin"
     end
 
-    test "Organizations activates on nested /admin/organizations/123" do
+    test "Admin activates on nested /admin/organizations/123" do
       html = render_nav(admin_assigns("/admin/organizations/123"))
       doc = LazyHTML.from_fragment(html)
 
       link = LazyHTML.query(doc, ~s(a[aria-current="page"]))
-      assert LazyHTML.text(link) =~ "Organizations"
+      assert LazyHTML.text(link) =~ "Admin"
     end
 
     test "the account-menu Settings item is current on the admin/users family" do
@@ -386,7 +386,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       end
     end
 
-    test "Organizations does NOT activate on /admin/users" do
+    test "Admin does NOT activate on /admin/users" do
       html = render_nav(admin_assigns("/admin/users"))
       doc = LazyHTML.from_fragment(html)
 
@@ -441,7 +441,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       end
     end
 
-    test "Stops & stations activates on /gtfs/42/stops and on station pages" do
+    test "Stops activates on /gtfs/42/stops and on station pages" do
       for path <- [
             "/gtfs/42/stops",
             "/gtfs/42/stops/BROWSER_STATION/reachability",
@@ -450,7 +450,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
         doc = LazyHTML.from_fragment(render_nav(editor_assigns(path)))
 
         assert LazyHTML.attribute(LazyHTML.query(doc, "#nav-stops"), "aria-current") == ["page"],
-               "#{path} should select Stops & stations"
+               "#{path} should select Stops"
       end
     end
 
@@ -496,7 +496,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       assert LazyHTML.attribute(LazyHTML.query(doc, "#nav-routes"), "aria-current") == []
     end
 
-    test "Calendars and Stops & stations do not cross-select" do
+    test "Calendars and Stops do not cross-select" do
       doc = LazyHTML.from_fragment(render_nav(editor_assigns("/gtfs/42/calendars")))
 
       assert LazyHTML.attribute(LazyHTML.query(doc, "#nav-calendars"), "aria-current") == ["page"]
@@ -841,14 +841,14 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
   end
 
   describe "role gating" do
-    test "administrator sees Organizations link" do
+    test "administrator sees Admin link" do
       html = render_nav(admin_assigns("/"))
-      assert html =~ "Organizations"
+      assert "Admin" in nav_link_texts(html)
     end
 
-    test "non-administrator does not see Organizations link" do
+    test "non-administrator does not see Admin link" do
       html = render_nav(editor_assigns("/"))
-      refute html =~ "Organizations"
+      refute "Admin" in nav_link_texts(html)
     end
 
     test "editor sees the seven label-only task links and their destinations" do
@@ -856,22 +856,22 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       doc = LazyHTML.from_fragment(html)
 
       assert nav_link_texts(html) == [
-               "Alerts",
                "Routes",
+               "Stops",
                "Calendars",
-               "Operations",
-               "Stops & stations",
+               "Alerts",
                "Flex",
+               "Operations",
                "GTFS"
              ]
 
       assert LazyHTML.attribute(LazyHTML.query(doc, "#main-navigation a"), "href") == [
-               "/gtfs/42/alerts",
                "/gtfs/42/routes",
-               "/gtfs/42/calendars",
-               "/gtfs/42/blocks",
                "/gtfs/42/stops",
+               "/gtfs/42/calendars",
+               "/gtfs/42/alerts",
                "/gtfs/42/flex",
+               "/gtfs/42/blocks",
                "/gtfs/42/export"
              ]
     end

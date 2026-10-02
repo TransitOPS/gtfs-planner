@@ -213,6 +213,9 @@ defmodule GtfsPlanner.Organizations do
   @doc """
   Updates a user's roles in an organization.
 
+  Removing any role signs the user out of every session; adding roles only
+  leaves their sessions in place.
+
   ## Examples
 
       iex> update_user_roles(actor, user_id, organization_id, [:pathways_studio_admin])
@@ -462,7 +465,14 @@ defmodule GtfsPlanner.Organizations do
 
     updated = update_membership!(changeset)
 
-    {updated, delete_session_digests(updated.user_id)}
+    # Roles are read on every mount, so a grant takes effect without a new
+    # session. Only a removed role must end the sessions that already hold it.
+    digests =
+      if Enum.all?(membership.roles, &(&1 in updated.roles)),
+        do: [],
+        else: delete_session_digests(updated.user_id)
+
+    {updated, digests}
   end
 
   defp apply_membership_command(:remove, membership, actor_level) do

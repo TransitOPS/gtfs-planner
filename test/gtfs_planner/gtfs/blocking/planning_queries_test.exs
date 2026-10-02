@@ -47,6 +47,94 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanningQueriesTest do
   end
 
   describe "trip_rows/3" do
+    test "every filter selects the sequence endpoints and preserves missing clocks", %{
+      organization: o,
+      version: v,
+      other_version: other,
+      foreign: foreign,
+      foreign_version: fv
+    } do
+      trip = trip!(o, v, "endpoints", block_id: "7")
+      no_stops = trip!(o, v, "no-stops", block_id: "7")
+      first_stop = stop!(o, v, "FIRST", "42.0000", "-71.0000")
+      last_stop = stop!(o, v, "LAST", "42.0010", "-71.0000")
+
+      last =
+        stop_time_fixture(o.id, v.id, trip.trip_id, last_stop.stop_id, %{
+          stop_sequence: 90,
+          arrival_time: "invalid",
+          departure_time: nil,
+          drop_off_type: 3
+        })
+
+      stop_time!(o, v, trip.trip_id, last_stop.stop_id, 40, "05:00:00")
+
+      first =
+        stop_time_fixture(o.id, v.id, trip.trip_id, first_stop.stop_id, %{
+          stop_sequence: 4,
+          arrival_time: "25:00:00",
+          departure_time: "25:01:00",
+          pickup_type: 1
+        })
+
+      # Same natural trip ID, with sequences outside the selected scope's range.
+      for {organization, version} <- [{o, other}, {foreign, fv}] do
+        trip!(organization, version, trip.trip_id, block_id: "7")
+        stop_time!(organization, version, trip.trip_id, "OUTSIDE", 0, "01:00:00")
+        stop_time!(organization, version, trip.trip_id, "OUTSIDE", 999, "02:00:00")
+      end
+
+      filters = [
+        {:services, ["WK"]},
+        {:uuids, [trip.id, no_stops.id]},
+        {:trip_ids, [trip.trip_id, no_stops.trip_id]},
+        {:blocks, ["7"]},
+        {:blocks, ["7"], ["WK"]}
+      ]
+
+      for filter <- filters do
+        rows = Map.new(Queries.trip_rows(o.id, v.id, filter), &{&1.id, &1})
+        assert map_size(rows) == 2
+        row = Map.fetch!(rows, trip.id)
+        assert row.first_arrival == 90_000
+        assert row.first_departure == 90_060
+        assert row.first_stop.stop_id == first_stop.stop_id
+        assert row.first_pickup_type == 1
+        assert row.last_arrival == nil
+        assert row.last_departure == nil
+        assert row.last_stop.stop_id == last_stop.stop_id
+        assert row.last_drop_off_type == 3
+        refute row.plottable?
+        assert rows[no_stops.id].first_stop == nil
+        assert rows[no_stops.id].last_stop == nil
+      end
+
+      sources = Queries.raw_sources(o.id, v.id, [trip.id, no_stops.id])
+
+      fields =
+        ~w(trip_id stop_id stop_sequence arrival_time departure_time pickup_type drop_off_type)a
+
+      assert sources.stop_times == Enum.map([first, last], &Map.take(&1, fields))
+    end
+
+    test "empty filters return no trips without reading the database", %{
+      organization: o,
+      version: v
+    } do
+      trip!(o, v, "present", block_id: "7")
+
+      for filter <- [
+            {:services, []},
+            {:uuids, []},
+            {:trip_ids, []},
+            {:blocks, []},
+            {:blocks, [], ["WK"]},
+            {:blocks, ["7"], []}
+          ] do
+        assert {[], 0} = count_queries(fn -> Queries.trip_rows(o.id, v.id, filter) end)
+      end
+    end
+
     test "each trip carries its own shape_id, nil for a trip without one", %{
       organization: o,
       version: v

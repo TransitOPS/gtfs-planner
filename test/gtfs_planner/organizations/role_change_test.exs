@@ -53,6 +53,24 @@ defmodule GtfsPlanner.Organizations.RoleChangeTest do
     assert ["pathways_studio_editor"] == Accounts.get_user_org_membership(other.id, org.id).roles
   end
 
+  test "adding a role keeps the member's sessions", %{
+    organization: org,
+    admin: admin,
+    editor: editor
+  } do
+    token = Accounts.generate_user_session_token(editor)
+    :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "session_revocations")
+
+    assert {:ok, %{roles: ["pathways_studio_editor", "pathways_studio_admin"]}} =
+             Organizations.update_user_roles(admin, editor.id, org.id, [
+               "pathways_studio_editor",
+               "pathways_studio_admin"
+             ])
+
+    assert Accounts.get_user_by_session_token(token)
+    refute_receive {:session_tokens_revoked, [_ | _]}
+  end
+
   test "an editor cannot change roles or remove another member", %{
     organization: org,
     admin: admin,

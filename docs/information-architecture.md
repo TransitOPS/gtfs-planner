@@ -38,7 +38,7 @@ These rules decided every placement below. Use them for new features.
 ## Top level
 
 ```
-Pathways Studio   Alerts · Routes · Calendars · Operations · Stops & stations · Flex · GTFS
+Pathways Studio   Admin | Routes · Stops · Calendars · Alerts · Flex · Operations · GTFS
 Org name                                        [Version ▾]   [Initials ▾]
                                                                 ├ Org name: Settings
                                                                 └ Account settings · Log out
@@ -47,15 +47,15 @@ Org name                                        [Version ▾]   [Initials ▾]
 | Destination | Holds | Scope | Status |
 |---|---|---|---|
 | Home (`/`) | Organization tasks for the signed-in user | Organization | Live |
-| Alerts | Saved service alerts for the version, tabbed Current, Upcoming, In progress, Past | This version | Live |
+| Admin | Organizations: tenant management, shown first and set apart by a divider | System | Live, system administrators only |
 | Routes | Route catalog, transfers, route and pattern pages | This version | Live |
+| Stops | Stops, stations, floorplans, reports, closures | This version | Live |
 | Calendars | Service calendars | This version | Live |
-| Operations | Blocks · Runs · Rosters | This version | Live; grouping Proposed |
-| Stops & stations | Stops, stations, floorplans, reports, closures | This version | Live |
+| Alerts | Saved service alerts for the version, tabbed Current, Upcoming, In progress, Past | This version | Live |
 | Flex | On-demand services layered on routes | This version | Proposed |
+| Operations | Blocks · Runs · Rosters | This version | Live; grouping Proposed |
 | GTFS | Export (default tab): export runs, validation, publishing. Import: creates a new version from GTFS files | Export: this version. Import: organization | Live; GTFS grouping Proposed |
 | Settings | Rarely changed configuration and reference data, opened from the account menu | Labelled per section | Proposed |
-| Organizations | Tenant management | System | Live, system administrators only |
 | Account menu | Initials avatar; Settings under the organization name, then Account settings and Log out | User | Live; Settings entry and initials Proposed |
 
 **Proposed nav changes.**

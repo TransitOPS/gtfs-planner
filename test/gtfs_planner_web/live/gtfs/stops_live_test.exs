@@ -18,6 +18,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
   setup do
     previous = Application.fetch_env(:gtfs_planner, @adapter_key)
     Application.put_env(:gtfs_planner, @adapter_key, CatalogReadAdapterMock)
+    stub(CatalogReadAdapterMock, :load_stop_route_options, fn _org, _ver -> {:ok, []} end)
 
     on_exit(fn ->
       case previous do
@@ -42,12 +43,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     %{user: user, organization: organization, gtfs_version: gtfs_version}
   end
 
-  defp stop_page(rows, total_count, page, available_routes, routes_by_stop) do
+  defp stop_page(rows, total_count, page, routes_by_stop) do
     %{
       rows: rows,
       total_count: total_count,
       page: page,
-      available_routes: available_routes,
       routes_by_stop: routes_by_stop
     }
   end
@@ -84,7 +84,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
         })
 
       stub_catalog(fn _opts ->
-        {:ok, stop_page([stop], 1, 1, [route], %{stop.stop_id => [route]})}
+        {:ok, stop_page([stop], 1, 1, %{stop.stop_id => [route]})}
       end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
@@ -108,7 +108,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       stop = stop_fixture(organization.id, version.id, %{stop_id: "SORT1", parent_station: nil})
 
       stub_catalog(fn _opts ->
-        {:ok, stop_page([stop], 1, 1, [], %{})}
+        {:ok, stop_page([stop], 1, 1, %{})}
       end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
@@ -138,7 +138,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
         })
 
       stub_catalog(fn _opts ->
-        {:ok, stop_page([stop], 1, 1, [], %{})}
+        {:ok, stop_page([stop], 1, 1, %{})}
       end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
@@ -215,7 +215,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
         })
 
       stub_catalog(fn _opts ->
-        {:ok, stop_page([station, stop], 2, 1, [], %{})}
+        {:ok, stop_page([station, stop], 2, 1, %{})}
       end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
@@ -238,7 +238,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       stub_catalog(fn _opts ->
-        {:ok, stop_page([], 0, 1, [], %{})}
+        {:ok, stop_page([], 0, 1, %{})}
       end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
@@ -263,7 +263,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       stub_catalog(fn _opts ->
-        {:ok, stop_page([], 0, 1, [], %{})}
+        {:ok, stop_page([], 0, 1, %{})}
       end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
@@ -344,7 +344,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
         if count <= 1 do
           {:error, :unavailable}
         else
-          {:ok, stop_page([stop], 1, 1, [], %{})}
+          {:ok, stop_page([stop], 1, 1, %{})}
         end
       end)
 
@@ -380,7 +380,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
         })
 
       stub_catalog(fn _opts ->
-        {:partial, stop_page([stop], 1, 1, [], %{}), :route_enrichment_unavailable}
+        {:partial, stop_page([stop], 1, 1, %{}), :route_enrichment_unavailable}
       end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
@@ -422,9 +422,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
         count = :atomics.add_get(call_count, 1, 1)
 
         if count <= 1 do
-          {:partial, stop_page([stop], 1, 1, [], %{}), :route_enrichment_unavailable}
+          {:partial, stop_page([stop], 1, 1, %{}), :route_enrichment_unavailable}
         else
-          {:ok, stop_page([stop], 1, 1, [route], %{stop.stop_id => [route]})}
+          {:ok, stop_page([stop], 1, 1, %{stop.stop_id => [route]})}
         end
       end)
 
@@ -474,7 +474,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
           |> Enum.drop((canonical - 1) * per_page)
           |> Enum.take(per_page)
 
-        {:ok, stop_page(rows, total, canonical, [], %{})}
+        {:ok, stop_page(rows, total, canonical, %{})}
       end
 
       expect(CatalogReadAdapterMock, :load_stop_catalog, fn _org, _version, opts ->
@@ -536,7 +536,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
 
       stub_catalog(fn opts ->
         page = Keyword.get(opts, :page, 1)
-        {:ok, stop_page([stop], 1, page, [], %{})}
+        {:ok, stop_page([stop], 1, page, %{})}
       end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?page=2")
@@ -588,7 +588,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, [], %{})} end)
+      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, %{})} end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
 
@@ -604,7 +604,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, [], %{})} end)
+      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, %{})} end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?search=nonexistent")
 
@@ -620,7 +620,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, [], %{})} end)
+      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, %{})} end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?wheelchair_boarding=1")
 
@@ -644,13 +644,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
 
         cond do
           search == "nonexistent" ->
-            {:ok, stop_page([], 0, 1, [], %{})}
+            {:ok, stop_page([], 0, 1, %{})}
 
           wheelchair == 1 ->
-            {:ok, stop_page([], 0, 1, [], %{})}
+            {:ok, stop_page([], 0, 1, %{})}
 
           true ->
-            {:ok, stop_page([stop], 1, 1, [], %{})}
+            {:ok, stop_page([stop], 1, 1, %{})}
         end
       end)
 
@@ -679,7 +679,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       stop = stop_fixture(organization.id, version.id, %{stop_id: "FORM1", parent_station: nil})
-      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, [], %{})} end)
+      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, %{})} end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
 
@@ -700,7 +700,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, [], %{})} end)
+      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, %{})} end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
 
@@ -740,7 +740,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
             _ -> []
           end
 
-        {:ok, stop_page(rows, 51, page, [], %{})}
+        {:ok, stop_page(rows, 51, page, %{})}
       end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
@@ -763,7 +763,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
 
       {:ok, version2} = GtfsPlanner.Versions.create_gtfs_version(organization.id, %{name: "V2"})
 
-      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, [], %{})} end)
+      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, %{})} end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version1.id}/stops")
 
@@ -786,7 +786,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       other_org = organization_fixture()
       foreign = gtfs_version_fixture(other_org.id)
 
-      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, [], %{})} end)
+      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, %{})} end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version1.id}/stops")
 
@@ -811,7 +811,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       other_org = organization_fixture()
       foreign = gtfs_version_fixture(other_org.id)
 
-      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, [], %{})} end)
+      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, %{})} end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version1.id}/stops")
 
@@ -885,7 +885,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
         })
 
       expect(CatalogReadAdapterMock, :load_stop_catalog, fn _org, _ver, _opts ->
-        {:ok, stop_page([stop], 1, 1, [], %{})}
+        {:ok, stop_page([stop], 1, 1, %{})}
       end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
@@ -966,7 +966,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
         })
 
       expect(CatalogReadAdapterMock, :load_stop_catalog, fn _org, _ver, _opts ->
-        {:ok, stop_page([stop], 1, 1, [], %{})}
+        {:ok, stop_page([stop], 1, 1, %{})}
       end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
@@ -1005,7 +1005,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
 
       expect(CatalogReadAdapterMock, :load_stop_catalog, fn _org, _ver, opts ->
         assert Keyword.get(opts, :search) == "testsearch"
-        {:ok, stop_page([stop], 1, 1, [], %{})}
+        {:ok, stop_page([stop], 1, 1, %{})}
       end)
 
       {:ok, view, _html} =
@@ -1081,7 +1081,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
           parent_station: nil
         })
 
-      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, [], %{})} end)
+      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, %{})} end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
 
@@ -1109,7 +1109,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
           parent_station: nil
         })
 
-      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, [], %{})} end)
+      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, %{})} end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
 
@@ -1146,7 +1146,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
         })
 
       stub_catalog(fn _opts ->
-        {:ok, stop_page([accessible, blocked, unknown], 3, 1, [], %{})}
+        {:ok, stop_page([accessible, blocked, unknown], 3, 1, %{})}
       end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
@@ -1177,7 +1177,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
         route_fixture(organization.id, version.id, %{route_id: "R9", route_short_name: "R9"})
 
       stub_catalog(fn _opts ->
-        {:ok, stop_page([served, idle], 2, 1, [route], %{served.stop_id => [route]})}
+        {:ok, stop_page([served, idle], 2, 1, %{served.stop_id => [route]})}
       end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
@@ -1202,7 +1202,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
           parent_station: nil
         })
 
-      stub_catalog(fn _opts -> {:ok, stop_page([station], 1, 1, [], %{})} end)
+      stub_catalog(fn _opts -> {:ok, stop_page([station], 1, 1, %{})} end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
 
@@ -1233,8 +1233,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
 
       stub_catalog(fn opts ->
         if Keyword.get(opts, :search) == "cnt1",
-          do: {:ok, stop_page([hd(stops)], 1, 1, [], %{})},
-          else: {:ok, stop_page(stops, 2, 1, [], %{})}
+          do: {:ok, stop_page([hd(stops)], 1, 1, %{})},
+          else: {:ok, stop_page(stops, 2, 1, %{})}
       end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
@@ -1258,7 +1258,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       route =
         route_fixture(organization.id, version.id, %{route_id: "R7", route_short_name: "Seven"})
 
-      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, [route], %{})} end)
+      stub(CatalogReadAdapterMock, :load_stop_route_options, fn _org, _ver -> {:ok, [route]} end)
+      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, %{})} end)
 
       {:ok, view, _html} =
         live(
@@ -1282,7 +1283,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       stop = stop_fixture(organization.id, version.id, %{stop_id: "CHIP2", parent_station: nil})
-      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, [], %{})} end)
+      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, %{})} end)
 
       {:ok, view, _html} =
         live(conn, "/gtfs/#{version.id}/stops?search=harbour&wheelchair_boarding=2")
@@ -1301,7 +1302,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       stop = stop_fixture(organization.id, version.id, %{stop_id: "CHIP3", parent_station: nil})
-      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, [], %{})} end)
+      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, %{})} end)
 
       {:ok, view, _html} =
         live(conn, "/gtfs/#{version.id}/stops?route_id=R1&direction_id=0&search=main")
@@ -1325,7 +1326,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
         for id <- ["R1", "R2"],
             do: route_fixture(organization.id, version.id, %{route_id: id, route_short_name: id})
 
-      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, routes, %{})} end)
+      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, %{})} end)
+
+      stub(CatalogReadAdapterMock, :load_stop_route_options, fn _org, _ver -> {:ok, routes} end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?route_id=R1&direction_id=1")
 
@@ -1354,7 +1357,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       stop = stop_fixture(organization.id, version.id, %{stop_id: "DIR2", parent_station: nil})
-      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, [], %{})} end)
+      stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, %{})} end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
       refute has_element?(view, "select#direction_id")
@@ -1376,7 +1379,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, [], %{})} end)
+      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, %{})} end)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?search=harbour")
 
@@ -1391,13 +1394,87 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, [], %{})} end)
+      stub_catalog(fn _opts -> {:ok, stop_page([], 0, 1, %{})} end)
 
       {:ok, view, _html} =
         live(conn, "/gtfs/#{version.id}/stops?search=harbour&wheelchair_boarding=2")
 
       assert has_element?(view, "#stops-constrained-empty h2", "No stops match these filters")
       assert has_element?(view, "#stops-clear-filters", "Clear filters")
+    end
+  end
+
+  describe "StopsLive route options" do
+    setup :shared_setup
+
+    test "loads route options once across search, filter, sort, page and retry", %{
+      conn: conn,
+      user: user,
+      organization: org,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: org)
+      stop = stop_fixture(org.id, version.id, %{stop_id: "OPTIONS"})
+      route = route_fixture(org.id, version.id, %{route_id: "R1"})
+
+      owner = self()
+
+      stub(CatalogReadAdapterMock, :load_stop_route_options, fn org_id, version_id ->
+        send(owner, :route_options_loaded)
+        assert org_id == org.id
+        assert version_id == version.id
+        {:ok, [route]}
+      end)
+
+      stub_catalog(fn opts -> {:ok, stop_page([stop], 100, opts[:page], %{})} end)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      for query <- ["search=OPTIONS", "route_id=R1", "sort_by=stop_id&sort_dir=desc", "page=2"] do
+        render_patch(view, "/gtfs/#{version.id}/stops?#{query}")
+        assert has_element?(view, "#route_id option[value='R1']")
+      end
+
+      render_click(view, "retry")
+      refute has_element?(view, "#stops-enrichment-warning")
+      assert_received :route_options_loaded
+      refute_received :route_options_loaded
+    end
+
+    for retry <- [:patch, :button] do
+      test "unavailable route options keep rows and recover on #{retry}", %{
+        conn: conn,
+        user: user,
+        organization: org,
+        gtfs_version: version
+      } do
+        conn = log_in_user(conn, user, organization: org)
+        stop = stop_fixture(org.id, version.id, %{stop_id: "OPTIONS"})
+        route = route_fixture(org.id, version.id, %{route_id: "R1"})
+
+        expect(CatalogReadAdapterMock, :load_stop_route_options, fn _org, _ver ->
+          {:error, :unavailable}
+        end)
+
+        expect(CatalogReadAdapterMock, :load_stop_route_options, fn _org, _ver ->
+          {:ok, [route]}
+        end)
+
+        stub_catalog(fn _opts -> {:ok, stop_page([stop], 1, 1, %{})} end)
+
+        {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+        assert has_element?(view, "#stops tr")
+        assert has_element?(view, "#stops-enrichment-warning")
+        assert has_element?(view, "#route_id[disabled]")
+
+        case unquote(retry) do
+          :patch -> render_patch(view, "/gtfs/#{version.id}/stops?sort_by=stop_id&sort_dir=desc")
+          :button -> view |> element("#stops-enrichment-retry") |> render_click()
+        end
+
+        assert has_element?(view, "#route_id option[value='R1']")
+        refute has_element?(view, "#route_id[disabled]")
+        refute has_element?(view, "#stops-enrichment-warning")
+      end
     end
   end
 
@@ -1432,16 +1509,18 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       _route2 =
         route_fixture(org.id, version.id, %{route_id: "R2", route_short_name: "Route 2"})
 
+      stub(CatalogReadAdapterMock, :load_stop_route_options, fn _org, _ver -> {:ok, [route1]} end)
+
       stub_catalog(fn opts ->
         route_id = Keyword.get(opts, :route_id, "")
 
         case route_id do
           "R1" ->
-            {:ok, stop_page([station1], 1, 1, [route1], %{station1.stop_id => [route1]})}
+            {:ok, stop_page([station1], 1, 1, %{station1.stop_id => [route1]})}
 
           _ ->
             {:ok,
-             stop_page([station1, station2], 2, 1, [route1], %{
+             stop_page([station1, station2], 2, 1, %{
                station1.stop_id => [route1]
              })}
         end
@@ -1478,7 +1557,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
 
       stub_catalog(fn opts ->
         send(test_pid, {:catalog_opts, opts})
-        {:ok, stop_page([stop], 1, 1, [], %{})}
+        {:ok, stop_page([stop], 1, 1, %{})}
       end)
 
       %{conn: log_in_user(conn, user, organization: organization)}

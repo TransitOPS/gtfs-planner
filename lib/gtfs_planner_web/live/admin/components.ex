@@ -148,6 +148,7 @@ defmodule GtfsPlannerWeb.Admin.Components do
   attr :resend_event, :string, required: true, doc: "parent event name for Resend invite"
   attr :activate_event, :string, required: true, doc: "parent event name for Activate user"
   attr :deactivate_event, :string, required: true, doc: "parent event name for Deactivate user"
+  attr :edit_roles_event, :string, required: true, doc: "parent event name for Edit roles"
 
   def member_data_view(assigns) do
     assigns = assign(assigns, :access_levels, access_levels())
@@ -211,6 +212,7 @@ defmodule GtfsPlannerWeb.Admin.Components do
               resend_event={@resend_event}
               activate_event={@activate_event}
               deactivate_event={@deactivate_event}
+              edit_roles_event={@edit_roles_event}
             />
           </tbody>
         </table>
@@ -262,6 +264,7 @@ defmodule GtfsPlannerWeb.Admin.Components do
   attr :resend_event, :string, required: true
   attr :activate_event, :string, required: true
   attr :deactivate_event, :string, required: true
+  attr :edit_roles_event, :string, required: true
 
   defp member_row(assigns) do
     assigns = assign(assigns, :status, member_status(assigns.member))
@@ -320,6 +323,17 @@ defmodule GtfsPlannerWeb.Admin.Components do
             aria-label={"Activate #{@member.user.email}"}
           >
             Activate user
+          </.button>
+          <.button
+            :if={@status == :active}
+            id={"edit-roles-#{@member.user.id}"}
+            variant="quiet"
+            class="min-h-11 px-3"
+            phx-click={@edit_roles_event}
+            phx-value-user-id={@member.user.id}
+            aria-label={"Edit roles for #{@member.user.email}"}
+          >
+            Edit roles
           </.button>
           <.button
             :if={@status != :deactivated and "administrator" not in @member.roles}
@@ -414,6 +428,31 @@ defmodule GtfsPlannerWeb.Admin.Components do
         "Add another administrator before deactivating them."
 
   def deactivation_error(_reason, email), do: "#{email} could not be deactivated."
+
+  @doc "Names roles for a sentence, such as \"Editor and Organization administrator\"."
+  def role_list([]), do: "no roles"
+
+  def role_list(roles) do
+    labels = Enum.map(roles, &role_label/1)
+    {rest, [last]} = Enum.split(labels, -1)
+    if rest == [], do: last, else: Enum.join(rest, ", ") <> " and " <> last
+  end
+
+  @doc "Why a role change was refused, as the title and detail of the drawer's message."
+  def role_change_refusal(:last_organization_admin, email),
+    do: %{
+      title: "#{email} is the only administrator of this organization.",
+      detail: "Keep Organization administrator, or give it to someone else first."
+    }
+
+  def role_change_refusal(:forbidden, _email),
+    do: %{
+      title: "Your administrator access has changed.",
+      detail: "Nothing was saved. Ask a current organization administrator to change roles."
+    }
+
+  def role_change_refusal(_reason, email),
+    do: %{title: "Roles for #{email} could not be saved.", detail: "Nothing changed. Try again."}
 
   # A LiveStream yields {dom_id, item}; a plain list yields the item itself.
   defp row_member({_dom_id, member}), do: member
@@ -514,6 +553,60 @@ defmodule GtfsPlannerWeb.Admin.Components do
         </.button>
       </.drawer_footer>
     </.form>
+    """
+  end
+
+  @doc """
+  The Edit roles form for the planner-chrome drawer: the access-level cards and
+  a persistent footer with Cancel and Save roles.
+
+  Expects the `:role_edit` assign `GtfsPlannerWeb.Admin.RoleEditState` sets, and
+  the parent's `save_roles` event.
+  """
+  attr :role_edit, :map, required: true
+  attr :cancel_event, :string, required: true
+
+  def roles_form(assigns) do
+    assigns = assign(assigns, :access_levels, access_levels())
+
+    ~H"""
+    <form
+      id="member-roles-form"
+      novalidate
+      phx-submit="save_roles"
+      class="flex min-h-0 flex-1 flex-col"
+    >
+      <div class="grid flex-1 content-start gap-5 overflow-y-auto px-5 py-5 sm:px-6">
+        <.message
+          :if={@role_edit.refusal}
+          id="member-roles-refusal"
+          tabindex="-1"
+          kind="error"
+          title={@role_edit.refusal.title}
+        >
+          {@role_edit.refusal.detail}
+        </.message>
+
+        <.choice_cards
+          id="member-roles"
+          name="member_roles[roles][]"
+          label="Access level"
+          help="Choose both for someone who edits feed data and manages users."
+          options={@access_levels}
+          selected={@role_edit.selected}
+          error={@role_edit.error}
+        />
+      </div>
+
+      <.drawer_footer>
+        <.button type="button" variant="secondary" class="min-h-11" phx-click={@cancel_event}>
+          Cancel
+        </.button>
+        <.button type="submit" class="min-h-11 min-w-[132px]" phx-disable-with="Saving…">
+          Save roles
+        </.button>
+      </.drawer_footer>
+    </form>
     """
   end
 

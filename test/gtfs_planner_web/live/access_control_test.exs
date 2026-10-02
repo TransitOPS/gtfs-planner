@@ -178,7 +178,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
   end
 
   describe "navigation visibility" do
-    test "administrator sees Organizations link", %{
+    test "administrator sees Admin link", %{
       conn: conn,
       user: user,
       organization: organization
@@ -188,7 +188,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
       {:ok, view, _html} = live(conn, ~p"/")
 
       assert has_element?(view, "#dashboard-system-administrator")
-      assert has_element?(view, "a", "Organizations")
+      assert has_element?(view, "#main-navigation #nav-organizations", "Admin")
     end
 
     test "editor sees Import link", %{

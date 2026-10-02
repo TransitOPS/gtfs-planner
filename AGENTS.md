@@ -2,8 +2,69 @@ This is a web application written using the Phoenix web framework.
 
 ## Project guidelines
 
-- Use `mix precommit` alias when you are done with all changes and fix any pending issues
+- For executable changes, run `mix precommit` once at branch completion and resolve relevant failures. Implementation steps use focused checks below; do not run the full alias after every step. Documentation-only changes require diff, command/path, and instruction-consistency checks, not application suites.
 - Use the already included and available `:req` (`Req`) library for HTTP requests, **avoid** `:httpoison`, `:tesla`, and `:httpc`. Req is included by default and is the preferred HTTP client for Phoenix apps
+
+### Test selection and execution
+
+Keep integration coverage growing where it proves wiring, persistence, transactions,
+authorization, or user interactions. During implementation, default to affected unit tests
+for calculations, parsing, and rule permutations. Run focused database, LiveView, or API tests
+when the changed boundary is ready; browser tests belong to affected browser behavior.
+Do not repeat the same permutation matrix at every layer. Extend existing fixtures and tests,
+keep setup minimal, and make new cases independently selectable.
+
+| Need | Existing command or location |
+|---|---|
+| Routing unit feedback | `mix test test/gtfs_planner/routing/route_test.exs` |
+| Calendar rule feedback | `mix test test/gtfs_planner/gtfs/calendars/service_dates_test.exs` |
+| Calendar persistence boundary | `mix test test/gtfs_planner/gtfs/calendars/combination_apply_test.exs` |
+| One ExUnit case or describe block | `mix test path/to/file_test.exs:LINE` (use an actual test/describe line) |
+| Previously failed ExUnit cases | `mix test --failed` (for this checkout's last recorded failures) |
+| Map geometry unit feedback | `npm --prefix assets test -- js/__tests__/stop_map_geometry_test.js` |
+| Calendar browser journey | `bin/test-browser e2e/calendars.spec.js` |
+| Final Elixir regression and static checks | `mix precommit` |
+
+Find nearby context tests under `test/gtfs_planner/`, LiveView tests under
+`test/gtfs_planner_web/live/`, API tests under `test/gtfs_planner_web/api/`, JavaScript tests
+under `assets/js/__tests__/`, and browser journeys under `assets/e2e/`. Trace affected callers
+as well as matching filenames. These examples are selectors, not a required checklist.
+`mix precommit` does not run JavaScript or browser checks; select those separately when relevant.
+
+`mix test` always runs the database-create/migrate alias first, even for pure tests. Tags and
+name filters may still load broad collections; prefer explicit files. `--stale` is supplementary
+selection with an initial full run, not a replacement for boundary reasoning. `--slowest` and
+`--slowest-modules` enable tracing and serialize execution by default; distinguish diagnostic
+timings from ordinary suite runtime. Read `mix help test` before changing invocation options.
+
+One owner runs final regression checks. Reuse valid step/CI results, preserving their original
+revision and explaining why later changes leave them applicable. Rerun affected checks after
+fixes; broaden for changed shared foundations or a concrete integration risk. A new reviewer,
+workflow stage, or unrelated commit alone is not a reason for another full run. Keep scale and
+real external-service tests opt-in unless the feature or project gate requires them.
+
+Across local worktrees, allow one broad or resource-heavy suite at a time by default. Check
+existing runs before launching another; never terminate someone else's process. Independent
+runs need isolated databases, ports, and temporary roots. `MIX_TEST_PARTITION` separates default
+database names but does not isolate the fixed upload/artifact defaults in `config/test.exs`.
+Use the established disposable harnesses and [database setup](docs/db-setup.md). Do not increase
+ExUnit concurrency or browser workers without checking global state, fixture isolation, and
+connection capacity; the browser suite intentionally shares state with one worker.
+
+Use finite command deadlines (120 seconds for focused checks unless measured setup/runtime
+justifies longer). Record selection, elapsed time, outcome, and why a rerun is needed. Diagnose
+timeouts and narrow the reproduction instead of repeatedly extending a broad run. A timeout
+or unavailable check is not a pass. Passing required checks end verification unless a relevant
+change or new finding invalidates them.
+
+### Delivery priorities
+
+Read the current delivery posture in the primary checkout's `.specs/project-context.md`.
+This is an early, low-customer project: prioritize short feedback cycles and useful completed
+features. Record unrelated cleanup, minor polish, and speculative hardening in a concrete local
+follow-up brief or existing backlog for batched fix-up PRs. Do not expand each feature to absorb
+that work. Current acceptance failures, tenant isolation, security, retained-data protection,
+and relevant failing checks remain obligations; small customer numbers do not authorize resets.
 
 ### Scoped writes and LiveView verification
 

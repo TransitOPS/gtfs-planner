@@ -302,7 +302,7 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimesSummaryTest do
     assert summary.trips == 6
   end
 
-  test "a version with no blanks returns zero counts and empty lists" do
+  test "a version with no blanks returns zero counts without loading estimation inputs" do
     org = organization_fixture()
     version = gtfs_version_fixture(org.id)
     stop_fixture(org.id, version.id, stop_id: "S1")
@@ -316,6 +316,21 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimesSummaryTest do
       timepoint: 1
     })
 
+    handler_id = "missing-times-summary-#{System.unique_integer([:positive])}"
+    test_pid = self()
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:gtfs_planner, :repo, :query],
+        fn _event, _measurements, metadata, pid ->
+          if self() == pid, do: send(pid, {:summary_query, metadata.source})
+        end,
+        test_pid
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
     assert MissingTimes.summary(org.id, version.id) == %{
              trips: 0,
              missing_times: 0,
@@ -324,6 +339,45 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimesSummaryTest do
              not_estimable: [],
              routes: []
            }
+
+    assert_receive {:summary_query, "stop_times"}
+    refute_receive {:summary_query, _source}, 0
+  end
+
+  test "counts NULL and empty arrival and departure cells once per trip" do
+    org = organization_fixture()
+    version = gtfs_version_fixture(org.id)
+    stop_fixture(org.id, version.id, stop_id: "S1")
+    route_fixture(org.id, version.id, route_id: "R1")
+    trip_fixture(org.id, version.id, "R1", %{trip_id: "T_MIXED"})
+
+    blank_rows(org.id, version.id, "T_MIXED", [
+      {"S1", 1, "08:00:00", "08:00:00", 1, "0"},
+      {"S1", 2, nil, nil, 0, "1500"},
+      {"S1", 3, "08:10:00", "08:10:00", 1, "3000"}
+    ])
+
+    # Bypass changeset normalization to exercise literal empty strings as well as NULL.
+    from(s in StopTime,
+      where: s.organization_id == ^org.id and s.gtfs_version_id == ^version.id,
+      where: s.trip_id == "T_MIXED" and s.stop_sequence in [1, 2]
+    )
+    |> Repo.update_all(set: [arrival_time: ""])
+
+    from(s in StopTime,
+      where: s.organization_id == ^org.id and s.gtfs_version_id == ^version.id,
+      where: s.trip_id == "T_MIXED" and s.stop_sequence == 3
+    )
+    |> Repo.update_all(set: [departure_time: ""])
+
+    assert %{
+             trips: 1,
+             missing_times: 4,
+             estimable_trips: 1,
+             estimable_times: 4,
+             not_estimable: [],
+             routes: [%{route_id: "R1", trips: 1, missing_times: 4}]
+           } = MissingTimes.summary(org.id, version.id)
   end
 
   test "classifies with the organization's saved estimate method" do

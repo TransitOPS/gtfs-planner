@@ -197,12 +197,14 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
           ]
         }
   def summary(organization_id, gtfs_version_id) do
-    method = ExportDefaults.get(organization_id).estimate_method
-    coords = stop_coordinates(organization_id, gtfs_version_id)
-
     case blank_trip_ids(organization_id, gtfs_version_id) do
-      [] -> empty_summary()
-      trip_ids -> build_summary(organization_id, gtfs_version_id, trip_ids, method, coords)
+      [] ->
+        empty_summary()
+
+      trip_ids ->
+        method = ExportDefaults.get(organization_id).estimate_method
+        coords = stop_coordinates(organization_id, gtfs_version_id)
+        build_summary(organization_id, gtfs_version_id, trip_ids, method, coords)
     end
   end
 
@@ -332,6 +334,16 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
         where: s.organization_id == ^organization_id,
         where: s.gtfs_version_id == ^gtfs_version_id,
         where: s.trip_id in ^trip_ids,
+        select:
+          map(s, [
+            :trip_id,
+            :stop_id,
+            :stop_sequence,
+            :arrival_time,
+            :departure_time,
+            :timepoint,
+            :shape_dist_traveled
+          ]),
         order_by: [asc: s.trip_id, asc: s.stop_sequence]
       )
       |> Repo.all()

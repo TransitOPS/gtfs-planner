@@ -38,12 +38,12 @@ const VIEWPORTS = [DESKTOP, MOBILE];
 
 // `[id, label, path segment]`, in the information architecture's order.
 const TASKS = [
-  ["nav-alerts", "Alerts", "alerts"],
   ["nav-routes", "Routes", "routes"],
+  ["nav-stops", "Stops", "stops"],
   ["nav-calendars", "Calendars", "calendars"],
-  ["nav-operations", "Operations", "blocks"],
-  ["nav-stops", "Stops & stations", "stops"],
+  ["nav-alerts", "Alerts", "alerts"],
   ["nav-flex", "Flex", "flex"],
+  ["nav-operations", "Operations", "blocks"],
   ["nav-gtfs", "GTFS", "export"],
 ];
 
@@ -581,14 +581,14 @@ test.describe("header presentation", () => {
     // Keyboard focus uses the design system's two-pixel outline.
     await page.keyboard.press("Tab"); // skip to main content
     await page.keyboard.press("Tab"); // product link
-    await page.keyboard.press("Tab"); // Alerts, the first task
+    await page.keyboard.press("Tab"); // Routes, the first task
 
     expect(await page.evaluate(() => document.activeElement?.id)).toBe(
-      "nav-alerts",
+      "nav-routes",
     );
 
     const outline = await page
-      .locator("#nav-alerts")
+      .locator("#nav-routes")
       .evaluate((el) => getComputedStyle(el));
     expect(parseFloat(outline.outlineWidth)).toBeGreaterThanOrEqual(2);
     expect(outline.outlineStyle).not.toBe("none");

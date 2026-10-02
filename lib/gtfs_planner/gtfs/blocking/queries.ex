@@ -7,8 +7,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
   day or a block command (CR-4).
 
   `trip_rows/3` loads the trips, their two endpoint stop times, the endpoint stops
-  and their frequency rows in six queries whatever the trip count: the trips
-  themselves, one first and one last `DISTINCT ON (trip_id)` stop-time query, one
+  and their frequency rows in six queries for a nonempty filter: the trips
+  themselves, one first and one last lateral stop-time lookup query, one
   query for the endpoint stops, one for their parent stations and one grouped
   `frequencies` query. The endpoint stops are chosen by `stop_sequence` in SQL, never by an
   ordering of clock text, and the clock values are parsed with `GtfsTime.parse/1`
@@ -125,6 +125,13 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
   closure needs).
   """
   @spec trip_rows(Ecto.UUID.t(), Ecto.UUID.t(), filter()) :: [trip_row()]
+  def trip_rows(_organization_id, _gtfs_version_id, {kind, []})
+      when kind in [:services, :uuids, :trip_ids, :blocks],
+      do: []
+
+  def trip_rows(_organization_id, _gtfs_version_id, {:blocks, [], _service_ids}), do: []
+  def trip_rows(_organization_id, _gtfs_version_id, {:blocks, _block_ids, []}), do: []
+
   def trip_rows(organization_id, gtfs_version_id, filter) do
     filtered = trips_filter(filter, organization_id, gtfs_version_id)
     trip_ids = from(t in filtered, select: t.trip_id)
@@ -555,24 +562,32 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
     )
   end
 
-  # `DISTINCT ON (trip_id)` with `stop_sequence` as the leading tie-breaker after
-  # the trip ID keeps one row per trip: the smallest sequence when ascending and
-  # the largest when descending.
+  # Read the smallest/largest sequence directly through the scoped trip/sequence
+  # index. A DISTINCT ON read sorts every stop time of the selected trips just to
+  # keep their two endpoints. The lateral limit walks at most one row per trip,
+  # and still leaves a trip with no stop times absent from the endpoint map.
   defp endpoint_rows(organization_id, gtfs_version_id, trip_ids, direction) do
-    organization_id
-    |> endpoint_query(gtfs_version_id, trip_ids)
-    |> distinct([st], asc: st.trip_id)
-    |> order_by([st], asc: st.trip_id)
-    |> order_by([st], [{^direction, st.stop_sequence}])
+    endpoint =
+      organization_id
+      |> endpoint_query(gtfs_version_id)
+      |> order_by([st], [{^direction, st.stop_sequence}])
+      |> limit(1)
+
+    from(t in subquery(trip_ids),
+      as: :trip,
+      inner_lateral_join: st in subquery(endpoint),
+      on: true,
+      select: st
+    )
     |> Repo.all()
     |> Map.new(&{&1.trip_id, &1})
   end
 
-  defp endpoint_query(organization_id, gtfs_version_id, trip_ids) do
+  defp endpoint_query(organization_id, gtfs_version_id) do
     from(st in StopTime,
       where:
         st.organization_id == ^organization_id and st.gtfs_version_id == ^gtfs_version_id and
-          st.trip_id in subquery(trip_ids),
+          st.trip_id == parent_as(:trip).trip_id,
       select: %{
         trip_id: st.trip_id,
         stop_id: st.stop_id,
