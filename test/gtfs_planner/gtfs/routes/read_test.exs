@@ -206,6 +206,7 @@ defmodule GtfsPlanner.Gtfs.Routes.ReadTest do
          name: nil,
          hostname: "127.0.0.1",
          port: 1,
+         url: nil,
          username: "postgres",
          password: "postgres",
          database: "gtfs_planner_unreachable",

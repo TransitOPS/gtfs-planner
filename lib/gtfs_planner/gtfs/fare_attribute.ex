@@ -61,7 +61,7 @@ defmodule GtfsPlanner.Gtfs.FareAttribute do
       :organization_id,
       :gtfs_version_id
     ])
-    |> validate_number(:price, greater_than: 0)
+    |> validate_number(:price, greater_than_or_equal_to: 0)
     |> validate_inclusion(:payment_method, 0..1)
     |> validate_inclusion(:transfers, [0, 1, 2])
     |> unique_constraint([:organization_id, :gtfs_version_id, :fare_id])

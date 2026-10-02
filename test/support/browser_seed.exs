@@ -43,6 +43,7 @@ alias GtfsPlanner.Accounts.User
 alias GtfsPlanner.Accounts.UserToken
 alias GtfsPlanner.AdvancedBlockingFixtures
 alias GtfsPlanner.Agents.BrowserServiceAnswers
+alias GtfsPlanner.FaresFixtures
 alias GtfsPlanner.Gtfs
 alias GtfsPlanner.Gtfs.Agency
 alias GtfsPlanner.Gtfs.AlignmentSegment
@@ -55,7 +56,12 @@ alias GtfsPlanner.Gtfs.Export.ArtifactStorage
 alias GtfsPlanner.Gtfs.Export.Run, as: ExportRun
 alias GtfsPlanner.Gtfs.ExportRuns
 alias GtfsPlanner.Gtfs.FareAttribute
+alias GtfsPlanner.Gtfs.FareProductDetail
 alias GtfsPlanner.Gtfs.FareRule
+alias GtfsPlanner.Gtfs.Fares
+alias GtfsPlanner.Gtfs.Fares.Conversion
+alias GtfsPlanner.Gtfs.Fares.Transfers
+alias GtfsPlanner.Gtfs.FareSavedJourney
 alias GtfsPlanner.Gtfs.FareZones
 alias GtfsPlanner.Gtfs.FeedInfo
 alias GtfsPlanner.Gtfs.Flex
@@ -65,6 +71,7 @@ alias GtfsPlanner.Gtfs.Import.Run, as: ImportRun
 alias GtfsPlanner.Gtfs.PathwayEvolution
 alias GtfsPlanner.Gtfs.ReliefPoint
 alias GtfsPlanner.Gtfs.Route
+alias GtfsPlanner.Gtfs.RouteNetwork
 alias GtfsPlanner.Gtfs.RoutePattern
 alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
 alias GtfsPlanner.Gtfs.RoutePatternStop
@@ -3477,7 +3484,14 @@ case Accounts.register_first_admin(%{
 
     fare_points = FareZones.list_stop_points(org.id, fare_zones_version.id)
     fare_rule_groups = FareZones.list_rule_groups(org.id, fare_zones_version.id)
-    fare_fares = FareZones.list_fares(org.id, fare_zones_version.id)
+
+    fare_fares =
+      from(a in FareAttribute,
+        where: a.organization_id == ^org.id and a.gtfs_version_id == ^fare_zones_version.id,
+        order_by: a.fare_id,
+        select: %{fare_id: a.fare_id, price: a.price, currency_type: a.currency_type}
+      )
+      |> Repo.all()
 
     %{
       zones: fare_scale_zone_list,
@@ -3588,6 +3602,300 @@ case Accounts.register_first_admin(%{
         Enum.map_join(fare_scale_zone_list, ", ", fn zone ->
           "#{zone.zone_id}=#{zone.stop_count}"
         end) <> ")"
+    )
+
+    # ── Fare editor fixture versions (package 29, step 31) ──
+    #
+    # The fare editor's browser journeys read five versions by name through the
+    # version switcher, so every one of them carries a state the editor draws
+    # and none of them is a state no writer can produce:
+    #
+    #   * "Browser North Coast Fares Version" - the managed sample. It enters
+    #     rows through the production importer of
+    #     `test/fixtures/gtfs/fares/north_coast_v2` and the production
+    #     `Fares.Conversion`, then the two writes the prepared North Coast
+    #     still needs: the `N_LOCAL -> N_INTERCITY` difference through
+    #     `Fares.Transfers.save/5` and the Toledo-to-Corvallis journey through
+    #     `Fares.save_journey/2`. Without the difference that journey prices
+    #     $8.50 (the two fares summed); with it, $6.00, which is the total the
+    #     Checks tab's saved-journey row and "Accept new price" act on.
+    #   * "Browser Blank Fares Version" - `no_fare`, the same feed with no fare
+    #     files, which is the first-use setup: `Conversion.preview/2` answers
+    #     `source: :none` with nothing to create.
+    #   * "Browser Unmanaged V1 Fares Version" - `north_coast_v1` imported and
+    #     never converted, so its stored `fare_attributes`/`fare_rules` rows
+    #     stay the read-only fares the "Edit fares" conversion review opens on.
+    #   * "Browser Fares Mismatch Version" - `north_coast_v1` converted, then
+    #     its stored `fare_attributes` row for `LOCAL` raised to $1.75. That is
+    #     a stored row an import of a feed edited after the first one leaves,
+    #     written here as the row rather than through a writer because this
+    #     package deliberately never edits one (INV-3). The derived
+    #     older-format rows still say $1.50, which is the disagreement the
+    #     mismatch banner reports and the state `set_older_format(:imported)`
+    #     is offered against (R14).
+    #   * "Browser Fares Gaps Version" - the managed sample with the two gaps
+    #     step 29's checks read, opened through the production writers the
+    #     Where tab uses: `Fares.set_zone_fare/7` with a `nil` product clears
+    #     the `CST -> TOL` cell and `Fares.save_route_group/2` drops route 40
+    #     from Local routes.
+    #
+    # Every write runs inside `Fares.VersionLock.transact/2` with
+    # `Fares.Normalize.run!/2` before it commits (INV-1) and records its own
+    # `fare_version` change-log entry (AC-26), so the seeded versions carry the
+    # history the editor's Recent changes reads. Every read is scoped by the
+    # organization's and the version's ids together (INV-5).
+    #
+    # The versions are created before the "latest default" restore below, so
+    # that restore still decides which version the organization opens by.
+
+    fare_audit = fn version ->
+      %AuditContext{
+        organization_id: org.id,
+        gtfs_version_id: version.id,
+        station_stop_id: nil,
+        actor_id: editor.id,
+        actor_email: editor.email
+      }
+    end
+
+    fare_scope = fn version ->
+      %{organization_id: org.id, gtfs_version_id: version.id, audit: fare_audit.(version)}
+    end
+
+    {:ok, fares_managed_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser North Coast Fares Version"})
+
+    {:ok, fares_blank_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Blank Fares Version"})
+
+    {:ok, fares_unmanaged_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Unmanaged V1 Fares Version"})
+
+    # Conversion changes its input version. Keep the read-only journey's
+    # unmanaged fixture separate from the setup journey's writable review.
+    {:ok, fares_conversion_version} =
+      Versions.create_gtfs_version(org.id, %{
+        name: "Browser Unmanaged V1 Conversion Fares Version"
+      })
+
+    {:ok, fares_mismatch_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Fares Mismatch Version"})
+
+    {:ok, fares_gaps_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Fares Gaps Version"})
+
+    # `import!/3` raises when a feed stops importing, so a fixture that cannot
+    # be read is a seed failure rather than a silently empty version.
+    FaresFixtures.import!(org, fares_managed_version, "north_coast_v2")
+    FaresFixtures.import!(org, fares_blank_version, "no_fare")
+    FaresFixtures.import!(org, fares_unmanaged_version, "north_coast_v1")
+    FaresFixtures.import!(org, fares_conversion_version, "north_coast_v1")
+    FaresFixtures.import!(org, fares_mismatch_version, "north_coast_v1")
+    FaresFixtures.import!(org, fares_gaps_version, "north_coast_v2")
+
+    convert! = fn version ->
+      scope = fare_scope.(version)
+      {:ok, plan} = Conversion.preview(org.id, version.id)
+      {:ok, _converted} = Conversion.apply(scope, plan.fingerprint, [])
+      scope
+    end
+
+    managed_scope = convert!.(fares_managed_version)
+    convert!.(fares_mismatch_version)
+    gaps_scope = convert!.(fares_gaps_version)
+
+    # The sample's two pass names. `Conversion` classifies a product by R12 —
+    # every rule it uses must share its conditions with a rule of a *differently
+    # named* fare — and the sample's passes each stand alone, so the conversion
+    # leaves all seven fares as single rides. A version whose operator has since
+    # said which names are passes records that in `fare_product_details`, which
+    # is where the Where tab's passes table reads it from, so the seed records
+    # the same fact here.
+    record_pass_kinds! = fn version_ids, kinds ->
+      for gtfs_version_id <- version_ids,
+          detail <-
+            Repo.all(
+              from(product in FareProductDetail,
+                where:
+                  product.organization_id == ^org.id and
+                    product.gtfs_version_id == ^gtfs_version_id
+              )
+            ) do
+        base = detail.fare_product_id |> String.split("_adult_") |> hd()
+
+        case Map.fetch(kinds, base) do
+          {:ok, {kind, accepted}} ->
+            detail
+            |> Ecto.Changeset.change(%{kind: kind, accepted_network_ids: accepted})
+            |> Repo.update!()
+
+          :error ->
+            :ok
+        end
+      end
+    end
+
+    record_pass_kinds!.(
+      [fares_managed_version.id, fares_gaps_version.id],
+      %{
+        "day_pass" => {"pass", ["N_LOCAL"]},
+        "month_pass" => {"pass", ["all_routes"]}
+      }
+    )
+
+    # The difference the prepared North Coast needs: without it the sample's
+    # Local-then-Intercity journey charges both fares.
+    {:ok, _fares_difference} =
+      Transfers.save(
+        managed_scope,
+        "N_LOCAL",
+        "N_INTERCITY",
+        %{pay: :difference, minutes: 90},
+        nil
+      )
+
+    # A Monday inside the sample's calendar span (2026-09-01 through 2026-09-30).
+    {:ok, _fares_journey} =
+      Fares.save_journey(managed_scope, %{
+        name: "Toledo to Corvallis",
+        rider_category_id: "adult",
+        fare_media_id: "cash",
+        service_date: ~D[2026-09-07],
+        legs: [
+          %{
+            route_id: "4",
+            from_stop_id: "TOLEDO",
+            to_stop_id: "NTC",
+            departs: 7 * 3600 + 40 * 60,
+            arrives: 8 * 3600 + 55 * 60
+          },
+          %{
+            route_id: "10",
+            from_stop_id: "NTC",
+            to_stop_id: "CORVALLIS",
+            departs: 8 * 3600 + 20 * 60,
+            arrives: 10 * 3600 + 20 * 60
+          }
+        ]
+      })
+
+    # The mismatch is a stored older-format row the derived one disagrees with.
+    # `Fares` never edits a stored `fare_attributes` row (INV-3), so the row is
+    # written the way an import of a later-edited feed leaves it.
+    {1, nil} =
+      FareAttribute
+      |> where(
+        [attribute],
+        attribute.organization_id == ^org.id and
+          attribute.gtfs_version_id == ^fares_mismatch_version.id and attribute.fare_id == "LOCAL"
+      )
+      |> Repo.update_all(set: [price: Decimal.new("1.75"), updated_at: DateTime.utc_now()])
+
+    # The gaps version has no fare in either direction of the CST/TOL pair.
+    # This is a newly created disposable fixture, so no user has reviewed a
+    # cell yet; clear both directions together before normalization can remove
+    # the only fare-rule reference that keeps TOL discoverable as a zone.
+    {:ok, _fares_cleared_pair} =
+      Fares.set_zone_fare(gaps_scope, "N_LOCAL", "CST", "TOL", nil, true, nil)
+
+    gaps_local_routes =
+      "N_LOCAL"
+      |> then(fn network_id ->
+        from(row in RouteNetwork,
+          where:
+            row.organization_id == ^org.id and row.gtfs_version_id == ^fares_gaps_version.id and
+              row.network_id == ^network_id
+        )
+      end)
+      |> select([row], row.route_id)
+      |> Repo.all()
+      |> Enum.sort()
+
+    {:ok, _fares_group_without_40} =
+      FaresFixtures.save_route_group(gaps_scope, %{
+        network_id: "N_LOCAL",
+        name: "Local routes",
+        route_ids: Enum.reject(gaps_local_routes, &(&1 == "40"))
+      })
+
+    {:ok, managed_workspace} = Fares.load_workspace(org.id, fares_managed_version.id)
+
+    IO.puts(
+      "Browser seed: fare editor versions — " <>
+        "#{fares_managed_version.name} (#{fares_managed_version.id}, managed, " <>
+        "#{length(managed_workspace.fares)} fares), " <>
+        "#{fares_blank_version.name} (#{fares_blank_version.id}, no fares), " <>
+        "#{fares_unmanaged_version.name} (#{fares_unmanaged_version.id}, unmanaged v1), " <>
+        "#{fares_mismatch_version.name} (#{fares_mismatch_version.id}, stored LOCAL $1.75 vs derived $1.50), " <>
+        "#{fares_gaps_version.name} (#{fares_gaps_version.id}, CST→TOL gap, route 40 in no group)"
+    )
+
+    IO.puts(
+      "Browser seed: #{fares_managed_version.name} — journey \"Toledo to Corvallis\" saved at " <>
+        "$6.00 (the N_LOCAL → N_INTERCITY difference) on 2026-09-07"
+    )
+
+    # The states above are read back through the same reads the editor's tabs
+    # draw from, so a fixture that stops being the state its name promises
+    # fails the seed instead of quietly seeding an empty version.
+    fares_expect = fn
+      true, _message -> :ok
+      false, message -> raise "Browser seed fare editor check failed: #{message}"
+    end
+
+    fares_checks = fn version -> Fares.Checks.run(org.id, version.id) end
+
+    fares_expect.(
+      Fares.managed?(org.id, fares_managed_version.id),
+      "the North Coast version is not managed"
+    )
+
+    fares_expect.(
+      Fares.managed?(org.id, fares_unmanaged_version.id) == false,
+      "the unmanaged v1 version is managed"
+    )
+
+    fares_expect.(
+      Fares.managed?(org.id, fares_mismatch_version.id),
+      "the mismatch version is not managed"
+    )
+
+    fares_expect.(
+      match?({:ok, %{source: :none}}, Conversion.preview(org.id, fares_blank_version.id)),
+      "the blank version is not the first-use setup"
+    )
+
+    fares_expect.(
+      Enum.map(fares_checks.(fares_managed_version).repair, & &1.code) == [],
+      "the clean North Coast version reports #{inspect(fares_checks.(fares_managed_version).repair)}"
+    )
+
+    fares_expect.(
+      Enum.sort(Enum.map(fares_checks.(fares_gaps_version).repair, & &1.code)) ==
+        ["route_without_fare", "zone_pair_without_fare"],
+      "the gaps version does not report exactly the two gaps: " <>
+        inspect(Enum.map(fares_checks.(fares_gaps_version).repair, & &1.code))
+    )
+
+    # The saved journey's total is what the Checks tab shows and what "Accept new
+    # price" rewrites, so it is read back from the stored row rather than assumed.
+    stored_journey =
+      Repo.one!(
+        from(row in FareSavedJourney,
+          where:
+            row.organization_id == ^org.id and
+              row.gtfs_version_id == ^fares_managed_version.id
+        )
+      )
+
+    fares_expect.(
+      stored_journey.expected_amount == Decimal.new("6.00"),
+      "the saved journey prices #{stored_journey.expected_amount}, not 6.00"
+    )
+
+    fares_expect.(
+      fares_checks.(fares_managed_version) |> Map.fetch!(:review) == [],
+      "the North Coast version reports a review item"
     )
 
     # ── Flex fixture version (package 22; the data steps 18–27 capture) ──

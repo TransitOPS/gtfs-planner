@@ -1,0 +1,14 @@
+stop_id,stop_name,stop_lat,stop_lon,zone_id
+NTC,Newport Transit Center,44.6206,-124.0463,NPT
+NYE,Nye Beach,44.6633,-124.0612,NPT
+HOSP,Samaritan Pacific Hospital,44.6340,-124.0380,NPT
+AGATE,Agate Beach,44.6620,-124.0750,NPT
+SBPR,South Beach Park & Ride,44.5610,-124.0636,NPT
+TOLEDO,Toledo City Hall,44.9515,-123.4561,TOL
+SILETZ,Siletz,44.7210,-123.9210,TOL
+DEPOE,Depoe Bay,44.6730,-123.9200,CST
+LCTC,Lincoln City Transit Center,44.9740,-124.0150,CST
+WALDPORT,Waldport,44.3920,-123.9240,CST
+YACHATS,Yachats,44.2880,-123.9880,CST
+SEAL,Seal Rock,44.2440,-124.0650,CST
+CORVALLIS,Corvallis Downtown Transit Center,44.5646,-123.2620,

@@ -1,16 +1,18 @@
 defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   @moduledoc """
-  The Fares workspace shell for Settings › This version › Fares, built from the
+  The Fares zone workspace for Settings › This version › Fares, built from the
   TransitOps application design system. The page leads back to Settings with a
-  link, carries the zone, rule and check tabs, and puts its one primary action
-  where the task is: Create zone or Add fare rule in the header, Assign zone in the
-  selection bar while stops are selected, or the empty state's own action.
+  link and puts its one primary action where the task is: Create zone in the
+  header, Assign zone in the selection bar while stops are selected, or the
+  empty state's own action.
 
-  One LiveView serves the workspace's three destinations — `/settings/fares`
-  (`:zones`), `/settings/fares/rules` (`:rules`) and `/settings/fares/checks`
-  (`:checks`). The tabs patch between them, so the Zones tab's query state
-  (`?zone=`, `?filter=`, `?q=`, `?page=`) stays in the URL and a tab change
-  neither remounts the page nor drops it.
+  The Fares section is two LiveViews as of step 32. This one serves only the
+  Zones tab, at `/settings/fares/zones`, and
+  `GtfsPlannerWeb.Gtfs.FareEditorLive` serves Prices, Where fares apply,
+  Transfers and Checks. The shared `fares_tabs/1` strip navigates between them,
+  so a tab change is a real navigation between the two pages rather than a patch
+  within one. The Zones tab's own query state (`?zone=`, `?filter=`, `?q=`,
+  `?page=`) still stays in the URL as the stops are filtered and assigned.
 
   Access is authorized at mount through `EnsureRole`, following the other GTFS
   pages: there is no view-only GTFS role, and `Gtfs.FareZones` enforces the
@@ -102,39 +104,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   out, and Retry map renders the hook again, where the next mount hydrates from a
   fresh reply rather than from deltas it never received (CR-8, AC-29).
 
-  The Fare rules tab reads the version's rules with
-  `Gtfs.FareZones.list_rule_groups/2` and streams them as one table row per UI rule, so
-  the grouping the domain decided is what the page renders and a reload replaces
-  the list rather than the tab. Only that tab renders the list, so only that tab
-  reads it, together with the fares and routes its rule drawer offers.
-
-  The rule drawer is the tab's create and edit surface. It opens from the
-  header's `Add fare rule` - disabled with its reason when rules exist but the
-  version has no fares, and replaced by an empty state when it has neither - or
-  from a row's `Edit rule`, which sends the row's own DOM ID so the reviewed group
-  comes from the list this page read rather than from anything the browser said
-  (INV-4). A new rule starts with no fare chosen. The form is `FareZones.change_rule_group/2`'s changeset,
-  the write is `save_rule_group/3` with the reviewed group, and removal is
-  `delete_rule_group/2` behind a danger confirm. A key another rule holds, a zone
-  with no stops, a rule another editor changed and a pair that is no longer a
-  published version each leave the drawer open with its input and a visible
-  reason (AC-18, AC-19, AC-20, AC-26, AC-31); a stale result offers Reload rule,
-  which re-reads the rule the drawer was opened on and closes with what happened
-  when that rule is gone. A completed save or removal closes the drawer, reloads
-  the workspace - rules, inventory and checks - and reports "Fare rule saved."
-  or "Fare rule removed."
-
-  The Checks tab renders `FareZones.checks/2` as the setup's issue rows: one
-  "Needs repair" row per zone fare rules use that has no boardable stops, one
-  "Review" row while boardable stops have no zone, one "Review" row per fare whose
-  rules trip planners combine, one "Note" row for the empty declared zones, and
-  the "Source check" row only while fare rules reference zones at all. Four counts
-  sit above the rows and the checks that pass fold into one disclosure. With no
-  needs-repair and no review row, the tab states that both hold.
-  Every row that needs an action links into the Zones tab - the stopless zone's
-  own filter, and `?filter=unassigned` for the unassigned stops - and each of
-  those URLs is built by `URI.encode_query/1`, so a zone ID keeps its exact bytes
-  and the unassigned filter stays a separate key from a zone (AC-32, CR-7).
   """
 
   use GtfsPlannerWeb, :live_view
@@ -142,16 +111,12 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   import GtfsPlannerWeb.Gtfs.FaresComponents,
     only: [
       assignment_dialog: 1,
-      checks_tab: 1,
       delete_zone_dialog: 1,
       first_use_empty: 1,
       load_error: 1,
       loading: 1,
       map_legend: 1,
       map_unavailable: 1,
-      remove_rule_dialog: 1,
-      rule_drawer: 1,
-      rules_tab: 1,
       saved_callout: 1,
       selection_bar: 1,
       stage_header: 1,
@@ -195,16 +160,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   @delete_missing_message "This zone no longer exists."
 
-  # The rule drawer's outcomes (AC-18, AC-19, AC-20, AC-26, AC-31), named once so
-  # one outcome is never described two ways.
-  @rule_saved_message "Fare rule saved."
-
-  @rule_removed_message "Fare rule removed."
-
-  @rule_stale_message "This rule changed since you opened it."
-
-  @rule_missing_message "This rule no longer exists."
-
   # The color a new zone starts with, the reference's own default.
   @new_zone_color "ochre"
 
@@ -240,18 +195,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
      |> assign(:map_mounted?, false)
      |> assign(:map_filter, nil)
      |> assign(:map_snapshot_after_load, false)
-     |> assign(:rule_groups, [])
-     |> assign(:fares, [])
-     |> assign(:rule_routes, [])
-     |> assign(:rule_drawer_open, false)
-     |> assign(:reviewed_rule, nil)
-     |> assign(:rule_form, to_form(FareZones.change_rule_group(nil, %{}), as: :rule))
-     |> assign(:rule_error, nil)
-     |> assign(:rule_stale, false)
-     |> assign(:rule_return_focus_id, nil)
-     |> assign(:remove_rule, nil)
-     |> stream(:stops, [])
-     |> stream(:rule_groups, [], dom_id: &rule_dom_id/1)}
+     |> stream(:stops, [])}
   end
 
   @impl true
@@ -525,64 +469,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     {:noreply, delete_zone(socket)}
   end
 
-  # Opening the drawer is a read of the rule list the page already holds: create
-  # starts from an empty form with no fare chosen, and `Edit
-  # rule` starts from the group whose DOM ID the row rendered, so the reviewed
-  # rows the save will fence against come from this page's own read (INV-4). A
-  # rule ID no longer in the list changes nothing: the click raced the change
-  # that removed it.
-  @impl true
-  def handle_event("open_rule_drawer", params, socket) when is_map(params) do
-    {:noreply, open_rule_drawer(socket, params)}
-  end
-
-  def handle_event("open_rule_drawer", _params, socket), do: {:noreply, socket}
-
-  @impl true
-  def handle_event("close_rule_drawer", _params, socket) do
-    {:noreply, close_rule_drawer(socket)}
-  end
-
-  # Validation is the domain's own form changeset, so the drawer rejects exactly
-  # what the write rejects. It is the only thing that updates the plain-language
-  # summary while the operator types: the summary is rendered from the form's
-  # current values.
-  @impl true
-  def handle_event("validate_rule", %{"rule" => params}, socket) do
-    {:noreply, validate_rule(socket, params)}
-  end
-
-  def handle_event("validate_rule", _params, socket), do: {:noreply, socket}
-
-  @impl true
-  def handle_event("save_rule", %{"rule" => params}, socket) do
-    {:noreply, save_rule(socket, params)}
-  end
-
-  def handle_event("save_rule", _params, socket), do: {:noreply, socket}
-
-  # `Reload rule` is the stale drawer's way back to a rule it can save: it reads
-  # the list again and re-seeds the form from the rule as it stands now.
-  @impl true
-  def handle_event("reload_rule", _params, socket) do
-    {:noreply, reload_rule(socket)}
-  end
-
-  @impl true
-  def handle_event("open_remove_rule", _params, socket) do
-    {:noreply, open_remove_rule(socket)}
-  end
-
-  @impl true
-  def handle_event("cancel_remove_rule", _params, socket) do
-    {:noreply, assign(socket, :remove_rule, nil)}
-  end
-
-  @impl true
-  def handle_event("remove_rule", _params, socket) do
-    {:noreply, remove_rule(socket)}
-  end
-
   # Copy of GaragesLive's version handlers, pointed at the current tab so a
   # version switch keeps the operator on the workspace view they were reading.
   @impl true
@@ -592,7 +478,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
     if version_id && version_id != current_version_id &&
          Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
-      {:noreply, push_navigate(socket, to: fares_path(version_id, socket.assigns.live_action))}
+      {:noreply, push_navigate(socket, to: zones_path(version_id))}
     else
       {:noreply, socket}
     end
@@ -604,7 +490,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
     if Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
       socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
-      {:noreply, push_navigate(socket, to: fares_path(version_id, socket.assigns.live_action))}
+      {:noreply, push_navigate(socket, to: zones_path(version_id))}
     else
       {:noreply, socket}
     end
@@ -630,7 +516,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
         <.header>
           Fares
           <:subtitle>
-            Group stops into fare zones, then choose which fare riders pay for each journey.
+            What riders pay and which fare each ride charges. Exports include both GTFS fare formats.
           </:subtitle>
           <%!-- One primary per view, and it follows the task: Create zone while no
           stop is selected, then Assign zone in the selection bar. A first-use or
@@ -646,31 +532,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
             >
               <.icon name="hero-plus" class="size-4" /> Create zone
             </.button>
-          </:actions>
-
-          <%!-- The rules tab's one primary action. It is disabled while the catalog
-          has no fare to choose - a rule without a fare cannot be written - and the
-          reason it is disabled is visible beside it (AC-30). With no rule at all,
-          the empty state carries the action instead. --%>
-          <:actions :if={@live_action == :rules and not rules_empty?(assigns)}>
-            <div class="flex flex-col items-start gap-1 sm:items-end">
-              <.button
-                id="add-fare-rule"
-                class="min-h-11"
-                phx-click="open_rule_drawer"
-                phx-value-opener_id="add-fare-rule"
-                disabled={@load_state != :ready or @fares == []}
-              >
-                <.icon name="hero-plus" class="size-4" /> Add fare rule
-              </.button>
-              <p
-                :if={@load_state == :ready and @fares == []}
-                id="add-fare-rule-reason"
-                class="max-w-xs text-[13px] text-muted sm:text-right"
-              >
-                This version has no fares. Import fare_attributes.txt to add fares.
-              </p>
-            </div>
           </:actions>
         </.header>
 
@@ -774,24 +635,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
               <.selection_bar selection={@selection} matching_ids={@matching_ids} />
             </section>
-
-            <div :if={@live_action == :rules} id="fare-rules-panel">
-              <.rules_tab
-                rule_groups={@streams.rule_groups}
-                rule_count={length(@rule_groups)}
-                zones={@inventory.zones}
-                fares={@fares}
-                import_path={import_path(@current_gtfs_version.id)}
-              />
-            </div>
-            <div :if={@live_action == :checks} id="fare-checks-panel">
-              <.checks_tab
-                checks={@checks}
-                patch_base={zones_path(@current_gtfs_version.id)}
-                version_name={@current_gtfs_version.name}
-                export_path={export_path(@current_gtfs_version.id)}
-              />
-            </div>
           <% end %>
         </div>
 
@@ -816,27 +659,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
           error={@zone_error}
           return_focus_id={@zone_return_focus_id}
         />
-
-        <.rule_drawer
-          open={@rule_drawer_open}
-          reviewed={@reviewed_rule}
-          form={@rule_form}
-          fares={@fares}
-          routes={@rule_routes}
-          zones={inventory_zones(assigns)}
-          version_name={@current_gtfs_version.name}
-          combined_fare={combined_fare(assigns)}
-          error={@rule_error}
-          stale={@rule_stale}
-          return_focus_id={@rule_return_focus_id}
-        />
-
-        <.remove_rule_dialog
-          :if={@remove_rule}
-          remove={@remove_rule}
-          zones={inventory_zones(assigns)}
-          return_focus_id="fare-rule-remove"
-        />
       </div>
     </Layouts.app>
     """
@@ -847,11 +669,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   # resolves there is no inventory to judge, so the header action shows (disabled).
   defp first_use?(%{load_state: :ready, inventory: %{zones: []}}), do: true
   defp first_use?(_assigns), do: false
-
-  # The same for the Fare rules tab: with no rule read, the empty state owns the
-  # action.
-  defp rules_empty?(%{load_state: :ready, rule_groups: []}), do: true
-  defp rules_empty?(_assigns), do: false
 
   # The stop page is only meaningful on the Zones tab, where the filter, search
   # and page come from the URL. `filter=unassigned` is its own key so a zone
@@ -919,7 +736,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
         |> stream(:stops, stop_page.entries, reset: true)
         |> assign(:load_state, :ready)
         |> resolve_zone_filter(inventory)
-        |> stream_rule_groups()
         |> sync_map_filter()
         |> push_pending_map_snapshot()
 
@@ -933,47 +749,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
         |> unmount_map()
     end
   end
-
-  # The Fare rules tab's list, read on that tab alone: the load that resolves the
-  # tab is the same load every later reload repeats, so the stream always holds a
-  # complete read of the version's rules. The loaded list stays beside the stream
-  # for the tab's own count and for the rule drawer's lookups, and the drawer's
-  # fare and route catalogs are read here too, because it is the same tab and the
-  # same reload that must refresh them (a fare or a route another editor removed
-  # is exactly what the drawer's next options must show).
-  defp stream_rule_groups(socket) do
-    rules = loaded_rule_groups(socket)
-
-    socket
-    |> assign(:rule_groups, rules)
-    |> assign(:fares, loaded_rule_catalog(socket, &FareZones.list_fares/2))
-    |> assign(:rule_routes, loaded_rule_catalog(socket, &FareZones.list_rule_routes/2))
-    |> stream(:rule_groups, rules, reset: true, dom_id: &rule_dom_id/1)
-  end
-
-  defp loaded_rule_groups(%{assigns: %{live_action: :rules}} = socket) do
-    FareZones.list_rule_groups(
-      socket.assigns.current_organization.id,
-      socket.assigns.current_gtfs_version.id
-    )
-  end
-
-  defp loaded_rule_groups(_socket), do: []
-
-  # The drawer's fare and route options, read only where they are rendered. The
-  # LiveView issues no Ecto query of its own: both readers are `FareZones`'
-  # public functions, scoped to this organization and version (CR-1, INV-1).
-  defp loaded_rule_catalog(%{assigns: %{live_action: :rules}} = socket, reader) do
-    reader.(socket.assigns.current_organization.id, socket.assigns.current_gtfs_version.id)
-  end
-
-  defp loaded_rule_catalog(_socket, _reader), do: []
-
-  # A rule's DOM ID is its first row's own ID, never a zone ID: the sorted rows
-  # are the group's, and no two groups share a row. A table row's cells are
-  # named from it, so a rule with an imported ID such as " A" or "A&B 1" still
-  # has one stable DOM handle.
-  defp rule_dom_id(group), do: "fare-rule-" <> Enum.min(Enum.map(group.rows, & &1.id))
 
   # The filter the map dims by is a delta, so it is pushed when it actually
   # changed: a search or a page patch reloads the workspace without touching it.
@@ -1500,217 +1275,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     |> assign(:notice, notice)
   end
 
-  # The reviewed group of a rule row's DOM ID, from the list this page read. The DOM
-  # ID is the group's own first row ID (`rule_dom_id/1`), never a zone ID, so no
-  # zone ID can reach a push as a rule key (CR-3, CR-7, INV-4).
-  defp rule_group(socket, rule_id) when is_binary(rule_id) do
-    Enum.find(socket.assigns.rule_groups, &(rule_dom_id(&1) == rule_id))
-  end
-
-  # A create starts with no fare chosen: the select shows its "Choose a fare"
-  # prompt, so the form and the select agree, and a rule can never take the first
-  # fare in the list because nobody looked. The summary says "the selected fare"
-  # until one is chosen, and a save without one is refused with a field error.
-  defp new_rule_form(_socket) do
-    to_form(FareZones.change_rule_group(nil, %{}), as: :rule)
-  end
-
-  defp open_rule_drawer(socket, %{"rule_id" => rule_id} = params) do
-    case rule_group(socket, rule_id) do
-      nil ->
-        socket
-
-      group ->
-        socket
-        |> assign(:rule_drawer_open, true)
-        |> assign(:reviewed_rule, group)
-        |> assign(:rule_form, to_form(FareZones.change_rule_group(group, %{}), as: :rule))
-        |> assign(:rule_error, nil)
-        |> assign(:rule_stale, false)
-        |> assign(:rule_return_focus_id, params["opener_id"])
-    end
-  end
-
-  defp open_rule_drawer(socket, params) do
-    socket
-    |> assign(:rule_drawer_open, true)
-    |> assign(:reviewed_rule, nil)
-    |> assign(:rule_form, new_rule_form(socket))
-    |> assign(:rule_error, nil)
-    |> assign(:rule_stale, false)
-    |> assign(:rule_return_focus_id, params["opener_id"])
-  end
-
-  defp close_rule_drawer(socket) do
-    socket
-    |> assign(:rule_drawer_open, false)
-    |> assign(:reviewed_rule, nil)
-    |> assign(:rule_form, new_rule_form(socket))
-    |> assign(:rule_error, nil)
-    |> assign(:rule_stale, false)
-  end
-
-  # The closed drawer's form is inert but still in the page, so a validate and a
-  # save both do nothing while it is closed, exactly as the zone drawer's do.
-  defp validate_rule(%{assigns: %{rule_drawer_open: false}} = socket, _params), do: socket
-
-  defp validate_rule(socket, params) do
-    changeset = socket |> rule_changeset(params) |> Map.put(:action, :validate)
-
-    assign(socket, :rule_form, to_form(changeset, as: :rule))
-  end
-
-  # The domain's own form changeset for the drawer: nil creates, the reviewed
-  # group edits, and the reviewed rows stay the group's own (INV-4).
-  defp rule_changeset(socket, params) do
-    FareZones.change_rule_group(socket.assigns.reviewed_rule, params)
-  end
-
-  defp save_rule(%{assigns: %{rule_drawer_open: false}} = socket, _params), do: socket
-
-  defp save_rule(socket, params) do
-    case FareZones.save_rule_group(
-           audit_context(socket),
-           socket.assigns.reviewed_rule,
-           params
-         ) do
-      {:ok, _group} ->
-        rule_write_succeeded(socket, @rule_saved_message)
-
-      {:error, %Ecto.Changeset{} = changeset} ->
-        rule_form_error(socket, changeset)
-
-      # The reviewed rows are no longer the version's rows under that key.
-      # Nothing was written and the operator's choices stay on screen.
-      {:error, :stale} ->
-        socket
-        |> assign(:rule_stale, true)
-        |> assign(:rule_error, nil)
-
-      {:error, :not_found} ->
-        assign(socket, :rule_error, @save_failed_message)
-
-      {:error, :forbidden} ->
-        socket |> validate_rule(params) |> assign(:rule_error, @save_failed_message)
-    end
-  end
-
-  # A rejected save keeps its message and the operator's input: `to_form/2` reads
-  # the changeset's params, so the chosen values survive beside the errors, and
-  # the hook moves focus to the first invalid field.
-  defp rule_form_error(socket, changeset) do
-    socket
-    |> assign(:rule_stale, false)
-    |> assign(:rule_form, to_form(Map.put(changeset, :action, :validate), as: :rule))
-    |> push_event("focus_form_error", %{
-      form_id: "fare-rule-form",
-      fallback_id: "fare-rule-drawer-error"
-    })
-  end
-
-  # A write happened, so the drawer closes and the workspace is read again: the
-  # rules the save rewrote, the inventory its zones came from and the checks that
-  # report them all have to be what the page shows next.
-  defp rule_write_succeeded(socket, message) do
-    socket
-    |> close_rule_drawer()
-    |> assign(:undo, nil)
-    |> assign(:notice, message)
-    |> load_workspace()
-  end
-
-  # `Reload rule` re-reads the workspace and re-seeds the drawer from the rule as
-  # it stands now. The rule is looked up by the key it was opened under, and then
-  # by its own row IDs, because a rename moves a rule to another key while its
-  # rows stay the same rule - the operator is still editing that rule. A rule with
-  # neither is gone, and the drawer closes with that said out loud.
-  defp reload_rule(%{assigns: %{rule_drawer_open: false}} = socket), do: socket
-
-  defp reload_rule(socket) do
-    reviewed = socket.assigns.reviewed_rule
-
-    if is_nil(reviewed) do
-      socket
-    else
-      socket = load_workspace(socket)
-
-      case reloaded_rule(socket, reviewed) do
-        nil ->
-          socket
-          |> close_rule_drawer()
-          |> assign(:notice, @rule_missing_message)
-
-        group ->
-          socket
-          |> assign(:reviewed_rule, group)
-          |> assign(:rule_form, to_form(FareZones.change_rule_group(group, %{}), as: :rule))
-          |> assign(:rule_stale, false)
-          |> assign(:rule_error, nil)
-      end
-    end
-  end
-
-  defp reloaded_rule(_socket, nil), do: nil
-
-  defp reloaded_rule(socket, reviewed) do
-    row_ids = MapSet.new(reviewed.rows, & &1.id)
-
-    Enum.find(socket.assigns.rule_groups, &(&1.key == reviewed.key)) ||
-      Enum.find(socket.assigns.rule_groups, fn group ->
-        Enum.any?(group.rows, &MapSet.member?(row_ids, &1.id))
-      end)
-  end
-
-  # Removal is offered for a rule the drawer is editing and nowhere else, so the
-  # confirm can only act on the group the page showed.
-  defp open_remove_rule(%{assigns: %{reviewed_rule: nil}} = socket), do: socket
-
-  defp open_remove_rule(socket) do
-    assign(socket, :remove_rule, %{rule: socket.assigns.reviewed_rule, error: nil})
-  end
-
-  # Confirming runs the one domain call that deletes the reviewed rows and
-  # nothing else. A stale confirmation writes nothing: the workspace is read
-  # again, the dialog shows the rule as it stands now and stays open with its
-  # reason, and a rule that is gone closes the confirm and the drawer with it.
-  defp remove_rule(%{assigns: %{remove_rule: nil}} = socket), do: socket
-
-  defp remove_rule(socket) do
-    case FareZones.delete_rule_group(
-           audit_context(socket),
-           socket.assigns.remove_rule.rule
-         ) do
-      {:ok, _count} ->
-        socket
-        |> assign(:remove_rule, nil)
-        |> rule_write_succeeded(@rule_removed_message)
-
-      {:error, :stale} ->
-        socket |> load_workspace() |> reopen_remove()
-
-      {:error, :not_found} ->
-        assign(socket, :remove_rule, %{socket.assigns.remove_rule | error: @save_failed_message})
-
-      {:error, :forbidden} ->
-        assign(socket, :remove_rule, %{socket.assigns.remove_rule | error: @save_failed_message})
-    end
-  end
-
-  defp reopen_remove(socket) do
-    case reloaded_rule(socket, socket.assigns.reviewed_rule) do
-      nil ->
-        socket
-        |> assign(:remove_rule, nil)
-        |> close_rule_drawer()
-        |> assign(:notice, @rule_missing_message)
-
-      group ->
-        socket
-        |> assign(:reviewed_rule, group)
-        |> assign(:remove_rule, %{rule: group, error: @rule_stale_message})
-    end
-  end
-
   defp open_assignment(socket, mode) do
     if MapSet.size(socket.assigns.selection) == 0 do
       socket
@@ -1867,25 +1431,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   defp assigned_copy(:unassign, applied, _zone_name) do
     "#{stops_count(length(applied))} unassigned."
-  end
-
-  # The fare the drawer's rule would belong to after a save, when trip planners
-  # would read its rules differently than each rule reads alone: the reviewed rule
-  # is replaced by the form's own values and the fare's other groups stay as the
-  # page read them. Nil while the drawer is closed, the form names no fare or the
-  # fare's rules agree.
-  defp combined_fare(%{rule_drawer_open: false}), do: nil
-
-  defp combined_fare(%{rule_form: form, reviewed_rule: reviewed, rule_groups: groups}) do
-    candidate =
-      form.source |> Ecto.Changeset.apply_changes() |> Map.take([:fare_id, :route_id, :contains])
-
-    others =
-      Enum.filter(groups, fn group ->
-        group.fare_id == candidate.fare_id and (is_nil(reviewed) or group.key != reviewed.key)
-      end)
-
-    [candidate | others] |> FareZones.find_combined_fares() |> List.first()
   end
 
   # The inventory's zones, from the LiveView's assigns (the render reads them too,
@@ -2094,12 +1639,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   end
 
   defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
-  defp import_path(version_id), do: "/gtfs/#{version_id}/import"
-  defp export_path(version_id), do: "/gtfs/#{version_id}/export"
 
-  defp zones_path(version_id), do: "/gtfs/#{version_id}/settings/fares"
-
-  defp fares_path(version_id, :rules), do: "/gtfs/#{version_id}/settings/fares/rules"
-  defp fares_path(version_id, :checks), do: "/gtfs/#{version_id}/settings/fares/checks"
-  defp fares_path(version_id, _zones), do: zones_path(version_id)
+  defp zones_path(version_id), do: "/gtfs/#{version_id}/settings/fares/zones"
 end

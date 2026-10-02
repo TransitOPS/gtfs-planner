@@ -1,0 +1,4 @@
+agency_id,agency_name,agency_url,agency_timezone,agency_lang,agency_phone,agency_fare_url,agency_email,bikes_policy_url
+PSC,Portland Streetcar,https://portlandstreetcar.org/,America/Los_Angeles,en,503-222-4200,https://portlandstreetcar.org/fare-info/fare-info,info@portlandstreetcar.org,
+TRAM,Portland Aerial Tram,http://www.gobytram.com/,America/Los_Angeles,en,503-494-8283,http://www.gobytram.com/fare,commute@ohsu.edu,
+TRIMET,TriMet,https://trimet.org/,America/Los_Angeles,en,503-238-RIDE,https://trimet.org/fares/,customerservice@trimet.org,https://trimet.org/bikes/

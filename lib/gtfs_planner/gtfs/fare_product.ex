@@ -31,7 +31,7 @@ defmodule GtfsPlanner.Gtfs.FareProduct do
           organization_id: Ecto.UUID.t(),
           gtfs_version_id: Ecto.UUID.t(),
           fare_product_id: String.t(),
-          fare_product_name: String.t(),
+          fare_product_name: String.t() | nil,
           fare_media_id: String.t() | nil,
           amount: Decimal.t(),
           currency: String.t(),
@@ -64,14 +64,23 @@ defmodule GtfsPlanner.Gtfs.FareProduct do
     |> trim_string_fields()
     |> validate_required([
       :fare_product_id,
-      :fare_product_name,
       :amount,
       :currency,
       :organization_id,
       :gtfs_version_id
     ])
-    |> validate_number(:amount, greater_than_or_equal_to: 0)
-    |> unique_constraint([:organization_id, :gtfs_version_id, :fare_product_id, :fare_media_id])
+    # The index is named explicitly because the key is longer than the 63
+    # characters PostgreSQL allows for Ecto's generated constraint name.
+    |> unique_constraint(
+      [
+        :organization_id,
+        :gtfs_version_id,
+        :fare_product_id,
+        :rider_category_id,
+        :fare_media_id
+      ],
+      name: "fare_products_org_version_product_rider_category_media_index"
+    )
     |> foreign_key_constraint(:organization_id)
   end
 end

@@ -1,0 +1,15 @@
+route_id,route_short_name,route_long_name,route_type,route_color,route_text_color
+1,1,Coast Highway,3,1F5FBF,FFFFFF
+2,2,Yaquina Bay,3,0D737D,FFFFFF
+3,3,Newport City Loop,3,4B1F78,FFFFFF
+4,4,Toledo - Newport,3,F26A1B,0A1330
+5,5,Waldport - Yachats,3,267548,FFFFFF
+6,6,Depoe Bay Shuttle,3,D6274A,FFFFFF
+7,7,Siletz Valley,3,267548,FFFFFF
+10,10,Newport - Corvallis Intercity,3,0A1330,FFFFFF
+11,11,Agate Beach,3,0D737D,FFFFFF
+12,12,Nye Beach - Hospital,3,4B1F78,FFFFFF
+20,20,Lincoln City Loop,3,1F5FBF,FFFFFF
+21,21,Taft - Roads End,3,D6274A,FFFFFF
+30,30,South Beach Park & Ride,3,0D737D,FFFFFF
+40,40,Seal Rock Commuter,3,F26A1B,0A1330

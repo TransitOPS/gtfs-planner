@@ -55,6 +55,10 @@ defmodule GtfsPlannerWeb.Home.ChangeLinks do
     ~p"/gtfs/#{version_id}/transfers"
   end
 
+  def path(version_id, %{kind: :fares}) do
+    ~p"/gtfs/#{version_id}/settings/fares"
+  end
+
   def path(_version_id, %{kind: :none}), do: nil
 
   # An item without a destination or without the params its kind needs shows

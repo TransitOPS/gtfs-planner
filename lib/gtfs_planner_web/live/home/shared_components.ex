@@ -601,6 +601,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
   defp kind_icon(:route_pattern), do: "hero-square-3-stack-3d"
   defp kind_icon(:route_patterns), do: "hero-square-3-stack-3d"
   defp kind_icon(:transfers), do: "hero-square-3-stack-3d"
+  defp kind_icon(:fares), do: "hero-currency-dollar"
   defp kind_icon(_kind), do: "hero-question-mark-circle"
 
   # No link for an item whose entity is gone (`ChangeLinks.path/2` returns nil),
@@ -620,6 +621,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
   def featured_label(%{kind: :station}), do: "Open floorplan"
   def featured_label(%{kind: :stop}), do: "Open stop"
   def featured_label(%{kind: :transfers}), do: "Open transfers"
+  def featured_label(%{kind: :fares}), do: "Open fares"
   def featured_label(_item), do: "Open"
 
   @doc """

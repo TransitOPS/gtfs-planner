@@ -689,6 +689,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapterTest do
       start_supervised!(
         {GtfsPlanner.Repo,
          name: nil,
+         url: nil,
          hostname: "127.0.0.1",
          port: 1,
          username: "postgres",

@@ -54,21 +54,27 @@ defmodule GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraintsTest do
 
   @constraint "routes_version_owner_fkey"
 
-  test "validates every step 8 ownership constraint" do
+  test "validates the original ownership constraints without validating later fare constraints" do
     reset_route_constraint()
     assert constraint_validated?(@constraint) == false
 
     assert :ok == Migration.validate_all!(Repo)
 
     assert %{rows: rows} = Repo.query!(constraint_status_sql(), [])
-    # Every `*_owner_fkey` in the schema, not a subset: 68 from upstream, four
-    # from the rosters and one from service alerts. `roster_lines` and
-    # `roster_line_days` join the same version-owner catalog and carry the same
-    # scoped constraint, and two more keep a day under its own line and a line's
-    # operator in its own organization. `service_alerts` carries the same
-    # version-owner key and no other.
-    assert length(rows) == 73
-    assert Enum.all?(rows, fn [_name, validated?] -> validated? end)
+    # Every original `*_owner_fkey`: 68 from upstream, four from rosters
+    # and one from service alerts. The four later fare keys remain NOT VALID.
+    # `roster_lines` and `roster_line_days` join the same
+    # version-owner catalog and carry the same scoped constraint, and two more
+    # keep a day under its own line and a line's operator in its own organization.
+    fare_constraints =
+      ~w(fare_product_details fare_saved_journeys fare_time_periods fare_version_settings)
+      |> Enum.map(&"#{&1}_version_owner_fkey")
+
+    {later, original} = Enum.split_with(rows, fn [name, _] -> name in fare_constraints end)
+    assert length(original) == 73
+    assert Enum.all?(original, fn [_name, validated?] -> validated? end)
+    assert Enum.sort(Enum.map(later, &hd/1)) == Enum.sort(fare_constraints)
+    assert Enum.all?(later, fn [_name, validated?] -> not validated? end)
   end
 
   test "the additive migration validates all eleven constraints independently" do

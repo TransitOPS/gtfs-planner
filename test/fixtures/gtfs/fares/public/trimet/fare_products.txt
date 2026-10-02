@@ -1,0 +1,40 @@
+fare_product_id,fare_product_name,rider_category_id,fare_media_id,amount,currency
+AERIAL_TRAM_ROUND_TRIP,Portland Aerial Tram Single Round Trip,,0,9.00,USD
+AERIAL_TRAM_ROUND_TRIP,Portland Aerial Tram Single Round Trip,,3,9.00,USD
+AERIAL_TRAM_ROUND_TRIP,Portland Aerial Tram Single Round Trip,,1,9.00,USD
+STREETCAR_ADULT_SINGLE_RIDE,Portland Streetcar Adult 2 1/2 Hours,ADULT,0,2.00,USD
+STREETCAR_ADULT_SINGLE_RIDE,Portland Streetcar Adult 2 1/2 Hours,ADULT,2,2.00,USD
+STREETCAR_ADULT_SINGLE_RIDE,Portland Streetcar Adult 2 1/2 Hours,ADULT,3,2.00,USD
+STREETCAR_ADULT_SINGLE_RIDE,Portland Streetcar Adult 2 1/2 Hours,ADULT,4,2.00,USD
+STREETCAR_HC_SINGLE_RIDE,Portland Streetcar Honored Citizen 2 1/2 Hours,HONORED_CITIZEN,0,1.00,USD
+STREETCAR_HC_SINGLE_RIDE,Portland Streetcar Honored Citizen 2 1/2 Hours,HONORED_CITIZEN,2,1.00,USD
+STREETCAR_HC_SINGLE_RIDE,Portland Streetcar Honored Citizen 2 1/2 Hours,HONORED_CITIZEN,3,1.00,USD
+STREETCAR_HC_SINGLE_RIDE,Portland Streetcar Honored Citizen 2 1/2 Hours,HONORED_CITIZEN,4,1.00,USD
+STREETCAR_YOUTH_SINGLE_RIDE,Portland Streetcar Youth 2 1/2 Hours,YOUTH,0,1.00,USD
+STREETCAR_YOUTH_SINGLE_RIDE,Portland Streetcar Youth 2 1/2 Hours,YOUTH,2,1.00,USD
+STREETCAR_YOUTH_SINGLE_RIDE,Portland Streetcar Youth 2 1/2 Hours,YOUTH,3,1.00,USD
+STREETCAR_YOUTH_SINGLE_RIDE,Portland Streetcar Youth 2 1/2 Hours,YOUTH,4,1.00,USD
+TRIMET_ADULT_SINGLE_RIDE,TriMet Adult 2 1/2 Hours,ADULT,0,2.80,USD
+TRIMET_ADULT_SINGLE_RIDE,TriMet Adult 2 1/2 Hours,ADULT,2,2.80,USD
+TRIMET_ADULT_SINGLE_RIDE,TriMet Adult 2 1/2 Hours,ADULT,3,2.80,USD
+TRIMET_ADULT_SINGLE_RIDE,TriMet Adult 2 1/2 Hours,ADULT,4,2.80,USD
+TRIMET_HC_SINGLE_RIDE,TriMet Honored Citizen 2 1/2 Hours,HONORED_CITIZEN,0,1.40,USD
+TRIMET_HC_SINGLE_RIDE,TriMet Honored Citizen 2 1/2 Hours,HONORED_CITIZEN,2,1.40,USD
+TRIMET_HC_SINGLE_RIDE,TriMet Honored Citizen 2 1/2 Hours,HONORED_CITIZEN,3,1.40,USD
+TRIMET_HC_SINGLE_RIDE,TriMet Honored Citizen 2 1/2 Hours,HONORED_CITIZEN,4,1.40,USD
+TRIMET_YOUTH_SINGLE_RIDE,TriMet Youth 2 1/2 Hours,YOUTH,0,1.40,USD
+TRIMET_YOUTH_SINGLE_RIDE,TriMet Youth 2 1/2 Hours,YOUTH,2,1.40,USD
+TRIMET_YOUTH_SINGLE_RIDE,TriMet Youth 2 1/2 Hours,YOUTH,3,1.40,USD
+TRIMET_YOUTH_SINGLE_RIDE,TriMet Youth 2 1/2 Hours,YOUTH,4,1.40,USD
+STREETCAR_TRIMET_ADULT_TRANSFER,Adult transfer from Portland Streetcar to TriMet,ADULT,0,0.80,USD
+STREETCAR_TRIMET_ADULT_TRANSFER,Adult transfer from Portland Streetcar to TriMet,ADULT,2,0.80,USD
+STREETCAR_TRIMET_ADULT_TRANSFER,Adult transfer from Portland Streetcar to TriMet,ADULT,3,0.80,USD
+STREETCAR_TRIMET_ADULT_TRANSFER,Adult transfer from Portland Streetcar to TriMet,ADULT,4,0.80,USD
+STREETCAR_TRIMET_HC_TRANSFER,Honored Citizen transfer from Portland Streetcar to TriMet,HONORED_CITIZEN,0,0.40,USD
+STREETCAR_TRIMET_HC_TRANSFER,Honored Citizen transfer from Portland Streetcar to TriMet,HONORED_CITIZEN,2,0.40,USD
+STREETCAR_TRIMET_HC_TRANSFER,Honored Citizen transfer from Portland Streetcar to TriMet,HONORED_CITIZEN,3,0.40,USD
+STREETCAR_TRIMET_HC_TRANSFER,Honored Citizen transfer from Portland Streetcar to TriMet,HONORED_CITIZEN,4,0.40,USD
+STREETCAR_TRIMET_YOUTH_TRANSFER,Youth transfer from Portland Streetcar to TriMet,YOUTH,0,0.40,USD
+STREETCAR_TRIMET_YOUTH_TRANSFER,Youth transfer from Portland Streetcar to TriMet,YOUTH,2,0.40,USD
+STREETCAR_TRIMET_YOUTH_TRANSFER,Youth transfer from Portland Streetcar to TriMet,YOUTH,3,0.40,USD
+STREETCAR_TRIMET_YOUTH_TRANSFER,Youth transfer from Portland Streetcar to TriMet,YOUTH,4,0.40,USD

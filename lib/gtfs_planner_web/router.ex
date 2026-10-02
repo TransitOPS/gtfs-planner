@@ -210,14 +210,22 @@ defmodule GtfsPlannerWeb.Router do
       live "/settings/alerts", Gtfs.AlertSettingsLive, :index
       live "/settings/garages", Gtfs.GaragesLive, :index
       live "/settings/fleet", Gtfs.FleetLive, :index
-      # The Fare zones workspace owns the Fares section. Its three destinations
-      # are one LiveView with one action each, so the tab links patch between
-      # them and the Zones tab's query state survives a tab change. They are
-      # literal paths declared ahead of the section route, so neither "fares"
-      # nor its child segments can be read as a section slug.
-      live "/settings/fares", Gtfs.FaresLive, :zones
-      live "/settings/fares/rules", Gtfs.FaresLive, :rules
-      live "/settings/fares/checks", Gtfs.FaresLive, :checks
+      # The Fares section is two LiveViews. The fare editor shell owns Prices,
+      # Where fares apply, Transfers and Checks; the Fare zones workspace keeps
+      # the Zones tab, whose map, selection and assignment review spec 21 built.
+      # The shared tab strip navigates between them, so each tab is its own path
+      # and a tab change is a real navigation rather than a patch of one
+      # LiveView's query state. They are literal paths declared ahead of the
+      # section route, so neither "fares" nor its child segments can be read as a
+      # section slug.
+      live "/settings/fares", Gtfs.FareEditorLive, :prices
+      live "/settings/fares/where", Gtfs.FareEditorLive, :where
+      live "/settings/fares/transfers", Gtfs.FareEditorLive, :transfers
+      live "/settings/fares/zones", Gtfs.FaresLive, :zones
+      live "/settings/fares/checks", Gtfs.FareEditorLive, :checks
+      # The retired Fare rules path. Fare rules are edited on Where fares apply,
+      # so the action navigates there rather than rendering a tab of its own.
+      live "/settings/fares/rules", Gtfs.FareEditorLive, :rules
       live "/settings/:section", Gtfs.SettingsLive, :section
       live "/import", Gtfs.ImportLive, :index
       live "/export", Gtfs.ExportLive, :index

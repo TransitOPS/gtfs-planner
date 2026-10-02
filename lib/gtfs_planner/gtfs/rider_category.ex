@@ -12,6 +12,7 @@ defmodule GtfsPlanner.Gtfs.RiderCategory do
     field :min_age, :integer
     field :max_age, :integer
     field :eligibility_url, :string
+    field :is_default_fare_category, :integer
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization,
       foreign_key: :organization_id
@@ -30,6 +31,7 @@ defmodule GtfsPlanner.Gtfs.RiderCategory do
           min_age: integer() | nil,
           max_age: integer() | nil,
           eligibility_url: String.t() | nil,
+          is_default_fare_category: integer() | nil,
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }
@@ -43,6 +45,7 @@ defmodule GtfsPlanner.Gtfs.RiderCategory do
       :min_age,
       :max_age,
       :eligibility_url,
+      :is_default_fare_category,
       :organization_id,
       :gtfs_version_id
     ])
@@ -53,6 +56,7 @@ defmodule GtfsPlanner.Gtfs.RiderCategory do
       :organization_id,
       :gtfs_version_id
     ])
+    |> validate_inclusion(:is_default_fare_category, [0, 1])
     |> unique_constraint([:organization_id, :gtfs_version_id, :rider_category_id])
     |> foreign_key_constraint(:organization_id)
   end

@@ -334,7 +334,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
   describe "fares placement" do
     setup :editor_setup
 
-    test "the Fares destination renders the workspace, not the Coming soon body",
+    test "the Fares destination renders the editor shell, not the Coming soon body",
          %{conn: conn, user: user, organization: organization, version: version} do
       conn = log_in_user(conn, user, organization: organization)
 
@@ -342,10 +342,12 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
       doc = LazyHTML.from_fragment(render(view))
 
       # The literal route resolves before `/settings/:section`, so this is the
-      # workspace shell, which leads back to Settings instead of carrying its bar.
+      # fare editor shell, which leads back to Settings instead of carrying the
+      # Settings tab bar. It opens on Prices; the zone workspace is the Zones
+      # tab's own destination.
       assert text_of(doc, "h1") == "Fares"
-      # An empty inventory shows the workspace's first-use state instead of the panel.
-      assert has_element?(view, "#fare-zone-first-use")
+      assert has_element?(view, "#fare-editor-page")
+      assert has_element?(view, "#fares-tab-prices[aria-current='page']")
       refute has_element?(view, "#coming-soon")
 
       assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-back"), "href") ==

@@ -119,7 +119,7 @@ defmodule GtfsPlannerWeb.Layouts do
               current_path={@current_path}
               current_gtfs_version={@current_gtfs_version}
             />
-            <div class="ml-auto flex min-h-16 flex-wrap items-center justify-end gap-2">
+            <div class="ml-auto flex min-h-16 min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
               <%= if @current_organization && @current_gtfs_version && @available_versions != [] do %>
                 <.live_component
                   module={GtfsPlannerWeb.Components.GtfsVersionSwitcher}

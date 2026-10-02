@@ -30,7 +30,8 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   The calendar list feed status resolves the agency-local today once and reports
   the version-wide service gaps with it. The Fare zones workspace resolves its inventory, checks
   and first stop page in one operational read, so a lost connection is reported
-  once for the whole workspace, and the Flex services list resolves the version's
+  once for the whole workspace, and the fare editor resolves its whole read model
+  the same way. The Flex services list resolves the version's
   services with their readiness checks, the calendars map, the organization's
   export switch, the flex map payload (the stored areas, the route lines and
   the connecting stops) and the routes the create drawer offers the same way.
@@ -48,6 +49,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
     Calendars,
     DisplayClock,
     ExportDefaults,
+    Fares,
     FareZones,
     Flex,
     Flex.Checks,
@@ -346,6 +348,19 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
         stops: FareZones.list_stops(organization_id, gtfs_version_id, opts)
       }
     end)
+  end
+
+  @impl true
+  def load_fare_editor(organization_id, gtfs_version_id, opts) do
+    # The fare editor's tabs read one whole snapshot, so `opts` selects nothing
+    # here: the argument is kept so this read is reached the same way as every
+    # other catalog read, and so a future filter is added in one place.
+    _ = opts
+
+    case run(fn -> Fares.load_workspace(organization_id, gtfs_version_id) end) do
+      {:ok, {:ok, workspace}} -> {:ok, workspace}
+      {:error, :unavailable} = error -> error
+    end
   end
 
   @impl true

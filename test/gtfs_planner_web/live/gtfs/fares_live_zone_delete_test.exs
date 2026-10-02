@@ -554,7 +554,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneDeleteTest do
   end
 
   defp zones_path(version) do
-    "/gtfs/#{version.id}/settings/fares"
+    "/gtfs/#{version.id}/settings/fares/zones"
   end
 
   # A zone filter is a URL state, so the padded ID travels encoded exactly as

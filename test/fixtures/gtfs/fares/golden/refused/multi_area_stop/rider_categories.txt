@@ -1,0 +1,5 @@
+rider_category_id,rider_category_name,min_age,max_age,eligibility_url
+adult,Adult,,,
+child,Children under 6,0,5,
+reduced,Reduced fare,,,https://northcoast.example/reduced-fare
+youth,Youth (6-18),6,18,

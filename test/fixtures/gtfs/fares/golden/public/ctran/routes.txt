@@ -1,0 +1,32 @@
+route_id,agency_id,route_short_name,route_long_name,route_desc,route_type,route_url,route_color,route_text_color,route_sort_order,continuous_pickup,continuous_drop_off,network_id
+002,C-TRAN,002,Lincoln,,3,,3777bc,ffffff,3,1,1,LOCAL
+006,C-TRAN,006,Fruit Valley/Grand,,3,,3777bc,ffffff,4,1,1,LOCAL
+007,C-TRAN,007,Battle Ground,,3,,3777bc,ffffff,5,1,1,LOCAL
+009,C-TRAN,009,Felida,,3,,3777bc,ffffff,6,1,1,LOCAL
+012,C-TRAN,012,112th Avenue,,3,,3777bc,ffffff,7,1,1,LOCAL
+019,C-TRAN,019,Salmon Creek,,3,,3777bc,ffffff,8,1,1,LOCAL
+025,C-TRAN,025,Saint Johns,,3,,3777bc,ffffff,9,1,1,LOCAL
+030,C-TRAN,030,Burton,,3,,3777bc,ffffff,10,1,1,LOCAL
+031,C-TRAN,031,Hazel Dell,,3,,3777bc,ffffff,11,1,1,LOCAL
+032,C-TRAN,032,Evergreen/Andresen,,3,,3777bc,ffffff,12,1,1,LOCAL
+034,C-TRAN,034,192nd Ave/34th St,,3,,3777bc,ffffff,13,1,1,LOCAL
+041,C-TRAN,041,SR 14,,3,,3777bc,ffffff,14,1,1,LOCAL
+047,C-TRAN,047,Battle Ground/Yacolt,,3,,3777bc,ffffff,15,1,1,LOCAL
+048,C-TRAN,048,Ridgefield,,3,,3777bc,ffffff,16,1,1,LOCAL
+050,C-TRAN,Vine-Green,The Vine on Fourth Plain,,3,,2d9a47,000000,1,1,1,LOCAL
+051,C-TRAN,Vine-Red,The Vine on Mill Plain,,3,,d2232a,ffffff,2,1,1,LOCAL
+060,C-TRAN,060,Delta Park Regional,,3,,3777bc,ffffff,17,1,1,REGIONAL
+065,C-TRAN,065,Parkrose Regional,,3,,3777bc,ffffff,18,1,1,REGIONAL
+067,C-TRAN,067,Airport Regional,,3,,3777bc,ffffff,19,1,1,REGIONAL
+071,C-TRAN,071,Highway 99,,3,,3777bc,ffffff,20,1,1,LOCAL
+072,C-TRAN,072,Orchards,,3,,3777bc,ffffff,21,1,1,LOCAL
+074,C-TRAN,074,East Fourth Plain/162nd Ave,,3,,3777bc,ffffff,22,1,1,LOCAL
+078,C-TRAN,078,78th Street,,3,,3777bc,ffffff,23,1,1,LOCAL
+080,C-TRAN,080,Van Mall/Fishers,,3,,3777bc,ffffff,24,1,1,LOCAL
+092,C-TRAN,092,Camas/Washougal,,3,,3777bc,ffffff,25,1,1,LOCAL
+105,C-TRAN,105,I-5 Express,,3,,3777bc,ffffff,26,1,1,EXPRESS
+106,C-TRAN,105X,I-5X Express,,3,,3777bc,ffffff,27,1,1,EXPRESS
+164,C-TRAN,164,Fishers Landing Express,,3,,3777bc,ffffff,28,1,1,EXPRESS
+190,C-TRAN,190,Marquam Hill Express,,3,,3777bc,ffffff,29,1,1,EXPRESS
+500,C-TRAN,500,I-5 Construction Shuttle,,3,,3777bc,ffffff,30,1,1,REGIONAL
+899,C-TRAN,899,Shuttle,,3,,3777bc,ffffff,31,1,1,LOCAL
