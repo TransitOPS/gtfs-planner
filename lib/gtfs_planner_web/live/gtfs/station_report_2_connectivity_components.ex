@@ -143,7 +143,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
           <div class="flex flex-wrap items-baseline gap-x-2">
             <dt class="text-muted">Total time</dt>
             <dd class="font-bold tabular-nums text-strong">
-              {format_time(@expanded_route.time)}
+              {walk_time(@expanded_route.time)}
             </dd>
           </div>
           <div class="flex flex-wrap items-baseline gap-x-2">
@@ -204,7 +204,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
       <span class="inline-flex items-baseline gap-1">
         <span class="text-muted">Time</span>
         <span class="font-bold tabular-nums text-strong">
-          {if @nopath, do: "—", else: format_time(@target.time)}
+          {if @nopath, do: "—", else: walk_time(@target.time)}
         </span>
       </span>
       <span class="inline-flex items-baseline gap-1">
@@ -267,7 +267,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
               <td class="px-3 py-2 text-right tabular-nums">
                 <%= if item.time != nil do %>
                   <span class={item.time_warning && "font-bold text-warning-fg"}>
-                    {format_time(item.time)}
+                    {walk_time(item.time)}
                   </span>
                   <span :if={item.time_warning} class="block text-[13px] text-warning-fg">
                     Long
@@ -364,9 +364,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
   defp dimension_label(:platform_to_exit), do: "Platform to exit"
   defp dimension_label(:platform_to_platform), do: "Platform to platform"
 
-  defp format_time(nil), do: "—"
-  defp format_time(seconds) when is_number(seconds), do: Helpers.format_duration(seconds)
-  defp format_time(other), do: to_string(other)
+  defp walk_time(nil), do: "—"
+  defp walk_time(seconds) when is_number(seconds), do: Helpers.format_duration(seconds)
+  defp walk_time(other), do: to_string(other)
 
   defp format_distance(nil), do: "—"
   defp format_distance(meters), do: "#{format_number(meters)} m"

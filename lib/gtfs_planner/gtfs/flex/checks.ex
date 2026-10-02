@@ -651,7 +651,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
               :warning,
               :booking,
               :note,
-              "The note says “#{quoted}”, but the rule says at least #{duration(minutes)}. Trip " <>
+              "The note says “#{quoted}”, but the rule says at least #{RiderText.duration_words(minutes)}. Trip " <>
                 "planners show both."
             )
           ]
@@ -1019,25 +1019,6 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   defp duration_minutes(number, unit) do
     minutes = String.to_integer(number)
     if String.match?(unit, ~r/h/i), do: minutes * 60, else: minutes
-  end
-
-  # The same wording as `RiderText`'s deadline sentence ("at least 1 hour"),
-  # whose duration helper is private there.
-  defp duration(0), do: "0 minutes"
-  defp duration(1), do: "1 minute"
-  defp duration(minutes) when minutes < 60, do: "#{minutes} minutes"
-
-  defp duration(minutes) do
-    hours = div(minutes, 60)
-    rest = rem(minutes, 60)
-
-    case {hours, rest} do
-      {hours, 0} ->
-        "#{hours} hour#{Wording.noun(hours, "")}"
-
-      {hours, rest} ->
-        "#{hours} hour#{Wording.noun(hours, "")} #{rest} minute#{Wording.noun(rest, "")}"
-    end
   end
 
   defp day_count(days, business_days) do

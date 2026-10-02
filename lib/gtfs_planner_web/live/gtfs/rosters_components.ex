@@ -239,7 +239,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
       >
         <span class="shrink-0 font-[650]">Roster settings</span>
         <span class="min-w-0 text-muted">
-          · {@groups} · rest {minutes(@roster.rules.min_rest_minutes)} · warn above {@roster.rules.weekly_hours_warn_above} h
+          · {@groups} · rest {Wording.duration(@roster.rules.min_rest_minutes * 60)} · warn above {@roster.rules.weekly_hours_warn_above} h
         </span>
       </button>
 
@@ -443,12 +443,6 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
 
   defp pad(minutes) when minutes < 10, do: "0#{minutes}"
   defp pad(minutes), do: "#{minutes}"
-
-  # The minimum rest is stored in minutes and usually read in hours ("rest
-  # 10 h"), because a rule a planner sets between 8 and 12 hours is a rule in
-  # hours. A rule that is not a whole number of hours keeps its minutes.
-  defp minutes(minutes) when rem(minutes, 60) == 0, do: "#{div(minutes, 60)} h"
-  defp minutes(minutes), do: "#{div(minutes, 60)} h #{rem(minutes, 60)} min"
 
   @doc """
   The row above the grid: which lines are shown, and how many of them.
@@ -1274,7 +1268,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
 
   # A duration of minutes, in the hours and minutes a planner reads a rest rule
   # in: 289 minutes reads `4 h 49 min`, not `4:49`, which would read as a clock.
-  defp rest_hours(secs) when is_integer(secs), do: minutes(div(secs, @seconds_per_minute))
+  defp rest_hours(secs) when is_integer(secs), do: Wording.duration(secs)
 
   @doc """
   The Operator cell: the operator's name and employee ID, or `Open`, plus the
@@ -2066,7 +2060,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
           <legend class="text-base font-bold text-strong">Run for {@day_name}</legend>
           <p class="mt-1 text-[13px] text-muted">
             {@day_name} uses {@group_label} runs. Open runs whose sign-on is closest to this line’s
-            other days come first. Minimum rest is {minutes(@min_rest_minutes)}.
+            other days come first. Minimum rest is {Wording.duration(@min_rest_minutes * 60)}.
           </p>
 
           <div class="mt-3 overflow-x-auto rounded-card border border-subtle">
@@ -2431,7 +2425,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
           <h3 class="text-base font-bold">Lines with {@day_name} off</h3>
           <p class="mt-1 text-[13px] text-muted">
             Lines where it keeps the minimum rest come first, then the lines with the fewest paid
-            hours. Minimum rest is {minutes(@min_rest_minutes)}.
+            hours. Minimum rest is {Wording.duration(@min_rest_minutes * 60)}.
           </p>
           <div class="mt-3 overflow-x-auto rounded-card border border-subtle">
             <table class="w-full border-separate border-spacing-0 text-sm">

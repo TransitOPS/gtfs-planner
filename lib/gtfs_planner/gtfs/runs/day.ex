@@ -51,6 +51,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Day do
   alias GtfsPlanner.Gtfs.Runs.Checks
   alias GtfsPlanner.Gtfs.Runs.Pieces
   alias GtfsPlanner.Gtfs.Runs.WorkTime
+  alias GtfsPlanner.Wording
 
   @type run :: %{
           run_id: String.t(),
@@ -188,8 +189,10 @@ defmodule GtfsPlanner.Gtfs.Runs.Day do
     }
   end
 
+  # Zero of nothing is not a percentage, and the page shows the nil as a dash, so
+  # the caller of `Wording.percent/2` keeps that one case.
   defp share(_part, 0), do: nil
-  defp share(part, whole), do: round(part * 100 / whole)
+  defp share(part, whole), do: Wording.percent(part, whole)
 
   defp count(findings, severity), do: Enum.count(findings, &(&1.severity == severity))
 

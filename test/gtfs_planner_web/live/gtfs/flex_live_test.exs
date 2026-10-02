@@ -65,7 +65,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
       registered = row_text(doc, "Newport Access")
       assert registered =~ "Anywhere in Newport Access Area"
       assert registered =~ "Newport Access Area only: Weekdays 8:00 am–5:00 pm"
-      assert registered =~ "Call, 2 hr ahead"
+      assert registered =~ "Call, 2 h ahead"
       assert registered =~ "Ready · 1 suggestion"
 
       dial_a_ride = row_text(doc, "Newport Dial-a-Ride")

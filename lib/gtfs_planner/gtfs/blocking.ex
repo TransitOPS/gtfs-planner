@@ -106,6 +106,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   alias GtfsPlanner.Operations.Garage
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
 
   # The settings a version with no stored row reads. The map is the single
   # definition of the defaults: the reader merges stored columns over it and the form
@@ -3733,13 +3734,10 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       drive_secs: Enum.sum(Enum.map(movements, & &1.drive_secs)),
       service_km: round_km(Enum.sum(Enum.map(movements, & &1.service_km))),
       deadhead_km: round_km(Enum.sum(Enum.map(movements, & &1.deadhead_km))),
-      riders: riders(service_secs, platform_secs),
+      riders: Wording.percent(service_secs, platform_secs),
       problems: Enum.count(findings, &(&1.severity in [:error, :warning]))
     }
   end
-
-  defp riders(_service_secs, 0), do: 0
-  defp riders(service_secs, platform_secs), do: round(service_secs / platform_secs * 100)
 
   # `Enum.sum/1` over a day with no block is the integer `0`, which `Float.round/2`
   # refuses, so a kilometre figure is a float whatever the day holds.

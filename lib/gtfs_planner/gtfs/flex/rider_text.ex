@@ -617,7 +617,7 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
   end
 
   defp deadline_text(%FlexBookingRule{when: :same_day} = rule),
-    do: "Book at least #{dur(rule.minutes)} before pickup#{horizon(rule)}"
+    do: "Book at least #{duration_words(rule.minutes)} before pickup#{horizon(rule)}"
 
   defp deadline_text(%FlexBookingRule{when: :earlier_day} = rule) do
     unit = if rule.business_days, do: "business day", else: "day"
@@ -639,7 +639,7 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
   end
 
   defp transit_line(%FlexBookingRule{when: :same_day} = rule),
-    do: "Book #{dur(rule.minutes)} ahead"
+    do: "Book #{duration_words(rule.minutes)} ahead"
 
   defp transit_line(%FlexBookingRule{}), do: "Book now"
 
@@ -663,7 +663,16 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
   defp days(%FlexBookingRule{days: days}) when is_integer(days), do: days
   defp days(%FlexBookingRule{}), do: 0
 
-  defp dur(minutes) do
+  @doc """
+  Returns a booking rule's notice as the long words riders read: `"30 minutes"`,
+  `"1 hour"`, `"1 hour 5 minutes"`.
+
+  Minutes under an hour stay in minutes, and a non-integer reads as `"0 minutes"`.
+  The flex checks quote this wording back in their contradiction message, so the
+  check and the exported `booking_rules.txt` line cannot drift apart.
+  """
+  @spec duration_words(term()) :: String.t()
+  def duration_words(minutes) do
     minutes = if is_integer(minutes), do: minutes, else: 0
 
     hours = div(minutes, 60)

@@ -350,7 +350,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
         <dt class="text-base-content/70">Paid break</dt>
         <dd>{@crew.paid_break_max_minutes} min or less</dd>
         <dt class="text-base-content/70">Longest spread</dt>
-        <dd>{duration(@crew.max_spread_minutes * 60)}, never exceeded</dd>
+        <dd>{Wording.duration(@crew.max_spread_minutes * 60)}, never exceeded</dd>
         <dt class="text-base-content/70">Report</dt>
         <dd>
           {@crew.report_pull_out_minutes} min before a pull-out, {@crew.report_relief_minutes} min before a relief
@@ -992,7 +992,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       label: "Uncovered work",
       count: trips,
       value: "#{trips} trips",
-      detail: duration(uncovered.secs),
+      detail: Wording.duration(uncovered.secs),
       tone: :warning
     }
   end
@@ -1167,7 +1167,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
         <.rule
           id="runs-rule-spread"
           label="Longest spread"
-          value={duration(@crew.max_spread_minutes * 60)}
+          value={Wording.duration(@crew.max_spread_minutes * 60)}
         />
       </dl>
     </.drawer>
@@ -1227,18 +1227,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
     "#{div(minutes, 60)}:#{pad(rem(minutes, 60))}"
   end
 
-  # Whole hours, then minutes only when there are some, so exactly two hours
-  # reads "2 h" rather than "2 h 0 min".
-  defp duration(secs) when is_integer(secs) do
-    minutes = div(secs, 60)
-
-    if rem(minutes, 60) == 0,
-      do: "#{div(minutes, 60)} h",
-      else: "#{div(minutes, 60)} h #{rem(minutes, 60)} min"
-  end
-
   defp piece_limit(nil), do: "Not set"
-  defp piece_limit(minutes), do: duration(minutes * 60)
+  defp piece_limit(minutes), do: Wording.duration(minutes * 60)
 
   # The count, because a reader deciding whether relief is set up needs the
   # number; the names beside it, because a count alone cannot be checked against
@@ -1257,7 +1247,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   defp uncovered_note(%{trips: 0}), do: nil
 
   defp uncovered_note(%{trips: _trips, secs: secs}),
-    do: "#{duration(secs)} on vehicles with no operator"
+    do: "#{Wording.duration(secs)} on vehicles with no operator"
 
   defp pad(minutes) when minutes < 10, do: "0" <> Integer.to_string(minutes)
   defp pad(minutes), do: Integer.to_string(minutes)
@@ -2069,7 +2059,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       <p id="run-drawer-summary" class="text-sm text-base-content/70">
         {run_type_label(@run.work.type)} &middot; {length(@run.pieces)} {if length(@run.pieces) == 1,
           do: "piece",
-          else: "pieces"} &middot; {duration(@run.work.spread_secs)} spread &middot; {duration(
+          else: "pieces"} &middot; {Wording.duration(@run.work.spread_secs)} spread &middot; {Wording.duration(
           @run.work.paid_secs
         )} paid
       </p>
@@ -2144,7 +2134,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
               <td class="runs-uncovered-td tabular-nums" data-role="piece-time">
                 {GtfsTime.display(piece.start_secs)}&ndash;{GtfsTime.display(piece.end_secs)}
                 <div class="text-[13px] text-base-content/70">
-                  {duration(piece.end_secs - piece.start_secs)}
+                  {Wording.duration(piece.end_secs - piece.start_secs)}
                 </div>
               </td>
               <td class="runs-uncovered-td" data-role="piece-places">
@@ -2324,7 +2314,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
               data-role="pay-unpaid-length"
               class="text-base-content/70"
             >
-              ({duration(segment.end_secs - segment.start_secs)})
+              ({Wording.duration(segment.end_secs - segment.start_secs)})
             </span>
           </td>
           <td
@@ -2333,7 +2323,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
             data-paid={to_string(segment.paid? and segment.end_secs >= segment.start_secs)}
           >
             <span :if={segment.paid? and segment.end_secs >= segment.start_secs}>
-              {duration(segment.end_secs - segment.start_secs)}
+              {Wording.duration(segment.end_secs - segment.start_secs)}
             </span>
           </td>
         </tr>
@@ -2346,7 +2336,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
             data-role="pay-total"
             data-secs={@work.paid_secs}
           >
-            {duration(@work.paid_secs)}
+            {Wording.duration(@work.paid_secs)}
           </td>
         </tr>
       </tbody>
@@ -2508,11 +2498,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   end
 
   defp finding_detail(%{code: :piece_too_long, detail: %{secs: secs, limit_secs: limit}}) do
-    "#{duration(secs)} against a limit of #{duration(limit)}."
+    "#{Wording.duration(secs)} against a limit of #{Wording.duration(limit)}."
   end
 
   defp finding_detail(%{code: :spread_too_long, detail: %{secs: secs, limit_secs: limit}}) do
-    "#{duration(secs)} spread against a limit of #{duration(limit)}."
+    "#{Wording.duration(secs)} spread against a limit of #{Wording.duration(limit)}."
   end
 
   defp finding_detail(_finding), do: nil
@@ -2607,7 +2597,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
     ~H"""
     <div :if={@segments != []} id="runs-uncovered-callout" class="mt-3">
       <.callout kind="warning" title={"#{uncovered_trip_count(@segments)} trips are not in a run."}>
-        {duration(@duration_secs)} of vehicle work has no operator.
+        {Wording.duration(@duration_secs)} of vehicle work has no operator.
         <div class="mt-2">
           <button
             type="button"
@@ -2709,7 +2699,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
               <td class="runs-uncovered-td tabular-nums" data-role="uncovered-time">
                 {GtfsTime.display(segment.start_secs)}&ndash;{GtfsTime.display(segment.end_secs)}
                 <div class="text-[13px] text-base-content/70">
-                  {duration(segment.end_secs - segment.start_secs)} on the vehicle
+                  {Wording.duration(segment.end_secs - segment.start_secs)} on the vehicle
                 </div>
               </td>
               <td class="runs-uncovered-td" data-role="uncovered-places">
@@ -3498,24 +3488,24 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   defp mark_label(_segment, _kind), do: nil
 
   defp mark_title(%{kind: :report, start_secs: from, end_secs: to}, _kind),
-    do: "Report, #{duration(to - from)}, ending #{GtfsTime.display(to)}"
+    do: "Report, #{Wording.duration(to - from)}, ending #{GtfsTime.display(to)}"
 
   defp mark_title(%{kind: :sign_off, start_secs: from, end_secs: to}, _kind),
-    do: "Sign-off, #{duration(to - from)}, from #{GtfsTime.display(from)}"
+    do: "Sign-off, #{Wording.duration(to - from)}, from #{GtfsTime.display(from)}"
 
   defp mark_title(%{kind: :travel, start_secs: from, end_secs: to} = segment, _kind) do
-    "Travel, #{duration(to - from)}, estimated" <> unknown_note(segment.source)
+    "Travel, #{Wording.duration(to - from)}, estimated" <> unknown_note(segment.source)
   end
 
   defp mark_title(%{kind: :break, paid?: true} = segment, "break-paid"),
-    do: "Paid break, #{duration(segment.end_secs - segment.start_secs)}"
+    do: "Paid break, #{Wording.duration(segment.end_secs - segment.start_secs)}"
 
   defp mark_title(%{kind: :break, paid?: false} = segment, "break-unpaid"),
-    do: "Unpaid break, #{duration(segment.end_secs - segment.start_secs)}"
+    do: "Unpaid break, #{Wording.duration(segment.end_secs - segment.start_secs)}"
 
   defp mark_title(%{kind: :break} = segment, "cant-reach"),
     do:
-      "Can't reach the next piece in time, #{duration(abs(segment.end_secs - segment.start_secs))} short"
+      "Can't reach the next piece in time, #{Wording.duration(abs(segment.end_secs - segment.start_secs))} short"
 
   defp mark_title(_segment, _kind), do: ""
 

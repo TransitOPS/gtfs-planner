@@ -443,6 +443,23 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPlanSummaryLiveTest do
 
       refute has_element?(view, "#plan-summary-relief-note", "no place to change operators")
     end
+
+    test "a limit over an hour reads as whole hours", %{version: version} = context do
+      seed_plan!(context, cutaways: 4)
+
+      update_settings(editor_audit_fixture(context.organization.id, version.id), %{
+        max_piece_minutes: 600
+      })
+
+      {:ok, view, _html} = live(editor_conn(context), blocks_path(version.id))
+
+      view |> element("#blocks-summary-figures-item-vehicles") |> render_click()
+
+      # 600 stored minutes is 10 h. The limit is stored in minutes and the
+      # canonical duration helper takes seconds, so a caller that forgot the
+      # conversion would read "10 min" here.
+      assert has_element?(view, "#plan-summary-relief-note", "Limit 10 h · 0 stops marked.")
+    end
   end
 
   # The day's plan: one garage named "Main" and two vehicle types. `cutaways` and

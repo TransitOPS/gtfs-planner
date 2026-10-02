@@ -911,7 +911,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
 
   defp notice_suffix(%FlexBookingRule{when: :same_day, minutes: minutes})
        when is_integer(minutes),
-       do: ", #{duration_short(minutes)} ahead"
+       do: ", #{Wording.duration(minutes * 60)} ahead"
 
   defp notice_suffix(%FlexBookingRule{when: :earlier_day, days: days, by: by} = rule)
        when is_integer(days) do
@@ -922,11 +922,6 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   end
 
   defp notice_suffix(%FlexBookingRule{}), do: ""
-
-  defp duration_short(minutes) when minutes >= 60 and rem(minutes, 60) == 0,
-    do: "#{div(minutes, 60)} hr"
-
-  defp duration_short(minutes), do: "#{minutes} min"
 
   # --- the service page (AC-5) -------------------------------------------------
 

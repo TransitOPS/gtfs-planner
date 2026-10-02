@@ -1580,7 +1580,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               </dd>
             </dl>
             <p id="plan-summary-relief-note" class="mt-2 text-[13px] text-muted">
-              Limit {duration(@max_piece_minutes)} · {Wording.count_noun(@relief_stop_count, "stop")} marked.{too_long_note(
+              Limit {Wording.duration(@max_piece_minutes * 60)} · {Wording.count_noun(
+                @relief_stop_count,
+                "stop"
+              )} marked.{too_long_note(
                 @longest_stretch,
                 @max_piece_minutes
               )}
@@ -4663,10 +4666,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp pull_detail(%{drive_secs: nil}, _to, :back), do: "Driving time unknown"
 
   defp pull_detail(%{drive_secs: secs, source: source}, to, :out),
-    do: "#{minutes(secs)}#{est_mark(source)} to #{to}"
+    do: "#{Wording.duration(secs)}#{est_mark(source)} to #{to}"
 
   defp pull_detail(%{drive_secs: secs, source: source}, _to, :back),
-    do: "#{minutes(secs)}#{est_mark(source)}"
+    do: "#{Wording.duration(secs)}#{est_mark(source)}"
 
   defp trip_row(trip, routes, note \\ nil) do
     stops = "#{stop_name(trip.first_stop)} → #{stop_name(trip.last_stop)}"
@@ -4725,13 +4728,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     detail =
       cond do
         error? ->
-          "! Needs #{minutes(movement.drive_secs)}; has #{div(gap.gap_secs, 60)}"
+          "! Needs #{Wording.duration(movement.drive_secs)}; has #{div(gap.gap_secs, 60)}"
 
         movement.drive_secs == nil ->
           "Driving time unknown"
 
         true ->
-          "#{minutes(movement.drive_secs)}#{est_mark(movement.source)}"
+          "#{Wording.duration(movement.drive_secs)}#{est_mark(movement.source)}"
       end
 
     %{
@@ -4750,7 +4753,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       kind: :overlap,
       time: GtfsTime.display(movement.arrival_secs),
       activity: "Overlap",
-      detail: "#{minutes(-gap.gap_secs)} overlap",
+      detail: "#{Wording.duration(-gap.gap_secs)} overlap",
       error?: true,
       trip: nil,
       gap: gap
@@ -4862,23 +4865,24 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # distance and the time available, the deadhead with the drive it needs, or a
   # drive the vehicle cannot make in time.
   defp gap_text(%{gap_secs: secs}, _from, _to, _movement) when secs < 0,
-    do: "#{minutes(-secs)} overlap"
+    do: "#{Wording.duration(-secs)} overlap"
 
   # The gap the vehicle cannot cover: the drive it needs against the time there is,
   # which is the sentence the drawer leads with. The minutes are the movement's own
   # drive and the block's own gap, not a subtraction here.
   defp gap_text(%{gap_secs: secs}, _from, to, %{feasible?: false, drive_secs: drive})
        when is_integer(drive),
-       do: "Needs #{minutes(drive)} to reach #{stop_name(to.first_stop)}; has #{minutes(secs)}."
+       do:
+         "Needs #{Wording.duration(drive)} to reach #{stop_name(to.first_stop)}; has #{Wording.duration(secs)}."
 
   defp gap_text(%{handoff: :same_stop, gap_secs: secs}, _from, to, _movement),
-    do: "#{minutes(secs)} layover at #{stop_name(to.first_stop)}"
+    do: "#{Wording.duration(secs)} layover at #{stop_name(to.first_stop)}"
 
   defp gap_text(%{handoff: :same_station, gap_secs: secs}, from, _to, _movement),
-    do: "Same station · #{minutes(secs)} at #{station_name(from.last_stop)}"
+    do: "Same station · #{Wording.duration(secs)} at #{station_name(from.last_stop)}"
 
   defp gap_text(%{handoff: {:nearby, meters}, gap_secs: secs}, _from, _to, _movement),
-    do: "Nearby stop · #{meters} m · #{minutes(secs)} available"
+    do: "Nearby stop · #{meters} m · #{Wording.duration(secs)} available"
 
   defp gap_text(%{handoff: {:moves, nil}}, from, to, _movement),
     do: move_text(from, to, " (no coordinates)")
@@ -5197,14 +5201,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # time available to speak of — its own callout prints the overlap — so the row
   # says so rather than printing a negative number of minutes.
   defp available_text(%{gap_secs: secs}) when secs < 0, do: "—"
-  defp available_text(%{gap_secs: secs}), do: minutes(secs)
+  defp available_text(%{gap_secs: secs}), do: Wording.duration(secs)
 
   # The drive without riders, with the source the movement carries. A gap that
   # needs no drive names the handoff that made it, and a drive whose time the
   # version cannot compute says so rather than printing a zero, because a zero
   # would read as a drive that costs nothing.
   defp drive_text(%{kind: :layover}, %{handoff: handoff}), do: "None · #{handoff_label(handoff)}"
-  defp drive_text(%{drive_secs: secs}, _gap) when is_integer(secs), do: minutes(secs)
+  defp drive_text(%{drive_secs: secs}, _gap) when is_integer(secs), do: Wording.duration(secs)
   defp drive_text(_movement, _gap), do: "Unknown · no driving time"
 
   defp handoff_label(:same_stop), do: "same stop"
@@ -5226,13 +5230,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp drive_badge_tone(%{source: :entered}), do: :success
   defp drive_badge_tone(_movement), do: :neutral
 
-  defp drive_minutes(%{drive_secs: secs}) when is_integer(secs), do: minutes(secs)
+  defp drive_minutes(%{drive_secs: secs}) when is_integer(secs), do: Wording.duration(secs)
   defp drive_minutes(_movement), do: "an unknown number of"
 
   # The wait a reachable gap leaves behind. A drive the vehicle cannot make and a
   # drive whose length is unknown both leave no wait to report, so the row says so
   # rather than printing a number the movements never derived.
-  defp wait_text(%{wait_secs: secs}) when is_integer(secs) and secs >= 0, do: minutes(secs)
+  defp wait_text(%{wait_secs: secs}) when is_integer(secs) and secs >= 0,
+    do: Wording.duration(secs)
 
   defp wait_text(_movement), do: "—"
 
@@ -7996,7 +8001,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     Enum.filter(block.trips, &visible?(&1, route_filter))
   end
 
-  defp gap_label(%{gap_secs: secs}) when secs >= 0, do: minutes(secs)
+  defp gap_label(%{gap_secs: secs}) when secs >= 0, do: Wording.duration(secs)
   defp gap_label(%{gap_secs: secs}), do: "Overlap #{div(-secs, 60)} min"
 
   # The Schedules page for a trip's route, narrowed to the trip's own calendar
@@ -8834,7 +8839,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   defp too_long_note(%{secs: secs, block_id: block_id}, limit) when is_integer(limit) do
     if secs > limit * 60 do
-      " Block #{block_id} has no place to change operators for #{duration(div(secs, 60))}."
+      " Block #{block_id} has no place to change operators for #{Wording.duration(secs)}."
     else
       ""
     end
@@ -8845,15 +8850,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp stretch_label(nil), do: "—"
 
   defp stretch_label(%{secs: secs, block_id: block_id}) do
-    "#{duration(div(secs, 60))} in block #{block_id}"
-  end
-
-  # Whole hours, then minutes only when there are some, so a stretch of exactly
-  # two hours reads "2 h" rather than "2 h 0 min".
-  defp duration(minutes) when rem(minutes, 60) == 0, do: "#{div(minutes, 60)} h"
-
-  defp duration(minutes) do
-    "#{div(minutes, 60)} h #{rem(minutes, 60)} min"
+    "#{Wording.duration(secs)} in block #{block_id}"
   end
 
   @doc """
@@ -8865,8 +8862,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   zero height rather than a division by zero.
   """
   @spec bar_height(non_neg_integer(), non_neg_integer()) :: non_neg_integer()
-  def bar_height(_count, 0), do: 0
-  def bar_height(count, max), do: round(count / max * 100)
+  def bar_height(count, max), do: Wording.percent(count, max)
 
   defp month_groups(dates) do
     dates
@@ -8940,16 +8936,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp code_label(code), do: code_meta(code).label
 
   defp finding_detail(%{code: :cannot_reach, detail: %{drive_secs: drive, gap_secs: secs}}) do
-    "The drive between these two trips needs #{minutes(drive)} and there are #{minutes(secs)}."
+    "The drive between these two trips needs #{Wording.duration(drive)} and there are #{Wording.duration(secs)}."
   end
 
   defp finding_detail(%{code: :too_long, detail: detail}) do
-    "The vehicle is out of the garage #{duration(div(detail.platform_secs, 60))}; the limit is #{minutes(detail.limit_minutes)}."
+    "The vehicle is out of the garage #{Wording.duration(detail.platform_secs)}; the limit is #{Wording.duration(detail.limit_minutes * 60)}."
   end
 
   defp finding_detail(%{code: :no_relief_opportunity, detail: detail}) do
-    "The vehicle runs #{duration(div(detail.secs, 60))} with no place to change operators; " <>
-      "the limit is #{minutes(detail.limit_secs)}."
+    "The vehicle runs #{Wording.duration(detail.secs)} with no place to change operators; " <>
+      "the limit is #{Wording.duration(detail.limit_secs)}."
   end
 
   defp finding_detail(%{code: :type_mismatch}) do
@@ -8965,21 +8961,21 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   defp finding_detail(%{code: :overlap, detail: %{overlap_secs: secs}}) do
-    "Two trips in this block overlap by #{minutes(secs)}."
+    "Two trips in this block overlap by #{Wording.duration(secs)}."
   end
 
   defp finding_detail(%{code: :short_layover, detail: %{gap_secs: secs}}) do
-    "Only #{minutes(secs)} between two trips in this block."
+    "Only #{Wording.duration(secs)} between two trips in this block."
   end
 
   defp finding_detail(%{code: :repositions, detail: %{meters: nil} = detail}) do
-    "The vehicle drives empty with #{minutes(detail.gap_secs)} available. " <>
+    "The vehicle drives empty with #{Wording.duration(detail.gap_secs)} available. " <>
       "The driving time is unknown."
   end
 
   defp finding_detail(%{code: :repositions, detail: detail}) do
     "The vehicle drives empty about #{distance_label(detail.meters)} with " <>
-      "#{minutes(detail.gap_secs)} available."
+      "#{Wording.duration(detail.gap_secs)} available."
   end
 
   defp finding_detail(%{code: :frequency_trip, detail: %{headway_secs: secs}}) do
@@ -9081,8 +9077,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp remove_record_setting(_type), do: "riders must get off and board again"
 
   defp frequency_title(%{headway_secs: secs}), do: "Repeats every #{div(secs, 60)} min."
-
-  defp minutes(secs) when is_integer(secs), do: "#{div(secs, 60)} min"
 
   # The trip drawer's title: when the trip leaves and where it is headed, which is
   # what an operator calls it; a trip with no departure time falls back to its
@@ -9385,15 +9379,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   # A gap's hover text: how long it is and what kind of handoff it is.
   defp gap_hover(%{handoff: {:moves, _}} = gap),
-    do: "#{minutes(gap.gap_secs)} gap · deadhead, the vehicle drives empty"
+    do: "#{Wording.duration(gap.gap_secs)} gap · deadhead, the vehicle drives empty"
 
-  defp gap_hover(%{handoff: :same_stop} = gap), do: "#{minutes(gap.gap_secs)} gap · same stop"
+  defp gap_hover(%{handoff: :same_stop} = gap),
+    do: "#{Wording.duration(gap.gap_secs)} gap · same stop"
 
   defp gap_hover(%{handoff: :same_station} = gap),
-    do: "#{minutes(gap.gap_secs)} gap · same station"
+    do: "#{Wording.duration(gap.gap_secs)} gap · same station"
 
   defp gap_hover(%{handoff: {:nearby, meters}} = gap),
-    do: "#{minutes(gap.gap_secs)} gap · nearby stop, #{meters} m"
+    do: "#{Wording.duration(gap.gap_secs)} gap · nearby stop, #{meters} m"
 
   # A decided gap's title names the decision beside the gap's own handoff text,
   # so the chip's icon is never the only thing that says what it means.
@@ -9408,8 +9403,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # Copy for where a driving time came from. An entered time is a human's known
   # route, an estimate is this version's own guess and an unknown is neither, so
   # the three never read alike.
-  defp source_phrase(:entered, seconds), do: "#{minutes(seconds)} entered"
-  defp source_phrase(:estimated, seconds), do: "#{minutes(seconds)} estimated"
+  defp source_phrase(:entered, seconds), do: "#{Wording.duration(seconds)} entered"
+  defp source_phrase(:estimated, seconds), do: "#{Wording.duration(seconds)} estimated"
   defp source_phrase(_unknown, _seconds), do: "driving time unknown"
 
   defp pull_title(pull, garage, :out) do
@@ -9426,8 +9421,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp garage_label(name), do: "#{name} garage"
 
   defp drive_title(%{feasible?: false} = gap, _from, to) do
-    "Can't reach #{stop_name(to.first_stop)} · needs #{minutes(gap.drive_secs)} " <>
-      "to get there, has #{minutes(gap.gap_secs)}"
+    "Can't reach #{stop_name(to.first_stop)} · needs #{Wording.duration(gap.drive_secs)} " <>
+      "to get there, has #{Wording.duration(gap.gap_secs)}"
   end
 
   defp drive_title(%{kind: :unknown} = gap, from, to) do
@@ -9440,7 +9435,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     "Drive to #{stop_name(to.first_stop)} · " <>
       "#{GtfsTime.display(gap.arrival_secs)}–#{GtfsTime.display(gap.arrival_secs + gap.drive_secs)}, " <>
       "#{source_phrase(gap.source, gap.drive_secs)}, then wait " <>
-      "#{minutes(gap.wait_secs)}"
+      "#{Wording.duration(gap.wait_secs)}"
   end
 
   # --- the assignment form and the review --------------------------

@@ -260,6 +260,35 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSummaryLiveTest do
              )
     end
 
+    test "a sub-hour piece of uncovered work reads in minutes, not hours", context do
+      world = two_runs(context)
+      [first | _] = world.blocks["101"]
+
+      # A third block with one 45-minute trip, left unassigned, so the tile's own
+      # figure is exactly 2700 s. Under an hour, the duration reads "45 min"; the
+      # minutes-in copies this step replaced read "0 h 45 min".
+      blocked_trip_fixture(world.organization.id, world.version.id, first.route_id, %{
+        trip_id: "G1",
+        service_id: "WK",
+        block_id: "103",
+        first_stop: "BAY_A",
+        last_stop: "BAY_A",
+        first_departure: "14:00:00",
+        last_arrival: "14:45:00"
+      })
+
+      view = signed_in(context, world)
+      stats = derived(world).derived.stats
+
+      assert stats.uncovered.trips == 1
+      assert stats.uncovered.secs == 2700
+
+      tile = view |> element("#runs-count-strip-item-uncovered") |> render()
+
+      assert tile =~ "45 min"
+      refute tile =~ "0 h 45 min"
+    end
+
     test "the tiles are buttons that name their own action", context do
       world = two_runs(context)
       view = signed_in(context, world)
