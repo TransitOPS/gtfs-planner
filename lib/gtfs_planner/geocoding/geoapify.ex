@@ -141,7 +141,9 @@ defmodule GtfsPlanner.Geocoding.Geoapify do
       lon: lon,
       type: type,
       limit: @reverse_limit,
-      format: "json",
+      # GeoJSON is the shape `parse_places/1` reads (`features[].properties`);
+      # `format: "json"` answers with a flat `results` list instead.
+      format: "geojson",
       filter: "countrycode:us",
       apiKey: api_key
     }

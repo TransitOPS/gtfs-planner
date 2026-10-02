@@ -139,6 +139,7 @@ defmodule GtfsPlanner.Geocoding.GeoapifyReverseTest do
         assert params["lon"] == to_string(@lon)
         assert params["type"] == "street"
         assert params["limit"] == "5"
+        assert params["format"] == "geojson"
         assert params["apiKey"] == @test_key
 
         Req.Test.json(conn, feature_collection())
