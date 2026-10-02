@@ -66,6 +66,27 @@ async function versionIdFor(page, versionName) {
   return versionId;
 }
 
+// Reloads the page and waits for its LiveView to join, for the same reason.
+async function reloadLive(page) {
+  await page.reload();
+  await page.waitForLoadState("load");
+
+  if (await page.locator("[data-phx-main]").count()) {
+    await waitForLiveConnected(page);
+  }
+}
+
+// Opens an app page and waits for its LiveView to join, so the first click or
+// keystroke is not lost to the gap between the server's draw and the join.
+async function gotoLive(page, url) {
+  await page.goto(url);
+  await page.waitForLoadState("load");
+
+  if (await page.locator("[data-phx-main]").count()) {
+    await waitForLiveConnected(page);
+  }
+}
+
 // The page is drawn by the server before its socket joins, and a tab or link
 // clicked in that gap is followed as a plain link and reloads the page. A
 // journey that interacts waits for the join first.
@@ -76,7 +97,7 @@ async function waitForLiveConnected(page) {
 async function openAlerts(page, account = EDITOR) {
   await logIn(page, account);
   const versionId = await versionIdFor(page, ALERTS_VERSION);
-  await page.goto(`/gtfs/${versionId}/alerts`);
+  await gotoLive(page, `/gtfs/${versionId}/alerts`);
   await page.waitForSelector(
     "#alerts-first-use, #alerts-list, #alerts-tab-empty-current",
     { timeout: 15000 },
@@ -88,7 +109,7 @@ async function openAlerts(page, account = EDITOR) {
 async function openFirstUseAlerts(page) {
   await logIn(page, EMPTY_EDITOR);
   const versionId = await versionIdFor(page, "Browser Pathways Version");
-  await page.goto(`/gtfs/${versionId}/alerts`);
+  await gotoLive(page, `/gtfs/${versionId}/alerts`);
   await page.waitForSelector("#alerts-first-use", { timeout: 15000 });
   await waitForLiveConnected(page);
   return versionId;
@@ -146,6 +167,10 @@ async function captureAssistantReference(page, testInfo, state, width) {
 }
 
 test.describe("alerts list", () => {
+  // The first journey signs in against a freshly booted server, which pays for
+  // the asset digest and the route table on its first request.
+  test.describe.configure({ timeout: 120_000 });
+
   test("the seeded current tab lists alerts with counts at both widths @list", async ({
     page,
   }, testInfo) => {
@@ -280,7 +305,7 @@ async function editorVersionId(page) {
 
 async function openNewAlert(page) {
   const versionId = await editorVersionId(page);
-  await page.goto(`/gtfs/${versionId}/alerts/new`);
+  await gotoLive(page, `/gtfs/${versionId}/alerts/new`);
   await page.waitForSelector("#alert-question", { timeout: 15000 });
   await waitForLiveConnected(page);
   return versionId;
@@ -297,7 +322,7 @@ async function openCreatedAlert(page, step) {
 
   const url = page.url().split("?")[0];
   if (step) {
-    await page.goto(`${url}?mode=form&step=${step}`);
+    await gotoLive(page, `${url}?mode=form&step=${step}`);
     await page.waitForSelector("#alert-question", { timeout: 15000 });
     await waitForLiveConnected(page);
   }
@@ -374,7 +399,7 @@ test.describe("alert editor shell", () => {
 
     // The same URL after a reload is the same question, which is what makes the
     // mode and step addressable.
-    await page.reload();
+    await reloadLive(page);
     await expect(page.locator("#alert-question-title")).toHaveText(
       "What is happening?",
     );
@@ -412,7 +437,7 @@ test.describe("alert editor shell", () => {
     for (const href of steps) expect(href).toContain("step=");
 
     // Reloading that URL returns the same question.
-    await page.goto(`${url}?mode=form&step=situation`);
+    await gotoLive(page, `${url}?mode=form&step=situation`);
     await page.waitForSelector("#alert-question");
     await expect(page.locator("#alert-step-situation")).toHaveAttribute(
       "aria-current",
@@ -434,7 +459,7 @@ test.describe("alert editor shell", () => {
 
     // The assistant mode is not the reader's stored default, so the editor
     // offers to store it.
-    await page.goto(`${page.url().split("?")[0]}?mode=assistant`);
+    await gotoLive(page, `${page.url().split("?")[0]}?mode=assistant`);
     await page.waitForSelector("#alert-assistant");
     await expect(page.locator("#make-default-mode")).toBeVisible();
 
@@ -444,7 +469,7 @@ test.describe("alert editor shell", () => {
 
     // Storing assistant as the default means the form mode is now the one that
     // offers itself as the default.
-    await page.goto(`${page.url().split("?")[0]}?mode=form`);
+    await gotoLive(page, `${page.url().split("?")[0]}?mode=form`);
     await page.waitForSelector("#alert-question");
     await expect(page.locator("#make-default-mode")).toBeVisible();
     await page.locator("#make-default-mode").click();
@@ -519,7 +544,9 @@ async function openMessageAlert(page) {
     // The row's own link is what says the tab holds an alert. Waiting for the
     // stream's container instead would pass on a tab with no rows in it, and
     // the wait is bounded per tab so an empty one moves on to the next.
-    const row_link = page.locator("a[id^='alert-link-']").first();
+    const row_link = page
+      .locator("a[id^='alert-link-']:visible, a[id^='alert-card-link-']:visible")
+      .first();
 
     if (await row_link.waitFor({ state: "visible", timeout: 5_000 }).then(() => true, () => false)) {
       await row_link.click();
@@ -531,7 +558,7 @@ async function openMessageAlert(page) {
   await waitForLiveConnected(page);
 
   const url = page.url().split("?")[0];
-  await page.goto(`${url}?mode=form&step=message`);
+  await gotoLive(page, `${url}?mode=form&step=message`);
   await page.waitForSelector("#message-header", { timeout: 15_000 });
   await waitForLiveConnected(page);
 
@@ -560,7 +587,7 @@ test.describe("alert autosave", () => {
 
     // The same URL after a reload is the same question with the same answer:
     // the draft is on the server, not in the browser.
-    await page.reload();
+    await reloadLive(page);
     await page.waitForSelector("#message-header", { timeout: 15000 });
     await expect(page.locator("#message-header")).toHaveValue(
       "Route 12 detour: Harbor Hospital stop not served",
@@ -610,7 +637,7 @@ test.describe("alert autosave", () => {
     await settledWrite(page, () =>
       page.locator("#message-header").fill("Reloaded quickly header"),
     );
-    await page.reload();
+    await reloadLive(page);
     await page.waitForSelector("#message-header", { timeout: 15000 });
 
     await expect(page.locator("#message-header")).toHaveValue(
@@ -639,13 +666,16 @@ test.describe("alert autosave", () => {
       path: capturePath(testInfo, "autosave-failure-1440.png"),
       fullPage: false,
     });
-    await captureAutosaveReference(page, testInfo, "form-message", "1440");
 
     // Fixing the address saves it, which is what Retry's presence promised.
     await settledWrite(page, () =>
       page.locator("#message-url").fill("https://example.test/notice"),
     );
     await expect(page.locator("#alert-save-retry")).toHaveCount(0);
+
+    // The reference capture leaves the app for the prototype's file, so it is
+    // the last thing the journey does.
+    await captureAutosaveReference(page, testInfo, "form-message", "1440");
   });
 
   test("a stale save offers Load latest and Save as new alert, and nothing else @autosave", async ({
@@ -657,7 +687,7 @@ test.describe("alert autosave", () => {
     // A second tab holds the same alert at the same revision and saves first,
     // which is the interleaving AC-16 describes.
     const other = await page.context().newPage();
-    await other.goto(`${url}?mode=form&step=message`);
+    await gotoLive(other, `${url}?mode=form&step=message`);
     await other.waitForSelector("#message-header", { timeout: 15000 });
     await waitForLiveConnected(other);
     await settledWrite(other, () =>
@@ -695,7 +725,7 @@ test.describe("alert autosave", () => {
     const url = await openMessageAlert(page);
 
     const other = await page.context().newPage();
-    await other.goto(`${url}?mode=form&step=message`);
+    await gotoLive(other, `${url}?mode=form&step=message`);
     await other.waitForSelector("#message-header", { timeout: 15000 });
     await waitForLiveConnected(other);
     await settledWrite(other, () =>
@@ -864,7 +894,7 @@ test.describe("alert choice questions", () => {
     );
 
     // Back is navigation: the answer is still on the row behind it.
-    await page.goto(`${url}?mode=form&step=situation`);
+    await gotoLive(page, `${url}?mode=form&step=situation`);
     await page.waitForSelector("#situation-detour", { timeout: 15_000 });
     await expect(page.locator("#situation-detour")).toHaveAttribute(
       "aria-pressed",
@@ -1309,7 +1339,7 @@ test.describe("alert cancelled departures", () => {
 
     // The three pairs are on the row, not only in the browser: a reload draws the
     // two dates again from what was stored, each with its own choices.
-    await page.reload();
+    await reloadLive(page);
     await page.waitForSelector("#alert-departures", { timeout: 15_000 });
     await expect(page.locator("input[id^='alert-departure-']:checked")).toHaveCount(3);
     await expect(
@@ -1656,15 +1686,6 @@ async function captureReasonReference(page, testInfo, state, width) {
   });
 }
 
-// The editor composes every autosave against the base revision in a hidden
-// field, so two edits sent before the first lands are both refused as stale
-// (R6, AC-11). Waiting for that hidden value to move is waiting for the write
-// to have landed, which is what keeps this journey from racing itself.
-async function waitForSave(page) {
-  const before = await page.locator('input[name="alert[revision]"]').inputValue();
-  await expect(page.locator('input[name="alert[revision]"]')).not.toHaveValue(before);
-}
-
 // A delay is the shortest sequence that reaches the reason question: urgency,
 // situation, mode, routes, direction, timing - so this journey walks the
 // editor's own flow and answers the timing question rather than opening a URL
@@ -1674,15 +1695,19 @@ async function openReason(page) {
 
   // An estimate keeps the alert live, so the timing answer is a start date, a
   // clock time and a check-in, and Continue carries the reader on from there.
-  await page.locator("#alert-timing-end-kind-estimated").click();
-  await page.locator("#timing-check-in").selectOption({ index: 2 });
-  await waitForSave(page);
-
-  await page.locator("#timing-start-date").fill("2026-10-01");
-  await waitForSave(page);
-
-  await page.locator("#timing-start-time").fill("08:00");
-  await waitForSave(page);
+  await settledWrite(page, () =>
+    page.locator("#alert-timing-end-kind-estimated").click(),
+  );
+  await expect(page.locator("#timing-check-in")).toBeVisible();
+  await settledWrite(page, () =>
+    page.locator("#timing-check-in").selectOption({ index: 2 }),
+  );
+  await settledWrite(page, () =>
+    page.locator("#timing-start-date").fill("2026-10-01"),
+  );
+  await settledWrite(page, () =>
+    page.locator("#timing-start-time").fill("08:00"),
+  );
 
   await page.locator("#alert-timing-continue").click();
 
@@ -1742,16 +1767,15 @@ test.describe("alert reason", () => {
     // The description belongs to the other reason, so the field appears with it
     // and not before.
     await expect(page.locator("#cause-detail")).toHaveCount(0);
-    await page.locator("#alert-cause-other_cause").click();
+    await settledWrite(page, () => page.locator("#alert-cause-other_cause").click());
     await expect(page.locator("#cause-detail")).toBeVisible();
-    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
 
-    await page.locator("#cause-detail").fill("a fallen tree across the tracks");
+    await settledWrite(page, () =>
+      page.locator("#cause-detail").fill("a fallen tree across the tracks"),
+    );
     await expect(page.locator("#cause-detail")).toHaveValue(
       "a fallen tree across the tracks",
     );
-    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
-    await waitForSave(page);
 
     await page.screenshot({
       path: capturePath(testInfo, "reason-other-1440.png"),
@@ -1760,7 +1784,7 @@ test.describe("alert reason", () => {
 
     // The explanation is stored, so it is still on screen after the page comes
     // back rather than only in this session's memory.
-    await page.reload();
+    await reloadLive(page);
     await page.waitForSelector("#cause-detail", { timeout: 15_000 });
     await expect(page.locator("#cause-detail")).toHaveValue(
       "a fallen tree across the tracks",
@@ -1772,8 +1796,8 @@ test.describe("alert reason", () => {
       "Check the message for riders",
     );
 
-    await page.reload();
-    await page.goto(page.url().replace(/step=[a-z_]+/, "step=reason"));
+    await reloadLive(page);
+    await gotoLive(page, page.url().replace(/step=[a-z_]+/, "step=reason"));
     await page.waitForSelector("#alert-cause", { timeout: 15_000 });
     await expect(page.locator("#cause-detail")).toHaveCount(0);
     await expect(page.locator("#alert-cause-unknown_cause")).toHaveAttribute(
@@ -1906,11 +1930,10 @@ test.describe("alert message", () => {
     // A header longer than the advisory limit is advised about and still saves.
     const long =
       "Route 1 detour overnight while Highway 101 is repaved near the depot";
-    await page.locator("#message-header").fill(long);
-    await expect(page.locator("#message-header")).toHaveValue(long);
     // The checks are recomputed from the stored answer, so wait for the write
     // rather than for the keystroke.
-    await waitForSave(page);
+    await settledWrite(page, () => page.locator("#message-header").fill(long));
+    await expect(page.locator("#message-header")).toHaveValue(long);
     await expect(page.locator("#message-check-short")).toContainText(
       "Apps may cut it off after about 60",
     );
@@ -1925,13 +1948,12 @@ test.describe("alert message", () => {
     // which changes the fact the text was generated from. A full page load
     // leaves the view connecting, and a change made before it is mounted is
     // never sent, so wait for the editor to be live before typing into it.
-    await page.goto(messageUrl.replace(/step=[a-z_]+/, "step=timing"));
+    await gotoLive(page, messageUrl.replace(/step=[a-z_]+/, "step=timing"));
     await waitForEditorMounted(page);
     await page.waitForSelector("#timing-start-time", { timeout: 15_000 });
-    await page.locator("#timing-start-time").fill("09:00");
-    await waitForSave(page);
+    await settledWrite(page, () => page.locator("#timing-start-time").fill("09:00"));
 
-    await page.goto(messageUrl.replace(/step=[a-z_]+/, "step=message"));
+    await gotoLive(page, messageUrl.replace(/step=[a-z_]+/, "step=message"));
     await waitForEditorMounted(page);
     await page.waitForSelector("#review-wording", { timeout: 15_000 });
 
@@ -2022,12 +2044,11 @@ async function openReview(page) {
 async function openIncompleteReview(page) {
   const url = await openReview(page);
 
-  await page.goto(url.replace(/step=[a-z_]+/, "step=message"));
+  await gotoLive(page, url.replace(/step=[a-z_]+/, "step=message"));
   await waitForEditorMounted(page);
-  await page.locator("#message-header").fill("");
-  await waitForSave(page);
+  await settledWrite(page, () => page.locator("#message-header").fill(""));
 
-  await page.goto(url.replace(/step=[a-z_]+/, "step=review"));
+  await gotoLive(page, url.replace(/step=[a-z_]+/, "step=review"));
   await waitForEditorMounted(page);
   await page.locator("#save-alert").click();
   await page.waitForSelector("#review-errors", { timeout: 15_000 });
@@ -2198,7 +2219,7 @@ async function openAlertSettings(page, tab = "scripts") {
 // sign-in journey and goes straight to the page under test.
 async function openAlertSettingsSignedIn(page, tab = "scripts") {
   const versionId = await alertsVersionId(page);
-  await page.goto(`/gtfs/${versionId}/settings/alerts?tab=${tab}`);
+  await gotoLive(page, `/gtfs/${versionId}/settings/alerts?tab=${tab}`);
   // A full page load leaves the view connecting, and a change made before it is
   // mounted is never sent, so every interaction here waits for the page itself.
   await page.waitForSelector("#alert-settings-page", { timeout: 15000 });
@@ -2425,7 +2446,7 @@ async function captureInterviewReference(page, testInfo, state, width) {
 async function runRoute12Interview(page) {
   const versionId = await editorVersionId(page);
 
-  await page.goto(`/gtfs/${versionId}/alerts/new?mode=assistant`);
+  await gotoLive(page, `/gtfs/${versionId}/alerts/new?mode=assistant`);
   await page.waitForSelector("#alert-assistant-start", { timeout: 15_000 });
   // The example button is a LiveView event, and a click before the socket joins
   // is dropped.
@@ -2458,7 +2479,7 @@ test.describe("alert editor assistant", () => {
 
     for (const viewport of [DESKTOP, NARROW]) {
       await page.setViewportSize(viewport);
-      await page.goto(`/gtfs/${versionId}/alerts/new?mode=assistant`);
+      await gotoLive(page, `/gtfs/${versionId}/alerts/new?mode=assistant`);
       await page.waitForSelector("#alert-assistant-start", { timeout: 15_000 });
       await waitForLiveConnected(page);
 
@@ -2505,7 +2526,7 @@ test.describe("alert editor assistant", () => {
   }) => {
     const versionId = await editorVersionId(page);
     await page.setViewportSize(DESKTOP);
-    await page.goto(`/gtfs/${versionId}/alerts/new?mode=assistant`);
+    await gotoLive(page, `/gtfs/${versionId}/alerts/new?mode=assistant`);
     await page.waitForSelector("#alert-assistant-start", { timeout: 15_000 });
     await waitForLiveConnected(page);
 
@@ -2570,13 +2591,13 @@ test.describe("alert editor assistant", () => {
     await page.waitForSelector("#alert-question", { timeout: 15_000 });
     await waitForLiveConnected(page);
 
-    await page.goto(`${url}?mode=form&step=situation`);
+    await gotoLive(page, `${url}?mode=form&step=situation`);
     await page.waitForSelector("#situation-detour", { timeout: 15_000 });
     await expect(page.locator("#situation-detour")).toHaveAttribute("aria-pressed", "true");
 
     // The route question offers what a search returns, so the chosen route is
     // visible after the same search a reader would type.
-    await page.goto(`${url}?mode=form&step=routes`);
+    await gotoLive(page, `${url}?mode=form&step=routes`);
     await page.waitForSelector("#alert-route-search", { timeout: 15_000 });
     await waitForLiveConnected(page);
     await page.locator("#alert-route-search").pressSequentially("Route 1");
@@ -2630,7 +2651,7 @@ async function captureJourneyReference(page, testInfo, state, width) {
 // card would be testing the wrong surface (FH-28's own lesson).
 async function openJourneyAlert(page) {
   const versionId = await editorVersionId(page);
-  await page.goto(`/gtfs/${versionId}/alerts/new?mode=form`);
+  await gotoLive(page, `/gtfs/${versionId}/alerts/new?mode=form`);
   await page.waitForSelector("#alert-question", { timeout: 15_000 });
   await waitForLiveConnected(page);
   await waitForEditorMounted(page);
@@ -3196,7 +3217,7 @@ test.describe("alert authoring journeys", () => {
 
     // A reload once the write has landed is the same question with the same
     // answer, because the draft is on the server (AC-16).
-    await page.reload();
+    await reloadLive(page);
     await waitForEditorMounted(page);
     await expect(page.locator("#message-header")).toHaveValue(
       "Route 1 delayed by a stalled truck",
@@ -3205,7 +3226,7 @@ test.describe("alert authoring journeys", () => {
     // A second tab holding the same alert at the same revision saves first,
     // which is the interleaving AC-16 describes.
     const other = await page.context().newPage();
-    await other.goto(`${url}?mode=form&step=message`);
+    await gotoLive(other, `${url}?mode=form&step=message`);
     await other.waitForSelector("#message-header", { timeout: 15_000 });
     await waitForLiveConnected(other);
     const other_header = other.locator("#message-header");
