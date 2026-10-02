@@ -35,6 +35,11 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   interval, the reviewed date policy, the acceptance confirmation, the
   unresolved list and the assistant refusal. It reuses the columns step's
   mapping rather than keeping a second one.
+
+  Step 5 adds `batches_step/1`: the saved and unsaved state of the batches
+  the helper prepared from that source, beside the source card it belongs
+  to. The card renders only when a batch exists, so an ordinary paste is
+  unchanged. Its counts are the native result's own, never the proposal's.
   """
   use GtfsPlannerWeb, :html
 
@@ -782,6 +787,124 @@ alias GtfsPlanner.Gtfs.GtfsTime
   def column_value(%{target: :trip_headsign}), do: "trip_headsign"
   def column_value(%{target: :ignore}), do: "ignore"
   def column_value(_column), do: ""
+
+  @doc """
+  Renders the prepared-batch states (step 5): one row per batch the helper
+  prepared from the accepted source, its calendar and rows, and whether it
+  was saved, refused or is still under review.
+
+  The card exists only while a batch does, so a paste that was never
+  prepared sees no change. `#timetable-batches-remaining` states how many of
+  the source's rows are still unsaved, which is the honest answer when a
+  save leaves the page here rather than navigating away: those rows are the
+  next batch, and nothing about them has been written.
+  """
+  attr :batches, :list, default: [], doc: "the prepared batches, oldest first"
+  attr :remaining, :integer, default: 0, doc: "source rows no saved batch covered"
+
+  def batches_step(assigns) do
+    ~H"""
+    <section
+      :if={@batches != []}
+      id="timetable-batches"
+      aria-label="Prepared batches"
+      class="mt-4 overflow-hidden rounded-card border border-subtle bg-white"
+    >
+      <div class="flex flex-wrap items-center gap-3 border-b border-subtle bg-canvas px-5 py-3.5">
+        <div class="min-w-0">
+          <h2 class="text-[17px] font-bold tracking-normal text-strong">Prepared batches</h2>
+          <p class="text-[13px] text-muted">
+            Each batch is saved on its own, after you review and apply it here
+          </p>
+        </div>
+      </div>
+      <ul id="timetable-batches-list" class="grid gap-0 px-5">
+        <li
+          :for={batch <- @batches}
+          id={"timetable-batch-#{batch.entry_id}"}
+          class="grid gap-1 border-b border-subtle py-3 last:border-0"
+        >
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span class={["badge badge-sm", elem(batch_badge(batch.status), 1)]}>
+              {elem(batch_badge(batch.status), 0)}
+            </span>
+            <span class="text-[13px] font-semibold text-strong">
+              {batch.service_id || "Calendar"}
+            </span>
+            <span class="text-[13px] text-muted">
+              {length(batch.row_ids)} {batch_row_word(length(batch.row_ids))}
+            </span>
+          </div>
+          <p :if={batch.status == :saved} class="text-[13px] text-muted">
+            {batch_saved_text(batch)}
+          </p>
+          <p :if={batch.status == :pending} class="text-[13px] text-muted">
+            Waiting for you to apply it from the review above.
+          </p>
+          <p :if={batch.status == :failed} class="text-[13px] text-muted">
+            Not saved. The timetable it projected is still in the review above.
+          </p>
+          <p :if={batch.status == :unknown} class="text-[13px] text-muted">
+            The connection dropped while saving, so whether it was written is unknown. Check the
+            schedule before applying it again.
+          </p>
+        </li>
+      </ul>
+      <div id="timetable-batches-remaining" role="status" aria-live="polite" class="px-5 pb-4">
+        <.message
+          :if={@remaining == 0}
+          id="timetable-batches-complete"
+          kind="success"
+          title="Every row of this source has been saved."
+        >
+          Nothing is left to prepare from this source.
+        </.message>
+        <.message
+          :if={@remaining > 0}
+          id="timetable-batches-unsaved"
+          kind="info"
+          title={unsaved_title(@remaining)}
+        >
+          {unsaved_text(@remaining)}
+        </.message>
+      </div>
+    </section>
+    """
+  end
+
+  defp batch_badge(:saved), do: {"Saved", "badge-success"}
+  defp batch_badge(:failed), do: {"Not saved", "badge-warning"}
+  defp batch_badge(:unknown), do: {"Unknown", "badge-warning"}
+  defp batch_badge(_status), do: {"Under review", "badge-info"}
+
+  defp batch_row_word(1), do: "source row"
+  defp batch_row_word(_count), do: "source rows"
+
+  defp batch_saved_text(batch) do
+    counts =
+      [
+        {"Added", batch.added, "trip"},
+        {"changed", batch.changed, "trip"},
+        {"removed", batch.removed, "trip"}
+      ]
+      |> Enum.filter(fn {_label, count, _one} -> is_integer(count) and count > 0 end)
+      |> Enum.map(fn {label, count, one} -> "#{label} #{plural_noun(count, one)}" end)
+
+    case counts do
+      [] -> "Saved. This batch changed nothing that was already stored."
+      counts -> "Saved: " <> Enum.join(counts, ", ") <> "."
+    end
+  end
+
+  defp unsaved_title(1), do: "1 source row is still unsaved."
+  defp unsaved_title(count), do: "#{count} source rows are still unsaved."
+
+  defp unsaved_text(1),
+    do: "Ask the helper to prepare it, or review it yourself. Nothing about it has been written."
+
+  defp unsaved_text(_count),
+    do:
+      "Ask the helper to prepare them, or review them yourself. Nothing about them has been written."
 
   @doc """
   Renders the reviewed-source card beside the native steps (step 3).

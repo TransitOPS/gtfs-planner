@@ -97,6 +97,22 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   the native paste and the manual review stay usable. The comparison and
   report assigns exist from mount and step 8 renders them.
 
+  Step 5 mounts the timetable pack and connects the prepared batches to the
+  existing native review. `handle_event("agent_review_prepared", …)`
+  resolves `Agents.prepared/3` for this panel's own session, conversation
+  and entry, accepts only the `:timetable_input` tag, and refuses a
+  proposal whose `source_digest` is not the accepted source's own digest.
+  The batch is never trusted as a write: its `input` seeds the page's own
+  paste input and `Gtfs.prepare_timetable_paste/5` re-runs, so the review,
+  the fingerprint and the plan on screen are the host's own and the native
+  apply path is untouched (INV-1, INV-2). `timetable_batches` keeps one
+  entry per prepared batch in this page's memory, with its status and the
+  native result's own counts, and the remaining rows decide whether a
+  successful save stays on Paste (reloading the scope around the kept
+  draft) or navigates as it always has. A receipt is recorded only for the
+  exact command that was applied, so an edited native input or an
+  uncertain reconnect leaves the proposal unconfirmed.
+
   Step 30 owns the leave and version-switch guards. A `switch_gtfs_version`
   with pasted text opens `#paste-switch-confirm` (`Keep reviewing` /
   `Switch version`) and only navigates on confirm, through
@@ -114,7 +130,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
   import GtfsPlannerWeb.RouteWorkspace, only: [route_header: 1, route_label: 1]
 
-import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
 
   alias GtfsPlanner.Agents
   alias GtfsPlanner.Agents.Scope
@@ -134,6 +150,15 @@ import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   @scope_keys ~w(service_id direction pattern)
+
+  # A proposal whose source this page no longer holds, or that this panel's own
+  # session cannot produce, is refused with a notice rather than an exception.
+  @prepared_batch_notice "That prepared batch is no longer available here. Ask the helper to prepare it again."
+
+  # One receipt per applied batch, exactly like the Calendars handoff: the
+  # command the editor actually applied is compared with the proposal, so an
+  # edited native input leaves the card unconfirmed and says why.
+  @prepared_batch_edited_notice "Your edited batch was saved. The prepared batch was not marked as applied."
 
   @impl true
   def mount(_params, _session, socket) do
@@ -169,9 +194,11 @@ import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
      |> assign(:leave_confirm, nil)
      |> assign(:show_review_errors, false)
      |> put_timetable_source()
+     |> put_timetable_batches()
      |> stream_configure(:plan_rows, dom_id: & &1.id)
      |> stream(:plan_rows, [])
-     |> assign(:load_state, :loading)}
+     |> assign(:load_state, :loading)
+     |> AgentPanel.mount("timetables")}
   end
 
   @impl true
@@ -182,9 +209,31 @@ import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
       |> assign(:requested, params)
 
     if connected?(socket) do
-      {:noreply, load_scope(socket, params)}
+      {:noreply, socket |> load_scope(params) |> bind_agent_context()}
     else
       {:noreply, assign(socket, :load_state, :loading)}
+    end
+  end
+
+  # The helper conversation belongs to the route this page is showing, so the
+  # context is replaced from ordinary parameter handling, exactly as
+  # `RouteSchedulesLive` does it (INV-1). The identity is the route's own UUID
+  # rather than the URL's GTFS id, because `Scope.authorized_context/1`
+  # resolves a route identity by UUID; a page whose route has not loaded falls
+  # back to the whole-version context, which this pack refuses with its one
+  # unavailable result. The reviewed source rides the same context through
+  # step 3's `attach_source_context/2`, so an accepted source and the panel
+  # never disagree about which conversation owns them.
+  #
+  # A patch that kept this route does not rebind: `set_context/2` already
+  # treats an unchanged context as a no-op, and a source snapshot is the same
+  # route with more on it. Rebinding to the bare route context here would
+  # silently detach the accepted source from the conversation that can read it.
+  defp bind_agent_context(socket) do
+    if socket.assigns[:timetable_source_context] do
+      socket
+    else
+      AgentPanel.set_context(socket, source_base_context(socket))
     end
   end
 
@@ -727,6 +776,172 @@ import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
     {:noreply, assign(socket, :apply_notice, nil)}
   end
 
+  # Step 5 owns the prepared-batch handoff. The panel's card is a proposal:
+  # this handler resolves it from this panel's own session and conversation,
+  # accepts only the timetable command, and re-prepares it natively so the
+  # review on screen is the host's own (INV-1, INV-2).
+  #
+  # Every identity involved is server-held; the client contributes only the
+  # entry id, which is parsed and then resolved through `Agents.prepared/3`.
+  # A second handoff never replaces a batch that is still under review, and a
+  # forged or malformed id is ignored instead of reaching the session.
+  @impl true
+  def handle_event("agent_review_prepared", %{"entry" => id}, socket) do
+    {:noreply, review_prepared_batch(socket, id)}
+  end
+
+  def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
+
+  # Step 5 owns the prepared-batch handoff: `handoff_prepared_batch/2`
+  # resolves this panel's own session and re-prepares the batch natively, so
+  # the review on screen is the host's own (INV-1, INV-2).
+  defp review_prepared_batch(socket, id) do
+    cond do
+      socket.assigns[:timetable_batch_reviewing?] ->
+        socket
+
+      not is_binary(id) ->
+        socket
+
+      true ->
+        case Integer.parse(id) do
+          {entry_id, ""} -> handoff_prepared_batch(socket, entry_id)
+          _other -> socket
+        end
+    end
+  end
+
+  defp handoff_prepared_batch(socket, entry_id) do
+    with {:ok, %{command: {:timetable_input, command}}} when is_map(command) <-
+           Agents.prepared(
+             socket.assigns.agent_session,
+             socket.assigns.agent_conversation_id,
+             entry_id
+           ),
+         {:ok, source} <- current_source_for(socket, command),
+         {:ok, input} <- project_batch(source, command),
+         {:ok, %{scope: scope, review: review}} <-
+           reprepare_batch(socket, command, input) do
+      open_batch_review(socket, entry_id, command, source, scope, review, input)
+    else
+      _stale_or_foreign_or_unknown ->
+        assign(socket, :agent_notice, @prepared_batch_notice)
+    end
+  end
+
+  # The command names the source digest it was built from. A proposal for a
+  # source this page no longer holds — released by a text, column, decision or
+  # date change, or replaced by another acceptance — can never be reviewed,
+  # because the rows it projects no longer describe anything on screen
+  # (INV-1). A source this page never accepted has no digest to match.
+  defp current_source_for(socket, %{source_digest: digest}) do
+    case socket.assigns[:timetable_source] do
+      %{digest: ^digest} = source -> {:ok, source}
+      _no_matching_source -> {:error, :stale_source}
+    end
+  end
+
+  defp current_source_for(_socket, _command), do: {:error, :stale_source}
+
+  # The proposal's own `input` map seeds this page's paste input, and the
+  # native prepare runs again on it through the production call the paste page
+  # already uses. The command's fingerprint is deliberately discarded: it is a
+  # proposal token, and the review the editor reviews and the fingerprint the
+  # apply checks must both be this host's own (INV-2).
+  defp reprepare_batch(socket, command, input) do
+    Gtfs.prepare_timetable_paste(
+      socket.assigns.current_organization.id,
+      socket.assigns.current_gtfs_version.id,
+      socket.assigns.route_id,
+      batch_scope_params(command),
+      input
+    )
+  end
+
+  # The pasted input is the source's own projection of the batch's rows,
+  # through the same `TimetableSource.native_input/3` the pack used, so the
+  # native review shows exactly the rows and calendar the editor accepted. The
+  # decisions it carries (the rows left out of this batch) are the source's,
+  # not the model's.
+  defp project_batch(source, command) do
+    case TimetableSource.native_input(source, batch_row_ids(command), batch_service_id(command)) do
+      {:ok, %{input: input}} -> {:ok, Map.merge(fresh_paste_input(), input)}
+      {:error, _reason} -> {:error, :unprojectable}
+    end
+  end
+
+  defp batch_row_ids(%{row_ids: row_ids}) when is_list(row_ids), do: row_ids
+  defp batch_row_ids(_command), do: []
+
+  defp batch_service_id(%{scope_params: %{service_id: service_id}}) when is_binary(service_id),
+    do: service_id
+
+  defp batch_service_id(_command), do: nil
+
+  # The command carries the calendar, direction and pattern the batch was
+  # prepared against. They are re-resolved by `load_paste_scope/5` against the
+  # route itself, never trusted as selectors.
+  defp batch_scope_params(%{scope_params: params}) when is_map(params) do
+    %{
+      service_id: params[:service_id],
+      direction: direction_param(params[:direction_id]),
+      pattern: params[:pattern_id]
+    }
+  end
+
+  defp batch_scope_params(_command), do: %{}
+
+  # Opening a batch is an ordinary review of an ordinary paste: the same
+  # assigns a Read produces, the same review matrix, the same apply bar. Only
+  # the pasted text differs, and it is the accepted source's own projection.
+  defp open_batch_review(socket, entry_id, command, source, scope, review, input) do
+    socket
+    |> assign(:route, scope.route)
+    |> assign(:scope, scope)
+    |> assign(:input, input)
+    |> assign(:paste_form, to_form(paste_form_params(input), as: :paste))
+    |> assign(:review, review)
+    |> assign(:paste_error, nil)
+    |> assign(:source_open, false)
+    |> assign(:show_column_errors, false)
+    |> assign(:show_review_errors, false)
+    |> assign(:apply_notice, nil)
+    |> assign(:failed_reference, nil)
+    |> assign(:replace_confirm, false)
+    |> assign(:timetable_batch_origin, %{
+      session_pid: socket.assigns.agent_session,
+      conversation_id: socket.assigns.agent_conversation_id,
+      entry_id: entry_id,
+      command: {:timetable_input, command},
+      source_digest: source.digest,
+      fingerprint: review.fingerprint
+    })
+    |> record_batch_pending(entry_id, command, scope)
+    |> assign(:timetable_batch_reviewing?, true)
+    |> put_plan_rows()
+    |> push_canonical(scope, socket.assigns[:requested] || %{})
+    |> push_event("focus_scoped_target", %{id: "paste-apply-status"})
+  end
+
+  # The batch is recorded as under review the moment it opens, with no counts:
+  # applied numbers come from the native result alone, so a pending batch shows
+  # what it covers and nothing it has not done.
+  defp record_batch_pending(socket, entry_id, command, scope) do
+    assign(
+      socket,
+      :timetable_batches,
+      Map.put(socket.assigns.timetable_batches, entry_id, %{
+        entry_id: entry_id,
+        row_ids: command.row_ids,
+        service_id: scope.calendar && scope.calendar.service_id,
+        status: :pending,
+        added: 0,
+        changed: 0,
+        removed: 0
+      })
+    )
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -749,133 +964,206 @@ import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
 
         <TimetablePasteComponents.loading_skeleton :if={@load_state == :loading and is_nil(@scope)} />
 
-        <div :if={@scope}>
-          <div class="flex flex-wrap items-end justify-between gap-x-6 gap-y-3 pb-5 pt-7">
-            <div class="min-w-0">
-              <h1
-                id="paste-title"
-                tabindex="-1"
-                class="font-display text-[28px] font-semibold leading-tight tracking-[-0.025em] text-strong outline-none"
+        <%!-- The panel's focus listener belongs to this wrapper, which survives both the panel and
+        the paste's own drawers and confirmations. This hook only moves focus; it never decides
+        focus for the server. --%>
+        <div
+          id="timetable-helper-focus"
+          phx-hook=".PasteHelperFocus"
+          class={[
+            "flex flex-col lg:grid lg:gap-6",
+            @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"
+          ]}
+        >
+          <div class="min-w-0">
+            <div :if={@route} class="flex justify-end">
+              <.button
+                id="agent-helper-open"
+                type="button"
+                phx-click="agent_open"
+                aria-expanded={to_string(@agent_open?)}
+                aria-controls="agent-panel"
+                variant="quiet"
+                class="mb-3 min-h-11"
               >
-                Paste timetable
-              </h1>
-              <p class="mt-1.5 text-sm text-muted">
-                Add trips from a spreadsheet, or replace a schedule with it. Nothing changes until
-                you apply.
-              </p>
+                Open helper
+              </.button>
+            </div>
+
+            <div :if={@scope}>
+              <div class="flex flex-wrap items-end justify-between gap-x-6 gap-y-3 pb-5 pt-7">
+                <div class="min-w-0">
+                  <h1
+                    id="paste-title"
+                    tabindex="-1"
+                    class="font-display text-[28px] font-semibold leading-tight tracking-[-0.025em] text-strong outline-none"
+                  >
+                    Paste timetable
+                  </h1>
+                  <p class="mt-1.5 text-sm text-muted">
+                    Add trips from a spreadsheet, or replace a schedule with it. Nothing changes until
+                    you apply.
+                  </p>
+                </div>
+              </div>
+
+              <TimetablePasteComponents.scope_line
+                calendar={@scope.calendar}
+                direction_name={direction_name(@scope.direction_id)}
+                pattern={chosen_pattern(@scope)}
+              />
+
+              <TimetablePasteComponents.setup_empty
+                :if={setup_reason(@scope)}
+                reason={setup_reason(@scope)}
+                route_label={route_label(@scope.route)}
+                direction_adjective={direction_adjective(@scope.direction_id)}
+                calendars_path={"/gtfs/#{@current_gtfs_version.id}/calendars/new"}
+                patterns_path={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns/new"}
+              />
+
+              <TimetablePasteComponents.scope_drawer
+                open={@scope_draft != nil}
+                form={@scope_form}
+                calendars={@scope_calendars}
+                draft_scope={@draft_scope}
+                review={@review}
+                route_label={route_label(@scope.route)}
+              />
+
+              <TimetablePasteComponents.notices
+                :if={is_nil(setup_reason(@scope))}
+                notice={@apply_notice}
+                failed_reference={@failed_reference}
+                refusal_message={@refusal_message}
+                scope={@scope}
+                review={@review}
+                version_id={@current_gtfs_version.id}
+                route_id={@route_id}
+                has_text={!blank_paste_text?(@input.text)}
+              />
+
+              <.form
+                :if={is_nil(setup_reason(@scope))}
+                id="paste-form"
+                for={@paste_form}
+                phx-change="input"
+                phx-submit="read"
+                phx-hook="FormErrorFocus"
+                class="mt-4 grid gap-4"
+              >
+                <input
+                  type="hidden"
+                  id="paste-decisions"
+                  name="paste[decisions]"
+                  value={@paste_form[:decisions].value || "{}"}
+                />
+                <TimetablePasteComponents.source_step
+                  form={@paste_form}
+                  error={@paste_error}
+                  open={@source_open}
+                  review={@review}
+                />
+                <TimetablePasteComponents.columns_step
+                  :if={@review != nil and !@source_open and @review.column_issues != []}
+                  review={@review}
+                  scope={@scope}
+                  header?={@input.header?}
+                  show_errors={@show_column_errors}
+                />
+                <TimetablePasteComponents.review_header
+                  :if={@review != nil and !@source_open and @review.column_issues == []}
+                  review={@review}
+                  scope={@scope}
+                  input={@input}
+                  columns={@plan_columns}
+                  rows={@streams.plan_rows}
+                  shown={@plan_shown}
+                  timing_note={@timing_note}
+                  show_errors={@show_review_errors}
+                  notice={@apply_notice}
+                />
+              </.form>
+
+              <TimetablePasteComponents.source_review_step
+                :if={is_nil(setup_reason(@scope)) and @review != nil}
+                form={@timetable_source_form}
+                errors={@timetable_source_errors}
+                draft={@timetable_source_draft}
+                source={@timetable_source}
+                unresolved={@timetable_source_unresolved}
+                notice={@timetable_source_notice}
+                too_large={@timetable_helper_too_large}
+                scope={@scope}
+              />
+
+              <TimetablePasteComponents.batches_step
+                :if={is_nil(setup_reason(@scope))}
+                batches={batch_rows(@timetable_batches)}
+                remaining={remaining_row_count(@timetable_source, @timetable_batches)}
+              />
+
+              <TimetablePasteComponents.replace_confirm
+                :if={@replace_confirm}
+                open={true}
+                review={@review}
+                scope={@scope}
+                input={@input}
+              />
+              <TimetablePasteComponents.discard_confirm :if={@discard_confirm} open={true} />
+              <TimetablePasteComponents.switch_confirm
+                :if={@switch_confirm}
+                open={true}
+                version_name={@switch_confirm.version_name}
+              />
+              <TimetablePasteComponents.leave_confirm :if={@leave_confirm} open={true} />
+              <TimetablePasteComponents.leave_guard />
             </div>
           </div>
 
-          <TimetablePasteComponents.scope_line
-            calendar={@scope.calendar}
-            direction_name={direction_name(@scope.direction_id)}
-            pattern={chosen_pattern(@scope)}
-          />
-
-          <TimetablePasteComponents.setup_empty
-            :if={setup_reason(@scope)}
-            reason={setup_reason(@scope)}
-            route_label={route_label(@scope.route)}
-            direction_adjective={direction_adjective(@scope.direction_id)}
-            calendars_path={"/gtfs/#{@current_gtfs_version.id}/calendars/new"}
-            patterns_path={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns/new"}
-          />
-
-          <TimetablePasteComponents.scope_drawer
-            open={@scope_draft != nil}
-            form={@scope_form}
-            calendars={@scope_calendars}
-            draft_scope={@draft_scope}
-            review={@review}
-            route_label={route_label(@scope.route)}
-          />
-
-          <TimetablePasteComponents.notices
-            :if={is_nil(setup_reason(@scope))}
-            notice={@apply_notice}
-            failed_reference={@failed_reference}
-            refusal_message={@refusal_message}
-            scope={@scope}
-            review={@review}
-            version_id={@current_gtfs_version.id}
-            route_id={@route_id}
-            has_text={!blank_paste_text?(@input.text)}
-          />
-
-          <.form
-            :if={is_nil(setup_reason(@scope))}
-            id="paste-form"
-            for={@paste_form}
-            phx-change="input"
-            phx-submit="read"
-            phx-hook="FormErrorFocus"
-            class="mt-4 grid gap-4"
+          <div
+            :if={@agent_open?}
+            class="order-first mb-5 flex min-w-0 lg:order-last lg:mb-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
           >
-            <input
-              type="hidden"
-              id="paste-decisions"
-              name="paste[decisions]"
-              value={@paste_form[:decisions].value || "{}"}
+            <.agent_panel
+              id="agent-panel"
+              title={@agent_title}
+              intro={@agent_intro}
+              examples={@agent_examples}
+              scope_line={helper_scope_line(assigns)}
+              status={@agent_status}
+              entries={@streams.agent_entries}
+              form={@agent_form}
+              notice={@agent_notice}
+              entries_empty?={@agent_entries_empty?}
+              review_label={&agent_review_label/1}
             />
-            <TimetablePasteComponents.source_step
-              form={@paste_form}
-              error={@paste_error}
-              open={@source_open}
-              review={@review}
-            />
-            <TimetablePasteComponents.columns_step
-              :if={@review != nil and !@source_open and @review.column_issues != []}
-              review={@review}
-              scope={@scope}
-              header?={@input.header?}
-              show_errors={@show_column_errors}
-            />
-            <TimetablePasteComponents.review_header
-              :if={@review != nil and !@source_open and @review.column_issues == []}
-              review={@review}
-              scope={@scope}
-              input={@input}
-              columns={@plan_columns}
-              rows={@streams.plan_rows}
-              shown={@plan_shown}
-              timing_note={@timing_note}
-              show_errors={@show_review_errors}
-              notice={@apply_notice}
-            />
-          </.form>
+          </div>
 
-          <TimetablePasteComponents.source_review_step
-            :if={is_nil(setup_reason(@scope)) and @review != nil}
-            form={@timetable_source_form}
-            errors={@timetable_source_errors}
-            draft={@timetable_source_draft}
-            source={@timetable_source}
-            unresolved={@timetable_source_unresolved}
-            notice={@timetable_source_notice}
-            too_large={@timetable_helper_too_large}
-            scope={@scope}
-          />
-
-          <TimetablePasteComponents.replace_confirm
-            :if={@replace_confirm}
-            open={true}
-            review={@review}
-            scope={@scope}
-            input={@input}
-          />
-          <TimetablePasteComponents.discard_confirm :if={@discard_confirm} open={true} />
-          <TimetablePasteComponents.switch_confirm
-            :if={@switch_confirm}
-            open={true}
-            version_name={@switch_confirm.version_name}
-          />
-          <TimetablePasteComponents.leave_confirm :if={@leave_confirm} open={true} />
-          <TimetablePasteComponents.leave_guard />
+          <script :type={Phoenix.LiveView.ColocatedHook} name=".PasteHelperFocus">
+            export default {
+              mounted() {
+                this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+              }
+            }
+          </script>
         </div>
       </div>
     </Layouts.app>
     """
   end
+
+  # The panel names the route this page is bound to, from the loaded route
+  # rather than the URL, so the line always agrees with the schedule below it.
+  defp helper_scope_line(%{route: nil}), do: "Route · no route loaded"
+
+  defp helper_scope_line(%{route: route} = assigns),
+    do: "Route #{route.route_id} · #{assigns.current_gtfs_version.name}"
+
+  # This page prepares one kind of change, a timetable batch, so the panel's
+  # action label is named once here rather than per command.
+  defp agent_review_label(%{command: {:timetable_input, _command}}), do: "Review prepared batch"
+  defp agent_review_label(_prepared), do: "Review prepared change"
 
   defp load_scope(socket, params) do
     organization_id = socket.assigns.current_organization.id
@@ -1730,6 +2018,61 @@ import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   defp direction_param(1), do: "1"
   defp direction_param(_direction), do: nil
 
+  # --- Prepared batches (step 5) ----------------------------------------------
+
+  # The batch bookkeeping lives in this page's memory, beside the source it
+  # belongs to. It is deliberately not a second store: a context replacement,
+  # a released source or a navigation drops it with the rest of the page state,
+  # exactly as the accepted source itself is dropped.
+  defp put_timetable_batches(socket) do
+    assign(socket, :timetable_batches, %{})
+    |> assign(:timetable_batch_origin, nil)
+    |> assign(:timetable_batch_reviewing?, false)
+  end
+
+  # The rows a batch covers are the source's own row ids, so a saved batch's
+  # rows can be subtracted from the accepted source to say what is left. A batch
+  # that is not saved covers nothing: its rows are still unsaved and stay in
+  # the remaining count. An accepted source the pack named no rows for
+  # contributes every row.
+  defp saved_row_ids(batches) when is_map(batches) do
+    batches
+    |> Map.values()
+    |> Enum.filter(&(&1.status == :saved))
+    |> Enum.flat_map(& &1.row_ids)
+  end
+
+  defp saved_row_ids([]), do: []
+
+  defp saved_row_ids(_batches), do: []
+
+  defp remaining_row_ids(%{rows: rows}, batches) do
+    rows
+    |> Enum.map(& &1.source_row_id)
+    |> Enum.reject(&(&1 in saved_row_ids(batches)))
+  end
+
+  defp remaining_row_ids(_source, _batches), do: []
+
+  # The batches card is ordered oldest first, so a person reads what happened
+  # in the order it happened.
+  defp batch_rows(batches) when is_map(batches) do
+    Enum.sort_by(Map.values(batches), & &1.entry_id)
+  end
+
+  defp batch_rows(_batches), do: []
+
+  defp remaining_row_count(source, batches) do
+    length(remaining_row_ids(source, batches || %{}))
+  end
+
+  # The batch a successful save came from, if the save was this page's ordinary
+  # apply of a reviewed proposal.
+  defp batch_origin(%{assigns: %{timetable_batch_origin: origin}}) when not is_nil(origin),
+    do: origin
+
+  defp batch_origin(_socket), do: nil
+
   # --- Reviewed source (step 3) ------------------------------------------------
 
   # Loading a scope replaces the resource the reviewed source was read in, so
@@ -1777,6 +2120,7 @@ import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
     |> assign(:timetable_source_notice, nil)
     |> assign(:timetable_helper_too_large, false)
     |> assign(:timetable_source_context, nil)
+    |> put_timetable_batches()
     # Step 8 renders the comparison; this step only owns its lifecycle seed so
     # a source change can drop a report it has not computed yet.
     |> assign(:timetable_comparison, nil)
@@ -2087,6 +2431,7 @@ import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
     |> assign(:timetable_source_notice, nil)
     |> assign(:timetable_helper_too_large, false)
     |> assign(:timetable_source_context, nil)
+    |> put_timetable_batches()
     |> assign(:timetable_comparison, nil)
     |> assign(:timetable_comparison_state, :idle)
   end
@@ -2110,9 +2455,8 @@ import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
     end
   end
 
-  # Step 5 mounts the panel with the timetable pack. Until then the host keeps
-  # the admitted context itself, so attaching a source is already correct the
-  # moment the panel exists and never needs a second snapshot call.
+  # Step 5 mounts the panel with the timetable pack, so the panel is always
+  # mounted here: an accepted source is handed straight to it.
   defp panel_mounted?(socket), do: not is_nil(socket.assigns[:agent_context])
 
   defp blank_source_field?(value) when is_binary(value), do: String.trim(value) == ""
@@ -2170,10 +2514,60 @@ import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
 
   defp apply_outcome(socket, notice, focus_id) do
     socket
+    |> record_batch_failure(notice)
     |> assign(:apply_notice, notice)
     |> assign(:replace_confirm, false)
     |> assign(:show_review_errors, false)
     |> push_event("focus_scoped_target", %{id: focus_id})
+  end
+
+  # A refused, stale or uncertain apply settles no batch and records no receipt.
+  # The native draft and the reviewed proposal both stay exactly where they
+  # were (INV-2).
+  #
+  # A stale plan and a busy writer are not refusals of the batch: the editor can
+  # retry or review again, so the batch stays under review. A lost role and an
+  # uncertain outcome end it, because nothing this page can offer would apply
+  # that batch afterwards.
+  defp record_batch_failure(socket, notice) when notice in [:stale, :busy] do
+    mark_batch_status(socket, :pending)
+  end
+
+  defp record_batch_failure(socket, notice)
+       when notice in [:unknown, :permission, :mixed_service, :failed] do
+    socket
+    |> mark_batch_status(notice_status(notice))
+    |> clear_batch_origin()
+  end
+
+  defp record_batch_failure(socket, _notice), do: socket
+
+  defp notice_status(:unknown), do: :unknown
+  defp notice_status(_notice), do: :failed
+
+  defp clear_batch_origin(socket) do
+    socket
+    |> assign(:timetable_batch_origin, nil)
+    |> assign(:timetable_batch_reviewing?, false)
+  end
+
+  defp mark_batch_status(%{assigns: %{timetable_batch_origin: nil}} = socket, _status), do: socket
+
+  defp mark_batch_status(socket, status) do
+    entry_id = socket.assigns.timetable_batch_origin.entry_id
+
+    socket
+    |> assign(
+      :timetable_batches,
+      put_batch_status(socket.assigns.timetable_batches, entry_id, status)
+    )
+  end
+
+  defp put_batch_status(batches, entry_id, status) do
+    case batches[entry_id] do
+      nil -> batches
+      batch -> Map.put(batches, entry_id, %{batch | status: status})
+    end
   end
 
   # At apply time both the calendar and the direction are concrete, so
@@ -2189,10 +2583,174 @@ import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   # Success lands on Schedules with the filters and a flash naming the
   # adds, changes, removals, timings created, transfers removed and the
   # vehicles change (AC-32).
+  #
+  # A prepared batch with rows still unsaved keeps this page instead: the save
+  # succeeded and the remaining draft is still here, so the scope reloads
+  # around the kept input and the batches card shows what is saved and what is
+  # not. A single batch with nothing left over navigates exactly as before, and
+  # a paste that was never a prepared batch is untouched (INV-2).
   defp apply_success(socket, scope, summary) do
+    case batch_origin(socket) do
+      nil ->
+        navigate_after_apply(socket, scope, summary)
+
+      origin ->
+        socket
+        |> settle_batch_success(origin, scope, summary)
+        |> finish_batch_success(scope, summary)
+    end
+  end
+
+  # A batch that saved with rows still unsaved keeps this page: the save
+  # succeeded and the remaining draft is still here, so the scope reloads
+  # around the kept input and the batches card shows what is saved and what is
+  # not. A batch with nothing left over navigates exactly as an ordinary paste
+  # always has, and a paste that was never a prepared batch is untouched.
+  defp finish_batch_success(socket, scope, summary) do
+    if batch_rows_remaining?(socket) do
+      socket
+      |> put_flash(:info, batch_partial_flash(scope, summary, socket))
+      |> reload_after_batch()
+    else
+      navigate_after_apply(socket, scope, summary)
+    end
+  end
+
+  # The remaining draft stays available: the scope reloads against what is
+  # stored now, so the next batch is prepared and reviewed against current data
+  # rather than the fingerprint that has just been spent (INV-2).
+  #
+  # Unlike the ordinary `review_again`, this reload keeps the accepted source
+  # and its batch bookkeeping: the unsaved rows live in the source, so dropping
+  # it here would discard exactly the work the save was meant to leave behind.
+  defp reload_after_batch(socket) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    route_id = socket.assigns.route_id
+    input = current_input(socket)
+
+    case Gtfs.prepare_timetable_paste(
+           organization_id,
+           version_id,
+           route_id,
+           read_scope_params(socket.assigns.scope),
+           input
+         ) do
+      {:ok, %{scope: scope, review: review}} ->
+        socket
+        |> assign(:route, scope.route)
+        |> assign(:scope, scope)
+        |> assign(:review, review)
+        |> assign(:paste_error, nil)
+        |> assign(:source_open, is_nil(review))
+        |> assign(:show_column_errors, false)
+        |> assign(:show_review_errors, false)
+        |> assign(:apply_notice, nil)
+        |> assign(:failed_reference, nil)
+        |> assign(:replace_confirm, false)
+        |> assign(:load_state, :ready)
+        |> put_plan_rows()
+        |> push_event("focus_scoped_target", %{id: "timetable-batches"})
+
+      {:error, :not_found} ->
+        route_not_found(socket)
+
+      {:error, _reason} ->
+        socket
+    end
+  end
+
+  # Rows the accepted source still holds that no saved batch covered. A source
+  # this page no longer holds leaves nothing to keep, so the ordinary
+  # navigation stands.
+  defp batch_rows_remaining?(%{assigns: assigns}) do
+    case assigns[:timetable_source] do
+      %{rows: [_ | _]} = source ->
+        remaining_row_ids(source, assigns[:timetable_batches] || %{}) != []
+
+      _no_source ->
+        false
+    end
+  end
+
+  defp batch_partial_flash(scope, summary, socket) do
+    remaining =
+      remaining_row_ids(socket.assigns[:timetable_source], socket.assigns.timetable_batches)
+
+    "#{apply_flash(scope, summary)} " <>
+      "#{length(remaining)} of this source's rows are still unsaved and stay here for the next batch."
+  end
+
+  defp navigate_after_apply(socket, scope, summary) do
     socket
     |> put_flash(:info, apply_flash(scope, summary))
     |> push_navigate(to: apply_schedules_path(socket, scope))
+  end
+
+  # One receipt per applied batch, and only for the exact reviewed command.
+  #
+  # The proposal's own fingerprint is the one this page recorded when it opened
+  # the batch. If the review still carries that fingerprint at apply time, the
+  # editor reviewed and applied precisely what was prepared, so the proposal is
+  # confirmed. Any native edit — a mode switch, a decision, a correction —
+  # changes the fingerprint, so the save stands and the card stays unconfirmed
+  # with the notice saying why. Nothing here can confirm a batch from a
+  # different source or a replaced conversation: the session owns that check.
+  defp settle_batch_success(socket, origin, scope, summary) do
+    if applied_exactly?(socket, origin) do
+      socket
+      |> confirm_batch(origin, scope, summary)
+    else
+      socket
+      |> record_batch(origin, scope, summary)
+      |> assign(:agent_notice, @prepared_batch_edited_notice)
+    end
+  end
+
+  defp applied_exactly?(socket, origin) do
+    match?(%{fingerprint: _fingerprint}, socket.assigns[:review]) and
+      socket.assigns.review.fingerprint == origin.fingerprint
+  end
+
+  defp confirm_batch(socket, origin, scope, summary) do
+    case Agents.record_applied(
+           origin.session_pid,
+           origin.conversation_id,
+           origin.entry_id,
+           origin.command
+         ) do
+      :ok ->
+        record_batch(socket, origin, scope, summary)
+
+      {:error, :command_changed} ->
+        socket
+        |> record_batch(origin, scope, summary)
+        |> assign(:agent_notice, @prepared_batch_edited_notice)
+
+      _stale_or_ended ->
+        # A reset or an expired session never turns a successful save into an
+        # error: the trips were written, so the batch is recorded and the card
+        # simply stays unconfirmed.
+        record_batch(socket, origin, scope, summary)
+    end
+  end
+
+  defp record_batch(socket, origin, scope, summary) do
+    socket
+    |> assign(
+      :timetable_batches,
+      Map.put(socket.assigns.timetable_batches, origin.entry_id, %{
+        entry_id: origin.entry_id,
+        row_ids: origin.command |> elem(1) |> Map.fetch!(:row_ids),
+        service_id: scope.calendar && scope.calendar.service_id,
+        status: :saved,
+        added: Map.get(summary, :added, 0),
+        changed: Map.get(summary, :changed, 0),
+        removed: Map.get(summary, :removed, 0)
+      })
+    )
+    |> assign(:timetable_batch_origin, nil)
+    |> assign(:timetable_batch_reviewing?, false)
   end
 
   defp apply_flash(scope, summary) do
