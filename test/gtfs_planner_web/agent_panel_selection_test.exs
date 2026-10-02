@@ -350,8 +350,10 @@ defmodule GtfsPlannerWeb.AgentPanelSelectionTest do
     test "a host naming a helper the application does not ship fails the mount", context do
       socket = %Phoenix.LiveView.Socket{assigns: %{current_gtfs_version: context.version}}
 
+      # `connections` is the Schedule host's second helper and ships today, so a
+      # pack the application does not ship is one no host names either.
       assert_raise ArgumentError, ~r/does not ship/, fn ->
-        AgentPanel.mount(socket, "connections", allowed_packs: ["connections"])
+        AgentPanel.mount(socket, @forged_pack, allowed_packs: [@forged_pack])
       end
 
       assert_raise ArgumentError, ~r/does not ship/, fn ->

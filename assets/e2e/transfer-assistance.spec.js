@@ -19,15 +19,34 @@
 // scripts the provider: it prepares the page's own `selection-1` from the pack's
 // real source snapshot, so a change in the page's draft is what the tool reads.
 //
-// Test titles keep the prefix branch review greps: policy.
+// Test titles keep the prefix branch review greps: policy, approval.
 import { test, expect } from "@playwright/test";
 
 const EDITOR_USER = {
   email: "diagram-test@gtfs-planner.test",
-  password: "[redacted]",
+  password: "DiagramTest123!",
 };
 
 const TRANSFERS_VERSION = "Browser Transfers Version";
+
+const E2E_VERSION = "Browser E2E Version";
+
+// The approval journey's two routes are both on the seeded browser version: the
+// Schedules read route calls BSS_3 at 06:11, and the grid route leaves BSS_4 at
+// 06:48. Both run on CAL_DAILY, which covers every day either side of the seed
+// date, so the date this page offers is a date both trips run.
+const APPROVAL_FROM = {
+  route: "BROWSER_SCHEDULES_READY",
+  trip: "BROWSER_SCHED_T1",
+  stop: "BSS_3",
+  sequence: 3,
+};
+const APPROVAL_TO = {
+  route: "BROWSER_SCHEDULES_GRID",
+  trip: "BSG_T04",
+  stop: "BSS_4",
+  sequence: 4,
+};
 
 // A 1x1 opaque PNG, so the tile layers succeed without a network request.
 const ONE_PX_PNG_BASE64 =
@@ -144,14 +163,20 @@ test.describe("transfer policy helper", () => {
     // seconds their own draft carried.
     const review = page.locator("#transfer-policy-review");
     await expect(review).toBeVisible();
-    await expect(page.locator("#transfer-policy-after")).toContainText("BXF_CEN_C");
-    await expect(page.locator("#transfer-policy-after")).toContainText("BXF_MUS");
+    await expect(page.locator("#transfer-policy-after")).toContainText(
+      "BXF_CEN_C",
+    );
+    await expect(page.locator("#transfer-policy-after")).toContainText(
+      "BXF_MUS",
+    );
     await expect(page.locator("#transfer-policy-after")).toContainText(
       "300 seconds",
     );
 
     // Nothing is written until the reviewer confirms it.
-    await expect(page.locator("#transfers-count")).toHaveText("8 transfer rules");
+    await expect(page.locator("#transfers-count")).toHaveText(
+      "8 transfer rules",
+    );
 
     await capture(page, testInfo, "policy-review-1440x1000");
 
@@ -161,7 +186,9 @@ test.describe("transfer policy helper", () => {
       "Saved transfer type 2",
       { timeout: 30_000 },
     );
-    await expect(page.locator("#transfers-count")).toHaveText("9 transfer rules");
+    await expect(page.locator("#transfers-count")).toHaveText(
+      "9 transfer rules",
+    );
 
     // The receipt belongs to the entry that prepared this rule, settled by the
     // session's own event rather than by the page.
@@ -202,26 +229,141 @@ test.describe("transfer policy helper", () => {
     );
 
     // The page's own counts still read as an untouched version.
-    await expect(page.locator("#transfers-count")).toHaveText("8 transfer rules");
+    await expect(page.locator("#transfers-count")).toHaveText(
+      "8 transfer rules",
+    );
     await expect(page.locator("#transfer-policy-review")).toHaveCount(0);
+  });
+});
+
+// The connection approval journey (EV-16): the Schedules page's own form admits
+// exactly what an operator approves, and an edit takes it back.
+test.describe("connection approval helper", () => {
+  test("approval: the approved pair becomes the helper's only source, and an edit takes it back", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openSchedules(page);
+
+    // Both helpers this page offers are named by the page itself.
+    await expect(
+      page.locator("#schedule-helper-mode-connections"),
+    ).toBeVisible();
+    await expect(
+      page.locator("#schedule-helper-mode-service_queries"),
+    ).toBeVisible();
+
+    // The page seeds its own route on the first pair's receiving side.
+    await expect(page.locator("#connection-pair-1-from-route")).toHaveValue(
+      APPROVAL_FROM.route,
+    );
+
+    await page.locator("#connection-pair-1-from-trip").fill(APPROVAL_FROM.trip);
+    await page.locator("#connection-pair-1-from-stop").fill(APPROVAL_FROM.stop);
+    await page
+      .locator("#connection-pair-1-from-sequence")
+      .fill(String(APPROVAL_FROM.sequence));
+    await page.locator("#connection-pair-1-to-route").fill(APPROVAL_TO.route);
+    await page.locator("#connection-pair-1-to-trip").fill(APPROVAL_TO.trip);
+    await page.locator("#connection-pair-1-to-stop").fill(APPROVAL_TO.stop);
+    await page
+      .locator("#connection-pair-1-to-sequence")
+      .fill(String(APPROVAL_TO.sequence));
+    await page.locator("#connection-pair-1-candidate-arrival").fill("06:15");
+    await page
+      .locator("#connection-pair-1-candidate-approval")
+      .fill("Dispatch sheet");
+
+    await capture(page, testInfo, "approval-draft-1440x1000");
+
+    await page.locator("#connection-approve").click();
+
+    // The receipt is the approval itself: the pair count, the routes the read
+    // resolved, the minimum it compares against and the digests it is bound to.
+    await expect(page.locator("#connection-approval-receipt")).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.locator("#connection-approval-pairs")).toHaveText(
+      "1 pair",
+    );
+    await expect(page.locator("#connection-approval-routes")).toContainText(
+      APPROVAL_FROM.route,
+    );
+    await expect(page.locator("#connection-approval-routes")).toContainText(
+      APPROVAL_TO.route,
+    );
+    await expect(page.locator("#connection-approval-minimums")).toContainText(
+      "stored minimum",
+    );
+
+    // The approved source opened the connections helper, and the page's own
+    // control says which helper is bound to it.
+    await expect(
+      page.locator("#schedule-helper-mode-connections"),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    await capture(
+      page,
+      testInfo,
+      "approval-receipt-1440x1000",
+      page.locator("#connection-approval-receipt"),
+    );
+
+    // The operator edits the approval: the source, the receipt and the
+    // conversation that read it go together, and the draft stays on screen.
+    await page.locator("#connection-pair-1-candidate-arrival").fill("06:20");
+
+    await expect(page.locator("#connection-approval-receipt")).toHaveCount(0);
+    await expect(
+      page.locator("#connection-pair-1-candidate-arrival"),
+    ).toHaveValue("06:20");
+    await expect(page.locator("#connection-pair-1-to-trip")).toHaveValue(
+      APPROVAL_TO.trip,
+    );
+
+    await capture(page, testInfo, "approval-edited-1440x1000");
+
+    // A trip this version does not hold is refused, and the draft survives it.
+    await page.locator("#connection-pair-1-to-trip").fill("NOT-A-TRIP");
+    await page.locator("#connection-approve").click();
+
+    await expect(page.locator("#connection-approval-notice")).toContainText(
+      "not part of this version",
+      { timeout: 30_000 },
+    );
+    await expect(page.locator("#connection-approval-receipt")).toHaveCount(0);
+    await expect(page.locator("#connection-pair-1-to-trip")).toHaveValue(
+      "NOT-A-TRIP",
+    );
+
+    // Switching helper keeps every value the operator typed.
+    await page.locator("#schedule-helper-mode-service_queries").click();
+    await expect(page.locator("#connection-pair-1-to-trip")).toHaveValue(
+      "NOT-A-TRIP",
+    );
+
+    await page.setViewportSize(PHONE);
+    await capture(page, testInfo, "approval-mobile-390x844");
+
+    const fitsViewport = await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    );
+    expect(fitsViewport).toBe(true);
   });
 });
 
 // Signs in, reaches the seeded transfers version and opens a new draft whose
 // direction and time this journey reviews.
 async function openDraft(page) {
-  await page.goto("/users/log_in");
-  await page.fill('input[name="user[email]"]', EDITOR_USER.email);
-  await page.fill('input[name="user[password]"]', EDITOR_USER.password);
-  await page.getByRole("button", { name: "Log in" }).click();
-  await page.waitForURL((url) => !url.pathname.startsWith("/users/log_in"));
+  await login(page);
 
   const option = page
     .locator("#gtfs-version-panel [data-version-option]")
     .filter({ hasText: TRANSFERS_VERSION });
   await expect(option).toHaveCount(1);
   const versionId = await option.getAttribute("data-version-id");
-  if (!versionId) throw new Error(`${TRANSFERS_VERSION} is missing its version ID`);
+  if (!versionId)
+    throw new Error(`${TRANSFERS_VERSION} is missing its version ID`);
 
   await page.goto(`/gtfs/${versionId}/transfers`);
   await page.waitForSelector("#transfers-create, #transfers-first-use-create", {
@@ -240,6 +382,30 @@ async function stageDraft(page) {
   await page.locator("#transfer-min-time").fill("300");
   await page.locator("#transfer-policy-select").click();
   await expect(page.locator("#transfer-policy-selections")).toHaveCount(1);
+}
+
+// Signs in, reaches the seeded schedules version and opens the route whose
+// approval this journey fills in.
+async function openSchedules(page) {
+  await login(page);
+
+  const option = page
+    .locator("#gtfs-version-panel [data-version-option]")
+    .filter({ hasText: E2E_VERSION });
+  await expect(option).toHaveCount(1);
+  const versionId = await option.getAttribute("data-version-id");
+  if (!versionId) throw new Error(`${E2E_VERSION} is missing its version ID`);
+
+  await page.goto(`/gtfs/${versionId}/routes/${APPROVAL_FROM.route}/schedules`);
+  await page.waitForSelector("#connection-approval-form", { timeout: 15_000 });
+}
+
+async function login(page) {
+  await page.goto("/users/log_in");
+  await page.fill('input[name="user[email]"]', EDITOR_USER.email);
+  await page.fill('input[name="user[password]"]', EDITOR_USER.password);
+  await page.getByRole("button", { name: "Log in" }).click();
+  await page.waitForURL((url) => !url.pathname.startsWith("/users/log_in"));
 }
 
 async function pickStop(page, side, label) {

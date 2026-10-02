@@ -1295,6 +1295,30 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Gets a trip by its GTFS `trip_id` within an organization and GTFS version.
+
+  Returns nil if the trip does not exist in that scope, so a caller resolving an
+  operator's own trip identifier learns only that this version does not hold it.
+
+  ## Examples
+
+      iex> get_trip_by_trip_id(organization_id, gtfs_version_id, "R1-0902")
+      %Trip{}
+
+      iex> get_trip_by_trip_id(organization_id, gtfs_version_id, "missing")
+      nil
+  """
+  @spec get_trip_by_trip_id(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) :: Trip.t() | nil
+  def get_trip_by_trip_id(organization_id, gtfs_version_id, trip_id) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
+          t.trip_id == ^trip_id
+    )
+    |> Repo.one()
+  end
+
+  @doc """
   Reads the version-scoped agency options and mode counts the create drawer
   presents (R3, R2).
 

@@ -254,6 +254,17 @@ defmodule GtfsPlannerWeb.AgentPanel do
     end
   end
 
+  @doc """
+  The digest that binds this panel's approval and admitted source into its
+  conversation key.
+
+  A host that admits an approval shows the person which conversation that
+  approval opened, and the session it starts from is exactly this value, so the
+  line the host renders cannot drift from the key the session uses (INV-2).
+  """
+  @spec context_digest(Phoenix.LiveView.Socket.t()) :: String.t()
+  def context_digest(socket), do: Scope.context_digest(scope(socket))
+
   ## Opening
 
   @doc """

@@ -45,6 +45,7 @@ defmodule GtfsPlanner.Agents do
   @packs %{
     "alerts" => GtfsPlanner.Agents.Packs.Alerts,
     "calendars" => GtfsPlanner.Agents.Packs.Calendars,
+    "connections" => GtfsPlanner.Agents.Packs.Connections,
     "service_queries" => GtfsPlanner.Agents.Packs.ServiceQueries,
     "transfers" => GtfsPlanner.Agents.Packs.Transfers
   }
