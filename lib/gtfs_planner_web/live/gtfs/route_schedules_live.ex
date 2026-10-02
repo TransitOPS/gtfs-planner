@@ -4946,6 +4946,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                         dates={@streams.dates}
                         services={@dated_change_services}
                         partition_kind={@dated_change_kind}
+                        calendar_link={@dated_change_calendar_link}
                       />
                   <% end %>
 
