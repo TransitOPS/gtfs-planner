@@ -12387,16 +12387,20 @@ case Accounts.register_first_admin(%{
       {"route_patterns.txt", "route_pattern_id,route_id\nPUB_RP1,PUB_R1\n"}
     ]
 
+    # One archive per reviewed file, and an archive carries one `stops.txt`: the
+    # Pathways profile adds its station, its platform and the pathway between
+    # them, so the shared file is replaced rather than repeated.
     pub_pathways_members =
-      [
-        {"stops.txt",
-         "stop_id,stop_name,location_type,parent_station\n" <>
-           "PUB_PS1,Central,1,\nPUB_PS1_A,Platform A,0,PUB_PS1\n"},
-        {"pathways.txt",
-         "pathway_id,from_stop_id,to_stop_id,pathway_mode,is_bidirectional\n" <>
-           "PUB_PW1,PUB_PS1_A,PUB_PS1,1,1\n"},
-        {"levels.txt", "level_id,level_index,level_name\nPUB_L1,0,Ground\n"}
-      ] ++ pub_full_members
+      Enum.reject(pub_full_members, fn {name, _body} -> name == "stops.txt" end) ++
+        [
+          {"stops.txt",
+           "stop_id,stop_name,location_type,parent_station\n" <>
+             "PUB_PS1,Central,1,\nPUB_PS1_A,Platform A,0,PUB_PS1\n"},
+          {"pathways.txt",
+           "pathway_id,from_stop_id,to_stop_id,pathway_mode,is_bidirectional\n" <>
+             "PUB_PW1,PUB_PS1_A,PUB_PS1,1,1\n"},
+          {"levels.txt", "level_id,level_index,level_name\nPUB_L1,0,Ground\n"}
+        ]
 
     pub_actor = %{id: editor.id, email: editor.email}
 

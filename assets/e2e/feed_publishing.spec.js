@@ -70,36 +70,24 @@ async function exportPage(page, query = "") {
   return href.split("?")[0];
 }
 
-// The alert editor is reached the way an editor reaches it: from the alert list.
-async function alertIdFor(page, header) {
-  await page.goto("/alerts");
+// The alert editor is reached the way an editor reaches it: from the alert list,
+// on the tab that lists it. The list renders one tab at a time and offers a
+// table link and a card link for the same row, so both ids are matched.
+const ALERT_LINKS = "a[id^='alert-link-'], a[id^='alert-card-link-']";
+
+async function alertIdFor(page, header, tab = "current") {
+  await page.goto(`/alerts?tab=${tab}`);
   await page.waitForSelector("#alerts-page");
 
-  const href = await page
-    .locator(`#alerts a[href^='/alerts/']:has-text(${JSON.stringify(header)})`)
-    .first()
-    .getAttribute("href");
+  const rows = header
+    ? page.locator(`${ALERT_LINKS}:has-text(${JSON.stringify(header)})`)
+    : page.locator(ALERT_LINKS);
 
+  const href = await rows.first().getAttribute("href");
+
+  // The row's own link names the editor URL, whose first path segment after
+  // `/alerts/` is the alert's id.
   return href.split("/")[2].split("?")[0];
-}
-
-// The one seeded alert whose wording names no state is the draft the editor
-// left unfinished, so the refusal case can reach it without an id in the spec.
-async function draftAlertId(page) {
-  await page.goto("/alerts");
-  await page.waitForSelector("#alerts-page");
-
-  const rows = await page.locator("#alerts a[href^='/alerts/']").evaluateAll((links) =>
-    links.map((link) => ({
-      id: link.getAttribute("href").split("/")[2].split("?")[0],
-      text: link.textContent || "",
-    })),
-  );
-
-  const finished = [CONFIRMED_ALERT, SCHEDULED_ALERT, REFERENCE_GONE_ALERT];
-  const draft = rows.find((row) => !finished.some((header) => row.text.includes(header)));
-
-  return draft.id;
 }
 
 async function openReview(page, alertId) {
@@ -233,18 +221,24 @@ test.describe("alert publication @alerts", () => {
     );
 
     // Accepted for a notice that has not begun: accepted, and no served date.
-    await openReview(page, await alertIdFor(page, SCHEDULED_ALERT));
+    // A planned notice is listed on its own tab.
+    await openReview(page, await alertIdFor(page, SCHEDULED_ALERT, "upcoming"));
     await expect(page.locator("#alert-publication-status")).toBeVisible();
     await expect(page.locator("#alert-publication-date")).toContainText(
       "No confirmed publication yet",
     );
     await expect(page.locator("#alert-publish-checkbox")).not.toBeChecked();
 
-    // A checked Save accepts the revision the editor is holding: the card stops
-    // reading as private, and the date still waits for the manifest.
+    // A checked Save accepts the revision the editor is holding: the consent
+    // control becomes a republish control because the alert now has an accepted
+    // revision, the notice is still scheduled rather than served, and the date
+    // still waits for the manifest.
     await page.locator("#alert-publish-checkbox").check();
     await page.locator("#save-alert").click();
-    await expect(page.locator("#alert-publication-status")).toContainText("accepted");
+    await expect(page.locator("#review-publication-form")).toContainText(
+      "Republish these changes",
+    );
+    await expect(page.locator("#alert-publication-status")).toContainText("Scheduled");
     await expect(page.locator("#alert-publication-date")).toContainText(
       "No confirmed publication yet",
     );
@@ -255,9 +249,8 @@ test.describe("alert publication @alerts", () => {
   test("a refused checked save keeps the operator's intent @alerts", async ({ page }) => {
     await page.setViewportSize(NARROW);
 
-    // The draft the seed leaves unfinished: every alert whose wording names a
-    // state is finished, so the remaining row is the one still being answered.
-    await openReview(page, await draftAlertId(page));
+    // The draft the seed leaves unfinished is the alert on the In progress tab.
+    await openReview(page, await alertIdFor(page, null, "in_progress"));
 
     const consent = page.locator("#alert-publish-checkbox");
     await consent.scrollIntoViewIfNeeded();
@@ -266,8 +259,12 @@ test.describe("alert publication @alerts", () => {
 
     // The refusal lists the questions still unanswered, the review stays open,
     // and the tick the operator gave it survives the refusal.
-    await expect(page.locator("#review-errors")).toBeVisible();
-    await expect(page.locator("#alert-review")).toBeVisible();
+    // The refusal lists the questions still unanswered, and the consent the
+    // operator gave survives it.
+    await expect(page.locator("#alert-editor")).toContainText("Choose at least one route.");
+    await expect(page.locator("#alert-editor")).toContainText(
+      "Write the headline riders will see.",
+    );
     await expect(consent).toBeChecked();
 
     await shot(page, "alerts-refused-320");
