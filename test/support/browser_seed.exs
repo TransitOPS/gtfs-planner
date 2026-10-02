@@ -12525,6 +12525,20 @@ case Accounts.register_first_admin(%{
       last_error: "the public manifest belongs to another owner"
     )
 
+    # The flex channel was published once and the publisher blocked its attempt,
+    # so it reports that failure for as long as nothing publishes it again.
+    pub_channel.(:flex, :failed,
+      run: pub_full_run,
+      attempt_state: "blocked",
+      source: %{
+        "run_id" => Ecto.UUID.generate(),
+        "slot" => "flex",
+        "filename" => "browser-full-flex.zip",
+        "export_type" => "flex"
+      },
+      last_error: "the public manifest belongs to another owner"
+    )
+
     # The realtime channel is settled too: while it has nothing left to
     # reconcile, the periodic refresh leaves the accepted alert publications -
     # and the served date the editor reports from one - exactly as seeded.

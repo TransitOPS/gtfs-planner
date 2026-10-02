@@ -71,23 +71,22 @@ async function exportPage(page, query = "") {
 }
 
 // The alert editor is reached the way an editor reaches it: from the alert list,
-// on the tab that lists it. The list renders one tab at a time and offers a
-// table link and a card link for the same row, so both ids are matched.
-const ALERT_LINKS = "a[id^='alert-link-'], a[id^='alert-card-link-']";
+// on the tab that lists it. The list renders one tab at a time and gives every
+// row an id that names the alert, in a table on desktop and a card at narrow
+// widths, so the row's own id is the identity - not the wording inside it.
+const ALERT_ROWS = "[id^='alert-row-'], [id^='alert-card-']";
 
 async function alertIdFor(page, header, tab = "current") {
   await page.goto(`/alerts?tab=${tab}`);
   await page.waitForSelector("#alerts-page");
 
   const rows = header
-    ? page.locator(`${ALERT_LINKS}:has-text(${JSON.stringify(header)})`)
-    : page.locator(ALERT_LINKS);
+    ? page.locator(ALERT_ROWS).filter({ hasText: header })
+    : page.locator(ALERT_ROWS);
 
-  const href = await rows.first().getAttribute("href");
+  const rowId = await rows.first().getAttribute("id");
 
-  // The row's own link names the editor URL, whose first path segment after
-  // `/alerts/` is the alert's id.
-  return href.split("/")[2].split("?")[0];
+  return rowId.replace(/^alert-(row|card)-/, "");
 }
 
 async function openReview(page, alertId) {
@@ -287,8 +286,12 @@ test.describe("organization publication status @settings", () => {
     await expect(page.locator("#feed-url-pathways")).toContainText(
       "/static/pathways.zip",
     );
-    await expect(page.locator("#feed-status-pathways")).toContainText(
-      "Publication failed",
+
+    // A channel a previous publication left failed reports the row's own error;
+    // the flex channel carries that state because no journey publishes it.
+    await expect(page.locator("#feed-status-flex")).toContainText("Publication failed");
+    await expect(page.locator("#feed-status-flex")).toContainText(
+      "the public manifest belongs to another owner",
     );
 
     // The last refresh the application observed is reported as its own fact.
