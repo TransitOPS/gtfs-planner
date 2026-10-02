@@ -562,7 +562,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   defp preview_message(assigns) do
     ~H"""
     <div class={[
-      "rounded-card border border-l-4 border-subtle bg-white px-4 py-3 shadow-card",
+      "rounded-r-card border border-l-4 border-subtle bg-white px-4 py-3 shadow-card",
       effect_border(@effect)
     ]}>
       <div class="flex flex-wrap items-center gap-1.5">
@@ -2592,7 +2592,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
           </h3>
         </div>
         <div class="px-4 py-4 sm:px-5">
-          <div class={["rounded-card border border-l-4 bg-white px-4 py-3", effect_border(@effect)]}>
+          <div class={["rounded-r-card border border-l-4 bg-white px-4 py-3", effect_border(@effect)]}>
             <div class="flex flex-wrap items-center gap-1.5">
               <span
                 :if={@effect}
