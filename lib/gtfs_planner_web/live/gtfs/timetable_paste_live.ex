@@ -101,8 +101,6 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
   import GtfsPlannerWeb.RouteWorkspace, only: [route_header: 1, route_label: 1]
 
-  alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.TimetablePaste
@@ -1839,22 +1837,16 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
     "#{a}-#{b}"
   end
 
-  # The role is re-read from the membership on every apply, like every
+  # The membership is re-read from the database on every apply, like every
   # other mutating event in `RouteSchedulesLive`: the assign is only a
-  # snapshot from mount, so a role revoked while the page is open
-  # refuses the write.
+  # snapshot from mount, so a role revoked or a membership deactivated
+  # while the page is open refuses the write.
   defp editor_access?(socket) do
-    EnsureRole.has_role?(live_roles(socket), :pathways_studio_editor)
-  end
-
-  defp live_roles(socket) do
     with %{id: user_id} <- socket.assigns[:current_user],
-         %{id: organization_id} <- socket.assigns[:current_organization],
-         %UserOrgMembership{} = membership <-
-           Accounts.get_user_org_membership(user_id, organization_id) do
-      membership.roles || []
+         %{id: organization_id} <- socket.assigns[:current_organization] do
+      EnsureRole.editor_member?(user_id, organization_id)
     else
-      _ -> []
+      _other -> false
     end
   end
 

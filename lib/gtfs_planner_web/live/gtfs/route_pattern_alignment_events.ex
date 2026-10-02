@@ -13,8 +13,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
 
   use GtfsPlannerWeb, :verified_routes
 
-  alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.Alignments.Materializer
@@ -2184,12 +2182,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   # and every future write event re-checks at its own mutation boundary.
   defp editor_access?(socket) do
     with %{id: user_id} <- socket.assigns[:current_user],
-         %{id: organization_id} <- socket.assigns[:current_organization],
-         %UserOrgMembership{} = membership <-
-           Accounts.get_user_org_membership(user_id, organization_id) do
-      GtfsPlannerWeb.EnsureRole.has_role?(membership.roles, :pathways_studio_editor)
+         %{id: organization_id} <- socket.assigns[:current_organization] do
+      GtfsPlannerWeb.EnsureRole.editor_member?(user_id, organization_id)
     else
-      _ -> false
+      _other -> false
     end
   end
 end

@@ -33,8 +33,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
 
-  alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
@@ -3614,22 +3612,17 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   # --- editor authority ------------------------------------------------------
 
-  # The role is re-read from the membership on every mutating event, so a role
-  # revoked while the page is open refuses the next write. This is the stricter
-  # form of the `has_role?(@user_roles, :pathways_studio_editor)` check: the
-  # assign is only a snapshot from mount.
+  # The membership is re-read from the database on every mutating event, so a
+  # role revoked or a membership deactivated while the page is open refuses the
+  # next write. This is the stricter form of the
+  # `has_role?(@user_roles, :pathways_studio_editor)` check: the assign is only a
+  # snapshot from mount.
   defp editor_access?(socket) do
-    EnsureRole.has_role?(live_roles(socket), :pathways_studio_editor)
-  end
-
-  defp live_roles(socket) do
     with %{id: user_id} <- socket.assigns[:current_user],
-         %{id: organization_id} <- socket.assigns[:current_organization],
-         %UserOrgMembership{} = membership <-
-           Accounts.get_user_org_membership(user_id, organization_id) do
-      membership.roles || []
+         %{id: organization_id} <- socket.assigns[:current_organization] do
+      EnsureRole.editor_member?(user_id, organization_id)
     else
-      _ -> []
+      _other -> false
     end
   end
 

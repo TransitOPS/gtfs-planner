@@ -56,8 +56,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   use GtfsPlannerWeb, :live_view
   require Logger
   alias Ecto.Changeset
-  alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.DisplayClock
@@ -641,11 +639,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   # the editor role or been deactivated since this socket connected.
   defp editor_access?(socket) do
     with %{id: user_id} <- socket.assigns[:current_user],
-         %{id: organization_id} <- socket.assigns[:current_organization],
-         %UserOrgMembership{} = membership <-
-           Accounts.get_user_org_membership(user_id, organization_id),
-         true <- is_nil(membership.deactivated_at) do
-      GtfsPlannerWeb.EnsureRole.has_role?(membership.roles, :pathways_studio_editor)
+         %{id: organization_id} <- socket.assigns[:current_organization] do
+      GtfsPlannerWeb.EnsureRole.editor_member?(user_id, organization_id)
     else
       _other -> false
     end
