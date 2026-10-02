@@ -21,6 +21,7 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison do
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs.Export.Run
   alias GtfsPlanner.Gtfs.ExportRuns
+  alias GtfsPlanner.Gtfs.ReleaseComparison.Runner
   alias GtfsPlanner.Versions
 
   @default_limit 25
@@ -46,6 +47,16 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison do
           required(:estimate_missing_times) => boolean(),
           required(:estimate_method) => atom() | nil
         }
+
+  @typedoc """
+  One started comparison, its owner and the reference it answers under.
+
+  `owner_pid` is the only process that receives the result and the only process
+  whose cancellation is honoured; `request_ref` tags that one request so a stale
+  answer or a stale cancellation from a replaced request can never be mistaken
+  for the current one.
+  """
+  @type start_args :: {Scope.t(), map(), pid(), term()}
 
   @typedoc "Two retained artifacts plus the one inclusive service-date window they share."
   @type selection :: %{
@@ -120,6 +131,45 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison do
   end
 
   def resolve_selection(_scope, _params), do: {:error, :unavailable}
+
+  @doc """
+  Starts one native comparison and returns its coordinator pid.
+
+  This is the only entrypoint that reads or claims anything. `params` is the same
+  selection `resolve_selection/2` accepts; the coordinator resolves it itself,
+  re-authorizes the scope inside the claim transaction and claims each distinct
+  retained artifact once, in sorted run-id order, so comparing an artifact with
+  itself is one receipt and one read.
+
+  `owner_pid` receives exactly one tagged terminal message,
+  `{:release_comparison, request_ref, {:ok, result}}` or
+  `{:release_comparison, request_ref, {:error, reason}}`, where `reason` is one of
+  `unavailable`, `invalid_window`, `unsupported_profile`, `unsupported_size`,
+  `malformed_csv`, `invalid_archive`, `cancelled`, `timeout` or `worker_exit`. A
+  successful result carries the selection's fingerprint, window, both artifact
+  identities and the comparison result itself.
+
+  `{:error, :unavailable}` means no coordinator started at all. Every other
+  refusal arrives as the tagged message.
+
+  Starting a comparison takes the existing download claim, so the durable
+  download receipt increments and a corrupt artifact is closed and removed by
+  `GtfsPlanner.Gtfs.ExportRuns` exactly as an ordinary download would. Retention
+  and quotas are unchanged.
+  """
+  @spec start(Scope.t(), map(), pid(), term()) :: {:ok, pid()} | {:error, :unavailable}
+  defdelegate start(scope, params, owner_pid, request_ref), to: Runner
+
+  @doc """
+  Cancels the comparison `pid` is running for `request_ref`.
+
+  Only a message from the owning pid carrying the matching request reference is
+  acted on, so a foreign or stale cancellation changes nothing. Cancelling stops
+  the compute child and releases every claim the coordinator took; it never
+  touches export cancellation, retry or any durable export run.
+  """
+  @spec cancel(pid(), term()) :: :ok
+  defdelegate cancel(pid, request_ref), to: Runner
 
   # Membership and the host version identity first: both are checked before any
   # prepared lookup, and their two failure reasons collapse into one answer.
