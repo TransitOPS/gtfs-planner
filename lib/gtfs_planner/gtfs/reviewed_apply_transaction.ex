@@ -16,4 +16,15 @@ defmodule GtfsPlanner.Gtfs.ReviewedApplyTransaction do
 
   @callback run(transaction()) :: {:ok, term()} | {:error, term()}
   @callback run(transaction(), options()) :: {:ok, term()} | {:error, term()}
+
+  @doc """
+  Returns the configured transaction adapter.
+
+  Defaults to the SERIALIZABLE `GtfsPlanner.Gtfs.ReviewedApplyTransaction.Repo` adapter;
+  test environments configure their own adapter under `:reviewed_apply_transaction`.
+  """
+  @spec adapter() :: module()
+  def adapter do
+    Application.get_env(:gtfs_planner, :reviewed_apply_transaction, __MODULE__.Repo)
+  end
 end
