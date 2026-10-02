@@ -1,9 +1,13 @@
 /* @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import FlexAreaMapHook, { areaClassName } from "../flex_area_map_hook";
+import "../../vendor/leaflet";
 
-// Merge evidence (EV-19) for the FlexAreaMap hook. The Leaflet runtime is
-// stubbed, so nothing here loads a tile or reaches a tile host: these cases
+const leafletRuntime = window.L;
+
+// Merge evidence (EV-19) for the FlexAreaMap hook. Most cases stub Leaflet;
+// the pending-zoom teardown regression uses the shipped runtime. No case
+// loads a tile or reaches a tile host: these cases
 // establish the hook's own contract — what it draws for a `flex_map:load`
 // payload, which axis order it converts, how a second payload replaces the
 // first and what it tears down — for CL-16 (the read-only flex maps).
@@ -256,6 +260,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   window.L = originalLeaflet;
   window.matchMedia = originalMatchMedia;
   document.body.innerHTML = "";
@@ -333,6 +338,30 @@ describe("mounting the hook", () => {
     expect(map.remove).toHaveBeenCalledTimes(1);
     expect(hook._map).toBeNull();
     expect(hook._layers).toEqual([]);
+  });
+
+  it("can leave the page while Leaflet's zoom transition is pending", () => {
+    vi.useFakeTimers();
+    window.L = leafletRuntime;
+    const hook = {
+      ...FlexAreaMapHook,
+      el: renderRoot(),
+      pushEvent: vi.fn(),
+      handleEvent: vi.fn(),
+    };
+    hook.mounted();
+    const map = hook._map;
+
+    // Use the shipped runtime: its 250 ms zoom callback remains scheduled even
+    // after remove() deletes the map pane during a LiveView navigation.
+    map._animateZoom(map.getCenter(), map.getZoom() + 1, true);
+    expect(map._animatingZoom).toBe(true);
+
+    hook.destroyed();
+
+    expect(map._mapPane).toBeUndefined();
+    expect(() => vi.advanceTimersByTime(250)).not.toThrow();
+    expect(hook._map).toBeNull();
   });
 });
 
