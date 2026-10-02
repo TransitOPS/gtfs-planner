@@ -260,13 +260,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
       assert row_blocks(view) |> hd() == "2"
       refute "1" in row_blocks(view)
       assert has_element?(view, "th[aria-sort='descending']", "Time out")
-      assert has_element?(view, "th[aria-sort='descending']", "↓")
+      assert has_element?(view, "th[aria-sort='descending'] span[aria-hidden='true']", "▼")
 
       # The same key reverses: ascending puts the earliest pull-out first.
       view |> element("button[phx-value-key='out']") |> render_click()
 
       assert_patch(view, blocks_path(version.id) <> "?sort=out")
-      assert has_element?(view, "th[aria-sort='ascending']", "↑")
+      assert has_element?(view, "th[aria-sort='ascending'] span[aria-hidden='true']", "▲")
       assert row_blocks(view) |> hd() == "1"
     end
 

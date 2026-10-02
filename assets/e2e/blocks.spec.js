@@ -494,7 +494,7 @@ test.describe("Blocks workspace 1440x1000", () => {
     // leads page 1.
     await outHeader.locator("button.blocks-sort").click();
     await expect(outHeader).toHaveAttribute("aria-sort", "ascending");
-    await expect(outHeader.locator("button.blocks-sort")).toContainText("↑");
+    await expect(outHeader.locator("button.blocks-sort")).toContainText("▲");
 
     const ascending = (await blockBoxes(page)).map((row) => outSeconds(row.out));
     for (let index = 1; index < ascending.length; index += 1) {
@@ -504,7 +504,7 @@ test.describe("Blocks workspace 1440x1000", () => {
 
     await outHeader.locator("button.blocks-sort").click();
     await expect(outHeader).toHaveAttribute("aria-sort", "descending");
-    await expect(outHeader.locator("button.blocks-sort")).toContainText("↓");
+    await expect(outHeader.locator("button.blocks-sort")).toContainText("▼");
 
     const sorted = await blockBoxes(page);
     // The order is non-increasing down the page, and the sort kept the whole day

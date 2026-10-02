@@ -184,7 +184,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksColumnsLiveTest do
 
       # The row-select column has no visible label, and the Block column carries the
       # current sort arrow.
-      assert headers(view) == "Block ↑ Garage · type Time out Hours Status"
+      assert headers(view) == "Block ▲ Garage · type Time out Hours Status"
 
       # The three removed columns are gone from the header and from every row.
       refute has_element?(view, "th.blocks-meta-trips")

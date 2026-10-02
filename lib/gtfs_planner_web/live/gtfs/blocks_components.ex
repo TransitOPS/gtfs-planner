@@ -8080,7 +8080,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                   aria-hidden="true"
                   class="text-action"
                 >
-                  {sort_arrow(@state.dir)}
+                  {sort_glyph(@state.dir)}
                 </span>
                 <.icon
                   :if={Atom.to_string(@state.sort) != column.key}
@@ -9137,9 +9137,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       true -> "descending"
     end
   end
-
-  defp sort_arrow(:asc), do: "↑"
-  defp sort_arrow(_dir), do: "↓"
 
   defp axis_ticks(nil), do: []
 

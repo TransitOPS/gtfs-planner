@@ -606,7 +606,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
                   class={["text-xs", col[:sort] == "none" && "text-base-content/30"]}
                   aria-hidden="true"
                 >
-                  {sort_arrow(col[:sort])}
+                  {sort_glyph(col[:sort])}
                 </span>
               </button>
               <span :if={!col[:sort_event]} class="inline-flex items-center gap-1">
@@ -616,7 +616,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
                   class={["text-xs", col[:sort] == "none" && "text-base-content/30"]}
                   aria-hidden="true"
                 >
-                  {sort_arrow(col[:sort])}
+                  {sort_glyph(col[:sort])}
                 </span>
               </span>
             </th>
@@ -671,9 +671,18 @@ defmodule GtfsPlannerWeb.CoreComponents do
   defp sort_aria("none"), do: "none"
   defp sort_aria(_), do: nil
 
-  defp sort_arrow("asc"), do: "▲"
-  defp sort_arrow("desc"), do: "▼"
-  defp sort_arrow(_), do: "↕"
+  @doc """
+  The glyph for a column's current sort direction.
+
+  `"asc"`/`:asc` is `▲`, `"desc"`/`:desc` is `▼`, and any other value — the
+  string or atom a caller uses for "no sort" — is `↕`. The call site keeps the
+  glyph `aria-hidden`; the header's `aria-sort` carries the meaning.
+  """
+  def sort_glyph("asc"), do: "▲"
+  def sort_glyph(:asc), do: "▲"
+  def sort_glyph("desc"), do: "▼"
+  def sort_glyph(:desc), do: "▼"
+  def sort_glyph(_direction), do: "↕"
 
   @doc """
   Renders a data list.

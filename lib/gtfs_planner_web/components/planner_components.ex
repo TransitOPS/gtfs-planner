@@ -21,7 +21,7 @@ defmodule GtfsPlannerWeb.PlannerComponents do
   """
   use Phoenix.Component
 
-  import GtfsPlannerWeb.CoreComponents, only: [icon: 1]
+  import GtfsPlannerWeb.CoreComponents, only: [icon: 1, sort_glyph: 1]
 
   @message_tones %{
     "neutral" => {"bg-canvas text-default", "text-muted", "hero-information-circle", "status"},
@@ -513,9 +513,7 @@ defmodule GtfsPlannerWeb.PlannerComponents do
 
   # An unsorted column gets the neutral double arrow, because a single arrow
   # would imply a sort that is not there.
-  defp sort_indicator("asc"), do: "▲"
-  defp sort_indicator("desc"), do: "▼"
-  defp sort_indicator(_other), do: "↕"
+  defp sort_indicator(state), do: sort_glyph(state)
 
   @doc """
   The address a stored web or email value may open, or `nil`.

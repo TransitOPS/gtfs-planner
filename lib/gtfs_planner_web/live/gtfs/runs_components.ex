@@ -1330,7 +1330,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
               >
                 {column.label}
                 <span :if={Atom.to_string(@sort) == column.key} aria-hidden="true">
-                  {sort_arrow(@dir)}
+                  {CoreComponents.sort_glyph(@dir)}
                 </span>
               </button>
             </th>
@@ -1552,7 +1552,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
               <button type="button" phx-click="sort" phx-value-key={column.key} class="runs-sort">
                 {column.label}
                 <span :if={Atom.to_string(@sort) == column.key} aria-hidden="true">
-                  {sort_arrow(@dir)}
+                  {CoreComponents.sort_glyph(@dir)}
                 </span>
               </button>
             </th>
@@ -3101,9 +3101,6 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       true -> "descending"
     end
   end
-
-  defp sort_arrow(:asc), do: "↑"
-  defp sort_arrow(_dir), do: "↓"
 
   defp type_label(:one_piece), do: "One piece"
   defp type_label(:straight), do: "Straight"

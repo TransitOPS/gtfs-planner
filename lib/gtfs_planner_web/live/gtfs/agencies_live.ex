@@ -1043,7 +1043,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
           aria-hidden="true"
           class={[@sort == "none" && "text-muted", @sort != "none" && "text-action"]}
         >
-          {sort_arrow(@sort)}
+          {sort_glyph(@sort)}
         </span>
       </button>
     </th>
@@ -1053,10 +1053,6 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   defp sort_aria("asc"), do: "ascending"
   defp sort_aria("desc"), do: "descending"
   defp sort_aria(_none), do: "none"
-
-  defp sort_arrow("asc"), do: "↑"
-  defp sort_arrow("desc"), do: "↓"
-  defp sort_arrow(_none), do: "↕"
 
   # Phone first and email under it, so the row shows what riders would call
   # before what they would write.
