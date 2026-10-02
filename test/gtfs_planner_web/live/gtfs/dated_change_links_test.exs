@@ -415,7 +415,7 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeLinksTest do
   defp analyzed_view(context) do
     view = schedules_view(context)
 
-    view |> element("#schedule-helper-mode input[value=dated_changes]") |> render_click()
+    switch_helper(view, "dated_changes")
 
     Enum.each(context.trips, fn trip ->
       view |> element("#trip-select-#{trip.trip_id}") |> render_click()
@@ -437,6 +437,12 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeLinksTest do
     view
   end
 
+  # The helper switch is a `phx-change` form of radio inputs, so it is driven
+  # the way a browser drives it: the form posts the chosen value.
+  defp switch_helper(view, pack_id) do
+    view |> form("#schedule-helper-mode-form", %{"pack" => pack_id}) |> render_change()
+  end
+
   # The read the page started, waited on with a real monitor.
   defp await_plan(view) do
     case :sys.get_state(view.pid).socket.assigns.dated_change_task do
@@ -456,7 +462,7 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeLinksTest do
   # are observable without polling or sleeping.
   defp open_helper(context) do
     view = schedules_view(context)
-    view |> element("#schedule-helper-mode input[value=dated_changes]") |> render_click()
+    switch_helper(view, "dated_changes")
 
     Enum.each(context.trips, fn trip ->
       view |> element("#trip-select-#{trip.trip_id}") |> render_click()

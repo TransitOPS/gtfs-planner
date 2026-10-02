@@ -89,8 +89,11 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangePlanningLiveTest do
 
       # The stage list says what is missing rather than offering to run it.
       assert has_element?(view, "#dated-change-stages")
-      assert has_element?(view, "#dated-change-service")
       assert has_element?(view, "#dated-change-kind")
+
+      # These fixtures load one calendar, so the report names it rather than
+      # offering a switch with nothing to switch to.
+      assert has_element?(view, "#dated-change-service-single")
 
       # Planning only: no control anywhere applies the plan (INV-1, AC-10).
       refute render(view) =~ ~r/phx-click="apply_dated_change"/
@@ -111,17 +114,23 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangePlanningLiveTest do
       assert date_rows(view) == @window_dates
 
       # The original set is the whole Mon-Fri year, and the kept set is the
-      # difference, so `T` and `N` stay disjoint and both are reachable.
-      view |> element("#dated-change-kind input[value=original]") |> render_click()
-      original = date_rows(view)
+      # difference, so `T` and `N` stay disjoint and both are reachable. Both
+      # run to more than one page of dates, so each is read the way a person
+      # reads it: through the page's own paging control.
+      show_partition(view, "original")
+      original = all_date_rows(view)
       assert length(original) == 261
       assert "2026-01-01" in original
       assert "2026-12-31" in original
 
-      view |> element("#dated-change-kind input[value=normal]") |> render_click()
-      normal = date_rows(view)
+      show_partition(view, "normal")
+      normal = all_date_rows(view)
       assert length(normal) == 251
-      assert normal == original -- @window_dates
+
+      # The page lists newest first, so what paging pins is the membership of
+      # each set, not the order a person reads it in.
+      assert MapSet.new(normal) ==
+               MapSet.difference(MapSet.new(original), MapSet.new(@window_dates))
 
       # A forged calendar is refused rather than answered for another one.
       render_click(view, "dated_change_service", %{"service_id" => "NOT_LOADED"})
@@ -310,8 +319,10 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangePlanningLiveTest do
       await_plan(view)
       assert has_element?(view, "#dated-change-totals")
 
-      view =
-        patch(view, "/gtfs/#{context.scope.version.id}/routes/#{@route_id}/schedules?direction=1")
+      render_patch(
+        view,
+        "/gtfs/#{context.scope.version.id}/routes/#{@route_id}/schedules?stops=all"
+      )
 
       assert view |> element("#dated-change-state-headline") |> render() =~ "No plan yet."
       refute has_element?(view, "#dated-change-totals")
@@ -323,7 +334,7 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangePlanningLiveTest do
       view = accepted_view(context)
       draft_change(view, %{"source_label" => "Board memo 2026-14"})
 
-      view |> element("#schedule-helper-mode input[value=dated_changes]") |> render_click()
+      switch_helper(view, "dated_changes")
 
       # The draft and the selection are this page's own state; switching helpers
       # detaches a panel and nothing else (INV-3).
@@ -351,6 +362,9 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangePlanningLiveTest do
       await_plan(view)
       assert has_element?(view, "#dated-change-totals")
 
+      # The panel is the surface that carries a refusal, so it is open to read
+      # one; the forged id is then posted the way a tampered client would.
+      view |> element("#agent-helper-open") |> render_click()
       render_click(view, "helper_pack", %{"pack" => "connections"})
 
       # The panel refused it, and nothing this page owns changed: the report, the
@@ -369,14 +383,18 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangePlanningLiveTest do
     end
 
     test "a second tab sharing the conversation keeps its own session", context do
-      view = accepted_view(context)
-
+      # Both tabs open the same helper on the same page state, so both resolve to
+      # the same conversation. A tab holding a different context is a different
+      # conversation by design, not a second listener on this one.
+      view = schedules_view(context)
+      switch_helper(view, "dated_changes")
       view |> element("#agent-helper-open") |> render_click()
       first_session = session_pid(view)
 
       {:ok, second, _html} =
         live(context.conn, "/gtfs/#{context.scope.version.id}/routes/#{@route_id}/schedules")
 
+      switch_helper(second, "dated_changes")
       second |> element("#agent-helper-open") |> render_click()
       second_session = session_pid(second)
 
@@ -385,7 +403,7 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangePlanningLiveTest do
 
       # One panel switching detaches only that listener; the other tab's panel
       # and the shared session it is bound to are untouched (INV-3).
-      second |> element("#schedule-helper-mode input[value=dated_changes]") |> render_click()
+      second |> switch_helper("dated_changes")
 
       refute_received {:DOWN, ^ref, :process, ^first_session, _reason}
       assert session_pid(view) == first_session
@@ -418,15 +436,22 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangePlanningLiveTest do
 
       html = render(view)
 
-      # No fixed pixel widths on the plan's own containers, so the card reflows
-      # instead of forcing a sideways scroll at 320px.
-      plan_html = html |> String.split(~s(id="dated-change-plan")) |> List.last()
+      # No fixed pixel widths on the plan's own card, so it reflows instead of
+      # forcing a sideways scroll at 320px. The slice is the plan section alone:
+      # the trip drawer that follows it legitimately has a minimum width.
+      plan_html =
+        html
+        |> String.split(~s(id="dated-change-plan"))
+        |> List.last()
+        |> String.split("</section>")
+        |> List.first()
+
       refute plan_html =~ ~r/min-w-\[[0-9]+px\]/
 
       # The controls are real buttons and inputs, so they are keyboard reachable
       # and the plan offers no pointer-only affordance.
       assert has_element?(view, "#dated-change-refresh")
-      assert has_element?(view, "#dated-change-service input[value=PLANNED_WEEKDAY]")
+      assert has_element?(view, "#dated-change-service-single")
       assert has_element?(view, "#dated-change-kind input[value=temporary]")
     end
   end
@@ -451,14 +476,34 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangePlanningLiveTest do
 
   # Re-runs the ordinary acceptance after a case dropped the source, through the
   # same rendered form as the first one.
+  # A trip the page still has selected is left alone: the timetable's control is
+  # a toggle, and a blind re-click would deselect the very selection the
+  # acceptance needs.
   defp reaccept(view, context) do
-    Enum.each(context.trips, &select_trip(view, &1))
+    Enum.each(context.trips, fn trip ->
+      unless has_element?(view, "#trip-select-#{trip.trip_id}[checked]") do
+        select_trip(view, trip)
+      end
+    end)
+
     view |> element("#dated-change-form") |> render_submit(intent_params(%{}))
     view
   end
 
+  # The partition switch is a `phx-change` form of radio inputs, so it is driven
+  # the way a browser drives it: the form posts the chosen value.
+  defp show_partition(view, kind) do
+    view |> form("#dated-change-kind-form", %{"partition_kind" => kind}) |> render_change()
+  end
+
   defp select_trip(view, trip) do
     view |> element("#trip-select-#{trip.trip_id}") |> render_click()
+  end
+
+  # The helper switch is a `phx-change` form of radio inputs, so it is driven
+  # the way a browser drives it: the form posts the chosen value.
+  defp switch_helper(view, pack_id) do
+    view |> form("#schedule-helper-mode-form", %{"pack" => pack_id}) |> render_change()
   end
 
   defp intent_params(overrides) do
@@ -483,14 +528,32 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangePlanningLiveTest do
   end
 
   # The dates the page is currently listing, read from the stream the page
-  # rendered rather than from any assign.
+  # rendered rather than from any assign. `query/2` searches descendants;
+  # `filter/2` only ever matches the root nodes it is given.
   defp date_rows(view) do
     view
     |> render()
     |> LazyHTML.from_fragment()
-    |> LazyHTML.filter("#dated-change-dates [id^=dated-change-date-]")
+    |> LazyHTML.query("#dated-change-dates [id^=dated-change-date-]")
     |> Enum.map(&LazyHTML.text/1)
     |> Enum.map(&String.trim/1)
+  end
+
+  # Every date the page is listing across all of its pages, read by turning the
+  # page with the page's own control until it offers no next page. A single
+  # render only ever holds one page, so a set larger than a page can only be
+  # observed by paging.
+  defp all_date_rows(view), do: all_date_rows(view, [])
+
+  defp all_date_rows(view, acc) do
+    rows = date_rows(view) ++ acc
+
+    if has_element?(view, "#dated-change-page-next:not([disabled])") do
+      view |> element("#dated-change-page-next") |> render_click()
+      all_date_rows(view, rows)
+    else
+      Enum.reverse(rows)
+    end
   end
 
   # The read the page started, waited on with a real monitor. `Process.monitor/1`
@@ -525,11 +588,23 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangePlanningLiveTest do
     ref = Process.monitor(task.pid)
     Process.exit(task.pid, :kill)
     assert_receive {:DOWN, ^ref, :process, _pid, _reason}, 30_000
+
+    # The page's own monitor fires at the same moment as this test's, so a
+    # synchronous state read is what guarantees the live view has handled its
+    # DOWN before the headline is read.
+    _ = :sys.get_state(view.pid)
+
     render(view)
   end
 
   # A same-count substitution: the calendar keeps one exception row, but it now
   # removes a different date. Only the full content digest notices.
+  #
+  # Written through the sandbox transaction, not its own autocommit connection:
+  # the fixtures this file builds — the organization above all — are themselves
+  # uncommitted, so an autocommit write could not satisfy their foreign keys.
+  # The read the page starts is a separate *process*, and the non-async sandbox
+  # is shared, so it checks out this transaction and observes the edit.
   defp replace_calendar_exception(context) do
     service = context.scope.service
     version_id = context.scope.version.id
@@ -552,6 +627,9 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangePlanningLiveTest do
       |> Repo.insert()
   end
 
+  # Revoked after the acceptance, from this page's own shared sandbox connection:
+  # the read the page starts is a separate process that checks the membership
+  # out of the same transaction (AC-3, INV-2).
   defp revoke_editor(context) do
     membership =
       GtfsPlanner.Accounts.get_user_org_membership(
