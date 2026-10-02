@@ -27,6 +27,7 @@ defmodule GtfsPlanner.Alerts.MessageTest do
 
   alias GtfsPlanner.Alerts
   alias GtfsPlanner.Alerts.Alert
+  alias GtfsPlanner.Alerts.BuiltInScripts
   alias GtfsPlanner.Alerts.Message
   alias GtfsPlanner.Alerts.MessageAnswer
   alias GtfsPlanner.Gtfs.AuditContext
@@ -304,6 +305,26 @@ defmodule GtfsPlanner.Alerts.MessageTest do
       refute Map.has_key?(facts, "last skipped")
     end
 
+    test "a cancelled-departures alert's when fact is the service date of its departure",
+         context do
+      alert = cancelled_departures(context, ["2026-10-05"])
+
+      assert Message.facts(alert, labels(context, alert))["when"] == "Oct 5"
+    end
+
+    test "a cancelled-departures alert over several days names the first and last date",
+         context do
+      alert = cancelled_departures(context, ["2026-10-07", "2026-10-05"])
+
+      assert Message.facts(alert, labels(context, alert))["when"] == "Oct 5 to Oct 7"
+    end
+
+    test "a cancelled-departures alert with no departure yet has no when fact", context do
+      alert = cancelled_departures(context, [])
+
+      refute Map.has_key?(Message.facts(alert, labels(context, alert)), "when")
+    end
+
     test "an unanswered draft produces only the facts it can", context do
       alert = alert_fixture(context.audit, %{"urgency" => "planned"})
 
@@ -366,6 +387,24 @@ defmodule GtfsPlanner.Alerts.MessageTest do
       assert saved.message.header == "Route 12 detour: NE 6th St to NE 20th St not served"
       assert saved.message.customized == false
       assert Message.review_wording?(saved, labels(context, saved)) == false
+    end
+  end
+
+  describe "the built-in scripts" do
+    # A script's own situation is the only one that can ever fill its tokens, so
+    # each built-in is generated for an alert that has answered every question
+    # that situation asks. A token left in the text would reach riders as written.
+    for script <- BuiltInScripts.scripts() do
+      test "#{script.name} leaves no fill-in unanswered once its questions are answered",
+           context do
+        script = BuiltInScripts.script(unquote(script.key))
+        alert = answered_alert(context, script.situation)
+
+        generated = Message.generate(alert, script, labels(context, alert))
+
+        assert Regex.scan(~r/\[[a-z ]+\]/, generated.header <> " " <> generated.description) ==
+                 []
+      end
     end
   end
 
@@ -626,6 +665,80 @@ defmodule GtfsPlanner.Alerts.MessageTest do
         "end_kind" => "estimated",
         "check_in_at" => "2026-10-05 12:00:00",
         "delay_minutes" => 20
+      }
+    })
+  end
+
+  defp cancelled_departures(context, service_dates) do
+    route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
+    trip = trip_fixture(context.organization.id, context.version.id, route.route_id)
+
+    alert_fixture(context.audit, %{
+      "urgency" => "planned",
+      "situation" => "cancelled_trips",
+      "cause" => "construction",
+      "scope" => %{
+        "shape" => "trips",
+        "route_ids" => [route.id],
+        "trips" => Enum.map(service_dates, &%{"trip_id" => trip.id, "service_date" => &1})
+      }
+    })
+  end
+
+  # What the editor's sequence for a situation leaves on the alert: its routes
+  # or place, its alternative stop, its timing when the sequence has a timing
+  # step, and a cause.
+  defp answered_alert(context, :detour),
+    do: detour(context, route_id(context, "12"), stop_id(context, "S6"), stop_id(context, "S20"))
+
+  defp answered_alert(context, :delay), do: delay(context)
+
+  defp answered_alert(context, :stop_moved),
+    do: moved_stop(context, stop_id(context, "S6"), stop_id(context, "S20"))
+
+  defp answered_alert(context, :cancelled_trips),
+    do: cancelled_departures(context, ["2026-10-05"])
+
+  defp answered_alert(context, :stop_closed) do
+    now_alert(context, :stop_closed, %{
+      "shape" => "stop_all_routes",
+      "stop_ids" => [stop_id(context, "S6")],
+      "route_ids" => [route_id(context, "12")],
+      "alternative_stop_id" => stop_id(context, "S20")
+    })
+  end
+
+  defp answered_alert(context, :accessibility) do
+    now_alert(context, :accessibility, %{
+      "shape" => "stop_all_routes",
+      "stop_ids" => [stop_id(context, "S6")],
+      "alternative_stop_id" => stop_id(context, "S20")
+    })
+  end
+
+  defp answered_alert(context, situation) when situation in [:suspension, :service_change] do
+    now_alert(context, situation, %{
+      "shape" => "routes",
+      "route_ids" => [route_id(context, "12")]
+    })
+  end
+
+  defp now_alert(context, situation, scope) do
+    alert =
+      alert_fixture(context.audit, %{
+        "urgency" => "now",
+        "situation" => Atom.to_string(situation),
+        "cause" => "construction",
+        "scope" => scope
+      })
+
+    save!(context.audit, alert, %{
+      "timing" => %{
+        "start_date" => "2026-10-05",
+        "start_time" => "08:00:00",
+        "end_kind" => "confirmed",
+        "end_date" => "2026-10-06",
+        "end_time" => "18:00:00"
       }
     })
   end

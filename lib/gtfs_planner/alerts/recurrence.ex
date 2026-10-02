@@ -201,6 +201,20 @@ defmodule GtfsPlanner.Alerts.Recurrence do
 
   def summary(nil), do: ""
 
+  @doc """
+  Words the dates a cancelled-trips alert covers the way `summary/1` words a
+  period: `Oct 5` for one service date, `Oct 5 to Oct 7` for several, and `""`
+  while no departure is named yet.
+
+  A cancelled-trips alert has no timing answer of its own to summarize, so its
+  dates come from `date_range/1`.
+  """
+  @spec departures_summary(Alert.t()) :: String.t()
+  def departures_summary(%Alert{} = alert) do
+    {first_date, last_date} = date_range(alert)
+    date_range_phrase(first_date, last_date)
+  end
+
   # A current alert reads its start, then the end the operator chose: a
   # confirmed end names its own date and time, an estimate names the expected
   # recovery, and anything else leaves the end open.

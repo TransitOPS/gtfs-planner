@@ -397,11 +397,14 @@ defmodule GtfsPlanner.Alerts.Message do
     end
   end
 
+  # A cancelled-trips alert has no timing step, so its `when` is the service
+  # dates of the departures it names rather than a timing summary.
+  defp when_fact(%Alert{situation: :cancelled_trips} = alert) do
+    alert |> Recurrence.departures_summary() |> present()
+  end
+
   defp when_fact(%Alert{} = alert) do
-    case alert.timing |> Recurrence.summary() |> present() do
-      nil -> nil
-      summary -> summary
-    end
+    alert.timing |> Recurrence.summary() |> present()
   end
 
   # The prototype's phrasing, so `[because]` reads correctly wherever a template
