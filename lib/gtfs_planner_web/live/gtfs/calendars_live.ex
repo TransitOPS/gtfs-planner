@@ -153,6 +153,12 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   @impl true
   def handle_info(:load_calendars, socket), do: {:noreply, load_calendars(socket)}
 
+  # The helper panel passes a process `DOWN` it did not monitor down to the host, because the
+  # host may be the one waiting for it. This page holds no monitor of its own, so an unmatched
+  # message is none of its business and is ignored rather than crashing the socket.
+  @impl true
+  def handle_info(_message, socket), do: {:noreply, socket}
+
   # The reviewed apply runs in the LiveView's own async task: the socket renders its pending state
   # before the task starts, keeps its audit/scope in the task's closure, and settles exactly once
   # per dispatched confirmation.
