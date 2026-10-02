@@ -37,6 +37,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   import GtfsPlannerWeb.PlannerComponents,
     only: [first_use: 1, drawer_scroll: 1, drawer_footer: 1, message: 1]
 
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlannerWeb.Gtfs.TimetablePasteReview
 
@@ -1244,7 +1245,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   recompute, filter and view change (`paste-row-<n>` for pasted rows,
   `paste-remove-<trip_id>` for removals); the column set and the filtered
   count arrive as plain assigns because streams are not enumerable. Cells
-  render pasted times bold, estimates italic muted floored to the minute,
+  render pasted times bold, estimates italic muted,
   `Not served`, `+1 day` at or past 24:00, `arr HH:MM` for a differing
   arrival, `was HH:MM` on changed cells and struck old times for removals.
   Timing buttons store a `pattern_id|name` ref through `paste_timing` and
@@ -1581,7 +1582,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
     </div>
     <div :if={@decision.kind == :twelve} class="grid gap-2">
       <p class="text-[13px] text-warning-fg">
-        <strong>Starts at {TimetablePasteReview.format_clock(@decision.secs)};</strong>
+        <strong>Starts at {GtfsTime.display(@decision.secs)};</strong>
         the other trips start in the evening. Which time is it?
       </p>
       <div class="flex flex-wrap gap-2">
@@ -1593,7 +1594,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
           phx-value-choice="86400"
           class={@decision_button_class}
         >
-          {TimetablePasteReview.format_clock(@decision.secs + 86_400)} · after midnight
+          {GtfsTime.display(@decision.secs + 86_400)} · after midnight
         </button>
         <button
           type="button"
@@ -1603,7 +1604,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
           phx-value-choice="43200"
           class={@decision_button_class}
         >
-          {TimetablePasteReview.format_clock(@decision.secs + 43_200)}
+          {GtfsTime.display(@decision.secs + 43_200)}
         </button>
         <button
           type="button"
@@ -1613,7 +1614,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
           phx-value-choice="keep"
           class={@decision_button_class}
         >
-          Keep {TimetablePasteReview.format_clock(@decision.secs)}
+          Keep {GtfsTime.display(@decision.secs)}
         </button>
       </div>
     </div>
@@ -1702,7 +1703,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   end
 
   defp pairing_legend(%{start_secs: start_secs, options: options}) when is_integer(start_secs) do
-    "#{decision_count_text(options, "trip", "trips")} leave at #{TimetablePasteReview.format_clock(start_secs)}."
+    "#{decision_count_text(options, "trip", "trips")} leave at #{GtfsTime.display(start_secs)}."
   end
 
   defp pairing_legend(%{options: options}) do
@@ -1722,8 +1723,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   end
 
   @doc """
-  Renders one matrix time cell: pasted times bold, estimates italic muted
-  floored to the minute, `Not served`, `+1 day` at or past 24:00,
+  Renders one matrix time cell: pasted times bold, estimates italic muted,
+  `Not served`, `+1 day` at or past 24:00,
   `arr HH:MM` for a differing arrival, `was HH:MM` on changed cells and
   struck old times for removals.
   """
@@ -1735,9 +1736,9 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
 
     assigns =
       assigns
-      |> assign(:main, cell.secs && TimetablePasteReview.format_clock(cell.secs))
-      |> assign(:arr, cell.arr_secs && TimetablePasteReview.format_clock(cell.arr_secs))
-      |> assign(:was, cell.was_secs && TimetablePasteReview.format_clock(cell.was_secs))
+      |> assign(:main, cell.secs && GtfsTime.display(cell.secs))
+      |> assign(:arr, cell.arr_secs && GtfsTime.display(cell.arr_secs))
+      |> assign(:was, cell.was_secs && GtfsTime.display(cell.was_secs))
       |> assign(:next_day?, is_integer(cell.secs) and cell.secs >= 86_400)
 
     ~H"""
@@ -2047,12 +2048,12 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   defp clock_time(window, key) when is_map(window) do
     case Map.get(window, key) || Map.get(window, to_string(key)) do
       %Time{} = time ->
-        Calendar.strftime(time, "%H:%M")
+        GtfsTime.display(Time.to_seconds_after_midnight(time) |> elem(0))
 
       binary when is_binary(binary) ->
-        case String.split(binary, ":") do
-          [hour, minute | _rest] -> "#{hour}:#{minute}"
-          _parts -> nil
+        case GtfsTime.coerce(binary) do
+          nil -> raw_clock_parts(binary)
+          secs -> GtfsTime.display(secs)
         end
 
       _time ->
@@ -2061,6 +2062,13 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   end
 
   defp clock_time(_window, _key), do: nil
+
+  defp raw_clock_parts(binary) do
+    case String.split(binary, ":") do
+      [hour, minute | _rest] -> "#{hour}:#{minute}"
+      _parts -> nil
+    end
+  end
 
   @doc """
   The inline message for a failed read. Copy follows the spec proposal §1
@@ -3065,7 +3073,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
 
   defp removal_start(trip) when is_map(trip) do
     case Map.get(trip, :start_secs, Map.get(trip, "start_secs")) do
-      secs when is_integer(secs) -> TimetablePasteReview.format_clock(secs)
+      secs when is_integer(secs) -> GtfsTime.display(secs)
       _secs -> nil
     end
   end

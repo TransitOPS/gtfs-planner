@@ -1446,8 +1446,16 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   # after every valid clock by its own text rather than raising.
   defp earliest_clock(clocks) do
     case Enum.reject(clocks, &is_nil/1) do
-      [] -> nil
-      values -> values |> Enum.min_by(&clock_key/1) |> String.slice(0, 5)
+      [] ->
+        nil
+
+      values ->
+        earliest = Enum.min_by(values, &clock_key/1)
+
+        case GtfsTime.parse(earliest) do
+          {:ok, seconds} -> GtfsTime.display(seconds)
+          {:error, :invalid_time} -> String.slice(earliest, 0, 5)
+        end
     end
   end
 

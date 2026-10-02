@@ -50,6 +50,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
   import GtfsPlannerWeb.RouteWorkspace, only: [route_header: 1]
 
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Values
   alias GtfsPlannerWeb.Components.RouteIdentity
@@ -2313,13 +2314,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   defp hour_bar_height(count, max), do: max(18, round(count / max * 100))
 
   defp hour_bar_title(hour, count) do
-    after_midnight = if hour >= 24, do: " after midnight", else: ""
-
-    "#{clock(rem(hour * 60, 1440))}–#{clock(rem((hour + 1) * 60, 1440))}#{after_midnight}: #{plural(count, "trip")}"
-  end
-
-  defp clock(minutes) do
-    "#{String.pad_leading(Integer.to_string(div(minutes, 60)), 2, "0")}:#{String.pad_leading(Integer.to_string(rem(minutes, 60)), 2, "0")}"
+    "#{GtfsTime.display(hour * 3600)}–#{GtfsTime.display((hour + 1) * 3600)}: #{plural(count, "trip")}"
   end
 
   attr :label, :string, required: true

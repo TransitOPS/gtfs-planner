@@ -1540,6 +1540,25 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
       assert has_element?(view, "#paste-rows #paste-row-1", "+1 day")
     end
 
+    test "an estimate with seconds shows HH:MM:SS", %{conn: conn, version: version} = context do
+      setup = matrix_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = matrix_open(view, version, setup.route, setup)
+
+      text =
+        "Matrix Stop 1\tMatrix Stop 2\tMatrix Stop 3\n" <>
+          "06:00:30\t\t06:20:30"
+
+      review_read(view, text)
+
+      render_change(view, "input", review_params(text, %{"stops_view" => "all"}))
+
+      # Anchors with seconds make the interpolated middle stop land past a
+      # whole minute, so the estimated cell shows HH:MM:SS.
+      assert has_element?(view, "#paste-rows #paste-row-1", "06:10:30")
+    end
+
     test "arrival times render when arrival differs from departure",
          %{conn: conn, version: version} = context do
       setup = matrix_setup(context)

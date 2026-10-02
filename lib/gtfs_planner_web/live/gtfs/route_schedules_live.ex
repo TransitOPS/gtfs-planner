@@ -584,7 +584,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
           ids: [row.id],
           title: "Delete this trip?",
           confirm_label: "Delete 1 trip",
-          detail: "Departs #{clock(row.start_secs)} · #{row_pattern_name(socket, row)}",
+          detail:
+            "Departs #{GtfsTime.display(row.start_secs)} · #{row_pattern_name(socket, row)}",
           frequency?: row.frequency?,
           service_id: socket.assigns.filters.service_id,
           return_focus_id: return_focus,
@@ -1211,7 +1212,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # The one line the grid bar shows after a cell write (step 28 renders it): the
   # stop, the trip's departure and what moved, using the revision-2 copy.
   defp cell_outcome(%{position: position, row: row, section: section}, :clear, _secs, result) do
-    "Cleared #{stop_name(section, position)} on the #{clock(row.start_secs)} trip." <>
+    "Cleared #{stop_name(section, position)} on the #{GtfsTime.display(row.start_secs)} trip." <>
       custom_note(row, result)
   end
 
@@ -1222,7 +1223,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
          result
        ) do
     stop = stop_name(section, position)
-    departs = clock(row.start_secs)
+    departs = GtfsTime.display(row.start_secs)
     first? = first_position?(row, position)
 
     title =
@@ -1456,7 +1457,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
         "Nothing was undone. A trip from that change was deleted after it."
 
       row ->
-        "Nothing was undone. The #{clock(row.start_secs)} trip changed after your change. " <>
+        "Nothing was undone. The #{GtfsTime.display(row.start_secs)} trip changed after your change. " <>
           "Its current times are shown."
     end
   end
@@ -2553,7 +2554,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   defp stored_clock(value) do
     case GtfsTime.parse(value) do
-      {:ok, secs} -> clock(secs)
+      {:ok, secs} -> GtfsTime.display(secs)
       {:error, _reason} -> to_string(value)
     end
   end
@@ -2614,7 +2615,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     clocks =
       rows
       |> Enum.flat_map(fn row ->
-        if is_integer(row.start_secs), do: [clock(row.start_secs)], else: []
+        if is_integer(row.start_secs), do: [GtfsTime.display(row.start_secs)], else: []
       end)
       |> Enum.sort()
 
@@ -2745,7 +2746,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
     text =
       Enum.map_join(shown, ", ", fn {old, new} ->
-        "#{clock(old)} → #{clock(new)}"
+        "#{GtfsTime.display(old)} → #{GtfsTime.display(new)}"
       end)
 
     if more > 0, do: "#{text}, and #{more} more.", else: "#{text}."
@@ -3042,7 +3043,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     riders = if attrs.exact_times == 0, do: "every N minutes", else: "each departure time"
     day = calendar_name(socket, drawer.values["service_id"])
 
-    "Added frequency service to #{day}: #{clock(first.start_secs)}–#{clock(last.end_secs)}. " <>
+    "Added frequency service to #{day}: #{GtfsTime.display(first.start_secs)}–#{GtfsTime.display(last.end_secs)}. " <>
       "Riders see #{riders}."
   end
 
@@ -3188,7 +3189,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     first = List.first(windows)
     last = List.last(windows)
 
-    "Saved the frequency service #{clock(first.start_secs)}–#{clock(last.end_secs)}."
+    "Saved the frequency service #{GtfsTime.display(first.start_secs)}–#{GtfsTime.display(last.end_secs)}."
   end
 
   # The timestamp the engine forced on the changed trip, read from the restore
@@ -3236,7 +3237,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     label = calendar_label(socket.assigns.payload.calendars, trip.service_id)
 
     socket
-    |> put_flash(:info, "Duplicated the #{clock(row_start_secs(drawer))} trip to #{label}.")
+    |> put_flash(
+      :info,
+      "Duplicated the #{GtfsTime.display(row_start_secs(drawer))} trip to #{label}."
+    )
     |> assign(:drawer, nil)
     |> assign(:vehicle_change_from, current_vehicle_count(socket))
     |> assign(:keep_vehicle_change, true)
@@ -3253,7 +3257,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     moved? = trip.service_id != socket.assigns.filters.service_id
 
     message =
-      "Saved the #{clock(row_start_secs(drawer))} trip." <>
+      "Saved the #{GtfsTime.display(row_start_secs(drawer))} trip." <>
         if moved? do
           " Moved to #{calendar_label(socket.assigns.payload.calendars, trip.service_id)};" <>
             " it is no longer in this view."
@@ -3938,7 +3942,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       target: nil,
       label: label,
       meta: meta,
-      range: "#{clock(first.start_secs)}–#{clock(last.end_secs)}",
+      range: "#{GtfsTime.display(first.start_secs)}–#{GtfsTime.display(last.end_secs)}",
       total_minutes: nil,
       sentence:
         "About #{departures} departures. Not assigned to blocks; counted as ≈ in Trips per hour " <>
@@ -4176,7 +4180,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       range: range_label(start_secs, total),
       total_minutes: total,
       sentence:
-        "Adds #{trip_count_label(count)}, #{clock(start_secs)} → #{clock(last)}" <>
+        "Adds #{trip_count_label(count)}, #{GtfsTime.display(start_secs)} → #{GtfsTime.display(last)}" <>
           " every #{every} min.",
       hint: "Includes the end time only when a departure falls exactly on it."
     }
@@ -4233,10 +4237,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp trip_count_label(1), do: "1 trip"
   defp trip_count_label(count), do: "#{count} trips"
 
-  defp range_label(start_secs, nil), do: "#{clock(start_secs)} → #{clock(start_secs)}"
+  defp range_label(start_secs, nil),
+    do: "#{GtfsTime.display(start_secs)} → #{GtfsTime.display(start_secs)}"
 
   defp range_label(start_secs, total_minutes),
-    do: "#{clock(start_secs)} → #{clock(start_secs + total_minutes * 60)}"
+    do: "#{GtfsTime.display(start_secs)} → #{GtfsTime.display(start_secs + total_minutes * 60)}"
 
   defp timing_total_minutes(nil), do: nil
 

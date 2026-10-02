@@ -13,8 +13,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
   Display follows the prototype's review stage: Pasted view shows one column
   per pasted stop (the union of pasted occurrences across the changes), All
   stops shows every occurrence of the scoped pattern plus the extra stops of
-  rows on another pattern. Times render `HH:MM`; estimates are floored to
-  the minute, `+1 day` marks `>= 24:00`, `arr HH:MM` marks a differing
+  rows on another pattern. Times render `HH:MM` with seconds when nonzero,
+  `+1 day` marks `>= 24:00`, `arr HH:MM` marks a differing
   arrival, `was HH:MM` marks a changed cell, and removals strike their old
   times. Pure: no Repo, clock or process state.
 
@@ -52,6 +52,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
           warned?: boolean()
         }
 
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.TimetablePaste
 
   @doc """
@@ -105,20 +106,6 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
   @spec warned?(map()) :: boolean()
   def warned?(%{warnings: warnings}) when is_list(warnings), do: warnings != []
   def warned?(_change), do: false
-
-  @doc """
-  Formats absolute seconds as `HH:MM`, floored to the minute. Hours are not
-  capped at 24, so after-midnight times read `24:03`.
-  """
-  @spec format_clock(integer()) :: String.t()
-  def format_clock(secs) when is_integer(secs) do
-    total_minutes = Integer.floor_div(secs, 60)
-    hours = Integer.floor_div(total_minutes, 60)
-    minutes = Integer.mod(total_minutes, 60)
-    "#{pad2(hours)}:#{pad2(minutes)}"
-  end
-
-  defp pad2(number), do: number |> Integer.to_string() |> String.pad_leading(2, "0")
 
   @doc """
   Resolves the timing note for a `pattern_id|name` ref, or `nil` when the
@@ -694,7 +681,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
       fetch(row, :how) == :auto,
       "Skips stops, so it goes on the one pattern that fits."
     )
-    |> maybe_note(shifted?(row), "Read as #{format_clock(fetch(row, :start_secs))}.")
+    |> maybe_note(shifted?(row), "Read as #{GtfsTime.display(fetch(row, :start_secs))}.")
     |> maybe_note(
       TimetablePaste.truthy?(fetch(row, :rolled?)),
       "Runs past midnight; later times count from the same service day."
@@ -738,7 +725,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
 
     start =
       if is_map(row) and is_integer(fetch(row, :start_secs)),
-        do: " at #{format_clock(fetch(row, :start_secs))}",
+        do: " at #{GtfsTime.display(fetch(row, :start_secs))}",
         else: ""
 
     [note("Skipped: trip #{existing} already leaves#{start}.")]

@@ -762,7 +762,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
     do: "#{calendar_label} · both directions"
 
   defp vehicles_context(calendar_label, %{at_secs: at_secs}),
-    do: "#{calendar_label} · both directions · most at #{clock(at_secs)}"
+    do: "#{calendar_label} · both directions · most at #{GtfsTime.display(at_secs)}"
 
   defp bar_height(0, _max), do: 2
   defp bar_height(count, max), do: max(6, round(count / max * 24))
@@ -2888,15 +2888,15 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   end
 
   defp band_parts(%{kind: :frequency} = band) do
-    {"#{clock(band.first_secs)}–#{clock(band.last_secs)}",
+    {"#{GtfsTime.display(band.first_secs)}–#{GtfsTime.display(band.last_secs)}",
      "every #{band.max_headway_minutes} min", "frequency service"}
   end
 
   defp band_parts(%{kind: :irregular} = band) do
     window =
       if band.first_secs == band.last_secs,
-        do: clock(band.first_secs),
-        else: "#{clock(band.first_secs)}–#{clock(band.last_secs)}"
+        do: GtfsTime.display(band.first_secs),
+        else: "#{GtfsTime.display(band.first_secs)}–#{GtfsTime.display(band.last_secs)}"
 
     {window, nil, trip_count(band.trip_count)}
   end
@@ -2907,7 +2907,8 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
         do: "every #{band.min_headway_minutes} min",
         else: "#{band.min_headway_minutes}–#{band.max_headway_minutes} min"
 
-    {"#{clock(band.first_secs)}–#{clock(band.last_secs)}", headway, trip_count(band.trip_count)}
+    {"#{GtfsTime.display(band.first_secs)}–#{GtfsTime.display(band.last_secs)}", headway,
+     trip_count(band.trip_count)}
   end
 
   # The minutes between the displayed stops, with a trailing separator so the total
@@ -2921,7 +2922,4 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
 
   defp incomplete_times_note(count),
     do: "#{count} trips without complete times are not counted."
-
-  defp clock(seconds),
-    do: seconds |> GtfsTime.format() |> String.split(":") |> Enum.take(2) |> Enum.join(":")
 end

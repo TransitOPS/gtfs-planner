@@ -5867,7 +5867,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   defp preview_label(preview, offset) when is_integer(offset) do
     case preview_seconds(preview) do
-      {:ok, seconds} -> clock_label(seconds + offset)
+      {:ok, seconds} -> GtfsTime.display(seconds + offset)
       :error -> "—"
     end
   end
@@ -5909,25 +5909,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   defp parse_integer_part(_value), do: :error
-
-  defp clock_label(total) do
-    day = div(total, 86_400)
-    seconds = rem(total, 86_400)
-    hours = div(seconds, 3600)
-    minutes = div(rem(seconds, 3600), 60)
-    remainder = rem(seconds, 60)
-
-    clock =
-      if remainder == 0 do
-        pad(hours) <> ":" <> pad(minutes)
-      else
-        pad(hours) <> ":" <> pad(minutes) <> ":" <> pad(remainder)
-      end
-
-    if day > 0, do: clock <> " +#{day} day", else: clock
-  end
-
-  defp pad(number), do: number |> Integer.to_string() |> String.pad_leading(2, "0")
 
   defp offset_input(nil), do: ""
   defp offset_input(seconds) when is_integer(seconds), do: GtfsTime.format_offset(seconds)

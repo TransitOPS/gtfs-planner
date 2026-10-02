@@ -51,7 +51,6 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
   alias GtfsPlanner.Values
 
   @seconds_per_day 86_400
-  @seconds_per_hour 3_600
   @seconds_per_minute 60
 
   @typedoc "A pattern occurrence, one per visit and in position order."
@@ -494,10 +493,6 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
     }
   end
 
-  defp hhmm(secs) do
-    pad(div(secs, @seconds_per_hour)) <> ":" <> pad(div(rem(secs, @seconds_per_hour), 60))
-  end
-
   defp day_title(secs, days) do
     suffix = if days == 1, do: "next day", else: "#{days} days later"
     time = Time.from_seconds_after_midnight(rem(secs, @seconds_per_day))
@@ -554,9 +549,9 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
   end
 
   defp hhmm_value(value) do
-    case GtfsTime.parse(value) do
-      {:ok, secs} -> hhmm(secs)
-      {:error, :invalid_time} -> if(is_binary(value), do: value, else: "—")
+    case GtfsTime.coerce(value) do
+      nil -> if(is_binary(value), do: value, else: "—")
+      secs -> GtfsTime.display(secs)
     end
   end
 
@@ -596,6 +591,4 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
   defp row_sort_key(row) do
     {row.start_secs == nil, row.start_secs || 0, row.trip_id}
   end
-
-  defp pad(number), do: number |> Integer.to_string() |> String.pad_leading(2, "0")
 end

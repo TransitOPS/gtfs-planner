@@ -17,6 +17,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents do
 
   import GtfsPlannerWeb.PlannerComponents, only: [drawer_footer: 1, drawer_scroll: 1]
 
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Headsigns
 
   @doc """
@@ -777,12 +778,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents do
             phx-value-trip={@trip.id}
             checked={@selected}
             disabled={@applying}
-            aria-label={"Change trip #{clock(@trip.departure_secs)} #{row_aria_timing(@trip)}"}
+            aria-label={"Change trip #{GtfsTime.display(@trip.departure_secs)} #{row_aria_timing(@trip)}"}
             class="size-5 shrink-0 cursor-pointer accent-action"
           />
         </label>
       </td>
-      <td class="px-2 py-3 font-[650] tabular-nums text-strong">{clock(@trip.departure_secs)}</td>
+      <td class="px-2 py-3 font-[650] tabular-nums text-strong">
+        {GtfsTime.display(@trip.departure_secs)}
+      </td>
       <td class="px-2 py-3 text-default">
         <span class="font-mono text-[13px] text-muted [overflow-wrap:anywhere]">
           {@trip.service_id}
@@ -930,7 +933,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents do
   defp next_block_notes(%{next_block: %{route_short_name: route} = next_block})
        when is_binary(route) do
     toward = if is_binary(next_block[:headsign]), do: " toward #{next_block[:headsign]}", else: ""
-    ["Next in block: Route #{route} at #{clock(next_block[:departure_secs])}#{toward}"]
+    ["Next in block: Route #{route} at #{GtfsTime.display(next_block[:departure_secs])}#{toward}"]
   end
 
   defp next_block_notes(_trip), do: []
@@ -943,15 +946,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents do
   defp row_aria_timing(%{custom?: true}), do: "custom times"
   defp row_aria_timing(%{timing_name: name}) when is_binary(name), do: name
   defp row_aria_timing(_trip), do: "timing"
-
-  # A clock for the drawer rows in the prototype's HH:MM (24+ service hours
-  # keep counting up); absent or unparsable values print words.
-  defp clock(nil), do: "—"
-
-  defp clock(secs) when is_integer(secs) do
-    String.pad_leading(Integer.to_string(div(secs, 3600)), 2, "0") <>
-      ":" <> String.pad_leading(Integer.to_string(div(rem(secs, 3600), 60)), 2, "0")
-  end
 
   defp exceptions_status(:applying, count), do: "Changing #{plural(count, "trip")}…"
   defp exceptions_status(:stale, _count), do: "Nothing was changed."

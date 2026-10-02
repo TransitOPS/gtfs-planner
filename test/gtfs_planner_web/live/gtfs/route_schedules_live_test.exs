@@ -1066,6 +1066,33 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
       refute has_element?(view, "#section-#{section_id}-missing-times")
     end
 
+    test "a trip with seconds reads HH:MM:SS while the late trip keeps its day marker",
+         %{conn: conn, version: version} = context do
+      late = late_route(context)
+
+      schedule_trip_fixture(
+        context.organization.id,
+        version.id,
+        late.route.route_id,
+        late.bundle,
+        %{
+          service_id: "SCH_LATE_WKD",
+          trip_id: "SCH_LATE_T2",
+          stop_times: [
+            {"SCH_LATE_S1", "07:05:30", "07:05:30"},
+            {"SCH_LATE_S2", "07:15:30", "07:15:30"}
+          ]
+        }
+      )
+
+      {:ok, view, _html} = live(conn, schedules_path(version, late.route))
+
+      assert has_element?(view, "#trip-SCH_LATE_T2-start", "07:05:30")
+      refute has_element?(view, "#trip-SCH_LATE_T2-marker")
+      assert has_element?(view, "#trip-SCH_LATE_T1-start", "25:10")
+      assert has_element?(view, "#trip-SCH_LATE_T1-marker", "+1 day")
+    end
+
     test "the missing-time note appears only with a stop that has no time",
          %{conn: conn, version: version} = context do
       rich = rich_route(context)

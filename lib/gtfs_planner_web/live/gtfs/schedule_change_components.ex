@@ -1887,7 +1887,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
         "Windows can touch but not overlap."
 
       previous ->
-        "Overlaps #{clock(previous.start_secs)}–#{clock(previous.end_secs)}. " <>
+        "Overlaps #{GtfsTime.display(previous.start_secs)}–#{GtfsTime.display(previous.end_secs)}. " <>
           "Windows can touch but not overlap."
     end
   end
@@ -1917,8 +1917,8 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
   end
 
   defp summary_sentence(summary, row) do
-    "#{departures_label(summary.count)} · last #{clock(summary.last_secs)}; " <>
-      "the next would be #{clock(summary.next_secs)}#{ends_with_window_clause(row)}."
+    "#{departures_label(summary.count)} · last #{GtfsTime.display(summary.last_secs)}; " <>
+      "the next would be #{GtfsTime.display(summary.next_secs)}#{ends_with_window_clause(row)}."
   end
 
   # The next departure lands exactly on Until: it belongs to the next window, if
@@ -2014,14 +2014,6 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
     "h-11 w-full min-w-0 rounded-control border border-control bg-white px-3 text-sm text-strong tabular-nums placeholder:text-muted " <>
       "aria-[invalid=true]:border-2 aria-[invalid=true]:border-error-fg disabled:bg-canvas disabled:text-muted " <>
       @focus_inset
-  end
-
-  defp clock(secs) do
-    secs
-    |> GtfsTime.format()
-    |> String.split(":")
-    |> Enum.take(2)
-    |> Enum.join(":")
   end
 
   # The reference's radio choice cards; the chosen card takes the selection tint
@@ -2207,13 +2199,14 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
     end
   end
 
-  # The review's departure time is the full stored clock; the strip's copy shows
-  # the minute face the timetable shows.
-  defp clock_label(time) when is_binary(time) do
-    time |> String.split(":") |> Enum.take(2) |> Enum.join(":")
+  # The review's departure time: a stored GTFS clock shows its canonically
+  # displayed service time, while a value outside that grammar keeps its text.
+  defp clock_label(time) do
+    case GtfsTime.coerce(time) do
+      nil -> to_string(time)
+      secs -> GtfsTime.display(secs)
+    end
   end
-
-  defp clock_label(time), do: to_string(time)
 
   defp becomes_custom_lines(change, consequences, strip) do
     case consequence_ids(consequences, :becomes_custom) do

@@ -234,6 +234,37 @@ defmodule GtfsPlanner.Gtfs.Transfers.OptionsTest do
       assert trip_options(ctx, "12", "NOWHERE", :from, nil) == []
     end
 
+    test "keeps the seconds of an earliest side clock", ctx do
+      trip_fixture(ctx.organization.id, ctx.version.id, "12", %{
+        trip_id: "12-0705",
+        service_id: "WKDY",
+        trip_headsign: "Harbor"
+      })
+
+      stop_time_fixture(ctx.organization.id, ctx.version.id, "12-0705", "CEN-A", %{
+        arrival_time: "07:05:30",
+        departure_time: "07:05:30",
+        stop_sequence: 1
+      })
+
+      assert trip_options(ctx, "12", "CEN", :from, nil) == [
+               %{
+                 trip_id: "12-0705",
+                 time: "07:05:30",
+                 headsign: "Harbor",
+                 service_id: "WKDY",
+                 note: nil
+               },
+               %{
+                 trip_id: "12-0815",
+                 time: "08:15",
+                 headsign: "Harbor",
+                 service_id: "WKDY",
+                 note: nil
+               }
+             ]
+    end
+
     test "appends the stored trip with its reason when it is not offered", ctx do
       other_route = trip_options(ctx, "12", "CEN", :from, "24-0840")
 
