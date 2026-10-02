@@ -146,6 +146,22 @@ defmodule GtfsPlannerWeb.Router do
     end
   end
 
+  # The organization's published feeds belong to the organization, not to a
+  # version: their permanent addresses and what each one serves are the same
+  # whoever is editing which version, so this route carries no version and works
+  # for an organization that has none. It reads the application's own rows only.
+  scope "/settings", GtfsPlannerWeb do
+    pipe_through [:browser, :require_authenticated_user, :browser_organization]
+
+    live_session :organization_published_feeds,
+      on_mount: [
+        {GtfsPlannerWeb.UserAuth, :ensure_authenticated},
+        {GtfsPlannerWeb.AssignOrganization, :organization_required}
+      ] do
+      live "/published-feeds", Gtfs.FeedPublicationLive, :index
+    end
+  end
+
   # The versioned Alerts paths this package moved out of `/gtfs/:version`. They
   # authenticate and re-check the version against the reader's organization
   # before redirecting, so an old bookmark lands on the organization page it now

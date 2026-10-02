@@ -202,6 +202,34 @@ defmodule GtfsPlanner.FeedPublishing do
   end
 
   @doc """
+  Returns the permanent public URL one channel of a claimed namespace serves.
+
+  The organization's status page reports the address its bytes are actually
+  fetched from, so the channel path table and the configured base URL stay in
+  this module instead of being rebuilt by the page. It answers `nil` while
+  publishing has no configured base URL, which is the same state that hides the
+  links, and `nil` for a channel this installation serves no static payload for.
+
+  ## Examples
+
+      iex> public_url(namespace, :full)
+      "https://feeds.example/rivercity/static/gtfs.zip"
+
+      iex> public_url(namespace, :flex)
+      nil
+  """
+  @spec public_url(Namespace.t(), atom()) :: String.t() | nil
+  def public_url(%Namespace{prefix: prefix} = namespace, channel)
+      when is_binary(prefix) and is_map_key(@channel_public_path, channel) do
+    case Config.current() do
+      {:enabled, config} -> destination_url(config, namespace, channel)
+      :disabled -> nil
+    end
+  end
+
+  def public_url(_namespace, _channel), do: nil
+
+  @doc """
   Returns the organization's channels while publication state still exists.
 
   `Organizations.delete_organization/1` calls this inside its transaction: a

@@ -1,6 +1,6 @@
 defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
   @moduledoc """
-  Version-scoped Settings: the grouped overview and its placeholder sections.
+  Version-scoped Settings: the grouped directory of the pages that own them.
 
   Settings holds configuration that is changed rarely, so the overview groups
   its entries by the scope they affect: the current version, all versions of the
@@ -11,18 +11,16 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
   overview links to it rather than moving it.
 
   The overview is a directory, so it carries no tab bar: its rows are the
-  navigation between sections. A section page names its way back instead, with a
-  "Settings" link above its heading (`PlannerComponents.back_link/1`). Pages that
-  still render the tab bar drop it as they move to the same link.
+  navigation between sections, and a destination that is not the overview names
+  its own way back.
 
-  The one unbuilt section (`feed-url`) renders the shared
-  `GtfsPlannerWeb.ComingSoon` body, and the overview reads its title and summary
-  from the same catalog, so the two surfaces cannot drift apart. A section slug is
-  looked up in a fixed map: no request string becomes an atom, and an unknown slug
-  flashes and returns to the overview instead of rendering a page nobody
-  described. Feed details, Agencies, Export defaults and Fares are built, so their
-  literal routes are declared ahead of the section route and the overview lists
-  them above the placeholder, which sits last under a "Coming soon" band.
+  Every section has shipped, so the overview lists working pages only. One slug
+  still has to answer: `feed-url` described a permanent public address, and that
+  page shipped as the organization-owned `/settings/published-feeds` surface, so
+  this route sends an old version-scoped bookmark there rather than to a copy of a
+  placeholder that describes nothing. A slug is looked up in a fixed map: no
+  request string becomes an atom, and an unknown slug flashes and returns to the
+  overview instead of rendering a page nobody described.
 
   Access follows the other GTFS pages. The `:gtfs_routes` session supplies the
   user, organization and published version, and this LiveView declares the editor
@@ -37,33 +35,21 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
 
   use GtfsPlannerWeb, :live_view
 
-  import GtfsPlannerWeb.ComingSoon, only: [coming_soon: 1]
-  import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1]
-
   alias GtfsPlanner.Versions
-  alias GtfsPlannerWeb.ComingSoon
   alias GtfsPlannerWeb.Layouts
   alias GtfsPlannerWeb.ProductSurfaces
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
-  # The one placeholder section, keyed by its literal URL slug. A request path
-  # only ever looks a slug up here, and the answer is this fixed atom or `:error`.
-  # A built section is not listed: its literal route resolves before the
-  # `/settings/:section` placeholder route, so this map would only ever answer
-  # for a destination that no longer renders Coming soon.
-  @sections %{
-    "feed-url" => :feed_url
-  }
+  # The organization-owned page that reports this organization's published feeds.
+  @published_feeds_path "/settings/published-feeds"
 
-  # The overview's fixed groups, in the sitemap's order. Placeholder entries take
-  # their title and summary from the shared catalog; the pages that already exist
-  # carry their own copy and keep their current destinations.
-  #
-  # No version-scoped placeholder remains: Feed details, Agencies and Fares are
-  # built pages, so they are listed below with their own copy.
-  @version_sections []
-  @all_version_sections ["feed-url"]
+  # Where a version-scoped section slug belongs now, keyed by its literal URL slug.
+  # A request path only ever looks a slug up here: no request string becomes an
+  # atom, and an unknown slug flashes and returns to the overview.
+  @moved_sections %{
+    "feed-url" => @published_feeds_path
+  }
 
   # The built version-scoped pages, in the sitemap's order. Each moved here when
   # its page shipped: the summary is the copy its Coming soon entry used to
@@ -124,6 +110,17 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
       slug: "export-defaults",
       title: "Export defaults",
       summary: "Choose how future exports are written."
+    },
+    %{
+      # The permanent public addresses are the organization's, not a version's, so
+      # this row leads out of the version's Settings path. Its DOM key stays
+      # `feed_url`, which is the name this destination has always had here.
+      key: :feed_url,
+      surface: :published_feeds,
+      title: "Published feeds",
+      summary:
+        "The permanent addresses your published feeds are served from, and what each one is serving now.",
+      path: @published_feeds_path
     }
   ]
 
@@ -148,20 +145,14 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
   def mount(_params, _session, socket) do
     {:ok,
      socket
-     |> assign(:page_title, "Settings")
-     |> assign(:section_key, nil)
-     |> assign(:section_slug, nil)}
+     |> assign(:page_title, "Settings")}
   end
 
   @impl true
   def handle_params(%{"section" => slug}, _uri, socket) do
-    case Map.fetch(@sections, slug) do
-      {:ok, key} ->
-        {:noreply,
-         socket
-         |> assign(:section_key, key)
-         |> assign(:section_slug, slug)
-         |> assign(:page_title, ComingSoon.feature(key).title)}
+    case Map.fetch(@moved_sections, slug) do
+      {:ok, path} ->
+        {:noreply, push_navigate(socket, to: path)}
 
       :error ->
         {:noreply,
@@ -206,8 +197,6 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
 
   @impl true
   def render(assigns) do
-    assigns = assign_section_content(assigns)
-
     ~H"""
     <Layouts.app
       flash={@flash}
@@ -219,25 +208,16 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
       available_versions={assigns[:available_versions] || []}
     >
       <div id="settings-page">
-        <%= if @section_key do %>
-          <.back_link id="settings-back" navigate={~p"/gtfs/#{@current_gtfs_version.id}/settings"}>
-            Settings
-          </.back_link>
-          <div class="mt-2">
-            <.coming_soon feature={@feature} scope_label={@scope_label} />
-          </div>
-        <% else %>
-          <.header class="pb-8">
-            Settings
-            <:subtitle>
-              Setup you change only occasionally. Each group says what a change affects.
-            </:subtitle>
-          </.header>
+        <.header class="pb-8">
+          Settings
+          <:subtitle>
+            Setup you change only occasionally. Each group says what a change affects.
+          </:subtitle>
+        </.header>
 
-          <.settings_overview groups={
-            overview_groups(@current_gtfs_version, @user_roles, @current_organization)
-          } />
-        <% end %>
+        <.settings_overview groups={
+          overview_groups(@current_gtfs_version, @user_roles, @current_organization)
+        } />
       </div>
     </Layouts.app>
     """
@@ -254,15 +234,10 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
   end
 
   # One scope: its name and what a change in it affects on the left, a bordered
-  # list of directory rows on the right. Rows that do not work yet follow the
-  # working ones under a "Coming soon" band and stay links, so the placeholder page
-  # can explain them.
+  # list of directory rows on the right.
   attr :group, :map, required: true
 
   defp settings_group(assigns) do
-    {ready, soon} = Enum.split_with(assigns.group.entries, &(&1.status == :active))
-    assigns = assign(assigns, ready: ready, soon: soon)
-
     ~H"""
     <section
       id={@group.id}
@@ -282,20 +257,8 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
         <p class="mt-3 text-[13px] text-muted">{@group.note}</p>
       </div>
       <div class="min-w-0 overflow-hidden rounded-card border border-subtle bg-white">
-        <ul :if={@ready != []} class="divide-y divide-subtle">
-          <.directory_row :for={entry <- @ready} entry={entry} />
-        </ul>
-        <h3
-          :if={@soon != []}
-          class={[
-            "bg-canvas px-5 py-2.5 text-[13px] font-semibold text-muted",
-            @ready != [] && "border-t border-subtle"
-          ]}
-        >
-          Coming soon
-        </h3>
-        <ul :if={@soon != []} class="divide-y divide-subtle border-t border-subtle">
-          <.directory_row :for={entry <- @soon} entry={entry} />
+        <ul class="divide-y divide-subtle">
+          <.directory_row :for={entry <- @group.entries} entry={entry} />
         </ul>
       </div>
     </section>
@@ -348,10 +311,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
           </span>
           <span
             id={"settings-entry-#{@entry.key}-summary"}
-            class={[
-              "mt-1 block max-w-[62ch] text-pretty text-sm leading-relaxed",
-              if(@entry.status == :active, do: "text-default", else: "text-muted")
-            ]}
+            class="mt-1 block max-w-[62ch] text-pretty text-sm leading-relaxed text-default"
           >
             {@entry.summary}
           </span>
@@ -360,48 +320,31 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
           name="hero-chevron-right"
           class="size-4 text-muted sm:col-start-3 sm:row-start-1"
         />
-        <span
-          :if={@entry.status == :coming_soon}
-          class="col-span-2 sm:col-span-1 sm:col-start-2 sm:row-start-1"
-        >
-          <span class="inline-flex items-center gap-1.5 rounded-badge bg-canvas px-2 py-0.5 text-[13px] font-[650] text-muted">
-            <.icon name="hero-clock" class="size-4" /> Coming soon
-          </span>
-        </span>
       </.link>
     </li>
     """
   end
 
-  # A section page renders the catalog body for the mapped key, labelled with the
-  # scope that key declares. The overview needs neither, so it is left alone.
-  defp assign_section_content(%{section_key: nil} = assigns), do: assigns
-
-  defp assign_section_content(assigns) do
-    feature = ComingSoon.feature(assigns.section_key)
-
-    scope_label =
-      if feature.scope == :all_versions,
-        do: "All versions",
-        else: scope_here(assigns.current_gtfs_version)
-
-    assign(assigns, feature: feature, scope_label: scope_label)
+  # ProductSurfaces alone decides which entries an organization sees (INV-1):
+  # every entry is asked through `visible?/2`, and groups left empty are dropped.
+  # An entry may name its own surface when the destination is visible under a
+  # different name than the row it is listed as; otherwise its key is the surface.
+  # The Organization group keeps its existing admin gate and is never filtered, so
+  # an org admin still sees it when everything else is hidden.
+  defp visible_entry?(organization, entry) do
+    ProductSurfaces.visible?(organization, Map.get(entry, :surface, entry.key))
   end
 
-  # ProductSurfaces alone decides which entries an organization sees (INV-1):
-  # every entry key is asked through `visible?/2`, and groups left empty are
-  # dropped. The Organization group keeps its existing admin gate and is never
-  # filtered, so an org admin still sees it when everything else is hidden.
   defp overview_groups(version, user_roles, organization) do
     version_entries =
-      (Enum.map(@version_pages, &existing_page_entry(&1, version.id)) ++
-         Enum.map(@version_sections, &placeholder_entry(&1, version.id)))
-      |> Enum.filter(&ProductSurfaces.visible?(organization, &1.key))
+      @version_pages
+      |> Enum.map(&existing_page_entry(&1, version.id))
+      |> Enum.filter(&visible_entry?(organization, &1))
 
     all_version_entries =
-      (Enum.map(@all_version_pages, &existing_page_entry(&1, version.id)) ++
-         Enum.map(@all_version_sections, &placeholder_entry(&1, version.id)))
-      |> Enum.filter(&ProductSurfaces.visible?(organization, &1.key))
+      @all_version_pages
+      |> Enum.map(&existing_page_entry(&1, version.id))
+      |> Enum.filter(&visible_entry?(organization, &1))
 
     groups =
       [
@@ -440,37 +383,21 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
     end
   end
 
-  defp placeholder_entry(slug, version_id) do
-    key = Map.fetch!(@sections, slug)
-    feature = ComingSoon.feature(key)
-
-    %{
-      key: key,
-      title: feature.title,
-      summary: feature.summary,
-      path: ~p"/gtfs/#{version_id}/settings/#{slug}",
-      status: :coming_soon
-    }
-  end
-
   defp existing_page_entry(page, version_id) do
     %{
       key: page.key,
+      surface: Map.get(page, :surface, page.key),
       title: page.title,
       summary: page.summary,
       # An entry may name its own destination (the organization-owned Alerts page
       # does); otherwise the verified version-scoped Settings route builds it.
-      path: Map.get(page, :path) || ~p"/gtfs/#{version_id}/settings/#{page.slug}",
-      status: :active
+      path: Map.get(page, :path) || ~p"/gtfs/#{version_id}/settings/#{page.slug}"
     }
   end
 
-  defp scope_here(version), do: "This version: #{version.name}"
+  defp version_target(_socket, version_id), do: ~p"/gtfs/#{version_id}/settings"
 
-  defp version_target(socket, version_id) do
-    case socket.assigns.section_slug do
-      nil -> ~p"/gtfs/#{version_id}/settings"
-      slug -> ~p"/gtfs/#{version_id}/settings/#{slug}"
-    end
-  end
+  defp settings_path(version_id), do: ~p"/gtfs/#{version_id}/settings"
+
+  defp section_path(version_id, slug), do: ~p"/gtfs/#{version_id}/settings/#{slug}"
 end

@@ -32,6 +32,11 @@ defmodule GtfsPlannerWeb.Navigation do
     ]
   end
 
+  # The organization-owned page that reports the organization's published feeds.
+  # It is a Settings destination without a version, so the account menu names it
+  # for a reader who has no version to open the version's Settings with.
+  @published_feeds_path "/settings/published-feeds"
+
   # Design-system task link: a label-only target that takes the selection tint
   # from its own `aria-current`, so the state is never signalled by hue alone.
   defp task_link_class do
@@ -295,6 +300,14 @@ defmodule GtfsPlannerWeb.Navigation do
       has_role?(user_roles, :pathways_studio_admin) ->
         %{href: "/admin/users", hint: "Organization name, users"}
 
+      # An editor whose organization has no published version cannot use the
+      # version's Settings page, but the organization's published feeds are still
+      # theirs, so that status page is the Settings entry that works for them.
+      # A reader who has a version keeps the version's Settings entry above.
+      has_role?(user_roles, :pathways_studio_editor) && is_nil(current_gtfs_version) &&
+          GtfsPlannerWeb.ProductSurfaces.visible?(organization, :published_feeds) ->
+        %{href: @published_feeds_path, hint: "Published feed URLs and status"}
+
       true ->
         nil
     end
@@ -337,6 +350,7 @@ defmodule GtfsPlannerWeb.Navigation do
   # current there as well as on the account's own settings page.
   defp settings_family_active?(current_path) do
     gtfs_settings_family_active?(current_path) ||
+      path_family_active?(current_path, ["settings", "published-feeds"]) ||
       path_family_active?(current_path, ["admin", "users"])
   end
 

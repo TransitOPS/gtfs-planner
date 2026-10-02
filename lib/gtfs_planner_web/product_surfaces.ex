@@ -11,11 +11,16 @@ defmodule GtfsPlannerWeb.ProductSurfaces do
           | :fares
           | :export_defaults
           | :feed_url
+          | :published_feeds
           | :garages
           | :fleet
           | :operations_export
           | atom()
 
+  # `:feed_url` is the Export page's own notice about a permanent address, which
+  # has no meaning for a Pathways organization. `:published_feeds` is the page
+  # that lists the addresses this organization actually serves, and every product
+  # publishes one, so it stays visible everywhere.
   @pathways_hidden ~w(operations flex feed_details agencies fares export_defaults feed_url garages fleet operations_export)a
 
   @spec visible?(Organization.t() | nil, surface()) :: boolean()

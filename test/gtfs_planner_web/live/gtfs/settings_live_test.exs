@@ -8,15 +8,12 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Versions
-  alias GtfsPlannerWeb.ComingSoon
 
-  # The one allowlisted placeholder section, its catalog key and the scope the
-  # catalog declares for it. Feed details, Agencies, Export defaults and Fares
-  # left this list as their pages shipped; they are built pages now and are
-  # asserted as Available entries.
-  @placeholder_sections [
-    %{slug: "feed-url", key: :feed_url, scope: :all_versions}
-  ]
+  # The published feeds page shipped as an organization-owned surface, so the
+  # version-scoped Settings entry that used to describe it is a link to
+  # `/settings/published-feeds` now. The row keeps its `feed_url` key: that is the
+  # name this destination has always had in the directory.
+  @published_feeds_path "/settings/published-feeds"
 
   @unknown_section_message "That settings section doesn’t exist. Choose one from the list below."
 
@@ -161,41 +158,39 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
 
       refute text_of(doc, "#settings-entry-export_defaults") =~ "Coming soon"
 
-      assert_entry(
-        doc,
-        :feed_url,
-        "Published feed URL",
-        section_path(version.id, "feed-url"),
-        :coming_soon
-      )
+      assert_entry(doc, :feed_url, "Published feeds", @published_feeds_path, :working)
 
       assert_entry(doc, :garages, "Garages", section_path(version.id, "garages"), :working)
       assert_entry(doc, :fleet, "Fleet", section_path(version.id, "fleet"), :working)
 
-      assert_entry(doc, :alerts, "Alerts", section_path(version.id, "alerts"), :working)
+      # Alert settings are organization-owned, so this row leaves the version's
+      # Settings path for the page that owns them.
+      assert_entry(doc, :alerts, "Alerts", "/alerts/settings", :working)
 
       assert text_of(doc, "#settings-entry-alerts-summary") ==
                "The wording your organization uses for alerts: message scripts and writing guidelines."
     end
 
-    test "placeholder rows sit under a Coming soon band, after the working rows",
+    test "every section has shipped, so neither group carries a Coming soon band",
          %{conn: conn, user: user, organization: organization, version: version} do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} = live(conn, settings_path(version.id))
       doc = LazyHTML.from_fragment(render(view))
 
-      # The version group has only working pages, so it needs no band.
-      assert Enum.empty?(LazyHTML.query(doc, "#settings-version h3"))
+      refute has_element?(view, "#settings-version h3")
+      refute has_element?(view, "#settings-all-versions h3")
+      refute render(view) =~ "Coming soon"
 
-      assert text_of(doc, "#settings-all-versions h3") == "Coming soon"
+      # The All versions group ends with the published feeds row, which is now a
+      # working destination that leads out of the version's Settings path.
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-all-versions li"), "id") ==
+               Enum.map(@all_version_entry_keys, &"settings-entry-#{&1}")
 
-      # Export defaults is a built page, so the band holds the one remaining
-      # placeholder and its row sits with the working rows above the band.
       assert LazyHTML.attribute(
-               LazyHTML.query(doc, "#settings-all-versions ul:last-of-type li"),
-               "id"
-             ) == ["settings-entry-feed_url"]
+               LazyHTML.query(doc, "#settings-entry-feed_url a"),
+               "href"
+             ) == [@published_feeds_path]
     end
 
     test "each row is one link, so no control competes inside it",
@@ -210,19 +205,16 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
       assert Enum.empty?(LazyHTML.query(doc, "#settings-overview li button"))
     end
 
-    test "placeholder entries read their title and summary from the shared catalog",
+    test "the published feeds entry carries its own copy and leaves the version path",
          %{conn: conn, user: user, organization: organization, version: version} do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} = live(conn, settings_path(version.id))
       doc = LazyHTML.from_fragment(render(view))
 
-      for %{key: key} <- @placeholder_sections do
-        feature = ComingSoon.feature(key)
-
-        assert text_of(doc, "#settings-entry-#{key}-title") == feature.title
-        assert text_of(doc, "#settings-entry-#{key}-summary") == feature.summary
-      end
+      assert text_of(doc, "#settings-entry-feed_url-title") == "Published feeds"
+      assert text_of(doc, "#settings-entry-feed_url-summary") =~ "permanent addresses"
+      refute text_of(doc, "#settings-entry-feed_url") =~ "Coming soon"
     end
 
     test "the Fares entry carries the built page's copy and links to its workspace",
@@ -280,41 +272,14 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
   describe "placeholder sections" do
     setup :editor_setup
 
-    for section <- @placeholder_sections do
-      test "#{section.slug} renders the shared #{section.key} content with its scope",
-           %{conn: conn, user: user, organization: organization, version: version} do
-        conn = log_in_user(conn, user, organization: organization)
+    test "an old version-scoped feed-url bookmark lands on the published feeds page",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      conn = log_in_user(conn, user, organization: organization)
 
-        {:ok, view, _html} = live(conn, section_path(version.id, unquote(section.slug)))
-        doc = LazyHTML.from_fragment(render(view))
+      assert {:error, {:live_redirect, %{to: to}}} =
+               live(conn, section_path(version.id, "feed-url"))
 
-        feature = ComingSoon.feature(unquote(section.key))
-
-        # The feature title is the page's only h1: Settings itself is not repeated.
-        assert Enum.count(LazyHTML.query(doc, "h1")) == 1
-        assert text_of(doc, "h1") == feature.title
-        refute has_element?(view, "#settings-overview")
-
-        assert text_of(doc, "#coming-soon-scope") ==
-                 if(unquote(section.scope) == :version,
-                   do: "This version: #{version.name}",
-                   else: "All versions"
-                 )
-
-        assert LazyHTML.text(LazyHTML.query(doc, "#coming-soon")) =~ feature.summary
-
-        assert Enum.count(LazyHTML.query(doc, "#coming-soon-sections li")) ==
-                 length(feature.sections)
-
-        assert has_element?(view, "#coming-soon-status", "Coming soon")
-
-        # The way back is a "Settings" link above the heading, not a tab bar.
-        refute has_element?(view, "#settings-nav")
-        assert text_of(doc, "#settings-back") == "Settings"
-
-        assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-back"), "href") ==
-                 [settings_path(version.id)]
-      end
+      assert to == @published_feeds_path
     end
 
     test "an unknown section slug returns to the overview",
@@ -433,7 +398,8 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       selected_version_id = to_string(other_version.id)
 
-      for %{slug: slug} <- @placeholder_sections do
+      # A built section keeps its own section across the switch.
+      for slug <- ["feed-details", "fares"] do
         {:ok, view, _html} = live(conn, section_path(version.id, slug))
 
         render_hook(view, "switch_gtfs_version", %{"version" => selected_version_id})
@@ -457,10 +423,10 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
       assert_redirect(overview, settings_path(other_version.id))
       refute_push_event(overview, "gtfs_version_selected", %{version_id: _})
 
-      {:ok, section, _html} = live(conn, section_path(version.id, "feed-url"))
+      {:ok, section, _html} = live(conn, section_path(version.id, "feed-details"))
 
       render_hook(section, "gtfs_version_loaded", %{"version_id" => selected_version_id})
-      assert_redirect(section, section_path(other_version.id, "feed-url"))
+      assert_redirect(section, section_path(other_version.id, "feed-details"))
       refute_push_event(section, "gtfs_version_selected", %{version_id: _})
     end
 
@@ -495,11 +461,13 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
   end
 
   describe "product filtering (ProductSurfaces)" do
-    # The seven Settings sections a Pathways organization hides (spec R5). Alerts
-    # is deliberately not among them: alert wording is organization-wide and is
-    # not a Pathways-hidden surface, so it stays visible to both editions.
+    # The sections a Pathways organization hides (spec R5). Alerts and the
+    # published feeds are deliberately not among them: alert wording and the
+    # organization's own public addresses are organization-wide, so both stay
+    # visible to either edition. `:feed_url` remains the Export page's notice
+    # surface, which a Pathways organization does not show.
     defp pathways_hidden_keys do
-      [:feed_details, :agencies, :fares, :export_defaults, :feed_url, :garages, :fleet]
+      [:feed_details, :agencies, :fares, :export_defaults, :garages, :fleet]
     end
 
     defp product_org_with_version(product, roles) do
@@ -533,7 +501,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
                ["settings-all-versions", "settings-organization"]
 
       assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-all-versions li"), "id") ==
-               ["settings-entry-alerts"]
+               ["settings-entry-alerts", "settings-entry-feed_url"]
 
       assert text_of(doc, "#settings-organization h2") == "Organization"
 
@@ -564,7 +532,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
                ["settings-all-versions"]
 
       assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-all-versions li"), "id") ==
-               ["settings-entry-alerts"]
+               ["settings-entry-alerts", "settings-entry-feed_url"]
     end
 
     test "a Planner editor+admin sees every entry", %{conn: conn} do
