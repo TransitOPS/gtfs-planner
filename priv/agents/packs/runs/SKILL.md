@@ -44,7 +44,7 @@ Person: "What are we judging these runs against?"
 
 You: call `get_crew_rules` with no `day_ref`, then read the stored numbers exactly as returned.
 
-Reply: say for example: "This day's stored crew rules are a 15-minute pull-out report, a 5-minute relief report, a 5-minute sign-off, a 30-minute paid break maximum and a 720-minute spread limit, with a 120-minute piece limit and no marked relief stop, so no relief point is ready to plan against. The frozen day has <N> runs, <M> pieces longer than nothing to check them, and <K> unmeasured travel legs. Those are the stored rules, not a compliance check."
+Reply: say for example: "This day's stored crew rules are a 15-minute pull-out report, a 5-minute relief report, a 5-minute sign-off, a 30-minute paid break maximum and a 720-minute spread limit, with a 120-minute piece limit and no marked relief stop, so no relief point is ready to plan against. The frozen day has <N> runs, <M> negative breaks and <K> unmeasured travel legs. Those are the stored rules, not a compliance check."
 
 ### Prepare a rebuild of the whole day
 

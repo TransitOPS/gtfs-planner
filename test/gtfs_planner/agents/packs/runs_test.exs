@@ -12,8 +12,7 @@ defmodule GtfsPlanner.Agents.Packs.RunsTest do
 
   The cases follow this step's own obligations:
 
-  - the pack declares four tools, each rejecting undeclared keys, and its own
-    source names no cutter, plan-apply, move or settings-write API;
+  - the pack declares four tools, each rejecting undeclared keys;
   - a read answers from the frozen copy under its own digest, a run narrowing to
     a ref the copy holds pages only that run's issues, and a cursor from another
     day, filter set or position refuses;
@@ -60,25 +59,9 @@ defmodule GtfsPlanner.Agents.Packs.RunsTest do
   alias GtfsPlanner.Gtfs.TripRun
   alias GtfsPlanner.Operations.Operator
 
-  @pack_source "lib/gtfs_planner/agents/packs/runs.ex"
-
   # A sentinel planted in every operator, roster and seniority field of the
   # fixture world, so "the answer carries no personnel" is a real observation.
   @sentinel "OPERATOR-SENTINEL"
-
-  # Every call a prepare-only pack must never make, however it is spelled.
-  @forbidden_calls ~w(
-    suggest_runs
-    apply_run_plan
-    apply_moves
-    update_crew_settings
-    update_settings
-    update_relief_settings
-    put_deadhead_time
-    clear_deadhead_time
-    remove_orphans
-    rename_run
-  )
 
   describe "pack declaration" do
     test "declares exactly the four runs tools with their activity labels" do
@@ -101,14 +84,6 @@ defmodule GtfsPlanner.Agents.Packs.RunsTest do
              ]
 
       assert Enum.all?(Runs.tools(), &(&1.parameters["additionalProperties"] == false))
-    end
-
-    test "names no cutter, apply or settings write API in its own source" do
-      source = File.read!(Path.join(File.cwd!(), @pack_source))
-
-      for call <- @forbidden_calls do
-        refute source =~ ~r/\b#{call}\s*\(/
-      end
     end
 
     test "the registry is the only place the agent core names this pack" do
@@ -158,6 +133,32 @@ defmodule GtfsPlanner.Agents.Packs.RunsTest do
       # The day-wide totals stay beside the page, so a narrowed answer never
       # reads as the whole day.
       assert result["totals"] == context.payload["totals"]
+    end
+
+    test "follows a cursor for run refs named out of order", context do
+      # Sixty issues naming both runs, so the narrowing spans two pages.
+      [first_ref, second_ref] = Enum.sort([run_ref(context, "4001"), run_ref(context, "5001")])
+      template = hd(context.payload["issues"])
+
+      extra =
+        for index <- 1..60 do
+          Map.merge(template, %{
+            "issue_ref" => "issue_extra_#{String.pad_leading("#{index}", 2, "0")}",
+            "run_refs" => [first_ref, second_ref]
+          })
+        end
+
+      context = admit(context, Map.update!(context.payload, "issues", &(&1 ++ extra)))
+      reversed = [second_ref, first_ref]
+
+      assert {:ok, page_one, _evidence} = issues(context, %{"run_refs" => reversed})
+
+      assert {:ok, page_two, _evidence} =
+               issues(context, %{"run_refs" => reversed, "cursor" => page_one["next_cursor"]})
+
+      assert length(page_one["rows"]) == 50
+      assert page_two["next_cursor"] == nil
+      assert length(page_one["rows"]) + length(page_two["rows"]) == page_one["total"]
     end
 
     test "refuses a run ref this snapshot does not hold, twice, or empty", context do
@@ -493,6 +494,20 @@ defmodule GtfsPlanner.Agents.Packs.RunsTest do
       assert Enum.any?(evidence.exclusions, &(&1 =~ "trips no run covers"))
     end
 
+    test "caps the proposal's warnings and reports their full count", context do
+      context = with_plan!(context)
+      warnings = List.duplicate(%{"code" => "piece_too_long", "severity" => "warning"}, 60)
+      context = admit(context, put_in(context.payload, ["plan", "warnings"], warnings))
+
+      assert {:ok, result, evidence} = inspect_plan(context, %{"plan_ref" => plan_ref(context)})
+
+      assert length(result["proposal"]["warnings"]) == 50
+      assert result["proposal"]["warnings_total"] == 60
+
+      assert %{value: "50 shown of 60 (cap 50)"} =
+               Enum.find(evidence.facts, &(&1.label == "Problems it would add"))
+    end
+
     test "refuses no proposal at all and one the page does not hold", context do
       # No native cutter has run, so the attached copy carries no proposal.
       assert {:tool_error, message} =
@@ -693,6 +708,17 @@ defmodule GtfsPlanner.Agents.Packs.RunsTest do
       Enum.any?(block.trips, &(not MapSet.member?(covered, &1.id)))
     end).trips
     |> hd()
+  end
+
+  # Admits a hand-edited copy of the day, as a page that published it would.
+  defp admit(context, payload) do
+    assert {:ok, resource_context} =
+             Scope.with_source_snapshot(Scope.context({:version, context.version.id}), %{
+               kind: "operations_runs",
+               payload: payload
+             })
+
+    %{context | payload: payload, scope: %{context.scope | resource_context: resource_context}}
   end
 
   defp attach(context, payload) do

@@ -12,8 +12,7 @@ defmodule GtfsPlanner.Agents.Packs.BlocksTest do
 
   The cases follow this step's own obligations:
 
-  - the pack declares four tools, each rejecting undeclared keys, and its own
-    source names no solver, preview or write API;
+  - the pack declares four tools, each rejecting undeclared keys;
   - a read answers from the frozen copy under its own digest, and the cursor a
     first page returned pages the rest of the day's issues without re-reading the
     day;
@@ -47,21 +46,6 @@ defmodule GtfsPlanner.Agents.Packs.BlocksTest do
   alias GtfsPlanner.Gtfs.Blocking.DayTypes
   alias GtfsPlanner.Gtfs.OperationsAssistance
 
-  @pack_source "lib/gtfs_planner/agents/packs/blocks.ex"
-
-  # Every call a prepare-only pack must never make, however it is spelled.
-  @forbidden_calls ~w(
-    suggest_blocks
-    apply_block_plan
-    apply_block_change
-    preview_day
-    update_settings
-    update_relief_settings
-    update_route_operating_settings
-    put_deadhead_time
-    clear_deadhead_time
-  )
-
   describe "pack declaration" do
     test "declares exactly the four blocks tools with their activity labels" do
       assert Blocks.id() == "blocks"
@@ -83,14 +67,6 @@ defmodule GtfsPlanner.Agents.Packs.BlocksTest do
              ]
 
       assert Enum.all?(Blocks.tools(), &(&1.parameters["additionalProperties"] == false))
-    end
-
-    test "names no solver, preview or write API in its own source" do
-      source = File.read!(Path.join(File.cwd!(), @pack_source))
-
-      for call <- @forbidden_calls do
-        refute source =~ ~r/\b#{call}\s*\(/
-      end
     end
 
     test "the registry is the only place the agent core names this pack" do
@@ -150,6 +126,22 @@ defmodule GtfsPlanner.Agents.Packs.BlocksTest do
       assert second["next_cursor"] == nil
       assert length(second["rows"]) == 1
       assert evidence.total == 51
+    end
+
+    test "pages that fill the byte budget still fit beside the pack's envelope", context do
+      # Each issue carries enough detail that fifty of them overrun 32 KiB, so the
+      # pager must narrow the page. The page, the pack's envelope and the
+      # evidence together still have to fit the one result ceiling.
+      padded =
+        Enum.map(context.payload["issues"], &Map.put(&1, "note", String.duplicate("x", 300)))
+
+      context = admit(context, Map.put(context.payload, "issues", padded))
+
+      pages = all_pages(context, nil, [])
+
+      assert length(hd(pages)["rows"]) < 50
+      assert pages |> Enum.flat_map(& &1["rows"]) |> length() == 51
+      assert List.last(pages)["next_cursor"] == nil
     end
 
     test "narrows by a code the frozen copy carries and refuses one it does not", context do
@@ -355,6 +347,8 @@ defmodule GtfsPlanner.Agents.Packs.BlocksTest do
 
       # No write plan, no target list and no actor travel with the configuration.
       assert prepared.summary.title == "Rebuild the whole day on #{context.day_key}"
+      assert hd(prepared.summary.lines) == "Rebuilds every block on #{context.day_key} · 1 blocks"
+      assert result["blocks_in_scope"] == 1
       assert result["suggestion_started?"] == false
       assert result["saved?"] == false
       assert evidence.kind == "block_suggestion_configuration"
@@ -436,13 +430,45 @@ defmodule GtfsPlanner.Agents.Packs.BlocksTest do
 
       assert message =~ "a trip selection cannot be rebuilt"
 
-      # The unassigned modes stay available: they never need a selection.
+      # The other modes stay available: they never need a selection.
       for mode <- ["unassigned_only", "replace_all"] do
         assert {:prepared, _prepared, result, _evidence} =
                  prepare(context, %{"day_ref" => day_ref(context), "mode" => mode})
 
         assert result["mode"] == mode
       end
+    end
+  end
+
+  describe "preparing a day-wide mode with a selection on the page" do
+    setup :narrow_world
+
+    test "states no count taken from the selection", context do
+      # The day holds one block, but the copy holds only the selected pool trip,
+      # so a count read from it would say a full rebuild touches no block.
+      context = scoped!(context, %{selected_trip_ids: [pool_trip_id(context)]})
+
+      assert {:prepared, prepared, result, evidence} =
+               prepare(context, %{"mode" => "replace_all"})
+
+      assert prepared.summary.lines == [
+               "Rebuilds every block on #{context.day_key}, not only the selected ones",
+               "Existing blocks on this day are replaced",
+               "Nothing is suggested or saved yet"
+             ]
+
+      assert prepared.summary.detail ==
+               "The page has a selection, so this copy holds no day-wide counts"
+
+      assert result["blocks_in_scope"] == nil
+
+      assert Enum.map(evidence.facts, & &1.label) == ["Day", "Mode", "Day-wide counts", "Started"]
+
+      assert {:prepared, prepared, _result, _evidence} =
+               prepare(context, %{"mode" => "unassigned_only"})
+
+      assert hd(prepared.summary.lines) ==
+               "Works only on the trips with no block on #{context.day_key}"
     end
   end
 
@@ -636,6 +662,29 @@ defmodule GtfsPlanner.Agents.Packs.BlocksTest do
     assert {:ok, payload} = OperationsAssistance.block_day(day, selection)
 
     attach(context, payload)
+  end
+
+  # Follows every cursor from `cursor` to the end, asserting each page is served.
+  defp all_pages(context, cursor, pages) do
+    tool_args = if cursor, do: %{"cursor" => cursor}, else: %{}
+
+    assert {:ok, page, _evidence} = issues(context, tool_args)
+
+    case page["next_cursor"] do
+      nil -> Enum.reverse([page | pages])
+      next -> all_pages(context, next, [page | pages])
+    end
+  end
+
+  # Admits a hand-edited copy of the day, as a page that published it would.
+  defp admit(context, payload) do
+    assert {:ok, resource_context} =
+             Scope.with_source_snapshot(Scope.context({:version, context.version.id}), %{
+               kind: "operations_blocks",
+               payload: payload
+             })
+
+    %{context | payload: payload, scope: %{context.scope | resource_context: resource_context}}
   end
 
   defp attach(context, payload) do

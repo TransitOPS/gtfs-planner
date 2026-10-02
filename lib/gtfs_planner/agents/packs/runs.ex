@@ -43,15 +43,22 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
 
   @behaviour GtfsPlanner.Agents.Pack
 
+  alias GtfsPlanner.Agents.Packs.Operations
   alias GtfsPlanner.Agents.Scope
-  alias GtfsPlanner.Gtfs.Blocking
-  alias GtfsPlanner.Gtfs.Blocking.Queries, as: BlockingQueries
   alias GtfsPlanner.Gtfs.OperationsAssistance
 
   @section "runs"
-  @snapshot_kind "operations_runs"
-  @collection "issues"
   @source_ref "gtfs_runs"
+
+  @snapshot %{
+    kind: "operations_runs",
+    section: @section,
+    map_keys: ["scope", "selection", "constraints", "figures", "entities"],
+    unavailable:
+      "This conversation has no runs day attached. Ask the editor to reload the Runs page, then start again."
+  }
+
+  @scoped_reason "This day was read for a narrower scope than the whole day."
 
   # The only two scopes `GtfsPlanner.Gtfs.Runs.Cutter` understands. The enum is
   # checked here rather than in a schema keyword `Dispatch` does not implement,
@@ -62,16 +69,9 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
   # frozen pager accepts.
   @max_run_refs 100
 
-  # The issues a proposal read reports are capped rather than left to the shared
-  # result ceiling, and the count beside the rows discloses the cap.
+  # The warnings a proposal read returns are capped rather than left to the
+  # shared result ceiling, and `warnings_total` beside them discloses the cap.
   @max_proposal_warnings 50
-
-  # Resources are typed references the panel may resolve. A runs snapshot's route
-  # ids are the only allowlisted kind, but no tool here names a trip or block, so
-  # the evidence resolves no route either: the routes are already reachable from
-  # the day's own rows, and a typed reference the model could not have earned is
-  # not one this pack should mint.
-  @max_exclusions 20
 
   @skill_path Path.expand("../../../../priv/agents/packs/runs/SKILL.md", __DIR__)
   @external_resource @skill_path
@@ -246,16 +246,7 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
   way: `{:error, :unavailable}`, before any request, read or prepared lookup.
   """
   @impl true
-  def authorize_context(%Scope{} = scope) do
-    with {:ok, payload} <- attached_payload(scope),
-         :ok <- resolve_version(scope),
-         :ok <- resolve_day_catalog(scope, payload),
-         :ok <- resolve_trip_identities(scope, payload) do
-      :ok
-    else
-      _unavailable -> {:error, :unavailable}
-    end
-  end
+  def authorize_context(%Scope{} = scope), do: Operations.authorize_context(scope, @snapshot)
 
   @impl true
   def call("get_run_issues", args, %Scope{} = scope),
@@ -274,41 +265,37 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
 
   defp get_run_issues(args, %Scope{} = scope) do
     with {:ok, payload} <- attached_payload(scope),
-         :ok <- check_day_ref(args["day_ref"], payload),
+         :ok <- Operations.check_day_ref(args["day_ref"], payload),
          {:ok, run_refs} <- read_run_refs(args["run_refs"], payload),
-         {:ok, filters} <- read_filters(args["filters"]) do
+         {:ok, filters} <- Operations.read_filters(args["filters"]) do
       read_issue_page(args, scope, payload, build_narrowing(filters, run_refs))
     end
   end
 
   defp read_issue_page(args, scope, payload, narrowing) do
-    with {:ok, cursor} <- read_cursor(args["cursor"], payload, narrowing) do
-      case OperationsAssistance.page(payload, @collection, pager_filters(narrowing), cursor) do
-        {:ok, page} ->
-          {:ok, issues_result(payload, page, narrowing),
-           issues_evidence(scope, payload, page, narrowing)}
-
-        {:error, :unavailable} ->
-          {:error, "That page of this day's issues is not available. Start the list again."}
-      end
+    # The pager is handed the narrowing in its own normalized form - absent
+    # filters are explicit nulls there - while the cursor this tool accepts and
+    # echoes carries only the filters that were applied.
+    with {:ok, cursor} <-
+           Operations.read_cursor(args["cursor"], payload, applied_filters(narrowing), narrowing) do
+      Operations.issues_page(payload, narrowing, cursor, fn page ->
+        {issues_result(payload, page, narrowing),
+         issues_evidence(scope, payload, page, narrowing)}
+      end)
     end
   end
 
-  # A run narrowing is the same three filters the pager understands: an optional
+  # A run narrowing is the pager's own normalized filters: an optional
   # code and severity this call declared, and the run refs named directly rather
-  # than inside the filter object.
+  # than inside the filter object. The refs are sorted, because the pager sorts
+  # them and compares a cursor's filters exactly: refs named in any other order
+  # would otherwise refuse every page after the first.
   defp build_narrowing(filters, run_refs),
     do: %{
       "code" => Map.get(filters, "code"),
       "severity" => Map.get(filters, "severity"),
-      "run_refs" => run_refs
+      "run_refs" => Enum.sort(run_refs)
     }
-
-  defp read_filters(nil), do: {:ok, %{}}
-
-  defp read_filters(filters) when is_map(filters), do: {:ok, filters}
-
-  defp read_filters(_filters), do: {:error, "filters must be an object."}
 
   # Run refs are checked against this snapshot's own runs before the pager sees
   # them, so a ref from another day, another feed or another section learns
@@ -346,83 +333,32 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
     "This day's frozen copy holds no run reference #{foreign}. Read the day's issues first and use a run_ref from that answer."
   end
 
-  # The first page has no cursor. A later one must agree with this snapshot, this
-  # collection, these filters and land inside the frozen total; there is no store
-  # behind it, so a mismatched, malformed or out-of-range cursor is refused rather
-  # than followed.
-  defp read_cursor(nil, _payload, _narrowing), do: {:ok, nil}
-
-  defp read_cursor(cursor, payload, narrowing) when is_map(cursor) do
-    digest = payload["source_digest"]
-
-    with true <- Map.get(cursor, "digest") == digest,
-         true <-
-           Map.keys(cursor) |> Enum.sort() ==
-             ["collection", "digest", "filters", "offset"],
-         true <- Map.get(cursor, "collection") == @collection,
-         true <- Map.get(cursor, "filters") == applied_filters(narrowing),
-         offset when is_integer(offset) and offset >= 0 <- Map.get(cursor, "offset") do
-      # The cursor the pager is handed is its own normalized form - absent
-      # filters are explicit nulls there - while the cursor this tool accepts and
-      # echoes carries only the filters that were applied. The two are compared
-      # against the same narrowing, so a cursor from another day, another filter
-      # set or another position still cannot be followed.
-      {:ok,
-       %{
-         "digest" => digest,
-         "collection" => @collection,
-         "filters" => pager_filters(narrowing),
-         "offset" => offset
-       }}
-    else
-      _mismatch ->
-        {:error,
-         "That cursor belongs to a different day, filter set or position. Start the list again."}
-    end
-  end
-
-  defp read_cursor(_cursor, _payload, _narrowing),
-    do: {:error, "cursor must be the object a previous page returned."}
-
-  # The pager normalizes absent filters to explicit nulls, so the cursor it
-  # compares against is rebuilt here rather than echoed.
-  defp pager_filters(narrowing) do
-    %{
-      "code" => narrowing["code"],
-      "severity" => narrowing["severity"],
-      "run_refs" => narrowing["run_refs"]
-    }
-  end
-
   # The filter object the tool hands back: only what this call actually applied.
   # An empty run narrowing is left out rather than sent as `[]`, so the next
   # call's cursor stays inside the declared shape; the strictness is unchanged,
-  # because `read_cursor/3` compares the returned filters against the same
+  # because `Operations.read_cursor/4` compares the returned filters against the same
   # narrowing this call rebuilt from its arguments.
   defp applied_filters(narrowing) do
     %{
       "code" => narrowing["code"],
       "severity" => narrowing["severity"],
-      "run_refs" => applied_run_refs(narrowing["run_refs"])
+      "run_refs" => narrowing["run_refs"]
     }
     |> Enum.reject(fn {_key, value} -> is_nil(value) or value == [] end)
     |> Map.new()
   end
 
-  defp applied_run_refs([]), do: []
-  defp applied_run_refs(run_refs), do: Enum.sort(run_refs)
-
   defp issues_result(payload, page, narrowing) do
     %{
       "day_ref" => payload["day_ref"],
       "day_key" => payload["day_key"],
-      "scope" => payload["scope"],
+      "scope" => Operations.scope_summary(payload["scope"]),
       "completeness" => payload["completeness"],
       "totals" => payload["totals"],
       "filters" => applied_filters(narrowing),
       "rows" => page.rows,
       "total" => page.total,
-      "next_cursor" => page.next_cursor && tool_cursor(page.next_cursor, narrowing),
+      "next_cursor" => Operations.tool_cursor(page.next_cursor, applied_filters(narrowing)),
       "digest" => page.digest,
       "page_limited?" => page.total > length(page.rows),
       # Uncovered work and orphan rows are the day's own work counts, not issue
@@ -433,23 +369,14 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
     }
   end
 
-  defp tool_cursor(%{"digest" => digest, "offset" => offset}, narrowing) do
-    %{
-      "digest" => digest,
-      "collection" => @collection,
-      "filters" => applied_filters(narrowing),
-      "offset" => offset
-    }
-  end
-
   defp issues_evidence(%Scope{} = scope, payload, page, narrowing) do
     %{
       kind: "run_issues",
       title: "Run and crew issues on #{payload["day_key"]}",
       total: page.total,
       total_label: "issue instances in the frozen day",
-      completeness: completeness(payload),
-      completeness_reason: completeness_reason(payload),
+      completeness: Operations.completeness(payload),
+      completeness_reason: Operations.completeness_reason(payload, @scoped_reason),
       facts: [
         %{label: "Day", value: payload["day_key"]},
         %{label: "Scope", value: payload["scope"]["mode"]},
@@ -464,8 +391,8 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
       # There is no native revision behind a frozen read: the day is a copy the
       # page published, not a stored document with a version of its own.
       source_revision: nil,
-      scope: scope_evidence(scope),
-      exclusions: exclusions(payload),
+      scope: Operations.scope_evidence(scope),
+      exclusions: Operations.exclusions(payload),
       resources: []
     }
   end
@@ -491,7 +418,7 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
   # holds no roster, and this read has no second source to draw one from.
   defp get_crew_rules(args, %Scope{} = scope) do
     with {:ok, payload} <- attached_payload(scope),
-         :ok <- check_day_ref(args["day_ref"], payload) do
+         :ok <- Operations.check_day_ref(args["day_ref"], payload) do
       runs = payload["entities"]["runs"]
 
       result = %{
@@ -547,8 +474,8 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
       title: "Stored crew rules on #{payload["day_key"]}",
       total: length(runs),
       total_label: "runs the frozen copy measures against these rules",
-      completeness: completeness(payload),
-      completeness_reason: completeness_reason(payload),
+      completeness: Operations.completeness(payload),
+      completeness_reason: Operations.completeness_reason(payload, @scoped_reason),
       facts: [
         %{label: "Day", value: payload["day_key"]},
         %{label: "Runs in the copy", value: Integer.to_string(length(runs))},
@@ -573,8 +500,8 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
       source_ref: @source_ref,
       digest: payload["source_digest"],
       source_revision: nil,
-      scope: scope_evidence(scope),
-      exclusions: exclusions(payload),
+      scope: Operations.scope_evidence(scope),
+      exclusions: Operations.exclusions(payload),
       resources: []
     }
   end
@@ -587,7 +514,7 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
   # `suggest_runs/4`, `apply_run_plan/2` or `apply_moves/3`.
   defp prepare_run_suggestion(args, %Scope{} = scope) do
     with {:ok, payload} <- attached_payload(scope),
-         :ok <- check_day_ref(args["day_ref"], payload),
+         :ok <- Operations.check_day_ref(args["day_ref"], payload),
          {:ok, mode} <- read_scope(args["scope"]) do
       command =
         {:operations_suggestion,
@@ -677,8 +604,8 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
       title: "#{mode_label(mode)} on #{payload["day_key"]}",
       total: length(payload["entities"]["runs"]),
       total_label: "runs already on the day's frozen copy",
-      completeness: completeness(payload),
-      completeness_reason: completeness_reason(payload),
+      completeness: Operations.completeness(payload),
+      completeness_reason: Operations.completeness_reason(payload, @scoped_reason),
       facts: [
         %{label: "Day", value: payload["day_key"]},
         %{label: "Scope", value: mode},
@@ -692,8 +619,8 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
       source_ref: @source_ref,
       digest: payload["source_digest"],
       source_revision: nil,
-      scope: scope_evidence(scope),
-      exclusions: exclusions(payload),
+      scope: Operations.scope_evidence(scope),
+      exclusions: Operations.exclusions(payload),
       resources: []
     }
   end
@@ -714,12 +641,22 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
         "day_key" => payload["day_key"],
         "plan_ref" => plan["plan_ref"],
         "native_fingerprint" => plan["native_fingerprint"],
-        "proposal" => plan,
+        "proposal" => capped_proposal(plan),
         "digest" => payload["source_digest"]
       }
 
       {:ok, result, proposal_evidence(scope, payload, plan, result)}
     end
+  end
+
+  # A large recut can carry more warnings than one result may hold, and the tool
+  # takes no narrowing argument, so the proposal is returned with its warnings
+  # capped and their full count beside them.
+  defp capped_proposal(plan) do
+    Map.merge(plan, %{
+      "warnings" => Enum.take(plan["warnings"], @max_proposal_warnings),
+      "warnings_total" => length(plan["warnings"])
+    })
   end
 
   defp attached_plan(payload) do
@@ -752,8 +689,8 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
       title: "Run proposal for #{payload["day_key"]}",
       total: plan["move_count"],
       total_label: "assignments the proposal moves",
-      completeness: completeness(payload),
-      completeness_reason: completeness_reason(payload),
+      completeness: Operations.completeness(payload),
+      completeness_reason: Operations.completeness_reason(payload, @scoped_reason),
       facts: [
         %{label: "Day", value: payload["day_key"]},
         %{label: "Scope", value: plan["mode"]},
@@ -777,7 +714,7 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
       source_ref: @source_ref,
       digest: result["digest"],
       source_revision: nil,
-      scope: scope_evidence(scope),
+      scope: Operations.scope_evidence(scope),
       # A runs proposal has no leftovers: the work no run covers is already
       # carried as the day's own labelled uncovered count, so it is disclosed
       # here rather than counted twice.
@@ -794,171 +731,7 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
 
   # -- the attached copy ---------------------------------------------------
 
-  defp attached_payload(%Scope{} = scope) do
-    case Scope.source_snapshot(scope) do
-      %{kind: @snapshot_kind, payload: payload} when is_map(payload) ->
-        if well_formed?(payload) do
-          {:ok, payload}
-        else
-          {:error, unavailable_message()}
-        end
-
-      _none ->
-        {:error, unavailable_message()}
-    end
-  end
-
-  @binary_keys ["day_key", "day_ref", "source_digest"]
-  @map_keys ["scope", "selection", "constraints", "figures", "entities"]
-
-  defp well_formed?(payload) do
-    Map.get(payload, "section") == @section and
-      Enum.all?(@binary_keys, &is_binary(Map.get(payload, &1))) and
-      is_list(Map.get(payload, "issues")) and
-      Enum.all?(@map_keys, &is_map(Map.get(payload, &1)))
-  end
-
-  defp unavailable_message,
-    do:
-      "This conversation has no runs day attached. Ask the editor to reload the Runs page, then start again."
-
-  # The day is the one the page attached, so a `day_ref` from another day, another
-  # section or a model's guess is refused before any read.
-  #
-  # An absent `day_ref` resolves to the attached day's own ref. The ref is an
-  # opaque server-generated digest over the section and day key, so a model could
-  # not derive it from anything it can see and could not retype it reliably even
-  # if it were disclosed; requiring it made every read unreachable in production
-  # while the ExUnit cases, which read the ref out of the snapshot and script it
-  # in, passed regardless. Omitting it therefore names the same day, and a ref
-  # that IS supplied is still checked exactly as before, so the model gains no
-  # path to a day this conversation did not attach.
-  defp check_day_ref(nil, _payload), do: :ok
-
-  defp check_day_ref(day_ref, payload) when is_binary(day_ref) do
-    if day_ref == payload["day_ref"] do
-      :ok
-    else
-      {:error, "That day is not the day attached to this conversation."}
-    end
-  end
-
-  defp check_day_ref(_day_ref, _payload),
-    do: {:error, "day_ref must be the day reference this page attached."}
-
-  # -- authorization helpers -----------------------------------------------
-
-  defp resolve_version(%Scope{} = scope) do
-    case Scope.identity(scope) do
-      {:version, id} -> if id == scope.gtfs_version_id, do: :ok, else: {:error, :unavailable}
-      _other -> {:error, :unavailable}
-    end
-  end
-
-  # The frozen copy names a day type; the current catalog decides whether that
-  # day type still exists in this organization and version. A copy whose day has
-  # gone, and a version this organization no longer publishes, refuse alike.
-  defp resolve_day_catalog(%Scope{} = scope, payload) do
-    key = payload["day_key"]
-
-    if Enum.any?(current_day_types(scope), &(&1.key == key)),
-      do: :ok,
-      else: {:error, :unavailable}
-  end
-
-  # `list_day_types/2` rolls back and re-raises `{:error, :not_found}` for a
-  # version this organization does not publish. A read that raises is not an
-  # answer about another organization either, so it is caught here and answered
-  # with the single refusal rather than failing the whole turn.
-  defp current_day_types(%Scope{} = scope) do
-    Blocking.list_day_types(scope.organization_id, scope.gtfs_version_id)
-  rescue
-    _unavailable -> []
-  catch
-    :exit, _reason -> []
-  end
-
-  # Every technical trip identity the copy names must still resolve in the
-  # scoped version. A trip moved to another organization or version, or deleted
-  # after the copy was published, means this snapshot no longer describes this
-  # scope, and the refusal is the same one a foreign snapshot produces.
-  defp resolve_trip_identities(%Scope{} = scope, payload) do
-    ids = trip_ids(payload)
-
-    resolved =
-      BlockingQueries.trip_identities(
-        scope.organization_id,
-        scope.gtfs_version_id,
-        {:trip_ids, MapSet.to_list(ids)}
-      )
-
-    if resolved |> Enum.map(& &1.trip_id) |> MapSet.new() |> MapSet.equal?(ids) do
-      :ok
-    else
-      {:error, :unavailable}
-    end
-  end
-
-  defp trip_ids(payload) do
-    payload["entities"]["trips"]
-    |> Enum.map(& &1["trip_id"])
-    |> MapSet.new()
-  end
-
-  # -- shared evidence parts -----------------------------------------------
-
-  defp completeness(%{"completeness" => "complete"}), do: :complete
-  defp completeness(_payload), do: :incomplete
-
-  defp completeness_reason(%{"completeness" => "complete"}), do: nil
-
-  defp completeness_reason(%{"completeness" => "scoped"}),
-    do: "This day was read for a narrower scope than the whole day."
-
-  defp completeness_reason(_payload),
-    do: "This day's copy is not a whole-day read."
-
-  # The evidence scope records the scope the read ran under, so the panel can
-  # drop a card that answers for a day this panel no longer holds. It is the
-  # authorized scope's own values, never an argument's.
-  defp scope_evidence(%Scope{} = scope) do
-    %{
-      organization_id: scope.organization_id,
-      gtfs_version_id: scope.gtfs_version_id,
-      identity: identity_label(scope)
-    }
-  end
-
-  defp identity_label(%Scope{} = scope) do
-    case Scope.identity(scope) do
-      {kind, id} -> "#{kind}:#{id}"
-      nil -> nil
-    end
-  end
-
-  # Exclusions are the copy's own disclosure - unplottable and frequency-based
-  # trips, and rows an explicit subset left out - bounded so the card cannot push
-  # the answer past the result ceiling the page was served under.
-  defp exclusions(payload) do
-    payload["exclusions"]
-    |> Enum.take(@max_exclusions)
-    |> Enum.map(&exclusion_label/1)
-    |> Enum.reject(&is_nil/1)
-  end
-
-  defp exclusion_label(%{"kind" => "frequency_trip", "trip_ref" => ref}),
-    do: "frequency-based trip #{ref}"
-
-  defp exclusion_label(%{"kind" => "unplottable", "trip_ref" => ref}),
-    do: "unplottable trip #{ref}"
-
-  defp exclusion_label(%{"kind" => "outside_scope", "block_ref" => ref}),
-    do: "block #{ref} outside the selected scope"
-
-  defp exclusion_label(%{"kind" => "outside_scope", "trip_ref" => ref}),
-    do: "trip #{ref} outside the selected scope"
-
-  defp exclusion_label(_exclusion), do: nil
+  defp attached_payload(%Scope{} = scope), do: Operations.attached_payload(scope, @snapshot)
 
   # The uncovered work a proposal does not address is disclosed as the day's own
   # work count, beside the proposal rather than inside it.
