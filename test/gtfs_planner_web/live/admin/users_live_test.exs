@@ -672,6 +672,143 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
     end
   end
 
+  describe "role editing" do
+    test "the drawer opens with the member's current access levels checked", %{
+      conn: conn,
+      organization: organization
+    } do
+      editor = member_fixture(organization, %{email: "editor@example.com"})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+      view |> element("#edit-roles-#{editor.id}") |> render_click()
+
+      assert has_element?(view, "dialog#member-roles-drawer-overlay[data-open=true]")
+      assert has_element?(view, "#member-roles-pathways_studio_editor[checked]")
+      refute has_element?(view, "#member-roles-pathways_studio_admin[checked]")
+    end
+
+    test "an administrator adds Editor to their own roles without being signed out", %{
+      conn: conn,
+      admin_user: admin_user,
+      organization: organization
+    } do
+      token = get_session(conn, :user_token)
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+
+      view |> element("#edit-roles-#{admin_user.id}") |> render_click()
+
+      view
+      |> form("#member-roles-form", %{
+        member_roles: %{roles: ["pathways_studio_admin", "pathways_studio_editor"]}
+      })
+      |> render_submit()
+
+      assert Enum.sort(Accounts.get_user_org_membership(admin_user.id, organization.id).roles) ==
+               ["pathways_studio_admin", "pathways_studio_editor"]
+
+      assert Accounts.get_user_by_session_token(token)
+      assert has_element?(view, "#member-action-feedback", "Your new access applies now.")
+    end
+
+    test "removing a role signs the member out of every session", %{
+      conn: conn,
+      organization: organization
+    } do
+      member =
+        member_fixture(organization, %{
+          email: "both@example.com",
+          roles: ["pathways_studio_admin", "pathways_studio_editor"]
+        })
+
+      token = Accounts.generate_user_session_token(member)
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+
+      view |> element("#edit-roles-#{member.id}") |> render_click()
+
+      view
+      |> form("#member-roles-form", %{member_roles: %{roles: ["pathways_studio_editor"]}})
+      |> render_submit()
+
+      assert ["pathways_studio_editor"] ==
+               Accounts.get_user_org_membership(member.id, organization.id).roles
+
+      refute Accounts.get_user_by_session_token(token)
+    end
+
+    test "the only administrator cannot remove their own administrator role", %{
+      conn: conn,
+      admin_user: admin_user,
+      organization: organization
+    } do
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+
+      view |> element("#edit-roles-#{admin_user.id}") |> render_click()
+
+      view
+      |> form("#member-roles-form", %{member_roles: %{roles: ["pathways_studio_editor"]}})
+      |> render_submit()
+
+      assert has_element?(view, "dialog#member-roles-drawer-overlay[data-open=true]")
+
+      assert has_element?(
+               view,
+               "#member-roles-refusal",
+               "#{admin_user.email} is the only administrator of this organization."
+             )
+
+      assert has_element?(view, "#member-roles-pathways_studio_editor[checked]")
+
+      assert ["pathways_studio_admin"] ==
+               Accounts.get_user_org_membership(admin_user.id, organization.id).roles
+    end
+
+    test "saving with no access level chosen is refused in the drawer", %{
+      conn: conn,
+      organization: organization
+    } do
+      editor = member_fixture(organization, %{email: "editor@example.com"})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+      view |> element("#edit-roles-#{editor.id}") |> render_click()
+      # Unchecking every box submits no roles key at all.
+      render_submit(view, "save_roles", %{})
+
+      assert has_element?(view, "#member-roles-error", "Choose at least one access level.")
+
+      assert ["pathways_studio_editor"] ==
+               Accounts.get_user_org_membership(editor.id, organization.id).roles
+    end
+
+    test "a system administrator's role is kept when an organization administrator edits them",
+         %{conn: conn, organization: organization} do
+      system_administrator =
+        member_fixture(organization, %{email: "sysadmin@example.com", roles: ["administrator"]})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+      view |> element("#edit-roles-#{system_administrator.id}") |> render_click()
+
+      view
+      |> form("#member-roles-form", %{member_roles: %{roles: ["pathways_studio_editor"]}})
+      |> render_submit()
+
+      assert ["administrator", "pathways_studio_editor"] ==
+               Accounts.get_user_org_membership(system_administrator.id, organization.id).roles
+    end
+
+    test "only active members have an Edit roles button", %{
+      conn: conn,
+      organization: organization
+    } do
+      deactivated = member_fixture(organization, %{deactivated?: true})
+      pending = member_fixture(organization, %{invited?: true})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+
+      refute has_element?(view, "#edit-roles-#{deactivated.id}")
+      refute has_element?(view, "#edit-roles-#{pending.id}")
+    end
+  end
+
   # ----------------------------------------------------------------------------
   # AC-11 — server-owned scoped deactivation confirmation
   # ----------------------------------------------------------------------------

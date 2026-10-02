@@ -1013,6 +1013,32 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
     end
   end
 
+  describe "role editing" do
+    test "a system administrator gives themselves Editor and keeps administrator and their session",
+         %{conn: conn, admin_user: admin_user, organization: organization} do
+      token = get_session(conn, :user_token)
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations/#{organization.id}")
+
+      view |> element("#edit-roles-#{admin_user.id}") |> render_click()
+
+      view
+      |> form("#member-roles-form", %{member_roles: %{roles: ["pathways_studio_editor"]}})
+      |> render_submit()
+
+      assert Enum.sort(Accounts.get_user_org_membership(admin_user.id, organization.id).roles) ==
+               ["administrator", "pathways_studio_editor"]
+
+      assert Accounts.get_user_by_session_token(token)
+      refute has_element?(view, "dialog#member-roles-drawer-overlay[data-open=true]")
+
+      assert has_element?(
+               view,
+               "#member-action-feedback",
+               "#{admin_user.email} now has Administrator and Pathways Studio Editor."
+             )
+    end
+  end
+
   # ----------------------------------------------------------------------------
   # AC-11 — server-owned, organization-scoped deactivation
   # ----------------------------------------------------------------------------

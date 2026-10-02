@@ -58,7 +58,8 @@ defmodule GtfsPlannerWeb.Admin.ComponentsTest do
           first_use?: false,
           resend_event: "resend_invite",
           activate_event: "activate_user",
-          deactivate_event: "request_deactivation"
+          deactivate_event: "request_deactivation",
+          edit_roles_event: "edit_roles"
         },
         overrides
       )
@@ -75,6 +76,7 @@ defmodule GtfsPlannerWeb.Admin.ComponentsTest do
       resend_event={@resend_event}
       activate_event={@activate_event}
       deactivate_event={@deactivate_event}
+      edit_roles_event={@edit_roles_event}
     />
     """)
   end
@@ -222,11 +224,12 @@ defmodule GtfsPlannerWeb.Admin.ComponentsTest do
       assert Enum.empty?(LazyHTML.query(document, "#activate-user-#{@pending_id}"))
     end
 
-    test "offers only Deactivate user for an active member" do
+    test "offers Edit roles and Deactivate user for an active member" do
       html = render_view([active_member()])
 
       document = doc(html)
 
+      assert Enum.count(LazyHTML.query(document, "#edit-roles-#{@active_id}")) == 1
       assert Enum.count(LazyHTML.query(document, "#deactivate-user-#{@active_id}")) == 1
       assert Enum.empty?(LazyHTML.query(document, "#resend-invite-#{@active_id}"))
       assert Enum.empty?(LazyHTML.query(document, "#activate-user-#{@active_id}"))
@@ -457,6 +460,7 @@ defmodule GtfsPlannerWeb.Admin.ComponentsTest do
           resend_event="resend_invite"
           activate_event="activate_user"
           deactivate_event="request_deactivation"
+          edit_roles_event="edit_roles"
         />
         """)
 
@@ -480,6 +484,7 @@ defmodule GtfsPlannerWeb.Admin.ComponentsTest do
           resend_event="resend_invite"
           activate_event="activate_user"
           deactivate_event="request_deactivation"
+          edit_roles_event="edit_roles"
         />
         """)
 

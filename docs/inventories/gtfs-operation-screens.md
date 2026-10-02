@@ -40,8 +40,8 @@ who deep-links reaches every row here.
 
 ## 3. Entry points
 
-The main navigation bar carries one link per task area — Routes, Calendars, Operations,
-Stops & stations, Flex and GTFS — and each link's destination is the first route in its family
+The main navigation bar carries one link per task area — Routes, Stops, Calendars, Alerts,
+Flex, Operations and GTFS — and each link's destination is the first route in its family
 (`GtfsPlannerWeb.Navigation.main_tasks/0` in
 `lib/gtfs_planner_web/components/navigation.ex`). Every row is also reachable by deep link once
 the reader holds the version ID in the URL; the version in the path is the only state these

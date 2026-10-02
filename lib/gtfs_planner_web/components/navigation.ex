@@ -16,12 +16,12 @@ defmodule GtfsPlannerWeb.Navigation do
   # carry their own tabs.
   defp main_tasks do
     [
-      alerts: {"Alerts", ["alerts"]},
       routes: {"Routes", ["routes", "transfers"]},
+      stops: {"Stops", ["stops"]},
       calendars: {"Calendars", ["calendars"]},
-      operations: {"Operations", ["blocks", "runs", "rosters"]},
-      stops: {"Stops & stations", ["stops"]},
+      alerts: {"Alerts", ["alerts"]},
       flex: {"Flex", ["flex"]},
+      operations: {"Operations", ["blocks", "runs", "rosters"]},
       gtfs: {"GTFS", ["export", "import", "validation", "station-reachability"]}
     ]
   end
@@ -43,10 +43,9 @@ defmodule GtfsPlannerWeb.Navigation do
   end
 
   @doc """
-  Renders the role-aware main navigation: the task areas in the information
-  architecture's order - Alerts first, because it is what an editor comes back
-  to - then Organizations after a divider for system administrators. Task
-  areas hidden for the organization's product
+  Renders the role-aware main navigation: Admin first for system
+  administrators, then a divider and the task areas in the information
+  architecture's order. Task areas hidden for the organization's product
   (`GtfsPlannerWeb.ProductSurfaces.visible?/2`) are omitted.
 
   Task links are label-only and carry the design system's selection tint on the
@@ -96,6 +95,18 @@ defmodule GtfsPlannerWeb.Navigation do
       aria-label="Main navigation"
       class="flex min-h-[72px] flex-wrap items-center gap-1"
     >
+      <%= if is_administrator?(@current_user) do %>
+        <.link
+          id="nav-organizations"
+          navigate="/admin/organizations"
+          class={task_link_class()}
+          aria-current={path_family_active?(@current_path, ["admin", "organizations"]) && "page"}
+        >
+          Admin
+        </.link>
+        <span :if={@show_tasks} aria-hidden="true" class="mx-2 h-6 w-px shrink-0 bg-subtle"></span>
+      <% end %>
+
       <.link
         :for={{key, {label, families}} <- @visible_tasks}
         :if={@show_tasks}
@@ -106,18 +117,6 @@ defmodule GtfsPlannerWeb.Navigation do
       >
         {label}
       </.link>
-
-      <%= if is_administrator?(@current_user) do %>
-        <span :if={@show_tasks} aria-hidden="true" class="mx-2 h-6 w-px shrink-0 bg-subtle"></span>
-        <.link
-          id="nav-organizations"
-          navigate="/admin/organizations"
-          class={task_link_class()}
-          aria-current={path_family_active?(@current_path, ["admin", "organizations"]) && "page"}
-        >
-          Organizations
-        </.link>
-      <% end %>
     </nav>
     """
   end

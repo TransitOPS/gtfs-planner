@@ -30,6 +30,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlannerWeb.Admin.Components
+  alias GtfsPlannerWeb.Admin.RoleEditState
   alias GtfsPlannerWeb.ProductSurfaces
 
   import GtfsPlannerWeb.Admin.InviteFormState,
@@ -77,6 +78,8 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
       |> assign(:member_feedback, nil)
       |> assign(:pending_deactivation, nil)
       |> assign(:deactivation_return_focus_id, nil)
+      |> assign(:role_edit, nil)
+      |> assign(:role_edit_return_focus_id, nil)
       |> assign(:org_drawer_return_focus_id, nil)
       |> assign_organization_form(Organizations.change_organization(%Organization{}))
       |> assign_invite_form(InviteForm.changeset(%{}))
@@ -539,6 +542,32 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
     end
   end
 
+  # Like deactivation, the browser only proposes a member. The drawer stores the
+  # resolved member, and saving resolves that stored identity again.
+  def handle_event("edit_roles", %{"user-id" => user_id}, socket) do
+    with_resolved_member(socket, user_id, fn socket, member ->
+      socket |> clear_feedback() |> RoleEditState.open(member)
+    end)
+  end
+
+  def handle_event("cancel_roles", _params, socket) do
+    {:noreply, RoleEditState.close(socket)}
+  end
+
+  def handle_event("save_roles", params, socket) do
+    case socket.assigns.role_edit do
+      nil ->
+        {:noreply, socket}
+
+      %{member: %{user: %{id: user_id}}} ->
+        case resolve_member(socket, user_id) do
+          {:ok, member} -> {:noreply, save_roles(socket, member, params)}
+          {:error, :not_found} -> {:noreply, socket |> RoleEditState.close() |> refuse_stale()}
+          {:error, :unavailable} -> {:noreply, refuse_unavailable(socket)}
+        end
+    end
+  end
+
   def handle_event("cancel_deactivation", _params, socket) do
     {:noreply, assign(socket, :pending_deactivation, nil)}
   end
@@ -556,6 +585,45 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
           {:error, :not_found} -> {:noreply, refuse_stale(socket)}
           {:error, :unavailable} -> {:noreply, refuse_unavailable(socket)}
         end
+    end
+  end
+
+  defp save_roles(socket, member, params) do
+    organization = socket.assigns.organization
+
+    case RoleEditState.save(socket, member, organization.id, params) do
+      {:ok, membership} ->
+        {title, detail} =
+          RoleEditState.saved_feedback(member, membership, socket.assigns.current_user)
+
+        socket
+        |> RoleEditState.close()
+        |> assign_own_roles(member, organization, membership)
+        |> put_feedback("success", title, detail, member.user.id)
+        |> load_members()
+
+      {:error, :not_found} ->
+        socket |> RoleEditState.close() |> refuse_stale()
+
+      {:error, socket} ->
+        push_event(socket, "focus_form_error", %{
+          form_id: "member-roles-form",
+          fallback_id: "member-roles-refusal"
+        })
+    end
+  end
+
+  # The header's links follow the viewer's roles, so a change to the viewer's
+  # own roles in the organization they are working in applies right away.
+  defp assign_own_roles(socket, member, organization, membership) do
+    own? = member.user.id == socket.assigns.current_user.id
+
+    case socket.assigns[:current_organization] do
+      %{id: id} when own? and id == organization.id ->
+        assign(socket, :user_roles, membership.roles)
+
+      _other ->
+        socket
     end
   end
 
@@ -1069,6 +1137,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
             resend_event="resend_invite"
             activate_event="activate_user"
             deactivate_event="request_deactivation"
+            edit_roles_event="edit_roles"
           />
         </div>
       </section>
@@ -1127,6 +1196,23 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         failures={@invite_failures}
         cancel_path={~p"/admin/organizations/#{@organization.id}"}
       />
+    </.drawer>
+
+    <.drawer
+      id="member-roles-drawer"
+      chrome="planner"
+      open={@role_edit != nil}
+      on_close="cancel_roles"
+      title="Edit roles"
+      class="max-w-[480px]"
+      initial_focus={:first_field}
+      initial_focus_id="member-roles-pathways_studio_editor"
+      return_focus_id={@role_edit_return_focus_id}
+    >
+      <:lede :if={@role_edit}>
+        Choose what {@role_edit.member.user.email} can do in {@organization.name}.
+      </:lede>
+      <Components.roles_form :if={@role_edit} role_edit={@role_edit} cancel_event="cancel_roles" />
     </.drawer>
 
     <.confirm_dialog
