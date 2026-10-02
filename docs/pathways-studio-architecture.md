@@ -805,13 +805,13 @@ defmodule GtfsPlanner.Import do
       parse_gtfs_zip(zip_path)
     end)
     |> Multi.run(:stops, fn _, %{version: v, parse: data} ->
-      import_stops(scope, v, data.stops)
+      insert_stops(scope, v, data.stops)
     end)
     |> Multi.run(:levels, fn _, %{version: v, parse: data} ->
-      import_levels(scope, v, data.levels)
+      insert_levels(scope, v, data.levels)
     end)
     |> Multi.run(:pathways, fn _, %{version: v, parse: data} ->
-      import_pathways(scope, v, data.pathways)
+      insert_pathways(scope, v, data.pathways)
     end)
     |> Repo.transaction()
     |> handle_import_result()

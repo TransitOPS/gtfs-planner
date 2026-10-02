@@ -51,17 +51,5 @@
   {"lib/gtfs_planner_web/live/gtfs/station_reachability_live.ex", :pattern_match_cov},
   {"lib/gtfs_planner_web/live/gtfs/station_reachability_result_live.ex", :pattern_match_cov},
   {"lib/gtfs_planner_web/live/gtfs/station_report_2_live.ex", :call},
-  {"lib/gtfs_planner_web/live/gtfs/validation_result_live.ex", :pattern_match_cov},
-  {"lib/mix/tasks/gtfs/import_levels.ex", :callback_info_missing},
-  {"lib/mix/tasks/gtfs/import_levels.ex", :guard_fail},
-  {"lib/mix/tasks/gtfs/import_levels.ex", :unknown_function},
-  {"lib/mix/tasks/gtfs/import_levels.ex", :pattern_match},
-  {"lib/mix/tasks/gtfs/import_pathways.ex", :callback_info_missing},
-  {"lib/mix/tasks/gtfs/import_pathways.ex", :unknown_function},
-  {"lib/mix/tasks/gtfs/import_pathways.ex", :pattern_match},
-  {"lib/mix/tasks/gtfs/import_pathways.ex", :pattern_match_cov},
-  {"lib/mix/tasks/gtfs/import_stops.ex", :callback_info_missing},
-  {"lib/mix/tasks/gtfs/import_stops.ex", :unknown_function},
-  {"lib/mix/tasks/gtfs/import_stops.ex", :pattern_match},
-  {"lib/mix/tasks/gtfs/import_stops.ex", :pattern_match_cov}
+  {"lib/gtfs_planner_web/live/gtfs/validation_result_live.ex", :pattern_match_cov}
 ]

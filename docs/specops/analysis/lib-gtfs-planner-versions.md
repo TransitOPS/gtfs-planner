@@ -168,7 +168,7 @@ There is no `current_version_id` column on organizations or users — the versio
 
 ### 4.3 Version Assignment to Dependent Entities
 
-Whenever GTFS data is imported (via mix tasks: `import_stops`, `import_pathways`, `import_levels`), the importing process receives a `gtfs_version_id` as a parameter. The version ID is stored as a foreign key on each imported record (stops, routes, pathways, levels, etc.). This means:
+Whenever GTFS data is imported through the web import pipeline, the importing process receives a `gtfs_version_id` as a parameter. The version ID is stored as a foreign key on each imported record (stops, routes, pathways, levels, etc.). This means:
 - Each GTFS dataset import creates data under a specific version
 - Multiple versions can coexist — each with independent stop/route/pathway data
 - Version identity is the partition key for GTFS data queries
@@ -180,7 +180,7 @@ Whenever GTFS data is imported (via mix tasks: `import_stops`, `import_pathways`
 - Changeset pipeline order: `lib/gtfs_planner/versions/gtfs_version.ex:48-61`
 - Version dropdown used in templates: `lib/gtfs_planner_web/components/core_components.ex:774,780,790`
 - Version-scoped queries (example): `lib/gtfs_planner/validations.ex:28,344,363,856`
-- Mix task import with version ID: `lib/mix/tasks/gtfs/import_stops.ex:91,217`
+- Web import with version ID: `lib/gtfs_planner/gtfs/import.ex:193`
 
 ---
 
