@@ -30,11 +30,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
 
   # The built-in detour script's templates, filled from this fixture's own
   # answers: Route 1, NE 6th St to NE 20th St, a Monday-to-Friday 8 PM to 5 AM
-  # run, Lincoln City as the destination and roadwork as the reason.
+  # run and roadwork as the reason.
   @detour_header "Route 1 detour: NE 6th St to NE 20th St not served"
 
   @detour_description "Mon–Fri, 8 PM to 5 AM the next day, Oct 5 to Oct 23, " <>
-                        "Route 1 buses to Lincoln City are detoured because of roadwork. " <>
+                        "Route 1 buses are detoured because of roadwork. " <>
                         "Stops from NE 6th St to NE 20th St are not served."
 
   setup do
@@ -233,7 +233,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
 
       assert regenerated.message.description ==
                "Mon–Fri, 8 PM to 5 AM the next day, Oct 5 to Oct 23, " <>
-                 "Route 1 buses to Lincoln City are detoured because of roadwork. " <>
+                 "Route 1 buses are detoured because of roadwork. " <>
                  "Stops from NE 20th St to NE 12th St are not served."
 
       assert regenerated.message.customized == false

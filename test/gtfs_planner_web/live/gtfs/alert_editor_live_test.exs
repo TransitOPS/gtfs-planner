@@ -110,6 +110,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
 
       assert has_element?(view, "#alert-question-title", "When should this alert end?")
       assert has_element?(view, "#alert-step-timing[aria-current='step']")
+      assert page_title(view) =~ "Update alert"
 
       {:ok, view, _html} =
         live(context.conn, edit_path(context.version, alert) <> "?step=timing&mode=form")

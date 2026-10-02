@@ -82,6 +82,40 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
       assert has_element?(view, "#alert-save-status", "Not saved.")
     end
 
+    test "Enter in a text field cannot submit the form as Save and close", context do
+      alert = message_alert(context)
+
+      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+
+      # The first submit button in the form is disabled, so implicit submission
+      # has nothing to press. The real Save and close is outside the form.
+      assert has_element?(view, "#alert-form > button[type='submit'][disabled]")
+      assert has_element?(view, "#alert-save-close[form='alert-form']")
+    end
+
+    test "a target outside the version is refused and the typed draft stays", context do
+      alert = message_alert(context)
+
+      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+
+      render_change(view, "autosave", %{
+        "alert" => %{
+          "revision" => "1",
+          "scope" => %{"stop_ids" => [Ecto.UUID.generate()]},
+          "message" => %{"header" => "Typed beside a refused stop"}
+        }
+      })
+
+      assert has_element?(view, "#alert-save-status", "Not saved.")
+      assert has_element?(view, "#alert-save-detail", "Choose stops from this version.")
+      assert has_element?(view, "#alert-save-retry")
+      assert view |> element("#message-header") |> render() =~ "Typed beside a refused stop"
+
+      assert {:ok, unchanged} = Alerts.get_alert(context.audit, alert.id)
+      assert unchanged.revision == 1
+      assert unchanged.message.header == "Route 1 buses delayed"
+    end
+
     test "the form carries the base revision a recovery would replay", context do
       alert = message_alert(context)
 

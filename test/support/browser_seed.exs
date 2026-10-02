@@ -11205,7 +11205,7 @@ case Accounts.register_first_admin(%{
         route_pattern_typicality: 1,
         route_pattern_sort_order: 1,
         timing_name: "Weekday base",
-        timing_headsign: "To Lincoln City",
+        timing_headsign: "Lincoln City",
         stops: [
           {"AL_NTC", 0, 0, 1},
           {"AL_CST6", 420, 420, 0},
@@ -11225,7 +11225,7 @@ case Accounts.register_first_admin(%{
         route_pattern_typicality: 3,
         route_pattern_sort_order: 1,
         timing_name: "Weekday base",
-        timing_headsign: "To Newport",
+        timing_headsign: "Newport",
         stops: [
           {"AL_LCTC", 0, 0, 1},
           {"AL_CST36", 1800, 1800, 0},
@@ -11247,7 +11247,7 @@ case Accounts.register_first_admin(%{
         route_pattern_typicality: 1,
         route_pattern_sort_order: 1,
         timing_name: "Weekday base",
-        timing_headsign: "To Hospital",
+        timing_headsign: "Hospital",
         stops: [
           {"AL_NTC", 0, 0, 1},
           {"AL_NYE", 900, 960, 0},
@@ -11264,7 +11264,7 @@ case Accounts.register_first_admin(%{
         route_pattern_typicality: 3,
         route_pattern_sort_order: 1,
         timing_name: "Weekday base",
-        timing_headsign: "To Nye Beach",
+        timing_headsign: "Nye Beach",
         stops: [
           {"AL_HOSP", 0, 0, 1},
           {"AL_NYE", 1140, 1200, 0},
@@ -11281,7 +11281,7 @@ case Accounts.register_first_admin(%{
         route_pattern_typicality: 1,
         route_pattern_sort_order: 1,
         timing_name: "Weekday base",
-        timing_headsign: "To Newport",
+        timing_headsign: "Newport",
         stops: [
           {"AL_CST12", 0, 0, 1},
           {"AL_CST20", 420, 420, 0}
@@ -11294,35 +11294,29 @@ case Accounts.register_first_admin(%{
     # as the next day rather than as an earlier departure.
     [
       {alerts_route_1, route_1_outbound, "AL-R1-T1", "06:05:00", "ALERTS_WEEKDAY",
-       "To Lincoln City"},
+       "Lincoln City"},
       {alerts_route_1, route_1_outbound, "AL-R1-T2", "08:15:00", "ALERTS_WEEKDAY",
-       "To Lincoln City"},
+       "Lincoln City"},
       {alerts_route_1, route_1_outbound, "AL-R1-T3", "12:40:00", "ALERTS_WEEKDAY",
-       "To Lincoln City"},
+       "Lincoln City"},
       {alerts_route_1, route_1_outbound, "AL-R1-T4", "16:20:00", "ALERTS_WEEKDAY",
-       "To Lincoln City"},
+       "Lincoln City"},
       {alerts_route_1, route_1_outbound, "AL-R1-T5", "18:35:00", "ALERTS_WEEKDAY",
-       "To Lincoln City"},
+       "Lincoln City"},
       {alerts_route_1, route_1_outbound, "AL-R1-T6", "24:40:00", "ALERTS_WEEKDAY",
-       "To Lincoln City"},
+       "Lincoln City"},
       {alerts_route_1, route_1_outbound, "AL-R1-T7", "09:00:00", "ALERTS_WEEKEND",
-       "To Lincoln City"},
+       "Lincoln City"},
       {alerts_route_1, route_1_outbound, "AL-R1-T8", "17:30:00", "ALERTS_WEEKEND",
-       "To Lincoln City"},
-      {alerts_route_1, route_1_inbound, "AL-R1-T9", "07:00:00", "ALERTS_WEEKDAY", "To Newport"},
-      {alerts_route_1, route_1_inbound, "AL-R1-T10", "19:00:00", "ALERTS_WEEKDAY", "To Newport"},
-      {alerts_route_12, route_12_outbound, "AL-R12-T1", "06:50:00", "ALERTS_WEEKDAY",
-       "To Hospital"},
-      {alerts_route_12, route_12_outbound, "AL-R12-T2", "15:00:00", "ALERTS_WEEKDAY",
-       "To Hospital"},
-      {alerts_route_12, route_12_outbound, "AL-R12-T3", "10:00:00", "ALERTS_WEEKEND",
-       "To Hospital"},
-      {alerts_route_12, route_12_inbound, "AL-R12-T4", "08:00:00", "ALERTS_WEEKDAY",
-       "To Nye Beach"},
-      {alerts_route_50, route_50_outbound, "AL-R50-T1", "07:30:00", "ALERTS_WEEKDAY",
-       "To Newport"},
-      {alerts_route_50, route_50_outbound, "AL-R50-T2", "11:00:00", "ALERTS_WEEKEND",
-       "To Newport"}
+       "Lincoln City"},
+      {alerts_route_1, route_1_inbound, "AL-R1-T9", "07:00:00", "ALERTS_WEEKDAY", "Newport"},
+      {alerts_route_1, route_1_inbound, "AL-R1-T10", "19:00:00", "ALERTS_WEEKDAY", "Newport"},
+      {alerts_route_12, route_12_outbound, "AL-R12-T1", "06:50:00", "ALERTS_WEEKDAY", "Hospital"},
+      {alerts_route_12, route_12_outbound, "AL-R12-T2", "15:00:00", "ALERTS_WEEKDAY", "Hospital"},
+      {alerts_route_12, route_12_outbound, "AL-R12-T3", "10:00:00", "ALERTS_WEEKEND", "Hospital"},
+      {alerts_route_12, route_12_inbound, "AL-R12-T4", "08:00:00", "ALERTS_WEEKDAY", "Nye Beach"},
+      {alerts_route_50, route_50_outbound, "AL-R50-T1", "07:30:00", "ALERTS_WEEKDAY", "Newport"},
+      {alerts_route_50, route_50_outbound, "AL-R50-T2", "11:00:00", "ALERTS_WEEKEND", "Newport"}
     ]
     |> Enum.each(fn {route, bundle, trip_id, start_time, service_id, headsign} ->
       GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
@@ -11364,7 +11358,7 @@ case Accounts.register_first_admin(%{
         header_template: "[route] detour: [stop] not served",
         description_template:
           "[route] toward [direction] is not serving [stop]. Board at [alternate stop] instead. " <>
-            "Expect up to [minutes] minutes of delay because of [because].",
+            "Expect up to [minutes] minutes of delay[because].",
         position: 1
       })
 
@@ -11433,6 +11427,21 @@ case Accounts.register_first_admin(%{
 
     alerts_in_progress = alerts_new.(%{"urgency" => "planned", "situation" => "detour"})
 
+    # The alert names a stop row that exists when it is written, because a write
+    # refuses an identity that is not a row of the version. The stop is deleted
+    # once the alert is finished, which is how a stop leaves a version in
+    # practice and what the Needs attention badge reports.
+    {:ok, alerts_old_depot} =
+      GtfsFixtures.insert_stop(%{
+        organization_id: org.id,
+        gtfs_version_id: alerts_version.id,
+        stop_id: "AL_OLD_DEPOT",
+        stop_name: "Old Depot Road",
+        location_type: 0,
+        stop_lat: Decimal.new("44.6600"),
+        stop_lon: Decimal.new("-124.0500")
+      })
+
     alerts_needs_attention =
       alerts_new.(%{
         "urgency" => "now",
@@ -11440,7 +11449,7 @@ case Accounts.register_first_admin(%{
         "cause" => "construction",
         "scope" => %{
           "shape" => "stop_all_routes",
-          "stop_ids" => ["00000000-0000-0000-0000-000000000009"]
+          "stop_ids" => [alerts_old_depot.id]
         },
         "message" => %{
           "header" => "Old Depot Road stop closed",
@@ -11454,6 +11463,8 @@ case Accounts.register_first_admin(%{
       "end_kind" => "estimated",
       "check_in_at" => NaiveDateTime.to_iso8601(alerts_check_in)
     })
+
+    Repo.delete!(alerts_old_depot)
 
     IO.puts(
       "Browser seed: alerts #{alerts_current.id} current, " <>

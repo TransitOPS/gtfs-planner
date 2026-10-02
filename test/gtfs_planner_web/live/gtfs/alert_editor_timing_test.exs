@@ -248,6 +248,24 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       refute render(view) =~ "(next day)"
     end
 
+    test "a Once period that ends before it starts says so", context do
+      alert = planned_alert(context)
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+
+      view |> element("#alert-timing-pattern-continuous") |> render_click()
+      put_timing(view, %{"first_date" => "2026-10-09", "last_date" => "2026-10-05"})
+
+      assert has_element?(
+               view,
+               "#alert-timing-error",
+               "Choose an end date after the start date."
+             )
+
+      refute has_element?(view, "#alert-timing-preview")
+    end
+
     test "removing one Friday takes it out of the pattern", context do
       alert = planned_alert(context)
 

@@ -68,6 +68,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
 
       {:ok, view, _html} = live(context.conn, alerts_path(context.version))
 
+      assert has_element?(view, "#alerts-tabs[role='tablist'] #alerts-tab-current[role='tab']")
       assert has_element?(view, "#alerts-tab-current[data-count='1']")
       assert has_element?(view, "#alerts-tab-in_progress[data-count='1']")
       assert has_element?(view, "#alerts-tab-upcoming[data-count='0']")

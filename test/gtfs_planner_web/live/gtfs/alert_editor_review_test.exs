@@ -251,8 +251,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
 
       # The actions the step offers are the two that save: the review's own
       # **Save alert**, and the editor's **Save and close**.
-      assert has_element?(view, "#save-alert", "Save alert")
-      assert has_element?(view, "#alert-save-close", "Save and close")
+      assert has_element?(view, "#save-alert.btn-primary", "Save alert")
+      assert has_element?(view, "#alert-save-close.btn-outline", "Save and close")
       assert has_element?(view, "#alert-save-bar")
     end
   end

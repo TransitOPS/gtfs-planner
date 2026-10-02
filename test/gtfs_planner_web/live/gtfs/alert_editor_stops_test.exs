@@ -646,6 +646,27 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       assert saved.scope.alternative_directions == "Board at the temporary stop on NE Main St."
     end
 
+    test "written directions are still shown when the question is opened again", context do
+      %{depot: depot} = stops(context)
+      _coast_route = pattern(context, "R1", [{"S_DEPOT", 0}])
+
+      alert =
+        alert_with(context, %{
+          "urgency" => "now",
+          "situation" => "stop_moved",
+          "scope" => %{
+            "shape" => "stop_all_routes",
+            "stop_ids" => [depot.id],
+            "alternative_directions" => "Board on the corner."
+          }
+        })
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=alternative")
+
+      assert view |> element("#write-directions-field") |> render() =~ "Board on the corner."
+    end
+
     test "a moved stop cannot advance without a stop or written directions", context do
       %{depot: depot} = stops(context)
       _coast_route = pattern(context, "R1", [{"S_DEPOT", 0}])
