@@ -7,6 +7,11 @@ defmodule GtfsPlanner.Agents.Prompt do
   with its resolved display timezone, and the service version name. It carries
   no organization, version or user identifier, so nothing the model sees can
   name the tenant it came from.
+
+  An organization-owned conversation binds no service version, so the version
+  line says so instead of naming an empty one. That scope's pack reads the
+  version it needs from the record the conversation is about, which the model is
+  told through the skill rather than through a fact here.
   """
 
   alias GtfsPlanner.Agents.Scope
@@ -24,10 +29,16 @@ defmodule GtfsPlanner.Agents.Prompt do
 
     facts = [
       "Today is #{Date.to_iso8601(today.date)}, #{Calendar.strftime(today.date, "%A, %B %-d, %Y")} (#{today.timezone}), in the agency's local time.",
-      "Service version: #{scope.version_name}.",
+      version_line(scope.version_name),
       "Section: #{pack.title()}."
     ]
 
     %{"role" => "system", "content" => pack.skill() <> "\n\n" <> Enum.join(facts, "\n")}
   end
+
+  defp version_line(name) when is_binary(name), do: "Service version: #{name}."
+
+  defp version_line(_no_version),
+    do:
+      "No service version is selected for this conversation; it is about one of your organization's own records."
 end

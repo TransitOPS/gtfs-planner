@@ -517,17 +517,19 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
   # message produced.
   defp socket_assigns(view), do: :sys.get_state(view.pid).socket.assigns
 
+  # The scope the editor's panel builds: bound to the organization and the
+  # alert, with no service version, because the alert belongs to the
+  # organization rather than to the selected schedule.
   defp scope(context, alert_id) do
     %Scope{
       organization_id: context.organization.id,
-      gtfs_version_id: context.version.id,
+      gtfs_version_id: nil,
       user_id: context.actor.id,
       user_email: context.actor.email,
       pack_id: "alerts",
-      version_name: context.version.name,
+      version_name: nil,
       subject_id: alert_id,
-      # The editor's panel binds the whole version as the conversation's page.
-      resource_context: Scope.context({:version, context.version.id})
+      resource_context: Scope.context(nil)
     }
   end
 

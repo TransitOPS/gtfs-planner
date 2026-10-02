@@ -21,6 +21,14 @@ defmodule GtfsPlanner.Alerts.Targets do
   keeps when its source version disappears, from the same scoped reads the
   editor's options come from (CR-5).
 
+  A context with no `gtfs_version_id` has no schedule to read: every
+  version-scoped reader below answers its own empty result for one - no options,
+  no labels, no row maps, and no identity resolved - instead of building a query
+  that compares a column with nil. That is the reading an alert whose source
+  version was deleted and an organization that has no schedule yet both need,
+  and it never falls back to whichever version happens to be current (AC-9,
+  AC-10).
+
   `departures_on/4` decides whether a trip runs on the date with
   `Gtfs.Calendars.ServiceDates.active_dates_between/4`, which is the same
   evaluation the Calendar helper shows, so a cancelled departure is never
@@ -93,6 +101,8 @@ defmodule GtfsPlanner.Alerts.Targets do
   keystroke is the only thing that opens the list.
   """
   @spec search_routes(AuditContext.t(), term()) :: [route_option()]
+  def search_routes(%AuditContext{gtfs_version_id: nil}, _query), do: []
+
   def search_routes(%AuditContext{organization_id: o, gtfs_version_id: v}, query) do
     case search_pattern(query) do
       nil ->
@@ -126,7 +136,11 @@ defmodule GtfsPlanner.Alerts.Targets do
   offered to itself.
   """
   @spec search_stops(AuditContext.t(), term(), keyword()) :: [stop_option()]
-  def search_stops(%AuditContext{} = audit_context, query, opts \\ []) do
+  def search_stops(audit_context, query, opts \\ [])
+
+  def search_stops(%AuditContext{gtfs_version_id: nil}, _query, _opts), do: []
+
+  def search_stops(%AuditContext{} = audit_context, query, opts) do
     case search_pattern(query) do
       nil ->
         []
@@ -164,6 +178,8 @@ defmodule GtfsPlanner.Alerts.Targets do
   one trip's, each at the earliest position any trip gives it.
   """
   @spec route_stops(AuditContext.t(), term()) :: [stop_option()]
+  def route_stops(%AuditContext{gtfs_version_id: nil}, _route_id), do: []
+
   def route_stops(%AuditContext{} = audit_context, route_id) do
     case scoped_route(audit_context, route_id) do
       nil ->
@@ -197,6 +213,8 @@ defmodule GtfsPlanner.Alerts.Targets do
   appear, and a stop no trip of the version serves yields no routes.
   """
   @spec routes_at_stops(AuditContext.t(), [term()]) :: [route_option()]
+  def routes_at_stops(%AuditContext{gtfs_version_id: nil}, _stop_ids), do: []
+
   def routes_at_stops(%AuditContext{} = audit_context, stop_ids) when is_list(stop_ids) do
     gtfs_stop_ids =
       from(s in Stop,
@@ -246,6 +264,14 @@ defmodule GtfsPlanner.Alerts.Targets do
   """
   @spec departures_on(AuditContext.t(), term(), 0 | 1 | nil, Date.t()) :: [departure()]
   def departures_on(
+        %AuditContext{gtfs_version_id: nil},
+        _route_id,
+        _direction_id,
+        %Date{} = _date
+      ),
+      do: []
+
+  def departures_on(
         %AuditContext{} = audit_context,
         route_id,
         direction_id,
@@ -274,6 +300,8 @@ defmodule GtfsPlanner.Alerts.Targets do
   version actually contains rather than the whole GTFS table.
   """
   @spec route_types(AuditContext.t()) :: [integer()]
+  def route_types(%AuditContext{gtfs_version_id: nil}), do: []
+
   def route_types(%AuditContext{organization_id: o, gtfs_version_id: v}) do
     Gtfs.list_distinct_route_types(o, v)
   end
@@ -290,6 +318,8 @@ defmodule GtfsPlanner.Alerts.Targets do
   @type direction_option :: %{direction_id: 0 | 1, label: String.t()}
 
   @spec route_directions(AuditContext.t(), [term()]) :: [direction_option()]
+  def route_directions(%AuditContext{gtfs_version_id: nil}, _route_ids), do: []
+
   def route_directions(%AuditContext{} = audit_context, route_ids) when is_list(route_ids) do
     gtfs_route_ids =
       from(r in Route,
@@ -594,6 +624,9 @@ defmodule GtfsPlanner.Alerts.Targets do
           stops: %{optional(Ecto.UUID.t()) => String.t()},
           trips: %{optional(Ecto.UUID.t()) => String.t()}
         }
+  def labels_for(%AuditContext{gtfs_version_id: nil}, %Alert{} = _alert),
+    do: %{routes: %{}, stops: %{}, trips: %{}}
+
   def labels_for(%AuditContext{} = audit_context, %Alert{} = alert) do
     referenced = Listing.referenced_ids(alert)
 
@@ -615,6 +648,8 @@ defmodule GtfsPlanner.Alerts.Targets do
   attention (R8).
   """
   @spec routes_by_id(AuditContext.t(), [String.t()]) :: %{optional(Ecto.UUID.t()) => Route.t()}
+  def routes_by_id(%AuditContext{gtfs_version_id: nil}, _ids), do: %{}
+
   def routes_by_id(%AuditContext{organization_id: o, gtfs_version_id: v}, ids) do
     case uuids(ids) do
       [] ->
@@ -641,6 +676,8 @@ defmodule GtfsPlanner.Alerts.Targets do
   not have chosen cannot be stored by naming its UUID (R1, CR-4).
   """
   @spec stops_by_id(AuditContext.t(), [String.t()]) :: %{optional(Ecto.UUID.t()) => stop_option()}
+  def stops_by_id(%AuditContext{gtfs_version_id: nil}, _ids), do: %{}
+
   def stops_by_id(%AuditContext{organization_id: o, gtfs_version_id: v}, ids) do
     case uuids(ids) do
       [] ->
@@ -673,6 +710,13 @@ defmodule GtfsPlanner.Alerts.Targets do
           stops: [term()],
           trips: [term()]
         }) :: %{routes: [term()], stops: [term()], trips: [term()]}
+  def unresolved_ids(%AuditContext{gtfs_version_id: nil}, %{
+        routes: routes,
+        stops: stops,
+        trips: trips
+      }),
+      do: %{routes: routes, stops: stops, trips: trips}
+
   def unresolved_ids(%AuditContext{} = audit_context, %{
         routes: routes,
         stops: stops,

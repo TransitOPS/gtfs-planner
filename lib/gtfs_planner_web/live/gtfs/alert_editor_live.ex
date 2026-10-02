@@ -140,8 +140,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   start card already began.
 
   Every edit route in assistant mode mounts `AgentPanel` with the `alerts` pack,
-  `auto_apply: true` and this alert's own id as the session's subject, and opens
-  it. Each settled prepared change arrives as
+  `auto_apply: true`, `organization_scoped: true` and this alert's own id as the
+  session's subject, and opens it. The conversation is bound to that alert and
+  to this organization, not to the version the navbar happens to name, so
+  selecting another version while the alert is open leaves this conversation —
+  and this alert — alone; the pack derives whatever schedule context it needs
+  from the alert's own retained source. Each settled prepared change arrives as
   `{:agent_prepared, conversation_id, entry_id}`; a message naming another
   conversation, or another alert's session, changes nothing. The change itself
   is applied here and nowhere else: `Agents.prepared/3` returns the model's own
@@ -363,7 +367,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
      |> assign(:assistant_candidate, nil)
      |> assign(:assistant_filled?, false)
      |> assign(:form, draft_form(%Alert{}))
-     |> AgentPanel.mount("alerts", auto_apply: true)}
+     |> AgentPanel.mount("alerts", auto_apply: true, organization_scoped: true)}
   end
 
   @impl true
