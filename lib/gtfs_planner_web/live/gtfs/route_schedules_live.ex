@@ -5452,6 +5452,13 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
             :if={@agent_open?}
             class="order-first mb-5 min-w-0 lg:order-last lg:mb-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
           >
+            <ScheduleHelperComponents.connection_results
+              :if={@schedule_helper_mode == "connections"}
+              evidence={connection_evidence(assigns)}
+              status={@agent_status}
+              approved?={@connection_approval != nil}
+            />
+
             <.agent_panel
               id="agent-panel"
               title={@agent_title}
@@ -5490,4 +5497,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   defp helper_scope_line(%{route: route} = assigns),
     do: "Route #{route.route_id} · #{assigns.current_gtfs_version.name}"
+
+  # The connections helper's official answer, read from the evidence the session
+  # delivered rather than from anything the model wrote. The panel releases it
+  # with the transcript, so an edited approval or a replaced conversation drops
+  # this card with the source it was read against (INV-2).
+  defp connection_evidence(assigns),
+    do: AgentPanel.latest_evidence(assigns, "connection_comparison")
 end

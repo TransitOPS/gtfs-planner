@@ -350,6 +350,97 @@ test.describe("connection approval helper", () => {
     );
     expect(fitsViewport).toBe(true);
   });
+
+  // The comparison journey (EV-17): the numbers the page shows beside the
+  // helper are the ones this version read in one snapshot, not the helper's
+  // prose, and approving a comparison writes nothing.
+  test("connections: the comparison beside the panel reports this version's own margins", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openSchedules(page);
+
+    await page.locator("#connection-pair-1-from-trip").fill(APPROVAL_FROM.trip);
+    await page.locator("#connection-pair-1-from-stop").fill(APPROVAL_FROM.stop);
+    await page
+      .locator("#connection-pair-1-from-sequence")
+      .fill(String(APPROVAL_FROM.sequence));
+    await page.locator("#connection-pair-1-to-route").fill(APPROVAL_TO.route);
+    await page.locator("#connection-pair-1-to-trip").fill(APPROVAL_TO.trip);
+    await page.locator("#connection-pair-1-to-stop").fill(APPROVAL_TO.stop);
+    await page
+      .locator("#connection-pair-1-to-sequence")
+      .fill(String(APPROVAL_TO.sequence));
+
+    // This version states no minimum for this pair, so the operator's own
+    // approved minimum is the one it is compared against.
+    await page
+      .locator("#connection-pair-1-minimum-origin")
+      .selectOption("supplied");
+    await page.locator("#connection-pair-1-minimum-seconds").fill("600");
+    await page
+      .locator("#connection-pair-1-minimum-approval")
+      .fill("Timetable sheet 2026-03-04");
+
+    await page.locator("#connection-pair-1-candidate-arrival").fill("06:20:00");
+    await page
+      .locator("#connection-pair-1-candidate-departure")
+      .fill("06:48:00");
+    await page
+      .locator("#connection-pair-1-candidate-approval")
+      .fill("Dispatch sheet");
+
+    await page.locator("#connection-approve").click();
+    await expect(page.locator("#connection-approval-receipt")).toBeVisible({
+      timeout: 30_000,
+    });
+
+    await page.locator("#agent-helper-open").click();
+    await expect(page.locator("#agent-panel")).toBeVisible();
+    await page.locator("#agent-new-conversation").click();
+    await page
+      .locator("#agent-composer-input")
+      .fill("Can I make the connection, and how much time do I have?");
+    await page.locator("#agent-send").click();
+
+    const results = page.locator("#connection-comparison-results");
+    await expect(results).toBeVisible({ timeout: 30_000 });
+
+    // The card carries the pair, its totals and the minimum's provenance, all
+    // read from this version.
+    await expect(results).toContainText("1 approved connection pair");
+    await expect(
+      page.locator("#connection-comparison-row-pair-1-status"),
+    ).toHaveText("Comparable");
+    await expect(
+      page.locator("#connection-comparison-row-pair-1-minimum"),
+    ).toContainText("Supplied minimum 600 s");
+    await expect(results).toContainText("not a guarantee");
+    await expect(page.locator("#connection-comparison-source")).toContainText(
+      "gtfs_connections",
+    );
+
+    await capture(page, testInfo, "connections-results-1440x1000", results);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await capture(page, testInfo, "connections-results-390x844", results);
+
+    // This card is what step 10 adds, so the narrow viewport is measured against
+    // the card itself: nothing in it may push wider than its own column.
+    const cardFits = await page.evaluate(() => {
+      const card = document.querySelector("#connection-comparison-results");
+      const edge = card.getBoundingClientRect().left + card.clientWidth + 1;
+      const wide = [...card.querySelectorAll("*")]
+        .filter((el) => el.getBoundingClientRect().right > edge)
+        .map((el) => el.tagName + "#" + el.id);
+      return { fits: card.scrollWidth <= card.clientWidth, wide };
+    });
+    expect(cardFits.wide).toEqual([]);
+    expect(cardFits.fits).toBe(true);
+
+    // Asking a question writes nothing to the version this card read from.
+    await expect(page.locator("#connection-approval-receipt")).toBeVisible();
+  });
 });
 
 // Signs in, reaches the seeded transfers version and opens a new draft whose
