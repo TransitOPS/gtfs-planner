@@ -7,6 +7,7 @@ defmodule GtfsPlanner.Organizations do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.{User, UserOrgMembership, UserToken}
   alias GtfsPlanner.Authorization
+  alias GtfsPlanner.FeedPublishing
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Organizations.AdminReadAdapter
   alias GtfsPlanner.Organizations.Organization
@@ -163,6 +164,12 @@ defmodule GtfsPlanner.Organizations do
   @doc """
   Deletes an organization.
 
+  Refused while the organization retains publication state: a claimed public
+  namespace, its channel state and their attempts outlive the organization row, so
+  deletion is refused until an operator withdraws publication under separate
+  authority (`FeedPublishing.publications_blocking_deletion/1`, and the tables'
+  `ON DELETE RESTRICT` foreign keys behind it).
+
   ## Examples
 
       iex> delete_organization(organization)
@@ -170,9 +177,25 @@ defmodule GtfsPlanner.Organizations do
 
       iex> delete_organization(organization)
       {:error, %Ecto.Changeset{}}
+
+      iex> delete_organization(organization_with_publication)
+      {:error, {:publications_retained, [:alerts]}}
   """
+  @spec delete_organization(Organization.t()) ::
+          {:ok, Organization.t()}
+          | {:error, {:publications_retained, [atom()]} | Ecto.Changeset.t()}
   def delete_organization(%Organization{} = organization) do
-    Repo.delete(organization)
+    Repo.transaction(fn ->
+      case FeedPublishing.publications_blocking_deletion(organization.id) do
+        [] -> :ok
+        channels -> Repo.rollback({:publications_retained, channels})
+      end
+
+      case Repo.delete(organization) do
+        {:ok, deleted} -> deleted
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
     |> broadcast([:organizations, :deleted])
   end
 
