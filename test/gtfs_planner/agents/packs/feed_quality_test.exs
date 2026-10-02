@@ -84,7 +84,11 @@ defmodule GtfsPlanner.Agents.Packs.FeedQualityTest do
                "explain_notice",
                "locate_affected_records",
                "get_export_readiness",
-               "get_export_validation"
+               "get_export_validation",
+               "prepare_export_options",
+               "list_supported_remedies",
+               "inspect_remedy_targets",
+               "prepare_remedy_handoff"
              ]
 
       assert Enum.all?(FeedQuality.tools(), &(&1.parameters["additionalProperties"] == false))

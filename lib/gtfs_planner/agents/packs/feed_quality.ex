@@ -3,7 +3,9 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
 
   @behaviour GtfsPlanner.Agents.Pack
 
+  alias GtfsPlanner.Agents.Packs.FeedQuality.Remedies
   alias GtfsPlanner.Agents.Scope
+  alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Validations.Evidence
 
   @source_ref "gtfs_feed_quality"
@@ -103,17 +105,17 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
       %{
         name: "get_export_readiness",
         description:
-          "Report the current defaults'd profile, structured preflight totals, recent scoped checks and whether the selected artifact's exact bytes were checked. relationship is checked, different_bytes, different_profile, unknown or unavailable; currentness is always unknown and publication is unsupported.",
+          "Report the current defaults'd profile, structured preflight totals, recent scoped checks and whether the selected artifact's exact bytes were checked. export_type is full, pathways, operations or stations (the stations alias names the pathways files) and artifact is primary or flex. relationship is checked, different_bytes, different_profile, unknown or unavailable; currentness is always unknown and publication is unsupported.",
         activity: "Read export readiness",
         parameters: %{
           "type" => "object",
           "properties" => %{
             "export_type" => %{
               "type" => "string",
-              "enum" => ["full", "pathways", "operations", "stations"]
+              "maxLength" => 32
             },
             "export_ref" => %{"type" => "string", "maxLength" => 200},
-            "artifact" => %{"type" => "string", "enum" => ["primary", "flex"]}
+            "artifact" => %{"type" => "string", "maxLength" => 16}
           },
           "required" => ["export_type"],
           "additionalProperties" => false
@@ -128,22 +130,98 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
           "type" => "object",
           "properties" => %{
             "export_ref" => %{"type" => "string", "maxLength" => 200},
-            "artifact" => %{"type" => "string", "enum" => ["primary", "flex"]}
+            "artifact" => %{"type" => "string", "maxLength" => 16}
           },
           "required" => [],
+          "additionalProperties" => false
+        }
+      },
+      %{
+        name: "prepare_export_options",
+        description:
+          "Prepare a native export selection of one type for Review options; the type is full, pathways, operations or stations (the stations alias names the pathways files). It proposes only the type, starts no export, saves no defaults, and the person still presses the native control.",
+        activity: "Prepared export options",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{
+            "export_type" => %{
+              "type" => "string",
+              "maxLength" => 32
+            }
+          },
+          "required" => ["export_type"],
+          "additionalProperties" => false
+        }
+      },
+      %{
+        name: "list_supported_remedies",
+        description:
+          "List what the helper can do about a finding: an empty correction list and whether navigation is available; it cannot fix anything.",
+        activity: "Listed supported remedies",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{},
+          "additionalProperties" => false
+        }
+      },
+      %{
+        name: "inspect_remedy_targets",
+        description: "Return the current records one retained finding names, as navigation only.",
+        activity: "Inspected remedy targets",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{
+            "run_ref" => %{"type" => "string", "maxLength" => 200},
+            "instance_ref" => %{"type" => "string", "maxLength" => 300}
+          },
+          "required" => ["run_ref", "instance_ref"],
+          "additionalProperties" => false
+        }
+      },
+      %{
+        name: "prepare_remedy_handoff",
+        description:
+          "Prepare the navigation handoff for one finding, only when the person explicitly requested that exact finding on the page; without that request it returns discovery, never a handoff. No edits are ever prepared or applied.",
+        activity: "Prepared remedy handoff",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{
+            "run_ref" => %{"type" => "string", "maxLength" => 200},
+            "instance_ref" => %{"type" => "string", "maxLength" => 300}
+          },
+          "required" => ["run_ref", "instance_ref"],
           "additionalProperties" => false
         }
       }
     ]
   end
 
+  # The membership, the snapshot envelope and the snapshot's defaults digest
+  # are rechecked here, so a changed default makes every request, tool,
+  # delivery and prepared lookup the one :unavailable refusal.
   @impl true
   def authorize_context(%Scope{} = scope) do
     with :ok <- Scope.authorized_context(scope),
-         :ok <- feed_context(scope) do
+         :ok <- feed_context(scope),
+         :ok <- snapshot_defaults(scope) do
       :ok
     else
       _other -> {:error, :unavailable}
+    end
+  end
+
+  # The snapshot may pin the organization's defaults digest; a default saved
+  # after the snapshot means every answer below would be from a stale settings
+  # truth. Without a pinned digest the snapshot behaves exactly as before.
+  defp snapshot_defaults(%Scope{} = scope) do
+    case snapshot_payload(scope) do
+      %{"defaults_digest" => expected} when is_binary(expected) ->
+        if defaults_digest(ExportDefaults.get(scope.organization_id)) == expected,
+          do: :ok,
+          else: {:error, :unavailable}
+
+      _other ->
+        :ok
     end
   end
 
@@ -177,6 +255,18 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
 
   def call("get_export_validation", args, %Scope{} = scope),
     do: get_export_validation(args, scope)
+
+  def call("prepare_export_options", args, %Scope{} = scope),
+    do: prepare_export_options(args, scope)
+
+  def call("list_supported_remedies", _args, %Scope{} = scope),
+    do: list_supported_remedies(scope)
+
+  def call("inspect_remedy_targets", args, %Scope{} = scope),
+    do: inspect_remedy_targets(args, scope)
+
+  def call("prepare_remedy_handoff", args, %Scope{} = scope),
+    do: prepare_remedy_handoff(args, scope)
 
   def call(_name, _args, _scope), do: {:error, "That tool is not available."}
 
@@ -260,6 +350,123 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
     end
   end
 
+  # -- prepared export selection ----------------------------------------------
+
+  # The prepared command proposes only the type. The current authoritative
+  # defaults are read here and carried as facts and as a digest the host may
+  # pin, so the native form still makes every real choice and nothing is saved.
+  defp prepare_export_options(args, %Scope{} = scope) do
+    with {:ok, export_type} <- take_export_type(args) do
+      case Evidence.readiness(scope, export_type, nil, :primary) do
+        {:ok, readiness} ->
+          defaults = ExportDefaults.get(scope.organization_id)
+          result = export_options_result(readiness, defaults)
+          evidence = export_options_evidence(readiness, defaults, scope)
+
+          command =
+            {:feed_quality_export_options,
+             %{
+               export_type: readiness.export_type,
+               defaults_digest: defaults_digest(defaults),
+               context_digest: Scope.context_digest(scope)
+             }}
+
+          case bounded_reply(result, evidence) do
+            {:ok, _result, _evidence} ->
+              {:prepared,
+               %{summary: export_options_summary(readiness, defaults), command: command}, result,
+               evidence}
+
+            {:error, _message} = error ->
+              error
+          end
+
+        {:error, reason} ->
+          {:error, error_message(reason, :export)}
+      end
+    end
+  end
+
+  # -- remedies ---------------------------------------------------------------
+
+  defp list_supported_remedies(%Scope{} = scope) do
+    %{corrections: corrections, navigation: navigation} = Remedies.list()
+    result = %{"corrections" => corrections, "navigation" => navigation}
+
+    bounded_reply(
+      result,
+      remedy_evidence([], "corrections", "supported_remedies", "supported remedies", scope)
+    )
+  end
+
+  defp inspect_remedy_targets(args, %Scope{} = scope) do
+    with {:ok, run_ref} <- take_bound(args, "run_ref", 200, true),
+         {:ok, instance_ref} <- take_bound(args, "instance_ref", 300, true) do
+      case Remedies.inspect(scope, run_ref, instance_ref) do
+        {:ok, navigation} ->
+          bounded_reply(
+            remedy_result(navigation),
+            remedy_evidence(
+              navigation.targets,
+              "current records",
+              "remedy_targets",
+              "remedy targets",
+              scope
+            )
+          )
+
+        {:error, reason} ->
+          {:error, error_message(reason, :validation)}
+      end
+    end
+  end
+
+  # The approval is the server snapshot field the native Inspect target action
+  # copies; a model argument or paraphrase can never establish it. Without it
+  # the person gets discovery, never a handoff, and no edit command exists here.
+  defp prepare_remedy_handoff(args, %Scope{} = scope) do
+    with {:ok, run_ref} <- take_bound(args, "run_ref", 200, true),
+         {:ok, instance_ref} <- take_bound(args, "instance_ref", 300, true) do
+      requested? = snapshot_payload(scope)["requested_instance_ref"] == instance_ref
+
+      read =
+        if requested?,
+          do: Remedies.prepare(scope, run_ref, instance_ref, true),
+          else: Remedies.inspect(scope, run_ref, instance_ref)
+
+      case read do
+        {:ok, navigation} ->
+          result =
+            if requested? do
+              Map.merge(remedy_result(navigation), %{
+                "requested" => true,
+                "handoff" => remedy_result(navigation)
+              })
+            else
+              Map.merge(remedy_result(navigation), %{
+                "requested" => false,
+                "handoff" => nil,
+                "navigation" => remedy_result(navigation)
+              })
+            end
+
+          bounded_reply(
+            result,
+            remedy_evidence(
+              navigation.targets,
+              "current records",
+              "remedy_handoff",
+              "remedy handoff",
+              scope
+            )
+          )
+
+        {:error, reason} ->
+          {:error, error_message(reason, :validation)}
+      end
+    end
+  end
+
   # Every read goes through the already-authorized scope, so the pack only
   # builds the exact argument map the Evidence read it names declares. A refusal
   # is one bounded message; the evidence builder only ever sees an `{:ok, read}`.
@@ -270,13 +477,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
     case query.() do
       {:ok, read} ->
         {result, evidence} = build.(read)
-
-        if byte_size(Jason.encode!(%{"result" => result, "evidence" => evidence})) >
-             @max_result_bytes do
-          {:error, "That answer is larger than one tool result can carry. Narrow the request."}
-        else
-          {:ok, result, evidence}
-        end
+        bounded_reply(result, evidence)
 
       {:error, reason} ->
         {:error, error_message(reason, error_class)}
@@ -550,6 +751,9 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
   defp error_message(:invalid_arguments, _class),
     do: "That request is not valid. Check the values and try again."
 
+  defp error_message(:not_requested, _class),
+    do: "The person has not requested this finding. Open Inspect target on that finding first."
+
   defp error_message(_reason, _class), do: "That question could not be answered."
 
   # -- arguments --------------------------------------------------------------
@@ -613,6 +817,130 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
   defp take_artifact(%{"artifact" => "flex"}), do: {:ok, :flex}
   defp take_artifact(%{"artifact" => _other}), do: {:error, invalid_request()}
   defp take_artifact(_args), do: {:ok, :primary}
+
+  defp bounded_reply(result, evidence) do
+    if byte_size(Jason.encode!(%{"result" => result, "evidence" => evidence})) >
+         @max_result_bytes do
+      {:error, "That answer is larger than one tool result can carry. Narrow the request."}
+    else
+      {:ok, result, evidence}
+    end
+  end
+
+  defp remedy_result(navigation) do
+    %{
+      "targets" =>
+        Enum.map(navigation.targets, fn target ->
+          %{"kind" => target.kind, "id" => target.id, "label" => target.label}
+        end),
+      "unresolved" =>
+        Enum.map(navigation.unresolved, fn item ->
+          %{"reason" => item.reason, "field" => item.field, "value" => item.value}
+        end),
+      "navigable" => navigation.navigable
+    }
+  end
+
+  defp remedy_evidence(targets, total_label, kind, title, %Scope{} = scope) do
+    %{
+      kind: kind,
+      title: title,
+      total: length(targets),
+      total_label: total_label,
+      completeness: :complete,
+      completeness_reason: nil,
+      facts: [%{label: "Navigation targets", value: Integer.to_string(length(targets))}],
+      source_ref: @source_ref,
+      digest: "",
+      source_revision: nil,
+      scope: %{
+        organization_id: scope.organization_id,
+        gtfs_version_id: scope.gtfs_version_id,
+        identity: identity_label(scope)
+      },
+      exclusions: [],
+      resources: Enum.map(targets, &%{kind: &1.kind, id: &1.id, label: &1.label})
+    }
+  end
+
+  defp export_options_result(readiness, defaults) do
+    %{
+      "export_type" => Atom.to_string(readiness.export_type),
+      "profile" => readiness.profile,
+      "product_visibility" => readiness.product_visibility,
+      "defaults" => %{
+        "include_flex" => defaults.include_flex,
+        "estimate_missing_times" => defaults.estimate_missing_times,
+        "estimate_method" => defaults.estimate_method && Atom.to_string(defaults.estimate_method)
+      },
+      "digest" => readiness.digest,
+      "command_proposed" => true
+    }
+  end
+
+  defp export_options_evidence(readiness, defaults, %Scope{} = scope) do
+    %{
+      kind: "export_options",
+      title: "export options",
+      total: length(readiness.preflight),
+      total_label: "preflight findings",
+      completeness: :complete,
+      completeness_reason: nil,
+      facts: [
+        %{label: "Export type", value: export_type_label(readiness.export_type)},
+        %{label: "Flex companion", value: flex_label(defaults)},
+        %{label: "Missing times", value: estimate_label(defaults)}
+      ],
+      source_ref: @source_ref,
+      digest: readiness.digest || "",
+      source_revision: nil,
+      scope: %{
+        organization_id: scope.organization_id,
+        gtfs_version_id: scope.gtfs_version_id,
+        identity: identity_label(scope)
+      },
+      exclusions: [],
+      resources: []
+    }
+  end
+
+  defp export_options_summary(readiness, defaults) do
+    %{
+      title: "Review export options",
+      detail:
+        "Review options selects #{export_type_label(readiness.export_type)} in the native export form. Nothing is exported and no default is saved.",
+      lines: [
+        "Export type: #{export_type_label(readiness.export_type)}",
+        "Flex companion: #{flex_label(defaults)}",
+        "Missing times: #{estimate_label(defaults)}"
+      ]
+    }
+  end
+
+  defp export_type_label(:full), do: "Full feed"
+  defp export_type_label(:pathways), do: "Pathways / stations files"
+  defp export_type_label(:operations), do: "Operations"
+  defp export_type_label(other), do: to_string(other)
+
+  defp flex_label(%{include_flex: true}), do: "included (current default)"
+  defp flex_label(%{include_flex: false}), do: "excluded (current default)"
+  defp flex_label(_defaults), do: "unknown"
+
+  defp estimate_label(%{estimate_missing_times: true, estimate_method: method})
+       when not is_nil(method),
+       do: "estimated (#{method})"
+
+  defp estimate_label(%{estimate_missing_times: true}), do: "estimated"
+  defp estimate_label(%{estimate_missing_times: false}), do: "not estimated"
+  defp estimate_label(_defaults), do: "unknown"
+
+  defp defaults_digest(defaults) do
+    {:export_defaults, defaults.include_flex, defaults.realtime_source,
+     defaults.estimate_missing_times, defaults.estimate_method}
+    |> :erlang.term_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
 
   defp snapshot_payload(%Scope{} = scope) do
     case Scope.source_snapshot(scope) do
