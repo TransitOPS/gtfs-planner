@@ -138,7 +138,7 @@ defmodule GtfsPlanner.Agents.Packs.TimetablesTest do
   end
 
   describe "case 1: the registered pack reads the source, inspects the route and prepares one batch" do
-    test "is the pack the application ships, with no apply or comparison tool", context do
+    test "is the pack the application ships, with no apply tool", context do
       assert Agents.packs()["timetables"] == Timetables
       assert Timetables.id() == "timetables"
       assert Timetables.title() == "Timetable helper"
@@ -146,7 +146,9 @@ defmodule GtfsPlanner.Agents.Packs.TimetablesTest do
       assert Enum.map(Timetables.tools(), & &1.name) == [
                "read_timetable_source",
                "inspect_timetable_scope",
-               "prepare_timetable_input"
+               "prepare_timetable_input",
+               # Step 8 added the read-only comparison; nothing applies.
+               "compare_approved_timetable"
              ]
 
       assert Timetables.authorize_context(context.scope) == :ok

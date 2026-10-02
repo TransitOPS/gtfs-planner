@@ -40,6 +40,13 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   the helper prepared from that source, beside the source card it belongs
   to. The card renders only when a batch exists, so an ordinary paste is
   unchanged. Its counts are the native result's own, never the proposal's.
+
+  Step 8 adds `comparison_step/1`: the provider-independent Compare timetable
+  action, the server's exact totals with their units, the disclosure of what
+  the comparison could not settle, and one page of retained witnesses at a
+  time. It reuses this module's card shape, message tones and muted tokens, and
+  keeps the totals outside the streamed rows so a bounded sample never reads as
+  the whole answer.
   """
   use GtfsPlannerWeb, :html
 
@@ -48,7 +55,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   import GtfsPlannerWeb.PlannerComponents,
     only: [first_use: 1, drawer_scroll: 1, drawer_footer: 1, form_error_summary: 1, message: 1]
 
-alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.TimetableSource
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Wording
@@ -888,7 +895,7 @@ alias GtfsPlanner.Gtfs.GtfsTime
         {"removed", batch.removed, "trip"}
       ]
       |> Enum.filter(fn {_label, count, _one} -> is_integer(count) and count > 0 end)
-      |> Enum.map(fn {label, count, one} -> "#{label} #{plural_noun(count, one)}" end)
+      |> Enum.map(fn {label, count, one} -> "#{label} #{Wording.noun(count, one)}" end)
 
     case counts do
       [] -> "Saved. This batch changed nothing that was already stored."
@@ -3657,4 +3664,415 @@ alias GtfsPlanner.Gtfs.GtfsTime
 
   defp transfer_are(1), do: "is"
   defp transfer_are(_count), do: "are"
+
+  # --- Approved comparison (step 8) -------------------------------------------
+
+  # The report's own vocabulary, in the order a reader meets it. `matched` is
+  # the answer rather than a difference, so it is separated from the rest.
+  @comparison_differences [:missing, :extra, :time_mismatch, :date_mismatch]
+  @comparison_category_labels %{
+    matched: "Matched",
+    missing: "Missing from the feed",
+    extra: "Not in the table",
+    time_mismatch: "Different times",
+    date_mismatch: "Different dates"
+  }
+
+  @doc """
+  Renders the approved comparison beside the native review matrix (step 8).
+
+  `#timetable-compare` is the provider-independent action: it compares the
+  accepted source with this route's current feed and never reads the helper, so
+  it works with the helper closed, disabled or failing.
+
+  `#timetable-comparison-state` is the single announced state of the card: not
+  compared yet, comparing, complete with differences, complete and matching,
+  stale, or refused. A report that could not be computed in full never reads as
+  a match, and a stale report keeps its last numbers beside the notice that says
+  they describe a feed this page has not re-read.
+
+  The totals are the report's own exact counts beside the report's own units,
+  rendered outside the stream, so they never move with a page of witnesses.
+  `#timetable-comparison-rows` streams only the current page of retained
+  witnesses and `#timetable-comparison-next` pages through that retained sample;
+  both the retained count and the category total are stated above it, because a
+  bounded sample is not every difference (AC-13, AC-14, AC-17).
+  """
+  attr :source, :any, default: nil, doc: "the accepted source, if any"
+
+  attr :state, :atom,
+    default: :idle,
+    values: [:idle, :comparing, :checking, :ready, :stale, :unavailable]
+
+  attr :report, :any, default: nil, doc: "the typed server report, if one has been computed"
+  attr :error, :any, default: nil, doc: "the refusal copy for an unavailable comparison"
+  attr :stale, :any, default: nil, doc: "why a report is stale"
+  attr :checked, :any, default: nil, doc: "when the report was last checked against the feed"
+  attr :category, :atom, default: :missing, doc: "the witness category on screen"
+  attr :page, :any, default: nil, doc: "the page number on screen"
+  attr :page_size, :integer, default: 0, doc: "how many witnesses one page holds"
+  attr :total, :integer, default: 0, doc: "the category's exact total for the whole comparison"
+  attr :retained, :integer, default: 0, doc: "how many examples the bounded sample kept"
+  attr :shown, :integer, default: 0, doc: "how many examples this page shows"
+  attr :rows, :any, required: true, doc: "the streamed page of witnesses"
+
+  def comparison_step(assigns) do
+    assigns =
+      assigns
+      |> assign(:accepted?, not is_nil(assigns.source))
+      |> assign(:comparing?, assigns.state in [:comparing, :checking])
+      # The template reads these as assigns rather than as module attributes,
+      # which a HEEx body cannot expand.
+      |> assign(:differences, @comparison_differences)
+      |> assign(:labels, @comparison_category_labels)
+
+    ~H"""
+    <section
+      id="timetable-comparison"
+      aria-label="Feed comparison"
+      class="mt-4 overflow-hidden rounded-card border border-subtle bg-white"
+    >
+      <div class="flex flex-wrap items-center gap-3 border-b border-subtle bg-canvas px-5 py-3.5">
+        <div class="min-w-0">
+          <h2 class="text-[17px] font-bold tracking-normal text-strong">Feed comparison</h2>
+          <p class="text-[13px] text-muted">
+            What this route runs today against the table you reviewed. Comparing reads the feed; it
+            changes nothing
+          </p>
+        </div>
+        <div class="ms-auto flex flex-wrap items-center gap-2">
+          <.button
+            :if={@accepted? and not @comparing?}
+            id="timetable-compare"
+            type="button"
+            phx-click="compare"
+            class="min-h-11"
+          >
+            {if @report, do: "Compare again", else: "Compare timetable"}
+          </.button>
+          <.button
+            :if={@accepted? and not @comparing?}
+            id="timetable-comparison-freshness"
+            type="button"
+            variant="quiet"
+            phx-click="comparison_freshness"
+            aria-label="Check whether this comparison is still current"
+            class="min-h-11"
+          >
+            Check freshness
+          </.button>
+        </div>
+      </div>
+      <div class="grid gap-4 px-5 py-5 [&>*]:min-w-0">
+        <div
+          id="timetable-comparison-state"
+          tabindex="-1"
+          role="status"
+          aria-live="polite"
+          aria-busy={to_string(@comparing?)}
+          class="outline-none"
+        >
+          <p :if={not @accepted?} class="text-[13px] text-muted">
+            {comparison_idle_text(@state)}
+          </p>
+          <.message
+            :if={@accepted? and @comparing?}
+            id="timetable-comparison-busy"
+            kind="info"
+            title={comparison_busy_title(@state)}
+          >
+            {comparison_busy_text(@state)}
+          </.message>
+          <.message
+            :if={@state == :unavailable and @error}
+            id="timetable-comparison-unavailable"
+            kind="error"
+            title="This comparison was not computed."
+          >
+            {@error}
+          </.message>
+          <.message
+            :if={@state == :stale}
+            id="timetable-comparison-stale"
+            kind="warning"
+            title="This comparison is out of date."
+          >
+            {comparison_stale_text(@stale)}
+          </.message>
+          <.message
+            :if={@state == :ready and @report.clean?}
+            id="timetable-comparison-clean"
+            kind="success"
+            title="Every compared trip-date pair matches the feed."
+          >
+            {comparison_clean_text(@report)}
+          </.message>
+          <.message
+            :if={@state == :ready and not @report.clean?}
+            id="timetable-comparison-differences"
+            kind="warning"
+            title={comparison_difference_title(@report)}
+          >
+            {comparison_difference_text(@report)}
+          </.message>
+          <.message
+            :if={@accepted? and @state == :idle}
+            id="timetable-comparison-idle"
+            kind="info"
+            title="Not compared yet."
+          >
+            Comparing reads this route's current feed and writes nothing. The helper is not involved.
+          </.message>
+        </div>
+        <p
+          :if={not is_nil(@checked) and @state in [:ready, :stale]}
+          id="timetable-comparison-checked"
+          class="text-[13px] text-muted"
+        >
+          {@checked}
+        </p>
+        <div :if={@report != nil and @state in [:ready, :stale]} id="timetable-comparison-totals">
+          <table class="w-full border-collapse text-[13px]">
+            <caption class="sr-only">
+              Exact totals for this comparison, with the unit each category counts
+            </caption>
+            <thead>
+              <tr class="border-b border-subtle text-left text-[12px] text-muted">
+                <th scope="col" class="py-1.5 pe-3 font-semibold">Category</th>
+                <th scope="col" class="py-1.5 pe-3 font-semibold">Total</th>
+                <th scope="col" class="py-1.5 font-semibold">Counts</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                :for={category <- [:matched | @differences]}
+                id={"timetable-comparison-total-#{category}"}
+                class={[
+                  "border-b border-subtle last:border-0",
+                  category == @category and "bg-canvas"
+                ]}
+              >
+                <th scope="row" class="py-1.5 pe-3 text-left font-medium text-strong">
+                  {@labels[category]}
+                </th>
+                <td class="py-1.5 pe-3 text-right tabular-nums text-strong">
+                  {Map.get(@report.totals, category, 0)}
+                </td>
+                <td class="py-1.5 text-muted">{@report.units[category]}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p id="timetable-comparison-disclosure" class="mt-2 text-[13px] text-muted">
+            {comparison_disclosure(@report)}
+          </p>
+          <ul
+            :if={@report.unresolved != []}
+            id="timetable-comparison-unresolved"
+            class="mt-2 list-disc pl-5 text-[13px] text-warning-fg"
+          >
+            <li :for={reason <- Enum.take(@report.unresolved, 5)}>{inspect(reason)}</li>
+          </ul>
+        </div>
+        <div :if={@report != nil and @state in [:ready, :stale]} class="grid gap-3">
+          <form id="timetable-comparison-filters" phx-change="comparison_category">
+            <label for="timetable-comparison-category" class="label text-[13px]">
+              Differences to show
+            </label>
+            <select
+              id="timetable-comparison-category"
+              name="category"
+              class="select select-sm mt-1 w-full max-w-xs text-[13px]"
+            >
+              <option
+                :for={category <- [:matched | @differences]}
+                value={category}
+                selected={category == @category}
+              >
+                {@labels[category]}
+              </option>
+            </select>
+          </form>
+          <p id="timetable-comparison-sample" class="text-[13px] text-muted">
+            {comparison_sample_text(@category, @total, @retained, @shown, @page)}
+          </p>
+          <table class="w-full border-collapse text-[13px]">
+            <caption class="sr-only">Retained comparison witnesses for this page</caption>
+            <thead>
+              <tr class="border-b border-subtle text-left text-[12px] text-muted">
+                <th scope="col" class="py-1.5 pe-3 font-semibold">Date</th>
+                <th scope="col" class="py-1.5 pe-3 font-semibold">Source row</th>
+                <th scope="col" class="hidden py-1.5 pe-3 font-semibold sm:table-cell">Trip</th>
+                <th scope="col" class="hidden py-1.5 pe-3 font-semibold sm:table-cell">Stop</th>
+                <th scope="col" class="py-1.5 pe-3 font-semibold">Event</th>
+                <th scope="col" class="py-1.5 pe-3 text-right font-semibold">Table</th>
+                <th scope="col" class="py-1.5 text-right font-semibold">Feed</th>
+              </tr>
+            </thead>
+            <tbody id="timetable-comparison-rows" phx-update="stream">
+              <tr
+                :for={{dom_id, row} <- @rows}
+                id={dom_id}
+                class="border-b border-subtle last:border-0 hover:bg-canvas"
+              >
+                <td class="py-1.5 pe-3 whitespace-nowrap text-strong">
+                  {Date.to_iso8601(row.witness.date)}
+                </td>
+                <td class="py-1.5 pe-3 text-right tabular-nums text-strong">
+                  {row.witness.source_row_id}
+                </td>
+                <td class="hidden py-1.5 pe-3 whitespace-nowrap text-muted sm:table-cell">
+                  {row.witness.trip_id}
+                </td>
+                <td class="hidden py-1.5 pe-3 whitespace-nowrap text-muted sm:table-cell">
+                  {comparison_stop(row.witness)}
+                </td>
+                <td class="py-1.5 pe-3 text-muted">{comparison_event(row.witness)}</td>
+                <td class="py-1.5 pe-3 text-right tabular-nums text-strong">
+                  {comparison_clock(row.witness.source_clock)}
+                </td>
+                <td class="py-1.5 text-right tabular-nums text-strong">
+                  {comparison_clock(row.witness.feed_clock)}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="flex flex-wrap items-center gap-2">
+            <.button
+              :if={is_integer(@page) and @page > 1}
+              id="timetable-comparison-previous"
+              type="button"
+              variant="quiet"
+              phx-click="comparison_page"
+              phx-value-page={@page - 1}
+              class="min-h-11"
+            >
+              Previous page
+            </.button>
+            <.button
+              :if={comparison_more_pages?(@page, @page_size, @retained)}
+              id="timetable-comparison-next"
+              type="button"
+              variant="quiet"
+              phx-click="comparison_page"
+              phx-value-page={(@page || 1) + 1}
+              class="min-h-11"
+            >
+              Next page
+            </.button>
+          </div>
+        </div>
+      </div>
+    </section>
+    """
+  end
+
+  defp comparison_idle_text(:idle), do: comparison_not_accepted_text()
+
+  defp comparison_idle_text(_state),
+    do: comparison_not_accepted_text()
+
+  defp comparison_not_accepted_text do
+    "Accept the reviewed source above before comparing it with the feed."
+  end
+
+  defp comparison_busy_title(:checking), do: "Checking the feed…"
+  defp comparison_busy_title(_state), do: "Comparing the accepted source…"
+
+  defp comparison_busy_text(:checking),
+    do: "Reading this route's current feed to see whether these numbers still describe it."
+
+  defp comparison_busy_text(_state),
+    do: "Reading this route's feed for the interval this source covers. Nothing is written."
+
+  defp comparison_clean_text(report) do
+    "#{Map.get(report.totals, :matched, 0)} trip-date pairs match, with nothing unresolved " <>
+      "and nothing excluded, between #{comparison_interval(report)}."
+  end
+
+  defp comparison_difference_title(report) do
+    case comparison_incomplete?(report) do
+      true -> "This comparison could not be read as a match."
+      false -> "This comparison found differences."
+    end
+  end
+
+  defp comparison_difference_text(report) do
+    [
+      "#{Wording.count_noun(comparison_difference_count(report), "difference")}",
+      comparison_incomplete?(report) &&
+        "the reviewed scope was not computed in full, so nothing here reads as a match",
+      report.unresolved != [] && "#{length(report.unresolved)} item(s) remain unresolved",
+      report.exclusions != [] && "#{length(report.exclusions)} item(s) are excluded",
+      "between #{comparison_interval(report)}"
+    ]
+    |> Enum.reject(&(&1 in [nil, false, ""]))
+    |> Enum.join(" · ")
+  end
+
+  # A complete computation with no unresolved item, no exclusion, no difference
+  # in any category and at least one compared pair is the only clean reading, so
+  # every other report is disclosed as not matching (INV-3).
+  defp comparison_incomplete?(report) do
+    report.computation != :complete or report.unresolved != [] or report.exclusions != []
+  end
+
+  defp comparison_difference_count(report) do
+    Enum.sum(Enum.map(@comparison_differences, &Map.get(report.totals, &1, 0)))
+  end
+
+  defp comparison_interval(report) do
+    {first, last} = report.interval
+    "#{Date.to_iso8601(first)} and #{Date.to_iso8601(last)}"
+  end
+
+  defp comparison_disclosure(report) do
+    case comparison_difference_count(report) do
+      0 ->
+        "These categories overlap and are not added into one total: a date the feed runs and the " <>
+          "table omits is both a missing pair and a date difference."
+
+      count ->
+        "These categories overlap and are not added into one total: #{count} differences in " <>
+          "total, counted in #{comparison_difference_count(report)} category entries."
+    end
+  end
+
+  defp comparison_stale_text(:source_edit) do
+    "You accepted an edited source after this comparison ran, so the numbers below describe the " <>
+      "source as it was accepted. Compare again to see the current source."
+  end
+
+  defp comparison_stale_text(:native_write) do
+    "You saved a native change after this comparison ran, so the feed it read has moved on. " <>
+      "Compare again to see the current feed."
+  end
+
+  defp comparison_stale_text(_reason) do
+    "The feed changed after this comparison ran, so the numbers below describe a feed this page " <>
+      "has not re-read. Compare again to see the current feed."
+  end
+
+  defp comparison_sample_text(category, total, retained, shown, page) do
+    "#{@comparison_category_labels[category]}: #{total} in the whole comparison, #{retained} " <>
+      "retained as examples, #{shown} shown on page #{page || 1}. A retained example is a sample, " <>
+      "not every difference."
+  end
+
+  defp comparison_more_pages?(page, page_size, retained) do
+    is_integer(page) and page_size > 0 and page * page_size < retained
+  end
+
+  defp comparison_stop(%{stop_sequence: nil}), do: "—"
+  defp comparison_stop(%{stop_sequence: stop_sequence}), do: "##{stop_sequence}"
+
+  defp comparison_event(%{event: nil}), do: "dates"
+  defp comparison_event(%{event: :arrival}), do: "arrival"
+  defp comparison_event(%{event: :departure}), do: "departure"
+
+  # Service-day seconds, so a 24:10 table clock and a 00:10 feed clock stay
+  # different readings rather than both collapsing into an hour (AC-11).
+  defp comparison_clock(nil), do: "—"
+  defp comparison_clock(secs) when is_integer(secs), do: GtfsTime.display(secs)
+
+  defp comparison_clock(_other), do: "—"
 end

@@ -23,14 +23,20 @@ defmodule GtfsPlanner.Agents.Packs.Timetables do
   the native controls, with the native review's own fingerprint beside it. There
   is no apply tool here, and nothing in this module writes (CR-2, INV-2).
 
-  `compare_approved_timetable` is deliberately absent: it belongs to step 8, once
-  the comparison report exists to answer from.
+  `compare_approved_timetable` answers from the same server report the Paste page
+  shows: it takes no arguments either, rebuilds the accepted source from the
+  admitted snapshot through `TimetableSource.from_payload/1` and runs
+  `TimetableComparison.compare/2` on the identity `Scope.authorized_context/1`
+  already resolved. Its bounded summary, its totals and its evidence card are
+  that report's own values, so a model's sentence can neither restate a total
+  nor invent a link (AC-13, AC-15, INV-3).
   """
 
   @behaviour GtfsPlanner.Agents.Pack
 
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.TimetableComparison
   alias GtfsPlanner.Gtfs.TimetablePaste.ClipboardParser
   alias GtfsPlanner.Gtfs.TimetablePaste.TimeToken
   alias GtfsPlanner.Gtfs.TimetableSource
@@ -46,6 +52,13 @@ defmodule GtfsPlanner.Agents.Packs.Timetables do
   @text_preview_length 4_000
 
   @no_source "No accepted timetable source is attached to this page yet."
+
+  # A tool result is bounded, so the summary it hands the model is bounded too:
+  # the totals stay exact and the witness examples are explicitly a sample.
+  @summary_witnesses 20
+
+  # The report's own category vocabulary, in the order the panel reads it.
+  @comparison_categories [:matched, :missing, :extra, :time_mismatch, :date_mismatch]
 
   @skill_path Path.expand("../../../../priv/agents/packs/timetables/SKILL.md", __DIR__)
   @external_resource @skill_path
@@ -164,6 +177,24 @@ defmodule GtfsPlanner.Agents.Packs.Timetables do
           "required" => ["row_ids", "service_id", "pattern_id", "direction_id"],
           "additionalProperties" => false
         }
+      },
+      %{
+        name: "compare_approved_timetable",
+        description:
+          "Compare the accepted timetable source with this route's current feed over the " <>
+            "interval and pattern the source was reviewed against. It takes no arguments and " <>
+            "compares the whole accepted source, never a narrower subset, because a subset " <>
+            "cannot speak for the whole. The answer carries the server's exact totals per " <>
+            "category with their units, whether the computation was complete, and the first " <>
+            "examples of each category. It reads only: a difference is not fixed by it, and a " <>
+            "clean comparison certifies nothing about the agency's approval of the sheet.",
+        activity: "Compared the accepted timetable with the feed",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{},
+          "required" => [],
+          "additionalProperties" => false
+        }
       }
     ]
   end
@@ -191,6 +222,182 @@ defmodule GtfsPlanner.Agents.Packs.Timetables do
 
   def call("prepare_timetable_input", args, %Scope{} = scope),
     do: prepare_timetable_input(args, scope)
+
+  def call("compare_approved_timetable", _args, %Scope{} = scope),
+    do: compare_approved_timetable(scope)
+
+  # -- compare_approved_timetable --------------------------------------------
+
+  # Read-only, provider-independent and argument-free. The source comes from the
+  # admitted snapshot, the identity from the scope `Dispatch` already authorized,
+  # and every number from `TimetableComparison.compare/2`, so this tool and the
+  # Paste page's own Compare control cannot disagree (AC-13, AC-15).
+  defp compare_approved_timetable(scope) do
+    with {:ok, attached} <- require_source(scope),
+         {:ok, source} <- TimetableSource.from_payload(attached.payload),
+         {:ok, route_uuid} <- route_identity(scope),
+         {:ok, comparison_scope} <- comparison_scope(scope, route_uuid),
+         {:ok, report} <- TimetableComparison.compare(comparison_scope, source) do
+      result = comparison_result(report)
+      {:ok, result, comparison_evidence(report, result, attached, scope)}
+    else
+      {:error, :invalid_snapshot} ->
+        {:error, "The attached source could not be read back for comparison."}
+
+      {:error, :not_found} ->
+        {:error, "That route is not in this service version."}
+
+      {:error, :forbidden} ->
+        {:error, "Your access to this service version has changed."}
+
+      {:error, :invalid_selection} ->
+        {:error, "This source's interval or mapping is not a comparison scope."}
+
+      {:error, {:incomplete, reason}} ->
+        {:error, "This comparison was not computed: " <> incomplete_reason(reason)}
+
+      {:error, message} when is_binary(message) ->
+        {:error, message}
+    end
+  end
+
+  defp comparison_scope(%Scope{} = scope, route_uuid) do
+    {:ok,
+     %{
+       organization_id: scope.organization_id,
+       gtfs_version_id: scope.gtfs_version_id,
+       actor_id: scope.user_id,
+       route_id: route_uuid
+     }}
+  end
+
+  defp incomplete_reason({:too_many_dates, count}),
+    do:
+      "it covers #{count} dates, over the #{TimetableComparison.limits().dates} this comparison reads."
+
+  defp incomplete_reason({:too_many_trips, count}),
+    do:
+      "the route has #{count} trips in scope, over the #{TimetableComparison.limits().trips} this comparison reads."
+
+  defp incomplete_reason({:too_many_stop_times, count}),
+    do:
+      "the route has #{count} stop times in scope, over the #{TimetableComparison.limits().stop_times} this comparison reads."
+
+  defp incomplete_reason({:too_many_frequencies, count}),
+    do: "the route has #{count} frequency windows in scope, which this comparison does not read."
+
+  defp incomplete_reason(_reason), do: "the reviewed scope is larger than this comparison reads."
+
+  # The totals are the report's own exact numbers beside the report's own units;
+  # the examples are the first of each category's bounded sample, and the flag
+  # says so, so a bounded answer is never read as a whole one.
+  defp comparison_result(report) do
+    %{
+      "source_digest" => report.source_digest,
+      "feed_digest" => report.feed_digest,
+      "interval" => comparison_interval(report.interval),
+      "comparison_scope" => comparison_scope_result(report.comparison_scope),
+      "computation" => Atom.to_string(report.computation),
+      "clean" => report.clean?,
+      "totals" =>
+        Map.new(report.totals, fn {category, total} ->
+          {Atom.to_string(category), %{"total" => total, "unit" => report.units[category]}}
+        end),
+      "categories" => Enum.map(@comparison_categories, &category_examples(report, &1)),
+      "unresolved" => Enum.map(report.unresolved, &to_string/1),
+      "exclusions" => Enum.map(report.exclusions, &to_string/1)
+    }
+  end
+
+  defp comparison_interval({first, last}),
+    do: "#{Date.to_iso8601(first)} to #{Date.to_iso8601(last)}"
+
+  defp comparison_scope_result(scope) do
+    %{
+      "route_id" => scope.route_id,
+      "direction_ids" => scope.direction_ids,
+      "pattern_ids" => scope.pattern_ids,
+      "source_rows" => scope.source_rows,
+      "feed_trips" => scope.feed_trips
+    }
+  end
+
+  defp category_examples(report, category) do
+    retained = get_in(report, [:witnesses, category]) || []
+    total = Map.get(report.totals, category, 0)
+
+    %{
+      "category" => Atom.to_string(category),
+      "unit" => report.units[category],
+      "total" => total,
+      "retained_examples" => length(retained),
+      "examples" => Enum.map(Enum.take(retained, @summary_witnesses), &witness_result/1),
+      "examples_truncated" => length(retained) > @summary_witnesses
+    }
+  end
+
+  defp witness_result(witness) do
+    %{
+      "date" => Date.to_iso8601(witness.date),
+      "source_row_id" => witness.source_row_id,
+      "trip_id" => witness.trip_id,
+      "stop_sequence" => witness.stop_sequence,
+      "event" => witness.event && Atom.to_string(witness.event),
+      "source_clock" => witness.source_clock,
+      "feed_clock" => witness.feed_clock,
+      "reason" => to_string(witness.reason)
+    }
+  end
+
+  # The card's headline is the report's own difference count; its completeness is
+  # the report's own `computation`, and its links are the existing typed route
+  # reference the panel already renders, never a URL a model could have written
+  # (AC-15, INV-3).
+  defp comparison_evidence(report, result, attached, scope) do
+    differences =
+      [:missing, :extra, :time_mismatch, :date_mismatch]
+      |> Enum.map(&Map.get(report.totals, &1, 0))
+      |> Enum.sum()
+
+    %{
+      kind: "timetable_comparison",
+      title: source_label(attached),
+      total: differences,
+      total_label: "differences against the current feed",
+      completeness: if(report.computation == :complete, do: :complete, else: :incomplete),
+      completeness_reason: comparison_incomplete_reason(report),
+      facts: [
+        %{label: "Effective interval", value: result["interval"]},
+        %{label: "Matched trip-date pairs", value: Integer.to_string(report.totals.matched)},
+        %{label: "Missing trip-date pairs", value: Integer.to_string(report.totals.missing)},
+        %{label: "Extra trip-date pairs", value: Integer.to_string(report.totals.extra)},
+        %{label: "Time mismatches", value: Integer.to_string(report.totals.time_mismatch)},
+        %{label: "Date mismatches", value: Integer.to_string(report.totals.date_mismatch)},
+        %{label: "Unresolved items", value: Integer.to_string(length(report.unresolved))},
+        %{label: "Feed digest", value: report.feed_digest}
+      ],
+      source_ref: @source_ref,
+      digest: report.source_digest,
+      source_revision: nil,
+      scope: scope_of(scope),
+      exclusions: Enum.map(result["exclusions"], &to_string/1),
+      resources: [%{kind: "route", id: result["comparison_scope"]["route_id"], label: nil}]
+    }
+  end
+
+  defp comparison_incomplete_reason(%{computation: :complete} = report) do
+    if report.clean? do
+      nil
+    else
+      "This comparison is complete, but it still reports differences or unresolved items."
+    end
+  end
+
+  defp comparison_incomplete_reason(%{unresolved: unresolved}) when unresolved != [],
+    do: "#{length(unresolved)} unresolved item(s) mean this comparison cannot read clean."
+
+  defp comparison_incomplete_reason(_report),
+    do: "The reviewed scope could not be computed in full, so nothing here reads as a match."
 
   # -- read_timetable_source ------------------------------------------------
 

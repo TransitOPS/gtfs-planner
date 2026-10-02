@@ -136,6 +136,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.TimetableComparison
   alias GtfsPlanner.Gtfs.TimetablePaste
   alias GtfsPlanner.Gtfs.TimetableSource
   alias GtfsPlanner.Values
@@ -193,9 +194,10 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
      |> assign(:switch_confirm, nil)
      |> assign(:leave_confirm, nil)
      |> assign(:show_review_errors, false)
+     |> stream_configure(:plan_rows, dom_id: & &1.id)
+     |> stream_configure(:comparison_rows, dom_id: & &1.id)
      |> put_timetable_source()
      |> put_timetable_batches()
-     |> stream_configure(:plan_rows, dom_id: & &1.id)
      |> stream(:plan_rows, [])
      |> assign(:load_state, :loading)
      |> AgentPanel.mount("timetables")}
@@ -577,6 +579,11 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
         _params -> %{}
       end
 
+    # The source being replaced is half of any comparison on screen, so the
+    # report is remembered here and marked stale if the review is accepted
+    # again. A review that leaves no accepted source drops it instead.
+    previous_report = socket.assigns[:timetable_comparison]
+
     socket =
       socket
       |> put_source_params(source_params)
@@ -595,7 +602,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
       {:ok, draft} ->
         if source_params["confirm"] == "true" do
-          accept_timetable_source(socket, draft)
+          accept_timetable_source(socket, draft, previous_report)
         else
           {:noreply,
            socket
@@ -791,6 +798,38 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   end
 
   def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
+
+  # One comparison per accepted source. The task key carries the generation it
+  # was dispatched from, and every result and every exit is checked against the
+  # generation currently on the socket, so a late answer from a replaced source,
+  # a superseded run or a released source can never rewrite the report on
+  # screen (AC-14, FH-7).
+  @comparison_key :timetable_comparison
+  @comparison_categories [:matched, :missing, :extra, :time_mismatch, :date_mismatch]
+  # `matched` is the whole answer rather than a difference, so the witnesses open
+  # on the first category that can differ.
+  @first_difference_category :missing
+
+  @impl true
+  def handle_event("compare", _params, socket), do: dispatch_comparison(socket)
+
+  def handle_event("comparison_freshness", _params, socket),
+    do: dispatch_freshness(socket, nil)
+
+  def handle_event("comparison_page", %{"page" => page}, socket),
+    do: dispatch_freshness(socket, parse_page(page))
+
+  def handle_event("comparison_page", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("comparison_category", %{"category" => category}, socket) do
+    case Enum.find(@comparison_categories, &(Atom.to_string(&1) == category)) do
+      nil -> {:noreply, socket}
+      category -> {:noreply, show_comparison_page(socket, category, 1)}
+    end
+  end
+
+  def handle_event("comparison_category", _params, socket), do: {:noreply, socket}
 
   # Step 5 owns the prepared-batch handoff: `handoff_prepared_batch/2`
   # resolves this panel's own session and re-prepares the batch natively, so
@@ -1103,6 +1142,23 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
                 remaining={remaining_row_count(@timetable_source, @timetable_batches)}
               />
 
+              <TimetablePasteComponents.comparison_step
+                :if={is_nil(setup_reason(@scope)) and @review != nil}
+                source={@timetable_source}
+                state={@timetable_comparison_state}
+                report={@timetable_comparison}
+                error={@timetable_comparison_error}
+                stale={@timetable_comparison_stale}
+                checked={@timetable_comparison_checked}
+                category={@timetable_comparison_category}
+                page={@timetable_comparison_page}
+                page_size={@timetable_comparison_page_size}
+                total={@timetable_comparison_total}
+                retained={@timetable_comparison_retained}
+                shown={@timetable_comparison_shown}
+                rows={@streams.comparison_rows}
+              />
+
               <TimetablePasteComponents.replace_confirm
                 :if={@replace_confirm}
                 open={true}
@@ -1144,6 +1200,10 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
             export default {
               mounted() {
                 this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+                // The comparison card sits outside every form, so it announces
+                // its own state change through the same wrapper rather than
+                // through a form's error hook.
+                this.handleEvent("comparison:focus", ({id}) => document.getElementById(id)?.focus())
               }
             }
           </script>
@@ -2121,10 +2181,9 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
     |> assign(:timetable_helper_too_large, false)
     |> assign(:timetable_source_context, nil)
     |> put_timetable_batches()
-    # Step 8 renders the comparison; this step only owns its lifecycle seed so
-    # a source change can drop a report it has not computed yet.
-    |> assign(:timetable_comparison, nil)
-    |> assign(:timetable_comparison_state, :idle)
+    # Step 8 renders the comparison; its lifecycle seed lives here so a source
+    # change or a released source drops a report it has not earned yet.
+    |> put_comparison()
   end
 
   defp put_source_form(socket) do
@@ -2248,6 +2307,10 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   # The reviewed mapping is the native review's own resolved columns, never a
   # second mapping the host keeps: the Use-as selects the columns step posted
   # already decided which pasted column is which stop occurrence.
+  # The source's reviewed pattern is named by the GTFS pattern id the feed
+  # itself stores on its trips and route patterns, not by the pattern row's UUID:
+  # that is the vocabulary the comparison narrows the feed with, so naming the
+  # UUID here would leave the comparison with a pattern the route does not run.
   defp source_mapping(review, scope) do
     columns =
       review
@@ -2257,10 +2320,17 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
     %{
       "direction_id" => scope.direction_id,
-      "pattern_id" => scope.pattern_id,
+      "pattern_id" => source_pattern_id(scope),
       "columns" => columns,
       "rows" => source_row_mapping(review)
     }
+  end
+
+  defp source_pattern_id(scope) do
+    case chosen_pattern(scope) do
+      %{route_pattern_id: route_pattern_id} -> route_pattern_id
+      _no_pattern -> scope.pattern_id
+    end
   end
 
   # A twelve-hour clock only becomes exact seconds through the reading the
@@ -2320,14 +2390,11 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   defp source_native_scope(scope) do
     service_id = scope.calendar && scope.calendar.service_id
 
-    pattern_by_natural =
-      Map.new(scope.patterns, fn pattern -> {pattern.route_pattern_id, pattern.id} end)
-
     %{
       patterns:
         Enum.map(scope.patterns, fn pattern ->
           %{
-            id: pattern.id,
+            id: pattern.route_pattern_id,
             occurrences:
               Enum.map(pattern.occurrences, fn occurrence ->
                 %{stop_id: occurrence.stop_id, stop_sequence: occurrence.position}
@@ -2339,7 +2406,9 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
           %{
             id: trip.trip_id,
             direction_id: trip.direction_id,
-            pattern_id: Map.get(pattern_by_natural, trip.route_pattern_id),
+            # The same GTFS pattern identity the reviewed mapping and the
+            # comparison loader use, so a row resolves against one vocabulary.
+            pattern_id: trip.route_pattern_id,
             first_departure_secs: trip.start_secs,
             service_id: service_id
           }
@@ -2347,7 +2416,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
     }
   end
 
-  defp accept_timetable_source(socket, draft) do
+  defp accept_timetable_source(socket, draft, previous_report) do
     case TimetableSource.accept(draft, %{confirmed?: true}) do
       {:ok, source} ->
         socket =
@@ -2359,6 +2428,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
           |> assign(:timetable_source_notice, :accepted)
           |> put_source_form()
           |> attach_source_context(source)
+          |> mark_source_edit_stale(previous_report)
 
         {:noreply, push_event(socket, "focus_scoped_target", %{id: "timetable-source-state"})}
 
@@ -2432,8 +2502,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
     |> assign(:timetable_helper_too_large, false)
     |> assign(:timetable_source_context, nil)
     |> put_timetable_batches()
-    |> assign(:timetable_comparison, nil)
-    |> assign(:timetable_comparison_state, :idle)
+    |> put_comparison()
   end
 
   defp detach_source_context(socket) do
@@ -2461,6 +2530,325 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
   defp blank_source_field?(value) when is_binary(value), do: String.trim(value) == ""
   defp blank_source_field?(_value), do: true
+
+  # --- Comparison (step 8) ----------------------------------------------------
+
+  @no_accepted_source "Accept the reviewed source above before comparing it with the feed."
+  @comparison_lost "This comparison belonged to a source this page no longer holds."
+  @comparison_exited "The comparison stopped before it finished. Compare again to see the current feed."
+
+  # Both the result and the exit of a comparison are presentation only: an
+  # answer from a superseded generation describes a source this page has already
+  # replaced, so it is dropped rather than shown.
+  @impl true
+  def handle_async({@comparison_key, generation}, result, socket) do
+    if generation == comparison_generation(socket) do
+      {:noreply, settle_comparison(socket, result)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  defp put_comparison(socket) do
+    socket
+    |> assign(:timetable_comparison, nil)
+    |> assign(:timetable_comparison_state, :idle)
+    |> assign(:timetable_comparison_error, nil)
+    |> assign(:timetable_comparison_stale, nil)
+    |> assign(:timetable_comparison_checked, nil)
+    |> assign(:timetable_comparison_category, @first_difference_category)
+    |> assign(:timetable_comparison_page, nil)
+    |> assign(:timetable_comparison_total, 0)
+    |> assign(:timetable_comparison_shown, 0)
+    |> assign(:timetable_comparison_retained, 0)
+    |> assign(:timetable_comparison_page_size, 0)
+    |> stream(:comparison_rows, [])
+    |> bump_comparison_generation()
+  end
+
+  defp comparison_generation(socket), do: socket.assigns[:timetable_comparison_generation] || 0
+
+  defp bump_comparison_generation(socket),
+    do: assign(socket, :timetable_comparison_generation, comparison_generation(socket) + 1)
+
+  # The comparison is provider-independent: nothing here reads the helper, so it
+  # answers with the helper disabled and a request pending. The identity comes
+  # from the loaded route and this session's own user, never from an argument.
+  defp dispatch_comparison(socket) do
+    case accepted_comparison_source(socket) do
+      {:error, :no_source} ->
+        {:noreply, assign(socket, :timetable_comparison_error, @no_accepted_source)}
+
+      {:ok, source, scope} ->
+        generation = comparison_generation(socket) + 1
+
+        {:noreply,
+         socket
+         |> assign(:timetable_comparison_generation, generation)
+         |> assign(:timetable_comparison_state, :comparing)
+         |> assign(:timetable_comparison_error, nil)
+         |> assign(:timetable_comparison_stale, nil)
+         |> assign(:timetable_comparison_checked, nil)
+         |> start_async({@comparison_key, generation}, fn ->
+           {:compared, TimetableComparison.compare(scope, source)}
+         end)
+         |> focus_comparison("timetable-comparison-state")}
+    end
+  end
+
+  # Freshness is a digest read through the same loader the comparison used, not
+  # a timestamp: it runs before an explicit Check freshness, before a page
+  # change and before a re-run can show a page of a superseded feed.
+  defp dispatch_freshness(socket, page) do
+    case accepted_comparison_source(socket) do
+      {:error, :no_source} ->
+        {:noreply, assign(socket, :timetable_comparison_error, @no_accepted_source)}
+
+      {:ok, source, scope} ->
+        generation = comparison_generation(socket) + 1
+
+        {:noreply,
+         socket
+         |> assign(:timetable_comparison_generation, generation)
+         |> assign(:timetable_comparison_state, :checking)
+         |> start_async({@comparison_key, generation}, fn ->
+           {:digest, TimetableComparison.fresh_digest(scope, source), page}
+         end)
+         |> focus_comparison("timetable-comparison-state")}
+    end
+  end
+
+  defp accepted_comparison_source(socket) do
+    with %{accepted?: true} = source <- socket.assigns[:timetable_source],
+         %GtfsPlanner.Gtfs.Route{} = route <- socket.assigns[:route] do
+      {:ok, source,
+       %{
+         organization_id: socket.assigns.current_organization.id,
+         gtfs_version_id: socket.assigns.current_gtfs_version.id,
+         actor_id: socket.assigns.current_user.id,
+         route_id: route.id
+       }}
+    else
+      _missing -> {:error, :no_source}
+    end
+  end
+
+  defp settle_comparison(socket, {:ok, {:compared, {:ok, report}}}),
+    do: socket |> comparison_ready(report) |> focus_comparison("timetable-comparison-state")
+
+  defp settle_comparison(socket, {:ok, {:compared, {:error, reason}}}),
+    do: socket |> comparison_refused(reason) |> focus_comparison("timetable-comparison-state")
+
+  defp settle_comparison(socket, {:ok, {:digest, {:ok, digest}, page}}) do
+    if socket.assigns[:timetable_comparison] &&
+         digest != socket.assigns.timetable_comparison.feed_digest do
+      comparison_stale(socket, :feed, page)
+    else
+      socket
+      |> assign(:timetable_comparison_state, comparison_ready_state(socket))
+      |> assign(:timetable_comparison_checked, "checked just now")
+      |> apply_freshness_page(page)
+    end
+  end
+
+  defp settle_comparison(socket, {:ok, {:digest, {:error, reason}, _page}}),
+    do: socket |> comparison_refused(reason) |> focus_comparison("timetable-comparison-state")
+
+  defp settle_comparison(socket, {:exit, _reason}),
+    do: socket |> comparison_refused(:exited) |> focus_comparison("timetable-comparison-state")
+
+  defp settle_comparison(socket, _unexpected),
+    do:
+      socket |> comparison_refused(:unexpected) |> focus_comparison("timetable-comparison-state")
+
+  # A report just computed describes the feed as it was read, so it is current
+  # by construction; it becomes stale only when a source edit, a native save or
+  # a later digest read says it no longer is.
+  defp comparison_ready_state(socket),
+    do: if(socket.assigns[:timetable_comparison], do: :ready, else: :idle)
+
+  defp comparison_ready(socket, report) do
+    category = default_category(socket, report)
+
+    socket
+    |> assign(:timetable_comparison, report)
+    |> assign(:timetable_comparison_state, :ready)
+    |> assign(:timetable_comparison_error, nil)
+    |> assign(:timetable_comparison_stale, nil)
+    |> assign(:timetable_comparison_checked, "compared against the feed just now")
+    |> show_comparison_page(category, 1)
+  end
+
+  # Paging and filtering read the report already in this page's memory, so a
+  # page of witnesses can never be answered from a different snapshot than the
+  # totals beside it.
+  defp show_comparison_page(socket, category, page) do
+    case TimetableComparison.page(socket.assigns[:timetable_comparison], category, page) do
+      {:ok, page} ->
+        socket
+        |> assign(:timetable_comparison_category, category)
+        |> assign(:timetable_comparison_page, page.page)
+        |> assign(:timetable_comparison_total, page.total)
+        |> assign(:timetable_comparison_retained, page.retained)
+        |> assign(:timetable_comparison_shown, length(page.witnesses))
+        |> assign(:timetable_comparison_page_size, page.page_size)
+        |> stream(:comparison_rows, comparison_rows(page.witnesses), reset: true)
+
+      {:error, _reason} ->
+        socket
+    end
+  end
+
+  defp apply_freshness_page(socket, nil), do: socket
+
+  defp apply_freshness_page(socket, page),
+    do: show_comparison_page(socket, socket.assigns.timetable_comparison_category, page)
+
+  # A stale report keeps its numbers and its sample visible beside the notice
+  # that says they describe a feed this page has not re-read, because hiding
+  # them would throw away the only record of what the last comparison found.
+  defp comparison_stale(socket, reason, page) do
+    socket
+    |> assign(:timetable_comparison_state, :stale)
+    |> assign(:timetable_comparison_stale, reason)
+    |> assign(:timetable_comparison_checked, nil)
+    |> apply_freshness_page(page)
+    |> focus_comparison("timetable-comparison-state")
+  end
+
+  defp comparison_refused(socket, message) when is_binary(message) do
+    socket
+    |> assign(:timetable_comparison_state, :unavailable)
+    |> assign(:timetable_comparison_error, message)
+  end
+
+  defp comparison_refused(socket, reason) when reason in [:exited, :unexpected],
+    do: comparison_refused(socket, @comparison_exited)
+
+  defp comparison_refused(socket, :not_accepted),
+    do: comparison_refused(socket, @comparison_lost)
+
+  defp comparison_refused(socket, {:incomplete, reason}) when is_tuple(reason) do
+    comparison_refused(
+      socket,
+      "This comparison was not computed: " <> comparison_incomplete_reason(reason)
+    )
+  end
+
+  defp comparison_refused(socket, {:incomplete, count}) when is_integer(count) do
+    comparison_refused(socket, "This comparison was not computed: it reads #{count} dates.")
+  end
+
+  defp comparison_refused(socket, :forbidden),
+    do:
+      comparison_refused(
+        socket,
+        "Your access to this service version changed, so nothing was compared."
+      )
+
+  defp comparison_refused(socket, :not_found),
+    do:
+      comparison_refused(
+        socket,
+        "That route is not in this service version, so nothing was compared."
+      )
+
+  defp comparison_refused(socket, :invalid_selection),
+    do:
+      comparison_refused(
+        socket,
+        "This source's interval or mapping is not a comparison scope, so nothing was compared."
+      )
+
+  defp comparison_refused(socket, reason),
+    do: comparison_refused(socket, "Nothing was compared: #{inspect(reason)}.")
+
+  defp comparison_incomplete_reason({:too_many_dates, count}),
+    do:
+      "it covers #{count} dates, over the #{TimetableComparison.limits().dates} this comparison reads."
+
+  defp comparison_incomplete_reason({:too_many_trips, count}),
+    do:
+      "the route has #{count} trips in scope, over the #{TimetableComparison.limits().trips} this comparison reads."
+
+  defp comparison_incomplete_reason({:too_many_stop_times, count}),
+    do:
+      "the route has #{count} stop times in scope, over the " <>
+        "#{TimetableComparison.limits().stop_times} this comparison reads."
+
+  defp comparison_incomplete_reason({:too_many_frequencies, count}),
+    do: "the route has #{count} frequency windows in scope, which this comparison does not read."
+
+  defp comparison_incomplete_reason(reason), do: inspect(reason)
+
+  # The card opens on a category that actually differs, so an all-match
+  # comparison does not open on a page of matches, and a comparison whose only
+  # differences are time or date mismatches opens on one of those.
+  defp default_category(socket, report) do
+    chosen = socket.assigns[:timetable_comparison_category]
+
+    cond do
+      Enum.any?(@comparison_categories -- [:matched], &(Map.get(report.totals, &1, 0) > 0)) ->
+        Enum.find(@comparison_categories -- [:matched], &(Map.get(report.totals, &1, 0) > 0))
+
+      chosen in @comparison_categories ->
+        chosen
+
+      true ->
+        @first_difference_category
+    end
+  end
+
+  defp parse_page(page) when is_binary(page) do
+    case Integer.parse(page) do
+      {number, ""} when number >= 1 -> number
+      _other -> nil
+    end
+  end
+
+  defp parse_page(_page), do: nil
+
+  # The stream carries one page of witnesses and nothing else, so a bounded
+  # sample can never be mistaken for the totals beside it.
+  defp comparison_rows(witnesses) do
+    witnesses
+    |> Enum.with_index()
+    |> Enum.map(fn {witness, index} ->
+      %{
+        id:
+          "comparison-row-#{witness.category}-#{witness.date}-#{witness.trip_id}-#{witness.source_row_id}-#{index}",
+        witness: witness
+      }
+    end)
+  end
+
+  # Accepting an edited source replaces the half of this comparison the report
+  # was read against, so the report keeps its numbers and its page of witnesses
+  # beside the notice that they describe the source as it was accepted.
+  defp mark_source_edit_stale(socket, nil), do: socket
+
+  defp mark_source_edit_stale(socket, report) do
+    page = socket.assigns[:timetable_comparison_page] || 1
+    category = socket.assigns[:timetable_comparison_category]
+
+    socket
+    |> assign(:timetable_comparison, report)
+    |> comparison_stale(:source_edit, TimetableComparison.page(report, category, page))
+  end
+
+  # A native save changed the feed this comparison read, so the report on screen
+  # is stale from that moment rather than after the next digest read (AC-14).
+  defp mark_comparison_stale(socket) do
+    if socket.assigns[:timetable_comparison] do
+      socket
+      |> comparison_stale(:native_write, nil)
+    else
+      socket
+    end
+  end
+
+  defp focus_comparison(socket, id),
+    do: push_event(socket, "comparison:focus", %{id: id})
 
   # --- Apply, confirm and outcomes (step 28) ----------------------------------
 
@@ -2590,6 +2978,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   # not. A single batch with nothing left over navigates exactly as before, and
   # a paste that was never a prepared batch is untouched (INV-2).
   defp apply_success(socket, scope, summary) do
+    socket = mark_comparison_stale(socket)
+
     case batch_origin(socket) do
       nil ->
         navigate_after_apply(socket, scope, summary)
