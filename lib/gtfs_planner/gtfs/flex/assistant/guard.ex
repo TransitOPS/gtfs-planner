@@ -18,6 +18,19 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant.Guard do
     * `candidate_digest` — the final whole page the review was shown, through
       `candidate_digest/3`.
 
+  Of those five, the guarded transaction
+  (`GtfsPlanner.Gtfs.Flex.save_service/5`) verifies two under the exclusive
+  version fence: `saved_fingerprint` against a re-read baseline, and
+  `candidate_digest` against the page the save submits. The other three bind the
+  guard to the conversation rather than to stored state, and they are enforced
+  by the host that owns that conversation rather than by the transaction:
+  `source_digest` and `context_digest` are checked against the scope's own
+  snapshot and context before a command is staged, and a replaced source marks
+  the stage lapsed so the page refuses to save it; `patch_digest` names the patch
+  the review read, which the host holds as the same prepared value it staged
+  from. None of the three is verified against stored rows, because none of them
+  describes stored rows.
+
   `candidate_digest/3` is computed from the same `loaded` struct, `attrs` and
   `area_inputs` the save itself will submit, so a field the editor changes after
   the review, an area renamed after it, a removed geometry or an hours row edited
@@ -161,18 +174,21 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant.Guard do
   defp check_digests(attrs) do
     Enum.reduce_while(@digest_fields, {:ok, %{}}, fn field, {:ok, acc} ->
       case Map.fetch(attrs, field) do
-        {:ok, value} when is_binary(value) ->
-          if Regex.match?(@digest_format, value) do
-            {:cont, {:ok, Map.put(acc, field, value)}}
-          else
-            {:halt, {:error, {:invalid_guard, field}}}
-          end
-
-        _other ->
-          {:halt, {:error, {:invalid_guard, field}}}
+        {:ok, value} -> {:cont, put_digest(acc, field, value)}
+        _other -> {:halt, {:error, {:invalid_guard, field}}}
       end
     end)
   end
+
+  defp put_digest(acc, field, value) when is_binary(value) do
+    if Regex.match?(@digest_format, value) do
+      {:ok, Map.put(acc, field, value)}
+    else
+      {:error, {:invalid_guard, field}}
+    end
+  end
+
+  defp put_digest(_acc, field, _value), do: {:error, {:invalid_guard, field}}
 
   defp digest(value) do
     value

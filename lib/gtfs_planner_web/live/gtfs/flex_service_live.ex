@@ -157,6 +157,11 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
                              "Your draft and the accepted policy source are unchanged. Review the prepared " <>
                              "change again to refresh it, or discard the staged rows and save your own work."
 
+  @flex_policy_lapsed_review "The policy source changed after these rows were staged, so the review that " <>
+                               "covered them is gone and nothing was saved. Your draft and the accepted " <>
+                               "policy source are exactly as you left them. Review a prepared change again " <>
+                               "to save the staged rows, or discard them and save your own work."
+
   # The three distances the area editor's routes panel offers, the first three
   # of the reference's `DISTANCES`; the reference's distance for an area service
   # is the general-public half-mile.
@@ -1453,6 +1458,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
               <.flex_policy_review_section
                 review={@flex_policy_review}
                 stage={@flex_policy_stage}
+                lapsed?={lapsed_flex_policy_stage?(@flex_policy_stage)}
                 stale?={@flex_policy_stage_stale}
                 notice={@flex_policy_notice}
                 calendars={@calendars}
@@ -2042,18 +2048,34 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   # reviewed baseline and candidate before the first mutation. There is no
   # fallback to the ordinary save for a staged draft, so an assisted change can
   # never be persisted unguarded by accident (AC-10, AC-11, INV-2).
-  #
-  # A draft that moved after staging is refused here rather than reaching the
-  # transaction's own candidate check, because the message is a different
-  # one: the reviewed baseline is intact and it is the page that changed. The
-  # whole draft and the accepted source are kept either way (AC-11, AC-12).
   defp write_page(socket, loaded) do
-    if socket.assigns[:flex_policy_stage_stale] do
-      save_error(socket, @flex_policy_stale_stage)
-    else
-      write_page_now(socket, loaded)
+    # A draft that moved after staging is refused here rather than reaching the
+    # transaction's own candidate check, because the message is a different
+    # one: the reviewed baseline is intact and it is the page that changed. A
+    # staged change whose review belonged to a source this page has since
+    # replaced is refused for the same reason: its guard is kept, so the rows
+    # can still be discarded, but it describes a review that no longer exists.
+    # The whole draft and the accepted source are kept either way (AC-11, AC-12).
+    cond do
+      socket.assigns[:flex_policy_stage_stale] ->
+        save_error(socket, @flex_policy_stale_stage)
+
+      lapsed_flex_policy_stage?(socket.assigns[:flex_policy_stage]) ->
+        save_error(socket, @flex_policy_lapsed_review)
+
+      true ->
+        write_page_now(socket, loaded)
     end
   end
+
+  # A staged assistant change whose review belonged to a policy source this page
+  # has replaced. The stage is kept rather than dropped, so the page keeps
+  # routing this draft through the guarded writer and offers the explicit
+  # discard, but the guard's own source and context digests are the replaced
+  # source's, so a save under them would persist rows nobody reviewed against
+  # the source this page now holds (AC-2, AC-11, INV-2).
+  defp lapsed_flex_policy_stage?(%{lapsed?: true}), do: true
+  defp lapsed_flex_policy_stage?(_stage), do: false
 
   defp write_page_now(socket, loaded) do
     attrs = page_attrs(socket.assigns.draft)
@@ -2342,10 +2364,11 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
 
     case freeze_flex_policy_source(socket, values) do
       # Accepting a new source replaces the conversation's context, so a prepared
-      # review and a staged assistant guard that belonged to the old one are
-      # dropped here. The native draft is not touched: the editor keeps every
-      # unsaved field, and an assistant-origin change may only be saved again
-      # through a fresh preparation and review (AC-2, INV-2).
+      # review is dropped and a staged assistant guard that belonged to the old
+      # source is marked lapsed rather than dropped. The native draft is not
+      # touched: the editor keeps every unsaved field, and an assistant-origin
+      # change can only be saved again through a fresh preparation and review,
+      # or by discarding the staged rows (AC-2, AC-11, INV-2).
       {:ok, context} ->
         socket
         |> assign(:flex_policy_state, :accepted)
@@ -2353,7 +2376,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
         |> assign(:flex_policy_refusal, nil)
         |> assign(:flex_policy_field_errors, %{})
         |> assign(:flex_policy_review, nil)
-        |> assign(:flex_policy_stage, nil)
+        |> assign(:flex_policy_stage, lapse_flex_policy_stage(socket.assigns.flex_policy_stage))
         |> assign(:flex_policy_stage_stale, false)
         |> assign(:flex_policy_notice, nil)
         |> AgentPanel.set_context(context)
@@ -2571,6 +2594,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
         |> assign(:flex_policy_stage, %{
           guard: guard,
           entry_id: review.entry_id,
+          lapsed?: false,
           saved_rows: staged_saved_rows(socket, prepared, review.overlaps)
         })
         |> assign(:flex_policy_stage_stale, false)
@@ -2631,6 +2655,14 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     |> Enum.reject(&(Map.get(kept, &1) == :draft))
     |> Map.new(&{&1, flex_policy_rows(socket.assigns.saved, &1)})
   end
+
+  # The staged rows survive the replaced source and lose their review: the
+  # stage keeps the guard, the entry and the saved rows the explicit discard
+  # restores, and `lapsed?: true` is what keeps the page's Save from writing
+  # them under a guard the replaced source froze (AC-2, INV-2).
+  defp lapse_flex_policy_stage(nil), do: nil
+
+  defp lapse_flex_policy_stage(stage), do: Map.put(stage, :lapsed?, true)
 
   # The staged arrays go back to their saved rows and nothing else moves, so a
   # discarded assistant change leaves the editor's own unsaved work intact and

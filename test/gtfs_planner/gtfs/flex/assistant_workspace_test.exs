@@ -34,9 +34,9 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantWorkspaceTest do
   import GtfsPlanner.VersionsFixtures
 
   alias Ecto.Adapters.SQL.Sandbox
-  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Accounts.User
   alias GtfsPlanner.Accounts.UserOrgMembership
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarAttribute
@@ -85,7 +85,7 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantWorkspaceTest do
                ["Newport", "Toledo"]
 
       assert workspace.area_inputs |> hd() |> Map.fetch!(:geojson) |> is_map()
-      assert length(workspace.checks) > 0
+      assert workspace.checks != []
       assert workspace.check_status.errors == Enum.count(workspace.checks, &(&1.level == :error))
 
       # The generated wording is the native wording for the saved service: two

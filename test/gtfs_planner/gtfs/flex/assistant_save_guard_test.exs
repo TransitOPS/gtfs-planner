@@ -41,9 +41,9 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantSaveGuardTest do
   import GtfsPlanner.VersionsFixtures
 
   alias Ecto.Adapters.SQL.Sandbox
-  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Accounts.User
   alias GtfsPlanner.Accounts.UserOrgMembership
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.Calendar
@@ -858,25 +858,28 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantSaveGuardTest do
       [:gtfs_planner, :repo, :query],
       fn _event, _measurements, metadata, owner ->
         if self() == owner do
-          query = metadata |> Map.get(:query) |> to_string() |> String.replace("\n", " ")
-
-          if String.contains?(query, "gtfs_versions") and
-               String.contains?(query, "FOR UPDATE") do
-            :telemetry.detach(@fence_handler)
-            send(parent, {:fence_held, self(), backend_pid()})
-
-            receive do
-              :release -> :ok
-            after
-              @fence_timeout -> :ok
-            end
-
-            send(parent, {:fence_left, self()})
-          end
+          maybe_hold_fence(metadata, parent)
         end
       end,
       self()
     )
+  end
+
+  defp maybe_hold_fence(metadata, parent) do
+    query = metadata |> Map.get(:query) |> to_string() |> String.replace("\n", " ")
+
+    if String.contains?(query, "gtfs_versions") and String.contains?(query, "FOR UPDATE") do
+      :telemetry.detach(@fence_handler)
+      send(parent, {:fence_held, self(), backend_pid()})
+
+      receive do
+        :release -> :ok
+      after
+        @fence_timeout -> :ok
+      end
+
+      send(parent, {:fence_left, self()})
+    end
   end
 
   defp assert_blocked_by(backend, holder_backend) do

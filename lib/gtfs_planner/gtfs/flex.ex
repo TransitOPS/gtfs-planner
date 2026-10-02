@@ -620,22 +620,27 @@ defmodule GtfsPlanner.Gtfs.Flex do
 
         transact(
           audit,
-          fn ->
-            case scoped_service(organization_id, version_id, loaded.id) do
-              nil ->
-                Repo.rollback(:stale)
-
-              %FlexService{} = saved ->
-                verify_assistant_guard!(guard, saved, loaded, attrs, area_inputs)
-
-                write_service!(loaded, organization_id, version_id, attrs, area_inputs)
-            end
-          end,
+          fn -> guarded_write(guard, loaded, attrs, area_inputs, organization_id, version_id) end,
           :exclusive
         )
 
       :error ->
         {:error, :assistant_stale}
+    end
+  end
+
+  # The guarded write under the exclusive fence: the service is re-read inside
+  # the transaction as the baseline the guard is verified against, and the very
+  # same `write_service!/5` the ordinary save calls performs the write.
+  defp guarded_write(guard, loaded, attrs, area_inputs, organization_id, version_id) do
+    case scoped_service(organization_id, version_id, loaded.id) do
+      nil ->
+        Repo.rollback(:stale)
+
+      %FlexService{} = saved ->
+        verify_assistant_guard!(guard, saved, loaded, attrs, area_inputs)
+
+        write_service!(loaded, organization_id, version_id, attrs, area_inputs)
     end
   end
 

@@ -259,28 +259,38 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
           {:ok, workspace(), Pack.evidence()} | {:error, workspace_error()}
   def workspace(%Scope{} = scope, service_id) do
     with :ok <- Scope.authorized_context(scope) do
-      organization_id = scope.organization_id
-      version_id = scope.gtfs_version_id
+      scoped_workspace(scope, service_id)
+    end
+  end
 
-      case in_snapshot(fn ->
-             with {:ok, service} <- Flex.get_service(organization_id, version_id, service_id) do
-               build(organization_id, version_id, service)
-             end
-           end) do
-        {:ok, {:ok, workspace}} ->
-          {:ok, workspace, evidence(workspace, scope)}
+  # The snapshot read and the answers it maps to. A service of another
+  # organization or version, a deleted service and a malformed id are the same
+  # answer, so no foreign metadata is disclosed.
+  defp scoped_workspace(scope, service_id) do
+    organization_id = scope.organization_id
+    version_id = scope.gtfs_version_id
 
-        {:ok, {:error, :not_found}} ->
-          # A service of another organization or version, a deleted service and a
-          # malformed id are the same answer, so no foreign metadata is disclosed.
-          {:error, :unavailable}
+    case in_snapshot(fn -> snapshot_workspace(organization_id, version_id, service_id) end) do
+      {:ok, {:ok, workspace}} ->
+        {:ok, workspace, evidence(workspace, scope)}
 
-        {:ok, {:error, reason}} ->
-          {:error, reason}
+      {:ok, {:error, :not_found}} ->
+        {:error, :unavailable}
 
-        {:error, reason} ->
-          {:error, reason}
-      end
+      {:ok, {:error, reason}} ->
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # The scoped service read and the workspace projection, in the one shape
+  # `workspace/2` matches on: `{:ok, workspace}` or a reason it turns into its
+  # own answer above.
+  defp snapshot_workspace(organization_id, version_id, service_id) do
+    with {:ok, service} <- Flex.get_service(organization_id, version_id, service_id) do
+      build(organization_id, version_id, service)
     end
   end
 
@@ -555,24 +565,43 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
   defp check_unsupported(input) do
     case Map.get(input, "unsupported", []) do
       statements when is_list(statements) and length(statements) <= @max_unsupported ->
-        statements
-        |> Enum.with_index()
-        |> Enum.reduce_while({:ok, []}, fn
-          {statement, _index}, {:ok, acc} when is_binary(statement) ->
-            statement = String.trim(statement)
-
-            if statement != "" and String.length(statement) <= @max_statement_chars do
-              {:cont, {:ok, acc ++ [statement]}}
-            else
-              {:halt, {:error, {:invalid_input, {:unsupported_statement, statement}}}}
-            end
-
-          {statement, index}, _acc ->
-            {:halt, {:error, {:invalid_input, {:unsupported_statement, index, statement}}}}
-        end)
+        unsupported_statements(statements)
 
       _other ->
         {:error, {:invalid_input, :unsupported}}
+    end
+  end
+
+  # The bounded list, statement by statement, keeping source order. A statement
+  # that is not a string is refused with its index; one that is refused on its
+  # own content names the trimmed text.
+  defp unsupported_statements(statements) do
+    statements
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn
+      {statement, _index}, {:ok, acc} when is_binary(statement) ->
+        case checked_statement(statement) do
+          {:ok, trimmed} ->
+            {:cont, {:ok, acc ++ [trimmed]}}
+
+          {:error, trimmed} ->
+            {:halt, {:error, {:invalid_input, {:unsupported_statement, trimmed}}}}
+        end
+
+      {statement, index}, _acc ->
+        {:halt, {:error, {:invalid_input, {:unsupported_statement, index, statement}}}}
+    end)
+  end
+
+  # One statement, trimmed and bounded. The refusal names the trimmed text, the
+  # same value the accepted list would have carried.
+  defp checked_statement(statement) do
+    trimmed = String.trim(statement)
+
+    if trimmed != "" and String.length(trimmed) <= @max_statement_chars do
+      {:ok, trimmed}
+    else
+      {:error, trimmed}
     end
   end
 
@@ -657,9 +686,8 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
     with :ok <- check_row(:hours, row, index, @hours_fields),
          {:ok, attrs} <- row_attrs(row, @hours_fields),
          :ok <- check_area_key(workspace, attrs),
-         :ok <- check_calendar(workspace, attrs, "service_id"),
-         {:ok, cast} <- cast_row(FlexHours, @hours_fields, attrs, :hours, index) do
-      {:ok, cast}
+         :ok <- check_calendar(workspace, attrs, "service_id") do
+      cast_row(FlexHours, @hours_fields, attrs, :hours, index)
     end
   end
 
@@ -680,9 +708,8 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
     with :ok <- check_row(:booking_rules, row, index, @rule_fields),
          {:ok, attrs} <- row_attrs(row, @rule_fields),
          :ok <- check_calendar(workspace, attrs, "service_id"),
-         :ok <- check_calendar(workspace, attrs, "office_service_id"),
-         {:ok, cast} <- cast_row(FlexBookingRule, @rule_fields, attrs, :booking_rules, index) do
-      {:ok, cast}
+         :ok <- check_calendar(workspace, attrs, "office_service_id") do
+      cast_row(FlexBookingRule, @rule_fields, attrs, :booking_rules, index)
     end
   end
 
@@ -909,13 +936,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
               acc
               |> Map.update!(:saved, &(&1 ++ [before]))
               |> Map.update!(:candidate, &(&1 ++ [after_]))
-              |> append_comparison(
-                if fields == [] do
-                  {:unchanged, ordinal}
-                else
-                  {:changed, %{ordinal: ordinal, fields: fields, before: before, after: after_}}
-                end
-              )
+              |> append_comparison(row_comparison(ordinal, before, after_, fields))
 
             {:error, {:ok, after_}} ->
               acc
@@ -929,6 +950,16 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
           end
       end
     )
+  end
+
+  # One row both sides have: unchanged when every field is equal, changed with
+  # the fields that moved otherwise.
+  defp row_comparison(ordinal, before, after_, fields) do
+    if fields == [] do
+      {:unchanged, ordinal}
+    else
+      {:changed, %{ordinal: ordinal, fields: fields, before: before, after: after_}}
+    end
   end
 
   defp append_comparison(acc, {:unchanged, ordinal}),

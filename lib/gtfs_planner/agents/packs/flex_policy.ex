@@ -354,12 +354,16 @@ defmodule GtfsPlanner.Agents.Packs.FlexPolicy do
   defp days_label(nil), do: "None recorded"
 
   defp days_label(weekly) do
-    case Enum.flat_map(@weekday_fields, fn {label, field} ->
-           if Map.get(weekly, field) == 1, do: [label], else: []
-         end) do
+    case recorded_day_labels(weekly) do
       [] -> "None recorded"
       labels -> Enum.join(labels, ", ")
     end
+  end
+
+  defp recorded_day_labels(weekly) do
+    Enum.flat_map(@weekday_fields, fn {label, field} ->
+      if Map.get(weekly, field) == 1, do: [label], else: []
+    end)
   end
 
   defp span_label(nil), do: "Unknown"

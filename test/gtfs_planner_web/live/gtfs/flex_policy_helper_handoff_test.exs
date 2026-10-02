@@ -23,8 +23,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexPolicyHelperHandoffTest do
     * a calendar-only commit after staging refuses the Save under the guard, with
       the whole draft and the accepted source retained and a fresh preparation
       required (AC-10, AC-12);
-    * a forged entry id, a forged array or choice, and a replaced source are each
-      the same refusal and never reach a surface (AC-1, AC-2, AC-7);
+    * a forged entry id and a forged array or choice are each the same refusal
+      and never reach a surface, and a replaced source drops the review but
+      leaves the staged rows behind a lapsed guard, so the page's own Save
+      cannot persist them (AC-1, AC-2, AC-7, AC-11, INV-2);
     * the stale banner's "save both changes" cannot slip a staged change past the
       guard, and an uncertain or refused receipt never reports a saved service
       (AC-11, AC-12).
@@ -383,8 +385,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexPolicyHelperHandoffTest do
       assert stored_hours(context) == @proposed_hours
     end
 
-    test "a replaced source drops the staged guard and the review with it", context do
+    test "a replaced source drops the review and keeps the staged rows behind a lapsed guard",
+         context do
       view = ready_view(context)
+      saved = stored_hours(context)
       prepared_entry(context, view)
       view |> element("#flex-policy-stage") |> render_click()
       assert has_element?(view, "#flex-policy-staged")
@@ -392,18 +396,34 @@ defmodule GtfsPlannerWeb.Gtfs.FlexPolicyHelperHandoffTest do
       accept_source(view, "Second policy", nil, "Riders call ahead on weekdays only.")
 
       # The accepted source changed, so the conversation the review belonged to
-      # is gone: no staged guard, no review, and the native draft intact
-      # (AC-2, INV-2).
-      refute has_element?(view, "#flex-policy-staged")
-      refute has_element?(view, "#flex-policy-review")
+      # is gone: the comparison itself is gone, and the staged rows are marked
+      # lapsed rather than dropped, so the page still routes this draft through
+      # the guarded writer and still offers the explicit discard (AC-2, AC-11,
+      # INV-2).
+      refute has_element?(view, "#flex-policy-review-hours")
+      assert has_element?(view, "#flex-policy-stage-lapsed")
+      assert has_element?(view, "#flex-policy-discard-staged")
       assert has_element?(view, "#flex-policy-source-accepted", "Second policy")
       assert has_element?(view, "#service_hours_0_start[value='08:00']")
 
-      # Without a guard the page is an ordinary native draft again, and the Save
-      # is the ordinary one: nothing assistant-origin is persisted unguarded.
+      # The stage's guard is the replaced source's, so the page's own Save is
+      # refused rather than written: nothing assistant-origin reaches the
+      # database, and the stored rows are still the saved ones.
       view |> element("#flex-service-form") |> render_submit(%{})
 
-      assert stored_hours(context) == @proposed_hours
+      assert stored_hours(context) == saved
+      refute stored_hours(context) == @proposed_hours
+
+      # The explicit discard is the other way out, and it leaves the editor's
+      # own unsaved work alone.
+      view |> element("#flex-policy-discard-staged") |> render_click()
+
+      refute has_element?(view, "#flex-policy-stage-lapsed")
+      assert has_element?(view, "#service_hours_0_start[value='07:00']")
+
+      view |> element("#flex-service-form") |> render_submit(%{})
+
+      assert stored_hours(context) == saved
     end
 
     test "the staged rows can be taken back out and the editor's own work stays", context do
