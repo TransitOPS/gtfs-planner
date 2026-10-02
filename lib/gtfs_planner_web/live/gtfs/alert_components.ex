@@ -36,10 +36,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
 
   import GtfsPlannerWeb.PlannerComponents, only: [form_error_summary: 1]
 
-  alias Phoenix.LiveView.JS
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias LiveSelect.Component, as: LiveSelectComponent
+  alias Phoenix.LiveView.JS
 
   # The words a reader recognizes: the situation is what the alert is about and
   # the effect is what riders' apps do about it. The preview names the effect
@@ -142,8 +142,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
 
   def tabs(assigns) do
     ~H"""
-    <nav
+    <div
       id="alerts-tabs"
+      role="tablist"
       aria-label="Alerts by state"
       class="mt-6 flex gap-1 overflow-x-auto border-b border-subtle"
     >
@@ -170,7 +171,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
           {Map.get(@counts, key, 0)}
         </span>
       </.link>
-    </nav>
+    </div>
     """
   end
 
@@ -2854,8 +2855,17 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   attr :id, :string, default: "alert-save-bar"
   attr :status, :string, required: true
   attr :state, :atom, required: true, doc: ":idle, :saved or :error"
+
+  attr :detail, :string,
+    default: nil,
+    doc: "why the last save was refused, when no field on the question can say so"
+
   attr :show_delete?, :boolean, default: false
   attr :back_path, :string, required: true
+
+  attr :close_variant, :string,
+    default: "primary",
+    doc: "secondary where another action on the view is the one primary, as on the review"
 
   attr :form_id, :string,
     default: nil,
@@ -2879,6 +2889,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
             ]}
           >
             {@status}
+          </p>
+          <p
+            :if={@state == :error and @detail}
+            id="alert-save-detail"
+            role="alert"
+            class="mt-0.5 text-[13px] text-error-fg"
+          >
+            {@detail}
           </p>
           <.button
             :if={@state == :error}
@@ -2910,7 +2928,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
           :if={@form_id}
           id="alert-save-close"
           type="submit"
-          variant="primary"
+          variant={@close_variant}
           form={@form_id}
         >
           Save and close
