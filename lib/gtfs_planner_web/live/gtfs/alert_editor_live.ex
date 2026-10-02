@@ -2557,9 +2557,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     # socket holds, so the alert is assigned before the steps are prepared.
     socket = assign(socket, :alert, alert)
     prepared = prepare_steps(keys, step, flags, socket)
+    draft = draft_state(refused, alert)
 
     socket
-    |> assign(:page_title, if(alert, do: "Update alert", else: "New alert"))
+    |> assign(:page_title, page_title(alert))
     |> assign(:loaded_revision, alert && alert.revision)
     |> assign(:load_state, :ready)
     |> assign(:flags, flags)
@@ -2567,9 +2568,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> assign(:step, step)
     |> assign(:preview, preview(socket, alert))
     |> assign(:delete_open?, false)
-    |> assign(:save_state, refused[:save_state] || if(is_nil(alert), do: :idle, else: :saved))
-    |> assign(:conflict, refused[:conflict])
-    |> assign(:pending_attrs, refused[:pending_attrs])
+    |> assign(:save_state, draft.save_state)
+    |> assign(:conflict, draft.conflict)
+    |> assign(:pending_attrs, draft.pending_attrs)
     |> assign(:review_errors, [])
     |> assign(:route_query, socket.assigns[:route_query] || "")
     |> assign(:route_options, socket.assigns[:route_options] || [])
@@ -2581,9 +2582,27 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> assign(:stretch_ends, %{})
     |> assign(:directions_open?, written_directions?(alert))
     |> assign(:chosen_timing_date, socket.assigns[:chosen_timing_date] || nil)
-    |> assign(:form, refused[:form] || draft_form(alert || %Alert{}))
+    |> assign(:form, draft.form)
     |> prepare_questions(alert)
     |> prepare_assistant(alert)
+  end
+
+  defp page_title(nil), do: "New alert"
+  defp page_title(_alert), do: "Update alert"
+
+  # What the editor arrives with: the saved row's own state, or the refused
+  # draft's when `refused_draft/3` kept one.
+  defp draft_state(nil, alert) do
+    %{
+      save_state: if(is_nil(alert), do: :idle, else: :saved),
+      conflict: nil,
+      pending_attrs: nil,
+      form: draft_form(alert || %Alert{})
+    }
+  end
+
+  defp draft_state(refused, alert) do
+    Map.update!(refused, :form, &(&1 || draft_form(alert)))
   end
 
   # Directions the editor already wrote open their field, so coming back to the
@@ -2608,12 +2627,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
         pending_attrs: assigns.pending_attrs,
         form: if(assigns.step == step, do: assigns.form)
       }
-    else
-      %{}
     end
   end
 
-  defp refused_draft(_socket, _alert, _step), do: %{}
+  defp refused_draft(_socket, _alert, _step), do: nil
 
   # The reads the questions that need more than the alert's own answers take,
   # taken when the row changes rather than in the render function: the route's
