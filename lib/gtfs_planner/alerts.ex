@@ -47,6 +47,22 @@ defmodule GtfsPlanner.Alerts do
   banner (R6). `delete_alert/3` follows the same order and refuses a stale
   revision the same way.
 
+  `save_review/5` is the same private save plus an explicit publication
+  checkbox, and it is the only path that reads that checkbox. An unchecked save
+  or an autosave touches nothing public: the served content, its revision and its
+  publication date are exactly what they were. A checked save validates
+  completeness, the trusted captured selectors and wire representability, compiles
+  the civil timing into explicit UTC periods and stores exactly the revision that
+  just committed as this alert's desired public intent - so a later autosave stays
+  private and no draft is ever published automatically (INV-3, AC-11, AC-14).
+
+  Before accepting anything it measures a conservative envelope of every
+  non-withdrawn accepted snapshot the organization has, including the scheduled
+  ones, against the same 16 MiB ceiling the encoder enforces. A candidate that
+  does not fit is refused and the previous accepted intent is left untouched, so
+  the corrective removal stays available even while the feed cannot be projected
+  at all (AC-21).
+
   The script and guidelines commands below hold the same membership lock before
   the script or settings row, so a revocation that commits while a settings save
   is waiting refuses that save too (R5, CR-3). They carry no GTFS version: a
@@ -66,7 +82,9 @@ defmodule GtfsPlanner.Alerts do
   alias GtfsPlanner.Alerts.AlertSettings
   alias GtfsPlanner.Alerts.BuiltInScripts
   alias GtfsPlanner.Alerts.Completion
+  alias GtfsPlanner.Alerts.FeedPeriods
   alias GtfsPlanner.Alerts.Listing
+  alias GtfsPlanner.Alerts.Publication
   alias GtfsPlanner.Alerts.Recurrence
   alias GtfsPlanner.Alerts.ScopeAnswer
   alias GtfsPlanner.Alerts.Targets
@@ -83,6 +101,22 @@ defmodule GtfsPlanner.Alerts do
   carries the current alert so the editor can offer the conflict banner.
   """
   @type stale :: {:error, :stale, Alert.t()}
+
+  @typedoc """
+  What a reviewed save did with public intent.
+
+  `:private` is an unchecked save or an autosave, `:pending` is an accepted
+  revision whose notice has begun, `:scheduled` is an accepted revision whose
+  notice has not, and `{:refused, field_errors}` is a private save that committed
+  while the publication it was asked for did not.
+  """
+  @type publication_outcome ::
+          :private | :pending | :scheduled | {:refused, [Publication.field_error()]}
+
+  @typedoc """
+  A reviewed save: the committed draft and what it did with public intent.
+  """
+  @type review_result :: %{alert: Alert.t(), publication: publication_outcome()}
 
   @target_messages %{
     routes: "Choose routes from this version.",
@@ -472,16 +506,241 @@ defmodule GtfsPlanner.Alerts do
       alert = lock_alert!(audit_context, alert_id)
       assert_current_revision!(alert, expected_revision)
 
-      %{alert | revision: expected_revision}
-      |> Alert.draft_changeset(attrs)
-      |> refresh_targets(audit_context, alert)
-      |> put_change(:updated_by_id, audit_context.actor_id)
-      |> derive()
-      |> optimistic_lock(:revision)
-      |> Repo.update()
-      |> commit()
+      # `save_review_revision!/4` already leaves the transaction through
+      # `commit/1`, so a refused draft changes nothing here either.
+      save_review_revision!(audit_context, alert, expected_revision, attrs)
     end)
   end
+
+  @doc """
+  Saves a reviewed revision, and accepts it for publication when the editor
+  checked the box.
+
+  This is the one path that turns private authoring into public intent, so it is
+  the one place a checkbox is read. The write itself is always the same private
+  save `save_draft/4` performs, at the same expected revision and under the same
+  membership, channel and alert locks in that order (INV-1, CR-2); the checkbox
+  only decides what happens *after* that save commits.
+
+  The two outcomes are deliberately separate:
+
+    * `publish?: false` returns `publication: :private`. Nothing in
+      `alert_publications` is read or written, the alerts channel is not marked
+      dirty, and the served content and its publication date are exactly what
+      they were. This is also the path every autosave takes, so a later autosave
+      can never become a publication (AC-11).
+    * `publish?: true` returns `publication: :pending` when the accepted
+      snapshot's notice has begun and `:scheduled` when it has not, after
+      storing exactly the revision that just committed as this alert's desired
+      public intent.
+
+  A publication that cannot be made is reported apart from the save that did
+  happen: `{:ok, %{alert: saved, publication: {:refused, field_errors}}}` with the
+  draft committed and the previous accepted intent untouched. `{:error, reason}`
+  is reserved for a refusal of the private save itself — forbidden, stale
+  revision or an invalid draft — and in either refusal the editor keeps the
+  submitted form and the checkbox intent, because nothing here writes either
+  back.
+
+  `offset_choices` holds the offsets an editor explicitly saved for ambiguous
+  local occurrences, keyed by `FeedPeriods.choice_key/2`. A civil reading that
+  does not exist is a field correction and a reading that happens twice is a
+  choice the editor has to make; neither is ever resolved by taking the first
+  offset (AC-12).
+  """
+  @spec save_review(AuditContext.t(), Ecto.UUID.t() | term(), integer(), map(), keyword()) ::
+          {:ok, review_result()} | {:error, error()} | stale()
+  def save_review(%AuditContext{} = audit_context, alert_id, expected_revision, attrs, opts)
+      when is_map(attrs) and is_list(opts) do
+    publish? = Keyword.get(opts, :publish?, false)
+    offset_choices = Keyword.get(opts, :offset_choices) || %{}
+
+    transaction(fn ->
+      Authorization.lock_editor!(audit_context)
+
+      # Membership, then channel, then alert. The channel is locked before the
+      # alert so two publications of the same organization cannot both read the
+      # accepted envelope and each admit on top of the other.
+      channel = Publication.lock_channel!(audit_context.organization_id)
+      alert = lock_alert!(audit_context, alert_id)
+      assert_current_revision!(alert, expected_revision)
+
+      saved = save_review_revision!(audit_context, alert, expected_revision, attrs)
+
+      if publish? do
+        accept_for_publication!(audit_context, channel, saved, offset_choices)
+      else
+        %{alert: saved, publication: :private}
+      end
+    end)
+  end
+
+  # The private save, shared with `save_draft/4` so a reviewed save and an
+  # autosave cannot drift apart. It is committed through `commit/1` before any
+  # publication work, which is what makes the two outcomes separable.
+  defp save_review_revision!(audit_context, alert, expected_revision, attrs) do
+    %{alert | revision: expected_revision}
+    |> Alert.draft_changeset(attrs)
+    |> refresh_targets(audit_context, alert)
+    |> put_change(:updated_by_id, audit_context.actor_id)
+    |> derive()
+    |> optimistic_lock(:revision)
+    |> Repo.update()
+    |> commit()
+  end
+
+  defp accept_for_publication!(audit_context, channel, saved, offset_choices) do
+    case accepted_intent(audit_context, saved, offset_choices) do
+      {:ok, snapshot, identified} ->
+        case Publication.admit(audit_context.organization_id, identified.id, snapshot) do
+          :ok ->
+            publish!(audit_context, channel, identified, snapshot)
+
+          {:error, field_errors} ->
+            # The draft stays saved and the previous accepted intent stays
+            # exactly as it was; only the refusal is new.
+            %{alert: identified, publication: {:refused, field_errors}}
+        end
+
+      {:error, field_errors} ->
+        %{alert: saved, publication: {:refused, field_errors}}
+    end
+  end
+
+  defp publish!(audit_context, channel, saved, snapshot) do
+    {:ok, _publication} = Publication.accept(saved, snapshot, audit_context.actor_id)
+    Publication.mark_channel_dirty!(channel)
+
+    %{alert: saved, publication: publication_state(snapshot)}
+  end
+
+  # An accepted snapshot whose notice has not begun is still accepted public
+  # intent, and it already counts against the admission budget. Reporting it as
+  # scheduled rather than pending is what keeps a scheduled acceptance from
+  # reading as a publication that has already happened (AC-15).
+  defp publication_state(%{notice_at: notice_at}),
+    do: if(notice_at <= now_unix(), do: :pending, else: :scheduled)
+
+  defp now_unix, do: DateTime.utc_now() |> DateTime.to_unix()
+
+  # Everything between a complete draft and an encodable snapshot, in the order
+  # that gives the editor the most actionable correction first.
+  defp accepted_intent(audit_context, %Alert{} = alert, offset_choices) do
+    with :ok <- complete_for_publication(alert),
+         {:ok, zone} <- explicit_zone(audit_context, alert),
+         {:ok, compiled} <- compile_periods(alert, zone, offset_choices),
+         {:ok, scope} <- accepted_scope(alert),
+         {:ok, identified} <- public_identity(alert) do
+      {:ok, Publication.snapshot(identified, compiled, scope), identified}
+    end
+  end
+
+  defp complete_for_publication(%Alert{} = alert) do
+    case Completion.errors(alert) do
+      [] ->
+        :ok
+
+      errors ->
+        # `Completion.errors/1` returns `{step, field, message}`. The field and
+        # its message are what an editor needs, so the step is dropped rather
+        # than reported as the field a form would bind.
+        {:error, Enum.map(errors, &incomplete_error/1)}
+    end
+  end
+
+  defp incomplete_error({_step, field, message}), do: Publication.error(field, message)
+
+  # The alert's own retained zone first, then the organization's explicit one.
+  # With neither, publication refuses rather than inheriting the disclosed
+  # display fallback, which is a presentation answer and never consent (CR-5).
+  defp explicit_zone(audit_context, %Alert{timezone: timezone}) do
+    case usable_zone(timezone) || usable_zone(organization_zone(audit_context)) do
+      nil ->
+        {:error,
+         [
+           Publication.error(
+             :time_zone,
+             "Set the timezone this alert's times are in before publishing."
+           )
+         ]}
+
+      zone ->
+        {:ok, zone}
+    end
+  end
+
+  defp usable_zone(zone) when is_binary(zone) do
+    case String.trim(zone) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp usable_zone(_zone), do: nil
+
+  defp compile_periods(%Alert{timing: %TimingAnswer{} = timing}, zone, offset_choices) do
+    case FeedPeriods.compile(timing, zone, offset_choices) do
+      {:ok, compiled} -> {:ok, compiled}
+      {:error, field_errors} -> {:error, field_errors}
+    end
+  end
+
+  defp compile_periods(_alert, _zone, _offset_choices),
+    do: {:error, [Publication.error(:timing, "This alert has no timing to publish yet.")]}
+
+  # A mode is not a GTFS identity, so it is expanded here into the explicit route
+  # ids the alert's own trusted source holds for that mode. The expansion reads
+  # the captured source version, never the version the editor happens to have
+  # selected now, and an alert whose source version is gone refuses instead of
+  # being read through an unrelated schedule (CR-5).
+  defp accepted_scope(%Alert{} = alert) do
+    mode = alert.scope && alert.scope.mode_route_type
+
+    with {:ok, mode_route_ids} <- mode_route_ids(alert, mode) do
+      Publication.scope_from_reference(alert.target_reference, mode_route_ids)
+    end
+  end
+
+  defp mode_route_ids(_alert, nil), do: {:ok, []}
+
+  defp mode_route_ids(%Alert{source_gtfs_version_id: nil}, _mode),
+    do: {:error, [Publication.error(:scope, mode_message())]}
+
+  defp mode_route_ids(%Alert{} = alert, mode) do
+    source =
+      from(route in GtfsPlanner.Gtfs.Route,
+        where: route.organization_id == ^alert.organization_id,
+        where: route.gtf_version_id == ^alert.source_gtfs_version_id,
+        where: route.route_type == ^mode,
+        order_by: [asc: route.route_id],
+        select: route.route_id
+      )
+      |> Repo.all()
+
+    {:ok, source}
+  end
+
+  defp mode_message do
+    "This alert names a mode from a source version that no longer exists. " <>
+      "Retarget it before publishing."
+  end
+
+  # The stable public identity a served feed keeps across retargets and
+  # deletions. It is assigned once, on the first accepted revision, and never
+  # changed afterwards: a republished alert has to be the same entity to every
+  # consumer that already saw it (AC-13).
+  defp public_identity(%Alert{public_entity_id: nil} = alert) do
+    identity = Ecto.UUID.generate()
+
+    {:ok, updated} =
+      alert
+      |> Ecto.Changeset.change(public_entity_id: identity)
+      |> Repo.update()
+
+    {:ok, updated}
+  end
+
+  defp public_identity(%Alert{} = alert), do: {:ok, alert}
 
   @doc """
   Replaces the alert's complete target selection within one owned version.
@@ -553,23 +812,57 @@ defmodule GtfsPlanner.Alerts do
   @doc """
   Deletes one alert of the context's organization.
 
+  An alert with no accepted public history is removed outright, exactly as it was
+  before publication existed: nothing was ever public, so there is nothing to
+  withdraw and no tombstone to keep.
+
+  An alert that *has* accepted history is deleted logically instead. The row
+  stays with `deleted_at` set, so the trusted selectors, the accepted revision and
+  the served content survive; the publication row records the confirmed removal
+  while keeping the snapshot a served manifest may still be serving, because a
+  re-enable has to reconcile against it rather than publish from nothing. This
+  happens while publishing is disabled exactly as it happens while it is enabled:
+  nothing here reads configuration, so a disable/delete/re-enable cycle cannot
+  hide a withdrawal or resurrect the alert (AC-16, FH-14).
+
   A stale `expected_revision` keeps the row and returns
-  `{:error, :stale, current}`.
+  `{:error, :stale, current}` in both cases.
   """
   @spec delete_alert(AuditContext.t(), Ecto.UUID.t() | term(), integer()) ::
           {:ok, Alert.t()} | {:error, :forbidden | :not_found} | stale()
   def delete_alert(%AuditContext{} = audit_context, alert_id, expected_revision) do
     transaction(fn ->
       Authorization.lock_editor!(audit_context)
+      channel = Publication.lock_channel!(audit_context.organization_id)
 
       # The row is held `FOR UPDATE` and its revision is checked, so nothing can
       # move the revision between that check and this delete.
       audit_context
       |> lock_alert!(alert_id)
       |> assert_current_revision!(expected_revision)
-      |> Repo.delete()
+      |> remove_alert!(channel)
       |> commit()
     end)
+  end
+
+  # Removal is the one write an over-budget or corrupt accepted feed cannot
+  # block: the refusal from `Publication.admit/3` is reported at acceptance, and
+  # this path records the intent regardless of whether the feed can currently be
+  # projected at all.
+  defp remove_alert!(%Alert{} = alert, channel) do
+    case Publication.withdraw(alert) do
+      {:ok, _publication} ->
+        withdrawn =
+          alert
+          |> Ecto.Changeset.change(deleted_at: DateTime.utc_now())
+          |> Repo.update()
+
+        Publication.mark_channel_dirty!(channel)
+        withdrawn
+
+      {:error, _no_history} ->
+        Repo.delete(alert)
+    end
   end
 
   @doc """
