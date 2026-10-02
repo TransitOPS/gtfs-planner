@@ -57,9 +57,11 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       gets the Timetables pack's own sequence: `read_timetable_source`, then
       `inspect_timetable_scope`, then a `prepare_timetable_input` for the rows
       the message named against the seeded `BROWSER_PASTE` route's own calendar,
-      direction and pattern, and finally the prepared-batch sentence. The
-      selectors are the seeded route's own, so the batch can only be prepared
-      from what the Paste page already accepted;
+      direction and pattern, and finally the prepared-batch sentence. A message
+      may name a second calendar (`… for calendar CAL_SCHOOL`), which the pack
+      refuses because the route does not run it. The selectors are the seeded
+      route's own, so the batch can only be prepared from what the Paste page
+      already accepted;
     * the `query_departures` and `list_boarding_occurrences` tool results get a
       Schedule sentence, one of which contradicts the server's count on purpose;
     * the `read_timetable_source`, `inspect_timetable_scope` and
@@ -133,7 +135,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   @timetable_direction_id 0
   @timetable_inbound_pattern_id "BPS-INBOUND"
   @timetable_inbound_direction_id 1
-  @timetable_row ~r/prepare (inbound |outbound )?row (\d+)/i
+  @timetable_row ~r/prepare (inbound |outbound )?row (\d+)(?: for calendar ([A-Z0-9_]+))?/i
   @timetable_tools ~w(read_timetable_source inspect_timetable_scope prepare_timetable_input)
   # The end date the browser journey approves in the Calendars page's own form,
   # 200 days from today: inside the 366-day horizon, and later than the seeded
@@ -619,18 +621,29 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   # combination, so the browser journey can only reach a real batch by
   # preparing this route's own accepted source.
   defp timetable_arguments(messages) do
-    [_, direction, row] = Regex.run(@timetable_row, last_user_content(messages))
+    # `Regex.run/2` omits a trailing group that did not participate, so the
+    # calendar is read from whatever the match carried rather than from a
+    # fixed-width match.
+    [_, direction, row | named] = Regex.run(@timetable_row, last_user_content(messages))
+    calendar = List.first(named)
     inbound? = String.trim(direction) == "inbound"
 
     %{
       "row_ids" => [String.to_integer(row)],
-      "service_id" => @timetable_service_id,
+      # A message may name a second calendar. The pack compares it with the
+      # calendar the page's own scope resolved and refuses the call, so the
+      # journey shows a refused second calendar rather than a second batch of
+      # the first one.
+      "service_id" => named_service_id(calendar),
       "pattern_id" =>
         if(inbound?, do: @timetable_inbound_pattern_id, else: @timetable_pattern_id),
       "direction_id" =>
         if(inbound?, do: @timetable_inbound_direction_id, else: @timetable_direction_id)
     }
   end
+
+  defp named_service_id(calendar) when calendar in [nil, ""], do: @timetable_service_id
+  defp named_service_id(calendar), do: calendar
 
   defp prepare_arguments do
     monday = Date.add(Date.utc_today(), 8 - Date.day_of_week(Date.utc_today()))
