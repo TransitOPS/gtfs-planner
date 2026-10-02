@@ -195,6 +195,37 @@ function fareProductLockCount(databaseUrl, applicationName) {
   return psql(databaseUrl, sql);
 }
 
+async function disconnectBlockedFareReader(databaseUrl, lockerPid) {
+  const readerScope = `
+    reader.datname = current_database()
+    AND reader.usename = current_user
+    AND reader.backend_type = 'client backend'
+    AND reader.state = 'active'
+    AND reader.wait_event_type = 'Lock'
+    AND reader.pid <> pg_backend_pid()
+    AND reader.query ~ '^[[:space:]]*SELECT'
+    AND reader.query LIKE '%"fare_products"%'
+    AND ${lockerPid} = ANY(pg_blocking_pids(reader.pid))
+  `;
+  let readerPid;
+  await expect.poll(() => {
+    readerPid = psql(databaseUrl, `
+      SELECT reader.pid FROM pg_stat_activity AS reader WHERE ${readerScope}
+    `);
+    return readerPid;
+  }, { timeout: 10000, intervals: [100, 250, 500] }).toMatch(/^[0-9]+$/);
+
+  // A held query's timeout reports Postgrex query_canceled, not the connection
+  // loss this state handles. Disconnect only the reader blocked by this test's
+  // exact locker, on the positively verified owned database, before it times out.
+  const terminated = psql(databaseUrl, `
+    SELECT pg_terminate_backend(reader.pid) FROM pg_stat_activity AS reader
+    WHERE reader.pid = ${readerPid} AND ${readerScope}
+  `);
+  expect(terminated).toBe("t");
+  console.log("Owned fare catalog reader termination", JSON.stringify({ readerPid, lockerPid, terminated }));
+}
+
 async function withFareProductCatalogLock(callback) {
   const databaseUrl = fareTestDatabase();
   const applicationName = `fare_layout_lock_${randomUUID().replaceAll("-", "")}`;
@@ -240,7 +271,7 @@ async function withFareProductCatalogLock(callback) {
     `);
     expect(backendPid).toMatch(/^[0-9]+$/);
     console.log("Owned fare catalog lock", JSON.stringify({ applicationName, backendPid }));
-    await callback();
+    await callback(() => disconnectBlockedFareReader(databaseUrl, backendPid));
   } finally {
     // Closing psql alone does not interrupt the server's pg_sleep; its lock
     // could otherwise outlive a failed scenario. End only this recorded,
@@ -664,11 +695,15 @@ test("shell", async ({ page }, testInfo) => {
   await captureReference(page, testInfo, "?state=loading", "ref-loading");
   await captureReference(page, testInfo, "?state=load-error", "ref-load-error");
 
-  await withFareProductCatalogLock(async () => {
+  // Finish the current page's catalog read before introducing the fault, so
+  // only the next connected mount's reader can be blocked by our lock.
+  await expect(page.locator("#fare-table")).toBeVisible();
+  await withFareProductCatalogLock(async (disconnectReader) => {
     for (const viewport of [DESKTOP, PHONE]) {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
       await page.goto(`/gtfs/${versionId}/settings/fares`);
       await waitForLiveView(page);
+      await disconnectReader();
       await expect(page.locator("#fare-editor-error")).toBeVisible({ timeout: 25_000 });
       await expect(page.locator("#fare-editor-reload")).toBeVisible();
       await capture(page, testInfo, `prod-load-error-${viewport.label}`);
