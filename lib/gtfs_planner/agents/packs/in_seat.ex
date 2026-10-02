@@ -40,6 +40,7 @@ defmodule GtfsPlanner.Agents.Packs.InSeat do
 
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Wording
 
   @source_kind "in_seat"
   @schema_version 1
@@ -415,8 +416,7 @@ defmodule GtfsPlanner.Agents.Packs.InSeat do
 
   defp summary(request, choice, scope) do
     %{
-      title:
-        "Prepare #{count_label(length(request.pairs), "in-seat setting", "in-seat settings")}",
+      title: "Prepare #{Wording.count_noun(length(request.pairs), "in-seat setting")}",
       detail: "#{choice_label(choice)} · #{request.day_type_label}",
       lines: [
         "Selected on this page · nothing is saved",
@@ -429,9 +429,6 @@ defmodule GtfsPlanner.Agents.Packs.InSeat do
   defp choice_label(:stay_on_board), do: "Stay on board"
   defp choice_label(:must_reboard), do: "Must reboard"
 
-  defp count_label(1, one, _many), do: "1 #{one}"
-  defp count_label(count, _one, many), do: "#{count} #{many}"
-
   # -- evidence -------------------------------------------------------------
 
   defp evidence(request, checks, result, scope, choice \\ nil) do
@@ -441,7 +438,7 @@ defmodule GtfsPlanner.Agents.Packs.InSeat do
     %{
       kind: if(choice, do: "in_seat_policy", else: "in_seat_connections"),
       title:
-        "#{request.day_type_label} · #{count_label(totals["selected"], "connection", "connections")}",
+        "#{request.day_type_label} · #{Wording.count_noun(totals["selected"], "connection")}",
       total: totals["selected"],
       total_label: "selected connection pairs",
       completeness: if(complete, do: :complete, else: :incomplete),

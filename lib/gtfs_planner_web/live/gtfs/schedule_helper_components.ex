@@ -27,6 +27,8 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleHelperComponents do
 
   import GtfsPlannerWeb.CoreComponents, only: [button: 1, input: 1]
 
+  alias GtfsPlanner.Values
+
   attr :form, Phoenix.HTML.Form, required: true
   attr :notice, :string, default: nil
   attr :approval, :map, default: nil
@@ -546,20 +548,11 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleHelperComponents do
   # The posted name of one control. The pair's own name is a stable id for its
   # fieldset and its remove button, so a refusal leaves the operator looking at
   # the pair they wrote rather than at the pair that happens to be first.
-  defp pair_name(pair, index), do: presence(pair["id"]) || "pair-#{index}"
+  defp pair_name(pair, index), do: Values.presence(pair["id"]) || "pair-#{index}"
 
   defp input_name(%Phoenix.HTML.Form{name: name}, index, path) do
     "#{name}[pairs][#{index}]" <> Enum.map_join(path, fn key -> "[#{key}]" end)
   end
-
-  defp presence(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      text -> text
-    end
-  end
-
-  defp presence(_value), do: nil
 
   defp endpoint_value(pair, side, field), do: nested_value(pair, side, field)
 

@@ -39,6 +39,7 @@ defmodule GtfsPlanner.Agents.Packs.Transfers do
 
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs.Transfers
+  alias GtfsPlanner.Wording
 
   @source_kind "transfer_policy"
   @schema_version 1
@@ -587,7 +588,7 @@ defmodule GtfsPlanner.Agents.Packs.Transfers do
 
   defp sequence_summary(items, scope) do
     %{
-      title: "Prepare #{count_label(length(items), "transfer rule", "transfer rules")}",
+      title: "Prepare #{Wording.count_noun(length(items), "transfer rule")}",
       detail:
         Enum.map_join(items, ", ", fn %{selection: selection} ->
           direction_label(selection) <> minimum_label(selection)
@@ -606,9 +607,6 @@ defmodule GtfsPlanner.Agents.Packs.Transfers do
       _other -> ""
     end
   end
-
-  defp count_label(1, one, _many), do: "1 #{one}"
-  defp count_label(count, _one, many), do: "#{count} #{many}"
 
   defp direction_label(selection),
     do: "#{selection.from.stop_id} to #{selection.to.stop_id}"
@@ -660,7 +658,7 @@ defmodule GtfsPlanner.Agents.Packs.Transfers do
   defp sequence_evidence(items, scope, result) do
     evidence(
       "transfer_policy_sequence",
-      count_label(length(items), "prepared transfer rule", "prepared transfer rules"),
+      Wording.count_noun(length(items), "prepared transfer rule"),
       length(items),
       "prepared rules",
       scope,

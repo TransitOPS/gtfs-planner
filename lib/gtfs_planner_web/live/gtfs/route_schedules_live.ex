@@ -44,6 +44,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   alias GtfsPlanner.Gtfs.Schedules.FrequencyWindows
   alias GtfsPlanner.Gtfs.Schedules.Summary
   alias GtfsPlanner.Gtfs.Schedules.TimeEntry
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.AgentPanel
@@ -4659,8 +4660,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp connection_pair(_socket, _pair), do: {:error, @connection_pairs_error}
 
   defp connection_pair_id(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> {:error, @connection_id_error}
+    case Values.presence(value) do
+      nil -> {:error, @connection_id_error}
       id -> {:ok, id}
     end
   end
@@ -4726,8 +4727,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp version_id(socket), do: socket.assigns.current_gtfs_version.id
 
   defp connection_text(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> {:error, @connection_endpoint_error}
+    case Values.presence(value) do
+      nil -> {:error, @connection_endpoint_error}
       text -> {:ok, text}
     end
   end
@@ -4747,8 +4748,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # one is that same date rather than a missing number: an occurrence sequence is
   # still required, because "the stop" alone does not name a visit.
   defp connection_offset(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> {:ok, 0}
+    case Values.presence(value) do
+      nil -> {:ok, 0}
       text -> connection_count(text)
     end
   end
@@ -4776,8 +4777,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp connection_seconds(_value), do: {:error, @connection_minimum_error}
 
   defp connection_approval(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> {:error, @connection_minimum_error}
+    case Values.presence(value) do
+      nil -> {:error, @connection_minimum_error}
       text -> {:ok, text}
     end
   end
@@ -4800,9 +4801,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp connection_candidates(_pairs), do: {:error, @connection_pairs_error}
 
   defp connection_candidate(%{"id" => id, "candidate" => candidate}) when is_map(candidate) do
-    arrival = blank_to_nil(candidate["arrival"])
-    departure = blank_to_nil(candidate["departure"])
-    approval = blank_to_nil(candidate["approval"])
+    arrival = Values.presence(candidate["arrival"])
+    departure = Values.presence(candidate["departure"])
+    approval = Values.presence(candidate["approval"])
 
     cond do
       is_nil(arrival) and is_nil(departure) and is_nil(approval) ->
@@ -4839,15 +4840,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       {:error, _reason} -> {:error, @connection_candidate_error}
     end
   end
-
-  defp blank_to_nil(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      text -> text
-    end
-  end
-
-  defp blank_to_nil(value), do: value
 
   defp load_connections(socket, request) do
     ConnectionComparison.load(
