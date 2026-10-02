@@ -727,7 +727,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
       "import_digest" => import_digest,
       "diagnostics" => run_diagnostics(run),
       "counts" => import_counts(snapshot, station_rows, excluded, length(rows), offset),
-      "excluded" => excluded,
+      "excluded" => Map.new(excluded, fn {reason, count} -> {to_string(reason), count} end),
       "decisions" => rows,
       "filters" => %{"offset" => offset},
       "next_offset" => if(more?, do: offset + length(rows), else: nil),
