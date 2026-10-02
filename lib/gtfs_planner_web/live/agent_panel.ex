@@ -256,7 +256,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
       user_id: socket.assigns.current_user.id,
       user_email: socket.assigns.current_user.email,
       pack_id: socket.assigns.agent_pack_id,
-      version_name: scope_version_name(socket),
+version_name: scope_version_name(socket),
       subject_id: socket.assigns.agent_subject_id,
       alert_schedule_token: socket.assigns.agent_schedule_token,
       resource_context: socket.assigns.agent_context
