@@ -2432,7 +2432,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   end
 
   defp write_prepared(socket, alert, conversation_id, entry_id, params) do
-    case Alerts.save_draft(audit_context(socket), alert.id, alert.revision, params) do
+    attrs = mark_prepared_wording(socket, alert, params)
+
+    case Alerts.save_draft(audit_context(socket), alert.id, alert.revision, attrs) do
       {:ok, saved} ->
         socket
         |> assign(:alert, saved)
@@ -2466,6 +2468,35 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
         |> assign(:save_state, :error)
     end
   end
+
+  # Wording the assistant prepared is somebody's wording, the same as a typed
+  # edit: it is marked customized, so arriving at the message step never
+  # generates over it (FH-22). Unlike a typed edit it also stores the digest of
+  # the facts as this proposal leaves them, because the assistant wrote the text
+  # against those facts; only a later answer change should ask for Review
+  # wording. A proposal with no header or description leaves the stored mark
+  # and digest alone.
+  defp mark_prepared_wording(socket, alert, %{"message" => message} = params)
+       when is_map(message) do
+    if Enum.any?(["header", "description"], &Map.has_key?(message, &1)) do
+      digest =
+        alert
+        |> Alert.draft_changeset(params)
+        |> Ecto.Changeset.apply_changes()
+        |> message_facts(socket)
+        |> Message.digest()
+
+      Map.put(
+        params,
+        "message",
+        Map.merge(message, %{"customized" => true, "fact_digest" => digest})
+      )
+    else
+      params
+    end
+  end
+
+  defp mark_prepared_wording(_socket, _alert, params), do: params
 
   # Applying the kept candidate reads the row first, so the write is made at the
   # revision the row actually holds rather than the one this editor remembers.

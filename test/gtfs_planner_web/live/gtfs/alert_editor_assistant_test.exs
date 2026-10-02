@@ -198,6 +198,67 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
       assert view |> element("#alert-preview-header") |> render() =~ @header
     end
 
+    test "wording it prepared over generated wording is kept when a later answer changes a fact",
+         context do
+      alert = alert_with_answers(context)
+
+      # Arriving at the message step generates wording marked as the script's.
+      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+
+      assert {:ok, generated} = Alerts.get_alert(context.audit, alert.id)
+      assert generated.message.customized == false
+
+      view |> element("#draft-with-assistant") |> render_click()
+      pid = attach(context, alert, view)
+      script_prepared_turn(context)
+
+      view
+      |> element("#agent-composer")
+      |> render_submit(%{"agent" => %{"message" => @note}})
+
+      assert_receive {:agent_event, ^pid, {:entry, %{applied?: true}}}, 5_000
+
+      # Another editor then changes a fact the wording was written against.
+      assert {:ok, applied} = Alerts.get_alert(context.audit, alert.id)
+      assert applied.message.header == @header
+
+      assert {:ok, _changed} =
+               Alerts.save_draft(context.audit, alert.id, applied.revision, %{
+                 "cause" => "weather"
+               })
+
+      {:ok, arrived, _html} = live(editor_conn(context), message_path(context, alert))
+
+      assert {:ok, kept} = Alerts.get_alert(context.audit, alert.id)
+      assert kept.message.header == @header
+      assert kept.message.description == @description
+      assert has_element?(arrived, "#review-wording")
+    end
+
+    test "wording prepared together with a changed answer is not flagged for review at once",
+         context do
+      alert = alert_with_answers(context)
+
+      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+
+      view |> element("#draft-with-assistant") |> render_click()
+      pid = attach(context, alert, view)
+      script_prepared_turn(context, extra: %{"cause" => "weather"})
+
+      view
+      |> element("#agent-composer")
+      |> render_submit(%{"agent" => %{"message" => @note}})
+
+      assert_receive {:agent_event, ^pid, {:entry, %{applied?: true}}}, 5_000
+
+      {:ok, arrived, _html} = live(editor_conn(context), message_path(context, alert))
+
+      assert {:ok, kept} = Alerts.get_alert(context.audit, alert.id)
+      assert kept.cause == :weather
+      assert kept.message.header == @header
+      refute has_element?(arrived, "#review-wording")
+    end
+
     test "the card reads as applied and offers nothing to review again", context do
       alert = alert_fixture(context.audit, %{"urgency" => "now"})
 
@@ -378,16 +439,21 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
   # and the sentence that settles it.
   defp script_prepared_turn(context, opts \\ []) do
     arguments =
-      Jason.encode!(%{
-        "urgency" => "now",
-        "situation" => "detour",
-        "scope" => %{
-          "shape" => "route_stops",
-          "route_ids" => [context.route.id],
-          "stop_ids" => [context.skipped.id]
-        },
-        "message" => %{"header" => @header, "description" => @description}
-      })
+      Jason.encode!(
+        Map.merge(
+          %{
+            "urgency" => "now",
+            "situation" => "detour",
+            "scope" => %{
+              "shape" => "route_stops",
+              "route_ids" => [context.route.id],
+              "stop_ids" => [context.skipped.id]
+            },
+            "message" => %{"header" => @header, "description" => @description}
+          },
+          Keyword.get(opts, :extra, %{})
+        )
+      )
 
     Req.Test.expect(@owner, 1, fn conn ->
       respond(conn, tool_calls_reply([{"call_1", "propose_changes", arguments}]))
