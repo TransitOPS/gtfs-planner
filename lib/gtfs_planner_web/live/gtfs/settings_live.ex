@@ -101,7 +101,11 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
       slug: "alerts",
       title: "Alerts",
       summary:
-        "The wording your organization uses for alerts: message scripts and writing guidelines."
+        "The wording your organization uses for alerts: message scripts and writing guidelines.",
+      # Alert settings are organization-owned and moved out of the version's own
+      # path, so this entry points at the page that now owns them rather than at
+      # the version's Settings path that redirects there.
+      path: "/alerts/settings"
     },
     %{
       key: :garages,
@@ -454,7 +458,9 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
       key: page.key,
       title: page.title,
       summary: page.summary,
-      path: ~p"/gtfs/#{version_id}/settings/#{page.slug}",
+      # An entry may name its own destination (the organization-owned Alerts page
+      # does); otherwise the verified version-scoped Settings route builds it.
+      path: Map.get(page, :path) || ~p"/gtfs/#{version_id}/settings/#{page.slug}",
       status: :active
     }
   end

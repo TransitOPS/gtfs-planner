@@ -84,7 +84,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
     setup :log_in_editor
 
     test "it asks for the situation and writes nothing until it is sent", context do
-      {:ok, view, _html} = live(context.conn, new_assistant_path(context))
+      {:ok, view, _html} = live(context.conn, new_assistant_path())
 
       assert has_element?(view, "#alert-assistant")
       assert has_element?(view, "#alert-assistant-start-title", "Describe the situation")
@@ -107,7 +107,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
     end
 
     test "a sample situation fills the note instead of sending it", context do
-      {:ok, view, _html} = live(context.conn, new_assistant_path(context))
+      {:ok, view, _html} = live(context.conn, new_assistant_path())
 
       assert has_element?(view, "#alert-assistant-example-1", @sample)
 
@@ -123,7 +123,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
       # because this case is about what the start card does before the interview.
       Req.Test.stub(@owner, fn conn -> respond(conn, text_reply(@interview_text)) end)
 
-      {:ok, view, _html} = live(context.conn, new_assistant_path(context))
+      {:ok, view, _html} = live(context.conn, new_assistant_path())
 
       view
       |> element("#alert-assistant-form")
@@ -133,7 +133,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
 
       assert_redirect(
         view,
-        "/gtfs/#{context.version.id}/alerts/#{alert.id}?mode=assistant&step=urgency"
+        "/alerts/#{alert.id}?mode=assistant&step=urgency"
       )
 
       assert alert.revision == 1
@@ -148,7 +148,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
     end
 
     test "a blank note creates nothing", context do
-      {:ok, view, _html} = live(context.conn, new_assistant_path(context))
+      {:ok, view, _html} = live(context.conn, new_assistant_path())
 
       assert view
              |> element("#alert-assistant-form")
@@ -164,7 +164,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
     test "is applied through save_draft, and the preview shows what it wrote", context do
       alert = alert_fixture(context.audit, %{"urgency" => "now"})
 
-      {:ok, view, _html} = live(context.conn, assistant_path(context, alert))
+      {:ok, view, _html} = live(context.conn, assistant_path(alert))
 
       assert has_element?(view, "#alert-assistant-panel")
       assert has_element?(view, "#agent-composer-input")
@@ -203,7 +203,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
       alert = alert_with_answers(context)
 
       # Arriving at the message step generates wording marked as the script's.
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       assert {:ok, generated} = Alerts.get_alert(context.audit, alert.id)
       assert generated.message.customized == false
@@ -227,7 +227,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
                  "cause" => "weather"
                })
 
-      {:ok, arrived, _html} = live(editor_conn(context), message_path(context, alert))
+      {:ok, arrived, _html} = live(editor_conn(context), message_path(alert))
 
       assert {:ok, kept} = Alerts.get_alert(context.audit, alert.id)
       assert kept.message.header == @header
@@ -239,7 +239,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
          context do
       alert = alert_with_answers(context)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       view |> element("#draft-with-assistant") |> render_click()
       pid = attach(context, alert, view)
@@ -251,7 +251,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
 
       assert_receive {:agent_event, ^pid, {:entry, %{applied?: true}}}, 5_000
 
-      {:ok, arrived, _html} = live(editor_conn(context), message_path(context, alert))
+      {:ok, arrived, _html} = live(editor_conn(context), message_path(alert))
 
       assert {:ok, kept} = Alerts.get_alert(context.audit, alert.id)
       assert kept.cause == :weather
@@ -262,7 +262,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
     test "the card reads as applied and offers nothing to review again", context do
       alert = alert_fixture(context.audit, %{"urgency" => "now"})
 
-      {:ok, view, _html} = live(context.conn, assistant_path(context, alert))
+      {:ok, view, _html} = live(context.conn, assistant_path(alert))
       pid = attach(context, alert, view)
       script_prepared_turn(context)
 
@@ -280,7 +280,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
          context do
       alert = alert_fixture(context.audit, %{"urgency" => "now"})
 
-      {:ok, view, _html} = live(context.conn, assistant_path(context, alert))
+      {:ok, view, _html} = live(context.conn, assistant_path(alert))
       pid = attach(context, alert, view)
 
       # The settling reply waits for this test, so the newer save below is
@@ -332,10 +332,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
       first = alert_fixture(context.audit, %{"urgency" => "now"})
       second = alert_fixture(context.audit, %{"urgency" => "planned"})
 
-      {:ok, first_view, _html} = live(context.conn, assistant_path(context, first))
+      {:ok, first_view, _html} = live(context.conn, assistant_path(first))
       first_conversation = socket_assigns(first_view).agent_conversation_id
 
-      {:ok, view, _html} = live(editor_conn(context), assistant_path(context, second))
+      {:ok, view, _html} = live(editor_conn(context), assistant_path(second))
       refute socket_assigns(view).agent_conversation_id == first_conversation
 
       # The message the panel hands over for the alert this editor has since
@@ -360,7 +360,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
     test "the mode control says so and the form still saves", context do
       alert = alert_fixture(context.audit, %{"urgency" => "now", "situation" => "detour"})
 
-      {:ok, view, _html} = live(context.conn, assistant_path(context, alert))
+      {:ok, view, _html} = live(context.conn, assistant_path(alert))
       pid = attach(context, alert, view)
 
       Req.Test.expect(@owner, 1, fn conn -> unavailable(conn) end)
@@ -401,7 +401,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
     test "Draft with assistant opens assistant mode with the request in the composer", context do
       alert = alert_with_answers(context)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       assert has_element?(view, "#draft-with-assistant", "Draft with assistant")
       assert has_element?(view, "#alert-form")
@@ -501,14 +501,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
     log_in_user(build_conn(), context.actor, organization: context.organization)
   end
 
-  defp new_assistant_path(context),
-    do: "/gtfs/#{context.version.id}/alerts/new?mode=assistant"
+  defp new_assistant_path,
+    do: "/alerts/new?mode=assistant"
 
-  defp assistant_path(context, alert),
-    do: "/gtfs/#{context.version.id}/alerts/#{alert.id}?mode=assistant"
+  defp assistant_path(alert),
+    do: "/alerts/#{alert.id}?mode=assistant"
 
-  defp message_path(context, alert),
-    do: "/gtfs/#{context.version.id}/alerts/#{alert.id}?mode=form&step=message"
+  defp message_path(alert),
+    do: "/alerts/#{alert.id}?mode=form&step=message"
 
   defp session_pid(view), do: socket_assigns(view).agent_session
 

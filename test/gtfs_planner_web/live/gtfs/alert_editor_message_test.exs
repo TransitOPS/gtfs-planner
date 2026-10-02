@@ -71,7 +71,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
     test "a detour's own scripts come first, and choosing one fills the text from the facts",
          context do
       alert = detour_alert(context)
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       # Arriving with wording of nobody's own generates what a script would
       # produce, so the reader starts from a sentence rather than from a blank
@@ -111,7 +111,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
 
     test "arriving opens the wording, with the scripts behind the chooser", context do
       alert = detour_alert(context)
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       # The step is opened by URL as often as it is reached by Continue, so the
       # wording has to be what a fresh load shows rather than whatever the last
@@ -127,7 +127,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
 
     test "a script the chooser never offered stores nothing", context do
       alert = detour_alert(context)
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       revision = revision(context, alert)
 
@@ -150,7 +150,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
         })
 
       alert = detour_alert(context)
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       view |> element("#browse-scripts") |> render_click()
 
@@ -176,7 +176,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
     test "editing the header marks it customized, and a later fact change asks about it",
          context do
       alert = detour_alert(context)
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       render_change(view, "autosave", %{
         "alert" => %{"message" => %{"header" => "Route 1 detour overnight"}}
@@ -188,13 +188,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
 
       # The answers change under the wording: the stretch it skips is a
       # different one, which changes the stop facts the text was generated from.
-      render_patch(view, stops_path(context, alert))
+      render_patch(view, stops_path(alert))
       assert has_element?(view, "#alert-stops-list")
 
       view |> element("#alert-stop-#{context.middle.id}") |> render_click()
       view |> element("#alert-stop-#{context.first.id}") |> render_click()
 
-      render_patch(view, message_path(context, alert))
+      render_patch(view, message_path(alert))
 
       # The wording is still the operator's, and the change is reported rather
       # than applied (FH-22).
@@ -208,16 +208,16 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
 
     test "#use-generated-text replaces the text with the regenerated version", context do
       alert = detour_alert(context)
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       render_change(view, "autosave", %{
         "alert" => %{"message" => %{"header" => "Route 1 detour overnight"}}
       })
 
-      render_patch(view, stops_path(context, alert))
+      render_patch(view, stops_path(alert))
       view |> element("#alert-stop-#{context.middle.id}") |> render_click()
       view |> element("#alert-stop-#{context.first.id}") |> render_click()
-      render_patch(view, message_path(context, alert))
+      render_patch(view, message_path(alert))
 
       assert has_element?(view, "#review-wording")
 
@@ -242,15 +242,15 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
 
     test "saying the wording was checked keeps it and records the acknowledgement", context do
       alert = detour_alert(context)
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       render_change(view, "autosave", %{
         "alert" => %{"message" => %{"header" => "Route 1 detour overnight"}}
       })
 
-      render_patch(view, stops_path(context, alert))
+      render_patch(view, stops_path(alert))
       view |> element("#alert-stop-#{context.first.id}") |> render_click()
-      render_patch(view, message_path(context, alert))
+      render_patch(view, message_path(alert))
 
       assert has_element?(view, "#review-wording")
 
@@ -264,16 +264,16 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
       refute has_element?(view, "#review-wording")
 
       # A later change asks again rather than being answered once for all.
-      render_patch(view, stops_path(context, alert))
+      render_patch(view, stops_path(alert))
       view |> element("#alert-stop-#{context.middle.id}") |> render_click()
-      render_patch(view, message_path(context, alert))
+      render_patch(view, message_path(alert))
 
       assert has_element?(view, "#review-wording")
     end
 
     test "arriving again regenerates generated wording whose facts changed", context do
       alert = detour_alert(context)
-      {:ok, _view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, _view, _html} = live(context.conn, message_path(alert))
 
       # The wording was generated on arrival and nobody has touched it. The
       # skipped stops change under it before the editor comes back.
@@ -286,7 +286,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
                  "scope" => %{"stop_ids" => [context.middle.id, context.last.id]}
                })
 
-      {:ok, reloaded, _html} = live(context.conn, message_path(context, alert))
+      {:ok, reloaded, _html} = live(context.conn, message_path(alert))
 
       # Returning to the step reads the stops as they are now, not the ones the
       # text was generated from.
@@ -308,7 +308,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
                  "message" => %{"description" => "Written by someone else."}
                })
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       assert {:ok, unchanged} = Alerts.get_alert(context.audit, alert.id)
       assert unchanged.revision == written.revision
@@ -318,7 +318,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
 
     test "arriving again never regenerates wording the operator wrote", context do
       alert = detour_alert(context)
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       render_change(view, "autosave", %{
         "alert" => %{"message" => %{"header" => "Route 1 detour overnight"}}
@@ -326,7 +326,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
 
       # A full reload of the row, with the same answers as before: nothing has
       # changed, so nothing is regenerated and the wording survives the page.
-      {:ok, reloaded, _html} = live(context.conn, message_path(context, alert))
+      {:ok, reloaded, _html} = live(context.conn, message_path(alert))
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
       assert saved.message.header == "Route 1 detour overnight"
@@ -340,7 +340,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
 
     test "a header over 60 characters is advised about and still saves", context do
       alert = detour_alert(context)
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       header = String.duplicate("a", 61)
 
@@ -370,7 +370,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
 
     test "the checks report the description's missing timing without blocking", context do
       alert = delay_alert(context)
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       # The delay script asks for the minutes, and this alert has none, so the
       # header names the fact it could not fill rather than claiming a number.
@@ -380,7 +380,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
 
     test "markup in the wording is advised about and the text is kept as typed", context do
       alert = detour_alert(context)
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       render_change(view, "autosave", %{
         "alert" => %{"message" => %{"header" => "Route 1 <b>detour</b>"}}
@@ -403,7 +403,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
     test "the recommended guidelines are shown until the organization stores its own",
          context do
       alert = detour_alert(context)
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       assert has_element?(view, "#message-guidelines")
       assert has_element?(view, "#message-guidelines-body", "Aim for 60 characters or fewer")
@@ -411,7 +411,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
       {:ok, _settings} =
         Alerts.save_guidelines(context.audit, "Start with the route and the change.", 0)
 
-      {:ok, reloaded, _html} = live(context.conn, message_path(context, alert))
+      {:ok, reloaded, _html} = live(context.conn, message_path(alert))
 
       assert has_element?(
                reloaded,
@@ -519,11 +519,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
     }
   end
 
-  defp message_path(context, alert),
-    do: "/gtfs/#{context.version.id}/alerts/#{alert.id}?step=message"
+  defp message_path(alert),
+    do: "/alerts/#{alert.id}?step=message"
 
-  defp stops_path(context, alert),
-    do: "/gtfs/#{context.version.id}/alerts/#{alert.id}?step=stops"
+  defp stops_path(alert),
+    do: "/alerts/#{alert.id}?step=stops"
 
   # The names the script list shows, read from the list itself rather than from
   # `Alerts.list_scripts/1`, so the ordering the reader sees is the ordering

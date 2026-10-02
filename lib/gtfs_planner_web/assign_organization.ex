@@ -12,11 +12,17 @@ defmodule GtfsPlannerWeb.AssignOrganization do
   Required mode (`:default`) redirects to login when organization context
   is missing or invalid. Optional mode (`:optional`) always continues with
   an explicit `organization_context_status` and safe nil/empty defaults when
-  tenant context is unavailable.
+  tenant context is unavailable. Organization-required mode
+  (`:organization_required`) is `:default` plus the explicit unavailable state
+  for the organization-owned Alerts routes, which a system administrator may
+  reach without an organization in context.
 
   Administrators (system-scoped users) bypass the organization requirement,
   unless the session names an organization where they also hold an
-  organization role: then they get that organization's context like any member.
+  organization role: then they get that organization's context like any member -
+  and every bypass assigns the same explicit nil/empty shape optional mode
+  assigns, so a page that reads `current_organization` sees "no organization"
+  rather than a missing key.
   """
 
   import Phoenix.LiveView, only: [put_flash: 3, redirect: 2, attach_hook: 4]
@@ -37,6 +43,8 @@ defmodule GtfsPlannerWeb.AssignOrganization do
   ## Parameters
     - :default: Required organization context (existing admin/GTFS routes)
     - :optional: Account routes that tolerate missing/stale context
+    - :organization_required: Organization-owned routes that need an
+      organization and say so explicitly when there is none
     - _params: The route parameters (unused)
     - session: The session containing the organization_id
     - socket: The LiveView socket
@@ -45,17 +53,41 @@ defmodule GtfsPlannerWeb.AssignOrganization do
     - `{:cont, socket}` with organization/version assigns when authorized
     - `{:cont, socket}` without organization if user is administrator (required)
     - `{:cont, socket}` with complete safe shape and status (optional)
+    - `{:cont, socket}` with complete safe shape and status for a system
+      administrator with no organization in context (organization_required)
     - `{:halt, socket}` with flash error and redirect on required failures
       or deactivated membership
   """
-  @spec on_mount(:default | :optional, map(), map(), Phoenix.LiveView.Socket.t()) ::
+  @spec on_mount(
+          :default | :optional | :organization_required,
+          map(),
+          map(),
+          Phoenix.LiveView.Socket.t()
+        ) ::
           {:cont, Phoenix.LiveView.Socket.t()} | {:halt, Phoenix.LiveView.Socket.t()}
   def on_mount(:default, _params, session, socket) do
     current_user = socket.assigns[:current_user]
 
     # Administrator bypass - administrators don't need organization context
     if administrator_without_working_organization?(current_user, session) do
-      {:cont, socket}
+      {:cont, assign_safe_defaults(socket, :system_administrator)}
+    else
+      assign_organization_required(session, socket)
+    end
+  end
+
+  # Alerts is organization-owned, so this mode needs an organization in context
+  # the way `:default` does - including for a system administrator who has one
+  # selected. What it adds is the outcome the contract names for the one case
+  # `:default` lets through: a member authenticated without an organization gets
+  # the explicit unavailable state instead of a mount that reads a key that was
+  # never assigned. Both modes read the same rule, so an administrator who works
+  # in the session's organization is treated as that organization's member.
+  def on_mount(:organization_required, _params, session, socket) do
+    current_user = socket.assigns[:current_user]
+
+    if administrator_without_working_organization?(current_user, session) do
+      {:cont, assign_safe_defaults(socket, :system_administrator)}
     else
       assign_organization_required(session, socket)
     end

@@ -68,7 +68,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       alert = now_alert(context)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+        live(context.conn, edit_path(alert) <> "?step=timing")
 
       assert has_element?(view, "#alert-question-title", "When should this alert end?")
 
@@ -113,7 +113,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       alert = now_alert(context)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+        live(context.conn, edit_path(alert) <> "?step=timing")
 
       view |> element("#alert-timing-end-kind-confirmed") |> render_click()
 
@@ -140,7 +140,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
                })
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+        live(context.conn, edit_path(alert) <> "?step=timing")
 
       # The stored time never equals one of the offsets, which are measured from
       # a clock that moves on, so it is its own option and the selected one.
@@ -157,7 +157,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       alert = now_alert(context)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+        live(context.conn, edit_path(alert) <> "?step=timing")
 
       view |> render_click("choose_end_kind", %{"end_kind" => "whenever"})
 
@@ -174,7 +174,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       alert = planned_alert(context)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+        live(context.conn, edit_path(alert) <> "?step=timing")
 
       assert has_element?(view, "#alert-question-title", "When will service change?")
 
@@ -218,7 +218,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       alert = planned_alert(context)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+        live(context.conn, edit_path(alert) <> "?step=timing")
 
       view |> element("#alert-timing-pattern-continuous") |> render_click()
 
@@ -252,7 +252,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       alert = planned_alert(context)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+        live(context.conn, edit_path(alert) <> "?step=timing")
 
       view |> element("#alert-timing-pattern-continuous") |> render_click()
 
@@ -271,7 +271,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       alert = planned_alert(context)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+        live(context.conn, edit_path(alert) <> "?step=timing")
 
       view |> element("#alert-timing-pattern-continuous") |> render_click()
       put_timing(view, %{"first_date" => "2026-10-09", "last_date" => "2026-10-05"})
@@ -289,7 +289,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       alert = planned_alert(context)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+        live(context.conn, edit_path(alert) <> "?step=timing")
 
       view |> element("#alert-timing-pattern-weekly") |> render_click()
       choose_weekdays(view, 1..5)
@@ -323,7 +323,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       alert = planned_alert(context)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+        live(context.conn, edit_path(alert) <> "?step=timing")
 
       view |> element("#alert-timing-pattern-weekly") |> render_click()
       choose_weekdays(view, 1..5)
@@ -344,7 +344,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       alert = planned_alert(context)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+        live(context.conn, edit_path(alert) <> "?step=timing")
 
       view |> element("#alert-timing-pattern-weekly") |> render_click()
       choose_weekdays(view, 1..5)
@@ -375,7 +375,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       alert = planned_alert(context)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+        live(context.conn, edit_path(alert) <> "?step=timing")
 
       view |> element("#alert-timing-pattern-weekly") |> render_click()
 
@@ -404,7 +404,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       alert = planned_alert(context)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+        live(context.conn, edit_path(alert) <> "?step=timing")
 
       view |> element("#alert-timing-pattern-weekly") |> render_click()
       choose_weekdays(view, 1..5)
@@ -433,7 +433,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       alert = planned_alert(context)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+        live(context.conn, edit_path(alert) <> "?step=timing")
 
       view |> element("#alert-timing-pattern-weekly") |> render_click()
       choose_weekdays(view, 1..5)
@@ -459,7 +459,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       alert = planned_alert(context)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+        live(context.conn, edit_path(alert) <> "?step=timing")
 
       view |> element("#alert-timing-continue") |> render_click()
 
@@ -480,7 +480,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       alert = planned_alert(context)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+        live(context.conn, edit_path(alert) <> "?step=timing")
 
       view |> element("#alert-timing-pattern-weekly") |> render_click()
       choose_weekdays(view, 1..5)
@@ -502,7 +502,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       alert = planned_alert(context)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+        live(context.conn, edit_path(alert) <> "?step=timing")
 
       view |> element("#alert-timing-pattern-weekly") |> render_click()
       put_timing(view, %{"first_date" => Date.to_iso8601(@first_date)})
@@ -521,7 +521,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       alert = planned_alert(context)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=timing")
+        live(context.conn, edit_path(alert) <> "?step=timing")
 
       view |> element("#alert-timing-pattern-weekly") |> render_click()
       choose_weekdays(view, 1..7)
@@ -599,7 +599,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
     }
   end
 
-  defp edit_path(version, alert), do: "/gtfs/#{version.id}/alerts/#{alert.id}"
+  defp edit_path(alert), do: "/alerts/#{alert.id}"
 
   defp audit_context(organization, version, actor) do
     %AuditContext{

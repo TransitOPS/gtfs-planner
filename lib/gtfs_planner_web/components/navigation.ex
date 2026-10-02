@@ -10,19 +10,25 @@ defmodule GtfsPlannerWeb.Navigation do
   import GtfsPlannerWeb.UserAuth, only: [is_administrator?: 1]
 
   # The main task areas in the information architecture's order. Each entry is
-  # `{link key, {label, families}}`, where the families are the path segments
-  # under `/gtfs/:version` that mark the link current and the first family is
-  # also the link's own destination. GTFS holds Export and Import, whose pages
-  # carry their own tabs.
+  # `{link key, {label, families, scope}}`, where the families are the path
+  # segments that mark the link current, the first family is also the link's own
+  # destination, and the scope says which context the destination needs:
+  # `:organization` for the areas the organization owns, `:version` for the
+  # areas a selected service version owns. GTFS holds Export and Import, whose
+  # pages carry their own tabs.
   defp main_tasks do
     [
-      routes: {"Routes", ["routes", "transfers"]},
-      stops: {"Stops", ["stops"]},
-      calendars: {"Calendars", ["calendars"]},
-      alerts: {"Alerts", ["alerts"]},
-      flex: {"Flex", ["flex"]},
-      operations: {"Operations", ["blocks", "runs", "rosters"]},
-      gtfs: {"GTFS", ["export", "import", "validation", "station-reachability"]}
+      # The order, labels and route families are the ones main declares; what the
+      # branch adds is the scope each task needs. Alerts is organization-owned and
+      # its destination carries no version, so it is the one task an editor
+      # reaches before any service version exists.
+      routes: {"Routes", ["routes", "transfers"], :version},
+      stops: {"Stops", ["stops"], :version},
+      calendars: {"Calendars", ["calendars"], :version},
+      alerts: {"Alerts", ["alerts"], :organization},
+      flex: {"Flex", ["flex"], :version},
+      operations: {"Operations", ["blocks", "runs", "rosters"], :version},
+      gtfs: {"GTFS", ["export", "import", "validation", "station-reachability"], :version}
     ]
   end
 
@@ -50,7 +56,10 @@ defmodule GtfsPlannerWeb.Navigation do
 
   Task links are label-only and carry the design system's selection tint on the
   current area; each task owns its path family, so `/gtfs/:version/runs` marks
-  Operations and `/gtfs/:version/import` marks GTFS.
+  Operations and `/gtfs/:version/import` marks GTFS. Alerts is
+  organization-owned, so its link is `/alerts` and it appears for an editor who
+  has an organization but no selected service version, which is the context a
+  new organization with no schedule starts in (AC-8).
 
   ## Attributes
 
@@ -80,10 +89,12 @@ defmodule GtfsPlannerWeb.Navigation do
     assigns =
       assign(assigns,
         show_tasks:
+          has_role?(assigns.user_roles, :pathways_studio_editor) && assigns.current_organization,
+        show_version_tasks:
           has_role?(assigns.user_roles, :pathways_studio_editor) &&
             assigns.current_organization && assigns.current_gtfs_version,
         visible_tasks:
-          Enum.filter(main_tasks(), fn {key, _label_families} ->
+          Enum.filter(main_tasks(), fn {key, _label_families_scope} ->
             GtfsPlannerWeb.ProductSurfaces.visible?(assigns.current_organization, key)
           end)
       )
@@ -108,18 +119,38 @@ defmodule GtfsPlannerWeb.Navigation do
       <% end %>
 
       <.link
-        :for={{key, {label, families}} <- @visible_tasks}
-        :if={@show_tasks}
+        :for={{key, {label, families, scope}} <- @visible_tasks}
+        :if={task_visible?(assigns, scope)}
         id={"nav-#{key}"}
-        navigate={"/gtfs/#{@current_gtfs_version.id}/#{hd(families)}"}
+        navigate={task_path(key, families, @current_gtfs_version)}
         class={task_link_class()}
-        aria-current={gtfs_family_active?(@current_path, families) && "page"}
+        aria-current={task_active?(@current_path, key, families) && "page"}
       >
         {label}
       </.link>
     </nav>
     """
   end
+
+  # A task appears when the viewer can be in its context: a version-owned task
+  # needs the selected version, an organization-owned task only needs the
+  # organization. Both need the editor role and an organization to belong to.
+  defp task_visible?(assigns, :version), do: assigns.show_version_tasks
+  defp task_visible?(assigns, :organization), do: assigns.show_tasks
+
+  defp task_path(:alerts, ["alerts" | _rest], _current_gtfs_version), do: "/alerts"
+
+  defp task_path(_key, [family | _rest], current_gtfs_version),
+    do: "/gtfs/#{current_gtfs_version.id}/#{family}"
+
+  # Alerts is current on the organization path it owns, `/alerts…`, and on
+  # nothing else: the version's own `/gtfs/:version/settings/alerts` page was
+  # never the Alerts list and must not mark the task current.
+  defp task_active?(current_path, :alerts, ["alerts"]),
+    do: path_family_active?(current_path, ["alerts"])
+
+  defp task_active?(current_path, _key, families),
+    do: gtfs_family_active?(current_path, families)
 
   @doc """
   Renders the account menu: a trigger showing the user's initials that opens a

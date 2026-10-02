@@ -49,7 +49,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
     setup :editor_conn
 
     test "renders the page with Create alert and Alerts current in the navigation", context do
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       assert has_element?(view, "#alerts-page")
       assert has_element?(view, "#create-alert-first-use", "Create alert")
@@ -60,7 +60,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
       _incomplete = incomplete(context)
       {:ok, _current} = current_delay(context)
 
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       assert has_element?(view, "#alerts-tabs[role='tablist'] #alerts-tab-current[role='tab']")
       assert has_element?(view, "#alerts-tab-current[data-count='1']")
@@ -74,7 +74,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
       {:ok, current} = current_delay(context)
 
       {:ok, view, _html} =
-        live(context.conn, alerts_path(context.version) <> "?tab=in_progress")
+        live(context.conn, alerts_path() <> "?tab=in_progress")
 
       assert has_element?(view, "#alert-row-#{incomplete.id}", "Incomplete")
       refute has_element?(view, "#alert-row-#{current.id}")
@@ -85,7 +85,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
       incomplete = incomplete(context)
       {:ok, current} = current_delay(context)
 
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       assert has_element?(view, "#alert-row-#{current.id}")
       assert has_element?(view, "#alert-card-#{current.id}")
@@ -109,7 +109,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
       {:ok, current} = current_delay(context)
 
       {:ok, view, _html} =
-        live(context.conn, alerts_path(context.version) <> "?tab=nonsense")
+        live(context.conn, alerts_path() <> "?tab=nonsense")
 
       assert has_element?(view, "#alert-row-#{current.id}")
       assert has_element?(view, "#alerts-tab-current[aria-selected='true']")
@@ -131,7 +131,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
           now_timing(context)
         )
 
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       refute has_element?(view, "[data-role='alert-needs-attention']")
 
@@ -139,7 +139,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
       |> Repo.get!(stop.id)
       |> Repo.delete!()
 
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       assert has_element?(view, "[data-role='alert-needs-attention']", "Needs attention")
     end
@@ -167,7 +167,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
           timing
         )
 
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       assert has_element?(view, "[data-role='alert-check-in-due']", "Check-in due")
     end
@@ -189,7 +189,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
           now_timing(context)
         )
 
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       assert has_element?(view, "#alerts-list", "All routes")
       assert has_element?(view, "#alerts-list", "1 stop")
@@ -228,7 +228,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
           now_timing(context)
         )
 
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       # The paired route is affected at the stop, so the row names it beside the
       # route the editor chose.
@@ -241,13 +241,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
       {:ok, current} = current_delay(context)
 
       {:ok, view, _html} =
-        live(context.conn, alerts_path(context.version) <> "?tab=in_progress")
+        live(context.conn, alerts_path() <> "?tab=in_progress")
 
       assert has_element?(view, "#alert-row-#{draft.id}", "Incomplete")
       refute has_element?(view, "#alert-row-#{draft.id}", "All routes")
 
       # An alert that chose the whole system still reads All routes.
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       assert has_element?(view, "#alert-row-#{current.id}", "All routes")
     end
@@ -255,7 +255,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
     test "the page carries no publication state or action", context do
       {:ok, _current} = current_delay(context)
 
-      {:ok, _view, html} = live(context.conn, alerts_path(context.version))
+      {:ok, _view, html} = live(context.conn, alerts_path())
       text = LazyHTML.text(LazyHTML.from_fragment(html))
 
       for word <- @publication_copy do
@@ -266,7 +266,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
     test "the mobile rows carry the same words as the table", context do
       {:ok, current} = current_delay(context)
 
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       assert has_element?(
                view,
@@ -282,7 +282,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
     setup :editor_conn
 
     test "an organization with no alerts gets the first-use panel", context do
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       assert has_element?(view, "#alerts-first-use", "No alerts yet")
       assert has_element?(view, "#create-alert-first-use", "Create alert")
@@ -293,7 +293,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
     test "an empty tab gets its own message rather than the first-use panel", context do
       {:ok, _current} = current_delay(context)
 
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version) <> "?tab=upcoming")
+      {:ok, view, _html} = live(context.conn, alerts_path() <> "?tab=upcoming")
 
       refute has_element?(view, "#alerts-first-use")
       assert has_element?(view, "#alerts-tab-empty-upcoming", "Nothing is planned yet")
@@ -310,7 +310,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
 
       conn = log_in_user(build_conn(), actor, organization: pathways)
 
-      {:ok, view, _html} = live(conn, alerts_path(version))
+      {:ok, view, _html} = live(conn, alerts_path())
 
       assert has_element?(view, "#main-navigation #nav-alerts", "Alerts")
     end
@@ -320,11 +320,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
       # UTC for the list's tabs and times.
       pathways = organization_fixture(%{product: :pathways})
       actor = editor_fixture(pathways)
-      version = gtfs_version_fixture(pathways.id)
+      gtfs_version_fixture(pathways.id)
 
       conn = log_in_user(build_conn(), actor, organization: pathways)
 
-      {:ok, view, _html} = live(conn, alerts_path(version))
+      {:ok, view, _html} = live(conn, alerts_path())
 
       assert has_element?(view, "#alerts-first-use", "No alerts yet")
       assert has_element?(view, "#create-alert-first-use", "Create alert")
@@ -335,7 +335,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
       organization_membership_fixture(viewer, context.organization, [])
       conn = log_in_user(build_conn(), viewer, organization: context.organization)
 
-      assert {:error, {:redirect, %{to: path}}} = live(conn, alerts_path(context.version))
+      assert {:error, {:redirect, %{to: path}}} = live(conn, alerts_path())
       assert path == "/admin/organizations"
     end
   end
@@ -349,7 +349,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
     }
   end
 
-  defp alerts_path(version), do: "/gtfs/#{version.id}/alerts"
+  defp alerts_path, do: "/alerts"
 
   # The agency's own date, because the tabs are grouped on it rather than on
   # UTC's (CR-7).

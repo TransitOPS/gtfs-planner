@@ -19,7 +19,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
 
   A row's title navigates to `/alerts/:id`, and Create alert to `/alerts/new`.
   Both are `AlertEditorLive`'s routes, so they are live navigations rather than
-  patches of this page.
+  patches of this page. None of them carries a version: the list is reachable
+  from the organization navigation before the organization has any schedule at
+  all, which is why the audit context's version is the navbar's when there is
+  one and `nil` when there is none (AC-8).
   """
 
   use GtfsPlannerWeb, :live_view
@@ -54,7 +57,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
     service_change: "Service change"
   }
 
-  on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+  on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access_in_organization}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -79,7 +82,27 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
 
   # The whole page is one read. The four counts come from the same map the rows
   # do, so a tab can never show a count its own rows contradict.
+  #
+  # A reader with no organization in context - a system administrator who has
+  # none selected - sees the explicit unavailable state. `AssignOrganization`
+  # assigns it rather than halting, because this page is the destination the
+  # organization navigation offers and a page that answers "not here" is a
+  # truthful answer where a mount that reads a missing assign is not.
   defp load_alerts(socket, tab) do
+    case socket.assigns[:current_organization] do
+      nil ->
+        socket
+        |> assign(:alerts_state, :organization_required)
+        |> assign(:alerts_empty?, true)
+        |> stream(:alerts, [], reset: true)
+        |> stream(:alerts_mobile, [], reset: true)
+
+      _organization ->
+        load_alerts_for_organization(socket, tab)
+    end
+  end
+
+  defp load_alerts_for_organization(socket, tab) do
     audit_context = audit_context(socket)
 
     case Alerts.list_alerts(audit_context, DateTime.utc_now()) do
@@ -149,11 +172,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
 
     Enum.map(rows, fn row ->
       {today, local_change} = Map.fetch!(stamps, row.alert.id)
-      prepare_row(row, local_change, today, socket, emails, routes)
+      prepare_row(row, local_change, today, emails, routes)
     end)
   end
 
-  defp prepare_row(row, local_change, socket, today, emails, routes) do
+  defp prepare_row(row, local_change, today, emails, routes) do
     alert = row.alert
     referenced = Alerts.Listing.referenced_ids(alert)
 
@@ -163,7 +186,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
       # tab change, reset) the elements a stream inserted.
       id: alert.id,
       alert: alert,
-      alert_path: "/gtfs/#{socket.assigns.current_gtfs_version.id}/alerts/#{alert.id}",
+      alert_path: "/alerts/#{alert.id}",
       title: alert_title(alert),
       situation_label: Map.get(@situations, alert.situation),
       # Walking the stored identities keeps the alert's own order and drops an
@@ -255,13 +278,25 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
     |> Map.new(fn user_id -> {user_id, Accounts.get_user!(user_id).email} end)
   end
 
+  # The version is the navbar's when the organization has one and `nil` when it
+  # does not. Alerts belongs to the organization, so the list, its labels and
+  # its change stamps are organization-scoped either way; the version only names
+  # the schedule an alert was written against, and an organization with no
+  # schedule has none to name (AC-8, AC-10).
   defp audit_context(socket) do
     %AuditContext{
       organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      gtfs_version_id: selected_version_id(socket),
       actor_id: socket.assigns.current_user.id,
       actor_email: socket.assigns.current_user.email
     }
+  end
+
+  defp selected_version_id(socket) do
+    case socket.assigns[:current_gtfs_version] do
+      %{id: version_id} -> version_id
+      _no_version -> nil
+    end
   end
 
   # -- Rendering -----------------------------------------------------------
@@ -291,7 +326,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
           <:actions :if={@alerts_state == :ready and not @alerts_empty?}>
             <.link
               id="create-alert"
-              navigate={"/gtfs/#{@current_gtfs_version.id}/alerts/new"}
+              navigate={~p"/alerts/new"}
               class={[
                 "inline-flex min-h-11 items-center gap-2 rounded-control px-4 text-sm font-semibold no-underline",
                 "bg-action text-action-content hover:bg-action-hover"
@@ -301,6 +336,15 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
             </.link>
           </:actions>
         </.header>
+
+        <.message
+          :if={@alerts_state == :organization_required}
+          id="alerts-organization-required"
+          kind="error"
+          title="Alerts need an organization."
+        >
+          Choose an organization to see and write its alerts.
+        </.message>
 
         <.message
           :if={@alerts_state == :unavailable}
@@ -327,7 +371,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
             <:action>
               <.link
                 id="create-alert-first-use"
-                navigate={"/gtfs/#{@current_gtfs_version.id}/alerts/new"}
+                navigate={~p"/alerts/new"}
                 class={[
                   "inline-flex min-h-11 items-center gap-2 rounded-control px-4 text-sm font-semibold no-underline",
                   "bg-action text-action-content hover:bg-action-hover"
@@ -340,7 +384,6 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
 
           <%= if not @alerts_empty? do %>
             <.tabs
-              version_id={@current_gtfs_version.id}
               tab={@tab}
               counts={@counts}
             />

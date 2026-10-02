@@ -74,7 +74,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
   @unknown_built_in_message "That built-in script is not one this app offers."
   @script_deleted_message "Someone deleted this script. Your changes are still here; create script to save them again."
 
-  on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+  on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access_in_organization}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -82,6 +82,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
      socket
      |> assign(:page_title, "Alerts")
      |> assign(:user_roles, socket.assigns[:user_roles] || [])
+     |> assign(:settings_state, :loading)
      |> assign(:tab, :scripts)
      |> assign(:tab_titles, @tab_titles)
      |> assign(:script_count, 0)
@@ -102,12 +103,27 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    socket =
-      socket
-      |> assign(:tab, tab(params))
-      |> refresh_scripts()
+    socket = assign(socket, :tab, tab(params))
 
-    {:noreply, load_guidelines(socket)}
+    case socket.assigns[:current_organization] do
+      # An editor with no organization in context - a system administrator who
+      # has none selected - reaches the explicit unavailable state. This page is
+      # the organization's wording, and there is nothing to read without one.
+      nil ->
+        {:noreply,
+         socket
+         |> assign(:settings_state, :organization_required)
+         |> assign(:script_notice, nil)
+         |> assign(:guidelines_notice, nil)
+         |> stream(:scripts, [], reset: true)}
+
+      _organization ->
+        {:noreply,
+         socket
+         |> assign(:settings_state, :ready)
+         |> refresh_scripts()
+         |> load_guidelines()}
+    end
   end
 
   # The guidelines are read on every arrival, including a tab that does not show
@@ -117,34 +133,6 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
     %{text: text, revision: revision} = Alerts.get_guidelines(audit_context(socket))
 
     store_guidelines(socket, text, revision)
-  end
-
-  @impl true
-  def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
-    current_version_id = to_string(socket.assigns.current_gtfs_version.id)
-
-    if version_id && version_id != current_version_id &&
-         Versions.published_gtfs_version_for_org?(
-           socket.assigns.current_organization.id,
-           version_id
-         ) do
-      {:noreply, push_navigate(socket, to: alerts_path(version_id, socket.assigns.tab))}
-    else
-      {:noreply, socket}
-    end
-  end
-
-  @impl true
-  def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
-    if Versions.published_gtfs_version_for_org?(
-         socket.assigns.current_organization.id,
-         version_id
-       ) do
-      socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
-      {:noreply, push_navigate(socket, to: alerts_path(version_id, socket.assigns.tab))}
-    else
-      {:noreply, socket}
-    end
   end
 
   # -- Scripts ---------------------------------------------------------------
@@ -349,6 +337,37 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
     {:noreply, store_guidelines(socket, text, revision)}
   end
 
+  @impl true
+  def handle_event("gtfs_version_loaded", _params, socket) do
+    # Alerts settings are organization data, so a version in context changes the
+    # navbar and nothing on this page. There is no version here to re-resolve
+    # and no answer to record: the scripts and the guidelines are read from the
+    # organization on every arrival, so a version event simply leaves the page
+    # the reader is on.
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
+    # The same answer for a deliberate switch, plus the navbar's own event so
+    # the switcher stores the selection it now represents. The version is
+    # checked against this organization first, so a forged event cannot put a
+    # version of another tenant into this organization's own context.
+    if owned_version?(socket, version_id) do
+      {:noreply, push_event(socket, "gtfs_version_selected", %{version_id: version_id})}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  defp owned_version?(socket, version_id) do
+    is_binary(version_id) &&
+      Versions.published_gtfs_version_for_org?(
+        socket.assigns.current_organization.id,
+        version_id
+      )
+  end
+
   # The stored document becomes the form's source, so a save or a reload shows
   # what is stored and carries the revision the next save is expected at. A
   # refused save deliberately does not: the reader keeps their own words and the
@@ -477,16 +496,31 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
   defp audit_context(socket) do
     %AuditContext{
       organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      gtfs_version_id: selected_version_id(socket),
       station_stop_id: nil,
       actor_id: socket.assigns.current_user.id,
       actor_email: socket.assigns.current_user.email
     }
   end
 
-  defp alerts_path(version_id, tab), do: "/gtfs/#{version_id}/settings/alerts?tab=#{tab}"
+  defp selected_version_id(socket) do
+    case socket.assigns[:current_gtfs_version] do
+      %{id: version_id} -> version_id
+      _no_version -> nil
+    end
+  end
 
-  defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
+  defp alerts_path(tab), do: "/alerts/settings?tab=#{tab}"
+
+  # Where **Settings** goes back to. The version's own Settings page when the
+  # organization has a version selected, and the organization's alert list when
+  # it does not, because there is no version Settings page to return to there.
+  defp settings_path(current_gtfs_version) do
+    case current_gtfs_version do
+      %{id: version_id} -> "/gtfs/#{version_id}/settings"
+      _no_version -> "/alerts"
+    end
+  end
 
   # -- Rendering -------------------------------------------------------------
 
@@ -503,204 +537,217 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
       available_versions={assigns[:available_versions] || []}
     >
       <div id="alert-settings-page" class="ds-page">
-        <.back_link id="settings-back" navigate={settings_path(@current_gtfs_version.id)}>
+        <.back_link id="settings-back" navigate={settings_path(assigns[:current_gtfs_version])}>
           Settings
         </.back_link>
 
-        <.header>
-          Alerts
-          <:subtitle>
-            Wording everyone in {@current_organization.name} uses for alerts. Changes apply to new
-            alerts.
-            <.scope_line id="alert-settings-scope" icon="hero-square-3-stack-3d">
-              Applies to every service version at {@current_organization.name}. Switching versions
-              doesn't change these scripts or guidelines.
-            </.scope_line>
-          </:subtitle>
-          <:actions :if={@tab == :scripts}>
-            <.button
-              id="create-script"
-              class="min-h-11"
-              phx-click="open_create_script"
-              phx-value-opener_id="create-script"
-            >
-              <.icon name="hero-plus" class="size-4" /> Create script
-            </.button>
-          </:actions>
-        </.header>
-
-        <div
-          id="alert-settings-tabs"
-          role="tablist"
-          aria-label="Alert settings"
-          class="mt-4 flex gap-1 overflow-x-auto border-b border-subtle"
+        <.message
+          :if={@settings_state == :organization_required}
+          id="alert-settings-organization-required"
+          kind="error"
+          title="Alerts need an organization."
         >
-          <.link
-            :for={{key, title} <- @tab_titles}
-            id={"alert-settings-tab-#{key}"}
-            patch={alerts_path(@current_gtfs_version.id, key)}
-            role="tab"
-            aria-selected={to_string(@tab == key)}
-            aria-current={@tab == key && "page"}
-            class={[
-              "-mb-px inline-flex min-h-11 shrink-0 items-center border-b-2 px-3 text-sm font-[650] no-underline",
-              @tab == key && "border-action text-action",
-              @tab != key && "border-transparent text-muted hover:text-strong"
-            ]}
-          >
-            {title}
-          </.link>
-        </div>
+          Choose an organization to see and change its alert wording.
+        </.message>
 
-        <div :if={@tab == :scripts} id="alert-settings-scripts" class="mt-5 grid gap-4">
-          <%!-- While the modal drawer is open the page is inert behind its backdrop,
-                 so a refusal is shown inside the drawer instead. --%>
-          <.message
-            :if={@script_notice && !@script_drawer_open}
-            id="script-notice"
-            kind="info"
-            title={@script_notice}
-          />
-
-          <p id="scripts-intro" class="max-w-[80ch] text-sm text-default">
-            Scripts are your tested wording for common alerts. The form offers the scripts for
-            what's happening, and the fill-ins take their values from the alert. Built-in scripts
-            are read-only; copy one to change it.
-          </p>
-
-          <.scripts_table
-            rows={@streams.scripts}
-            script_count={@script_count}
-            built_in_count={@built_in_count}
-            version_id={@current_gtfs_version.id}
-          />
-        </div>
-
-        <div
-          :if={@tab == :guidelines}
-          id="alert-settings-guidelines"
-          class="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]"
-        >
-          <div class="min-w-0">
-            <.message
-              :if={@guidelines_notice}
-              id="guidelines-notice"
-              kind={if @guidelines_stale?, do: "warning", else: "success"}
-              title={@guidelines_notice}
-            >
-              <:action :if={@guidelines_stale?}>
-                <.button
-                  id="guidelines-reload"
-                  type="button"
-                  variant="secondary"
-                  phx-click="reload_guidelines"
-                >
-                  Reload guidelines
-                </.button>
-              </:action>
-            </.message>
-
-            <section
-              id="guidelines-card"
-              aria-labelledby="guidelines-title"
-              class="overflow-clip rounded-card border border-subtle bg-white"
-            >
-              <div class="flex min-h-[52px] items-center justify-between gap-3 border-b border-subtle px-4 py-1 md:px-5">
-                <h2 id="guidelines-title" class="text-base font-bold text-strong">
-                  Guidelines
-                </h2>
-                <p id="guidelines-revision" class="text-[13px] text-muted">
-                  {revision_label(@guidelines.revision)}
-                </p>
-              </div>
-
-              <.form
-                for={@guidelines_form}
-                id="guidelines-form"
-                novalidate
-                phx-submit="save_guidelines"
-                class="grid gap-4 p-4 md:p-5"
+        <%= if @settings_state != :organization_required do %>
+          <.header>
+            Alerts
+            <:subtitle>
+              Wording everyone in {@current_organization.name} uses for alerts. Changes apply to new
+              alerts.
+              <.scope_line id="alert-settings-scope" icon="hero-square-3-stack-3d">
+                Applies to every service version at {@current_organization.name}. Switching versions
+                doesn't change these scripts or guidelines.
+              </.scope_line>
+            </:subtitle>
+            <:actions :if={@tab == :scripts}>
+              <.button
+                id="create-script"
+                class="min-h-11"
+                phx-click="open_create_script"
+                phx-value-opener_id="create-script"
               >
-                <.input
-                  field={@guidelines_form[:revision]}
-                  type="hidden"
-                />
-                <.input
-                  field={@guidelines_form[:guidelines]}
-                  id="guidelines-text"
-                  type="textarea"
-                  rows="18"
-                  label="Writing guidelines"
-                  help="One guideline per paragraph. The message step checks the wording against these."
-                />
+                <.icon name="hero-plus" class="size-4" /> Create script
+              </.button>
+            </:actions>
+          </.header>
 
-                <div class="flex justify-end">
-                  <.button
-                    id="save-guidelines"
-                    type="submit"
-                    class="min-h-11"
-                    phx-disable-with="Saving…"
-                  >
-                    Save guidelines
-                  </.button>
-                </div>
-              </.form>
-            </section>
+          <div
+            id="alert-settings-tabs"
+            role="tablist"
+            aria-label="Alert settings"
+            class="mt-4 flex gap-1 overflow-x-auto border-b border-subtle"
+          >
+            <.link
+              :for={{key, title} <- @tab_titles}
+              id={"alert-settings-tab-#{key}"}
+              patch={alerts_path(key)}
+              role="tab"
+              aria-selected={to_string(@tab == key)}
+              aria-current={@tab == key && "page"}
+              class={[
+                "-mb-px inline-flex min-h-11 shrink-0 items-center border-b-2 px-3 text-sm font-[650] no-underline",
+                @tab == key && "border-action text-action",
+                @tab != key && "border-transparent text-muted hover:text-strong"
+              ]}
+            >
+              {title}
+            </.link>
           </div>
 
-          <aside class="grid content-start gap-4">
-            <section
-              id="guidelines-apply"
-              aria-labelledby="guidelines-apply-title"
-              class="rounded-card border border-subtle bg-white p-4 sm:p-5"
-            >
-              <h2 id="guidelines-apply-title" class="text-base font-bold tracking-normal text-strong">
-                Where these apply
-              </h2>
-              <p class="mt-2 text-sm text-default">
-                <strong class="text-strong">Form:</strong>
-                the message step checks the short message and details against them as you type.
-              </p>
-              <p class="mt-2 text-sm text-default">
-                <strong class="text-strong">Assistant:</strong>
-                follows them when it drafts, and says which ones a draft does not meet.
-              </p>
-              <p class="mt-3 text-[13px] text-muted">
-                Written in plain sentences. The checks the form runs are fixed rules based on these;
-                new guidelines guide the assistant and appear as reminders.
-              </p>
-            </section>
-          </aside>
-        </div>
+          <div :if={@tab == :scripts} id="alert-settings-scripts" class="mt-5 grid gap-4">
+            <%!-- While the modal drawer is open the page is inert behind its backdrop,
+                 so a refusal is shown inside the drawer instead. --%>
+            <.message
+              :if={@script_notice && !@script_drawer_open}
+              id="script-notice"
+              kind="info"
+              title={@script_notice}
+            />
 
-        <.script_drawer
-          open={@script_drawer_open}
-          title={@script_drawer_title}
-          entity={@script_entity}
-          form={@script_form}
-          notice={@script_notice}
-          return_focus_id={@script_return_focus_id}
-        />
+            <p id="scripts-intro" class="max-w-[80ch] text-sm text-default">
+              Scripts are your tested wording for common alerts. The form offers the scripts for
+              what's happening, and the fill-ins take their values from the alert. Built-in scripts
+              are read-only; copy one to change it.
+            </p>
 
-        <.confirm_dialog
-          :if={@script_delete_target}
-          id="script-delete-confirm"
-          chrome="planner"
-          open={true}
-          title={"Delete #{@script_delete_target.name}?"}
-          confirm_label="Delete script"
-          cancel_label="Keep script"
-          pending_label="Deleting…"
-          on_confirm="confirm_delete_script"
-          on_cancel="cancel_delete_script"
-          described_by="script-delete-confirm-body"
-          return_focus_id="script-delete"
-        >
-          <p>
-            This removes the script for everyone in {@current_organization.name}. Alerts already
-            written keep their text. You can't undo it.
-          </p>
-        </.confirm_dialog>
+            <.scripts_table
+              rows={@streams.scripts}
+              script_count={@script_count}
+              built_in_count={@built_in_count}
+            />
+          </div>
+
+          <div
+            :if={@tab == :guidelines}
+            id="alert-settings-guidelines"
+            class="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]"
+          >
+            <div class="min-w-0">
+              <.message
+                :if={@guidelines_notice}
+                id="guidelines-notice"
+                kind={if @guidelines_stale?, do: "warning", else: "success"}
+                title={@guidelines_notice}
+              >
+                <:action :if={@guidelines_stale?}>
+                  <.button
+                    id="guidelines-reload"
+                    type="button"
+                    variant="secondary"
+                    phx-click="reload_guidelines"
+                  >
+                    Reload guidelines
+                  </.button>
+                </:action>
+              </.message>
+
+              <section
+                id="guidelines-card"
+                aria-labelledby="guidelines-title"
+                class="overflow-clip rounded-card border border-subtle bg-white"
+              >
+                <div class="flex min-h-[52px] items-center justify-between gap-3 border-b border-subtle px-4 py-1 md:px-5">
+                  <h2 id="guidelines-title" class="text-base font-bold text-strong">
+                    Guidelines
+                  </h2>
+                  <p id="guidelines-revision" class="text-[13px] text-muted">
+                    {revision_label(@guidelines.revision)}
+                  </p>
+                </div>
+
+                <.form
+                  for={@guidelines_form}
+                  id="guidelines-form"
+                  novalidate
+                  phx-submit="save_guidelines"
+                  class="grid gap-4 p-4 md:p-5"
+                >
+                  <.input
+                    field={@guidelines_form[:revision]}
+                    type="hidden"
+                  />
+                  <.input
+                    field={@guidelines_form[:guidelines]}
+                    id="guidelines-text"
+                    type="textarea"
+                    rows="18"
+                    label="Writing guidelines"
+                    help="One guideline per paragraph. The message step checks the wording against these."
+                  />
+
+                  <div class="flex justify-end">
+                    <.button
+                      id="save-guidelines"
+                      type="submit"
+                      class="min-h-11"
+                      phx-disable-with="Saving…"
+                    >
+                      Save guidelines
+                    </.button>
+                  </div>
+                </.form>
+              </section>
+            </div>
+
+            <aside class="grid content-start gap-4">
+              <section
+                id="guidelines-apply"
+                aria-labelledby="guidelines-apply-title"
+                class="rounded-card border border-subtle bg-white p-4 sm:p-5"
+              >
+                <h2
+                  id="guidelines-apply-title"
+                  class="text-base font-bold tracking-normal text-strong"
+                >
+                  Where these apply
+                </h2>
+                <p class="mt-2 text-sm text-default">
+                  <strong class="text-strong">Form:</strong>
+                  the message step checks the short message and details against them as you type.
+                </p>
+                <p class="mt-2 text-sm text-default">
+                  <strong class="text-strong">Assistant:</strong>
+                  follows them when it drafts, and says which ones a draft does not meet.
+                </p>
+                <p class="mt-3 text-[13px] text-muted">
+                  Written in plain sentences. The checks the form runs are fixed rules based on these;
+                  new guidelines guide the assistant and appear as reminders.
+                </p>
+              </section>
+            </aside>
+          </div>
+
+          <.script_drawer
+            open={@script_drawer_open}
+            title={@script_drawer_title}
+            entity={@script_entity}
+            form={@script_form}
+            notice={@script_notice}
+            return_focus_id={@script_return_focus_id}
+          />
+
+          <.confirm_dialog
+            :if={@script_delete_target}
+            id="script-delete-confirm"
+            chrome="planner"
+            open={true}
+            title={"Delete #{@script_delete_target.name}?"}
+            confirm_label="Delete script"
+            cancel_label="Keep script"
+            pending_label="Deleting…"
+            on_confirm="confirm_delete_script"
+            on_cancel="cancel_delete_script"
+            described_by="script-delete-confirm-body"
+            return_focus_id="script-delete"
+          >
+            <p>
+              This removes the script for everyone in {@current_organization.name}. Alerts already
+              written keep their text. You can't undo it.
+            </p>
+          </.confirm_dialog>
+        <% end %>
       </div>
     </Layouts.app>
     """
@@ -713,7 +760,6 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
   attr :rows, :any, required: true, doc: "the `:scripts` stream"
   attr :script_count, :integer, required: true
   attr :built_in_count, :integer, required: true
-  attr :version_id, :any, required: true
 
   defp scripts_table(assigns) do
     ~H"""

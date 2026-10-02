@@ -55,7 +55,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
       alert = cancelled_alert(context, schedule.route)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=departures")
+        live(context.conn, edit_path(alert) <> "?step=departures")
 
       assert has_element?(view, "#alert-question-title", "Which departures will not run?")
 
@@ -86,7 +86,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
       alert = cancelled_alert(context, schedule.route)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=departures")
+        live(context.conn, edit_path(alert) <> "?step=departures")
 
       # With nothing named, the question offers the agency's own today.
       today = context.audit |> Alerts.agency_now() |> NaiveDateTime.to_date()
@@ -105,7 +105,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
       alert = cancelled_alert(context, schedule.route)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=departures")
+        live(context.conn, edit_path(alert) <> "?step=departures")
 
       add_date(view, @out_of_service)
 
@@ -121,7 +121,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
       alert = cancelled_alert(context, schedule.route)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=departures")
+        live(context.conn, edit_path(alert) <> "?step=departures")
 
       add_date(view, @monday)
 
@@ -139,7 +139,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
       alert = cancelled_alert(context, schedule.route)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=departures")
+        live(context.conn, edit_path(alert) <> "?step=departures")
 
       add_date(view, @monday)
 
@@ -170,7 +170,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
       alert = cancelled_alert(context, schedule.route)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=departures")
+        live(context.conn, edit_path(alert) <> "?step=departures")
 
       add_date(view, @monday)
       view |> element("#alert-departure-2026-10-05-#{schedule.early.id}") |> render_click()
@@ -201,7 +201,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
       alert = cancelled_alert(context, schedule.route)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=departures")
+        live(context.conn, edit_path(alert) <> "?step=departures")
 
       add_date(view, @monday)
       view |> element("#alert-departure-2026-10-05-#{schedule.early.id}") |> render_click()
@@ -235,7 +235,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
       alert = cancelled_alert(context, schedule.route)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=departures")
+        live(context.conn, edit_path(alert) <> "?step=departures")
 
       view |> element("#alert-departures-continue") |> render_click()
 
@@ -259,7 +259,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
       alert = cancelled_alert(context, schedule.route)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=departures")
+        live(context.conn, edit_path(alert) <> "?step=departures")
 
       add_date(view, @monday)
       revision = alert.revision
@@ -309,7 +309,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
       alert = cancelled_alert(context, schedule.route)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=departures")
+        live(context.conn, edit_path(alert) <> "?step=departures")
 
       render_change(view, "autosave", %{"service_date" => %{"date" => "not-a-date"}})
       render_click(view, "add_service_date", %{})
@@ -405,7 +405,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
     }
   end
 
-  defp edit_path(version, alert), do: "/gtfs/#{version.id}/alerts/#{alert.id}"
+  defp edit_path(alert), do: "/alerts/#{alert.id}"
 
   defp audit_context(organization, version, actor) do
     %AuditContext{

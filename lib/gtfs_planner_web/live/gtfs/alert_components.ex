@@ -135,8 +135,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   `role="tablist"` with `aria-selected` on the pressed tab, and the pressed tab
   also carries `aria-current="page"`, so the selection is never signalled by
   colour alone.
+
+  The tab path carries no version: the strip belongs to the organization's
+  alert list, so a tab keeps the alert set the organization owns rather than a
+  slice of one schedule.
   """
-  attr :version_id, :any, required: true
   attr :tab, :atom, required: true
   attr :counts, :map, required: true, doc: "the four tab counts, keyed by tab atom"
 
@@ -151,7 +154,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
       <.link
         :for={{key, label} <- tab_items()}
         id={"alerts-tab-#{key}"}
-        patch={"/gtfs/#{@version_id}/alerts?tab=#{key}"}
+        patch={"/alerts?tab=#{key}"}
         role="tab"
         aria-selected={to_string(@tab == key)}
         aria-current={@tab == key && "page"}

@@ -124,6 +124,41 @@ defmodule GtfsPlannerWeb.Router do
     end
   end
 
+  # Alerts belongs to the organization, so its routes carry no version. The
+  # editor's two entry points share one LiveView, because the editor is one
+  # frame: `new` writes no row until the first answer, and `edit` is where that
+  # answer navigates to. `new` and `settings` are declared before the
+  # `:alert_id` segment so neither literal is ever read as an alert ID.
+  scope "/alerts", GtfsPlannerWeb do
+    pipe_through [:browser, :require_authenticated_user, :browser_organization]
+
+    live_session :organization_alerts,
+      on_mount: [
+        {GtfsPlannerWeb.UserAuth, :ensure_authenticated},
+        {GtfsPlannerWeb.AssignOrganization, :organization_required}
+      ] do
+      live "/", Gtfs.AlertsLive, :index
+      live "/new", Gtfs.AlertEditorLive, :new
+      # Message scripts and writing guidelines are the organization's alert
+      # wording, read by every version's alert editor.
+      live "/settings", Gtfs.AlertSettingsLive, :index
+      live "/:alert_id", Gtfs.AlertEditorLive, :edit
+    end
+  end
+
+  # The versioned Alerts paths this package moved out of `/gtfs/:version`. They
+  # authenticate and re-check the version against the reader's organization
+  # before redirecting, so an old bookmark lands on the organization page it now
+  # belongs to and a version of another tenant is refused.
+  scope "/gtfs/:version", GtfsPlannerWeb do
+    pipe_through [:browser, :require_authenticated_user, :browser_organization]
+
+    get "/alerts", Gtfs.AlertsRedirectController, :index
+    get "/alerts/new", Gtfs.AlertsRedirectController, :new
+    get "/alerts/:alert_id", Gtfs.AlertsRedirectController, :edit
+    get "/settings/alerts", Gtfs.AlertsRedirectController, :settings
+  end
+
   scope "/gtfs/:version", GtfsPlannerWeb do
     pipe_through [:browser, :require_authenticated_user, :browser_organization]
 
@@ -134,15 +169,6 @@ defmodule GtfsPlannerWeb.Router do
         GtfsPlannerWeb.AssignGtfsVersion
       ] do
       # GTFS routes (viewer or editor roles required)
-      # Alerts is the first task area, and it lists the alerts of the version in
-      # the URL only (R1).
-      live "/alerts", Gtfs.AlertsLive, :index
-      # The alert editor's two entry points share one LiveView, because the
-      # editor is one frame: `new` writes no row until the first answer, and
-      # `edit` is where that answer navigates to. `new` is declared before the
-      # `:alert_id` segment so the literal never reads as an alert ID.
-      live "/alerts/new", Gtfs.AlertEditorLive, :new
-      live "/alerts/:alert_id", Gtfs.AlertEditorLive, :edit
       live "/routes", Gtfs.RoutesLive, :index
       # Transfers is the Routes area's second tab, beside the routes list.
       live "/transfers", Gtfs.TransfersLive, :index
@@ -203,11 +229,6 @@ defmodule GtfsPlannerWeb.Router do
       live "/settings/feed-details", Gtfs.FeedDetailsLive, :index
       live "/settings/agencies", Gtfs.AgenciesLive, :index
       live "/settings/export-defaults", Gtfs.ExportDefaultsLive, :index
-      # Message scripts and writing guidelines are the organization's alert
-      # wording, read by every version's alert editor. The literal route is
-      # declared ahead of the section route so "alerts" is never read as a
-      # section slug.
-      live "/settings/alerts", Gtfs.AlertSettingsLive, :index
       live "/settings/garages", Gtfs.GaragesLive, :index
       live "/settings/fleet", Gtfs.FleetLive, :index
       # The Fares section is two LiveViews. The fare editor shell owns Prices,

@@ -51,7 +51,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       alert = alert_with(context, %{"urgency" => "now", "situation" => "stop_moved"})
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=place")
+        live(context.conn, edit_path(alert) <> "?step=place")
 
       assert has_element?(view, "#alert-question-title", "Which stop or station?")
       assert has_element?(view, "#alert-place-stop")
@@ -94,7 +94,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         })
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=place")
+        live(context.conn, edit_path(alert) <> "?step=place")
 
       revision = alert.revision
 
@@ -121,7 +121,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         })
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=place")
+        live(context.conn, edit_path(alert) <> "?step=place")
 
       # The label the stop renders is not what the editor just typed, so the
       # identity is dropped rather than left attached to new text (R7, PM-9).
@@ -144,7 +144,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       alert = alert_with(context, %{"urgency" => "now", "situation" => "stop_moved"})
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=place")
+        live(context.conn, edit_path(alert) <> "?step=place")
 
       revision = alert.revision
 
@@ -165,7 +165,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       alert = alert_with(context, %{"urgency" => "now", "situation" => "stop_moved"})
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=place")
+        live(context.conn, edit_path(alert) <> "?step=place")
 
       assert has_element?(view, "#alert-place-continue")
 
@@ -185,7 +185,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       alert = alert_with(context, %{"urgency" => "now", "situation" => "stop_moved"})
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=place")
+        live(context.conn, edit_path(alert) <> "?step=place")
 
       revision = alert.revision
 
@@ -202,7 +202,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       alert = alert_with(context, %{"urgency" => "now", "situation" => "stop_moved"})
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=place")
+        live(context.conn, edit_path(alert) <> "?step=place")
 
       revision = alert.revision
 
@@ -229,7 +229,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       alert = detour_alert(context, coast_route.id)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=stops")
+        live(context.conn, edit_path(alert) <> "?step=stops")
 
       # The list is the chosen route's own stops, in the order riders meet them.
       assert has_element?(view, "#alert-question-title", "Which stops will buses skip?")
@@ -261,7 +261,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       alert = detour_alert(context, coast_route.id)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=stops")
+        live(context.conn, edit_path(alert) <> "?step=stops")
 
       revision = alert.revision
 
@@ -280,7 +280,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       alert = detour_alert(context, coast_route.id)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=stops")
+        live(context.conn, edit_path(alert) <> "?step=stops")
 
       # The two selects are fields of the autosave form, so a change carries the
       # whole form the way the browser sends it. One end alone stores nothing.
@@ -317,7 +317,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         })
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=stops")
+        live(context.conn, edit_path(alert) <> "?step=stops")
 
       # The union of the two routes' stops lists both ends, but no one route
       # runs from one to the other, so there is no stretch to skip.
@@ -337,7 +337,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       alert = detour_alert(context, coast_route.id)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=stops")
+        live(context.conn, edit_path(alert) <> "?step=stops")
 
       view |> element("#all-stops-served") |> render_click()
 
@@ -356,7 +356,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       alert = detour_alert(context, coast_route.id)
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=stops")
+        live(context.conn, edit_path(alert) <> "?step=stops")
 
       assert {:ok, _other} =
                Alerts.save_draft(context.audit, alert.id, alert.revision, %{"cause" => "weather"})
@@ -392,7 +392,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         })
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=shared")
+        live(context.conn, edit_path(alert) <> "?step=shared")
 
       other =
         Alerts.routes_at_stops(context.audit, [depot.id]) |> Enum.find(&(&1.id != coast_route.id))
@@ -433,7 +433,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         Alerts.routes_at_stops(context.audit, [depot.id]) |> Enum.find(&(&1.id != coast_route.id))
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=shared")
+        live(context.conn, edit_path(alert) <> "?step=shared")
 
       render_click(view, "choose_shared", %{"answer" => "yes"})
 
@@ -464,7 +464,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         })
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=shared")
+        live(context.conn, edit_path(alert) <> "?step=shared")
 
       render_click(view, "choose_shared", %{"answer" => "no"})
 
@@ -490,7 +490,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         })
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=shared")
+        live(context.conn, edit_path(alert) <> "?step=shared")
 
       render_click(view, "choose_shared", %{"answer" => "yes"})
 
@@ -522,7 +522,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         })
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=shared")
+        live(context.conn, edit_path(alert) <> "?step=shared")
 
       view |> element("#alert-shared-#{other_route.id}-yes") |> render_click()
 
@@ -558,7 +558,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
           }
         })
 
-      {:ok, view, _html} = live(context.conn, edit_path(context.version, alert) <> "?step=stops")
+      {:ok, view, _html} = live(context.conn, edit_path(alert) <> "?step=stops")
 
       # `steps_for/2` leaves `shared` out entirely, so the URL falls back to the
       # first question this alert asks rather than rendering an empty card.
@@ -590,7 +590,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         })
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=alternative")
+        live(context.conn, edit_path(alert) <> "?step=alternative")
 
       assert has_element?(view, "#alert-question-title", "Where should riders board instead?")
       assert has_element?(view, "#alert-boarding-stop")
@@ -637,7 +637,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         })
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=alternative")
+        live(context.conn, edit_path(alert) <> "?step=alternative")
 
       # The boarding question's form carries the base revision and the combobox
       # alone while "Write directions instead" is closed.
@@ -665,7 +665,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         })
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=alternative")
+        live(context.conn, edit_path(alert) <> "?step=alternative")
 
       view |> render_change("autosave", %{"alternative" => %{"stop_id" => harbor.id}})
 
@@ -701,7 +701,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         })
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=alternative")
+        live(context.conn, edit_path(alert) <> "?step=alternative")
 
       assert view |> element("#write-directions-field") |> render() =~ "Board on the corner."
     end
@@ -718,7 +718,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         })
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=alternative")
+        live(context.conn, edit_path(alert) <> "?step=alternative")
 
       view |> element("#write-directions") |> render_click()
       assert {:ok, opened} = Alerts.get_alert(context.audit, alert.id)
@@ -754,7 +754,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         })
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=alternative")
+        live(context.conn, edit_path(alert) <> "?step=alternative")
 
       # The combobox posts the stop it holds with the facility the editor typed.
       render_change(view, "autosave", %{
@@ -782,7 +782,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         })
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=alternative")
+        live(context.conn, edit_path(alert) <> "?step=alternative")
 
       view |> element("#alert-alternative-continue") |> render_click()
 
@@ -811,7 +811,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         })
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=alternative")
+        live(context.conn, edit_path(alert) <> "?step=alternative")
 
       assert has_element?(view, "input[name='alert[scope][facility]']")
 
@@ -920,7 +920,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
     }
   end
 
-  defp edit_path(version, alert), do: "/gtfs/#{version.id}/alerts/#{alert.id}"
+  defp edit_path(alert), do: "/alerts/#{alert.id}"
 
   defp alert_with(context, attrs), do: alert_fixture(context.audit, attrs)
 

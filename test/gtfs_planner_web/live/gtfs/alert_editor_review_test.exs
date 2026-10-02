@@ -85,7 +85,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
       # remaining answer is one this step's own sequence names.
       alert = alert_fixture(context.audit, %{"urgency" => "now", "situation" => "delay"})
 
-      {:ok, view, _html} = live(context.conn, review_path(context, alert))
+      {:ok, view, _html} = live(context.conn, review_path(alert))
 
       assert view |> element("#save-alert") |> render_click()
 
@@ -108,12 +108,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
       # that answers it, so the summary is a list of doors rather than a
       # paragraph of advice.
       assert review_links(view) == [
-               review_path(context, alert, :routes),
-               review_path(context, alert, :timing),
-               review_path(context, alert, :timing),
-               review_path(context, alert, :timing),
-               review_path(context, alert, :message),
-               review_path(context, alert, :message)
+               review_path(alert, :routes),
+               review_path(alert, :timing),
+               review_path(alert, :timing),
+               review_path(alert, :timing),
+               review_path(alert, :message),
+               review_path(alert, :message)
              ]
 
       # The reader is still on the review, and the draft is untouched: a
@@ -128,7 +128,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
     test "the same step finishes the alert once the questions are answered", context do
       alert = alert_fixture(context.audit, %{"urgency" => "now", "situation" => "delay"})
 
-      {:ok, view, _html} = live(context.conn, review_path(context, alert))
+      {:ok, view, _html} = live(context.conn, review_path(alert))
 
       assert view |> element("#save-alert") |> render_click()
       assert has_element?(view, "#review-errors")
@@ -150,14 +150,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
 
       assert answered.complete == true
 
-      {:ok, reloaded, _html} = live(context.conn, review_path(context, alert))
+      {:ok, reloaded, _html} = live(context.conn, review_path(alert))
 
       # Arriving at a finished alert offers nothing to report.
       refute has_element?(reloaded, "#review-errors")
 
       assert reloaded |> element("#save-alert") |> render_click()
 
-      flash = assert_redirect(reloaded, alerts_path(context.version))
+      flash = assert_redirect(reloaded, alerts_path())
       assert flash["info"] == "Alert saved."
     end
   end
@@ -167,14 +167,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
 
     test "#save-alert returns to the list with the flash it says it does", context do
       alert = planned_delay(context)
-      {:ok, view, _html} = live(context.conn, review_path(context, alert))
+      {:ok, view, _html} = live(context.conn, review_path(alert))
 
       # Nothing is outstanding, so the one action finishes the draft and says
       # so. The draft itself is already saved: every answer was written as it
       # was given, and this action only says that the alert is whole (AC-23).
       assert view |> element("#save-alert") |> render_click()
 
-      flash = assert_redirect(view, alerts_path(context.version))
+      flash = assert_redirect(view, alerts_path())
       assert flash["info"] == "Alert saved."
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
@@ -185,7 +185,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
     test "the review shows the header and description exactly as saved, and the When summary",
          context do
       alert = planned_delay(context)
-      {:ok, view, _html} = live(context.conn, review_path(context, alert))
+      {:ok, view, _html} = live(context.conn, review_path(alert))
 
       # The wording is the operator's, character for character: the review
       # never re-generates it, and it is the same string the row stores
@@ -212,7 +212,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
 
     test "a stop-closed alert says what no service does to a rider's trip plan", context do
       alert = closed_stop(context)
-      {:ok, view, _html} = live(context.conn, review_path(context, alert))
+      {:ok, view, _html} = live(context.conn, review_path(alert))
 
       # AC-23 fixes this sentence, and it is the only consequence the review
       # states: no service is the one effect that changes what a trip planner
@@ -231,14 +231,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
 
     test "a delay carries no no-service consequence", context do
       alert = planned_delay(context)
-      {:ok, view, _html} = live(context.conn, review_path(context, alert))
+      {:ok, view, _html} = live(context.conn, review_path(alert))
 
       refute has_element?(view, "#review-no-service")
     end
 
     test "nothing on the review offers a publication state or an action", context do
       alert = closed_stop(context)
-      {:ok, view, _html} = live(context.conn, review_path(context, alert))
+      {:ok, view, _html} = live(context.conn, review_path(alert))
 
       html = render(view)
 
@@ -370,13 +370,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
     }
   end
 
-  defp review_path(context, alert),
-    do: review_path(context, alert, :review)
+  defp review_path(alert),
+    do: review_path(alert, :review)
 
-  defp review_path(context, alert, step),
-    do: "/gtfs/#{context.version.id}/alerts/#{alert.id}?mode=form&step=#{step}"
+  defp review_path(alert, step),
+    do: "/alerts/#{alert.id}?mode=form&step=#{step}"
 
-  defp alerts_path(version), do: "/gtfs/#{version.id}/alerts"
+  defp alerts_path, do: "/alerts"
 
   # The questions the summary lists, read from the rendered summary rather than
   # from `Alerts.Completion.errors/1`, so the order an operator reads is the

@@ -50,7 +50,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
     test "a change with a header and revision 1 saves revision 2 and reads Saved", context do
       alert = message_alert(context)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       view
       |> form("#alert-form",
@@ -68,7 +68,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
     test "the status never reads Saved before the server has acknowledged", context do
       alert = message_alert(context)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       # A refused save is the observable case: the bar says what happened, not
       # what was attempted.
@@ -85,7 +85,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
     test "Enter in a text field cannot submit the form as Save and close", context do
       alert = message_alert(context)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       # The first submit button in the form is disabled, so implicit submission
       # has nothing to press. The real Save and close is outside the form.
@@ -96,7 +96,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
     test "a target outside the version is refused and the typed draft stays", context do
       alert = message_alert(context)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       render_change(view, "autosave", %{
         "alert" => %{
@@ -119,7 +119,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
     test "the form carries the base revision a recovery would replay", context do
       alert = message_alert(context)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       assert view
              |> element("input[name='alert[revision]']")
@@ -134,7 +134,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
          context do
       alert = message_alert(context)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       # Another process saves revision 2 while this editor still holds 1.
       assert {:ok, _other} =
@@ -168,7 +168,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
     test "the conflict banner offers no way to overwrite", context do
       alert = message_alert(context)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       assert {:ok, _other} =
                Alerts.save_draft(context.audit, alert.id, 1, %{
@@ -191,7 +191,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
     test "walking to another question keeps the banner and the typed values", context do
       alert = message_alert(context)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       assert {:ok, _other} =
                Alerts.save_draft(context.audit, alert.id, 1, %{
@@ -225,7 +225,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
          context do
       alert = message_alert(context)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       assert {:ok, _other} =
                Alerts.save_draft(context.audit, alert.id, 1, %{
@@ -262,7 +262,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
     test "Load latest shows the newer saved draft", context do
       alert = message_alert(context)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       assert {:ok, _other} =
                Alerts.save_draft(context.audit, alert.id, 1, %{
@@ -286,7 +286,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
          context do
       alert = message_alert(context)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       assert {:ok, _other} =
                Alerts.save_draft(context.audit, alert.id, 1, %{
@@ -312,7 +312,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
 
       assert_redirect(
         view,
-        "/gtfs/#{context.version.id}/alerts/#{copy.id}?mode=form&step=message"
+        "/alerts/#{copy.id}?mode=form&step=message"
       )
     end
   end
@@ -323,7 +323,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
     test "is written on top of the editor's own save instead of refused", context do
       alert = message_alert(context)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       render_change(view, "autosave", %{
         "alert" => %{"revision" => "1", "message" => %{"header" => "First edit"}}
@@ -347,7 +347,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
     test "is still refused when another editor wrote in between", context do
       alert = message_alert(context)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       render_change(view, "autosave", %{
         "alert" => %{"revision" => "1", "message" => %{"header" => "First edit"}}
@@ -377,7 +377,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
                  "message" => %{"header" => "Saved by the other editor"}
                })
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       # A form recovery after a reconnect replays what it composed on revision 1,
       # and the editor loaded revision 2, so the write is refused.
@@ -400,7 +400,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
       alert = message_alert(context)
       long = String.duplicate("a", 121)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       view
       |> form("#alert-form", alert: %{"revision" => "1", "message" => %{"header" => long}})
@@ -424,7 +424,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
       alert = message_alert(context)
       long = String.duplicate("a", 121)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       view
       |> form("#alert-form", alert: %{"revision" => "1", "message" => %{"header" => long}})
@@ -462,7 +462,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
     test "saves and returns to the list", context do
       alert = message_alert(context)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       view
       |> form("#alert-form",
@@ -474,13 +474,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
       assert saved.revision == 2
       assert saved.message.header == "Typed then closed"
 
-      assert_redirect(view, "/gtfs/#{context.version.id}/alerts")
+      assert_redirect(view, "/alerts")
     end
 
     test "a refused save keeps the editor open rather than leaving", context do
       alert = message_alert(context)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       view
       |> form("#alert-form",
@@ -503,7 +503,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
     test "a revision that does not parse is not written as the alert's own", context do
       alert = message_alert(context)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       # Sent as a raw event rather than through `form/3`, because a real form
       # could not hold this value: the point is what the handler does with a
@@ -522,7 +522,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
     test "a forged organization, version or completion flag is ignored", context do
       alert = message_alert(context)
 
-      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+      {:ok, view, _html} = live(context.conn, message_path(alert))
 
       render_change(view, "autosave", %{
         "alert" => %{
@@ -538,7 +538,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
       assert saved.revision == 2
       assert saved.message.header == "Forged identity"
       assert saved.organization_id == context.organization.id
-      assert saved.gtfs_version_id == context.version.id
+      assert saved.source_gtfs_version_id == context.version.id
       refute saved.complete
     end
   end
@@ -563,8 +563,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
     })
   end
 
-  defp message_path(context, alert) do
-    "/gtfs/#{context.version.id}/alerts/#{alert.id}?mode=form&step=message"
+  defp message_path(alert) do
+    "/alerts/#{alert.id}?mode=form&step=message"
   end
 
   defp audit_context(organization, version, actor) do

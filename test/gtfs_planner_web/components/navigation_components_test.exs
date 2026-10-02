@@ -482,11 +482,38 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       assert LazyHTML.attribute(LazyHTML.query(doc, "#nav-gtfs"), "href") == ["/gtfs/42/export"]
     end
 
-    test "Alerts activates on /gtfs/42/alerts" do
-      doc = LazyHTML.from_fragment(render_nav(editor_assigns("/gtfs/42/alerts")))
+    test "Alerts activates on the organization path and points at it" do
+      doc = LazyHTML.from_fragment(render_nav(editor_assigns("/alerts")))
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#nav-alerts"), "aria-current") == ["page"]
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#nav-alerts"), "href") == ["/alerts"]
+      assert Enum.count(LazyHTML.query(doc, "#main-navigation a[aria-current='page']")) == 1
+    end
+
+    test "Alerts activates on one alert's own page, whichever version is selected" do
+      doc =
+        LazyHTML.from_fragment(
+          render_nav(editor_assigns("/alerts/2f0c0d1e-6b6f-4a3a-9a1e-0d2c3b4a5968"))
+        )
 
       assert LazyHTML.attribute(LazyHTML.query(doc, "#nav-alerts"), "aria-current") == ["page"]
       assert Enum.count(LazyHTML.query(doc, "#main-navigation a[aria-current='page']")) == 1
+    end
+
+    test "Alerts does NOT activate on the version's own settings/alerts page" do
+      doc = LazyHTML.from_fragment(render_nav(editor_assigns("/gtfs/42/settings/alerts")))
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#nav-alerts"), "aria-current") == []
+    end
+
+    test "Alerts is offered to an editor whose organization has no version" do
+      doc =
+        LazyHTML.from_fragment(
+          render_nav(%{editor_assigns("/alerts") | current_gtfs_version: nil})
+        )
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#nav-alerts"), "href") == ["/alerts"]
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#nav-routes"), "href") == []
     end
 
     test "Routes does NOT activate on /gtfs/42/stops" do

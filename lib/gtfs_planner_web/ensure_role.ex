@@ -82,6 +82,24 @@ defmodule GtfsPlannerWeb.EnsureRole do
     on_mount(:require, params, session, socket)
   end
 
+  # The editor role check for the organization-owned Alerts routes. It refuses a
+  # member whose membership lacks the editor role exactly as
+  # `:require_gtfs_access` does. It differs in one case: a member with no
+  # organization in context at all - a system administrator, whom
+  # `GtfsPlannerWeb.AssignOrganization` lets through without one - is not refused
+  # here, because there is no membership whose roles could answer the question.
+  # The page that asked for it renders its explicit unavailable state instead of a
+  # redirect that refuses something the reader was never offered.
+  def on_mount(:require_gtfs_access_in_organization, params, session, socket) do
+    socket =
+      Phoenix.Component.assign(socket, :role_spec, :pathways_studio_editor)
+
+    case socket.assigns[:current_organization] do
+      nil -> {:cont, socket}
+      _organization -> on_mount(:require, params, session, socket)
+    end
+  end
+
   def on_mount(:require_gtfs_editor, params, session, socket) do
     socket = Phoenix.Component.assign(socket, :role_spec, :pathways_studio_editor)
     on_mount(:require, params, session, socket)
