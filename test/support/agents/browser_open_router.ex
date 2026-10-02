@@ -77,6 +77,19 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       gets the prepared-change sentence with no write;
     * anything else gets the helper's generic sentence.
 
+  The in-seat script is the Blocks page's own worked example, and it is the one the
+  in-seat journey drives:
+
+    * a `"user"` message asking whether a connection may hold gets the pack's own
+      argument-free `inspect_in_seat_connections` call, so the answer is the
+      source's rather than a scripted one;
+    * any other `"user"` message gets a `prepare_in_seat_policy` call whose
+      `choice` is the person's own wording — `"must reboard"` prepares
+      `must_reboard` and anything else prepares `stay_on_board` — so the tool can
+      only ever prepare the setting the journey actually asked for;
+    * either tool result gets the prepared-change sentence, which says
+      "prepared" and never "saved".
+
   The Alerts script is the alerts skill's Route 12 worked example, and it is
   the one the editor's journey drives:
 
@@ -156,6 +169,9 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   # sentence keeps to the skill's "say I prepared, never saved or published"
   # rule, and the not-found sentence is what the skill asks for when a search
   # did not return what the person meant.
+  @in_seat_marker "the selected in-seat connections"
+  @prepared_in_seat "I prepared the in-seat setting. Review it before applying."
+
   @alerts_marker "Alerts helper"
   @alerts_question "Now or planned: are riders affected right now, or on planned dates?"
   @alerts_prepared "I prepared a detour on Route 12. The answers are filled in on the form. Check the preview."
@@ -181,10 +197,10 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   end
 
   defp reply(messages) do
-    if alerts?(messages) do
-      alerts_reply(messages)
-    else
-      calendars_reply(messages)
+    cond do
+      in_seat?(messages) -> in_seat_reply(messages)
+      alerts?(messages) -> alerts_reply(messages)
+      true -> calendars_reply(messages)
     end
   end
 
@@ -200,6 +216,45 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       _other ->
         false
     end)
+  end
+
+  # The Blocks page's in-seat pack, whose skill body names the selection this
+  # script prepares. Its tools carry no pair, no block and no date, so the
+  # scripted call can only ever act on the source the page admitted.
+  defp in_seat?(messages) do
+    Enum.any?(messages, fn
+      %{"role" => "system", "content" => content} when is_binary(content) ->
+        String.contains?(content, @in_seat_marker)
+
+      _other ->
+        false
+    end)
+  end
+
+  defp in_seat_reply(messages) do
+    case List.last(messages) do
+      %{"role" => "user", "content" => content} when is_binary(content) ->
+        if content =~ ~r/hold|may|eligible|can riders|check/i do
+          tool_calls_reply("inspect_in_seat_connections", %{})
+        else
+          tool_calls_reply("prepare_in_seat_policy", %{"choice" => in_seat_choice(content)})
+        end
+
+      %{"role" => "tool"} ->
+        text_reply(@prepared_in_seat)
+
+      _other ->
+        text_reply(@prepared_in_seat)
+    end
+  end
+
+  # The person's own wording is the only argument the call carries, so the
+  # journey's "must reboard" prepares `must_reboard` and its stay-on-board
+  # question prepares `stay_on_board`.
+  defp in_seat_choice(content) do
+    if content =~ ~r/reboard|re-board|get off|new bus/i,
+      do: "must_reboard",
+      else: "stay_on_board"
   end
 
   defp calendars_reply(messages) do
