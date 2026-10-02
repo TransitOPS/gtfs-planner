@@ -1726,6 +1726,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
          previous: assigns.connection_saved || :not_stated,
          restorable?: connection_restorable?(gap.records),
          gap: gap_param(gap.from.id, gap.to.id),
+         pairs: [{gap.from.id, gap.to.id}],
          audit: AuditContext.from_assigns(socket.assigns)
        }}
     else
@@ -2434,19 +2435,33 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # saved, or one whose save was refused, leaves the entry unconfirmed and says so
   # beside the panel rather than claiming a whole the reader did not earn
   # (INV-7, AC-12). The receipt is recorded after the write and never replaces it.
-  defp settle_in_seat_origin(socket, complete?) do
+  #
+  # `pairs` are the connections the save itself wrote for, taken from the save's
+  # own request, so a save after the reader moved to other connections is judged
+  # against the pairs the proposal was prepared for, not the page's current ones.
+  defp settle_in_seat_origin(socket, pairs, complete?) do
     case socket.assigns.in_seat_origin do
       nil ->
         socket
 
       origin ->
         socket
-        |> record_in_seat_receipt(origin, complete?)
+        |> record_in_seat_receipt(
+          origin,
+          MapSet.new(origin.pairs) == MapSet.new(pairs),
+          complete?
+        )
         |> assign(:in_seat_origin, nil)
     end
   end
 
-  defp record_in_seat_receipt(socket, origin, true) do
+  # A save of other connections is not this proposal's save. Nothing is recorded,
+  # so the entry stays prepared and can be reviewed again, and the review notice
+  # that described the proposal is dropped (INV-7, AC-12).
+  defp record_in_seat_receipt(socket, _origin, false, _complete?),
+    do: assign(socket, :in_seat_notice, nil)
+
+  defp record_in_seat_receipt(socket, origin, true, true) do
     case Agents.record_applied(
            origin.session_pid,
            origin.conversation_id,
@@ -2464,7 +2479,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     end
   end
 
-  defp record_in_seat_receipt(socket, _origin, _partly_saved),
+  defp record_in_seat_receipt(socket, _origin, true, false),
     do: assign(socket, :in_seat_notice, @in_seat_partial_notice)
 
   # The proposal this page is holding, recorded so a native save can settle the
@@ -2476,7 +2491,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       conversation_id: socket.assigns.agent_conversation_id,
       entry_id: origin.entry_id,
       command: origin.command,
-      setting: origin.setting
+      setting: origin.setting,
+      pairs: origin.pairs
     })
   end
 
@@ -2559,6 +2575,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
          setting: review.choice,
          choice: choice,
          entries: entries,
+         # The connections the review listed, so a receipt is judged against the
+         # set the save was for rather than the group the page shows afterwards.
+         pairs: Enum.map(review.rows, &{&1.connection.from.id, &1.connection.to.id}),
          # R9: each included pair's previous writable state, captured from the
          # review's own records before the write, so the Undo restores the
          # setting the reader actually replaced rather than one read afterwards.
@@ -5622,7 +5641,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     {:noreply,
      socket
      |> assign(:bulk_result, bulk_result(request, result, socket.assigns.connections_all))
-     |> settle_in_seat_origin(complete?)
+     |> settle_in_seat_origin(request.pairs, complete?)
      |> focus_within("bulk-result")}
   end
 
@@ -5854,7 +5873,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> resolve_drawers()
      |> assign_page_rows_if_loaded()
      |> close_connection_drawer()
-     |> settle_in_seat_origin(prepared_setting?(socket, request.choice))
+     |> settle_in_seat_origin(request.pairs, prepared_setting?(socket, request.choice))
      |> focus_within("connection-result")}
   end
 
