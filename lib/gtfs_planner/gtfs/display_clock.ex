@@ -155,7 +155,7 @@ defmodule GtfsPlanner.Gtfs.DisplayClock do
 
   Pass `seconds: true` to include seconds.
   """
-  @spec format_time(NaiveDateTime.t(), keyword()) :: String.t()
+  @spec format_time(NaiveDateTime.t() | Time.t(), keyword()) :: String.t()
   def format_time(local_time, opts \\ []) do
     format =
       if Keyword.get(opts, :seconds, false) do
@@ -165,6 +165,27 @@ defmodule GtfsPlanner.Gtfs.DisplayClock do
       end
 
     Calendar.strftime(local_time, format)
+  end
+
+  @doc """
+  Formats a timestamp as a date with unpadded 12-hour time.
+
+  The form is `"Oct 1, 2026, 2:05 PM"`. A `DateTime` whose `time_zone` is
+  `"Etc/UTC"` gains a `" UTC"` suffix so a stored UTC timestamp names its zone;
+  a `NaiveDateTime` and a `DateTime` in any other zone are already the intended
+  wall-clock display value and carry no suffix.
+  """
+  @spec format_datetime(DateTime.t() | NaiveDateTime.t()) :: String.t()
+  def format_datetime(%DateTime{time_zone: "Etc/UTC"} = datetime) do
+    Calendar.strftime(datetime, "%b %-d, %Y, %-I:%M %p") <> " UTC"
+  end
+
+  def format_datetime(%DateTime{} = datetime) do
+    Calendar.strftime(datetime, "%b %-d, %Y, %-I:%M %p")
+  end
+
+  def format_datetime(%NaiveDateTime{} = naive_datetime) do
+    Calendar.strftime(naive_datetime, "%b %-d, %Y, %-I:%M %p")
   end
 
   defp distinct_zone_candidates(organization_id, gtfs_version_id) do
