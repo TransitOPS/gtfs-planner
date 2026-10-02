@@ -99,10 +99,29 @@ defmodule GtfsPlannerWeb.Gtfs.AlertOrganizationRoutesTest do
     test "a system-scope answer is the whole selection when there is no schedule", context do
       assert {:ok, view, _html} = live(context.conn, "/alerts/new")
 
+      assert has_element?(view, "#alert-urgency-now", "Happening now")
+
+      # The start card is the urgency question. Answering it creates the private
+      # draft and sends the reader to the situation question, which is where the
+      # scope answer lives - it is not on this card.
       assert view |> element("#alert-urgency-now") |> render_click()
+
+      assert [created] = Repo.all(Alert)
+      situation_path = "/alerts/#{created.id}?mode=form&step=situation"
+      assert_redirect(view, situation_path)
+
+      assert {:ok, view, _html} = live(context.conn, situation_path)
       assert view |> element("#situation-delay") |> render_click()
 
+      # With no schedule there is no route to name, so the routes question offers
+      # the whole system, and that answer is the entire selection.
+      assert has_element?(view, "#alert-routes-system", "The whole system")
+      assert view |> element("#alert-routes-system") |> render_click()
+
+      # The delay is stored and the scope is the whole system, on a draft that
+      # still carries no version: the organization has none to carry.
       assert [alert] = Repo.all(Alert)
+      assert alert.situation == :delay
       assert alert.scope.shape == :system
       assert alert.organization_id == context.organization.id
       assert alert.source_gtfs_version_id == nil
