@@ -57,6 +57,12 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       Schedule sentence, one of which contradicts the server's count on purpose;
     * the `prepare_calendar_extension` tool result gets the prepared-extension
       sentence;
+    * a `"user"` message asking about a connection between two of the seeded
+      transfer stops gets a `prepare_transfer_policy` call for the selection the
+      Transfers page admitted, so the tool prepares from the page's own draft; a
+      message asking to check one direction first gets an
+      `inspect_transfer_competition` call for the same selection, and its result
+      gets the prepared-change sentence with no write;
     * anything else gets the helper's generic sentence.
 
   The Alerts script is the alerts skill's Route 12 worked example, and it is
@@ -112,6 +118,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   # twice, so the follow-up names the next action instead of answering anyway.
   @ambiguous_visit "I did not answer, because Central Station is visited more than once on that date. Ask which visit you mean."
   @prepared_extension "I prepared the extension. Review it before applying."
+  @prepared_transfer "I prepared the transfer rule. Review it before applying."
   # The end date the browser journey approves in the Calendars page's own form,
   # 200 days from today: inside the 366-day horizon, and later than the seeded
   # calendar's own end date, so the tool can only prepare it from that approval.
@@ -189,6 +196,9 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       content =~ ~r/extend/i ->
         tool_calls_reply("prepare_calendar_extension", extension_arguments(content))
 
+      transfer_question?(content) ->
+        transfer_reply(content)
+
       service_question?(content) ->
         service_question_reply(content)
 
@@ -197,6 +207,17 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
       true ->
         text_reply(@generic)
+    end
+  end
+
+  # The Transfers page names its own selections, so the stand-in prepares the one
+  # the journey staged rather than one it invented: `selection-1` is the first
+  # draft the operator added, and the pack refuses any other id.
+  defp transfer_reply(content) do
+    if content =~ ~r/check|compete|competing|look at/i do
+      tool_calls_reply("inspect_transfer_competition", %{"selection_id" => "selection-1"})
+    else
+      tool_calls_reply("prepare_transfer_policy", %{"selection_ids" => ["selection-1"]})
     end
   end
 
@@ -227,6 +248,16 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
         ~r/depart|leaves? |after \d/i,
         ~r/board|stops? does/i
       ],
+      &Regex.match?(&1, content)
+    )
+  end
+
+  # The Transfers page asks about connections, so the seeded transfer stops and
+  # this stand-in's own "connection" wording are what no other scripted journey
+  # mentions.
+  defp transfer_question?(content) do
+    Enum.any?(
+      [~r/transfer/i, ~r/connection/i, ~r/change (at|between) stops/i],
       &Regex.match?(&1, content)
     )
   end
@@ -280,7 +311,18 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   end
 
   defp tool_reply(messages, %{"tool_call_id" => tool_call_id}) do
-    case answered_tool(messages, tool_call_id) do
+    name = answered_tool(messages, tool_call_id)
+
+    case answered_transfer_tool(name) do
+      nil -> calendar_tool_reply(messages, name)
+      sentence -> text_reply(sentence)
+    end
+  end
+
+  # The transfer tools are answered above; every other tool this stand-in scripts
+  # belongs to the Schedule pack.
+  defp calendar_tool_reply(messages, name) do
+    case name do
       "list_calendars" -> tool_calls_reply("prepare_date_change", prepare_arguments())
       "prepare_date_change" -> text_reply(@prepared)
       "get_calendar" -> get_calendar_reply(messages)
@@ -291,6 +333,15 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       _other -> text_reply(@generic)
     end
   end
+
+  # The two transfer tools are the only ones whose result reads the same sentence,
+  # so their stand-in answers share one lookup rather than two identical branches.
+  # Any other tool leaves `nil` and is answered by the Schedule pack's clauses.
+  defp answered_transfer_tool(name)
+       when name in ["inspect_transfer_competition", "prepare_transfer_policy"],
+       do: @prepared_transfer
+
+  defp answered_transfer_tool(_other), do: nil
 
   # The seeded A02 answer has two listed departures, so the stand-in's sentence
   # for that call contradicts the card; the refusal branches keep the generic
