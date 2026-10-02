@@ -26,6 +26,31 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   the context, previews the reviewed times in the grid without writing, and
   applies it with the review's fingerprint as the fence (R3), so a trip another
   editor changed between the review and the apply is never overwritten.
+
+  ## The dated change planner
+
+  The page also plans a date-bounded change and never executes one. A person
+  selects trips with the timetable's own controls, describes a window on the
+  dated change form, and this page accepts that interpretation as an immutable
+  source. Analyzing it is a native read: `DatedChangePlan.prepare/2` runs in a
+  supervised task over the current route scope, so the report a reader sees is
+  computed by the same domain code the helper's tools call and never by a model
+  (AC-14, CR-3).
+
+  The plan's lifecycle is the page's own, and it is deliberately not a cached
+  truth. One integer generation names the current task, the accepted source and
+  the context it was started for, so a result from a replaced source, a closed
+  panel or a lost process is dropped instead of restored. Changing the draft,
+  the selection, the route or the helper drops the source and the plan with it;
+  a native edit or an edit made elsewhere marks the retained plan not current
+  rather than deleting it, and only a full dependency read can say a plan is
+  current again. Nothing here labels a plan continuously current, because an
+  unobserved edit is undetectable from this page (AC-15).
+
+  The helper is a switch between code-owned packs declared at mount, and
+  switching detaches this panel's conversation alone: the timetable, the draft,
+  the selection and any running native work are untouched, and no other tab or
+  session stops (CR-2, INV-3).
   """
   use GtfsPlannerWeb, :live_view
 
@@ -88,7 +113,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # below, which ignores an id that is not in this table.
   @helper_modes [
     {"service_queries", "Schedule questions"},
-    {"connections", "Approved connections"}
+    {"connections", "Approved connections"},
+    {"dated_changes", "Dated change planner"}
   ]
 
   # The approved source the connections helper may read. The kind is the pack's
@@ -171,7 +197,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
      |> assign(:calendar_form, to_form(%{"service_id" => nil}))
      |> assign(:pattern_form, to_form(%{"pattern" => "all"}))
      |> stream_configure(:sections, dom_id: &"section-#{&1.pattern.route_pattern_id}")
+     |> stream_configure(:dates, dom_id: &"dated-change-date-#{&1}")
      |> stream(:sections, [])
+     |> stream(:dates, [])
+     |> assign(:dated_change_task, nil)
+     |> assign_dated_change_plan(empty_dated_change_plan())
+     |> assign(:dated_change_generation, 0)
      |> assign(:schedule_helper_mode, "service_queries")
      |> assign(:schedule_helper_modes, @helper_modes)
      |> assign(:connection_pair_limit, ConnectionComparison.pair_limit())
@@ -179,6 +210,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
      |> assign(:connection_notice, nil)
      |> assign(:connection_approval, nil)
      |> assign(:connection_context, nil)
+     |> attach_hook(:schedule_helper_lifecycle, :handle_event, &handle_helper_lifecycle/3)
      |> AgentPanel.mount("service_queries", allowed_packs: Enum.map(@helper_modes, &elem(&1, 0)))}
   end
 
@@ -208,8 +240,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       # `handle_params/3` rebinds the context below once the new route has
       # loaded, so only the assigns are cleared here. Field messages name this
       # route's own selection, so they go with the acceptance; the typed draft
-      # itself is kept.
-      |> clear_dated_change_source()
+      # itself is kept. A plan is scoped the same way: it described this route's
+      # own read, so it goes with the source that produced it (AC-15).
+      |> invalidate_dated_change()
       |> assign(:dated_change_errors, %{})
 
     if connected?(socket) do
@@ -277,10 +310,15 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # `accept_intent/2` would refuse the same source, but dropping it here means
   # the page never renders an acceptance whose selection it no longer holds
   # (AC-2). The typed draft is deliberately kept.
-  defp drop_dated_change_source(%{assigns: %{dated_change_accepted: nil}} = socket), do: socket
+  defp drop_dated_change_source(%{assigns: %{dated_change_accepted: nil}} = socket) do
+    case socket.assigns[:dated_change_plan] do
+      nil -> socket
+      _plan -> invalidate_dated_change(socket)
+    end
+  end
 
   defp drop_dated_change_source(socket) do
-    socket |> clear_dated_change_source() |> bind_agent_context()
+    socket |> invalidate_dated_change() |> bind_agent_context()
   end
 
   defp clear_dated_change_source(socket) do
@@ -474,6 +512,58 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   def handle_event("dated_change_accept", _params, socket), do: {:noreply, socket}
+
+  # Analysis is a native read, so it runs whether or not the helper is working,
+  # reachable or even selected. Nothing here calls a provider, which is why a
+  # disabled or failing helper leaves planning and manual editing untouched
+  # (AC-14).
+  @impl true
+  def handle_event("dated_change_analyze", _params, socket) do
+    {:noreply, analyze_dated_change(socket, :analyze)}
+  end
+
+  def handle_event("dated_change_refresh", _params, socket) do
+    {:noreply, analyze_dated_change(socket, :recheck)}
+  end
+
+  # Paging is presentation over a report this page already holds, so turning a
+  # page cannot describe a second database state (AC-3).
+  @impl true
+  def handle_event("dated_change_service", %{"service_id" => service_id}, socket) do
+    {:noreply, show_dated_change_page(socket, service_id, socket.assigns.dated_change_kind, 1)}
+  end
+
+  def handle_event("dated_change_service", _params, socket), do: {:noreply, socket}
+
+  def handle_event("dated_change_kind", %{"partition_kind" => kind}, socket) do
+    {:noreply,
+     show_dated_change_page(
+       socket,
+       current_dated_change_service(socket),
+       dated_change_kind(kind),
+       1
+     )}
+  end
+
+  def handle_event("dated_change_kind", _params, socket), do: {:noreply, socket}
+
+  def handle_event("dated_change_page", %{"page" => page}, socket) do
+    case socket.assigns[:dated_change_page_view] do
+      nil ->
+        {:noreply, socket}
+
+      page_view ->
+        {:noreply,
+         show_dated_change_page(
+           socket,
+           page_view.service_id,
+           page_view.partition_kind,
+           dated_change_page_number(page)
+         )}
+    end
+  end
+
+  def handle_event("dated_change_page", _params, socket), do: {:noreply, socket}
 
   # Copy trips keeps the selection's UUIDs in this process (INV-6, §7's
   # server-held clipboard) and reports the shortcut that pastes them. The paste
@@ -901,6 +991,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp apply_payload(socket, payload, params) do
     socket
     |> put_payload(payload)
+    |> mark_dated_change_stale()
     |> push_canonical(payload.filters, params)
   end
 
@@ -4491,7 +4582,16 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
+  # Moving to another helper drops the accepted dated source with its plan: the
+  # source belongs to the dated helper's conversation and to this route's own
+  # selection, and neither survives a move to another helper (AC-15). Selecting
+  # the helper the panel already holds changes nothing.
   defp select_helper_mode(socket, mode, context) do
+    socket =
+      if mode == socket.assigns.schedule_helper_mode,
+        do: socket,
+        else: invalidate_dated_change(socket)
+
     socket
     |> assign(:schedule_helper_mode, mode)
     |> AgentPanel.select_pack(mode, context)
@@ -4510,8 +4610,20 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
-  defp helper_context_for(socket, _mode),
-    do: with_dated_change_source(socket, base_helper_context(socket))
+  # The dated helper reads the source an editor accepted, but only once the panel
+  # already holds that helper: a switch drops the acceptance, so the context for
+  # the helper being switched to is the plain route context. Every other helper
+  # reads the plain route context, because a dated source is not input to any
+  # other question set.
+  defp helper_context_for(socket, "dated_changes") do
+    context = base_helper_context(socket)
+
+    if socket.assigns.schedule_helper_mode == "dated_changes",
+      do: with_dated_change_source(socket, context),
+      else: context
+  end
+
+  defp helper_context_for(socket, _mode), do: base_helper_context(socket)
 
   defp base_helper_context(socket) do
     case socket.assigns[:route] do
@@ -5523,6 +5635,21 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                         accepted={@dated_change_accepted}
                         notice={@dated_change_notice}
                         helper_refusal={@dated_change_refusal}
+                        can_analyze?={not is_nil(@dated_change_accepted)}
+                        analyzing?={@dated_change_state == :analyzing}
+                      />
+
+                      <ScheduleComponents.dated_change_plan
+                        state={@dated_change_state}
+                        message={@dated_change_message}
+                        plan={@dated_change_plan}
+                        verified?={@dated_change_verified?}
+                        busy={@dated_change_state == :analyzing}
+                        can_analyze?={not is_nil(@dated_change_accepted)}
+                        page_view={@dated_change_page_view}
+                        dates={@streams.dates}
+                        services={@dated_change_services}
+                        partition_kind={@dated_change_kind}
                       />
                   <% end %>
 

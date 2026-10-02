@@ -194,6 +194,16 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
   @max_dependency_rows 20_000
   @max_date_work_cells 200_000
 
+  # The number of native service dates one page of a partition lists. The host
+  # streams exactly this many rows and reports the set's full total beside it.
+  @page_size 50
+  @partition_kinds [:original, :temporary, :normal]
+  @partition_date_keys %{
+    original: :original_dates,
+    temporary: :temporary_dates,
+    normal: :normal_dates
+  }
+
   # The native `GtfsTime` supported range. A projection outside it is refused
   # rather than wrapped into a clock the service day never had.
   @max_gtfs_seconds 2_147_483_647
@@ -784,7 +794,7 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
          {:ok, routes} <-
            in_rows(Route, scoped, :route_id, route_ids, :routes, @max_dependency_rows),
          {:ok, route_patterns} <-
-           in_rows(
+           in_text_rows(
              RoutePattern,
              scoped,
              :route_pattern_id,
@@ -793,7 +803,7 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
              @max_dependency_rows
            ),
          {:ok, route_pattern_stops} <-
-           in_rows(
+           in_text_rows(
              RoutePatternStop,
              scoped,
              :route_pattern_id,
@@ -856,13 +866,17 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
   defp timed_pattern_stops(_scoped, []), do: {:ok, []}
 
   defp timed_pattern_stops(scoped, timed_pattern_ids) do
+    # The select names the stop row: without it the read returns the joined
+    # pattern, and every projected field below would be read off the wrong
+    # struct.
     from(pattern in TimedPattern,
       join: stop in TimedPatternStop,
       on: stop.timed_pattern_id == pattern.id,
       where:
         pattern.organization_id == ^scoped.organization_id and
           pattern.gtfs_version_id == ^scoped.version_id and
-          stop.timed_pattern_id in ^timed_pattern_ids
+          stop.timed_pattern_id in ^timed_pattern_ids,
+      select: stop
     )
     |> capped_rows(@max_dependency_rows, :timed_pattern_stops)
   end
@@ -885,6 +899,22 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
           row.gtfs_version_id == ^scoped.version_id
     )
     |> where([row], field(row, ^field) in ^values)
+    |> capped_rows(cap, kind)
+  end
+
+  defp in_text_rows(_queryable, _scoped, _field, [], _kind, _cap), do: {:ok, []}
+
+  # The pattern tables hold two id namespaces: the ids a feed imported, and the
+  # `app-` ids the application mints for the patterns it derives itself. Both
+  # are compared as text, because a column typed as a UUID would refuse the
+  # application's own identifiers before the row could be read (AC-3).
+  defp in_text_rows(queryable, scoped, field, values, kind, cap) do
+    from(row in queryable,
+      where:
+        row.organization_id == ^scoped.organization_id and
+          row.gtfs_version_id == ^scoped.version_id
+    )
+    |> where([row], type(field(row, ^field), :string) in ^values)
     |> capped_rows(cap, kind)
   end
 
@@ -1666,6 +1696,63 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
   end
 
   def prepare(_scope, _accepted), do: {:error, :forbidden}
+
+  @doc """
+  One page of one partition's native service dates, for a host that lists them.
+
+  A report holds every original date of every loaded calendar, which is more
+  than any page should paint at once, so the host asks for one partition's one
+  date set at a time. `partition_kind` is `:original`, `:temporary` or
+  `:normal`; the rows are that partition's own dates, ascending.
+
+  The result is `%{service_id:, partition_kind:, total:, page:, pages:, rows:}`,
+  where `total` counts every date in the set and `pages` is at least one: an
+  empty partition is page 1 of 1 with no rows rather than a missing selection.
+  A service the report does not name, a kind that is not one of the three, or a
+  page past the end is `{:error, :invalid_selection}`. Nothing here computes:
+  the dates are the ones the one snapshot already admitted, so paging cannot
+  describe a second database state (AC-3, CR-3).
+  """
+  @spec page(map(), term(), atom(), term()) :: {:ok, map()} | {:error, :invalid_selection}
+  def page(report, service_id, partition_kind, page_number)
+      when is_map(report) and is_atom(partition_kind) and is_integer(page_number) and
+             page_number >= 1 do
+    with true <- partition_kind in @partition_kinds,
+         {:ok, partition} <- report_partition(report, service_id) do
+      dates = partition |> Map.fetch!(Map.fetch!(@partition_date_keys, partition_kind))
+      dates = Enum.sort_by(dates, & &1, Date)
+      total = length(dates)
+      pages = max(div(total + @page_size - 1, @page_size), 1)
+
+      if page_number > pages do
+        {:error, :invalid_selection}
+      else
+        {:ok,
+         %{
+           service_id: partition.service_id,
+           partition_kind: partition_kind,
+           total: total,
+           page: page_number,
+           pages: pages,
+           rows: Enum.slice(dates, (page_number - 1) * @page_size, @page_size)
+         }}
+      end
+    else
+      _other -> {:error, :invalid_selection}
+    end
+  end
+
+  def page(_report, _service_id, _partition_kind, _page_number),
+    do: {:error, :invalid_selection}
+
+  defp report_partition(report, service_id) do
+    partitions = report |> Map.get(:partitions) |> List.wrap()
+
+    case Enum.find(partitions, &(is_map(&1) and &1.service_id == service_id)) do
+      nil -> {:error, :invalid_selection}
+      partition -> {:ok, partition}
+    end
+  end
 
   defp build_report(snapshot, partitions, projection) do
     impact = impact_input(snapshot, partitions)
