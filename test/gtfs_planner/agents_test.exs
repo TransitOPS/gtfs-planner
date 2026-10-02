@@ -271,7 +271,8 @@ defmodule GtfsPlanner.AgentsTest do
 
   defp registry_key(scope) do
     {scope.user_id, scope.organization_id, scope.gtfs_version_id, scope.pack_id,
-     Scope.identity(scope), Scope.approved_digest(scope), scope.subject_id}
+     Scope.identity(scope), Scope.approved_digest(scope), scope.subject_id,
+     Scope.context_digest(scope)}
   end
 
   defp active_sessions, do: DynamicSupervisor.count_children(SessionSupervisor).active
