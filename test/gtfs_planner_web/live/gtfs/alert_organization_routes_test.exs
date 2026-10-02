@@ -25,6 +25,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertOrganizationRoutesTest do
 
   use GtfsPlannerWeb.ConnCase, async: true
 
+  import Ecto.Query, only: [from: 2]
   import Phoenix.LiveViewTest
 
   import GtfsPlanner.AccountsFixtures
@@ -36,11 +37,18 @@ defmodule GtfsPlannerWeb.Gtfs.AlertOrganizationRoutesTest do
   alias GtfsPlanner.Alerts.Alert
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions.GtfsVersion
 
   describe "an organization with no schedule" do
     setup do
       organization = organization_fixture()
       actor = editor_fixture(organization)
+
+      # `organization_fixture/1` seeds a default published version, so the
+      # versionless organization this suite is about must be built explicitly:
+      # removing it is what makes AssignOrganization assign a nil
+      # `current_gtfs_version`, which is the state the contract names.
+      Repo.delete_all(from v in GtfsVersion, where: v.organization_id == ^organization.id)
 
       %{
         organization: organization,
@@ -59,6 +67,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertOrganizationRoutesTest do
       # The organization's first task is Alerts, and it points at the
       # organization path rather than at a version this organization has not got.
       assert has_element?(view, "#main-navigation #nav-alerts[href='/alerts']")
+
+      # No version is selected or selectable, so the switcher has nothing to show.
       refute has_element?(view, "#gtfs-version-switcher")
     end
 
@@ -162,7 +172,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertOrganizationRoutesTest do
       assert {:error, {:redirect, %{to: "/", flash: flash}}} =
                live(context.conn, "/gtfs/#{other_version.id}/alerts")
 
-      assert flash == "GTFS version not found"
+      assert flash["error"] == "GTFS version not found"
     end
 
     test "a bookmark read without a session is sent to sign in", context do
@@ -181,18 +191,19 @@ defmodule GtfsPlannerWeb.Gtfs.AlertOrganizationRoutesTest do
           "message" => %{"header" => "Foreign header", "description" => "Foreign description."}
         })
 
-      assert {:ok, view, _html} = live(context.conn, "/alerts/#{foreign.id}")
-
-      assert_redirect(view, "/alerts")
-      refute render(view) =~ "Foreign header"
-      assert render(view) =~ "That alert is not available here."
+      # The editor refuses during mount: the reader is taken straight to the
+      # organization list with the error, so no foreign wording is ever rendered.
+      assert {:error,
+              {:live_redirect,
+               %{to: "/alerts", flash: %{"error" => "That alert is not available here."}}}} =
+               live(context.conn, "/alerts/#{foreign.id}")
     end
 
     test "an identifier that is not an alert reveals nothing", context do
-      assert {:ok, view, _html} = live(context.conn, "/alerts/#{Ecto.UUID.generate()}")
-
-      assert_redirect(view, "/alerts")
-      refute render(view) =~ "alert-editor"
+      assert {:error,
+              {:live_redirect,
+               %{to: "/alerts", flash: %{"error" => "That alert is not available here."}}}} =
+               live(context.conn, "/alerts/#{Ecto.UUID.generate()}")
     end
   end
 

@@ -277,8 +277,9 @@ defmodule GtfsPlanner.Agents.Packs.AlertsPublicationBoundaryTest do
       pid = attach(context, alert)
       ref = Process.monitor(pid)
 
-      stub = blocked_request()
+      park_next_provider_request()
       assert :ok = Agents.send_message(pid, @note)
+      assert_receive {:blocked, stub}, 5_000
 
       Repo.delete!(alert)
 
@@ -299,8 +300,9 @@ defmodule GtfsPlanner.Agents.Packs.AlertsPublicationBoundaryTest do
       pid = attach(context, alert)
       ref = Process.monitor(pid)
 
-      stub = blocked_request()
+      park_next_provider_request()
       assert :ok = Agents.send_message(pid, @note)
+      assert_receive {:blocked, stub}, 5_000
 
       revoke(context.membership)
 
@@ -311,8 +313,17 @@ defmodule GtfsPlanner.Agents.Packs.AlertsPublicationBoundaryTest do
       assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 5_000
 
       # The alert itself is untouched: a revoked member's proposal is never
-      # applied, so the row keeps the revision it already had.
-      assert {:ok, untouched} = Alerts.get_alert(context.audit, alert.id)
+      # applied, so the row keeps the revision it already had. It is read back by
+      # an editor who is still a member, because the revoked one is not.
+      reader = user_fixture()
+      organization_membership_fixture(reader, context.organization)
+
+      assert {:ok, untouched} =
+               Alerts.get_alert(
+                 audit_context(context.organization, context.source, reader),
+                 alert.id
+               )
+
       assert untouched.revision == alert.revision
       assert untouched.urgency == :now
     end
@@ -376,7 +387,17 @@ defmodule GtfsPlanner.Agents.Packs.AlertsPublicationBoundaryTest do
   # deletes a source version: a route, a stop and an agency reference the
   # version with a plain foreign key, so the schedule rows go first.
   defp delete_version!(version) do
-    for schema <- [GtfsPlanner.Gtfs.Route, GtfsPlanner.Gtfs.Stop, GtfsPlanner.Gtfs.Agency] do
+    # Every child row that names the version must go first: calendars carry a
+    # `calendars_version_owner_fkey` to `gtfs_versions`, so a version whose
+    # agency/route/stop rows are gone but whose calendar rows remain cannot be
+    # deleted. `service_alerts` is deliberately absent - its source-version key
+    # is `ON DELETE SET NULL`, which is the retained provenance this suite proves.
+    for schema <- [
+          GtfsPlanner.Gtfs.Route,
+          GtfsPlanner.Gtfs.Stop,
+          GtfsPlanner.Gtfs.Agency,
+          GtfsPlanner.Gtfs.Calendar
+        ] do
       Repo.delete_all(from(row in schema, where: row.gtfs_version_id == ^version.id))
     end
 
@@ -412,10 +433,10 @@ defmodule GtfsPlanner.Agents.Packs.AlertsPublicationBoundaryTest do
 
   defp route(organization, version, route_id, short_name) do
     route_fixture(organization.id, version.id, %{
-      "route_id" => route_id,
-      "route_short_name" => short_name,
-      "route_long_name" => "Coast Highway",
-      "route_type" => 3
+      route_id: route_id,
+      route_short_name: short_name,
+      route_long_name: "Coast Highway",
+      route_type: 3
     })
   end
 
@@ -425,9 +446,12 @@ defmodule GtfsPlanner.Agents.Packs.AlertsPublicationBoundaryTest do
     |> Map.fetch!("content")
   end
 
-  # A provider request that parks until this test releases it, so the deletion
-  # and the revocation below are committed before the answer is read back.
-  defp blocked_request do
+  # Parks the next provider request until this test releases it, so the deletion
+  # and the revocation below are committed before the answer is read back. It only
+  # registers the expectation: the request itself is made by
+  # `Agents.send_message/2`, so the caller must trigger it first and then wait for
+  # `{:blocked, pid}` before it can `send(pid, {:release, payload})`.
+  defp park_next_provider_request do
     test = self()
 
     Req.Test.expect(@owner, 1, fn conn ->
@@ -440,9 +464,6 @@ defmodule GtfsPlanner.Agents.Packs.AlertsPublicationBoundaryTest do
         30_000 -> send_json(conn, text_reply("The stub gave up waiting."))
       end
     end)
-
-    assert_receive {:blocked, stub}, 5_000
-    stub
   end
 
   defp text_reply(text), do: reply("stop", %{"content" => text})

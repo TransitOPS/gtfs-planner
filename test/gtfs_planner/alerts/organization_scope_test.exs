@@ -124,7 +124,15 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
 
       assert {:error, :not_found} = Alerts.delete_alert(context.audit, theirs.id, theirs.revision)
 
-      assert {:ok, %{current: []}} = Alerts.list_alerts(context.audit, @new_york_night)
+      # The list this organization reads is its own: the foreign row appears in no
+      # tab, at an instant when the organization's own open alerts are current
+      # (the enclosing setup writes one per version).
+      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @new_york_night)
+
+      listed =
+        Enum.map(tabs.current ++ tabs.upcoming ++ tabs.in_progress ++ tabs.past, & &1.alert.id)
+
+      refute theirs.id in listed
     end
 
     test "a retarget naming another organization's version is not found", context do
@@ -169,20 +177,36 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
       assert {:ok, tabs} = Alerts.list_alerts(context.audit, @tokyo_morning)
 
       assert Enum.map(tabs.past, & &1.alert.id) == [new_york.id]
-      assert Enum.map(tabs.current, & &1.alert.id) == [tokyo.id]
+
+      # The enclosing setup writes one open alert per version, so `current` holds
+      # those too. What this proves is the classification: at this instant the
+      # Tokyo alert is current and the finished New York one is not.
+      current_ids = Enum.map(tabs.current, & &1.alert.id)
+      assert tokyo.id in current_ids
+      refute new_york.id in current_ids
 
       # And the same instant read through the Tokyo context classifies
       # identically: the selected version does not decide the civil date.
       assert {:ok, other_tabs} = Alerts.list_alerts(context.other_audit, @tokyo_morning)
 
       assert Enum.map(other_tabs.past, & &1.alert.id) == [new_york.id]
-      assert Enum.map(other_tabs.current, & &1.alert.id) == [tokyo.id]
+
+      other_current_ids = Enum.map(other_tabs.current, & &1.alert.id)
+      assert tokyo.id in other_current_ids
+      refute new_york.id in other_current_ids
     end
   end
 
   describe "retained targets after the source version is deleted" do
     setup context do
-      route = route_fixture(context.organization.id, context.spring.id, %{route_id: "r_1"})
+      # `Targets.route_label/1` presents `route_short_name` before `route_long_name`,
+      # so the label this suite asserts is the fixture's short name.
+      route =
+        route_fixture(context.organization.id, context.spring.id, %{
+          route_id: "r_1",
+          route_short_name: "1 Main"
+        })
+
       stop = stop_fixture(context.organization.id, context.spring.id, %{stop_id: "s_1"})
 
       alert = delay_about(context, context.spring, "Spring detour", route.id, "2026-10-01", nil)
@@ -269,10 +293,25 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
                  %{"shape" => "stop_all_routes", "stop_ids" => [context.stop.id, foreign_stop.id]}
                )
 
-      assert %{scope: ["Choose stops from this version."]} = errors_on(changeset)
+      # The alert being retargeted still holds a route of the version it was
+      # written in, so the fall version refuses both the route it does not hold
+      # and the stop it cannot resolve from there.
+      assert %{
+               scope: [
+                 "Choose routes from this version.",
+                 "Choose stops from this version."
+               ]
+             } = errors_on(changeset)
 
       assert {:ok, unchanged} = Alerts.get_alert(context.audit, context.alert.id)
-      assert unchanged.scope.stop_ids == []
+
+      # The refused write stored nothing: the alert keeps the revision, the source
+      # version and the route-shaped selection it already had. Its scope is a
+      # `routes` answer, so it carries no stop selection at all (`stop_ids` is nil,
+      # not an empty list).
+      assert unchanged.revision == context.alert.revision
+      assert unchanged.scope == context.alert.scope
+      assert unchanged.scope.stop_ids == nil
       assert unchanged.source_gtfs_version_id == context.spring.id
     end
 

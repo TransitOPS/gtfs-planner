@@ -139,7 +139,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
       assert alert.revision == 1
       assert alert.urgency == nil
       assert alert.organization_id == context.organization.id
-      assert alert.gtfs_version_id == context.version.id
+      assert alert.source_gtfs_version_id == context.version.id
 
       # The conversation the navigation lands on is the one the start card began:
       # it is keyed by the alert and already holds the note.
