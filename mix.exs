@@ -79,6 +79,7 @@ defmodule GtfsPlanner.MixProject do
       {:bandit, "~> 1.5"},
       {:argon2_elixir, "~> 4.1"},
       {:ex_cldr_plugs, "~> 1.3"},
+      {:tzdata, "~> 1.2"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: :dev, runtime: false},
       {:sobelow, "~> 0.14.1", only: :dev, runtime: false},

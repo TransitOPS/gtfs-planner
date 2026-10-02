@@ -174,6 +174,12 @@ config :logger, :default_formatter,
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
 
+# Time zone database used to resolve civil alert timing into explicit UTC
+# periods. Autoupdate is disabled so a deployed instance never fetches zone
+# rules over the network at runtime and never silently reinterprets already
+# accepted periods: the pinned dependency version is the only zone source.
+config :tzdata, autoupdate: :disabled
+
 # Filter password- and token-bearing keys from structured parameter logging.
 # This covers substring matches (current_password, password_confirmation) but
 # does not redact tokens embedded in URL paths.
