@@ -516,7 +516,7 @@ defmodule GtfsPlanner.Alerts.FeedTest do
         url: "https://transit.example.org/alerts/route-12",
         scope: scope()
       },
-      overrides
+      Map.new(overrides)
     )
   end
 
@@ -531,7 +531,7 @@ defmodule GtfsPlanner.Alerts.FeedTest do
         route_stops: [],
         trips: []
       },
-      overrides
+      Map.new(overrides)
     )
   end
 end

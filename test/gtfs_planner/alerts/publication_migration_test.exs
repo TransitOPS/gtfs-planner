@@ -102,7 +102,7 @@ defmodule GtfsPlanner.Alerts.PublicationMigrationTest do
     test "keep captured wire ids and labels after the source version is deleted", context do
       Repo.query!(
         """
-        UPDATE service_alerts SET target_reference = $2::jsonb WHERE id = $1
+        UPDATE service_alerts SET target_reference = $2::text::jsonb WHERE id = $1
         """,
         [
           Ecto.UUID.dump!(context.detour),
@@ -245,7 +245,7 @@ defmodule GtfsPlanner.Alerts.PublicationMigrationTest do
   defp constraint_names(table) do
     %{rows: rows} =
       Repo.query!(
-        "SELECT conname FROM pg_constraint WHERE conrelid = $1::regclass ORDER BY conname",
+        "SELECT conname FROM pg_constraint WHERE conrelid = to_regclass($1) ORDER BY conname",
         [table]
       )
 
