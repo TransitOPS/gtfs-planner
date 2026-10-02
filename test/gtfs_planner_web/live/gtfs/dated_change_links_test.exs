@@ -36,6 +36,8 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeLinksTest do
   import GtfsPlanner.ScheduleEditingFixtures
   import GtfsPlanner.VersionsFixtures
 
+  alias GtfsPlanner.Agents
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.CalendarDate
@@ -503,10 +505,35 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeLinksTest do
     pid = session_pid(view)
     assert is_pid(pid)
 
+    # The session sends its events to the processes registered as listeners, and
+    # the only way in is the `attach` the facade performs for the caller of
+    # `open/1`. The page opened the conversation from inside the LiveView, so the
+    # test process joins the same conversation here and observes the turn's own
+    # events instead of polling the render.
+    assert {:ok, ^pid, _snapshot} = Agents.open(join_scope(view))
+
     {view, pid}
   end
 
   defp session_pid(view), do: :sys.get_state(view.pid).socket.assigns.agent_session
+
+  # The very scope the page's own panel opened the session under, read from the
+  # same socket assigns, so the facade resolves this session rather than
+  # starting a second one beside it.
+  defp join_scope(view) do
+    socket = :sys.get_state(view.pid).socket
+
+    %Scope{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      user_id: socket.assigns.current_user.id,
+      user_email: socket.assigns.current_user.email,
+      pack_id: socket.assigns.agent_pack_id,
+      version_name: socket.assigns.current_gtfs_version.name,
+      subject_id: socket.assigns.agent_subject_id,
+      resource_context: socket.assigns.agent_context
+    }
+  end
 
   defp submit(view, text) do
     view
@@ -532,7 +559,7 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeLinksTest do
     |> render()
     |> LazyHTML.from_fragment()
     |> LazyHTML.query("a")
-    |> Enum.map(&LazyHTML.attribute(&1, "href"))
+    |> Enum.flat_map(&LazyHTML.attribute(&1, "href"))
   end
 
   defp track_sessions do

@@ -59,6 +59,7 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.DatedChangePlan
   alias GtfsPlanner.Gtfs.Frequency
+  alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RouteOperatingSetting
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Transfer
@@ -492,10 +493,25 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
     end
 
     test "a deleted route refuses the pack's own precondition", context do
+      # The delete must not outlive this case holding its row lock. ExUnit runs
+      # this file's committed cleanup before it rolls the sandbox back, and an
+      # unboxed `DELETE FROM routes` cannot proceed past a row an open
+      # transaction deleted, so the lock is taken and released inside a named
+      # savepoint instead of living to the end of the test.
+      Repo.query!("SAVEPOINT deleted_route", [], sandbox_subtransaction: false)
+      route_id = context.harbor.route.id
+
       Repo.delete!(context.harbor.route)
 
       assert {:error, :unavailable} =
                Dispatch.call(DatedChanges, context.scope, "prepare_dated_change_plan", "{}")
+
+      Repo.query!("ROLLBACK TO SAVEPOINT deleted_route", [], sandbox_subtransaction: false)
+      Repo.query!("RELEASE SAVEPOINT deleted_route", [], sandbox_subtransaction: false)
+
+      # The rollback restored the row and released the lock the delete took, so
+      # this transaction holds nothing the committed cleanup would wait on.
+      assert Repo.get(Route, route_id)
     end
   end
 
