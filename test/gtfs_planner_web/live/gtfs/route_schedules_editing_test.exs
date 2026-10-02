@@ -828,7 +828,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
 
       assert html =~ "Duplicate trip"
       assert has_element?(view, "#trip-start")
-      assert html =~ ~s(value="07:30")
+      assert html =~ ~s(value="07:30:00")
 
       before = count_trips(scope)
 

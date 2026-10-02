@@ -1696,7 +1696,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
         params = %{
           service_id: socket.assigns.filters.service_id,
           mode: :at,
-          first_departure: clock(anchor + @duplicate_offset_secs),
+          first_departure: GtfsTime.format(anchor + @duplicate_offset_secs),
           skip_existing: true,
           anchor_secs: anchor
         }
@@ -3735,8 +3735,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     case parse_clock_value(until_text) do
       {:ok, until_secs} ->
         %{
-          from: clock(until_secs),
-          until: clock(until_secs + @window_hours * 3_600),
+          from: GtfsTime.format(until_secs),
+          until: GtfsTime.format(until_secs + @window_hours * 3_600),
           every: window.every
         }
 
@@ -3768,7 +3768,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       "pattern_id" => row_pattern_uuid(socket, row),
       "timed_pattern_id" => row.timed_pattern_id || "custom",
       "service_id" => row.service_id,
-      "start_time" => clock(row.start_secs) || "",
+      "start_time" => (row.start_secs && GtfsTime.format(row.start_secs)) || "",
       "trip_headsign" => row.trip_headsign || "",
       "trip_short_name" => row.trip_short_name || "",
       "wheelchair_accessible" => integer_string(row.wheelchair_accessible),
@@ -3790,7 +3790,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       "pattern_id" => row_pattern_uuid(socket, row),
       "timed_pattern_id" => row.timed_pattern_id || first_timing_id(socket, row),
       "service_id" => row.service_id,
-      "start_time" => clock((row.start_secs || 0) + @duplicate_offset_secs)
+      "start_time" => GtfsTime.format((row.start_secs || 0) + @duplicate_offset_secs)
     }
   end
 
@@ -4088,7 +4088,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   defp stored_clock_text(value) do
     case GtfsTime.parse(value) do
-      {:ok, secs} -> clock(secs)
+      {:ok, secs} -> GtfsTime.format(secs)
       {:error, _reason} -> if(is_binary(value), do: value, else: "")
     end
   end
@@ -4270,14 +4270,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # The drawer reads the page's one R2 grammar; the context takes HH:MM:SS.
   defp parse_start_clock(value) do
     case parse_clock_value(value) do
-      {:ok, secs} -> {:ok, secs, seconds_to_clock(secs)}
+      {:ok, secs} -> {:ok, secs, GtfsTime.format(secs)}
       {:error, _reason} -> {:error, :start_time, ScheduleComponents.error_message(:invalid_time)}
     end
   end
 
   defp parse_until_clock(value) do
     case parse_clock_value(value) do
-      {:ok, secs} -> {:ok, secs, seconds_to_clock(secs)}
+      {:ok, secs} -> {:ok, secs, GtfsTime.format(secs)}
       {:error, _reason} -> {:error, :until, ScheduleComponents.error_message(:until_before_start)}
     end
   end
@@ -4303,25 +4303,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     do: Regex.match?(~r/\A\d+\z/, String.trim(value))
 
   defp whole_number?(_value), do: false
-
-  defp clock(nil), do: nil
-
-  defp clock(secs) do
-    secs
-    |> GtfsTime.format()
-    |> String.split(":")
-    |> Enum.take(2)
-    |> Enum.join(":")
-  end
-
-  defp seconds_to_clock(secs) do
-    hours = div(secs, 3_600)
-    minutes = div(rem(secs, 3_600), 60)
-
-    pad(hours) <> ":" <> pad(minutes) <> ":00"
-  end
-
-  defp pad(number), do: number |> Integer.to_string() |> String.pad_leading(2, "0")
 
   # --- URL parameters --------------------------------------------------------
 
@@ -4479,7 +4460,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       |> Enum.map(& &1.start_secs)
       |> Enum.reject(&is_nil/1)
       |> Enum.sort()
-      |> Enum.map(&clock/1)
+      |> Enum.map(&GtfsTime.display/1)
 
     case {Enum.take(times, @listed_departures), length(times) - @listed_departures} do
       {[], _more} -> nil

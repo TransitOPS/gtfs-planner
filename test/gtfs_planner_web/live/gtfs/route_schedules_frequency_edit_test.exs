@@ -73,8 +73,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesFrequencyEditTest do
       refute has_element?(view, "#trip-drawer", "Frequency times are shown for reference")
 
       assert has_element?(view, "#frequency-windows", "departures from FE_START")
-      assert has_element?(view, "#windows-0-from[value='06:00']")
-      assert has_element?(view, "#windows-0-until[value='07:00']")
+      assert has_element?(view, "#windows-0-from[value='06:00:00']")
+      assert has_element?(view, "#windows-0-until[value='07:00:00']")
       assert has_element?(view, "#windows-0-every[value='10']")
 
       assert has_element?(
