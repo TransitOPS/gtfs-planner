@@ -699,6 +699,38 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       assert saved.revision == opened.revision + 1
     end
 
+    test "a field typed beside a chosen stop is saved without picking the stop again", context do
+      %{depot: depot, harbor: harbor} = stops(context)
+      _coast_route = pattern(context, "R1", [{"S_DEPOT", 0}, {"S_HARBOR", 600}])
+
+      alert =
+        alert_with(context, %{
+          "urgency" => "now",
+          "situation" => "accessibility",
+          "scope" => %{
+            "shape" => "stop_all_routes",
+            "stop_ids" => [depot.id],
+            "alternative_stop_id" => harbor.id
+          }
+        })
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=alternative")
+
+      # The combobox posts the stop it holds with the facility the editor typed.
+      render_change(view, "autosave", %{
+        "alert" => %{
+          "revision" => Integer.to_string(alert.revision),
+          "scope" => %{"facility" => "North entrance ramp"}
+        },
+        "alternative" => %{"stop_id" => harbor.id}
+      })
+
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.scope.facility == "North entrance ramp"
+      assert saved.scope.alternative_stop_id == harbor.id
+    end
+
     test "a moved stop cannot advance without a stop or written directions", context do
       %{depot: depot} = stops(context)
       _coast_route = pattern(context, "R1", [{"S_DEPOT", 0}])

@@ -860,10 +860,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
         {:noreply, socket}
 
       _alert ->
-        case write_without_advancing(socket, %{"scope" => %{"alternative_stop_id" => nil}}) do
-          {:noreply, socket} -> {:noreply, assign(socket, :directions_open?, true)}
-          other -> other
-        end
+        # The combobox is told the selection is gone as well: its own field would
+        # otherwise keep posting the old stop with every change to the directions.
+        socket = forget_stop(socket, :alternative, nil)
+
+        {:noreply, assign(socket, :directions_open?, true)}
     end
   end
 
@@ -1559,6 +1560,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # question, so choosing the stop clears the text. The alternative search
   # already excluded the affected stops, which is why this identity cannot be
   # one of them by accident.
+  # The combobox repeats the stop it already holds with every change on this
+  # question, so a stop equal to the stored one is a change to some other field,
+  # for instance the facility, and is written as one.
+  defp pick_alternative(socket, %Alert{scope: %{alternative_stop_id: id}}, id, params),
+    do: autosave_alert(socket, params)
+
   defp pick_alternative(socket, alert, id, params) do
     case Alerts.stops_by_id(audit_context(socket), [id]) do
       %{^id => stop} ->
