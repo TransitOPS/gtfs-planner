@@ -1,0 +1,32 @@
+route_id,agency_id,route_short_name,route_long_name,route_desc,route_type,route_url,route_color,route_text_color,network_id,route_sort_order
+002,C-TRAN,002,Lincoln,,3,,3777bc,ffffff,LOCAL,3
+006,C-TRAN,006,Fruit Valley/Grand,,3,,3777bc,ffffff,LOCAL,4
+007,C-TRAN,007,Battle Ground,,3,,3777bc,ffffff,LOCAL,5
+009,C-TRAN,009,Felida,,3,,3777bc,ffffff,LOCAL,6
+012,C-TRAN,012,112th Avenue,,3,,3777bc,ffffff,LOCAL,7
+019,C-TRAN,019,Salmon Creek,,3,,3777bc,ffffff,LOCAL,8
+025,C-TRAN,025,Saint Johns,,3,,3777bc,ffffff,LOCAL,9
+030,C-TRAN,030,Burton,,3,,3777bc,ffffff,LOCAL,10
+031,C-TRAN,031,Hazel Dell,,3,,3777bc,ffffff,LOCAL,11
+032,C-TRAN,032,Evergreen/Andresen,,3,,3777bc,ffffff,LOCAL,12
+034,C-TRAN,034,192nd Ave/34th St,,3,,3777bc,ffffff,LOCAL,13
+041,C-TRAN,041,SR 14,,3,,3777bc,ffffff,LOCAL,14
+047,C-TRAN,047,Battle Ground/Yacolt,,3,,3777bc,ffffff,LOCAL,15
+048,C-TRAN,048,Ridgefield,,3,,3777bc,ffffff,LOCAL,16
+050,C-TRAN,Vine-Green,The Vine on Fourth Plain,,3,,2d9a47,000000,LOCAL,1
+051,C-TRAN,Vine-Red,The Vine on Mill Plain,,3,,d2232a,ffffff,LOCAL,2
+060,C-TRAN,060,Delta Park Regional,,3,,3777bc,ffffff,REGIONAL,17
+065,C-TRAN,065,Parkrose Regional,,3,,3777bc,ffffff,REGIONAL,18
+067,C-TRAN,067,Airport Regional,,3,,3777bc,ffffff,REGIONAL,19
+071,C-TRAN,071,Highway 99,,3,,3777bc,ffffff,LOCAL,20
+072,C-TRAN,072,Orchards,,3,,3777bc,ffffff,LOCAL,21
+074,C-TRAN,074,East Fourth Plain/162nd Ave,,3,,3777bc,ffffff,LOCAL,22
+078,C-TRAN,078,78th Street,,3,,3777bc,ffffff,LOCAL,23
+080,C-TRAN,080,Van Mall/Fishers,,3,,3777bc,ffffff,LOCAL,24
+092,C-TRAN,092,Camas/Washougal,,3,,3777bc,ffffff,LOCAL,25
+105,C-TRAN,105,I-5 Express,,3,,3777bc,ffffff,EXPRESS,26
+106,C-TRAN,105X,I-5X Express,,3,,3777bc,ffffff,EXPRESS,27
+164,C-TRAN,164,Fishers Landing Express,,3,,3777bc,ffffff,EXPRESS,28
+190,C-TRAN,190,Marquam Hill Express,,3,,3777bc,ffffff,EXPRESS,29
+500,C-TRAN,500,I-5 Construction Shuttle,,3,,3777bc,ffffff,REGIONAL,30
+899,C-TRAN,899,Shuttle,,3,,3777bc,ffffff,LOCAL,31

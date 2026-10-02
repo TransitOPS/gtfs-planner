@@ -9,6 +9,7 @@ defmodule GtfsPlanner.Gtfs.Export.CsvWriter do
   - Booleans are exported as 0 (false) or 1 (true)
   """
 
+  alias GtfsPlanner.Gtfs.Fares.Money
   alias GtfsPlanner.Gtfs.GtfsTime
 
   @doc """
@@ -76,6 +77,17 @@ defmodule GtfsPlanner.Gtfs.Export.CsvWriter do
   # A column the interchange format fixes for every row, such as `is_closed` 1 or
   # an always-blank direction.
   defp extract_value(_record, {:constant, value}, _lookup_maps), do: value
+
+  defp extract_value(record, {:currency_amount, field, currency_field}, _lookup_maps) do
+    case Map.get(record, field) do
+      %Decimal{} = amount ->
+        digits = Money.minor_units(Map.get(record, currency_field))
+        amount |> Decimal.round(max(digits, -amount.exp)) |> Decimal.to_string(:normal)
+
+      absent ->
+        absent
+    end
+  end
 
   # Formats and escapes a value for GTFS CSV output
   defp format_and_escape(value) do

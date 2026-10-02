@@ -191,7 +191,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveFareZoneTest do
       assert has_element?(view, "a#stop-fare-zone-link", "View in Fares")
 
       assert href(view, "#stop-fare-zone-link") ==
-               "/gtfs/#{version.id}/settings/fares?zone=A"
+               "/gtfs/#{version.id}/settings/fares/zones?zone=A"
 
       # The entry sits in the Service and access card, where riders' options are listed.
       assert "Fare zone" in dt_labels(view)
@@ -210,7 +210,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveFareZoneTest do
 
       # `filter` is its own query key: the unassigned link never sets `zone`.
       assert href(view, "#stop-fare-zone-link") ==
-               "/gtfs/#{version.id}/settings/fares?filter=unassigned"
+               "/gtfs/#{version.id}/settings/fares/zones?filter=unassigned"
     end
 
     test "names a zone no record declares by its own ID", %{
@@ -222,7 +222,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveFareZoneTest do
       {:ok, view, _html} = open_stop(conn, user, organization, version, "PLATFORM_IMPLIED")
 
       assert stop_fare_zone(view) == "C · C"
-      assert href(view, "#stop-fare-zone-link") == "/gtfs/#{version.id}/settings/fares?zone=C"
+
+      assert href(view, "#stop-fare-zone-link") ==
+               "/gtfs/#{version.id}/settings/fares/zones?zone=C"
     end
 
     test "keeps a padded stored zone ID byte-for-byte and encodes its space in the link", %{
@@ -238,7 +240,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveFareZoneTest do
       assert stop_fare_zone(view) == "Airport West ·  A"
 
       href = href(view, "#stop-fare-zone-link")
-      assert href == "/gtfs/#{version.id}/settings/fares?" <> URI.encode_query(%{"zone" => " A"})
+
+      assert href ==
+               "/gtfs/#{version.id}/settings/fares/zones?" <> URI.encode_query(%{"zone" => " A"})
+
       refute href =~ " "
     end
 
@@ -272,7 +277,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveFareZoneTest do
       assert stop_fare_zone(twin_view) == "Airport · A"
 
       assert href(twin_view, "#stop-fare-zone-link") ==
-               "/gtfs/#{twin.id}/settings/fares?zone=A"
+               "/gtfs/#{twin.id}/settings/fares/zones?zone=A"
     end
   end
 
@@ -301,8 +306,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveFareZoneTest do
       refute has_element?(view, "#station-platform-fare-zones a", "E · E")
       refute has_element?(view, "#station-platform-fare-zones a", "Z · Z")
 
-      assert href(view, "#platform-fare-zone-0") == "/gtfs/#{version.id}/settings/fares?zone=A"
-      assert href(view, "#platform-fare-zone-1") == "/gtfs/#{version.id}/settings/fares?zone=B"
+      assert href(view, "#platform-fare-zone-0") ==
+               "/gtfs/#{version.id}/settings/fares/zones?zone=A"
+
+      assert href(view, "#platform-fare-zone-1") ==
+               "/gtfs/#{version.id}/settings/fares/zones?zone=B"
     end
 
     test "shows None for a station with no zoned platform", %{

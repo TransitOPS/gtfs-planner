@@ -40,6 +40,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopPlacement
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
@@ -1483,6 +1484,169 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   defp route_label(%Route{route_id: route_id}), do: route_id
 
   @doc """
+  Suggests street-routed interior points for every pair of stops around one
+  moved stop.
+
+  A stop's map line is drawn through the pairs it sits between, so moving it
+  changes the interior of at most two of them: the pair it *follows* on each
+  pattern it is on, and the pair it *precedes*. Every pattern in the version
+  that visits the stop is scanned once, both pairs are collected and
+  deduplicated, and each distinct pair is routed once — a pair two patterns
+  share is one request and one suggestion, which is what makes the review able
+  to say "both of these redraw" from a single fact.
+
+  The new point is always one endpoint and the neighbouring stop's own
+  coordinates the other, in the pair's own direction, so a leg's interior is
+  oriented the way the pattern runs it. Endpoints are the stop anchors (R5,
+  `[lon, lat]`): only interior points are suggested.
+
+  Returns `%{pairs, suggestions, failed}`. A pair whose neighbour has no
+  coordinates, or whose routing call fails, appears in `failed` with the
+  adapter's bare atom rather than being dropped — the review has to be able to
+  say *why* a line is not being redrawn. Nothing is written, and this runs
+  outside any transaction: a routing call is an external request and has no
+  business holding a database transaction open.
+  """
+  @spec suggest_stop_pairs(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), StopPlacement.point()) :: %{
+          pairs: [{String.t(), String.t()}],
+          suggestions: %{{String.t(), String.t()} => [[float()]]},
+          failed: %{{String.t(), String.t()} => atom()}
+        }
+  def suggest_stop_pairs(organization_id, gtfs_version_id, stop_id, {new_lon, new_lat})
+      when is_binary(stop_id) and is_number(new_lon) and is_number(new_lat) do
+    new_point = [new_lon * 1.0, new_lat * 1.0]
+    pairs = stop_pairs(organization_id, gtfs_version_id, stop_id)
+    neighbours = stop_points(organization_id, gtfs_version_id, neighbours_of(pairs))
+
+    {suggestions, failed} =
+      Enum.reduce(pairs, {%{}, %{}}, fn {from_id, to_id} = pair, {suggestions, failed} ->
+        from = Map.get(neighbours, from_id, new_point)
+        to = if to_id == stop_id, do: new_point, else: Map.get(neighbours, to_id, new_point)
+
+        case suggest_pair_leg(from, to) do
+          {:ok, points} -> {Map.put(suggestions, pair, points), failed}
+          {:error, reason} -> {suggestions, Map.put(failed, pair, reason)}
+        end
+      end)
+
+    %{pairs: pairs, suggestions: suggestions, failed: failed}
+  end
+
+  # The distinct `{from, to}` pairs on either side of the stop, in a stable
+  # order so a review of the same version twice lists the same rows.
+  #
+  # The window is computed over a subquery of *every* occurrence in the version
+  # and the stop's own row is filtered afterwards. Written the other way round
+  # — filtering first — the window would only ever see the stop's own rows, so
+  # every LAG and LEAD would be nil and the review would find no pairs at all.
+  # That failure is silent: an empty pair list reads as "nothing to redraw".
+  @doc """
+  The distinct `{from, to}` stop pairs on either side of `stop` in this
+  version, sorted.
+
+  The same list `suggest_stop_pairs/4` routes, exposed so a caller that
+  already has a routed set can ask which patterns a move touches without
+  routing again. `StopEditing.apply_move/4` needs it twice inside one
+  transaction — to recompute the review's fingerprint and, for `lines: :keep`,
+  to name the patterns it is leaving stale — and a routing request has no
+  business inside a database transaction.
+  """
+  @spec stop_pairs(AuditContext.t(), Stop.t()) :: [{String.t(), String.t()}]
+  def stop_pairs(%AuditContext{} = audit_context, %Stop{} = stop) do
+    stop_pairs(audit_context.organization_id, audit_context.gtfs_version_id, stop.stop_id)
+  end
+
+  defp stop_pairs(organization_id, gtfs_version_id, stop_id) do
+    neighbours =
+      from(occurrence in RoutePatternStop,
+        where:
+          occurrence.organization_id == ^organization_id and
+            occurrence.gtfs_version_id == ^gtfs_version_id,
+        select: %{
+          stop_id: occurrence.stop_id,
+          previous_stop_id:
+            type(
+              fragment(
+                "LAG(?) OVER (PARTITION BY ? ORDER BY ?)",
+                occurrence.stop_id,
+                occurrence.route_pattern_id,
+                occurrence.position
+              ),
+              :string
+            ),
+          next_stop_id:
+            type(
+              fragment(
+                "LEAD(?) OVER (PARTITION BY ? ORDER BY ?)",
+                occurrence.stop_id,
+                occurrence.route_pattern_id,
+                occurrence.position
+              ),
+              :string
+            )
+        }
+      )
+
+    neighbours
+    |> subquery()
+    |> where([row], row.stop_id == ^stop_id)
+    |> Repo.all()
+    |> Enum.flat_map(fn row ->
+      [
+        if(is_nil(row.previous_stop_id), do: nil, else: {row.previous_stop_id, stop_id}),
+        if(is_nil(row.next_stop_id), do: nil, else: {stop_id, row.next_stop_id})
+      ]
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp neighbours_of(pairs) do
+    pairs
+    |> Enum.flat_map(fn {from_id, to_id} -> [from_id, to_id] end)
+    |> Enum.uniq()
+  end
+
+  # `[lon, lat]` for every named stop that has both, and nil for one that does
+  # not. A missing coordinate is `nil` rather than a dropped entry so the
+  # caller's fallback is explicit about *why* it fell back.
+  defp stop_points(organization_id, gtfs_version_id, stop_ids) do
+    from(stop in Stop,
+      where:
+        stop.organization_id == ^organization_id and
+          stop.gtfs_version_id == ^gtfs_version_id and
+          stop.stop_id in ^stop_ids,
+      select: {stop.stop_id, stop.stop_lon, stop.stop_lat}
+    )
+    |> Repo.all()
+    |> Map.new(fn {stop_id, lon, lat} -> {stop_id, point_pair(lon, lat)} end)
+  end
+
+  defp point_pair(lon, lat) when is_float(lon) or is_integer(lon) do
+    if is_float(lat) or is_integer(lat), do: [lon * 1.0, lat * 1.0]
+  end
+
+  defp point_pair(%Decimal{} = lon, %Decimal{} = lat),
+    do: [Decimal.to_float(lon), Decimal.to_float(lat)]
+
+  defp point_pair(_lon, _lat), do: nil
+
+  # One leg, through `suggest_between/2` so the endpoint validation and the
+  # "interior points only" rule stay in one place.
+  defp suggest_pair_leg(from, to) do
+    with true <- valid_endpoint?(from),
+         true <- valid_endpoint?(to) do
+      suggest_between(from, to)
+    else
+      _invalid -> {:error, :no_coordinates}
+    end
+  end
+
+  defp valid_endpoint?([lon, lat]) when is_number(lon) and is_number(lat), do: true
+  defp valid_endpoint?(_point), do: false
+
+  @doc """
   Suggests street-routed interior points for the given section positions (step 32).
 
   Scopes through `RoutePatterns.published_route/3` and a scoped pattern query
@@ -1626,6 +1790,324 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   end
 
   defp endpoint_latlon(_point), do: {:error, :invalid_coordinates}
+
+  @type redraw_result :: %{
+          segments_written: non_neg_integer(),
+          redrawn: [%{pattern_id: Ecto.UUID.t(), route_pattern_id: String.t()}],
+          stale: [%{pattern_id: Ecto.UUID.t(), route_pattern_id: String.t(), reason: atom()}]
+        }
+
+  @doc """
+  Redraws the map-line sections a moved stop's pairs cover.
+
+  Runs in the *caller's* transaction, after the stop's new coordinates are
+  already written: the anchors the segments resolve against are the stop rows
+  themselves, so redrawing before the move would draw the line the stop used
+  to sit on. `StopEditing.apply_move/4` is the only caller.
+
+  `suggestions` is `%{{from, to} => [[float()]]}` — interior points only, one
+  entry per distinct pair, as `suggest_stop_pairs/4` returns them. Every
+  segment covering one of those pairs, shared or override, is rewritten with
+  them; a pair with no segment yet gets a shared one, so a review that routed
+  a missing section is not thrown away by the apply.
+
+  `failed` carries the pairs routing could not answer, so a pattern that
+  depends on one is reported as a routing failure rather than as a data
+  problem. `reviewed_lock_versions` is the segment lock versions the review
+  saw; a segment that moved on since rolls the whole redraw back with
+  `:stale_review` rather than overwriting somebody else's edit. Pass it
+  whenever the redraw is the second half of a review-then-apply pair.
+
+  Answers `%{segments_written:, redrawn:, stale:}`. A pattern is rematerialized
+  only when it is redrawable: it has a line to draw, no pair failed to route,
+  every section resolves and `shape_plan/2` finds no linked trip disagreeing
+  with the pattern's visit count. Everything else is returned in `stale` with
+  the reason, and its existing shape rows and digest are left exactly as they
+  were — `materialize_pattern!/4` rolls the whole transaction back when handed
+  blockers, so it is never called for one.
+
+  A pattern with no `shape_id` is left out of both lists: it had no line to
+  redraw, and calling it stale would imply there was one worth saving. Every
+  read and write filters by the caller's organization and version.
+  """
+  @spec redraw_stop_pairs!(Ecto.UUID.t(), Ecto.UUID.t(), map()) :: redraw_result()
+  def redraw_stop_pairs!(organization_id, gtfs_version_id, options) when is_map(options) do
+    %{
+      suggestions: suggestions,
+      audit_context: %AuditContext{} = audit_context
+    } = options
+
+    failed = Map.get(options, :failed, %{})
+    reviewed = Map.get(options, :reviewed_lock_versions, %{})
+
+    segments_written =
+      write_pair_segments!(organization_id, gtfs_version_id, suggestions, reviewed, audit_context)
+
+    {redrawn, stale} =
+      organization_id
+      |> affected_patterns(gtfs_version_id, suggestions, failed)
+      |> Enum.reduce({[], []}, fn {pattern_id, pairs}, {redrawn, stale} ->
+        case redraw_pattern!(pattern_id, pairs, failed, audit_context) do
+          {:redrawn, row} -> {[row | redrawn], stale}
+          {:stale, row} -> {redrawn, [row | stale]}
+          :untouched -> {redrawn, stale}
+        end
+      end)
+
+    %{
+      segments_written: segments_written,
+      redrawn: Enum.sort_by(redrawn, & &1.route_pattern_id),
+      stale: Enum.sort_by(stale, & &1.route_pattern_id)
+    }
+  end
+
+  def redraw_stop_pairs!(_organization_id, _gtfs_version_id, _options),
+    do: {:error, :invalid_input}
+
+  # Every pattern that uses any reviewed pair, once, with the pairs it uses
+  # kept so a routing failure can be attributed to the right pattern. Both
+  # the routed and the failed pairs are scanned: a pattern the review could
+  # not answer for still has to be reported, and dropping it would tell the
+  # editor their drag touches fewer lines than it does.
+  defp affected_patterns(organization_id, gtfs_version_id, suggestions, failed) do
+    suggestions
+    |> Map.keys()
+    |> Enum.concat(Map.keys(failed))
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Enum.flat_map(fn {from_id, to_id} ->
+      organization_id
+      |> pair_users(gtfs_version_id, from_id, to_id)
+      |> Enum.map(&{&1.pattern_id, {from_id, to_id}})
+    end)
+    |> Enum.group_by(fn {pattern_id, _pair} -> pattern_id end)
+    |> Enum.map(fn {pattern_id, uses} ->
+      {pattern_id, uses |> Enum.map(&elem(&1, 1)) |> Enum.uniq()}
+    end)
+    |> Enum.sort_by(&elem(&1, 0))
+  end
+
+  # One segment row per write, whether it already existed or was created for a
+  # section the review had routed but nothing had ever drawn.
+  defp write_pair_segments!(
+         organization_id,
+         gtfs_version_id,
+         suggestions,
+         reviewed,
+         audit_context
+       ) do
+    suggestions
+    |> Enum.sort_by(fn {from_id, to_id} -> {from_id, to_id} end)
+    |> Enum.reduce(0, fn {pair, points}, acc ->
+      acc +
+        write_pair_segment!(
+          organization_id,
+          gtfs_version_id,
+          pair,
+          points,
+          reviewed,
+          audit_context
+        )
+    end)
+  end
+
+  # A pair's geometry is keyed by the pair, not by the pattern, so every
+  # segment carrying it — the shared row and any visit-specific override on
+  # any pattern in the version — moves together. A pattern with an override
+  # on this pair would otherwise keep drawing the old street while its
+  # neighbour redrew.
+  defp write_pair_segment!(
+         organization_id,
+         gtfs_version_id,
+         {from_id, to_id},
+         points,
+         reviewed,
+         audit_context
+       ) do
+    existing =
+      from(s in AlignmentSegment,
+        where:
+          s.organization_id == ^organization_id and
+            s.gtfs_version_id == ^gtfs_version_id and
+            s.from_stop_id == ^from_id and
+            s.to_stop_id == ^to_id,
+        order_by: [asc: fragment("? IS NULL", s.from_occurrence_id), asc: s.id]
+      )
+      |> Repo.all()
+
+    case existing do
+      [] ->
+        insert_shared_segment!(
+          organization_id,
+          gtfs_version_id,
+          from_id,
+          to_id,
+          points,
+          audit_context
+        )
+
+      segments ->
+        Enum.reduce(segments, 0, fn segment, acc ->
+          acc + update_pair_segment!(segment, points, reviewed, audit_context)
+        end)
+    end
+  end
+
+  defp insert_shared_segment!(
+         organization_id,
+         gtfs_version_id,
+         from_id,
+         to_id,
+         points,
+         audit_context
+       ) do
+    %AlignmentSegment{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id,
+      from_stop_id: from_id,
+      to_stop_id: to_id
+    }
+    |> AlignmentSegment.changeset(%{points: points})
+    |> Repo.insert()
+    |> case do
+      {:ok, segment} ->
+        audit!(audit_context, :alignment_segment, segment, "created", %{
+          before: nil,
+          after: apply_segment_after(segment)
+        })
+
+        1
+
+      {:error, _changeset} ->
+        Repo.rollback(:stale_review)
+    end
+  end
+
+  defp update_pair_segment!(segment, points, reviewed, audit_context) do
+    refuse_moved_segment!(segment, reviewed)
+
+    if segment.points == points do
+      0
+    else
+      before = apply_segment_before(segment)
+
+      result =
+        try do
+          segment |> AlignmentSegment.changeset(%{points: points}) |> Repo.update()
+        rescue
+          # The optimistic lock on `lock_version` raises rather than returning
+          # a changeset, and a segment another editor moved on since the
+          # review is exactly the case the review is meant to refuse.
+          Ecto.StaleEntryError -> :stale
+        end
+
+      case result do
+        {:ok, updated} ->
+          audit!(audit_context, :alignment_segment, updated, "updated", %{
+            before: before,
+            after: apply_segment_after(updated)
+          })
+
+          1
+
+        {:error, _changeset} ->
+          Repo.rollback(:stale_review)
+
+        :stale ->
+          Repo.rollback(:stale_review)
+      end
+    end
+  end
+
+  defp refuse_moved_segment!(segment, reviewed) do
+    key = {segment.from_stop_id, segment.to_stop_id, segment.from_occurrence_id}
+
+    case Map.fetch(reviewed, key) do
+      {:ok, lock_version} when lock_version != segment.lock_version ->
+        Repo.rollback(:stale_review)
+
+      _unreviewed_or_unchanged ->
+        :ok
+    end
+  end
+
+  # The same four questions `StopEditing.move_review/3` asks, asked here
+  # against the rows as they are *after* the segments were rewritten. The
+  # review computed them from its own snapshot; this one is what decides
+  # whether a write actually happens.
+  defp redraw_pattern!(pattern_id, pairs, failed, audit_context) do
+    case scoped_pattern(pattern_id, audit_context) do
+      nil ->
+        :untouched
+
+      %RoutePattern{} = found ->
+        resolved = resolve(found)
+
+        cond do
+          no_line_to_draw?(found) ->
+            :untouched
+
+          reason = routing_reason(pairs, failed) ->
+            {:stale, stale_row(found, {:routing_failed, reason})}
+
+          unresolved_section?(resolved) ->
+            {:stale, stale_row(found, {:blocked, :missing_sections})}
+
+          true ->
+            redrawable(found, resolved, audit_context)
+        end
+    end
+  end
+
+  defp scoped_pattern(pattern_id, audit_context) do
+    Repo.one(
+      from(p in RoutePattern,
+        where:
+          p.id == ^pattern_id and
+            p.organization_id == ^audit_context.organization_id and
+            p.gtfs_version_id == ^audit_context.gtfs_version_id
+      )
+    )
+  end
+
+  # The last question, asked where the answer is a write rather than a
+  # verdict. `shape_plan/2` is consulted first: `materialize_pattern!/4` rolls
+  # the whole transaction back when handed blockers, and a blocked pattern's
+  # bytes have to survive its neighbours' redraw.
+  defp redrawable(pattern, resolved, audit_context) do
+    plan = shape_plan(pattern, length(resolved.visits))
+
+    if Enum.any?(plan.blockers) do
+      {:stale, stale_row(pattern, {:blocked, :trip_counts})}
+    else
+      _ = materialize_pattern!(pattern, resolved, plan, audit_context)
+      {:redrawn, %{pattern_id: pattern.id, route_pattern_id: pattern.route_pattern_id}}
+    end
+  end
+
+  # A pattern with no `shape_id` is left alone, whatever its sections say. It
+  # has no line of its own to redraw, and creating one here would be a
+  # different decision from the one the editor reviewed: the review reported
+  # it as `:no_line` because it has no shape, and answering that with a new
+  # shape would give the pattern a geometry nobody asked for. Its sections
+  # still resolve against the shared segments, so the stop's move is not lost
+  # — it just is not this redraw's business to draw a line that was never
+  # there.
+  defp no_line_to_draw?(%RoutePattern{shape_id: shape_id}) do
+    is_nil(shape_id)
+  end
+
+  defp routing_reason(pairs, failed) do
+    Enum.find_value(Enum.sort(pairs), &Map.get(failed, &1))
+  end
+
+  defp unresolved_section?(%{sections: sections}) do
+    Enum.any?(sections, &(&1.kind in [:missing, :blocked]))
+  end
+
+  defp stale_row(pattern, reason) do
+    %{pattern_id: pattern.id, route_pattern_id: pattern.route_pattern_id, reason: reason}
+  end
 
   @bulk_section_limit 200
 

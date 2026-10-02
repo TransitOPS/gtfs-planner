@@ -91,8 +91,8 @@ defmodule GtfsPlanner.AccountsFixtures do
   @doc """
   Generate a user with an active `pathways_studio_editor` membership in the organization.
   """
-  def editor_fixture(organization) do
-    user = user_fixture()
+  def editor_fixture(organization, attrs \\ %{}) do
+    user = user_fixture(attrs)
     organization_membership_fixture(user, organization)
     user
   end

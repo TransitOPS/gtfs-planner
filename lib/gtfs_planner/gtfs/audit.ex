@@ -8,6 +8,7 @@ defmodule GtfsPlanner.Gtfs.Audit do
   alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.ChangeLog
+  alias GtfsPlanner.Gtfs.FareVersionSetting
   alias GtfsPlanner.Gtfs.Level
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.PathwayEvolution
@@ -130,6 +131,9 @@ defmodule GtfsPlanner.Gtfs.Audit do
         diagram_coordinate
         parent_station
         level_id
+        stop_code
+        tts_stop_name
+        stop_url
       )
 
   def reversible_fields_for(:pathway), do: reversible_fields_for("pathway")
@@ -244,6 +248,12 @@ defmodule GtfsPlanner.Gtfs.Audit do
   # complete before/after snapshots are passed explicitly by Transfers, so the
   # entity itself never yields a snapshot.
   defp build_snapshot(type, %Transfer{}) when type in [:transfer, "transfer"], do: nil
+
+  # A fare operation addresses the version's fares section. Its settings row is
+  # the entity key; the operation's explicit row snapshots live in changed_fields.
+  defp build_snapshot(type, %FareVersionSetting{}) when type in [:fare_version, "fare_version"],
+    do: nil
+
   # Alignment segments snapshot their scope, stop-pair identity, override
   # linkage, optimistic-lock revision and interior points. Pattern shapes
   # snapshot the owning pattern's shape identity; the replaced-shape detail
@@ -286,7 +296,15 @@ defmodule GtfsPlanner.Gtfs.Audit do
       platform_code: stop.platform_code,
       diagram_coordinate: stop.diagram_coordinate,
       parent_station: stop.parent_station,
-      level_id: stop.level_id
+      level_id: stop.level_id,
+      # The stop editor writes these three; without them the audit entry and any
+      # rollback would lose a sign number, a spoken name or a web page.
+      stop_code: stop.stop_code,
+      tts_stop_name: stop.tts_stop_name,
+      stop_url: stop.stop_url,
+      # Read-only here (Settings › Fares owns a zone) but recorded so history
+      # still shows what the stop had.
+      zone_id: stop.zone_id
     }
   end
 
@@ -417,6 +435,10 @@ defmodule GtfsPlanner.Gtfs.Audit do
        when type in [:transfer, "transfer"],
        do: Transfer.audit_external_id(transfer)
 
+  defp entity_external_id_for(type, %FareVersionSetting{}, _attrs)
+       when type in [:fare_version, "fare_version"],
+       do: "fares"
+
   # A shared segment is addressed by its stop pair; an override also names the
   # visit it belongs to (INV-6). A pattern shape is addressed by the pattern's
   # natural GTFS ID.
@@ -495,6 +517,17 @@ defmodule GtfsPlanner.Gtfs.Audit do
     end)
   end
 
+  # A stop update carries its reversible columns plus the command's own provenance.
+  # `move`, `replaced_by`, `delete_old` and `replaced` are a move's and a replace's
+  # provenance: which stop took over, whether the old one was removed and how far
+  # the stop moved are not stop columns, and a history entry that cannot say them
+  # cannot explain a feed that changed.
+  defp audited_attrs_for(type, attrs) when type in [:stop, "stop"] do
+    Map.filter(attrs, fn {key, _value} ->
+      to_string(key) in (reversible_fields_for(:stop) ++ ~w(move replaced_by delete_old replaced))
+    end)
+  end
+
   # A transfer write carries the explicit before/after snapshots and its operation
   # scope; no transfer column is diffed field-by-field.
   defp audited_attrs_for(type, attrs) when type in [:transfer, "transfer"] do
@@ -516,6 +549,13 @@ defmodule GtfsPlanner.Gtfs.Audit do
   # column is diffed field-by-field.
   defp audited_attrs_for(type, attrs) when type in [:pathway_evolution, "pathway_evolution"] do
     Map.filter(attrs, fn {key, _value} -> to_string(key) in ~w(before after) end)
+  end
+
+  # Fare changes are audited as one operation with explicit row snapshots.
+  defp audited_attrs_for(type, attrs) when type in [:fare_version, "fare_version"] do
+    Map.filter(attrs, fn {key, _value} ->
+      to_string(key) in ~w(operation_id summary before after)
+    end)
   end
 
   defp audited_attrs_for(entity_type, attrs), do: reversible_attrs_for(entity_type, attrs)
@@ -586,6 +626,18 @@ defmodule GtfsPlanner.Gtfs.Audit do
     |> put_transfer_operation(attrs)
   end
 
+  defp build_changed_fields(entity_type, action, _snapshot, attrs)
+       when entity_type in [:fare_version, "fare_version"] and
+              action in ["created", "updated", "deleted"] do
+    %{
+      "operation_id" =>
+        normalize_value(Map.get(attrs, :operation_id, Map.get(attrs, "operation_id"))),
+      "summary" => normalize_value(Map.get(attrs, :summary, Map.get(attrs, "summary"))),
+      "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
+      "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
+    }
+  end
+
   # Alignment entries, like trips, store the explicit before/after aggregates
   # (including INV-5 replaced-shape detail) rather than a column diff.
   defp build_changed_fields(entity_type, action, _snapshot, attrs)
@@ -637,6 +689,19 @@ defmodule GtfsPlanner.Gtfs.Audit do
 
       _ ->
         changed
+    end
+  end
+
+  # A stop deletion is the one irreversible write in this module, so what went
+  # with the stop belongs in the log the same way a column diff does. `:stop` is
+  # not a structured audit type, so without this clause the counts a caller
+  # passes are dropped and the entry records only the pre-delete snapshot. A
+  # caller that passes no counts keeps the historical `nil` shape.
+  defp build_changed_fields(entity_type, "deleted", _snapshot, attrs)
+       when entity_type in [:stop, "stop"] do
+    case Map.get(attrs, "removed", Map.get(attrs, :removed)) do
+      nil -> nil
+      removed -> %{"removed" => stringify_map_keys(removed)}
     end
   end
 

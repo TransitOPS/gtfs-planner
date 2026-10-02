@@ -68,9 +68,13 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   re-send the untouched field, an imported `" A"` included. An ID the inventory
   already carries - a record, a stop of any location type or a fare-rule
   reference - is rejected with the in-use message, so a rename can neither merge
-  two zones nor duplicate a rule row. `change_zone/2` is the drawer's form
-  changeset and makes the same byte-for-byte decision, so a form validates what
-  the write will do.
+  two zones nor duplicate a rule row. A rename and a delete also carry the zone ID
+  onto `fare_leg_rules.from_area_id` and `to_area_id` (R7) - the same rows the
+  stops and the fare rules are carried to - and then let `Fares.Normalize.run!/2`
+  refresh a managed version's implied rows inside the same version-locked
+  transaction, since `Normalize` is their only writer. `change_zone/2` is the
+  drawer's form changeset and makes the same byte-for-byte decision, so a form
+  validates what the write will do.
 
   `delete_zone/4` removes a zone inside the same version-locked transaction. It
   refuses a zone that left the inventory (`:not_found`), a request whose expected
@@ -81,53 +85,33 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   the zone's stops of every location type move to the replacement (nil unassigns
   them), every fare-rule row that mentions the zone in `origin_id`,
   `destination_id` or `contains_id` is rewritten with the exact replacement value
-  and reinserted under a new ID, a rewritten row identical to an unaffected row
+  and reinserted under a new ID, as is every leg rule that names the zone as an
+  area, a rewritten row identical to an unaffected row
   or to an earlier kept rewritten row is dropped, and the metadata record is
   removed - so no row keeps the deleted ID and no group is left orphaned.
 
-  The rule drawer's reads are `list_fares/2` and `list_rule_routes/2`, and its
-  form is `change_rule_group/2`. `save_rule_group/3` writes one reviewed rule
-  inside the same version-locked transaction: it fences the review against the
-  version's current rows under the reviewed key, refuses a fare, route or zone
-  outside the version, refuses a new reference to a stopless zone and a key
-  another rule already holds, then deletes exactly the reviewed rows and inserts
-  one row per contains zone (or one row without a `contains_id`) with the exact
-  chosen values. `delete_rule_group/2` removes exactly the reviewed rows under
-  the same fence. So a rule edit can neither merge two rules, orphan a row, trim
-  an ID nor overwrite a review the user never saw.
+  `adopt_areas_as_zones/4` is this sub-context's one job for a fare conversion:
+  it turns a version's imported `areas` into its fare zones, which is why it —
+  and nothing else outside the importer — writes `stops.zone_id` and
+  `fare_zones` for a converted version (R13, INV-2). It runs inside the caller's
+  transaction rather than taking the version lock itself, because a conversion
+  already holds it, and it returns the two sets of changes an undo needs: the
+  stops whose empty `zone_id` it filled and the zone IDs it declared.
   """
 
   import Ecto.Query, warn: false
 
-  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareAttribute
+  alias GtfsPlanner.Gtfs.FareLegRule
   alias GtfsPlanner.Gtfs.FareRule
+  alias GtfsPlanner.Gtfs.Fares
+  alias GtfsPlanner.Gtfs.Fares.Normalize
+  alias GtfsPlanner.Gtfs.Fares.VersionLock
   alias GtfsPlanner.Gtfs.FareZone
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
-  alias GtfsPlanner.Values
-  alias GtfsPlanner.Versions.GtfsVersion
-
-  @published_status "published"
-
-  @rule_key_message "A rule with this fare, route, start and end already exists. Edit that rule instead."
-  @stopless_zone_message "This zone has no stops yet. Assign stops before using it in a fare rule."
-  @unknown_fare_message "This fare is not in this version. Choose another."
-  @unknown_route_message "This route is not in this version. Choose another."
-  @unknown_zone_message "This zone is not in this version. Choose another."
-
-  # The drawer's form fields. `contains` is a list of through zones; the four
-  # scalars are strings, where an empty string means "any".
-  @rule_group_fields %{
-    fare_id: :string,
-    route_id: :string,
-    origin_id: :string,
-    destination_id: :string,
-    contains: {:array, :string}
-  }
-  @rule_group_field_names Map.keys(@rule_group_fields)
 
   @type zone :: %{
           zone_id: String.t(),
@@ -286,8 +270,8 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   @doc """
   The fares among `groups` whose rules disagree on route or through zones.
 
-  `groups` need only carry `fare_id`, `route_id` and `contains`, so the rule
-  drawer can add the rule it is editing to the page's own groups. A fare is
+  `groups` need only carry `fare_id`, `route_id` and `contains`, so callers can
+  compare the grouped version rows without loading display catalogs. A fare is
   reported when its groups do not all share the same `route_id` (`routes_differ?`)
   or the same sorted `contains` set (`contains_differ?`). `route_ids` lists the
   distinct route IDs with nil, "all routes", first, and `contains` the union of
@@ -644,6 +628,98 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   end
 
   @doc """
+  Adopts a version's imported `areas` as its fare zones (R13, INV-2).
+
+  `areas` is the version's `areas` rows as `[%{area_id: id, area_name: name}]`
+  and `stop_areas` is one `%{stop_id: id, area_id: area_id}` entry per stop the
+  caller has established belongs to exactly one area. A stop whose `zone_id` is
+  nil or empty is given that area; a stop already in a zone keeps it, because a
+  zone an operator drew is never overwritten by an imported area. Each area with
+  no `fare_zones` record is declared with `FareZone.changeset/3`'s `:keep` mode,
+  so the imported ID keeps its exact bytes, named after its `area_name` or — when
+  the area has no name — after its own ID, and colored with the deterministic
+  palette key `FareZone.default_color/1` gives that ID.
+
+  Both writes run in the caller's transaction, so a conversion that adopts areas
+  and then fails leaves the version exactly as it was. The answer is
+  `{:ok, %{stops: [%{stop_id: id, zone_id: zone_id}], zones: [zone_id]}}` — the
+  stops whose `zone_id` this call filled and the zone IDs it declared, which is
+  what `GtfsPlanner.Gtfs.Fares.Conversion` clears and deletes when it undoes the
+  conversion. An area the version already declares is not returned, so an undo
+  never deletes a record this call did not write.
+  """
+  @spec adopt_areas_as_zones(Ecto.UUID.t(), Ecto.UUID.t(), [map()], [map()]) :: {:ok, map()}
+  def adopt_areas_as_zones(organization_id, gtfs_version_id, areas, stop_areas) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    stops = adopt_stop_zones(organization_id, gtfs_version_id, stop_areas, now)
+    zones = declare_zones(organization_id, gtfs_version_id, areas)
+
+    {:ok, %{stops: stops, zones: zones}}
+  end
+
+  # Only an empty `zone_id` is filled, and only for a stop of this organization
+  # and version. The returned pairs are the rows this call changed, so undoing it
+  # clears exactly those and no zone an operator drew.
+  defp adopt_stop_zones(organization_id, gtfs_version_id, stop_areas, now) do
+    stop_areas
+    |> Enum.uniq_by(& &1.stop_id)
+    |> Enum.reduce([], fn %{stop_id: stop_id, area_id: area_id}, adopted ->
+      updated =
+        from(s in Stop,
+          where:
+            s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+              s.stop_id == ^stop_id and (is_nil(s.zone_id) or s.zone_id == "")
+        )
+        |> Repo.update_all(set: [zone_id: area_id, updated_at: now])
+
+      case updated do
+        {1, _rows} -> [%{stop_id: stop_id, zone_id: area_id} | adopted]
+        {0, _rows} -> adopted
+      end
+    end)
+    |> Enum.reverse()
+  end
+
+  defp declare_zones(organization_id, gtfs_version_id, areas) do
+    Enum.flat_map(areas, fn area ->
+      area_id = area.area_id
+
+      if zone_record(organization_id, gtfs_version_id, area_id) do
+        []
+      else
+        insert_zone(organization_id, gtfs_version_id, area)
+        [area_id]
+      end
+    end)
+  end
+
+  # `:keep` never casts `zone_id`, so the struct carries the area's exact bytes
+  # into the insert; only the name and the palette color are cast.
+  defp insert_zone(organization_id, gtfs_version_id, area) do
+    %FareZone{
+      zone_id: area.area_id,
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
+    }
+    |> FareZone.changeset(
+      %{name: zone_name(area), color: FareZone.default_color(area.area_id)},
+      :keep
+    )
+    |> Repo.insert!()
+  end
+
+  defp zone_name(%{area_name: name, area_id: area_id}), do: zone_name(name, area_id)
+
+  defp zone_name(name, area_id) when is_binary(name) do
+    case String.trim(name) do
+      "" -> area_id
+      trimmed -> trimmed
+    end
+  end
+
+  defp zone_name(_name, area_id), do: area_id
+
+  @doc """
   Creates a zone in a published version of an organization.
 
   The name is trimmed and must be 1-60 characters, the ID is trimmed and must
@@ -661,7 +737,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     organization_id = audit.organization_id
     gtfs_version_id = audit.gtfs_version_id
 
-    transact(audit, fn ->
+    VersionLock.transact(audit, fn ->
       changeset =
         %FareZone{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
         |> FareZone.changeset(attrs, :new)
@@ -691,12 +767,16 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   after trimming is a rename. The trimmed new ID is validated, rejected with the
   in-use message when the inventory already carries it, and otherwise written in
   one transaction to `stops.zone_id` of every location type, to
-  `fare_rules.origin_id`, `destination_id` and `contains_id`, and to the metadata
-  record; no row keeps the old ID, and every one of those writes uses the
-  trimmed new ID. A form value that is the stored bytes or trims back to them is
-  a metadata edit, not a rename. The returned zone is the inventory entry under
-  the final ID. A pair that is not a published version of the organization
-  returns `:not_found` and writes nothing.
+  `fare_rules.origin_id`, `destination_id` and `contains_id`, to
+  `fare_leg_rules.from_area_id` and `to_area_id`, and to the metadata record; no
+  row keeps the old ID, and every one of those writes uses the trimmed new ID. A
+  managed version's implied rows are then refreshed by `Fares.Normalize.run!/2`
+  inside the same transaction (R7, INV-1), because a leg rule's conditions
+  decide its priority, its leg group and the pass rows that mirror it. A form
+  value that is the stored bytes or trims back to them is a metadata edit, not a
+  rename. The returned zone is the inventory entry under the final ID. A pair
+  that is not a published version of the organization returns `:not_found` and
+  writes nothing.
   """
   @spec update_zone(AuditContext.t(), String.t(), map()) ::
           {:ok, zone()} | {:error, Ecto.Changeset.t()} | {:error, :not_found | :forbidden}
@@ -704,7 +784,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     organization_id = audit.organization_id
     gtfs_version_id = audit.gtfs_version_id
 
-    transact(audit, fn ->
+    VersionLock.transact(audit, fn ->
       if zone_exists?(organization_id, gtfs_version_id, current_zone_id) do
         update_zone_write(organization_id, gtfs_version_id, current_zone_id, attrs)
       else
@@ -729,14 +809,19 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   Inside one version-locked transaction the zone's stops of every location type
   move to the exact replacement ID (nil unassigns them), every fare-rule row that
   mentions the zone in `origin_id`, `destination_id` or `contains_id` is rewritten
-  with the exact replacement value and reinserted with a new ID, a rewritten row
-  that would be identical to an unaffected row or to an earlier kept rewritten
-  row is dropped, and the zone's metadata record is removed. Every other row keeps
-  its bytes and timestamps, so no row references the deleted ID and no fare-rule
-  group is destroyed or left orphaned. The result counts the stops whose zone
-  changed, the rewritten rows kept and the affected rows dropped as duplicates. A
-  pair that is not a published version of the organization returns `:not_found`
-  and writes nothing.
+  with the exact replacement value and reinserted with a new ID, every
+  `fare_leg_rules` row whose `from_area_id` or `to_area_id` is the zone is carried
+  to the replacement the same way (nil clears the area), and the zone's metadata
+  record is removed. A rewritten row that would be identical to an unaffected row
+  or to an earlier kept rewritten row is dropped, on both sides of the write, so
+  neither the fare-rule index nor the leg-rule index is asked for a row that
+  already exists. A managed version's implied rows are then refreshed by
+  `Fares.Normalize.run!/2` inside the same transaction (R7, INV-1). Every other
+  row keeps its bytes and timestamps, so no row references the deleted ID and no
+  fare-rule group is destroyed or left orphaned. The result counts the stops
+  whose zone changed, the rewritten rows kept and the affected rows dropped as
+  duplicates. A pair that is not a published version of the organization returns
+  `:not_found` and writes nothing.
   """
   @spec delete_zone(
           AuditContext.t(),
@@ -760,7 +845,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     organization_id = audit.organization_id
     gtfs_version_id = audit.gtfs_version_id
 
-    transact(audit, fn ->
+    VersionLock.transact(audit, fn ->
       zone = inventory_zone(organization_id, gtfs_version_id, zone_id)
 
       cond do
@@ -782,132 +867,12 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     end)
   end
 
-  @doc """
-  Lists the version's fare attributes for the rule drawer's fare options.
-
-  Each entry is `%{fare_id, price, currency_type}`, ordered by `fare_id`. A pair
-  that is not a version of the organization returns an empty list.
-  """
-  @spec list_fares(Ecto.UUID.t(), Ecto.UUID.t()) :: [
-          %{fare_id: String.t(), price: Decimal.t(), currency_type: String.t()}
-        ]
-  def list_fares(organization_id, gtfs_version_id) do
-    from(a in FareAttribute,
-      where: a.organization_id == ^organization_id and a.gtfs_version_id == ^gtfs_version_id,
-      order_by: a.fare_id,
-      select: %{fare_id: a.fare_id, price: a.price, currency_type: a.currency_type}
-    )
-    |> Repo.all()
-  end
-
-  @doc """
-  Lists the version's routes for the rule drawer's route options.
-
-  Each entry is `%{route_id, short_name, long_name}`, ordered by `route_id`. A
-  pair that is not a version of the organization returns an empty list.
-  """
-  @spec list_rule_routes(Ecto.UUID.t(), Ecto.UUID.t()) :: [
-          %{route_id: String.t(), short_name: String.t() | nil, long_name: String.t() | nil}
-        ]
-  def list_rule_routes(organization_id, gtfs_version_id) do
-    from(r in Route,
-      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id,
-      order_by: r.route_id,
-      select: %{
-        route_id: r.route_id,
-        short_name: r.route_short_name,
-        long_name: r.route_long_name
-      }
-    )
-    |> Repo.all()
-  end
-
-  @doc """
-  The rule drawer's schemaless changeset for a create or an edit form.
-
-  `nil` starts a new rule; a reviewed group seeds the form with its current fare,
-  route, origin, destination and contains zones, so an untouched field keeps the
-  values the drawer showed. An empty string in a fare, route, origin or
-  destination becomes nil, which is how the drawer's "Any origin", "Any
-  destination" and "All routes" arrive; `contains` is deduplicated, empty entries
-  dropped and a nil or empty list kept empty. `fare_id` is required. The same
-  changeset seeds `save_rule_group/3`, so the form checks what the save will do;
-  the save adds its own field errors for the values only the database can settle.
-  """
-  @spec change_rule_group(rule_group() | nil, map()) :: Ecto.Changeset.t()
-  def change_rule_group(reviewed, attrs) do
-    {rule_group_data(reviewed), @rule_group_fields}
-    |> Ecto.Changeset.cast(attrs, @rule_group_field_names)
-    |> Ecto.Changeset.update_change(:contains, &contains_list/1)
-    |> Ecto.Changeset.validate_required([:fare_id])
-  end
-
-  @doc """
-  Saves one reviewed rule group, replacing exactly its rows.
-
-  `reviewed` is the group the drawer showed, or nil for a new rule. When it is
-  given, the version's rows under its key must still be exactly `reviewed.rows`
-  (IDs and the five values), otherwise the call rolls back `:stale` and writes
-  nothing - a rule another editor renamed a zone in, extended with a member,
-  moved to another key or removed cannot be overwritten from a review the user
-  never saw again.
-
-  A save is refused with a changeset whose field errors the drawer renders: a
-  fare that is not in `fare_attributes` and is not the rule's current fare, a
-  route that is not in `routes` and is not the rule's current route, a zone that
-  is not in the version's inventory, a zone with no boardable stops that the
-  reviewed rule did not already reference, and a key another rule holds - so a
-  save can neither create a reference it cannot serve nor merge two rules into
-  one. Otherwise the reviewed rows are deleted and one row is inserted per
-  contains zone, or one row without a `contains_id`, carrying the exact chosen
-  values (never through `FareRule.changeset/2`, which trims), and the saved group
-  is returned. A pair that is not a published version of the organization returns
-  `:not_found` and writes nothing.
-  """
-  @spec save_rule_group(AuditContext.t(), rule_group() | nil, map()) ::
-          {:ok, rule_group()}
-          | {:error, Ecto.Changeset.t()}
-          | {:error, :stale | :not_found | :forbidden}
-  def save_rule_group(%AuditContext{} = audit, reviewed, attrs) do
-    organization_id = audit.organization_id
-    gtfs_version_id = audit.gtfs_version_id
-
-    transact(audit, fn ->
-      save_rule_group_write(organization_id, gtfs_version_id, reviewed, attrs)
-    end)
-  end
-
-  @doc """
-  Removes one reviewed rule group, deleting exactly its rows.
-
-  `reviewed` is the group the drawer showed, fenced exactly as `save_rule_group/3`
-  fences a save: the version's rows under its key must still be `reviewed.rows`
-  (IDs and the five values), otherwise the call rolls back `:stale` and writes
-  nothing. Otherwise the reviewed rows are deleted and their count returned; the
-  fare attribute is untouched. A pair that is not a published version of the
-  organization returns `:not_found` and writes nothing.
-  """
-  @spec delete_rule_group(AuditContext.t(), rule_group()) ::
-          {:ok, non_neg_integer()} | {:error, :stale | :not_found | :forbidden}
-  def delete_rule_group(%AuditContext{} = audit, reviewed) do
-    organization_id = audit.organization_id
-    gtfs_version_id = audit.gtfs_version_id
-
-    transact(audit, fn ->
-      if stale_rule_review?(list_rows(organization_id, gtfs_version_id), reviewed) do
-        Repo.rollback(:stale)
-      else
-        delete_rule_rows(organization_id, gtfs_version_id, reviewed_row_ids(reviewed))
-      end
-    end)
-  end
-
   defp write_assignment(%AuditContext{} = audit, changes, opts) do
     changes = Enum.uniq_by(changes, & &1.id)
     organization_id = audit.organization_id
     gtfs_version_id = audit.gtfs_version_id
 
-    transact(audit, fn ->
+    VersionLock.transact(audit, fn ->
       validate_targets(organization_id, gtfs_version_id, changes, opts)
       locked_stops = lock_selected_stops(organization_id, gtfs_version_id, changes)
       stale = stale_changes(locked_stops, changes)
@@ -919,37 +884,6 @@ defmodule GtfsPlanner.Gtfs.FareZones do
       write_zone_changes(organization_id, gtfs_version_id, changes)
       %{applied: changes}
     end)
-  end
-
-  # Membership is checked on every write attempt before the published version
-  # lock. The version row then validates the selected scope and serializes zone
-  # writers; an invalid or unpublished version rolls back with :not_found.
-  defp transact(%AuditContext{} = audit, fun) do
-    Repo.transaction(fn ->
-      Authorization.lock_editor!(audit)
-      lock_version_and_run(audit.organization_id, audit.gtfs_version_id, fun)
-    end)
-  end
-
-  defp lock_version_and_run(organization_id, gtfs_version_id, fun) do
-    version =
-      if Values.uuid?(organization_id) and Values.uuid?(gtfs_version_id),
-        do: published_version_for_update(organization_id, gtfs_version_id)
-
-    case version do
-      %GtfsVersion{} -> fun.()
-      nil -> Repo.rollback(:not_found)
-    end
-  end
-
-  defp published_version_for_update(organization_id, gtfs_version_id) do
-    from(v in GtfsVersion,
-      where:
-        v.id == ^gtfs_version_id and v.organization_id == ^organization_id and
-          v.publication_status == ^@published_status,
-      lock: "FOR UPDATE"
-    )
-    |> Repo.one()
   end
 
   # A preview has no lock to roll back to, so it returns the target error instead.
@@ -1180,6 +1114,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
 
         if changeset.valid? do
           rewrite_zone_id(organization_id, gtfs_version_id, current_zone_id, new_zone_id)
+          normalize_managed_fares(organization_id, gtfs_version_id)
           persist_zone(changeset, record, organization_id, gtfs_version_id, new_zone_id)
         else
           Repo.rollback(changeset)
@@ -1207,7 +1142,9 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   # An ID change moves the exact new ID on every location type - a station or
   # entrance carries a zone ID too - and in all three fare-rule zone columns. The
   # new ID was not in the inventory, so no rewritten fare rule can become
-  # identical to another row and hit the unique row index.
+  # identical to another row and hit the unique row index. The version's leg
+  # rules move with them (R7), and they are rebuilt like the fare rules because a
+  # leg rule's unique index covers its areas too.
   defp rewrite_zone_id(organization_id, gtfs_version_id, current_zone_id, new_zone_id) do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
@@ -1232,12 +1169,142 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     |> rule_scope(gtfs_version_id)
     |> where([r], r.contains_id == ^current_zone_id)
     |> Repo.update_all(set: [contains_id: new_zone_id, updated_at: now])
+
+    carry_leg_rule_areas(organization_id, gtfs_version_id, current_zone_id, new_zone_id, now)
   end
 
   defp rule_scope(organization_id, gtfs_version_id) do
     from(r in FareRule,
       where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id
     )
+  end
+
+  defp leg_rule_scope(organization_id, gtfs_version_id) do
+    from(r in FareLegRule,
+      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id
+    )
+  end
+
+  # R7: the exact replacement area ID moves onto `from_area_id` and `to_area_id`
+  # of every leg rule that names the zone. A `nil` replacement clears the area
+  # rather than leaving a reference to a zone that no longer exists, which is
+  # what the stops of that zone and its fare rules already do.
+  #
+  # A leg rule's unique index covers its areas, so the affected rows are read,
+  # rewritten, deduplicated against the rows the write does not touch and then
+  # deleted and reinserted - the same treatment the fare rules of a deletion get.
+  # A rewritten row that would land on an existing row is a duplicate the rider
+  # is already offered, so it is dropped rather than rejected.
+  defp carry_leg_rule_areas(organization_id, gtfs_version_id, zone_id, replacement, now) do
+    {affected, unaffected} =
+      organization_id
+      |> list_leg_rules(gtfs_version_id)
+      |> Enum.split_with(&references_area?(&1, zone_id))
+
+    {kept, removed_duplicate_rows} =
+      deduplicate_leg_rules(affected, unaffected, zone_id, replacement)
+
+    delete_leg_rule_rows(organization_id, gtfs_version_id, Enum.map(affected, & &1.id))
+    insert_leg_rule_rows(organization_id, gtfs_version_id, kept, now)
+
+    %{kept_rows: length(kept), removed_duplicate_rows: removed_duplicate_rows}
+  end
+
+  defp list_leg_rules(organization_id, gtfs_version_id) do
+    organization_id
+    |> leg_rule_scope(gtfs_version_id)
+    |> Repo.all()
+  end
+
+  defp references_area?(row, zone_id) do
+    row.from_area_id == zone_id or row.to_area_id == zone_id
+  end
+
+  defp deduplicate_leg_rules(affected, unaffected, zone_id, replacement) do
+    seen = MapSet.new(unaffected, &leg_rule_values/1)
+
+    {kept, _seen} =
+      Enum.reduce(affected, {[], seen}, fn row, {kept, seen} ->
+        rewritten = rewrite_leg_rule_row(row, zone_id, replacement)
+        values = leg_rule_values(rewritten)
+
+        if MapSet.member?(seen, values) do
+          {kept, seen}
+        else
+          {[rewritten | kept], MapSet.put(seen, values)}
+        end
+      end)
+
+    kept = Enum.reverse(kept)
+    {kept, length(affected) - length(kept)}
+  end
+
+  defp rewrite_leg_rule_row(row, zone_id, replacement) do
+    %{
+      row
+      | from_area_id: replace_zone(row.from_area_id, zone_id, replacement),
+        to_area_id: replace_zone(row.to_area_id, zone_id, replacement)
+    }
+  end
+
+  # The eight columns the unique index covers: two rows that differ in nothing
+  # else are the same rule priced the same way.
+  defp leg_rule_values(row) do
+    {
+      row.network_id,
+      row.from_area_id,
+      row.to_area_id,
+      row.from_timeframe_group_id,
+      row.to_timeframe_group_id,
+      row.fare_product_id
+    }
+  end
+
+  defp delete_leg_rule_rows(organization_id, gtfs_version_id, ids) do
+    {deleted, nil} =
+      organization_id
+      |> leg_rule_scope(gtfs_version_id)
+      |> where([r], r.id in ^ids)
+      |> Repo.delete_all()
+
+    deleted
+  end
+
+  defp insert_leg_rule_rows(_organization_id, _gtfs_version_id, [], _now), do: :ok
+
+  defp insert_leg_rule_rows(organization_id, gtfs_version_id, rows, now) do
+    rows =
+      Enum.map(rows, fn row ->
+        %{
+          id: Ecto.UUID.generate(),
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id,
+          leg_group_id: row.leg_group_id,
+          network_id: row.network_id,
+          from_area_id: row.from_area_id,
+          to_area_id: row.to_area_id,
+          from_timeframe_group_id: row.from_timeframe_group_id,
+          to_timeframe_group_id: row.to_timeframe_group_id,
+          fare_product_id: row.fare_product_id,
+          rule_priority: row.rule_priority,
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    Repo.insert_all(FareLegRule, rows)
+  end
+
+  # INV-1: a managed version's implied rows are `Fares.Normalize`'s to write, and
+  # it is the only module that writes them, so a zone ID that moved under a
+  # managed version's leg rules is refreshed here - inside the same version-locked
+  # transaction as the move. An unmanaged version has no implied rows to refresh.
+  defp normalize_managed_fares(organization_id, gtfs_version_id) do
+    if Fares.managed?(organization_id, gtfs_version_id) do
+      Normalize.run!(organization_id, gtfs_version_id)
+    end
+
+    :ok
   end
 
   defp zone_record(organization_id, gtfs_version_id, zone_id) do
@@ -1315,6 +1382,8 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     delete_rule_rows(organization_id, gtfs_version_id, Enum.map(affected, & &1.id))
     insert_rule_rows(organization_id, gtfs_version_id, kept, now)
     delete_zone_record(organization_id, gtfs_version_id, zone_id)
+    carry_leg_rule_areas(organization_id, gtfs_version_id, zone_id, replacement, now)
+    normalize_managed_fares(organization_id, gtfs_version_id)
 
     %{
       moved_stops: moved_stops,
@@ -1405,228 +1474,6 @@ defmodule GtfsPlanner.Gtfs.FareZones do
           z.zone_id == ^zone_id
     )
     |> Repo.delete_all()
-  end
-
-  # The stale fence compares the version's rows under the reviewed key as a set
-  # of ID plus the five values. A member added to the key, a renamed zone that
-  # moved the rows to another key, a deleted row and a replaced rule all leave a
-  # different set, so a review the user never saw again never overwrites rows.
-  defp stale_rule_review?(current_rows, reviewed) do
-    key = reviewed.key
-
-    current_rows
-    |> Enum.filter(&(group_key(&1) == key))
-    |> rule_row_set()
-    |> Kernel.!=(rule_row_set(reviewed.rows))
-  end
-
-  defp rule_row_set(rows), do: MapSet.new(rows, &rule_row_values/1)
-
-  defp rule_row_values(row) do
-    {row.id, row.fare_id, row.route_id, row.origin_id, row.destination_id, row.contains_id}
-  end
-
-  defp reviewed_row_ids(nil), do: []
-  defp reviewed_row_ids(reviewed), do: Enum.map(reviewed.rows, & &1.id)
-
-  defp save_rule_group_write(organization_id, gtfs_version_id, reviewed, attrs) do
-    current_rows = list_rows(organization_id, gtfs_version_id)
-
-    if reviewed != nil and stale_rule_review?(current_rows, reviewed) do
-      Repo.rollback(:stale)
-    end
-
-    changeset =
-      change_rule_group(reviewed, attrs)
-      |> validate_rule_group(organization_id, gtfs_version_id, reviewed, current_rows)
-
-    case Ecto.Changeset.apply_action(changeset, :validate) do
-      {:ok, data} ->
-        delete_rule_rows(organization_id, gtfs_version_id, reviewed_row_ids(reviewed))
-        insert_saved_rule_rows(organization_id, gtfs_version_id, data)
-        saved_rule_group(organization_id, gtfs_version_id, rule_group_key(data))
-
-      {:error, changeset} ->
-        Repo.rollback(changeset)
-    end
-  end
-
-  # Only a format-valid form reaches the database checks, so a blank fare keeps
-  # its single "can't be blank" error instead of a second message about a version
-  # catalog the user never got to choose from.
-  defp validate_rule_group(changeset, organization_id, gtfs_version_id, reviewed, current_rows) do
-    if changeset.valid? do
-      data = Ecto.Changeset.apply_changes(changeset)
-
-      changeset
-      |> validate_rule_fare(organization_id, gtfs_version_id, reviewed, data)
-      |> validate_rule_route(organization_id, gtfs_version_id, reviewed, data)
-      |> validate_rule_zones(organization_id, gtfs_version_id, reviewed, data)
-      |> validate_rule_key(current_rows, reviewed, data)
-    else
-      changeset
-    end
-  end
-
-  defp validate_rule_fare(changeset, organization_id, gtfs_version_id, reviewed, data) do
-    known? =
-      organization_id
-      |> list_fares(gtfs_version_id)
-      |> MapSet.new(& &1.fare_id)
-      |> MapSet.member?(data.fare_id)
-
-    # The rule's own fare stays usable even when `fare_attributes` has no row for
-    # it, so an imported rule with an unknown fare remains editable.
-    if known? or data.fare_id == reviewed_value(reviewed, :fare_id) do
-      changeset
-    else
-      Ecto.Changeset.add_error(changeset, :fare_id, @unknown_fare_message)
-    end
-  end
-
-  defp validate_rule_route(changeset, organization_id, gtfs_version_id, reviewed, data) do
-    known? =
-      organization_id
-      |> list_rule_routes(gtfs_version_id)
-      |> Enum.any?(&(&1.route_id == data.route_id))
-
-    cond do
-      is_nil(data.route_id) -> changeset
-      known? -> changeset
-      data.route_id == reviewed_value(reviewed, :route_id) -> changeset
-      true -> Ecto.Changeset.add_error(changeset, :route_id, @unknown_route_message)
-    end
-  end
-
-  # Every chosen zone must be one the version's inventory carries, and a zone the
-  # reviewed rule did not already reference must have a boardable stop, so a rule
-  # cannot gain a reference the fare could never serve. A reference the rule
-  # already had may stay, so an imported rule that cites a stopless zone remains
-  # editable. Each error lands on the field the user chose it in.
-  defp validate_rule_zones(changeset, organization_id, gtfs_version_id, reviewed, data) do
-    zones = Map.new(inventory(organization_id, gtfs_version_id).zones, &{&1.zone_id, &1})
-    kept = reviewed_zone_ids(reviewed)
-
-    data
-    |> rule_zone_selections()
-    |> Enum.reduce(changeset, fn {field, zone_id}, changeset ->
-      cond do
-        is_nil(zone_id) ->
-          changeset
-
-        not Map.has_key?(zones, zone_id) ->
-          Ecto.Changeset.add_error(changeset, field, @unknown_zone_message)
-
-        not MapSet.member?(kept, zone_id) and Map.fetch!(zones, zone_id).stop_count == 0 ->
-          Ecto.Changeset.add_error(changeset, field, @stopless_zone_message)
-
-        true ->
-          changeset
-      end
-    end)
-  end
-
-  # A group's key is its fare, route, origin, destination and whether it has
-  # contains rows, so a key another group holds is the projected key the save
-  # would merge into. The reviewed rule's own key is allowed: that is an edit in
-  # place (its contains content may change freely).
-  defp validate_rule_key(changeset, current_rows, reviewed, data) do
-    key = rule_group_key(data)
-
-    if key != reviewed_value(reviewed, :key) and
-         MapSet.member?(MapSet.new(current_rows, &group_key/1), key) do
-      Ecto.Changeset.add_error(changeset, :fare_id, @rule_key_message)
-    else
-      changeset
-    end
-  end
-
-  defp reviewed_value(nil, _field), do: nil
-  defp reviewed_value(reviewed, field), do: Map.get(reviewed, field)
-
-  defp rule_zone_selections(data) do
-    [{:origin_id, data.origin_id}, {:destination_id, data.destination_id}] ++
-      Enum.map(contains_list(data.contains), &{:contains, &1})
-  end
-
-  # The zones the reviewed rule already referenced: a save may keep them even
-  # when they have no boardable stops, so an imported rule stays editable.
-  defp reviewed_zone_ids(nil), do: MapSet.new()
-
-  defp reviewed_zone_ids(reviewed) do
-    [
-      Map.get(reviewed, :origin_id),
-      Map.get(reviewed, :destination_id) | contains_list(Map.get(reviewed, :contains))
-    ]
-    |> Enum.reject(&is_nil/1)
-    |> MapSet.new()
-  end
-
-  defp rule_group_data(nil) do
-    %{fare_id: nil, route_id: nil, origin_id: nil, destination_id: nil, contains: []}
-  end
-
-  defp rule_group_data(reviewed) do
-    %{
-      fare_id: Map.get(reviewed, :fare_id),
-      route_id: Map.get(reviewed, :route_id),
-      origin_id: Map.get(reviewed, :origin_id),
-      destination_id: Map.get(reviewed, :destination_id),
-      contains: contains_list(Map.get(reviewed, :contains))
-    }
-  end
-
-  # One row per contains zone, or one row without a `contains_id` when the
-  # journey has no through-zone requirement. The rows carry the chosen values
-  # exactly as the form sent them; nothing here trims or normalizes them.
-  defp insert_saved_rule_rows(organization_id, gtfs_version_id, data) do
-    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
-
-    base = %{
-      organization_id: organization_id,
-      gtfs_version_id: gtfs_version_id,
-      fare_id: data.fare_id,
-      route_id: data.route_id,
-      origin_id: data.origin_id,
-      destination_id: data.destination_id,
-      inserted_at: now,
-      updated_at: now
-    }
-
-    rows =
-      Enum.map(contains_ids(data), fn contains_id ->
-        Map.merge(base, %{id: Ecto.UUID.generate(), contains_id: contains_id})
-      end)
-
-    Repo.insert_all(FareRule, rows)
-  end
-
-  defp contains_ids(data) do
-    case contains_list(data.contains) do
-      [] -> [nil]
-      contains -> contains
-    end
-  end
-
-  defp rule_group_key(data) do
-    {data.fare_id, data.route_id, data.origin_id, data.destination_id,
-     contains_list(data.contains) != []}
-  end
-
-  defp contains_list(values) when is_list(values) do
-    values |> Enum.reject(&(&1 in [nil, ""])) |> Enum.uniq()
-  end
-
-  defp contains_list(_values), do: []
-
-  # The projection of the rows just written must carry their key, so a missing
-  # group is a defect rather than a caller error; `Map.fetch!/2` fails loudly
-  # inside the transaction instead of returning a group-shaped nil.
-  defp saved_rule_group(organization_id, gtfs_version_id, key) do
-    organization_id
-    |> list_rule_groups(gtfs_version_id)
-    |> Map.new(&{&1.key, &1})
-    |> Map.fetch!(key)
   end
 
   defp boardable_query(organization_id, gtfs_version_id) do

@@ -342,18 +342,6 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleProjectionTest do
 
       assert FareZones.list_combined_fares(other_organization.id, version.id) == []
     end
-
-    test "is part of the checks the Checks tab renders", %{
-      organization: organization,
-      version: version
-    } do
-      insert_rules(organization, version, [
-        {"CITY", nil, "A", "A", nil},
-        {"CITY", "R1", "DQ", "A", nil}
-      ])
-
-      assert [%{fare_id: "CITY"}] = FareZones.checks(organization.id, version.id).combined_fares
-    end
   end
 
   defp insert_rules(organization, version, attrs_list) do

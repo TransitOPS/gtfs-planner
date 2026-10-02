@@ -457,7 +457,9 @@ defmodule GtfsPlanner.Gtfs.FeedSettings.AgencyCreateTest do
           assert_receive {:winner_committed, ^winner}, @race_timeout
 
           rows = FeedSettings.list_agencies(organization.id, version.id)
-          assert Enum.map(rows, & &1.agency.agency_id) == ["metro_transit", "metro_transit_2"]
+          # Both agencies have the same name; list_agencies/2 orders by name.
+          assert Enum.sort(Enum.map(rows, & &1.agency.agency_id)) ==
+                   ["metro_transit", "metro_transit_2"]
         after
           send(winner, :release_winner)
           delete_committed_fixtures(organization.id, [actor.id, second_actor.id])

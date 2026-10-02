@@ -340,7 +340,46 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
             Find any stop or station in {@current_gtfs_version.name}, see which routes serve it, and check
             wheelchair access.
           </:subtitle>
+          <:actions>
+            <%!-- The two views are two routes of one page, so the switch is two links
+                   and either works without JavaScript. `aria-current="page"` names
+                   the view being looked at. --%>
+            <div
+              id="stops-view-switch"
+              class="flex rounded-control border border-control"
+              role="group"
+              aria-label="View"
+            >
+              <span
+                id="stops-view-list"
+                aria-current="page"
+                class="flex min-h-11 items-center gap-2 rounded-l-control bg-selection px-4 text-sm font-bold text-action"
+              >
+                <.icon name="hero-list-bullet" class="size-4" /> List
+              </span>
+              <.link
+                id="stops-view-map"
+                navigate={~p"/gtfs/#{@current_gtfs_version.id}/stops/map"}
+                class="flex min-h-11 items-center gap-2 rounded-r-control border-l border-control px-4 text-sm font-semibold text-strong no-underline hover:bg-canvas"
+              >
+                <.icon name="hero-map" class="size-4" /> Map
+              </.link>
+            </div>
+
+            <.button
+              id="stops-add-stop"
+              navigate={~p"/gtfs/#{@current_gtfs_version.id}/stops/map?add=1"}
+              class="min-h-11"
+            >
+              <.icon name="hero-plus" class="size-4" /> Add stop
+            </.button>
+          </:actions>
         </.header>
+
+        <p id="stops-add-stop-note" class="-mt-2 mb-6 text-[13px] text-muted">
+          Add stop opens the map, because a stop's place on the street is the first thing to get
+          right.
+        </p>
 
         <%!-- Route lookup failed: the stops still load, so the warning sits above
                the card and names what is off. --%>
@@ -376,9 +415,25 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
         >
           Stops appear here after you import a GTFS feed into {@current_gtfs_version.name}.
           <:action>
-            <.button navigate={~p"/gtfs/#{@current_gtfs_version.id}/import"} class="min-h-11">
-              <.icon name="hero-arrow-up-tray" class="size-4" /> Import feed
-            </.button>
+            <%!-- One primary per view: Add stop is the filled button and Import
+                   feed sits under it, outlined. --%>
+            <div class="flex flex-col items-center gap-3">
+              <.button
+                id="stops-first-use-add-stop"
+                navigate={~p"/gtfs/#{@current_gtfs_version.id}/stops/map?add=1"}
+                class="min-h-11"
+              >
+                <.icon name="hero-plus" class="size-4" /> Add stop
+              </.button>
+              <.button
+                id="stops-first-use-import"
+                navigate={~p"/gtfs/#{@current_gtfs_version.id}/import"}
+                variant="secondary"
+                class="min-h-11"
+              >
+                <.icon name="hero-arrow-up-tray" class="size-4" /> Import feed
+              </.button>
+            </div>
           </:action>
         </.first_use>
 

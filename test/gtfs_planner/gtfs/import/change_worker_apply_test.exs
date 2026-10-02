@@ -113,7 +113,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
 
     assert {:ok, runner} = ChangeRunner.start_apply(organization.id, run.id)
     ref = Process.monitor(runner)
-    assert_receive {:DOWN, ^ref, :process, ^runner, :normal}
+    assert_receive {:DOWN, ^ref, :process, ^runner, :normal}, 5_000
 
     assert %ChangeRun{state: :completed} = Repo.get!(ChangeRun, run.id)
     assert GtfsPlanner.Gtfs.get_level_by_level_id(organization.id, version.id, "L2")

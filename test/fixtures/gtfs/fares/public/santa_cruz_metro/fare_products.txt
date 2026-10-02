@@ -1,0 +1,26 @@
+fare_product_id,fare_product_name,amount,currency,rider_category_id
+1-day-veteran,Day Pass (Local Service in Santa Cruz County),3.00,USD,veteran
+31-day-veteran,31-Day Pass (Local Service in Santa Cruz County),32.00,USD,veteran
+1-ride-veteran,Cash/1-Ride Pass (Local Service in Santa Cruz County),1.00,USD,veteran
+1-day-veteran-hwy17,Day Pass (Amtrak/Highway 17 Express),14.00,USD,veteran
+31-day-veteran-hwy17,31-Day Pass (Amtrak/Highway 17 Express),145.00,USD,veteran
+1-ride-veteran-hwy17,Cash/1-Ride Pass (Amtrak/Highway 17 Express),3.50,USD,veteran
+1-day-adult,Day Pass (Local Service in Santa Cruz County),6.00,USD,adult
+31-day-adult,31-Day Pass (Local Service in Santa Cruz County),65.00,USD,adult
+1-ride-adult,Cash/1-Ride Pass (Local Service in Santa Cruz County),2.00,USD,adult
+free-youth,Free Service,0.00,USD,youth
+1-day-senior,Day Pass (Local Service in Santa Cruz County),3.00,USD,senior
+31-day-senior,31-Day Pass (Local Service in Santa Cruz County),32.00,USD,senior
+1-ride-senior,Cash/1-Ride Pass (Local Service in Santa Cruz County),1.00,USD,senior
+1-day-discount,Day Pass (Local Service in Santa Cruz County),3.00,USD,discount
+31-day-discount,31-Day Pass (Local Service in Santa Cruz County),32.00,USD,discount
+1-ride-discount,Cash/1-Ride Pass (Local Service in Santa Cruz County),1.00,USD,discount
+1-day-adult-hwy17,Day Pass (Amtrak/Highway 17 Express),14.00,USD,adult
+31-day-adult-hwy17,31-Day Pass (Amtrak/Highway 17 Express),145.00,USD,adult
+1-ride-adult-hwy17,Cash/1-Ride Pass (Amtrak/Highway 17 Express),7.00,USD,adult
+1-day-senior-hwy17,Day Pass (Amtrak/Highway 17 Express),14.00,USD,senior
+31-day-senior-hwy17,31-Day Pass (Amtrak/Highway 17 Express),145.00,USD,senior
+1-ride-senior-hwy17,Cash/1-Ride Pass (Amtrak/Highway 17 Express),3.50,USD,senior
+1-day-discount-hwy17,Day Pass (Amtrak/Highway 17 Express),14.00,USD,discount
+31-day-discount-hwy17,31-Day Pass (Amtrak/Highway 17 Express),145.00,USD,discount
+1-ride-discount-hwy17,Cash/1-Ride Pass (Amtrak/Highway 17 Express),3.50,USD,discount

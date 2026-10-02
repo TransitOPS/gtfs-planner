@@ -50,7 +50,23 @@ defmodule GtfsPlanner.Geocoding do
   """
   @spec autocomplete(String.t(), keyword()) :: {:ok, [Result.t()]} | {:error, atom() | tuple()}
   def autocomplete(text, opts \\ []) do
-    Application.get_env(:gtfs_planner, :geocoding_service)
-    |> apply(:autocomplete, [text, opts])
+    service().autocomplete(text, opts)
   end
+
+  @doc """
+  Reports the places near a coordinate, for a stop placed by clicking a map.
+
+  Returns `{:ok, [GtfsPlanner.Geocoding.Place.t()]}` on success or
+  `{:error, reason}` on failure. `opts` may carry `:amenities`, which asks for
+  the second pass over nearby amenities the stop editor offers.
+  """
+  @spec reverse(float(), float(), keyword()) ::
+          {:ok, [GtfsPlanner.Geocoding.Place.t()]} | {:error, atom() | tuple()}
+  def reverse(lat, lon, opts \\ []) do
+    service().reverse(lat, lon, opts)
+  end
+
+  # The configured adapter is a module, so its functions are called directly
+  # rather than through `apply/3`.
+  defp service, do: Application.get_env(:gtfs_planner, :geocoding_service)
 end

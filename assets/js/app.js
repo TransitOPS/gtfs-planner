@@ -29,6 +29,7 @@ import DiagramCanvasHook from "./diagram_canvas_hook"
 import DiagramCandidateProbe from "./diagram_candidate_probe_hook"
 import MapAlignmentHook from "./map_alignment_hook"
 import FareZoneMapHook from "./fare_zone_map_hook"
+import StopMapHook from "./stop_map_hook"
 import FlexAreaMapHook from "./flex_area_map_hook"
 import PatternAlignment from "./pattern_alignment_hook"
 import OverlayDialogHook from "./overlay_dialog_hook"
@@ -62,7 +63,7 @@ const liveSocket = new LiveSocket("/live", Socket, {
     _csrf_token: csrfToken,
     new_route_attempt: el?.querySelector("#new-route-attempt")?.value,
   }),
-  hooks: {...colocatedHooks, CalendarDateChange, CalendarCombination, CalendarEditor, DraftGuard: CalendarEditor, GtfsVersionHook, DiagramCanvas: DiagramCanvasHook, DiagramCandidateProbe, MapAlignment: MapAlignmentHook, FareZoneMap: FareZoneMapHook, FlexAreaMap: FlexAreaMapHook, PatternAlignment, OverlayDialog: OverlayDialogHook, FormErrorFocus: FormErrorFocusHook, TablistHook, TimetableGrid, UserMenu: UserMenuHook, JournalPanelHook, LiveSelect: LiveSelect.LiveSelect, RoutePatternEditor: RoutePatternEditorHook, RouteDetailsEditor: RouteDetailsEditorHook, RouteDetailsMap: RouteDetailsMapHook, FillPreviewMap: FillPreviewMapHook, TransferMap: TransferMapHook, ConnectionMap: ConnectionMapHook, PathwayEvolutionsFloorplan, PatternCompareWorkspace, PatternCompareMap},
+  hooks: {...colocatedHooks, CalendarDateChange, CalendarCombination, CalendarEditor, DraftGuard: CalendarEditor, GtfsVersionHook, DiagramCanvas: DiagramCanvasHook, DiagramCandidateProbe, MapAlignment: MapAlignmentHook, FareZoneMap: FareZoneMapHook, StopMap: StopMapHook, FlexAreaMap: FlexAreaMapHook, PatternAlignment, OverlayDialog: OverlayDialogHook, FormErrorFocus: FormErrorFocusHook, TablistHook, TimetableGrid, UserMenu: UserMenuHook, JournalPanelHook, LiveSelect: LiveSelect.LiveSelect, RoutePatternEditor: RoutePatternEditorHook, RouteDetailsEditor: RouteDetailsEditorHook, RouteDetailsMap: RouteDetailsMapHook, FillPreviewMap: FillPreviewMapHook, TransferMap: TransferMapHook, ConnectionMap: ConnectionMapHook, PathwayEvolutionsFloorplan, PatternCompareWorkspace, PatternCompareMap},
 })
 
 const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)")

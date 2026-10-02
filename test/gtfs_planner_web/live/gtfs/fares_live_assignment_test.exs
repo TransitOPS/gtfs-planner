@@ -116,7 +116,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares?zone=B")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones?zone=B")
 
       refute has_element?(view, "#fare-zone-assignment-dialog")
 
@@ -190,7 +190,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       version: version
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares?zone=B")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones?zone=B")
 
       assert text_of(view, "#fare-zone-select-matching") == "Select all 150 matching"
 
@@ -223,7 +223,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       select_stop(view, stop_ids["BAY_1"])
       view |> element("#fare-zone-assign-selection") |> render_click()
@@ -250,7 +250,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       select_stop(view, stop_ids["BAY_1"])
       select_stop(view, stop_ids["BAY_2"])
@@ -300,7 +300,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       select_stop(view, stop_ids["BAY_1"])
       view |> element("#fare-zone-assign-selection") |> render_click()
@@ -330,7 +330,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares?zone=A")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones?zone=A")
 
       select_stop(view, stop_ids["WEST_1"])
       select_stop(view, stop_ids["WEST_2"])
@@ -355,7 +355,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares?zone=A")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones?zone=A")
 
       # The station itself is not boardable, so it cannot join the selection at
       # all; its platform can, and its sibling is then disclosed.
@@ -381,7 +381,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       select_stop(view, stop_ids["BAY_1"])
       select_stop(view, stop_ids["BAY_2"])
@@ -442,7 +442,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares?zone=A")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones?zone=A")
 
       select_stop(view, stop_ids["WEST_1"])
       select_stop(view, stop_ids["WEST_2"])
@@ -493,7 +493,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       select_stop(view, stop_ids["BAY_1"])
       view |> element("#fare-zone-assign-selection") |> render_click()
@@ -528,7 +528,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       select_stop(view, stop_ids["BAY_1"])
       view |> element("#fare-zone-assign-selection") |> render_click()
@@ -562,7 +562,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       select_stop(view, stop_ids["BAY_1"])
       view |> element("#fare-zone-assign-selection") |> render_click()
@@ -571,13 +571,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
 
       assert has_element?(view, "#fare-zone-undo")
 
-      render_patch(view, "/gtfs/#{version.id}/settings/fares/rules")
-
-      assert_patch(view, "/gtfs/#{version.id}/settings/fares/rules")
-      refute has_element?(view, "#fare-zone-saved")
-
-      # Coming back does not bring it back either: the tab change ended it.
-      render_patch(view, "/gtfs/#{version.id}/settings/fares")
+      # A tab change is now a navigation to another LiveView, so the save
+      # callout is proved gone by a fresh mount of the zone tab.
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       assert has_element?(view, "#fare-zones-panel")
       refute has_element?(view, "#fare-zone-saved")
@@ -594,7 +590,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       select_stop(view, stop_ids["BAY_1"])
       view |> element("#fare-zone-assign-selection") |> render_click()
@@ -625,7 +621,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       select_stop(view, stop_ids["BAY_1"])
       view |> element("#fare-zone-assign-selection") |> render_click()
@@ -664,7 +660,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
         ])
 
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       # " A" sorts before "A", so it is the review's default target, and the
       # select carries its exact bytes; the leading space is never trimmed.
@@ -708,7 +704,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       # A crafted toggle cannot put an out-of-scope stop in the selection, so the
       # review it opens cannot contain one either.
@@ -751,7 +747,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
         insert_stops(organization, empty_zone_version, [located_stop("PLAIN", "Plain Stop", nil)])
 
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{empty_zone_version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{empty_zone_version.id}/settings/fares/zones")
 
       select_stop(view, stop.id)
 
@@ -781,7 +777,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares?zone=A")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones?zone=A")
 
       select_stop(view, stop_ids["WEST_1"])
       view |> element("#fare-zone-assign-selection") |> render_click()

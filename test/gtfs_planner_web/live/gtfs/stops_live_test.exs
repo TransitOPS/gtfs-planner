@@ -226,6 +226,70 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     end
   end
 
+  describe "StopsLive Map view entry points" do
+    setup :shared_setup
+
+    test "the header offers the Map view and Add stop, with List marked current", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stub_catalog(fn _opts ->
+        {:ok, stop_page([], 0, 1, [], %{})}
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      assert has_element?(view, "#stops-view-map[href='/gtfs/#{version.id}/stops/map']")
+
+      assert has_element?(
+               view,
+               "#stops-add-stop[href='/gtfs/#{version.id}/stops/map?add=1']",
+               "Add stop"
+             )
+
+      assert view |> element("#stops-view-list") |> render() =~ "aria-current=\"page\""
+    end
+
+    test "the first-use state makes Add stop primary and Import feed secondary", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stub_catalog(fn _opts ->
+        {:ok, stop_page([], 0, 1, [], %{})}
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      assert has_element?(view, "#stops-first-use-empty")
+      assert has_element?(view, "#stops-first-use-add-stop", "Add stop")
+      assert has_element?(view, "#stops-first-use-import", "Import feed")
+
+      # The header's own Add stop is still there in the first-use state, so a
+      # version with no stops has two identical entry points.
+      assert has_element?(view, "#stops-add-stop")
+
+      add =
+        view |> element("#stops-first-use-add-stop") |> render()
+
+      assert add =~ "/stops/map?add=1"
+      assert add =~ "btn-primary"
+
+      import_button =
+        view |> element("#stops-first-use-import") |> render()
+
+      assert import_button =~ "btn-outline"
+      refute import_button =~ "btn-primary"
+    end
+  end
+
   describe "StopsLive unavailable state and retry" do
     setup :shared_setup
 

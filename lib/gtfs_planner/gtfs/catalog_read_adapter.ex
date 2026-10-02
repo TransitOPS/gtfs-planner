@@ -10,6 +10,13 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
   and programmer defects stay crash-visible so a code defect is never presented to
   a user as downtime.
 
+  The fare editor's whole read model is one of those operational reads:
+  `load_fare_editor/3` delegates to `GtfsPlanner.Gtfs.Fares.load_workspace/2` and
+  unwraps only that function's `{:ok, workspace}` tuple, because it answers for
+  any scope it was given and has no `{:error, :not_found}` reading of its own; a
+  lost connection is reported once for the whole workspace so the page can offer
+  its reload action.
+
   Calendar reads keep their domain tagged results: `{:ok, ...}` for a coherent
   scoped load and `{:error, :not_found}` for a foreign, unpublished or unknown
   scope, with only `DBConnection.ConnectionError` becoming `{:error, :unavailable}`.
@@ -44,6 +51,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
   alias GtfsPlanner.Gtfs.{
     Blocking,
     Calendars,
+    Fares,
     FareZones,
     Flex.Checks,
     FlexService,
@@ -149,6 +157,8 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
             }
   @callback load_fare_workspace(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
               {:ok, fare_workspace()} | unavailable()
+  @callback load_fare_editor(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+              {:ok, Fares.Workspace.t()} | unavailable()
   @callback load_flex_list(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, flex_list()} | unavailable()
   @callback load_transfer_catalog(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
               {:ok, Transfers.catalog()} | unavailable()

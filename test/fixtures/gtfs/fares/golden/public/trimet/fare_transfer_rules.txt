@@ -1,0 +1,7 @@
+from_leg_group_id,to_leg_group_id,transfer_count,duration_limit,duration_limit_type,fare_transfer_type,fare_product_id
+PSC,PSC,-1,9000,1,0,
+PSC,TRIMET,,9000,1,0,STREETCAR_TRIMET_ADULT_TRANSFER
+PSC,TRIMET,,9000,1,0,STREETCAR_TRIMET_HC_TRANSFER
+PSC,TRIMET,,9000,1,0,STREETCAR_TRIMET_YOUTH_TRANSFER
+TRIMET,PSC,,9000,1,0,
+TRIMET,TRIMET,-1,9000,1,0,

@@ -5208,6 +5208,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 Change
               </button>
             </div>
+            <%!-- `Stop.child_stop_changeset/2` requires a level for a child stop. The
+                level picker is hidden while the active level is implied, so its error
+                is reported here rather than on an input nobody can see. --%>
+            <p
+              :for={
+                {message, index} <-
+                  Enum.with_index(Enum.map(@child_stop_form[:level_id].errors, &translate_error/1))
+              }
+              id={"child-stop-level-error-#{index}"}
+              class="flex items-center gap-2 text-sm text-error"
+            >
+              <.icon name="hero-exclamation-circle" class="size-5" />
+              {message}
+            </p>
           </div>
         <% end %>
 

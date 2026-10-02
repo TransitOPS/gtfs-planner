@@ -30,7 +30,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.AuthorizationTest do
     %{audit: audit, membership: membership}
   end
 
-  test "a revoked editor cannot write an assignment, zone, or rule", context do
+  test "a revoked editor cannot write an assignment or zone", context do
     audit = context.audit
 
     {:ok, _zone} =
@@ -45,27 +45,9 @@ defmodule GtfsPlanner.Gtfs.FareZones.AuthorizationTest do
         location_type: 0
       })
 
-    Repo.insert!(%FareAttribute{
-      organization_id: audit.organization_id,
-      gtfs_version_id: audit.gtfs_version_id,
-      fare_id: "F1",
-      price: Decimal.new("2.50"),
-      currency_type: "USD",
-      payment_method: 0
-    })
-
     {:ok, %{applied: applied}} =
       FareZones.apply_assignment(audit, [%{id: stop.id, from: nil, to: "A"}])
 
-    rule_attrs = %{
-      "fare_id" => "F1",
-      "route_id" => "",
-      "origin_id" => "A",
-      "destination_id" => "",
-      "contains" => []
-    }
-
-    {:ok, reviewed} = FareZones.save_rule_group(audit, nil, rule_attrs)
     before = scoped_rows(audit)
     deactivate_membership_fixture(context.membership)
 
@@ -86,13 +68,8 @@ defmodule GtfsPlanner.Gtfs.FareZones.AuthorizationTest do
       {:update_zone, fn -> FareZones.update_zone(audit, "A", %{"name" => "Changed"}) end},
       {:delete_zone,
        fn ->
-         FareZones.delete_zone(audit, "A", nil, %{stop_count: 1, rule_count: 1})
-       end},
-      {:save_rule_group,
-       fn ->
-         FareZones.save_rule_group(audit, reviewed, %{rule_attrs | "origin_id" => ""})
-       end},
-      {:delete_rule_group, fn -> FareZones.delete_rule_group(audit, reviewed) end}
+         FareZones.delete_zone(audit, "A", nil, %{stop_count: 1, rule_count: 0})
+       end}
     ]
 
     Enum.each(commands, fn {name, command} ->

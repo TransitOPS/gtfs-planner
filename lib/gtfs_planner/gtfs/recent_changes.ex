@@ -7,8 +7,8 @@ defmodule GtfsPlanner.Gtfs.RecentChanges do
   operation and then groups operations by the destination they touched, newest
   first. An operation's destination is its highest-precedence row: calendar,
   route-pattern build, route pattern, pattern shape, timed pattern, trip, level,
-  stop, pathway, alignment segment, transfer. A trip row carrying a calendar
-  combination's envelope ranks as the destination calendar, because a
+  stop, pathway, alignment segment, transfer, fare version. A trip row carrying a
+  calendar combination's envelope ranks as the destination calendar, because a
   combination that leaves the destination's dates unchanged writes no calendar
   row.
 
@@ -41,7 +41,8 @@ defmodule GtfsPlanner.Gtfs.RecentChanges do
     "stop" => 8,
     "pathway" => 9,
     "alignment_segment" => 10,
-    "transfer" => 11
+    "transfer" => 11,
+    "fare_version" => 12
   }
 
   @type destination ::
@@ -53,6 +54,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges do
           | {:station, station_stop_id :: String.t(), level_id :: String.t() | nil}
           | {:stop, stop_id :: String.t()}
           | :alignment
+          | :fares
           | :transfers
 
   @type group :: %{
@@ -348,13 +350,14 @@ defmodule GtfsPlanner.Gtfs.RecentChanges do
   end
 
   # The types the cond above does not name: a shape edit has no editor surface,
-  # a transfer rule has its own screen, and every other type reads through the
-  # stop vocabulary. One alignment save writes a row per section without an
-  # operation id, so all alignment rows share one destination instead of one
-  # per stop pair.
+  # a transfer rule has its own screen, a fare operation has the Fares section,
+  # and every other type reads through the stop vocabulary. One alignment save
+  # writes a row per section without an operation id, so all alignment rows share
+  # one destination instead of one per stop pair.
   defp default_destination(%ChangeLog{entity_type: "alignment_segment"}), do: :alignment
 
   defp default_destination(%ChangeLog{entity_type: "transfer"}), do: :transfers
+  defp default_destination(%ChangeLog{entity_type: "fare_version"}), do: :fares
   defp default_destination(%ChangeLog{} = log), do: {:stop, log.entity_external_id}
 
   # A level's GTFS `level_id` is its external id; a stop's is its snapshot value.

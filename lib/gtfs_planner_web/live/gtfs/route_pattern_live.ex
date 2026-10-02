@@ -26,6 +26,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Headsigns
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.StopPlacement
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimingFill
   alias GtfsPlanner.Values
@@ -116,6 +117,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:stop_search_form, stop_search_form())
      |> assign(:insert_after, "")
      |> assign(:insert_form, insert_form(""))
+     |> assign(:handled_add_stop, nil)
      |> assign(:timing_rows, [])
      |> assign(:timing_edits, %{})
      |> assign(:timing_headsign_edits, %{})
@@ -273,6 +275,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       end
 
     socket = maybe_load_grouping(socket, params)
+    socket = stage_requested_stop(socket, params["add_stop"])
 
     case RoutePatternAlignmentEvents.ensure_loaded(socket) do
       {:ok, socket} -> {:noreply, socket}
@@ -4152,6 +4155,118 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       _ -> nil
     end
   end
+
+  # `task=stops&add_stop=<id>` is how the Map view's "Add to a pattern" link
+  # reaches this editor: the editor created a stop, the stop needs to be on a
+  # route, and the link that started there carries which stop. The stop is
+  # staged rather than appended, at the position its own coordinates imply —
+  # otherwise an editor who clicked "add it to the northbound pattern" would
+  # land on a pattern with the stop at the end and have to find it.
+  #
+  # Three things have to hold and each has its own reason:
+  #
+  #   * only once per value. `handle_params/3` runs on a patch as well as a
+  #     mount, and a LiveView that stages the same stop on every patch would
+  #     grow a list the editor never asked for. The value is remembered, so a
+  #     re-render with the same link stages nothing and a link to a different
+  #     stop stages that one.
+  #   * only for the stops task and only once the screen is loaded. The
+  #     insertion position is computed from the pattern's own stops, and the
+  #     stops arrive with the screen.
+  #   * only for a stop this version holds. `lookup_eligible_stop/2` is scoped to
+  #     the organization and version, so a link carrying another version's stop
+  #     resolves to nothing and stages nothing.
+  defp stage_requested_stop(socket, stop_id) when is_binary(stop_id) and stop_id != "" do
+    cond do
+      socket.assigns.task != :stops ->
+        socket
+
+      socket.assigns.load_state != :ready ->
+        socket
+
+      socket.assigns.handled_add_stop == stop_id ->
+        socket
+
+      true ->
+        socket
+        |> assign(:handled_add_stop, stop_id)
+        |> stage_stop_at_cheapest_position(stop_id)
+    end
+  end
+
+  defp stage_requested_stop(socket, _stop_id), do: socket
+
+  defp stage_stop_at_cheapest_position(socket, stop_id) do
+    case lookup_eligible_stop(socket, stop_id) do
+      nil ->
+        # An unknown stop is a stale link, not an editor's mistake: the stop
+        # list is left exactly as it was and the editor adds a stop the usual
+        # way if they meant to.
+        socket
+
+      stop ->
+        case stop_point(stop) do
+          nil -> socket
+          point -> socket |> stage_at(point, stop) |> put_flash(:info, added_stop_flash(stop))
+        end
+    end
+  end
+
+  # The position is a count of the pattern's located stops that lie before the
+  # new stop along its own line, which `StopPlacement.insertion_index/2` is the
+  # one function that answers. `insert_after` is the form's own vocabulary —
+  # "after N stops", `-1` for before the first and `""` for the end — so the
+  # computed count is mapped onto it rather than stored as an integer the form
+  # cannot hold.
+  defp stage_at(socket, point, stop) do
+    ordered = Enum.map(socket.assigns.staged_occurrences, &occurrence_point(socket, &1))
+
+    index = StopPlacement.insertion_index(point, Enum.reject(ordered, &is_nil/1))
+    value = insert_after_value(index)
+
+    socket
+    |> assign(:insert_after, value)
+    |> assign(:insert_form, insert_form(value))
+    |> stage_stop(stop)
+  end
+
+  # `insertion_index/2` answers with the number of stops before the point, and
+  # the form asks for the number of stops to insert after. Those are the same
+  # number except at the front, where the count is zero and the form's name for
+  # zero is `-1`.
+  defp insert_after_value(0), do: "-1"
+  defp insert_after_value(index), do: Integer.to_string(index)
+
+  # A staged occurrence is a position in the pattern's stop order; its point is
+  # the point of the stop it names, read from the stops the screen loaded rather
+  # than from a query, because the screen already has every stop the pattern
+  # calls at.
+  defp occurrence_point(socket, occurrence) do
+    case socket.assigns.stops[occurrence.stop_id] do
+      nil -> nil
+      stop -> stop_point(stop)
+    end
+  end
+
+  defp added_stop_flash(stop),
+    do:
+      "#{stop.stop_name || stop.stop_id} is staged at its place along the route. Save and review to apply it."
+
+  # `{lon, lat}`, the order `StopPlacement` measures points in.
+  defp stop_point(stop) do
+    with lat when not is_nil(lat) <- decimal_to_float(stop.stop_lat),
+         lon when not is_nil(lon) <- decimal_to_float(stop.stop_lon) do
+      {lon, lat}
+    else
+      _ -> nil
+    end
+  end
+
+  defp decimal_to_float(nil), do: nil
+  defp decimal_to_float(%Decimal{} = value), do: Decimal.to_float(value)
+  defp decimal_to_float(value) when is_float(value), do: value
+  defp decimal_to_float(value) when is_integer(value), do: value * 1.0
+  defp decimal_to_float(_value), do: nil
 
   defp stage_stop(socket, stop) do
     occurrences = socket.assigns.staged_occurrences

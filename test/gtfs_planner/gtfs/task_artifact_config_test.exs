@@ -35,7 +35,14 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactConfigTest do
   test "test configuration supplies an isolated task artifact root" do
     root = Application.fetch_env!(:gtfs_planner, :gtfs_task_artifacts_path)
 
-    assert root == Path.join(System.tmp_dir!(), "gtfs_planner_test_task_artifacts")
+    configured = System.get_env("GTFS_TASK_ARTIFACTS_PATH")
+
+    expected =
+      if configured in [nil, ""],
+        do: Path.join(System.tmp_dir!(), "gtfs_planner_test_task_artifacts"),
+        else: Path.expand(configured)
+
+    assert root == expected
     refute root == Application.fetch_env!(:gtfs_planner, :uploads_path)
   end
 

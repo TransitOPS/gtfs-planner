@@ -310,7 +310,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionSaveLiveTest do
 
       # Both rows are untouched: the refused write deleted neither the row the
       # save made nor the other editor's.
-      assert [_saved, other] = stored_transfers(context, a, b)
+      assert [saved, other] =
+               context |> stored_transfers(a, b) |> Enum.sort_by(& &1.transfer_type)
+
+      assert saved.transfer_type == 4
       assert other.transfer_type == 5
       assert other.from_stop_id == nil
 

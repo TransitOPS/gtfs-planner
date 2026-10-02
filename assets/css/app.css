@@ -5641,6 +5641,32 @@ html:has(#schedules-grid) {
   color: var(--color-muted);
 }
 
+/* Fare workspaces use a 44px minimum for every control the operator can reach.
+   A few compact fields intentionally use Tailwind's 40px `min-h-10`; the
+   workspace contract raises those fields and disclosure triggers together. */
+#fare-prices-panel {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+body:has(#fare-editor-page) :is(button, input:not([type="hidden"], [type="checkbox"], [type="radio"]), select, textarea, summary, a.btn, [role="button"]),
+body:has(#route-fares) :is(button, input:not([type="hidden"], [type="checkbox"], [type="radio"]), select, textarea, summary, a.btn, [role="button"]) {
+  min-height: 44px;
+}
+
+body:has(#fare-editor-page) label:has(> input:is([type="checkbox"], [type="radio"])),
+body:has(#route-fares) label:has(> input:is([type="checkbox"], [type="radio"])) {
+  min-height: 44px;
+}
+
+/* The fare editor shell is rendered in more than one LiveView and several
+   buttons are deliberately unstyled. The dialog and drawer portals are
+   siblings of the page root, so scope through the owning fare page instead. */
+body:has(#fare-editor-page) :is(a, button, input, select, textarea, summary, [role="button"], [tabindex]:not([tabindex="-1"])):focus-visible,
+body:has(#route-fares) :is(a, button, input, select, textarea, summary, [role="button"], [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
 /* The keycaps the grid reading line, the grid bar's idle hint and the shortcut
    sheet share. */
 #cell-reading kbd,
@@ -5662,4 +5688,249 @@ html:has(#schedules-grid) {
   font-weight: 600;
   line-height: 1;
   white-space: nowrap;
+}
+
+/* The Stops map markers. Leaflet positions a divIcon's element; these rules are
+   what it looks like once it is there. The box is fixed in pixels rather than
+   scaled with zoom, because a stop that grows as the map zooms stops reading as
+   a point on a street. */
+.stop-map-marker {
+  background: none;
+  border: 0;
+}
+
+.stop-map-stop,
+.stop-map-bay,
+.stop-map-station {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: block;
+  transform: translate(-50%, -50%);
+  background: #fff;
+}
+
+.stop-map-stop {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #0f1a3d;
+  border-radius: 50%;
+}
+
+.stop-map-stop-unserved {
+  border-color: #7a85ac;
+  border-style: dashed;
+}
+
+.stop-map-station {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: #0f1a3d;
+}
+
+/* A bay is a labelled white disc: the letter is the part an editor looks for,
+   and a disc of the same size as a stop is what makes it read as the same kind
+   of thing on the same street. */
+.stop-map-bay {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 2px solid #0f1a3d;
+  border-radius: 50%;
+  color: #0f1a3d;
+  font-family: var(--font-ds);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* The travel tick. Positioned from the hook's bearing in degrees, so it points
+   the way the bus goes rather than up the screen. */
+.stop-map-tick {
+  position: absolute;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 7px solid #1a2654;
+}
+
+.stop-map-marker:hover .stop-map-stop,
+.stop-map-marker:focus-visible .stop-map-stop {
+  box-shadow: 0 0 0 3px rgba(200, 24, 112, 0.35);
+}
+
+/* The stop's name, once the map is close enough for it to be read. The white
+   halo is what lets a name sit over a coloured route line and still be read,
+   which is why the outline is painted behind the text rather than adding a
+   box. */
+.stop-map-label {
+  position: absolute;
+  left: 16px;
+  bottom: 12px;
+  max-width: 180px;
+  overflow: hidden;
+  color: #0f1a3d;
+  font-family: var(--font-ds);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  -webkit-text-stroke: 3px #fff;
+  paint-order: stroke fill;
+  pointer-events: none;
+}
+
+/* The placement overlay: the pin and the crosshair, which are the stage's
+   children rather than the canvas's because Leaflet owns every child of
+   `#stop-map`. It sits above the canvas's panes and takes no pointer input of
+   its own — only the pin does. */
+.stop-map-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 900;
+  pointer-events: none;
+}
+
+/* Add mode. The cursor is the only thing the mode changes before a stop is
+   placed, and it is the one an editor sees without looking for it. */
+.stop-map-adding {
+  cursor: crosshair;
+}
+
+/* The crosshair: where Enter will place the stop. Centred, because that is
+   where the keyboard path puts it and a crosshair anywhere else would promise
+   a placement the keyboard does not make. */
+.stop-map-crosshair {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 36px;
+  height: 36px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.stop-map-crosshair-v,
+.stop-map-crosshair-h {
+  position: absolute;
+  background: rgb(15 26 61 / 70%);
+}
+
+.stop-map-crosshair-v {
+  top: 0;
+  left: 50%;
+  width: 2px;
+  height: 100%;
+  transform: translateX(-50%);
+}
+
+.stop-map-crosshair-h {
+  top: 50%;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  transform: translateY(-50%);
+}
+
+/* The pin is a real button, so it is 44px of target with a focus ring: it is
+   dragged by mouse and by finger, and moved by the arrow keys. */
+.stop-map-pin {
+  position: absolute;
+  display: flex;
+  width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  transform: translate(-50%, -50%);
+  border: 0;
+  background: none;
+  cursor: move;
+  touch-action: none;
+  pointer-events: auto;
+}
+
+.stop-map-pin:focus-visible {
+  outline: 2px solid #96305f;
+  outline-offset: 2px;
+}
+
+/* The magenta ring is the selection: it is the one thing on the map that says
+   this stop does not exist yet. */
+.stop-map-pin-ring {
+  position: absolute;
+  width: 38px;
+  height: 38px;
+  border: 3px solid #c81870;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 70%);
+}
+
+.stop-map-pin-body {
+  position: relative;
+  display: flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #0f1a3d;
+  color: #fff;
+  box-shadow: 0 4px 18px rgb(10 19 48 / 9%);
+}
+
+.stop-map-pin-glyph {
+  width: 16px;
+  height: 16px;
+}
+
+.stop-map-pin-label {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  margin-bottom: 4px;
+  padding: 2px 6px;
+  transform: translateX(-50%);
+  border-radius: 4px;
+  background: #0a1330;
+  color: #fff;
+  font-family: var(--font-ds);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+/* The saved position of a stop being moved. Dashed rather than solid because it
+   is where the stop was, not where it is. */
+.stop-map-ghost {
+  display: block;
+  width: 22px;
+  height: 22px;
+  border: 2px dashed #4e5c8b;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 60%);
+}
+
+/* How far the pin is from the position it started at. The figures are set in
+   tabular numerals so the label does not reflow as the number changes. */
+.stop-map-distance {
+  display: block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #fff;
+  color: #0a1330;
+  font-family: var(--font-ds);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  box-shadow:
+    0 2px 3px rgb(10 19 48 / 2%),
+    0 10px 24px rgb(10 19 48 / 3%);
 }

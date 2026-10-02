@@ -68,6 +68,23 @@ defmodule GtfsPlanner.Agents.ScopeTest do
     end
   end
 
+  describe "the optional subject" do
+    test "a scope built without a subject has a nil subject_id and authorizes as before" do
+      organization = organization_fixture()
+      user = user_fixture()
+      organization_membership_fixture(user, organization)
+
+      scope = scope_fixture(user, organization)
+
+      assert scope.subject_id == nil
+      assert Scope.authorize(scope) == :ok
+
+      with_subject = %{scope | subject_id: Ecto.UUID.generate()}
+
+      assert Scope.authorize(with_subject) == :ok
+    end
+  end
+
   describe "audit_context/1" do
     test "carries the actor identity and leaves the station unset" do
       organization = organization_fixture()

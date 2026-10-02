@@ -38,7 +38,7 @@ These rules decided every placement below. Use them for new features.
 ## Top level
 
 ```
-Pathways Studio   Routes · Calendars · Operations · Stops & stations · Flex · GTFS
+Pathways Studio   Alerts · Routes · Calendars · Operations · Stops & stations · Flex · GTFS
 Org name                                        [Version ▾]   [Initials ▾]
                                                                 ├ Org name: Settings
                                                                 └ Account settings · Log out
@@ -47,6 +47,7 @@ Org name                                        [Version ▾]   [Initials ▾]
 | Destination | Holds | Scope | Status |
 |---|---|---|---|
 | Home (`/`) | Organization tasks for the signed-in user | Organization | Live |
+| Alerts | Saved service alerts for the version, tabbed Current, Upcoming, In progress, Past | This version | Live |
 | Routes | Route catalog, transfers, route and pattern pages | This version | Live |
 | Calendars | Service calendars | This version | Live |
 | Operations | Blocks · Runs · Rosters | This version | Live; grouping Proposed |
@@ -125,7 +126,7 @@ flowchart LR
 
   app --> settings[Settings]
   settings --> sVersion["This version: Feed details · Agencies · Fares"]
-  settings --> sAll["All versions: Export defaults · Published feed URL · Garages · Fleet"]
+  settings --> sAll["All versions: Alerts · Export defaults · Published feed URL · Garages · Fleet"]
   settings --> sOrg["Organization: Name · Users"]
 
   app --> orgs[Organizations]
@@ -371,6 +372,7 @@ Settings
 │   ├── Agencies            name · URL · timezone · routes
 │   └── Fares               Zones · Fare rules
 ├── All versions
+│   ├── Alerts              message scripts (built-ins read-only, copy to edit) + writing guidelines
 │   ├── Export defaults     ID formats, interpolation + estimate method, GTFS-flex files
 │   ├── Published feed URL  URL, Copy URL, what is live, permanence note
 │   ├── Garages             Live (#697) at /blocks/garages; moves here

@@ -906,11 +906,13 @@ defmodule GtfsPlanner.Gtfs.Import.RowParser do
          {:ok, rider_category_name} <- extract_required(row_map, "rider_category_name") do
       {:ok, min_age} = parse_integer(row_map["min_age"])
       {:ok, max_age} = parse_integer(row_map["max_age"])
+      {:ok, is_default_fare_category} = parse_integer(row_map["is_default_fare_category"])
 
       {:ok,
        %{
          rider_category_id: rider_category_id,
          rider_category_name: rider_category_name,
+         is_default_fare_category: is_default_fare_category,
          min_age: min_age,
          max_age: max_age,
          eligibility_url: empty_to_nil(row_map["eligibility_url"]),

@@ -17,6 +17,11 @@ defmodule GtfsPlanner.Agents.Scope do
   no foreign metadata is disclosed. `approved_digest/1` binds an editor-submitted
   Calendar approval to the session key, so a conversation started before an
   approval is a different one.
+
+  `subject_id` names the record one conversation is about — the alert of an
+  assistant editor — and is `nil` for a conversation with no such record, such as
+  Calendar's. It is part of the session key, so two alerts of one person and
+  version get two conversations.
   """
 
   alias GtfsPlanner.Authorization
@@ -35,6 +40,7 @@ defmodule GtfsPlanner.Agents.Scope do
     :user_email,
     :pack_id,
     :version_name,
+    :subject_id,
     resource_context: %{identity: nil, approved_extension: nil}
   ]
 
@@ -61,6 +67,7 @@ defmodule GtfsPlanner.Agents.Scope do
           user_email: String.t() | nil,
           pack_id: String.t(),
           version_name: String.t() | nil,
+          subject_id: Ecto.UUID.t() | nil,
           resource_context: resource_context()
         }
 

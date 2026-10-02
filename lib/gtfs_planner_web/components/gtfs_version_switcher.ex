@@ -66,7 +66,7 @@ defmodule GtfsPlannerWeb.Components.GtfsVersionSwitcher do
       data-current-version={@current_version.id}
       class="relative inline-flex w-fit min-w-0 max-w-full flex-wrap items-center gap-2"
     >
-      <div id="version-control" class="relative min-w-0">
+      <div id="version-control" class="relative min-w-0 max-w-full">
         <button
           id="gtfs-version-trigger"
           type="button"

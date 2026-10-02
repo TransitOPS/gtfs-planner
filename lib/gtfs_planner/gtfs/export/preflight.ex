@@ -10,6 +10,12 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
   The pathways export contains only stops, levels and pathways, so it runs only
   the stop and pathway checks.
 
+  Fares are checked here through `GtfsPlanner.Gtfs.Fares.Checks`, the same read
+  model the Checks tab draws. Its repair and review items become one warning each
+  under a `fares_` code, and its notes stay out of the run because a note is not a
+  fault with this version. Every other check answers one aggregate issue, so
+  `run/3` flattens a check that answers a list.
+
   Transfers are checked here with their own set-based query. The Transfers page
   flags rules that need attention through `GtfsPlanner.Gtfs.Transfers`, but that
   logic loads every transfer and its stops, routes and trips before it judges
@@ -31,13 +37,19 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
     Trip
   }
 
+  alias GtfsPlanner.Gtfs.Fares.Checks, as: FareChecks
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Wording
 
   @sample_size 5
   @exit_gate 7
   @pathway_checks [:station_with_parent, :stops_missing_coordinates, :bidirectional_exit_gate]
-  @feed_checks [:mixed_agency_timezones, :transfer_missing_reference, :trip_missing_service]
+  @feed_checks [
+    :mixed_agency_timezones,
+    :transfer_missing_reference,
+    :trip_missing_service,
+    :fares
+  ]
 
   # Each transfer column with the schema and key that must contain its value.
   @transfer_references [
@@ -62,7 +74,7 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
     issues =
       export_type
       |> checks()
-      |> Enum.map(&check(&1, organization_id, gtfs_version_id))
+      |> Enum.flat_map(&List.wrap(check(&1, organization_id, gtfs_version_id)))
       |> Enum.reject(&is_nil/1)
 
     if issues == [], do: :ok, else: {:error, issues}
@@ -190,6 +202,27 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
         "calendar dates (for example #{examples}). GTFS requires every trip's service to be " <>
         "defined. Add the service on the Calendars page or re-import the calendars."
     end)
+  end
+
+  # `Fares.Checks` reads the version's fares through the same model every fare
+  # tab draws, so a warning names a hole the operator can also see on the Checks
+  # tab. Its repair and review items are faults; its notes are not (R16, AC-32).
+  defp check(:fares, organization_id, gtfs_version_id) do
+    %{repair: repair, review: review} =
+      FareChecks.run(organization_id, gtfs_version_id)
+
+    Enum.map(repair ++ review, &fare_issue/1)
+  end
+
+  defp fare_issue(%{code: code, title: title} = item) do
+    body = Map.get(item, :body)
+
+    message =
+      if is_binary(body) and body != "",
+        do: title <> ". " <> body,
+        else: title
+
+    %{code: "fares_" <> code, message: message}
   end
 
   defp mixed_timezones_issue(organization_id, gtfs_version_id) do

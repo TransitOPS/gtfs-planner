@@ -1,0 +1,5 @@
+route_id,agency_id,route_short_name,route_long_name,route_desc,route_type,route_url,route_color,route_text_color,route_sort_order,continuous_pickup,continuous_drop_off,network_id
+193,PSC,NS,Portland Streetcar - NS Line,,0,https://portlandstreetcar.org/,72A130,000000,200,1,1,PSC
+194,PSC,A,Portland Streetcar - A Loop,,0,https://portlandstreetcar.org/,D91965,FFFFFF,250,1,1,PSC
+195,PSC,B,Portland Streetcar - B Loop,,0,https://portlandstreetcar.org/,4650BE,FFFFFF,275,1,1,PSC
+208,TRAM,,Portland Aerial Tram,,6,http://www.gobytram.com/,898E91,000000,300,1,1,TRAM

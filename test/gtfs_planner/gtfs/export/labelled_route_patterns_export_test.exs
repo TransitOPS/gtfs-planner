@@ -46,7 +46,9 @@ defmodule GtfsPlanner.Gtfs.Export.LabelledRoutePatternsExportTest do
 
   # The exported bytes of the unlabelled round-trip fixture, captured from
   # `export_to_zip/3` before the label join existed. They are the whole file,
-  # header included, so a changed column, order or value all fail here.
+  # header included, so a changed column or value fails here. Trips sharing a
+  # route have no secondary export ordering, so compare their literal rows
+  # independently of that unspecified order.
   @golden_trips """
   route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id,wheelchair_accessible,bikes_allowed,route_pattern_id
   RP_ROUTE,WEEKDAY,RP_TRIP_LINKED,Linked Destination,,1,,,,,RP_B
@@ -195,7 +197,7 @@ defmodule GtfsPlanner.Gtfs.Export.LabelledRoutePatternsExportTest do
            |> Enum.map(&column(&1, "route_pattern_id")) == ["P_OWNER"]
   end
 
-  test "a feed without labels exports the same trips.txt and route_patterns.txt bytes as before",
+  test "a feed without labels preserves the literal trips rows and route_patterns bytes",
        context do
     org_id = context.organization.id
     version = gtfs_version_fixture(org_id)
@@ -294,7 +296,10 @@ defmodule GtfsPlanner.Gtfs.Export.LabelledRoutePatternsExportTest do
 
     files = export!(org_id, version.id)
 
-    assert file_text(files, "trips.txt") == @golden_trips
+    [actual_header | actual_rows] = String.split(file_text(files, "trips.txt"), "\n", trim: true)
+    [expected_header | expected_rows] = String.split(@golden_trips, "\n", trim: true)
+    assert actual_header == expected_header
+    assert Enum.sort(actual_rows) == Enum.sort(expected_rows)
     assert file_text(files, "route_patterns.txt") == @golden_route_patterns
   end
 

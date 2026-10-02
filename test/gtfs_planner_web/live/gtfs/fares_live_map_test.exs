@@ -449,7 +449,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveMapTest do
     end
   end
 
-  defp zones_path(version), do: "/gtfs/#{version.id}/settings/fares"
+  defp zones_path(version), do: "/gtfs/#{version.id}/settings/fares/zones"
 
   defp zone_url(version, zone_id) do
     zones_path(version) <> "?" <> URI.encode_query(zone: zone_id)

@@ -46,7 +46,8 @@ defmodule GtfsPlanner.Gtfs.FaresFlexTranslationsImportExportTest do
       "from_leg_group_id,to_leg_group_id,transfer_count,duration_limit,duration_limit_type," <>
         "fare_transfer_type,fare_product_id\n",
     "rider_categories.txt" =>
-      "rider_category_id,rider_category_name,min_age,max_age,eligibility_url\n",
+      "rider_category_id,rider_category_name,is_default_fare_category,min_age,max_age," <>
+        "eligibility_url\n",
     "timeframes.txt" => "timeframe_group_id,start_time,end_time,service_id\n",
     "areas.txt" => "area_id,area_name\n",
     "stop_areas.txt" => "area_id,stop_id\n",
@@ -90,9 +91,9 @@ defmodule GtfsPlanner.Gtfs.FaresFlexTranslationsImportExportTest do
     L2,L1,,,,0,
     """,
     "rider_categories.txt" => """
-    rider_category_id,rider_category_name,min_age,max_age,eligibility_url
-    R1,Adult,19,64,https://example.test/adult
-    R2,Senior,,,
+    rider_category_id,rider_category_name,is_default_fare_category,min_age,max_age,eligibility_url
+    R1,Adult,1,19,64,https://example.test/adult
+    R2,Senior,,,,
     """,
     "timeframes.txt" => """
     timeframe_group_id,start_time,end_time,service_id

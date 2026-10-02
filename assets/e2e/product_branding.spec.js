@@ -108,6 +108,7 @@ for (const account of [PLANNER_EDITOR, PATHWAYS_EDITOR]) {
         const planner = account === PLANNER_EDITOR;
         const gated = ["#nav-operations", "#nav-flex"];
         const shown = [
+          "#nav-alerts",
           "#nav-routes",
           "#nav-calendars",
           "#nav-stops",

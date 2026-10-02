@@ -283,7 +283,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSetAllSaveLiveTest do
 
   defp save_review(view) do
     view |> element("#set-all-review-save") |> render_click()
-    render_async(view)
+    render_async(view, 5_000)
   end
 
   defp doc(view), do: view |> render() |> LazyHTML.from_fragment()
@@ -591,7 +591,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSetAllSaveLiveTest do
 
       # The refusal comes from the write's own transaction, so it arrives with
       # the asynchronous result rather than with the click.
-      html = render_async(view)
+      html = render_async(view, 5_000)
 
       assert html =~ @permission_message
 
@@ -653,7 +653,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSetAllSaveLiveTest do
         "pairs" => [%{from: blocked_pair.from.trip_id, to: blocked_pair.to.trip_id}]
       })
 
-      assert render_async(view)
+      assert render_async(view, 5_000)
 
       assert pair_transfers(context, blocked_pair) == []
 

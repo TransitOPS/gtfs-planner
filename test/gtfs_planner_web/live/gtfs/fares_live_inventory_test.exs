@@ -102,7 +102,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveInventoryTest do
       version: version
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
       html = render(view)
 
       assert has_element?(view, "#fare-zone-row-all", "All stops")
@@ -161,13 +161,14 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveInventoryTest do
       version: version
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       assert has_element?(view, "#fare-zone-row-all[aria-current='page']")
       assert has_element?(view, "#fare-zone-stage-title", "All stops")
       assert has_element?(view, "#fare-zone-stage-subtitle", "8 stops in this version")
 
-      assert row_href(view, "#fare-zone-row-2") == "/gtfs/#{version.id}/settings/fares?zone=A"
+      assert row_href(view, "#fare-zone-row-2") ==
+               "/gtfs/#{version.id}/settings/fares/zones?zone=A"
 
       render_patch(view, row_href(view, "#fare-zone-row-2"))
 
@@ -189,10 +190,10 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveInventoryTest do
       version: version
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       href = row_href(view, "#fare-zone-row-3")
-      assert href == "/gtfs/#{version.id}/settings/fares?zone=A%26B+1"
+      assert href == "/gtfs/#{version.id}/settings/fares/zones?zone=A%26B+1"
 
       render_patch(view, href)
 
@@ -206,7 +207,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveInventoryTest do
              )
 
       assert row_href(view, "#fare-zone-row-unassigned") ==
-               "/gtfs/#{version.id}/settings/fares?filter=unassigned"
+               "/gtfs/#{version.id}/settings/fares/zones?filter=unassigned"
 
       refute render(view) =~ ~s(id="fare-zone-row-A&B 1")
     end
@@ -218,13 +219,13 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveInventoryTest do
       version: version
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       zone_href = row_href(view, "#fare-zone-row-8")
       filter_href = row_href(view, "#fare-zone-row-unassigned")
 
-      assert zone_href == "/gtfs/#{version.id}/settings/fares?zone=unassigned"
-      assert filter_href == "/gtfs/#{version.id}/settings/fares?filter=unassigned"
+      assert zone_href == "/gtfs/#{version.id}/settings/fares/zones?zone=unassigned"
+      assert filter_href == "/gtfs/#{version.id}/settings/fares/zones?filter=unassigned"
 
       render_patch(view, zone_href)
 
@@ -253,9 +254,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveInventoryTest do
       version: version
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
-      render_patch(view, "/gtfs/#{version.id}/settings/fares?zone=A")
+      render_patch(view, "/gtfs/#{version.id}/settings/fares/zones?zone=A")
       assert has_element?(view, "#fare-zone-row-2[aria-current='page']")
 
       # Byte-exact: " A" is its own zone, so the space the link encoded selects
@@ -264,7 +265,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveInventoryTest do
       assert has_element?(view, "#fare-zone-row-1[aria-current='page']")
       refute has_element?(view, "#fare-zone-row-2[aria-current='page']")
 
-      render_patch(view, "/gtfs/#{version.id}/settings/fares?zone=GONE")
+      render_patch(view, "/gtfs/#{version.id}/settings/fares/zones?zone=GONE")
 
       assert has_element?(view, "#fare-zone-row-all[aria-current='page']")
       assert has_element?(view, "#fare-zone-stage-title", "All stops")
@@ -330,7 +331,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveInventoryTest do
       end)
 
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares?zone=GONE")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones?zone=GONE")
 
       # The first read serves the filter the URL asked for; the second one serves
       # All stops, so the stop list below the header cannot render the rows of a

@@ -134,6 +134,15 @@ defmodule GtfsPlannerWeb.Router do
         GtfsPlannerWeb.AssignGtfsVersion
       ] do
       # GTFS routes (viewer or editor roles required)
+      # Alerts is the first task area, and it lists the alerts of the version in
+      # the URL only (R1).
+      live "/alerts", Gtfs.AlertsLive, :index
+      # The alert editor's two entry points share one LiveView, because the
+      # editor is one frame: `new` writes no row until the first answer, and
+      # `edit` is where that answer navigates to. `new` is declared before the
+      # `:alert_id` segment so the literal never reads as an alert ID.
+      live "/alerts/new", Gtfs.AlertEditorLive, :new
+      live "/alerts/:alert_id", Gtfs.AlertEditorLive, :edit
       live "/routes", Gtfs.RoutesLive, :index
       # Transfers is the Routes area's second tab, beside the routes list.
       live "/transfers", Gtfs.TransfersLive, :index
@@ -155,6 +164,10 @@ defmodule GtfsPlannerWeb.Router do
       live "/routes/:route_id/schedules", Gtfs.RouteSchedulesLive, :index
       live "/routes/:route_id/schedules/paste", Gtfs.TimetablePasteLive, :new
       live "/stops", Gtfs.StopsLive, :index
+      # The Map view is the same page at its second route. It must be declared
+      # before the stop show route, which would otherwise capture "map" as a
+      # stop ID.
+      live "/stops/map", Gtfs.StopsMapLive, :index
       live "/stops/:stop_id", Gtfs.StopDetailLive, :show
       live "/stops/:stop_id/diagram", Gtfs.StationDiagramLive, :index
       live "/stops/:stop_id/report", Gtfs.StationReport2Live, :index
@@ -190,16 +203,29 @@ defmodule GtfsPlannerWeb.Router do
       live "/settings/feed-details", Gtfs.FeedDetailsLive, :index
       live "/settings/agencies", Gtfs.AgenciesLive, :index
       live "/settings/export-defaults", Gtfs.ExportDefaultsLive, :index
+      # Message scripts and writing guidelines are the organization's alert
+      # wording, read by every version's alert editor. The literal route is
+      # declared ahead of the section route so "alerts" is never read as a
+      # section slug.
+      live "/settings/alerts", Gtfs.AlertSettingsLive, :index
       live "/settings/garages", Gtfs.GaragesLive, :index
       live "/settings/fleet", Gtfs.FleetLive, :index
-      # The Fare zones workspace owns the Fares section. Its three destinations
-      # are one LiveView with one action each, so the tab links patch between
-      # them and the Zones tab's query state survives a tab change. They are
-      # literal paths declared ahead of the section route, so neither "fares"
-      # nor its child segments can be read as a section slug.
-      live "/settings/fares", Gtfs.FaresLive, :zones
-      live "/settings/fares/rules", Gtfs.FaresLive, :rules
-      live "/settings/fares/checks", Gtfs.FaresLive, :checks
+      # The Fares section is two LiveViews. The fare editor shell owns Prices,
+      # Where fares apply, Transfers and Checks; the Fare zones workspace keeps
+      # the Zones tab, whose map, selection and assignment review spec 21 built.
+      # The shared tab strip navigates between them, so each tab is its own path
+      # and a tab change is a real navigation rather than a patch of one
+      # LiveView's query state. They are literal paths declared ahead of the
+      # section route, so neither "fares" nor its child segments can be read as a
+      # section slug.
+      live "/settings/fares", Gtfs.FareEditorLive, :prices
+      live "/settings/fares/where", Gtfs.FareEditorLive, :where
+      live "/settings/fares/transfers", Gtfs.FareEditorLive, :transfers
+      live "/settings/fares/zones", Gtfs.FaresLive, :zones
+      live "/settings/fares/checks", Gtfs.FareEditorLive, :checks
+      # The retired Fare rules path. Fare rules are edited on Where fares apply,
+      # so the action navigates there rather than rendering a tab of its own.
+      live "/settings/fares/rules", Gtfs.FareEditorLive, :rules
       live "/settings/:section", Gtfs.SettingsLive, :section
       live "/import", Gtfs.ImportLive, :index
       live "/export", Gtfs.ExportLive, :index

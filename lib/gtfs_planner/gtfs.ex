@@ -27,6 +27,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.DeadheadTime
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.FareAttribute
+  alias GtfsPlanner.Gtfs.Fares
   alias GtfsPlanner.Gtfs.FareLegJoinRule
   alias GtfsPlanner.Gtfs.FareLegRule
   alias GtfsPlanner.Gtfs.FareMedia
@@ -50,7 +51,6 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RouteNetwork
   alias GtfsPlanner.Gtfs.RoutePattern
-  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
   alias GtfsPlanner.Gtfs.Routes
@@ -66,6 +66,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopArea
   alias GtfsPlanner.Gtfs.StopLevel
+  alias GtfsPlanner.Gtfs.StopReferences
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Timeframe
   alias GtfsPlanner.Gtfs.TimetablePaste
@@ -1046,6 +1047,29 @@ defmodule GtfsPlanner.Gtfs do
           {:ok, CatalogReadAdapter.fare_workspace()} | CatalogReadAdapter.unavailable()
   def load_fare_workspace(organization_id, gtfs_version_id, opts) do
     catalog_read_adapter().load_fare_workspace(organization_id, gtfs_version_id, opts)
+  end
+
+  @doc """
+  Loads the fare editor's whole read model through the configured catalog read
+  adapter.
+
+  The load carries everything the Prices, Where fares apply, Transfers and
+  Checks tabs render, so they read one snapshot and cannot disagree: `managed?`
+  and `older_format`, the fare grid with each rider's price and each payment
+  method's differing price, the rider categories and payment methods, the route
+  groups with their routes, one zone matrix per zone-priced group with its gap
+  cells, the fare time periods, the from × to transfer matrix, the read-only leg
+  join rules, the latest `fare_version` history and — for a version that is not
+  managed — its stored rows.
+
+  A lost database connection is reported once as `{:error, :unavailable}` so the
+  page can offer its reload action instead of presenting an empty workspace as
+  the version's data.
+  """
+  @spec load_fare_editor(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+          {:ok, Fares.Workspace.t()} | CatalogReadAdapter.unavailable()
+  def load_fare_editor(organization_id, gtfs_version_id, opts) do
+    catalog_read_adapter().load_fare_editor(organization_id, gtfs_version_id, opts)
   end
 
   @doc """
@@ -6163,22 +6187,10 @@ defmodule GtfsPlanner.Gtfs do
 
   def apply_import_entity(_, _, _, _), do: {:error, :invalid_decision}
 
-  # Tables that hold a stop's or level's GTFS ID as a plain string, as
-  # {kind, schema, column, column already counted}. There are no foreign keys, so a
-  # removal leaves these rows pointing at a missing record. A row naming one stop in
-  # both columns is counted once, by the first column.
-  @stop_references [
-    {:stop_times, StopTime, :stop_id, nil},
-    {:transfers, Transfer, :from_stop_id, nil},
-    {:transfers, Transfer, :to_stop_id, :from_stop_id},
-    {:pathways, Pathway, :from_stop_id, nil},
-    {:pathways, Pathway, :to_stop_id, :from_stop_id},
-    {:child_stops, Stop, :parent_station, nil},
-    {:stop_areas, StopArea, :stop_id, nil},
-    {:route_pattern_stops, RoutePatternStop, :stop_id, nil},
-    {:fare_leg_join_rules, FareLegJoinRule, :from_stop_id, nil},
-    {:fare_leg_join_rules, FareLegJoinRule, :to_stop_id, :from_stop_id}
-  ]
+  # The level's GTFS ID is held as a plain string, as
+  # {kind, schema, column, column already counted}. A row naming one level in both
+  # columns is counted once, by the first column. Stops read the shared reference
+  # list in `StopReferences` instead of keeping a second, shorter list here.
   @level_references [{:stops, Stop, :level_id, nil}]
 
   # Counts the records of one organization and version that still use each of the given
@@ -6188,8 +6200,11 @@ defmodule GtfsPlanner.Gtfs do
           %{String.t() => %{atom() => pos_integer()}}
   def import_dependent_counts(_entity_type, _organization_id, _gtfs_version_id, []), do: %{}
 
+  # The import review reads the one shared reference list, so a removal cannot
+  # understate what it would leave behind: a relief point, a flex hub, a
+  # deadhead time and a translation are counted here too.
   def import_dependent_counts(:stop, organization_id, gtfs_version_id, natural_keys),
-    do: dependent_counts(@stop_references, organization_id, gtfs_version_id, natural_keys)
+    do: StopReferences.counts(organization_id, gtfs_version_id, natural_keys)
 
   def import_dependent_counts(:level, organization_id, gtfs_version_id, natural_keys),
     do: dependent_counts(@level_references, organization_id, gtfs_version_id, natural_keys)

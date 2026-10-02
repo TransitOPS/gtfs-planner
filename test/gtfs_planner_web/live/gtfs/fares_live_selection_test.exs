@@ -111,7 +111,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       # Nothing selected: the header's action is the primary, and the bar carries
       # no action to compete with it.
@@ -142,7 +142,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       stop_id_by_row_id: stop_id_by_row_id
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       # Nothing selected: the reference's hint, and no count line.
       assert bar_hint(view) ==
@@ -186,7 +186,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       stop_ids: stop_ids
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares?zone=B")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones?zone=B")
 
       base_hrefs = Enum.map(1..2, &row_href(view, "#fare-zone-row-#{&1}"))
 
@@ -213,7 +213,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       stop_id_by_row_id: stop_id_by_row_id
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       # 153 boardable stops, one page of 100: the head's two actions differ.
       assert has_element?(view, "#fare-zone-stop-head", "153 shown")
@@ -233,7 +233,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       |> element("#fare-zone-stops-pagination button[phx-value-page='2']")
       |> render_click()
 
-      assert_patched(view, "/gtfs/#{version.id}/settings/fares?page=2")
+      assert_patched(view, "/gtfs/#{version.id}/settings/fares/zones?page=2")
 
       page_two = visible_stop_ids(view, stop_id_by_row_id)
 
@@ -256,7 +256,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       stop_id_by_row_id: stop_id_by_row_id
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares?zone=B")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones?zone=B")
 
       assert has_element?(view, "#fare-zone-select-matching", "Select all 150 matching")
       assert length(visible_stop_ids(view, stop_id_by_row_id)) == 100
@@ -271,7 +271,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       |> element("#fare-zone-stops-pagination button[phx-value-page='2']")
       |> render_click()
 
-      assert_patched(view, "/gtfs/#{version.id}/settings/fares?zone=B&page=2")
+      assert_patched(view, "/gtfs/#{version.id}/settings/fares/zones?zone=B&page=2")
 
       page_two = visible_stop_ids(view, stop_id_by_row_id)
 
@@ -283,7 +283,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       # A search narrows the match the action offers and selects.
       view |> form("#fare-zone-search-form", %{"q" => "Riverside 150"}) |> render_change()
 
-      assert_patched(view, "/gtfs/#{version.id}/settings/fares?zone=B&q=Riverside+150")
+      assert_patched(view, "/gtfs/#{version.id}/settings/fares/zones?zone=B&q=Riverside+150")
 
       assert has_element?(view, "#fare-zone-select-matching", "Select all 1 matching")
       assert has_element?(view, "#fare-zone-select-shown", "Select 1 shown")
@@ -306,7 +306,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       stop_id_by_row_id: stop_id_by_row_id
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       toggle_stop(view, stop_ids["STOP_B_001"])
 
@@ -318,7 +318,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       |> element("#fare-zone-stops-pagination button[phx-value-page='2']")
       |> render_click()
 
-      assert_patched(view, "/gtfs/#{version.id}/settings/fares?page=2")
+      assert_patched(view, "/gtfs/#{version.id}/settings/fares/zones?page=2")
       assert bar_count(view) == "1 stop selected"
       assert checked_stop_ids(view, stop_id_by_row_id) == []
       refute has_element?(view, "#fare-zone-selection-outside")
@@ -326,7 +326,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       # The filter still contains it, and page 1 renders it checked again.
       render_patch(view, row_href(view, "#fare-zone-row-2"))
 
-      assert_patched(view, "/gtfs/#{version.id}/settings/fares?zone=B")
+      assert_patched(view, "/gtfs/#{version.id}/settings/fares/zones?zone=B")
       assert has_element?(view, "#fare-zone-stage-title", "Eastbank")
       assert length(visible_stop_ids(view, stop_id_by_row_id)) == 100
       assert checked_stop_ids(view, stop_id_by_row_id) == ["STOP_B_001"]
@@ -336,7 +336,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       # discloses that the filter cannot show it.
       render_patch(view, row_href(view, "#fare-zone-row-1"))
 
-      assert_patched(view, "/gtfs/#{version.id}/settings/fares?zone=A")
+      assert_patched(view, "/gtfs/#{version.id}/settings/fares/zones?zone=A")
       assert visible_stop_ids(view, stop_id_by_row_id) == ["HARBOR"]
       assert bar_count(view) == "1 stop selected"
       assert bar_outside(view) == "1 outside this filter"
@@ -346,7 +346,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       # shipped.
       render_patch(view, row_href(view, "#fare-zone-row-unassigned"))
 
-      assert_patched(view, "/gtfs/#{version.id}/settings/fares?filter=unassigned")
+      assert_patched(view, "/gtfs/#{version.id}/settings/fares/zones?filter=unassigned")
       assert bar_outside(view) == "1 outside this filter"
 
       # A search that no longer matches it does the same.
@@ -377,7 +377,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       stop_id_by_row_id: stop_id_by_row_id
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       toggle_stop(view, stop_ids["HARBOR"])
       toggle_stop(view, stop_ids["DEPOT"])
@@ -409,7 +409,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       stop_id_by_row_id: stop_id_by_row_id
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       toggle_stop(view, stop_ids["HARBOR"])
       assert bar_count(view) == "1 stop selected"
@@ -447,7 +447,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       # A crafted event cannot reach another version either: the same UUID is a
       # real stop there, but never one of this version's.
       {:ok, other_view, _html} =
-        live(conn, "/gtfs/#{version.id}/settings/fares?zone=A")
+        live(conn, "/gtfs/#{version.id}/settings/fares/zones?zone=A")
 
       render_click(other_view, "toggle_stop", %{"id" => foreign_stop.id})
 
@@ -464,7 +464,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       stop_id_by_row_id: stop_id_by_row_id
     } do
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares/zones")
 
       toggle_stop(view, stop_ids["HARBOR"])
       assert bar_count(view) == "1 stop selected"

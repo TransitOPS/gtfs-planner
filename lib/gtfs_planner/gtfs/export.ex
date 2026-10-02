@@ -12,6 +12,10 @@ defmodule GtfsPlanner.Gtfs.Export do
   - Resolves UUID foreign keys to GTFS string identifiers
   - Creates ZIP archives using Erlang's `:zip` module
   - Reads every GTFS file from one repeatable-read database snapshot
+  - Writes a managed version's `fare_attributes.txt`, `fare_rules.txt`,
+    `areas.txt` and `stop_areas.txt` from `Fares.Projection` instead of
+    streaming them, appends one `calendar.txt` row per fare time period and
+    leaves the `network_id` column out of `routes.txt` (R2, R7, R10, R14)
   - Doubles the `stop_sequence` of trips on an active detour service's route in
     every `stop_times.txt` it writes (R3, through `Flex.Export.sequence_mapper/2`)
   - Builds the flex zip (fixed routes plus flex rows) beside the main zip from
@@ -33,6 +37,7 @@ defmodule GtfsPlanner.Gtfs.Export do
   alias GtfsPlanner.Gtfs.Blocking.TodsExport
   alias GtfsPlanner.Gtfs.Export.{CsvWriter, FileSpec, MissingTimes, Snapshot, StreamBuilder}
   alias GtfsPlanner.Gtfs.Extensions
+  alias GtfsPlanner.Gtfs.Fares.Projection, as: FaresProjection
   alias GtfsPlanner.Gtfs.Flex.Export, as: FlexExport
   alias GtfsPlanner.Gtfs.Flex.Export.FileSpecs, as: FlexFileSpecs
   alias GtfsPlanner.Gtfs.FlexService
@@ -465,17 +470,18 @@ defmodule GtfsPlanner.Gtfs.Export do
     )
 
     garage_map = Map.new(garages, &{&1.garage_id, &1.name})
+    fares = FaresProjection.export_rows(organization_id, gtfs_version_id)
 
     with {:ok, {file_paths, emitted_conflicts, missing_warnings}} <-
            export_files(
              temp_dir,
-             FileSpec.get_specs(:full),
+             fare_specs(FileSpec.get_specs(:full), fares),
              organization_id,
              gtfs_version_id,
              %{},
              garage_map,
              mapper,
-             %{appended_rows: %{}, estimate: estimate, coords: coords}
+             fare_opts(fares, estimate, coords)
            ) do
       conflict_rollback(emitted_conflicts)
 
@@ -505,19 +511,52 @@ defmodule GtfsPlanner.Gtfs.Export do
          estimate,
          coords
        ) do
+    fares = FaresProjection.export_rows(organization_id, gtfs_version_id)
+
     with {:ok, {file_paths, _conflicts, missing_warnings}} <-
            export_files(
              temp_dir,
-             FileSpec.get_specs(export_type),
+             fare_specs(FileSpec.get_specs(export_type), fares),
              organization_id,
              gtfs_version_id,
              %{},
              %{},
              mapper,
-             %{appended_rows: %{}, estimate: estimate, coords: coords}
+             fare_opts(fares, estimate, coords)
            ) do
       {:ok, create_zip_archive(file_paths, organization_id, gtfs_version_id), missing_warnings}
     end
+  end
+
+  # R2: a managed version states a route's network in `route_networks.txt`, so
+  # its `routes.txt` drops the `network_id` column. Every other profile, and
+  # every unmanaged version, keeps the column it always wrote.
+  defp fare_specs(specs, %{drop_route_network?: true}) do
+    Enum.map(specs, fn
+      %{filename: "routes.txt"} ->
+        FileSpec.routes_spec_without_network()
+
+      %{filename: filename} = spec
+      when filename in ["fare_products.txt", "fare_attributes.txt"] ->
+        FileSpec.managed_fare_money_spec(spec)
+
+      spec ->
+        spec
+    end)
+  end
+
+  defp fare_specs(specs, _fares), do: specs
+
+  # R2, R7, R10: the fare rows a managed version replaces its own files with, the
+  # fare-only `calendar.txt` rows it appends, and the two estimating options the
+  # profiles share.
+  defp fare_opts(fares, estimate, coords) do
+    %{
+      appended_rows: fares.appended,
+      replaced_rows: fares.replaced,
+      estimate: estimate,
+      coords: coords
+    }
   end
 
   # The flex zip: the full specs written from the same snapshot with the R3
@@ -535,18 +574,22 @@ defmodule GtfsPlanner.Gtfs.Export do
          estimate,
          coords
        ) do
-    appended_rows = %{
-      "routes.txt" => entries.rows.routes,
-      "trips.txt" => entries.rows.trips,
-      "stop_times.txt" => entries.rows.stop_times,
-      "booking_rules.txt" => entries.rows.booking_rules
-    }
+    fares = FaresProjection.export_rows(organization_id, gtfs_version_id)
+
+    appended_rows =
+      Map.merge(fares.appended, %{
+        "routes.txt" => entries.rows.routes,
+        "trips.txt" => entries.rows.trips,
+        "stop_times.txt" => entries.rows.stop_times,
+        "booking_rules.txt" => entries.rows.booking_rules
+      })
 
     file_paths =
-      FileSpec.get_specs(:full)
+      fare_specs(FileSpec.get_specs(:full), fares)
       |> Enum.filter(fn spec ->
         has_records?(spec.schema, organization_id, gtfs_version_id) or
-          Map.get(appended_rows, spec.filename, []) != []
+          Map.get(appended_rows, spec.filename, []) != [] or
+          replaced?(fares.replaced, spec)
       end)
       |> Enum.map(fn spec ->
         spec = flex_spec(spec)
@@ -561,7 +604,9 @@ defmodule GtfsPlanner.Gtfs.Export do
             %{},
             %{},
             mapper,
-            %{appended_rows: rows, estimate: estimate, coords: coords}
+            fare_opts(fares, estimate, coords)
+            |> Map.put(:appended_rows, rows)
+            |> Map.put(:replaced_rows, Map.get(fares.replaced, spec.filename))
           )
 
         file_path
@@ -713,12 +758,14 @@ defmodule GtfsPlanner.Gtfs.Export do
   # garage ID, and the missing-times warnings from estimated `stop_times.txt`
   # files in trip order. `garage_map` holds the organization's garage IDs and names; it is
   # empty for exports that check no collisions. `opts` carries the optional tail:
-  # `:appended_rows` adds flex rows after the streamed records, keyed by filename
-  # (a map here); `:estimate` fills missing stop times per trip against `:coords`;
-  # nil writes stored rows unchanged.
+  # `:appended_rows` adds flex or fare rows after the streamed records, keyed by
+  # filename (a map here); `:replaced_rows` holds the rows a managed version
+  # writes instead of its own table, keyed by filename; `:estimate` fills missing
+  # stop times per trip against `:coords`; nil writes stored rows unchanged.
   # A version with no records for
-  # any spec and no appended rows answers `{:error, :no_data}` without rolling
-  # the snapshot back, so a caller that still has flex files can keep building.
+  # any spec, no appended rows and nothing replacing one answers
+  # `{:error, :no_data}` without rolling the snapshot back, so a caller that
+  # still has flex files can keep building.
   defp export_files(
          temp_dir,
          file_specs,
@@ -730,13 +777,15 @@ defmodule GtfsPlanner.Gtfs.Export do
          opts \\ %{}
        ) do
     appended_rows = Map.get(opts, :appended_rows, %{})
+    replaced_rows = Map.get(opts, :replaced_rows, %{})
     estimate = Map.get(opts, :estimate)
     coords = Map.get(opts, :coords, %{})
 
     specs =
       Enum.filter(file_specs, fn spec ->
         has_records?(spec.schema, organization_id, gtfs_version_id) or
-          Map.get(appended_rows, spec.filename, []) != []
+          Map.get(appended_rows, spec.filename, []) != [] or
+          replaced?(replaced_rows, spec)
       end)
 
     if Enum.empty?(specs) do
@@ -754,6 +803,7 @@ defmodule GtfsPlanner.Gtfs.Export do
             mapper,
             %{
               appended_rows: Map.get(appended_rows, spec.filename, []),
+              replaced_rows: Map.get(replaced_rows, spec.filename, nil),
               estimate: estimate,
               coords: coords
             }
@@ -778,14 +828,21 @@ defmodule GtfsPlanner.Gtfs.Export do
     |> Repo.exists?()
   end
 
+  # INV-3: a managed version replaces a file with the rows its own fare tables
+  # no longer decide, and a stored `fare_attributes`/`fare_rules` row is never
+  # written beside a derived one. A key present with no rows still writes the
+  # file, so an empty replaced file is an empty file rather than the stored one.
+  defp replaced?(replaced_rows, spec), do: Map.has_key?(replaced_rows, spec.filename)
+
   # Exports a single GTFS file and returns its path, the garage/stop
   # collisions among the records it wrote, and the missing-times warnings from
   # estimated stop-time trips in trip order. The garage map is checked against the
   # exact streamed stop records, so a stop ID that changed after the preliminary
   # conflict query is still caught before any ZIP can be returned. The R3 mapper
   # is applied to stop time records only; `:appended_rows` in `opts` follow the
-  # streamed records through the file's own spec (a list here). An estimating
-  # `stop_times.txt` chunks
+  # streamed records through the file's own spec (a list here). A file with
+  # `:replaced_rows` writes those rows instead of streaming its table. An
+  # estimating `stop_times.txt` chunks
   # its trip-ordered stream by trip through `MissingTimes.fill_trip/3` before
   # the mapper, so filled rows on a detour route keep their doubled sequence.
   defp export_file(
@@ -799,6 +856,7 @@ defmodule GtfsPlanner.Gtfs.Export do
          opts
        ) do
     appended_rows = Map.get(opts, :appended_rows, [])
+    replaced_rows = Map.get(opts, :replaced_rows)
     estimate = Map.get(opts, :estimate)
     coords = Map.get(opts, :coords, %{})
 
@@ -811,8 +869,13 @@ defmodule GtfsPlanner.Gtfs.Export do
 
       # Stream and write records
       {conflicts, missing_warnings} =
-        StreamBuilder.stream_records(Repo, spec.schema, organization_id, gtfs_version_id)
-        |> write_records(file, spec, lookup_maps, garage_map, mapper, estimate, coords)
+        if replaced_rows do
+          Enum.each(replaced_rows, &CsvWriter.write_row(file, &1, spec, %{}))
+          {[], []}
+        else
+          StreamBuilder.stream_records(Repo, spec.schema, organization_id, gtfs_version_id)
+          |> write_records(file, spec, lookup_maps, garage_map, mapper, estimate, coords)
+        end
 
       Enum.each(appended_rows, &CsvWriter.write_row(file, &1, spec, %{}))
 

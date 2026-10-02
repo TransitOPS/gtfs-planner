@@ -1,0 +1,7 @@
+from_leg_group_id,to_leg_group_id,transfer_count,duration_limit,duration_limit_type,fare_transfer_type,fare_product_id
+LG_LOCAL_CITY,LG_LOCAL_CITY,2,5400,1,0,
+LG_LOCAL_VALLEY,LG_LOCAL_VALLEY,2,5400,1,0,
+LG_LOCAL_CITY,LG_INTERCITY,,5400,1,2,intercity_ride_adult_cash
+LG_LOCAL_VALLEY,LG_INTERCITY,,5400,1,2,intercity_ride_adult_cash
+LG_INTERCITY,LG_LOCAL_CITY,,5400,1,0,
+LG_INTERCITY,LG_LOCAL_VALLEY,,5400,1,0,

@@ -1344,9 +1344,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :gtfs_version_id, :any, required: true, doc: "the current GTFS version ID"
 
   attr :active_tab, :atom,
-    values: [:zones, :rules, :checks],
-    default: :zones,
-    doc: "the workspace tab the current action renders"
+    values: [:prices, :where, :transfers, :zones, :checks],
+    default: :prices,
+    doc: "the tab the current action renders"
 
   attr :checks_count, :integer,
     default: nil,
@@ -1365,24 +1365,40 @@ defmodule GtfsPlannerWeb.CoreComponents do
       class="mt-4 flex gap-1 overflow-x-auto border-b border-subtle"
     >
       <.link
+        id="fares-tab-prices"
+        navigate={"/gtfs/#{@gtfs_version_id}/settings/fares"}
+        class={fares_tab_class()}
+        aria-current={@active_tab == :prices && "page"}
+      >
+        Prices
+      </.link>
+      <.link
+        id="fares-tab-where"
+        navigate={"/gtfs/#{@gtfs_version_id}/settings/fares/where"}
+        class={fares_tab_class()}
+        aria-current={@active_tab == :where && "page"}
+      >
+        Where fares apply
+      </.link>
+      <.link
+        id="fares-tab-transfers"
+        navigate={"/gtfs/#{@gtfs_version_id}/settings/fares/transfers"}
+        class={fares_tab_class()}
+        aria-current={@active_tab == :transfers && "page"}
+      >
+        Transfers
+      </.link>
+      <.link
         id="fares-tab-zones"
-        patch={"/gtfs/#{@gtfs_version_id}/settings/fares"}
+        navigate={"/gtfs/#{@gtfs_version_id}/settings/fares/zones"}
         class={fares_tab_class()}
         aria-current={@active_tab == :zones && "page"}
       >
         Zones
       </.link>
       <.link
-        id="fares-tab-rules"
-        patch={"/gtfs/#{@gtfs_version_id}/settings/fares/rules"}
-        class={fares_tab_class()}
-        aria-current={@active_tab == :rules && "page"}
-      >
-        Fare rules
-      </.link>
-      <.link
         id="fares-tab-checks"
-        patch={"/gtfs/#{@gtfs_version_id}/settings/fares/checks"}
+        navigate={"/gtfs/#{@gtfs_version_id}/settings/fares/checks"}
         class={fares_tab_class()}
         aria-current={@active_tab == :checks && "page"}
       >

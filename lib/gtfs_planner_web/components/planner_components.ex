@@ -327,6 +327,7 @@ defmodule GtfsPlannerWeb.PlannerComponents do
           :for={option <- @options}
           class={[
             "flex cursor-pointer items-start gap-3 rounded-control border bg-white px-4 py-3",
+            Map.get(option, :disabled?, false) && "cursor-not-allowed opacity-60",
             "has-[:checked]:border-action has-[:checked]:bg-selection",
             "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus",
             if(@invalid?, do: "border-error-line", else: "border-control")
@@ -338,6 +339,7 @@ defmodule GtfsPlannerWeb.PlannerComponents do
             name={@name}
             value={option.value}
             checked={option.value in @selected}
+            disabled={Map.get(option, :disabled?, false)}
             class="mt-0.5 size-5 shrink-0 accent-action focus-visible:outline-0"
           />
           <span class="min-w-0">

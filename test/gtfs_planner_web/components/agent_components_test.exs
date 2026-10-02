@@ -276,6 +276,37 @@ defmodule GtfsPlannerWeb.AgentComponentsTest do
       assert text(LazyHTML.query(notice_doc, "#agent-notice")) =~ notice
       assert count(LazyHTML.query(panel() |> doc(), "#agent-notice")) == 0
     end
+
+    test "layout={:main} renders the conversation card instead of the side panel" do
+      main_doc = panel(%{layout: :main}) |> doc()
+
+      # The card a host puts in its own column: a section, in the host's card
+      # palette, and without the side panel's close button.
+      assert LazyHTML.tag(LazyHTML.query(main_doc, "#agent-panel")) == ["section"]
+      assert first_attr(LazyHTML.query(main_doc, "#agent-panel"), "class") =~ "rounded-card"
+      assert count(LazyHTML.query(main_doc, "#agent-panel-close")) == 0
+
+      # The conversation itself is the same conversation: the transcript, the
+      # status region, the notice and the composer are all still here.
+      assert first_attr(LazyHTML.query(main_doc, "#agent-entries"), "phx-update") == "stream"
+      assert count(LazyHTML.query(main_doc, "#agent-status")) == 1
+      assert first_attr(LazyHTML.query(main_doc, "#agent-composer"), "phx-submit") == "agent_send"
+
+      assert first_attr(LazyHTML.query(main_doc, "#agent-composer-input"), "name") ==
+               "agent[message]"
+
+      assert text(LazyHTML.query(main_doc, "#agent-first-conversation")) =~
+               "One sentence of scope."
+    end
+
+    test "the default layout is the side panel, unchanged" do
+      panel_doc = panel() |> doc()
+
+      assert LazyHTML.tag(LazyHTML.query(panel_doc, "#agent-panel")) == ["aside"]
+      assert first_attr(LazyHTML.query(panel_doc, "#agent-panel"), "class") =~ "rounded-box"
+      assert count(LazyHTML.query(panel_doc, "#agent-panel-close")) == 1
+      assert count(LazyHTML.query(panel_doc, "#agent-new-conversation")) == 1
+    end
   end
 
   describe "agent_entry/1" do

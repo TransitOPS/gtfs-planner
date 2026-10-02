@@ -1693,6 +1693,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
         service_description: "Alpha weekdays"
       })
 
+      # Tomorrow may be a weekend; keep the final service date tomorrow while
+      # retaining the regular Mon–Fri presentation this case exercises.
+      calendar_date_fixture(organization.id, version.id, %{
+        service_id: "WEEKD",
+        date: Date.add(today, 1),
+        exception_type: 1
+      })
+
       calendar_date_fixture(organization.id, version.id, %{
         service_id: "DATES",
         date: Date.add(today, 30),

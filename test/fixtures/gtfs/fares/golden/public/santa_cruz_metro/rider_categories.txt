@@ -1,0 +1,6 @@
+rider_category_id,rider_category_name,min_age,max_age,eligibility_url
+adult,Adult (age 18 - 64),18,64,https://scmetro.org/fares
+discount,People with Disabilities,,,https://scmetro.org/fares
+senior,Older adults (at least 65 years of age),65,,https://scmetro.org/fares
+veteran,Qualified Military Veteran,,,https://scmetro.org/fares
+youth,Youth (through age 17),,17,https://scmetro.org/fares

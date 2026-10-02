@@ -1,0 +1,29 @@
+route_id,agency_id,route_short_name,route_long_name,route_desc,route_type,route_url,route_color,route_text_color,route_sort_order,continuous_pickup,continuous_drop_off,network_id
+1,1,1,Soquel/Cabrillo/Airport,,3,https://scmetro.org/routes/schedules/1,003d6b,ffffff,,1,1,local
+11,1,11,UCSC via West Gate - High,,3,https://scmetro.org/routes/schedules/11,003d6b,ffffff,,1,1,local
+16,1,16,UCSC via Main Gate - Laurel/Bay,,3,https://scmetro.org/routes/schedules/16,003d6b,ffffff,,1,1,local
+17,1,17,Highway 17 Express,,3,https://scmetro.org/routes/schedules/17,ffce07,003d6b,,1,1,commuter
+18,1,18,UCSC via Main Gate - Mission,,3,https://scmetro.org/routes/schedules/18,003d6b,ffffff,,1,1,local
+19,1,19,UCSC via West Gate - Bay,,3,https://scmetro.org/routes/schedules/19,003d6b,ffffff,,1,1,local
+2,1,2,Capitola/Cabrillo/Main,,3,https://scmetro.org/routes/schedules/2,003d6b,ffffff,,1,1,local
+20,1,20,UCSC via Main Gate - Delaware,,3,https://scmetro.org/routes/schedules/20,003d6b,ffffff,,1,1,local
+2N,1,2N,Capitola/Cabrillo/Main,,3,https://scmetro.org/routes/schedules/2N,003d6b,ffffff,,1,1,local
+34,1,34,Scotts Valley Drive/Emeline,,3,https://scmetro.org/routes/schedules/34,003d6b,ffffff,,1,1,local
+35,1,35,Highway 9/Scotts Valley,,3,https://scmetro.org/routes/schedules/35,003d6b,ffffff,,1,1,local
+35B,1,35B,Scotts Valley/Big Basin,,3,https://scmetro.org/routes/schedules/35B,003d6b,ffffff,,1,1,local
+35X,1,35X,Santa Cruz/Boulder Creek Express,,3,https://scmetro.org/routes/schedules/35X,003d6b,ffffff,,1,1,local
+3A,1,3A,Capitola Mall/Live Oak,,3,https://scmetro.org/routes/schedules/3A,003d6b,ffffff,,1,1,local
+3B,1,3B,Capitola Mall/Live Oak,,3,https://scmetro.org/routes/schedules/3B,003d6b,ffffff,,1,1,local
+4,1,4,River/Harvey West,,3,https://scmetro.org/routes/schedules/4,003d6b,ffffff,,1,1,local
+40,1,40,Highway 1 - Davenport,,3,https://scmetro.org/routes/schedules/40,6c6e70,ffffff,,1,1,local
+41,1,41,Empire Grade - Bonny Doon,,3,https://scmetro.org/routes/schedules/41,6c6e70,ffffff,,1,1,local
+4W,1,4W,River/Harvey West,,3,https://scmetro.org/routes/schedules/4W,003d6b,ffffff,,1,1,local
+55,1,55,Cabrillo/Rio Del Mar/La Selva,,3,https://scmetro.org/routes/schedules/55,003d6b,ffffff,,1,1,local
+72,1,72,Green Valley - Pinto Lake,,3,https://scmetro.org/routes/schedules/72,003d6b,ffffff,,1,1,local
+72W,1,72W,Green Valley - Corralitos,,3,https://scmetro.org/routes/schedules/72W,003d6b,ffffff,,1,1,local
+73,1,73,Soquel/Freedom/Cabrillo,,3,https://scmetro.org/routes/schedules/73,003d6b,ffffff,,1,1,local
+74S,1,74S,PVHS/Watsonville Hospital,,3,https://scmetro.org/routes/schedules/74S,003d6b,ffffff,,1,1,local
+75,1,75,Green Valley - Wheelock,,3,https://scmetro.org/routes/schedules/75,003d6b,ffffff,,1,1,local
+78,1,78,Ohlone/Watsonville Hospital,,3,https://scmetro.org/routes/schedules/78,003d6b,ffffff,,1,1,local
+79,1,79,East Lake,,3,https://scmetro.org/routes/schedules/79,003d6b,ffffff,,1,1,local
+79F,1,79F,County Fair,,3,https://scmetro.org/routes/schedules/79F,003d6b,ffffff,,1,1,local

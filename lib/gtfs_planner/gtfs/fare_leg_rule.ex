@@ -57,14 +57,21 @@ defmodule GtfsPlanner.Gtfs.FareLegRule do
     ])
     |> trim_string_fields()
     |> validate_required([:organization_id, :gtfs_version_id])
-    |> unique_constraint([
-      :organization_id,
-      :gtfs_version_id,
-      :network_id,
-      :from_area_id,
-      :to_area_id,
-      :fare_product_id
-    ])
+    # The index is named explicitly because the key is longer than the 63
+    # characters PostgreSQL allows for Ecto's generated constraint name.
+    |> unique_constraint(
+      [
+        :organization_id,
+        :gtfs_version_id,
+        :network_id,
+        :from_area_id,
+        :to_area_id,
+        :from_timeframe_group_id,
+        :to_timeframe_group_id,
+        :fare_product_id
+      ],
+      name: "fare_leg_rules_org_version_areas_timeframes_product_id_index"
+    )
     |> foreign_key_constraint(:organization_id)
   end
 end
