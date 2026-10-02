@@ -576,9 +576,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
   # assigns and the route ID is percent-encoded, so an imported ID cannot escape
   # the path.
   defp route_schedules_path(socket, route_id) do
-    version_id = socket.assigns.current_gtfs_version.id
-
-    "/gtfs/" <> version_id <> "/routes/" <> URI.encode_www_form(route_id) <> "/schedules"
+    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{route_id}/schedules"
   end
 
   defp calendar_base(socket),
