@@ -40,6 +40,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
      |> assign(:stops_empty?, false)
      |> assign(:stops_state, :loading)
      |> assign(:available_routes, [])
+     |> assign(:route_options_state, :not_loaded)
      |> assign(:route_id, nil)
      |> assign(:direction_id, nil)
      |> assign(:canonical_patch_identity, nil)
@@ -103,6 +104,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
         {:noreply, assign(socket, :canonical_patch_identity, nil)}
 
       true ->
+        socket = load_route_options(socket, organization_id, gtfs_version_id)
+
         organization_id
         |> Gtfs.load_stop_catalog(gtfs_version_id, opts)
         |> apply_catalog_result(socket, opts)
@@ -264,13 +267,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
       per_page: socket.assigns.per_page
     ]
 
+    socket = load_route_options(socket, organization_id, gtfs_version_id)
+
     case Gtfs.load_stop_catalog(organization_id, gtfs_version_id, opts) do
       {:ok,
        %{
          rows: stops,
          total_count: total_count,
          page: canonical_page,
-         available_routes: available_routes,
          routes_by_stop: routes_by_stop
        }} ->
         stops_with_routes =
@@ -282,7 +286,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
          socket
          |> assign(:page, canonical_page)
          |> assign(:total_count, total_count)
-         |> assign(:available_routes, available_routes)
          |> assign(:stops_empty?, stops == [])
          |> assign(:stops_state, :ready)
          |> put_stops(stops_with_routes)}
@@ -291,8 +294,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
        %{
          rows: stops,
          total_count: total_count,
-         page: canonical_page,
-         available_routes: available_routes
+         page: canonical_page
        }, :route_enrichment_unavailable} ->
         stops_with_empty_routes =
           Enum.map(stops, fn s -> Map.put(s, :routes, []) end)
@@ -301,7 +303,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
          socket
          |> assign(:page, canonical_page)
          |> assign(:total_count, total_count)
-         |> assign(:available_routes, available_routes)
          |> assign(:stops_empty?, stops == [])
          |> assign(:stops_state, :route_enrichment_unavailable)
          |> put_stops(stops_with_empty_routes)}
@@ -382,13 +383,17 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
         <%!-- Route lookup failed: the stops still load, so the warning sits above
                the card and names what is off. --%>
         <div
-          :if={@stops_state == :route_enrichment_unavailable}
+          :if={@stops_state == :route_enrichment_unavailable or @route_options_state == :unavailable}
           id="stops-enrichment-warning"
           class="mb-6"
         >
           <.message kind="warning" title="Route information is unavailable">
-            Stops are listed without their routes, and the route filter is off. Search and the other
-            filters still work.
+            <%= if @stops_state == :route_enrichment_unavailable do %>
+              Stops are listed without their routes, and the route filter is off. Search and the other
+              filters still work.
+            <% else %>
+              The route filter is off. Search and the other filters still work.
+            <% end %>
             <:action>
               <.button
                 id="stops-enrichment-retry"
@@ -899,13 +904,29 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
     """
   end
 
+  defp load_route_options(%{assigns: %{route_options_state: :loaded}} = socket, _org, _version),
+    do: socket
+
+  defp load_route_options(socket, organization_id, gtfs_version_id) do
+    case Gtfs.load_stop_route_options(organization_id, gtfs_version_id) do
+      {:ok, routes} ->
+        socket
+        |> assign(:available_routes, routes)
+        |> assign(:route_options_state, :loaded)
+
+      {:error, :unavailable} ->
+        socket
+        |> assign(:available_routes, [])
+        |> assign(:route_options_state, :unavailable)
+    end
+  end
+
   defp apply_catalog_result(
          {:ok,
           %{
             rows: stops,
             total_count: total_count,
             page: canonical_page,
-            available_routes: available_routes,
             routes_by_stop: routes_by_stop
           }},
          socket,
@@ -920,7 +941,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
       socket
       |> assign(:page, canonical_page)
       |> assign(:total_count, total_count)
-      |> assign(:available_routes, available_routes)
       |> assign(:stops_empty?, stops == [])
       |> assign(:stops_state, :ready)
       |> put_stops(stops_with_routes)
@@ -933,8 +953,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
           %{
             rows: stops,
             total_count: total_count,
-            page: canonical_page,
-            available_routes: available_routes
+            page: canonical_page
           }, :route_enrichment_unavailable},
          socket,
          opts
@@ -946,7 +965,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
       socket
       |> assign(:page, canonical_page)
       |> assign(:total_count, total_count)
-      |> assign(:available_routes, available_routes)
       |> assign(:stops_empty?, stops == [])
       |> assign(:stops_state, :route_enrichment_unavailable)
       |> put_stops(stops_with_empty_routes)
@@ -1028,7 +1046,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
   # clear it, and the form keeps submitting its value.
   defp route_filter_disabled?(assigns) do
     assigns.stops_state == :loading or
-      (assigns.stops_state == :route_enrichment_unavailable and assigns.route_id in [nil, ""])
+      ((assigns.stops_state == :route_enrichment_unavailable or
+          assigns.route_options_state == :unavailable) and assigns.route_id in [nil, ""])
   end
 
   defp stop_count_text(count, false),

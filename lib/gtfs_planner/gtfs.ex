@@ -119,15 +119,15 @@ defmodule GtfsPlanner.Gtfs do
   configured catalog read adapter.
 
   The adapter counts the matching stations, clamps the requested page to a valid
-  canonical page, and fetches the rows. Route enrichment (available routes and
-  routes-by-stop) runs separately, so its failure yields
+  canonical page, and fetches the rows. Route enrichment (routes-by-stop) runs
+  separately, so its failure yields
   `{:partial, page, :route_enrichment_unavailable}` while keeping the loaded
   stop rows. A primary stop/count failure returns `{:error, :unavailable}`.
 
   ## Examples
 
       iex> load_stop_catalog(organization_id, gtfs_version_id, page: 1, per_page: 50)
-      {:ok, %{rows: [%Stop{}], total_count: 1, page: 1, available_routes: [], routes_by_stop: %{}}}
+      {:ok, %{rows: [%Stop{}], total_count: 1, page: 1, routes_by_stop: %{}}}
 
       iex> load_stop_catalog(organization_id, gtfs_version_id, [])
       {:partial, %{rows: [%Stop{}]}, :route_enrichment_unavailable}
@@ -138,6 +138,15 @@ defmodule GtfsPlanner.Gtfs do
           | {:error, :unavailable}
   def load_stop_catalog(organization_id, gtfs_version_id, opts \\ []) do
     catalog_read_adapter().load_stop_catalog(organization_id, gtfs_version_id, opts)
+  end
+
+  @doc """
+  Loads the route filter options separately from the changing stop catalog page.
+  """
+  @spec load_stop_route_options(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, [map()]} | {:error, :unavailable}
+  def load_stop_route_options(organization_id, gtfs_version_id) do
+    catalog_read_adapter().load_stop_route_options(organization_id, gtfs_version_id)
   end
 
   @doc """
@@ -2982,15 +2991,23 @@ defmodule GtfsPlanner.Gtfs do
   Returns a list of routes that serve at least one station (stop with no parent).
   """
   def list_routes_serving_stations(organization_id, gtfs_version_id) do
+    serving_routes =
+      from(t in Trip,
+        join: st in StopTime,
+        on: st.trip_id == t.trip_id,
+        join: s in Stop,
+        on: s.stop_id == st.stop_id,
+        where: t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id,
+        where: st.organization_id == ^organization_id and st.gtfs_version_id == ^gtfs_version_id,
+        where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id,
+        where: is_nil(s.parent_station),
+        distinct: true,
+        select: t.route_id
+      )
+
     from(r in Route,
       where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id,
-      where: fragment("EXISTS (
-        SELECT 1 FROM stop_times st
-        JOIN trips t ON st.trip_id = t.trip_id AND st.organization_id = t.organization_id AND st.gtfs_version_id = t.gtfs_version_id
-        JOIN stops s ON st.stop_id = s.stop_id AND st.organization_id = s.organization_id AND st.gtfs_version_id = s.gtfs_version_id
-        WHERE t.route_id = ? AND t.organization_id = ? AND t.gtfs_version_id = ?
-        AND s.parent_station IS NULL
-      )", r.route_id, r.organization_id, r.gtfs_version_id),
+      where: r.route_id in subquery(serving_routes),
       order_by: [asc: r.route_short_name, asc: r.route_id],
       select: %{
         route_id: r.route_id,
@@ -4995,77 +5012,55 @@ defmodule GtfsPlanner.Gtfs do
   defp maybe_filter_route(query, "", _organization_id, _gtfs_version_id), do: query
 
   defp maybe_filter_route(query, route_id, organization_id, gtfs_version_id) do
-    # Step 1: Get representative trip_ids from route_patterns (typically 2-4 trips)
-    # This is much faster than scanning all trips for a route
-    representative_trip_ids =
+    representative_patterns =
       from(rp in RoutePattern,
         where:
-          rp.route_id == ^route_id and
-            rp.organization_id == ^organization_id and
-            rp.gtfs_version_id == ^gtfs_version_id and
-            not is_nil(rp.representative_trip_id),
+          rp.route_id == ^route_id and rp.organization_id == ^organization_id and
+            rp.gtfs_version_id == ^gtfs_version_id and not is_nil(rp.representative_trip_id),
         select: rp.representative_trip_id
       )
-      |> Repo.all()
 
-    # Step 2: Get stop_ids using route_patterns (fast) or all trips (fallback)
-    stop_ids =
-      if representative_trip_ids != [] do
-        # Fast path: Query only 2-4 representative trips
-        from(st in StopTime,
-          where:
-            st.trip_id in ^representative_trip_ids and
-              st.organization_id == ^organization_id and
-              st.gtfs_version_id == ^gtfs_version_id,
-          distinct: true,
-          select: st.stop_id
-        )
-        |> Repo.all()
-      else
-        # Fallback: For data without route_patterns, query all trips
-        from(st in StopTime,
-          join: t in Trip,
-          on:
-            st.trip_id == t.trip_id and
-              st.organization_id == t.organization_id and
-              st.gtfs_version_id == t.gtfs_version_id,
-          where:
-            t.route_id == ^route_id and
-              t.organization_id == ^organization_id and
-              t.gtfs_version_id == ^gtfs_version_id,
-          distinct: true,
-          select: st.stop_id
-        )
-        |> Repo.all()
-      end
+    representative_stops =
+      from(st in StopTime,
+        where: st.organization_id == ^organization_id and st.gtfs_version_id == ^gtfs_version_id,
+        where: st.trip_id in subquery(representative_patterns),
+        select: st.stop_id
+      )
 
-    # Step 3: Filter stops using IN clause (efficient with index)
-    where(query, [s], s.stop_id in ^stop_ids)
+    route_stops =
+      from(st in StopTime,
+        join: t in Trip,
+        on: st.trip_id == t.trip_id,
+        where: st.organization_id == ^organization_id and st.gtfs_version_id == ^gtfs_version_id,
+        where: t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id,
+        where: t.route_id == ^route_id,
+        select: st.stop_id
+      )
+
+    # Any representative id selects the representative path, even if it has no stop times.
+    where(
+      query,
+      [s],
+      s.stop_id in subquery(representative_stops) or
+        (not exists(subquery(representative_patterns)) and s.stop_id in subquery(route_stops))
+    )
   end
 
   defp maybe_filter_direction(query, nil, _organization_id, _gtfs_version_id), do: query
   defp maybe_filter_direction(query, "", _organization_id, _gtfs_version_id), do: query
 
   defp maybe_filter_direction(query, direction_id, organization_id, gtfs_version_id) do
-    # Filter stations by direction_id
-    # Find stops that are served by trips with the specified direction_id
-    stop_ids =
+    direction_stops =
       from(st in StopTime,
         join: t in Trip,
-        on:
-          st.trip_id == t.trip_id and
-            st.organization_id == t.organization_id and
-            st.gtfs_version_id == t.gtfs_version_id,
-        where:
-          t.direction_id == ^direction_id and
-            t.organization_id == ^organization_id and
-            t.gtfs_version_id == ^gtfs_version_id,
-        distinct: true,
+        on: st.trip_id == t.trip_id,
+        where: st.organization_id == ^organization_id and st.gtfs_version_id == ^gtfs_version_id,
+        where: t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id,
+        where: t.direction_id == ^direction_id,
         select: st.stop_id
       )
-      |> Repo.all()
 
-    where(query, [s], s.stop_id in ^stop_ids)
+    where(query, [s], s.stop_id in subquery(direction_stops))
   end
 
   defp maybe_search_stops(query, nil), do: query

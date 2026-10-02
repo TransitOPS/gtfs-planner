@@ -148,9 +148,21 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapterTest do
       assert Enum.map(page.rows, & &1.stop_id) == ["st1", "st2"]
       assert %Stop{} = hd(page.rows)
 
-      assert Enum.any?(page.available_routes, &(&1.route_id == "r1"))
+      refute Map.has_key?(page, :available_routes)
+      assert {:ok, [%{route_id: "r1"}]} = Gtfs.load_stop_route_options(org.id, version.id)
       assert [%{route_id: "r1"} | _] = Map.get(page.routes_by_stop, "st1", [])
       assert Map.get(page.routes_by_stop, "st2", []) == []
+    end
+
+    test "route options connection loss returns unavailable", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      capture_log(fn ->
+        with_unreachable_repo(fn ->
+          assert Gtfs.load_stop_route_options(org.id, version.id) == {:error, :unavailable}
+        end)
+      end)
     end
 
     test "stop catalog clamps an out-of-range page", %{organization: org, gtfs_version: version} do
@@ -478,7 +490,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapterTest do
         assert page.total_count == 1
         assert page.page == 1
         assert Enum.map(page.rows, & &1.id) == [stop.id]
-        assert page.available_routes == []
+        refute Map.has_key?(page, :available_routes)
         assert page.routes_by_stop == %{}
       end)
 
@@ -558,7 +570,6 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapterTest do
         rows: [stop],
         total_count: 1,
         page: 1,
-        available_routes: [],
         routes_by_stop: %{}
       }
 

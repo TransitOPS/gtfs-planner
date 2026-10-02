@@ -99,6 +99,11 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   end
 
   @impl true
+  def load_stop_route_options(organization_id, gtfs_version_id) do
+    run(fn -> Gtfs.list_routes_serving_stations(organization_id, gtfs_version_id) end)
+  end
+
+  @impl true
   def fetch_route(organization_id, gtfs_version_id, route_id) do
     case run(fn -> Gtfs.get_route_by_route_id(organization_id, gtfs_version_id, route_id) end) do
       {:ok, nil} -> {:error, :not_found}
@@ -438,13 +443,12 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
     stop_ids = Enum.map(rows, & &1.stop_id)
 
     %{
-      available_routes: Gtfs.list_routes_serving_stations(organization_id, gtfs_version_id),
       routes_by_stop: Gtfs.get_routes_for_stops(organization_id, gtfs_version_id, stop_ids)
     }
   end
 
   defp empty_enrichment do
-    %{available_routes: [], routes_by_stop: %{}}
+    %{routes_by_stop: %{}}
   end
 
   # Clamps a requested page to a valid canonical page for the given total. A
