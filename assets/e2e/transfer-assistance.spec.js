@@ -38,10 +38,11 @@ const TRANSFERS_VERSION = "Browser Transfers Version";
 
 const E2E_VERSION = "Browser E2E Version";
 
-// The Blocks journey's version. Its seed puts a two-block, two-connection group
+// The in-seat journey's version. Its seed puts a two-block, two-connection group
 // at BB_INSEAT on the weekday service, so both pairs are consecutive on every
-// date they run and the helper may prepare them.
-const BLOCKS_VERSION = "Browser Blocks Version";
+// date they run and the helper may prepare them. It is separate from "Browser
+// Blocks Version", whose literal block counts the Blocks journey measures.
+const BLOCKS_VERSION = "Browser In-seat Helper Version";
 
 // The approval journey's two routes are both on the seeded browser version: the
 // Schedules read route calls BSS_3 at 06:11, and the grid route leaves BSS_4 at
@@ -203,6 +204,9 @@ test.describe("transfer policy helper", () => {
       "Saved transfer type 2",
       { timeout: 30_000 },
     );
+    // The drawer left with the save; what it did stays on the page.
+    await expect(page.locator("#transfer-policy-drawer")).toHaveCount(0);
+    await expect(page.locator("#transfer-policy-outcome")).toBeVisible();
 
     // The receipt belongs to the entry that prepared this rule, settled by the
     // session's own event rather than by the page.
@@ -210,7 +214,12 @@ test.describe("transfer policy helper", () => {
       "Applied",
     );
 
-    await capture(page, testInfo, "policy-saved-1440x1000");
+    await capture(
+      page,
+      testInfo,
+      "policy-saved-1440x1000",
+      page.locator("#transfer-policy-outcome"),
+    );
 
     // The rule the operator reviewed is the one stored, in the direction they
     // wrote it. The page's own count only reads on the list, so the draft is
@@ -372,8 +381,11 @@ test.describe("connection approval helper", () => {
       "NOT-A-TRIP",
     );
 
-    // Switching helper keeps every value the operator typed.
+    // The card leaves with the helper that owns it and returns with every value
+    // the operator typed.
     await page.locator("#schedule-helper-mode-service_queries").click();
+    await expect(page.locator("#connection-approval-region")).toHaveCount(0);
+    await page.locator("#schedule-helper-mode-connections").click();
     await expect(page.locator("#connection-pair-1-to-trip")).toHaveValue(
       "NOT-A-TRIP",
     );
@@ -485,7 +497,7 @@ test.describe("connection approval helper", () => {
 // The in-seat journey (EV-18): the Blocks page's own connection group is the
 // helper's only source, the prepared card opens the Set-all review this page
 // already had, and only that review's Save writes. The whole journey lives on
-// the seeded "Browser Blocks Version" group the seed puts at BB_INSEAT, and the
+// the seeded "Browser In-seat Helper Version" group the seed puts at BB_INSEAT, and the
 // provider stand-in prepares the choice the operator asked for from the page's
 // own admitted snapshot.
 //
@@ -964,6 +976,9 @@ async function openSchedules(page) {
   const versionId = await schedulesVersionId(page);
 
   await page.goto(`/gtfs/${versionId}/routes/${APPROVAL_FROM.route}/schedules`);
+  // The approval card belongs to the connections helper, so the page opens it by
+  // choosing that helper.
+  await page.locator("#schedule-helper-mode-connections").click();
   await page.waitForSelector("#connection-approval-form", { timeout: 15_000 });
 
   return versionId;
