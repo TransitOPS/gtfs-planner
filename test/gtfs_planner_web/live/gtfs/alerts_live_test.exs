@@ -87,6 +87,30 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
       assert has_element?(view, "#alerts-tab-in_progress[aria-selected='true']")
     end
 
+    test "switching between two populated tabs replaces the previous tab's rows", context do
+      incomplete = incomplete(context)
+      {:ok, current} = current_delay(context)
+
+      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+
+      assert has_element?(view, "#alert-row-#{current.id}")
+      assert has_element?(view, "#alert-card-#{current.id}")
+
+      view |> element("#alerts-tab-in_progress") |> render_click()
+
+      assert has_element?(view, "#alert-row-#{incomplete.id}")
+      assert has_element?(view, "#alert-card-#{incomplete.id}")
+      refute has_element?(view, "#alert-row-#{current.id}")
+      refute has_element?(view, "#alert-card-#{current.id}")
+
+      view |> element("#alerts-tab-current") |> render_click()
+
+      assert has_element?(view, "#alert-row-#{current.id}")
+      assert has_element?(view, "#alert-card-#{current.id}")
+      refute has_element?(view, "#alert-row-#{incomplete.id}")
+      refute has_element?(view, "#alert-card-#{incomplete.id}")
+    end
+
     test "an unknown tab falls back to Current rather than raising", context do
       {:ok, current} = current_delay(context)
 

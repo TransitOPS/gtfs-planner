@@ -65,6 +65,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
      |> assign(:counts, %{})
      |> assign(:alerts_state, :loading)
      |> assign(:alerts_empty?, true)
+     |> stream_configure(:alerts, dom_id: &"alert-row-#{&1.id}")
+     |> stream_configure(:alerts_mobile, dom_id: &"alert-card-#{&1.id}")
      |> stream(:alerts, [])
      |> stream(:alerts_mobile, [])}
   end
@@ -136,8 +138,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
     referenced = Alerts.Listing.referenced_ids(alert)
 
     %{
-      # A stream item's `:id` is its DOM identity, so the two streams render the
-      # same rows under the same ids and either can update one row in place.
+      # `mount/3` configures each stream's dom_id from this id. The row and card
+      # components render the same ids, which the client needs to find (and on a
+      # tab change, reset) the elements a stream inserted.
       id: alert.id,
       alert: alert,
       alert_path: "/gtfs/#{socket.assigns.current_gtfs_version.id}/alerts/#{alert.id}",

@@ -205,6 +205,19 @@ test.describe("alerts list", () => {
             ? page.locator("#alerts-mobile li[id^='alert-card-']")
             : page.locator("#alerts tr[id^='alert-row-']");
         await expect(rows.first()).toBeVisible();
+
+        // A tab change patches the page. With two populated tabs a row left
+        // over from the tab being left shows as an extra row, so each tab
+        // holds exactly its own count and the page ends on Current again.
+        for (const tab of ["in_progress", "current"]) {
+          const tabLink = page.locator(`#alerts-tab-${tab}`);
+          const expected = Number(await tabLink.getAttribute("data-count"));
+          expect(expected).toBeGreaterThan(0);
+
+          await tabLink.click();
+          await expect(tabLink).toHaveAttribute("aria-selected", "true");
+          await expect(rows).toHaveCount(expected);
+        }
       }
 
       // The publication states and actions this package removed must not appear.
