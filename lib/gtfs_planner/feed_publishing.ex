@@ -134,6 +134,45 @@ defmodule GtfsPlanner.FeedPublishing do
   end
 
   @doc """
+  Claims the organization's permanent namespace from trusted server state.
+
+  This is the system-owned sibling of `claim_namespace/1`: the periodic
+  publisher calls it for an organization that already has accepted public
+  intent but no claimed namespace yet. It takes no actor, because there is
+  none for a background tick, and no client value: the prefix is the
+  organization's own current alias, exactly as the interactive claim would use
+  it, and the claim is fresh randomness. A reserved or unusable alias is
+  refused the same way an interactive claim refuses it.
+
+  An organization with no accepted intent must not go through here; that is
+  what keeps a configured installation from publishing an organization that
+  never asked to be public.
+  """
+  @spec ensure_namespace_for(Ecto.UUID.t()) :: {:ok, Namespace.t()} | {:error, error()}
+  def ensure_namespace_for(organization_id) do
+    Repo.transaction(fn ->
+      case Ecto.UUID.cast(organization_id) do
+        {:ok, id} -> ensure_namespace_locked(id)
+        :error -> Repo.rollback(:not_found)
+      end
+    end)
+  end
+
+  defp ensure_namespace_locked(id) do
+    case Repo.get_by(Namespace, organization_id: id) do
+      %Namespace{} = namespace -> namespace
+      nil -> claim_from_organization(id)
+    end
+  end
+
+  defp claim_from_organization(id) do
+    case Repo.get(Organization, id) do
+      %Organization{alias: alias} -> claim(id, alias)
+      nil -> Repo.rollback(:not_found)
+    end
+  end
+
+  @doc """
   Lists the organization's channel states for the publish and status screens.
 
   ## Examples
