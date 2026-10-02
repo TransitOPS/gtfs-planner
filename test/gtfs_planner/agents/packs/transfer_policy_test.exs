@@ -239,6 +239,59 @@ defmodule GtfsPlanner.Agents.Packs.TransferPolicyTest do
       assert Enum.find(evidence.facts, &(&1.label == "Stored minimum")).value == "240 seconds"
     end
 
+    test "a stored rule and a reverse rule past the first page of the catalog are still reported",
+         context do
+      # More than fifty general rules sort ahead of Museum, so the two rules this
+      # selection is about sit on the catalog's second page.
+      for from <- ["CEN", "CEN-C", "HBR"],
+          to <- ["CEN-A", "CEN-C", "HBR", "MKT", "MUS", "NOC"],
+          from != to,
+          route <- [nil, "12", "24", "6"] do
+        GtfsPlanner.GtfsFixtures.transfer_fixture(context.organization.id, context.version.id, %{
+          from_stop_id: from,
+          to_stop_id: to,
+          from_route_id: route
+        })
+      end
+
+      stored =
+        write_general!(context, %{
+          "from_stop_id" => "MUS",
+          "to_stop_id" => "NOC",
+          "transfer_type" => "2",
+          "min_transfer_time" => "240"
+        })
+
+      write_general!(context, %{
+        "from_stop_id" => "NOC",
+        "to_stop_id" => "MUS",
+        "transfer_type" => "0"
+      })
+
+      assert Repo.aggregate(Transfer, :count) > 50
+
+      expect_reply(
+        tool_calls_reply([
+          {"call_1", "inspect_transfer_policy", ~s({"selection_id":"museum-night"})}
+        ])
+      )
+
+      expect_reply(text_reply("There is a 4 minute rule stored."))
+
+      {entry, _session, _conversation} =
+        run_turn(with_selection(context, "museum-night"), "What is stored for Museum?")
+
+      assert %{
+               "total" => 1,
+               "rules" => [%{"id" => stored_id}],
+               "reverse_direction_rules" => 1,
+               "stored_minimum_seconds" => 240
+             } = tool_result()
+
+      assert stored_id == stored.id
+      assert [%{completeness: :complete, total: 1}] = entry.evidence
+    end
+
     test "the review keeps the protected trip exception and refuses an equal-best one",
          context do
       # The stored `MKT` -> `CEN` rule and a `MKT` -> `CEN-A` command are equally
@@ -256,6 +309,10 @@ defmodule GtfsPlanner.Agents.Packs.TransferPolicyTest do
 
       assert %{"error" => message} = tool_result()
       assert message =~ "equally specific"
+
+      # The disagreement is named by the concrete pair the two rules compete for.
+      assert message =~ "MKT to CEN-A (trips 12-0815 and 12-0815)"
+      refute message =~ "nil"
       assert entry.evidence == []
       assert Repo.aggregate(Transfer, :count) == context.transfer_count
     end
