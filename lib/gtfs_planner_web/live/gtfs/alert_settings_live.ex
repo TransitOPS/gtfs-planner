@@ -553,7 +553,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
         </div>
 
         <div :if={@tab == :scripts} id="alert-settings-scripts" class="mt-5 grid gap-4">
-          <.message :if={@script_notice} id="script-notice" kind="info" title={@script_notice} />
+          <%!-- While the modal drawer is open the page is inert behind its backdrop,
+                 so a refusal is shown inside the drawer instead. --%>
+          <.message
+            :if={@script_notice && !@script_drawer_open}
+            id="script-notice"
+            kind="info"
+            title={@script_notice}
+          />
 
           <p id="scripts-intro" class="max-w-[80ch] text-sm text-default">
             Scripts are your tested wording for common alerts. The form offers the scripts for
@@ -671,6 +678,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
           title={@script_drawer_title}
           entity={@script_entity}
           form={@script_form}
+          notice={@script_notice}
           return_focus_id={@script_return_focus_id}
         />
 
@@ -824,6 +832,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
   attr :title, :string, required: true
   attr :entity, :any, default: nil
   attr :form, :any, required: true
+  attr :notice, :string, default: nil, doc: "why the last save was refused"
   attr :return_focus_id, :string, default: nil
 
   defp script_drawer(assigns) do
@@ -851,6 +860,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
         class="flex min-h-0 flex-1 flex-col"
       >
         <.drawer_scroll>
+          <.message :if={@notice && @open} id="script-drawer-notice" kind="error" title={@notice} />
+
           <.message
             :if={save_failed?(@form)}
             id="script-form-error"

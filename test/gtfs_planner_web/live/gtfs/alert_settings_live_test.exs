@@ -357,7 +357,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
       |> render_submit()
 
       # The drawer stays on the typed wording and offers to create it again.
-      assert has_element?(view, "#script-notice", "Someone deleted this script.")
+      assert has_element?(view, "#script-drawer-notice", "Someone deleted this script.")
+      refute has_element?(view, "#script-notice")
 
       assert has_element?(
                view,
@@ -390,7 +391,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
       })
       |> render_submit()
 
-      assert has_element?(view, "#script-notice", @forbidden_notice)
+      assert has_element?(view, "#script-drawer-notice", @forbidden_notice)
+      refute has_element?(view, "#script-notice")
 
       # Nothing was written and the drawer is still open with the draft in it.
       assert own_script_names(context.reader_audit) == []
