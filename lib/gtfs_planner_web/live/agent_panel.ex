@@ -434,11 +434,15 @@ defmodule GtfsPlannerWeb.AgentPanel do
      |> assign(:agent_status, status)}
   end
 
-  # The only monitors this socket holds are the panel's session monitors, and a
-  # host consumes its async work through `handle_async/3`, not raw downs.
-  defp handle_info({:DOWN, _ref, :process, _pid, _reason}, socket), do: {:halt, socket}
-  # An unknown message is the host's: the handoff below has no handler here, so it
-  # reaches the host's own `handle_info/2` unchanged.
+# A down for a session this panel released never arrives: the release
+  # demonitors with `[:flush]`, so a stale session's down is discarded at the
+  # moment it stops being this panel's business. Every remaining down therefore
+  # belongs to somebody else -- typically a host monitoring its own async work
+  # (AC-15, AC-16) -- so it is passed through rather than swallowed. Swallowing
+  # it here would leave the host waiting forever for a result it was told could
+  # fail. An unknown message is the host's for the same reason: the handoff below
+  # has no handler here, so it reaches the host's own `handle_info/2` unchanged.
+  defp handle_info({:DOWN, _ref, :process, _pid, _reason}, socket), do: {:cont, socket}
   defp handle_info(_message, socket), do: {:cont, socket}
 
   ## Evidence resolution
