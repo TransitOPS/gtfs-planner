@@ -465,6 +465,87 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
              )
     end
 
+    test "an imported whitespace-only service_id survives URL canonicalization and schedule selection",
+         %{conn: conn, organization: organization, version: version} = context do
+      paste = paste_route(context)
+      service_id = "  "
+
+      # Import accepts every nonempty ID verbatim; editor changesets would nil this ID.
+      Repo.insert!(%GtfsCalendar{
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        service_id: service_id,
+        monday: 1,
+        tuesday: 1,
+        wednesday: 1,
+        thursday: 1,
+        friday: 1,
+        saturday: 0,
+        sunday: 0,
+        start_date: ~D[2026-01-01],
+        end_date: ~D[2026-12-31]
+      })
+
+      Repo.insert!(%GtfsPlanner.Gtfs.CalendarAttribute{
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        service_id: service_id,
+        service_description: "Imported whitespace service",
+        service_schedule_name: "Imported whitespace service"
+      })
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      requested = paste_path(version, paste.route, %{"service_id" => service_id})
+
+      canonical =
+        paste_path(version, paste.route, %{
+          "service_id" => service_id,
+          "direction" => "0",
+          "pattern" => paste.main.pattern.id
+        })
+
+      follow(view, requested)
+      assert_patch(view, canonical)
+      follow(view, canonical)
+      assert has_element?(view, "#paste-scope-calendar", "Imported whitespace service")
+
+      # The route's one-trip Weekday is the fallback, so dropping the selected
+      # ID would switch calendars instead of keeping this empty imported service.
+      follow(
+        view,
+        paste_path(version, paste.route, %{
+          "service_id" => paste.weekday,
+          "direction" => "0",
+          "pattern" => paste.main.pattern.id
+        })
+      )
+
+      assert has_element?(view, "#paste-scope-calendar", "Weekday")
+      open_drawer(view)
+
+      params =
+        draft_params(%{
+          "service_id" => service_id,
+          "direction" => "0",
+          "pattern" => paste.main.pattern.id
+        })
+
+      view |> form("#paste-scope-form", params) |> render_change()
+
+      assert has_element?(
+               view,
+               "#paste-scope-pattern-field option[value='#{paste.main.pattern.id}']",
+               "Main · 0 trips"
+             )
+
+      view |> form("#paste-scope-form", params) |> render_submit()
+      assert_patch(view, canonical)
+      follow(view, canonical)
+
+      assert has_element?(view, "#paste-scope-calendar", "Imported whitespace service")
+      refute has_element?(view, "#paste-scope-form")
+    end
+
     test "using a schedule patches the URL, rebuilds the scope and closes the drawer",
          %{conn: conn, version: version} = context do
       paste = paste_route(context)

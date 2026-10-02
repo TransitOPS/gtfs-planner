@@ -1622,7 +1622,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
   defp canonical_scope_params(scope) do
     %{}
-    |> Values.put_present("service_id", scope.calendar && scope.calendar.service_id)
+    |> put_service_id(scope.calendar && scope.calendar.service_id)
     |> Values.put_present("direction", direction_param(scope.direction_id))
     |> Values.put_present("pattern", scope.pattern_id)
   end
@@ -2043,10 +2043,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
   defp schedule_query(params) do
     %{}
-    |> Values.put_present(
-      "service_id",
-      exact_id_param(params["service_id"] || params[:service_id])
-    )
+    |> put_service_id(exact_id_param(params["service_id"] || params[:service_id]))
     |> Values.put_present(
       "direction",
       schedule_direction(params["direction"] || params[:direction])
@@ -2061,6 +2058,11 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   # or "" becomes nil; canonical trimming would make a stored " RAW " unmatchable.
   defp exact_id_param(value) when is_binary(value) and value != "", do: value
   defp exact_id_param(_value), do: nil
+
+  # Imported service IDs keep their exact bytes, including an all-whitespace ID.
+  # Omitting one from the URL would resolve a different calendar on the next patch.
+  defp put_service_id(query, nil), do: query
+  defp put_service_id(query, service_id), do: Map.put(query, "service_id", service_id)
 
   defp close_scope_drawer(socket) do
     socket
