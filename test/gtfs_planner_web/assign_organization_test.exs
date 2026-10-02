@@ -32,6 +32,30 @@ defmodule GtfsPlannerWeb.AssignOrganizationTest do
                lifecycle_has_rename_hook?(socket)
     end
 
+    test "a system administrator who also edits the session's organization gets its context" do
+      organization = organization_fixture()
+      admin = user_fixture()
+
+      {:ok, _} =
+        Accounts.create_user_org_membership(%{
+          user_id: admin.id,
+          organization_id: organization.id,
+          roles: ["administrator", "pathways_studio_editor"]
+        })
+
+      {:ok, version} = Versions.create_gtfs_version(organization.id, %{name: "Spring 2026"})
+
+      socket = build_socket(admin)
+      session = %{"organization_id" => organization.id}
+
+      assert {:cont, socket} = AssignOrganization.on_mount(:optional, %{}, session, socket)
+
+      assert socket.assigns.organization_context_status == :available
+      assert socket.assigns.current_organization.id == organization.id
+      assert "pathways_studio_editor" in socket.assigns.user_roles
+      assert socket.assigns.current_gtfs_version.id == version.id
+    end
+
     test "returns available for active membership with published versions only" do
       organization = organization_fixture()
       user = user_fixture()
@@ -203,6 +227,26 @@ defmodule GtfsPlannerWeb.AssignOrganizationTest do
       assert {:cont, socket} = AssignOrganization.on_mount(:default, %{}, %{}, socket)
       refute Map.has_key?(socket.assigns, :current_organization)
       refute Map.has_key?(socket.assigns, :organization_context_status)
+    end
+
+    test "a system administrator who also edits the session's organization is not bypassed" do
+      organization = organization_fixture()
+      admin = user_fixture()
+
+      {:ok, _} =
+        Accounts.create_user_org_membership(%{
+          user_id: admin.id,
+          organization_id: organization.id,
+          roles: ["administrator", "pathways_studio_editor"]
+        })
+
+      socket = build_socket(admin)
+      session = %{"organization_id" => organization.id}
+
+      assert {:cont, socket} = AssignOrganization.on_mount(:default, %{}, session, socket)
+
+      assert socket.assigns.current_organization.id == organization.id
+      assert "pathways_studio_editor" in socket.assigns.user_roles
     end
 
     test "valid membership assigns organization, roles, published versions, and rename hook" do

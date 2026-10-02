@@ -116,14 +116,30 @@ defmodule GtfsPlannerWeb.UserAuth do
   def is_administrator?(_), do: false
 
   defp maybe_set_organization_in_session(conn, user) do
-    if is_administrator?(user) do
-      conn
-    else
-      case fetch_user_organization(user) do
-        nil -> conn
-        organization_id -> put_organization_in_session(conn, organization_id)
-      end
+    organization_id =
+      if is_administrator?(user),
+        do: administrator_working_organization(user),
+        else: fetch_user_organization(user)
+
+    case organization_id do
+      nil -> conn
+      organization_id -> put_organization_in_session(conn, organization_id)
     end
+  end
+
+  @doc """
+  The organization a system administrator also works in: the first active
+  membership that holds an organization role, such as Editor, alongside or
+  instead of `administrator`. Returns nil for an administrator who only
+  administers, who keeps the system-wide context.
+  """
+  def administrator_working_organization(user) do
+    user.id
+    |> Accounts.list_user_org_memberships()
+    |> Enum.find_value(fn membership ->
+      if Enum.any?(membership.roles, &(&1 != "administrator")),
+        do: membership.organization_id
+    end)
   end
 
   @doc """

@@ -14,7 +14,9 @@ defmodule GtfsPlannerWeb.AssignOrganization do
   an explicit `organization_context_status` and safe nil/empty defaults when
   tenant context is unavailable.
 
-  Administrators (system-scoped users) bypass the organization requirement.
+  Administrators (system-scoped users) bypass the organization requirement,
+  unless the session names an organization where they also hold an
+  organization role: then they get that organization's context like any member.
   """
 
   import Phoenix.LiveView, only: [put_flash: 3, redirect: 2, attach_hook: 4]
@@ -52,7 +54,7 @@ defmodule GtfsPlannerWeb.AssignOrganization do
     current_user = socket.assigns[:current_user]
 
     # Administrator bypass - administrators don't need organization context
-    if current_user && UserAuth.is_administrator?(current_user) do
+    if administrator_without_working_organization?(current_user, session) do
       {:cont, socket}
     else
       assign_organization_required(session, socket)
@@ -62,12 +64,34 @@ defmodule GtfsPlannerWeb.AssignOrganization do
   def on_mount(:optional, _params, session, socket) do
     current_user = socket.assigns[:current_user]
 
-    if current_user && UserAuth.is_administrator?(current_user) do
+    if administrator_without_working_organization?(current_user, session) do
       {:cont, assign_safe_defaults(socket, :system_administrator)}
     else
       assign_organization_optional(session, socket)
     end
   end
+
+  # A system administrator who also holds an organization role in the session's
+  # organization works there like any member; otherwise they keep the
+  # system-wide context.
+  defp administrator_without_working_organization?(nil, _session), do: false
+
+  defp administrator_without_working_organization?(current_user, session) do
+    UserAuth.is_administrator?(current_user) and
+      not working_membership?(current_user, session["organization_id"])
+  end
+
+  defp working_membership?(current_user, organization_id) when is_binary(organization_id) do
+    case Accounts.get_user_org_membership(current_user.id, organization_id) do
+      %Accounts.UserOrgMembership{deactivated_at: nil, roles: roles} ->
+        Enum.any?(roles, &(&1 != "administrator"))
+
+      _ ->
+        false
+    end
+  end
+
+  defp working_membership?(_current_user, _organization_id), do: false
 
   defp assign_organization_required(_session, %{assigns: %{current_user: nil}} = socket) do
     socket =
