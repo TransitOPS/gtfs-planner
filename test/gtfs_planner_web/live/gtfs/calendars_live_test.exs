@@ -1688,6 +1688,16 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
         end_date: Date.add(today, 1)
       })
 
+      # The badge counts from the last effective service day, so a weekly range that
+      # simply ends tomorrow would land on today whenever tomorrow is a Saturday or a
+      # Sunday. The added day keeps the last service day tomorrow on every weekday,
+      # and the row still leads with the weekly days.
+      calendar_date_fixture(organization.id, version.id, %{
+        service_id: "WEEKD",
+        date: Date.add(today, 1),
+        exception_type: 1
+      })
+
       calendar_attribute_fixture(organization.id, version.id, %{
         service_id: "WEEKD",
         service_description: "Alpha weekdays"
