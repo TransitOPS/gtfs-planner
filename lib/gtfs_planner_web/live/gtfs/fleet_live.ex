@@ -78,6 +78,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   alias GtfsPlanner.Operations.VehicleType
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
 
   @vehicle_type_form_id "vehicle-type-form"
   @vehicle_type_form_error_id "vehicle-type-form-error"
@@ -635,7 +636,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
         {:ok, count} ->
           {:noreply,
            socket
-           |> assign(:vehicle_notice, "#{vehicle_count_text(count)} deleted.")
+           |> assign(:vehicle_notice, "#{Wording.count_noun(count, "vehicle")} deleted.")
            |> reset_selection()
            |> load_fleet()}
 
@@ -893,7 +894,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
               class="flex min-h-[60px] flex-wrap items-center gap-x-4 gap-y-2 border-b border-subtle bg-selection px-4 py-2 md:px-5"
             >
               <strong id="bulk-bar-count" class="mr-auto text-sm tabular-nums text-strong">
-                {vehicle_count_text(MapSet.size(@selected_ids))} selected
+                {Wording.count_noun(MapSet.size(@selected_ids), "vehicle")} selected
               </strong>
               <div class="flex flex-wrap items-center gap-2">
                 <.button
@@ -1013,8 +1014,8 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
           id="bulk-delete-confirm"
           chrome="planner"
           open={true}
-          title={"Delete #{vehicle_count_text(@bulk_delete.total)}?"}
-          confirm_label={"Delete #{vehicle_count_text(@bulk_delete.total)}"}
+          title={"Delete #{Wording.count_noun(@bulk_delete.total, "vehicle")}?"}
+          confirm_label={"Delete #{Wording.count_noun(@bulk_delete.total, "vehicle")}"}
           pending_label="Deleting…"
           on_confirm="confirm_delete_selected_vehicles"
           on_cancel="cancel_delete_selected_vehicles"
@@ -1274,7 +1275,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
                   checked={@all_selected?}
                   phx-click="select_all_filtered"
                 />
-                <span class="md:sr-only">Select all {vehicle_count_text(@count)}</span>
+                <span class="md:sr-only">Select all {Wording.count_noun(@count, "vehicle")}</span>
               </label>
             </th>
             <th scope="col" class={[vehicle_head_class(), "w-[150px]"]}>Vehicle number</th>
@@ -1810,7 +1811,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
       class="max-w-[520px]"
     >
       <:lede>
-        <span id="bulk-drawer-scope">{vehicle_count_text(@count)} selected</span>
+        <span id="bulk-drawer-scope">{Wording.count_noun(@count, "vehicle")} selected</span>
       </:lede>
 
       <div id="bulk-drawer-content" class="flex min-h-0 flex-1 flex-col">
@@ -1822,7 +1823,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
         >
           <.drawer_scroll>
             <p id="bulk-drawer-description" class="text-sm text-default">
-              Update {vehicle_count_text(@count)} at once. The {@noun} you choose replaces the current one on every selected vehicle.
+              Update {Wording.count_noun(@count, "vehicle")} at once. The {@noun} you choose replaces the current one on every selected vehicle.
             </p>
 
             <.input
@@ -2221,10 +2222,10 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   end
 
   defp bulk_updated_notice(:vehicle_type_id, count),
-    do: "Type updated on #{vehicle_count_text(count)}."
+    do: "Type updated on #{Wording.count_noun(count, "vehicle")}."
 
   defp bulk_updated_notice(:garage_id, count),
-    do: "Garage updated on #{vehicle_count_text(count)}."
+    do: "Garage updated on #{Wording.count_noun(count, "vehicle")}."
 
   # What the confirmation dialog names: the selected vehicles still on screen, in
   # list order, plus the count of selected ids it cannot name (a crafted or
@@ -2262,7 +2263,8 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
       {:ok, ids} ->
         %{
           ok?: true,
-          text: "Adds #{hd(ids)}–#{List.last(ids)} (#{vehicle_count_text(length(ids))})"
+          text:
+            "Adds #{hd(ids)}–#{List.last(ids)} (#{Wording.count_noun(length(ids), "vehicle")})"
         }
 
       :error ->
@@ -2313,10 +2315,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   defp vehicle_saved_notice(vehicle_id, true), do: "#{vehicle_id} saved."
   defp vehicle_saved_notice(vehicle_id, false), do: "#{vehicle_id} added."
 
-  defp vehicles_added_notice(count), do: "#{vehicle_count_text(count)} added."
-
-  defp vehicle_count_text(1), do: "1 vehicle"
-  defp vehicle_count_text(count), do: "#{count} vehicles"
+  defp vehicles_added_notice(count), do: "#{Wording.count_noun(count, "vehicle")} added."
 
   defp ids_taken_message(ids) do
     "No vehicles were added. These IDs already exist: #{Enum.join(ids, ", ")}. Choose unused numbers."
@@ -2477,8 +2476,10 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
 
   defp types_help(false, false), do: "Select a type name to edit it."
 
-  defp count_summary(_filtered, total, false), do: vehicle_count_text(total)
-  defp count_summary(filtered, total, true), do: "#{filtered} of #{vehicle_count_text(total)}"
+  defp count_summary(_filtered, total, false), do: Wording.count_noun(total, "vehicle")
+
+  defp count_summary(filtered, total, true),
+    do: "#{filtered} of #{Wording.count_noun(total, "vehicle")}"
 
   defp needs_assignment_title(1), do: "1 vehicle needs a garage or type"
   defp needs_assignment_title(count), do: "#{count} vehicles need a garage or type"

@@ -22,6 +22,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternGroupingComponents do
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
   import GtfsPlannerWeb.RouteWorkspace, only: [route_header: 1]
 
+  alias GtfsPlanner.Wording
+
   @doc """
   The DOM id of one group's card.
 
@@ -87,7 +89,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternGroupingComponents do
           tabindex="-1"
           class="mt-1 font-display text-[26px] font-semibold leading-tight tracking-[-0.025em] text-strong sm:text-[30px]"
         >
-          Group {trips(@trip_total)} into patterns
+          Group {Wording.count_noun(@trip_total, "trip")} into patterns
         </h2>
         <p class="mt-1.5 max-w-[86ch] text-[15px] leading-relaxed text-default">
           These trips have no direction, so import left them out. We found {@card_count} stop
@@ -149,7 +151,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternGroupingComponents do
             >
               <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0" />
               <span>
-                Not offered here: {trips(@blocked_total)} with other problems ({blocked_reasons(
+                Not offered here: {Wording.count_noun(@blocked_total, "trip")} with other problems ({blocked_reasons(
                   @preview.blocked
                 )}).
                 They stay as imported until the source feed is fixed and re-imported, and are offered
@@ -207,7 +209,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternGroupingComponents do
       <header class="flex flex-wrap items-start gap-x-4 gap-y-2 px-5 pb-3 pt-4">
         <div class="min-w-0 flex-1 basis-[280px]">
           <p class="text-[13px] text-muted">
-            {trips(@group.trip_count)} · {group_label(@group)}
+            {Wording.count_noun(@group.trip_count, "trip")} · {group_label(@group)}
           </p>
           <h3
             id={"#{card_id(@key)}-title"}
@@ -355,7 +357,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternGroupingComponents do
       <div class="min-w-0 flex-1 basis-[420px]">
         <p class="text-sm text-default">
           <strong class="font-[650] text-strong">
-            {trips(@trip_total)} get a direction, which is exported.
+            {Wording.count_noun(@trip_total, "trip")} get a direction, which is exported.
           </strong>
           Trip times don’t change.
         </p>
@@ -377,7 +379,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternGroupingComponents do
           phx-disable-with="Grouping…"
           class="btn btn-primary min-h-11 disabled:cursor-progress disabled:hover:bg-action"
         >
-          Group {trips(@trip_total)}
+          Group {Wording.count_noun(@trip_total, "trip")}
         </button>
       </div>
     </div>
@@ -426,9 +428,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternGroupingComponents do
   defp blocked_reason_phrase(:unusable_stops, _count), do: "that serves a station"
   defp blocked_reason_phrase(_other, 1), do: "that cannot be served yet"
   defp blocked_reason_phrase(_other, _count), do: "that cannot be served yet"
-
-  defp trips(1), do: "1 trip"
-  defp trips(total), do: "#{total} trips"
 
   defp blocked_trips(blocked), do: blocked |> Enum.map(&length(&1.trip_ids)) |> Enum.sum()
   # A paired group is each other's reverse, so the route's own patterns cannot say

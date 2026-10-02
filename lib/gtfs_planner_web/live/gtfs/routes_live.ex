@@ -715,7 +715,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
           class="flex min-h-[52px] flex-wrap items-center gap-x-3 gap-y-1 border-b border-subtle px-4 py-1 text-[13px] md:px-5"
         >
           <p id="routes-count" role="status" class="font-[650] tabular-nums text-strong">
-            {route_count_text(@routes_state, @total_count)}
+            {if @routes_state == :unavailable,
+              do: "Routes could not load",
+              else: Wording.count_noun(@total_count, "route")}
           </p>
 
           <div id="routes-chips" class="flex flex-wrap items-center gap-2">
@@ -1019,9 +1021,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   defp route_display_name(route) do
     route.route_long_name || route.route_short_name || route.route_id
   end
-
-  defp route_count_text(:ready, count), do: Wording.count_noun(count, "route")
-  defp route_count_text(:unavailable, _count), do: "Routes could not load"
 
   # The summary row repeats each active constraint as a removable chip, so it
   # needs the value, not the param. Status reads as a word; mode maps through the

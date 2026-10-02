@@ -1029,7 +1029,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 gtfs_version_id={@current_gtfs_version.id}
                 active_tab={:diagram}
               >
-                <:meta>Station · {level_count_label(length(@levels))}</:meta>
+                <:meta>
+                  Station · {if @levels == [],
+                    do: "No levels yet",
+                    else: Wording.count_noun(length(@levels), "level")}
+                </:meta>
                 <:actions>
                   <.editing_presence_control
                     station_editing_status={@station_editing_status}
@@ -6249,10 +6253,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     value = Map.get(stop_level, field)
     if Coordinates.normalize_point(value), do: value, else: nil
   end
-
-  defp level_count_label(0), do: "No levels yet"
-  defp level_count_label(1), do: "1 level"
-  defp level_count_label(count), do: "#{count} levels"
 
   defp scale_configured?(nil), do: false
 

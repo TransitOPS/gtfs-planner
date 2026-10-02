@@ -101,6 +101,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
 
   alias GtfsPlanner.Gtfs.FareZone
   alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
 
   @doc """
   Renders the workspace's first-paint skeleton.
@@ -1104,7 +1105,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
         icon="hero-ticket"
       >
         A fare rule says which fare riders pay for a journey: between two zones, within one zone, or
-        on one route. Your feed has {fares_copy(length(@fares))} ready to use.
+        on one route. Your feed has {Wording.count_noun(length(@fares), "fare")} ready to use.
         <:action>
           <.button
             id="add-fare-rule"
@@ -1127,7 +1128,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
           id="fare-rules-count"
           class="flex min-h-14 items-center border-b border-subtle px-4 text-sm font-bold tabular-nums text-strong sm:px-5"
         >
-          {rules_copy_count(@rule_count)}
+          {Wording.count_noun(@rule_count, "fare rule")}
         </p>
         <table class="w-full border-collapse text-left text-sm">
           <caption class="sr-only">Fare rules</caption>
@@ -2101,7 +2102,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
 
         <div :if={@rows != []} id="fare-zone-assignment-rows">
           <p class="mb-1 text-[13px] font-[650] text-default">
-            {stops_copy(@selected_count)} in this review
+            {Wording.count_noun(@selected_count, "stop")} in this review
           </p>
           <ul class="divide-y divide-subtle rounded-card border border-subtle text-sm">
             <li
@@ -2513,7 +2514,10 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
       <div id="fare-zone-delete-body" class="grid gap-4">
         <div class="grid gap-1">
           <p id="fare-zone-delete-consequence">
-            {stops_copy(@zone.stop_count)} and {fare_rules_copy(@zone.rule_count)} use this zone.
+            {Wording.count_noun(@zone.stop_count, "stop")} and {Wording.count_noun(
+              @zone.rule_count,
+              "fare rule"
+            )} use this zone.
           </p>
           <p :if={@zone.other_stop_count > 0} id="fare-zone-delete-others">
             {delete_station_line(@zone.other_stop_count)}
@@ -2589,7 +2593,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
 
   # The edit summary's headline: the counts the zone's ID rewrites.
   defp edit_summary_title(%{stop_count: stop_count, rule_count: rule_count}) do
-    "#{stops_copy(stop_count)} · #{rules_use_copy(rule_count)} this zone"
+    "#{Wording.count_noun(stop_count, "stop")} · #{rules_use_copy(rule_count)} this zone"
   end
 
   defp rules_use_copy(1), do: "1 fare rule uses"
@@ -2604,8 +2608,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
 
   # The delete dialog's own copy. A count of one reads as one, the way the
   # workspace's other count lines do.
-  defp fare_rules_copy(1), do: "1 fare rule"
-  defp fare_rules_copy(count), do: "#{count} fare rules"
 
   defp delete_station_line(1), do: "Also moves 1 station or entrance with this zone ID."
 
@@ -2614,7 +2616,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
 
   defp stale_zone_copy(%{stop_count: stop_count, rule_count: rule_count}) do
     "This zone changed since you opened this dialog. It now has " <>
-      "#{stops_copy(stop_count)} and #{fare_rules_copy(rule_count)}."
+      "#{Wording.count_noun(stop_count, "stop")} and #{Wording.count_noun(rule_count, "fare rule")}."
   end
 
   # The replacement select. No zone is the unreferenced zone's own choice and
@@ -2707,21 +2709,23 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
     end
   end
 
-  defp assignment_title(true, count) when count > 0, do: "Remove zone from #{stops_copy(count)}"
+  defp assignment_title(true, count) when count > 0,
+    do: "Remove zone from #{Wording.count_noun(count, "stop")}"
+
   defp assignment_title(true, _count), do: "Remove zone from stops"
-  defp assignment_title(false, count) when count > 0, do: "Assign #{stops_copy(count)} to a zone"
+
+  defp assignment_title(false, count) when count > 0,
+    do: "Assign #{Wording.count_noun(count, "stop")} to a zone"
+
   defp assignment_title(false, _count), do: "Assign stops to a zone"
 
   # The confirm repeats the verb and its object: how many stops will change.
   defp assignment_confirm_label(true, _preview), do: "Remove zone"
 
   defp assignment_confirm_label(false, %{changed_count: count}) when count > 0,
-    do: "Assign #{stops_copy(count)}"
+    do: "Assign #{Wording.count_noun(count, "stop")}"
 
   defp assignment_confirm_label(false, _preview), do: "Assign stops"
-
-  defp stops_copy(1), do: "1 stop"
-  defp stops_copy(count), do: "#{count} stops"
 
   # A review that would change nothing is not a failure, so it says what the
   # selection already is rather than leaving the disabled button unexplained.
@@ -3033,12 +3037,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
 
   defp checks_passed_copy(1), do: "1 check passed"
   defp checks_passed_copy(count), do: "#{count} checks passed"
-
-  defp fares_copy(1), do: "1 fare"
-  defp fares_copy(count), do: "#{count} fares"
-
-  defp rules_copy_count(1), do: "1 fare rule"
-  defp rules_copy_count(count), do: "#{count} fare rules"
 
   defp combined_fare_title(%{fare_id: fare_id}) do
     "Rules for fare #{fare_id} combine in trip planners"

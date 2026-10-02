@@ -77,6 +77,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.DiagramPalette
   alias GtfsPlannerWeb.Gtfs.CalendarComponents
   alias GtfsPlannerWeb.Gtfs.CalendarEditorComponents
@@ -102,7 +103,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
      |> assign(:blocked, nil)
      |> assign(:first_use?, false)
      |> assign(:filtered_empty?, false)
-     |> assign(:closure_count, pluralize_closures(0))
+     |> assign(:closure_count, Wording.count_noun(0, "closure"))
      |> assign(:match_count, 0)
      |> assign(:pathway_groups, [])
      |> assign(:closure_counts, %{})
@@ -1849,7 +1850,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     |> assign(:blocked, blocked)
     |> assign(:first_use?, first_use?)
     |> assign(:filtered_empty?, filtered_empty?)
-    |> assign(:closure_count, pluralize_closures(length(rows)))
+    |> assign(:closure_count, Wording.count_noun(length(rows), "closure"))
     |> assign(:match_count, length(matches))
     |> assign(:pathway_groups, mode_groups(data.pathways))
     |> assign(:closure_counts, closure_counts(rows))

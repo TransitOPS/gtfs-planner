@@ -1669,8 +1669,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                 id="calendar-delete-closures"
                 class={[@delete_block.trip_count > 0 && "mt-2"]}
               >
-                {@delete_block.closure_count} {closure_usage_phrase(@delete_block.closure_count)} this calendar on {pathway_phrase(
-                  length(@delete_block.closure_paths)
+                {@delete_block.closure_count} {closure_usage_phrase(@delete_block.closure_count)} this calendar on {Wording.noun(
+                  length(@delete_block.closure_paths),
+                  "pathway"
                 )}
                 <CalendarComponents.pathway_links
                   id="calendar-delete-pathways"
@@ -2213,7 +2214,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                 kind="info"
                 title={closure_consequence_title(@usage.closure_count)}
               >
-                On {pathway_phrase(length(@usage.closure_paths))}
+                On {Wording.noun(length(@usage.closure_paths), "pathway")}
                 <CalendarComponents.pathway_links
                   id="calendar-review-closures-pathways"
                   paths={@usage.closure_paths}
@@ -2381,9 +2382,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     do: "Scheduled closures use this calendar, so it can’t be deleted"
 
   defp delete_block_title(_block), do: "This calendar is used by trips, so it can’t be deleted"
-
-  defp pathway_phrase(1), do: "pathway"
-  defp pathway_phrase(_count), do: "pathways"
 
   defp closure_usage_phrase(1), do: "scheduled closure uses"
   defp closure_usage_phrase(_count), do: "scheduled closures use"

@@ -104,6 +104,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   alias GtfsPlanner.Gtfs.LanguageCodes
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Layouts
 
   # The zone field is the only place this page validates a zone, and the server
@@ -909,7 +910,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
       <div class="overflow-hidden rounded-card border border-subtle bg-white">
         <div class="px-5 py-4">
           <h2 id="agencies-list-title" class="text-base font-bold text-strong">
-            {agency_count_label(@health.agency_count)}
+            {Wording.count_noun(@health.agency_count, "agency", "agencies")}
           </h2>
         </div>
 
@@ -999,7 +1000,8 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
                     class="inline-flex min-h-11 items-center gap-2 whitespace-nowrap text-sm font-[650] tabular-nums text-action no-underline hover:text-action-hover hover:underline"
                     aria-label={"View #{row.route_count} routes for #{row.agency.agency_name}"}
                   >
-                    {routes_label(row.route_count)} <.icon name="hero-arrow-right" class="size-4" />
+                    {Wording.count_noun(row.route_count, "route")}
+                    <.icon name="hero-arrow-right" class="size-4" />
                   </.link>
                 </td>
               </tr>
@@ -1365,7 +1367,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
           </div>
         </div>
         <div class="whitespace-nowrap text-sm text-muted">
-          {routes_label(agency.route_count)}
+          {Wording.count_noun(agency.route_count, "route")}
         </div>
       </li>
     </ul>
@@ -1626,7 +1628,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
                 class="rounded-control bg-canvas px-4 py-3 text-[13px] text-muted"
               >
                 Agency ID <strong class="text-strong">{@agency.agency_id}</strong>
-                · {routes_label(@route_count)}
+                · {Wording.count_noun(@route_count, "route")}
               </p>
 
               <.form_section :if={@route_count > 0} title="Move routes to" first?>
@@ -2331,7 +2333,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   defp delete_review_summary(%{target: nil}), do: "No routes or fare references need to move."
 
   defp delete_review_summary(review) do
-    "#{routes_label(length(review.routes))} will move to #{review.target.agency_name}. " <>
+    "#{Wording.count_noun(length(review.routes), "route")} will move to #{review.target.agency_name}. " <>
       "No routes will be deleted."
   end
 
@@ -2512,12 +2514,6 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
 
   defp agencies_label([_agency]), do: "1 agency"
   defp agencies_label(agencies), do: "#{length(agencies)} agencies"
-
-  defp agency_count_label(1), do: "1 agency"
-  defp agency_count_label(count), do: "#{count} agencies"
-
-  defp routes_label(1), do: "1 route"
-  defp routes_label(count), do: "#{count} routes"
 
   defp ack_errors(nil), do: []
   defp ack_errors(message), do: [message]

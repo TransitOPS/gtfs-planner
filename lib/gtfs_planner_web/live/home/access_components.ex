@@ -24,6 +24,8 @@ defmodule GtfsPlannerWeb.Home.AccessComponents do
   import GtfsPlannerWeb.CoreComponents, only: [icon: 1]
   import GtfsPlannerWeb.Home.SharedComponents, only: [home_head: 1]
 
+  alias GtfsPlanner.Wording
+
   # The reference's three control shapes: the state's single primary action, a
   # bordered secondary action, and an inline text action beside a primary.
   defp primary_link do
@@ -48,7 +50,7 @@ defmodule GtfsPlannerWeb.Home.AccessComponents do
     <div id="dashboard-system-administrator">
       <.home_head
         title="System administration"
-        lede={organization_count_text(@organization_count)}
+        lede={Wording.count_noun(@organization_count, "organization")}
       />
       <section
         id="system-admin"
@@ -241,9 +243,6 @@ defmodule GtfsPlannerWeb.Home.AccessComponents do
 
   defp no_org_root(:missing), do: "dashboard-no-organization"
   defp no_org_root(:unavailable), do: "dashboard-organization-unavailable"
-
-  defp organization_count_text(1), do: "1 organization"
-  defp organization_count_text(count), do: "#{count} organizations"
 
   defp member_count_text(1), do: "1 person has access today."
   defp member_count_text(count), do: "#{count} people have access today."

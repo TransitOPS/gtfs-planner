@@ -23,6 +23,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   import GtfsPlannerWeb.CoreComponents, except: [count_strip: 1]
 
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias GtfsPlannerWeb.CoreComponents
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
@@ -382,9 +383,6 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
   defp notice_text({:error, message}), do: message
 
-  defp word(1, singular, _plural), do: singular
-  defp word(_count, _singular, plural), do: plural
-
   defp scope_id(:uncovered_only), do: "runs-scope-uncovered"
   defp scope_id(:replace_all), do: "runs-scope-rebuild"
 
@@ -395,7 +393,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
     do: "Every blocked trip is already in a run."
 
   defp uncovered_scope_sentence(trips, next_run_id) do
-    planned = "Plan the #{trips} #{word(trips, "trip", "trips")} with no operator as new runs"
+    planned =
+      "Plan the #{trips} #{Wording.noun(trips, "trip", "trips")} with no operator as new runs"
 
     case next_run_id do
       nil -> planned <> "."
@@ -488,9 +487,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
         <details id="runs-suggestion-changed" class="text-sm">
           <summary class="inline-flex min-h-11 cursor-pointer items-center gap-2 font-semibold">
-            {length(@plan.moves)} {word(length(@plan.moves), "trip changes", "trips change")} run &middot; {length(
+            {length(@plan.moves)} {Wording.noun(length(@plan.moves), "trip changes", "trips change")} run &middot; {length(
               @changed_runs
-            )} {word(length(@changed_runs), "run", "runs")} new or changed
+            )} {Wording.noun(length(@changed_runs), "run", "runs")} new or changed
           </summary>
 
           <ul id="runs-suggestion-changed-list" class="mt-2 grid gap-1">
@@ -1963,7 +1962,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
             <.icon name="hero-exclamation-triangle" class="size-4" /> Not in a run
           </span>
           <span>
-            {count(@uncovered_trips, "trip")} across {count(length(@uncovered), "block")}: {Enum.map_join(
+            {Wording.count_noun(@uncovered_trips, "trip")} across {Wording.count_noun(
+              length(@uncovered),
+              "block"
+            )}: {Enum.map_join(
               @uncovered,
               " · ",
               &uncovered_label/1
@@ -1981,7 +1983,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       >
         <h3 class="text-base font-bold">Old run assignments</h3>
         <p class="mt-1 text-sm">
-          {count(@orphan_count, "assignment")} {orphan_tail(@orphan_count)}
+          {Wording.count_noun(@orphan_count, "assignment")} {orphan_tail(@orphan_count)}
         </p>
         <p class="mt-1 text-[13px] text-base-content/70">
           They are on no chart and in no run. Removing them deletes the rows and nothing else.
@@ -1993,7 +1995,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
           phx-disable-with="Removing…"
           class="mt-3 min-h-11"
         >
-          Remove {count(@orphan_count, "assignment")}
+          Remove {Wording.count_noun(@orphan_count, "assignment")}
         </.button>
       </div>
 
@@ -3385,9 +3387,6 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       GtfsTime.display(segment.start_secs) <>
       "–" <> GtfsTime.display(segment.end_secs)
   end
-
-  defp count(1, noun), do: "1 #{noun}"
-  defp count(n, noun), do: "#{n} #{noun}s"
 
   defp severity_label(:error), do: "Problem"
   defp severity_label(:warning), do: "Warning"

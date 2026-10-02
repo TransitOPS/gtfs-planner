@@ -19,6 +19,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.Alignments.Materializer
   alias GtfsPlanner.Gtfs.MapLineFiles
+  alias GtfsPlanner.Wording
   alias Phoenix.Component
 
   require Phoenix.LiveView
@@ -382,7 +383,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     Component.assign(
       socket,
       :status_message,
-      "#{removed} #{points_noun(removed)} removed. Undo restores them."
+      "#{removed} #{Wording.noun(removed, "point")} removed. Undo restores them."
     )
   end
 
@@ -1989,7 +1990,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     |> Component.assign(:alignment_pending, nil)
     |> Component.assign(:alignment_forced_local, [])
     |> Component.assign(:alignment_save_notice, nil)
-    |> Component.assign(:status_message, "Map line saved. #{trips} #{trip_noun(trips)} updated.")
+    |> Component.assign(
+      :status_message,
+      "Map line saved. #{trips} #{Wording.noun(trips, "trip")} updated."
+    )
     |> clear_draft_mirror()
     |> reload_alignment_model()
   end
@@ -2011,9 +2015,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     |> assign_applying(false)
     |> open_blocked(draft, review, blockers)
   end
-
-  defp trip_noun(1), do: "trip"
-  defp trip_noun(_), do: "trips"
 
   # Latest base revisions for the drafted positions, so the hook keeps
   # its points against the newer shared path after "Keep as local draft".
@@ -2072,9 +2073,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   # end in alignment:load or alignment:rebase.
   defp push_save_settled(socket),
     do: Phoenix.LiveView.push_event(socket, "alignment:save_settled", %{})
-
-  defp points_noun(1), do: "point"
-  defp points_noun(_), do: "points"
 
   defp parse_tolerance(value) when is_binary(value) do
     case Integer.parse(value) do

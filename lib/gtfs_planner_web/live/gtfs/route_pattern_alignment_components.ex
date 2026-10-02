@@ -17,6 +17,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
   import GtfsPlannerWeb.RouteWorkspace, only: [badge: 1]
 
+  alias GtfsPlanner.Wording
+
   attr :alignment, :map, default: nil, doc: "the Gtfs.alignment_editor/4 read model"
   attr :version_id, :string, default: nil, doc: "the published version the download is scoped to"
   attr :state, :map, required: true, doc: "alignment UI state (selected section first)"
@@ -677,7 +679,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
 
         missing > 0 ->
           "#{section_count(missing)} no saved path, so the file has the line in " <>
-            "#{length(pieces)} #{piece_word(length(pieces))}: " <>
+            "#{length(pieces)} #{Wording.noun(length(pieces), "piece")}: " <>
             Enum.map_join(Enum.map(pieces, &piece_span(&1, alignment)), ", and ", &"#{&1}.")
 
         pieces == [] ->
@@ -696,7 +698,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents do
   end
 
   # `2 pieces` / `1 piece`
-  defp piece_word(count), do: if(count == 1, do: "piece", else: "pieces")
 
   # `Lincoln City to Depoe Bay`, the two stops a run of saved sections joins.
   defp piece_span({first, last}, alignment) do

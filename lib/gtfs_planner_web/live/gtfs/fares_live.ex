@@ -170,6 +170,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -1852,11 +1853,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   defp reload_after_undo(socket, _reason), do: load_workspace(socket)
 
   defp assigned_copy(:assign, applied, zone_name) do
-    "#{stops_count(length(applied))} assigned to #{zone_name}."
+    "#{Wording.count_noun(length(applied), "stop")} assigned to #{zone_name}."
   end
 
   defp assigned_copy(:unassign, applied, _zone_name) do
-    "#{stops_count(length(applied))} unassigned."
+    "#{Wording.count_noun(length(applied), "stop")} unassigned."
   end
 
   # The fare the drawer's rule would belong to after a save, when trip planners
@@ -2030,19 +2031,19 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   # without a zone. A zone's count is its boardable membership, so a zone carried
   # only by stations reads 0 and "Empty zone".
   defp stage_subtitle(:all, inventory),
-    do: "#{stops_count(inventory.boardable_count)} in this version"
+    do: "#{Wording.count_noun(inventory.boardable_count, "stop")} in this version"
 
   defp stage_subtitle(:unassigned, inventory),
     do:
-      "#{stops_count(inventory.unassigned_count)} · trip planners can’t price zone-based journeys that use them"
+      "#{Wording.count_noun(inventory.unassigned_count, "stop")} · trip planners can’t price zone-based journeys that use them"
 
   defp stage_subtitle({:zone, zone_id}, inventory) do
     case Enum.find(inventory.zones, &(&1.zone_id == zone_id)) do
       nil ->
-        "#{stops_count(0)} · Zone ID #{zone_id}"
+        "#{Wording.count_noun(0, "stop")} · Zone ID #{zone_id}"
 
       zone ->
-        "#{stops_count(zone.stop_count)}#{empty_zone_note(zone)} · #{zone_rules_note(zone)} · Zone ID #{zone_id}"
+        "#{Wording.count_noun(zone.stop_count, "stop")}#{empty_zone_note(zone)} · #{zone_rules_note(zone)} · Zone ID #{zone_id}"
     end
   end
 
@@ -2052,9 +2053,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   defp zone_rules_note(%{rule_count: 0}), do: "no fare rules use it"
   defp zone_rules_note(%{rule_count: 1}), do: "used by 1 fare rule"
   defp zone_rules_note(%{rule_count: count}), do: "used by #{count} fare rules"
-
-  defp stops_count(1), do: "1 stop"
-  defp stops_count(count), do: "#{count} stops"
 
   # One issue per stopless referenced zone and per fare whose rules trip planners
   # combine, plus one for unassigned stops. The caller passes nil while the

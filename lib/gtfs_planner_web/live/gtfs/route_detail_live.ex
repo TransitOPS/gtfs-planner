@@ -63,6 +63,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias GtfsPlannerWeb.Gtfs.RouteFormComponents
 
@@ -1347,21 +1348,18 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
 
     cond do
       patterns > 0 and trips > 0 ->
-        "#{ref} #{name} deleted, with its #{plural_count(patterns, "pattern")} and #{plural_count(trips, "trip")}."
+        "#{ref} #{name} deleted, with its #{Wording.count_noun(patterns, "pattern")} and #{Wording.count_noun(trips, "trip")}."
 
       patterns > 0 ->
-        "#{ref} #{name} deleted, with its #{plural_count(patterns, "pattern")}."
+        "#{ref} #{name} deleted, with its #{Wording.count_noun(patterns, "pattern")}."
 
       trips > 0 ->
-        "#{ref} #{name} deleted, with its #{plural_count(trips, "trip")}."
+        "#{ref} #{name} deleted, with its #{Wording.count_noun(trips, "trip")}."
 
       true ->
         "Route #{ref} deleted."
     end
   end
-
-  defp plural_count(1, word), do: "1 #{word}"
-  defp plural_count(count, word) when is_integer(count), do: "#{count} #{word}s"
 
   # The review's rows: every affected category in the review's own order
   # (AC-13), named the way an operator counts them, its scoped identities kept
@@ -1496,13 +1494,13 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
 
     cond do
       patterns > 0 and trips > 0 ->
-        "I understand this permanently deletes #{label}, its #{plural_count(patterns, "pattern")} and #{plural_count(trips, "trip")}."
+        "I understand this permanently deletes #{label}, its #{Wording.count_noun(patterns, "pattern")} and #{Wording.count_noun(trips, "trip")}."
 
       patterns > 0 ->
-        "I understand this permanently deletes #{label} and its #{plural_count(patterns, "pattern")}."
+        "I understand this permanently deletes #{label} and its #{Wording.count_noun(patterns, "pattern")}."
 
       trips > 0 ->
-        "I understand this permanently deletes #{label} and its #{plural_count(trips, "trip")}."
+        "I understand this permanently deletes #{label} and its #{Wording.count_noun(trips, "trip")}."
 
       true ->
         "I understand this permanently deletes #{label} and the records listed here."
@@ -1540,7 +1538,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   defp dependents_phrase(patterns, trips) do
     counted =
       for {count, word} <- [{patterns, "pattern"}, {trips, "trip"}], count > 0 do
-        plural_count(count, word)
+        Wording.count_noun(count, word)
       end
 
     "its " <> Enum.join(counted, " and ")
@@ -1558,11 +1556,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
       Enum.reject(
         [
           dialog.ref,
-          positive?(dialog.trips) && "its #{plural_count(dialog.trips, "trip")}",
+          positive?(dialog.trips) && "its #{Wording.count_noun(dialog.trips, "trip")}",
           positive?(dialog.transfers) &&
-            "the #{plural_count(dialog.transfers, "transfer rule")} that " <>
+            "the #{Wording.count_noun(dialog.transfers, "transfer rule")} that " <>
               if(dialog.transfers == 1, do: "mentions", else: "mention") <> " it",
-          positive?(dialog.fare_rules) && "its #{plural_count(dialog.fare_rules, "fare rule")}"
+          positive?(dialog.fare_rules) &&
+            "its #{Wording.count_noun(dialog.fare_rules, "fare rule")}"
         ],
         &(&1 == false)
       )
@@ -1575,9 +1574,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
 
   defp to_sentence(parts),
     do: Enum.join(Enum.drop(parts, -1), ", ") <> ", and " <> List.last(parts)
-
-  defp count_phrase(1, word), do: "1 #{word}"
-  defp count_phrase(count, word) when is_integer(count), do: "#{count} #{word}s"
 
   defp positive?(count) when is_integer(count) and count > 0, do: true
   defp positive?(_other), do: false
@@ -3040,12 +3036,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
     parts =
       Enum.concat([
         if(dashed > 0,
-          do: ["#{count_phrase(dashed, "section")} without a path yet"],
+          do: ["#{Wording.count_noun(dashed, "section")} without a path yet"],
           else: []
         ),
         if(hidden > 0,
           do: [
-            "#{count_phrase(hidden, "section")} not shown: #{Enum.join(reasons, ", ")}"
+            "#{Wording.count_noun(hidden, "section")} not shown: #{Enum.join(reasons, ", ")}"
           ],
           else: []
         )

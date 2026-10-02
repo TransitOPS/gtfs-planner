@@ -104,6 +104,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   alias GtfsPlanner.Gtfs.Rosters.AssignmentsExport
   alias GtfsPlanner.Gtfs.Rosters.Candidates
   alias GtfsPlanner.Gtfs.Rosters.Checks
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.CoreComponents
   alias Phoenix.HTML.Form
 
@@ -509,13 +510,10 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
       if(summary.stale_slots > 0, do: [{"Stale slots #{summary.stale_slots}", "stale"}], else: [])
   end
 
-  defp filter_count(%{showing_all: true, total: total}), do: plural_lines(total)
+  defp filter_count(%{showing_all: true, total: total}), do: Wording.count_noun(total, "line")
 
   defp filter_count(%{shown: shown, total: total}),
-    do: "Showing #{shown} of #{plural_lines(total)}"
-
-  defp plural_lines(1), do: "1 line"
-  defp plural_lines(count), do: "#{count} lines"
+    do: "Showing #{shown} of #{Wording.count_noun(total, "line")}"
 
   @doc """
   Renders the roster grid: one row per line, seven weekday slots, and the four
@@ -1742,7 +1740,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
             <span class="font-normal text-muted">· {group.day_type.label}</span>
           </h3>
           <span class="tabular text-[13px] text-muted">
-            {open_run_days_text(group.open_run_days)}
+            {Wording.count_noun(group.open_run_days, "open run-day")}
           </span>
         </div>
 
@@ -1789,9 +1787,6 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
       availability: Candidates.new_line_availability(roster, key, open_run.run_id)
     })
   end
-
-  defp open_run_days_text(1), do: "1 open run-day"
-  defp open_run_days_text(count), do: "#{count} open run-days"
 
   @doc """
   One open run's card: what the run is, when it is open, and what can be built
@@ -2024,8 +2019,9 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
     >
       <:lede>
         <span id="rosters-slot-lede">
-          {(@line.operator && @line.operator.display_name) || "Open line"} · {plural_days(
-            map_size(@line.slots)
+          {(@line.operator && @line.operator.display_name) || "Open line"} · {Wording.count_noun(
+            map_size(@line.slots),
+            "working day"
           )} · {@line.paid_secs |> hours_minutes()} paid a week
         </span>
       </:lede>
@@ -2330,9 +2326,6 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
       "the day. Until then the export skips this day."
   end
 
-  defp plural_days(1), do: "1 working day"
-  defp plural_days(count), do: "#{count} working days"
-
   @doc """
   The "Add to line" drawer: an open run's day, and the lines that have it off.
 
@@ -2407,7 +2400,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
         >
           <legend class="text-[13px] font-[650] text-default">Day</legend>
           <p class="text-[13px] text-muted">
-            Run {@run_id} is open on {plural_open_days(length(@open_weekdays))}.
+            Run {@run_id} is open on {Wording.count_noun(length(@open_weekdays), "day")}.
           </p>
           <div
             role="group"
@@ -2480,7 +2473,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
                     </label>
                   </td>
                   <td class="px-2 py-1">
-                    {plural_working_days(map_size(row.line.slots))}
+                    {Wording.count_noun(map_size(row.line.slots), "day")}
                     <span class="text-muted">
                       · off {days_off_text(row.line)}
                     </span>
@@ -2569,11 +2562,6 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   # The column counts working days, so it says "days" rather than the grid's
   # "working days": it sits beside "Paid now", where the reader is comparing two
   # lines rather than reading one line's week.
-  defp plural_working_days(1), do: "1 day"
-  defp plural_working_days(count), do: "#{count} days"
-
-  defp plural_open_days(1), do: "1 day"
-  defp plural_open_days(count), do: "#{count} days"
 
   @doc """
   The line drawer: one line's whole week, and the one destructive action on it.
@@ -2618,7 +2606,10 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
     >
       <:lede>
         <span id="rosters-line-lede">
-          {if @line.operator, do: "Assigned", else: "Open"} · {plural_days(map_size(@line.slots))}
+          {if @line.operator, do: "Assigned", else: "Open"} · {Wording.count_noun(
+            map_size(@line.slots),
+            "working day"
+          )}
         </span>
       </:lede>
 
@@ -3217,7 +3208,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
         </p>
 
         <p class="text-sm">
-          With the lines as they are, the export has <strong class="tabular">{assignment_count(length(@assignments.rows))}</strong>:
+          With the lines as they are, the export has <strong class="tabular">{Wording.count_noun(length(@assignments.rows), "assignment")}</strong>:
           one per operator, run and date.
         </p>
 
@@ -3328,9 +3319,6 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
 
   defp warning_title(1), do: "1 thing the export leaves out"
   defp warning_title(count), do: "#{count} things the export leaves out"
-
-  defp assignment_count(1), do: "1 assignment"
-  defp assignment_count(count), do: "#{count} assignments"
 
   # "Oct 12, 2026" — the page's date format. The export's own report writes
   # ISO dates and the spec asks for this one here; the rest of the sentence is

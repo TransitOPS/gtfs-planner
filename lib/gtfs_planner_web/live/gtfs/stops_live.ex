@@ -495,7 +495,17 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
               role="status"
               class="font-[650] tabular-nums text-strong"
             >
-              {stop_count_text(@total_count, has_active_constraints?(assigns))}
+              {case has_active_constraints?(assigns) do
+                true ->
+                  Wording.count_noun(
+                    @total_count,
+                    "stop or station matches",
+                    "stops and stations match"
+                  )
+
+                false ->
+                  Wording.count_noun(@total_count, "stop or station", "stops and stations")
+              end}
             </p>
 
             <div id="stops-chips" class="flex flex-wrap items-center gap-2">
@@ -977,12 +987,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
     assigns.stops_state == :loading or
       (assigns.stops_state == :route_enrichment_unavailable and assigns.route_id in [nil, ""])
   end
-
-  defp stop_count_text(count, false),
-    do: Wording.count_noun(count, "stop or station", "stops and stations")
-
-  defp stop_count_text(count, true),
-    do: Wording.count_noun(count, "stop or station matches", "stops and stations match")
 
   defp no_match_title(assigns) do
     if only_search_active?(assigns),

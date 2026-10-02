@@ -26,6 +26,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Schedules.FrequencyWindows
   alias GtfsPlanner.Gtfs.Schedules.TimeEntry
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Gtfs.ScheduleComponents
 
   @focus_inset "focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus"
@@ -80,7 +81,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
           <.outcome_line :if={@outcome} outcome={@outcome} undo_stack={@undo_stack} stacked? />
           <div class="flex flex-wrap items-center gap-x-2 gap-y-2">
             <p id="selection-count" class="mr-2 font-bold tabular-nums text-action">
-              {trip_count(@selected_count)} selected
+              {Wording.count_noun(@selected_count, "trip")} selected
             </p>
             <.button
               id="bulk-shift"
@@ -184,7 +185,8 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
               phx-disconnected={JS.set_attribute({"disabled", ""})}
               phx-connected={JS.remove_attribute("disabled")}
             >
-              <.icon name="hero-trash" class="size-4" /> Delete {trip_count(@selected_count)}
+              <.icon name="hero-trash" class="size-4" />
+              Delete {Wording.count_noun(@selected_count, "trip")}
             </.button>
             <.button
               id="clear-selection"
@@ -298,7 +300,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
     >
       <div class="flex flex-wrap items-baseline gap-x-3">
         <h3 id="strip-title" class="text-base font-bold text-strong">
-          {strip_title(@kind)} · {@strip[:who] || trip_count(length(@change.ids))}
+          {strip_title(@kind)} · {@strip[:who] || Wording.count_noun(length(@change.ids), "trip")}
         </h3>
         <p class="text-[13px] text-muted">
           The new times show in the timetable in amber until you apply.
@@ -927,7 +929,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
     pronoun = if count == 1, do: "it goes", else: "they go"
     blocks = Enum.join(cleared_block_names(change_set), ", ")
 
-    "#{trip_count(count)} #{verb} block #{blocks}: #{subject} run with the same trips " <>
+    "#{Wording.count_noun(count, "trip")} #{verb} block #{blocks}: #{subject} run with the same trips " <>
       "on #{to}, so #{pronoun} to the unassigned pool on Blocks."
   end
 
@@ -963,11 +965,11 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
       "To change which dates each service day covers, use Calendars."
   end
 
-  defp review_title(:copy, count, to), do: "Copy #{trip_count(count)} to #{to}?"
-  defp review_title(:move, count, to), do: "Move #{trip_count(count)} to #{to}?"
+  defp review_title(:copy, count, to), do: "Copy #{Wording.count_noun(count, "trip")} to #{to}?"
+  defp review_title(:move, count, to), do: "Move #{Wording.count_noun(count, "trip")} to #{to}?"
 
-  defp review_primary(:copy, count), do: "Copy #{trip_count(count)}"
-  defp review_primary(:move, count), do: "Move #{trip_count(count)}"
+  defp review_primary(:copy, count), do: "Copy #{Wording.count_noun(count, "trip")}"
+  defp review_primary(:move, count), do: "Move #{Wording.count_noun(count, "trip")}"
 
   defp review_apply_label(:copy), do: "Copying…"
   defp review_apply_label(:move), do: "Moving…"
@@ -1042,7 +1044,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
       assign(assigns,
         duplicate?: duplicate?,
         prefix: paste.prefix,
-        title: "#{paste_verb(duplicate?)} #{trip_count(length(change.ids))}",
+        title: "#{paste_verb(duplicate?)} #{Wording.count_noun(length(change.ids), "trip")}",
         refusal: refusal,
         skip?: skip?,
         skip_help: skip_help(change_set, skip?, paste.target_name),
@@ -1053,7 +1055,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
         confirm_label:
           if(stale?,
             do: "Refresh preview",
-            else: "#{paste_verb(duplicate?)} #{trip_count(adding)}"
+            else: "#{paste_verb(duplicate?)} #{Wording.count_noun(adding, "trip")}"
           ),
         pending_label: paste_pending(duplicate?, stale?),
         on_confirm: if(stale?, do: "refresh_change", else: "apply_change"),
@@ -1238,7 +1240,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
         nil
 
       departures ->
-        "Adds #{trip_count(length(change_set.inserts))} on #{to}: " <>
+        "Adds #{Wording.count_noun(length(change_set.inserts), "trip")} on #{to}: " <>
           "#{Enum.join(departures, ", ")}. They start without a block."
     end
   end
@@ -1277,14 +1279,18 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
     assigns =
       assign(assigns,
         count: count,
-        title: "Convert to #{scheduled_trips(count)}?",
+        title: "Convert to #{Wording.count_noun(count, "scheduled trip")}?",
         refusal: refusal,
         departures: Enum.map(change_set.inserts, &convert_departure/1),
         removed: length(change_set.deletes),
         transfers: transfer_count(change_set),
         stale?: stale?,
         confirm_id: if(stale?, do: "convert-refresh", else: "convert-apply"),
-        confirm_label: if(stale?, do: "Refresh preview", else: "Convert to #{trip_count(count)}"),
+        confirm_label:
+          if(stale?,
+            do: "Refresh preview",
+            else: "Convert to #{Wording.count_noun(count, "trip")}"
+          ),
         pending_label: if(stale?, do: "Refreshing…", else: "Converting…"),
         on_confirm: if(stale?, do: "refresh_change", else: "apply_change"),
         confirm_disabled: not stale? and (refusal != nil or count == 0)
@@ -1396,9 +1402,6 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
     </.confirm_dialog>
     """
   end
-
-  defp scheduled_trips(1), do: "1 scheduled trip"
-  defp scheduled_trips(count), do: "#{count} scheduled trips"
 
   # One departures-table row: the new trip's allocated ID and its first
   # departure, both from the review's insert.
@@ -1917,7 +1920,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
   end
 
   defp summary_sentence(summary, row) do
-    "#{departures_label(summary.count)} · last #{GtfsTime.display(summary.last_secs)}; " <>
+    "#{Wording.count_noun(summary.count, "departure")} · last #{GtfsTime.display(summary.last_secs)}; " <>
       "the next would be #{GtfsTime.display(summary.next_secs)}#{ends_with_window_clause(row)}."
   end
 
@@ -1933,9 +1936,6 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
     do: "The gap between departures is longer than this window. Raise Until or lower Every."
 
   defp warning_sentence(_summary), do: nil
-
-  defp departures_label(1), do: "1 departure"
-  defp departures_label(count), do: "#{count} departures"
 
   defp window(row) do
     %{start_secs: row.start_secs, end_secs: row.end_secs, headway_secs: row.headway_secs}
@@ -2047,8 +2047,10 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
 
   # The primary counts what it will change: the command's trips for a shift, and
   # the eligible trips the review planned for a timing change.
-  defp primary_label(%{kind: :shift}, count), do: "Shift #{trip_count(count)}"
-  defp primary_label(%{kind: :timing}, count), do: "Change timing for #{trip_count(count)}"
+  defp primary_label(%{kind: :shift}, count), do: "Shift #{Wording.count_noun(count, "trip")}"
+
+  defp primary_label(%{kind: :timing}, count),
+    do: "Change timing for #{Wording.count_noun(count, "trip")}"
 
   # A reviewed shift counts the trips it would change: a position shift leaves
   # frequency trips out, so they are not counted. A refused review still names
@@ -2086,7 +2088,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
   defp windows_moved_line(consequences) do
     case consequence_ids(consequences, :windows_moved) do
       [] -> []
-      ids -> ["Frequency windows move too (#{service_count(length(ids))})."]
+      ids -> ["Frequency windows move too (#{Wording.count_noun(length(ids), "service")})."]
     end
   end
 
@@ -2097,7 +2099,9 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
     if count == 0 do
       []
     else
-      ["#{service_count(count)} left out, because frequency service moves as a whole."]
+      [
+        "#{Wording.count_noun(count, "service")} left out, because frequency service moves as a whole."
+      ]
     end
   end
 
@@ -2179,7 +2183,9 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
             _no_calendar -> ""
           end
 
-        ["#{trip_count(length(ids))} would start after midnight (24:00 or later)#{tail}."]
+        [
+          "#{Wording.count_noun(length(ids), "trip")} would start after midnight (24:00 or later)#{tail}."
+        ]
     end
   end
 
@@ -2214,7 +2220,9 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
         []
 
       ids ->
-        ["#{trip_count(length(ids))} will have custom times#{custom_stop_clause(change, strip)}"]
+        [
+          "#{Wording.count_noun(length(ids), "trip")} will have custom times#{custom_stop_clause(change, strip)}"
+        ]
     end
   end
 
@@ -2238,7 +2246,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
 
       ids ->
         [
-          "#{trip_count(length(ids))} #{has_or_have(ids)} custom times and #{takes_or_take(ids)} this timing's times."
+          "#{Wording.count_noun(length(ids), "trip")} #{has_or_have(ids)} custom times and #{takes_or_take(ids)} this timing's times."
         ]
     end
   end
@@ -2250,7 +2258,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
       []
     else
       [
-        "#{trip_count(count)}'s stops differ from the pattern and #{left_out_verb(count)} left out."
+        "#{Wording.count_noun(count, "trip")}'s stops differ from the pattern and #{left_out_verb(count)} left out."
       ]
     end
   end
@@ -2303,9 +2311,6 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
 
   defp minute_label(secs), do: "#{round(secs / 60)} min"
 
-  defp service_count(1), do: "1 service"
-  defp service_count(count), do: "#{count} services"
-
   # `sel` while a strip or a selection carries the bar (the prototype's selection
   # bar), `idle` with the hint, and the outcome's own tone otherwise.
   defp bar_tone(true, _selected?, _outcome), do: "sel"
@@ -2341,7 +2346,4 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
   defp focus_inset, do: @focus_inset
 
   defp menu_item_class, do: @menu_item
-
-  defp trip_count(1), do: "1 trip"
-  defp trip_count(count), do: "#{count} trips"
 end

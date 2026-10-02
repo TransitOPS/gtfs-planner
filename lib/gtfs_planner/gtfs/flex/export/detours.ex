@@ -33,6 +33,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Export.Detours do
   alias GtfsPlanner.Gtfs.Flex.RiderText
   alias GtfsPlanner.Gtfs.FlexService
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Wording
 
   @typedoc """
   One stored stop of a trip, in visit order.
@@ -288,22 +289,19 @@ defmodule GtfsPlanner.Gtfs.Flex.Export.Detours do
   end
 
   defp detail(service, :flex_detour_same_time, stop_a, stop_b, count) do
-    "#{service.name}: no detour row for #{count} #{trip_word(count)} between stops " <>
+    "#{service.name}: no detour row for #{count} #{Wording.noun(count, "trip")} between stops " <>
       "#{stop_a} and #{stop_b}: the departure and arrival times are equal."
   end
 
   defp detail(service, :flex_detour_missing_time, stop_a, stop_b, count) do
-    "#{service.name}: no detour row for #{count} #{trip_word(count)} between stops " <>
+    "#{service.name}: no detour row for #{count} #{Wording.noun(count, "trip")} between stops " <>
       "#{stop_a} and #{stop_b}: a departure or arrival time is missing."
   end
 
   defp detail(service, :flex_detour_no_zone, stop_a, stop_b, count) do
     "#{service.name}: no detour area covers stops #{stop_a} and #{stop_b} for " <>
-      "#{count} #{trip_word(count)}."
+      "#{count} #{Wording.noun(count, "trip")}."
   end
-
-  defp trip_word(1), do: "trip"
-  defp trip_word(_count), do: "trips"
 
   defp time_seconds(value) when is_binary(value), do: GtfsTime.parse(value)
   defp time_seconds(_value), do: {:error, :invalid_time}

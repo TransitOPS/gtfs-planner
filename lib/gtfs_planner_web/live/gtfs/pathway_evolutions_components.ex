@@ -326,7 +326,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
                 :if={count > 0}
                 class="shrink-0 rounded-badge bg-canvas px-2 py-0.5 text-[13px] font-[650] tabular-nums text-muted"
               >
-                {pluralize_closures(count)}
+                {Wording.count_noun(count, "closure")}
               </span>
             </button>
           </li>
@@ -335,13 +335,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
     </div>
     """
   end
-
-  @doc """
-  Returns `1 closure` / `n closures` for a count, in words rather than a color.
-  """
-  @spec pluralize_closures(non_neg_integer()) :: String.t()
-  def pluralize_closures(1), do: "1 closure"
-  def pluralize_closures(count), do: "#{count} closures"
 
   @doc """
   Prepares one station's static floorplan for the authoring locator and the
@@ -666,7 +659,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
             Station at {@moment}
           </h2>
           <.tone_badge :if={@closed_count > 0} tone="error" id="preview-floorplan-badge">
-            {pluralize_pathways(@closed_count)} closed
+            {Wording.count_noun(@closed_count, "pathway")} closed
           </.tone_badge>
           <.tone_badge :if={@closed_count == 0} tone="success" id="preview-floorplan-badge">
             No pathway closed
@@ -1077,9 +1070,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
   defp has_no_floorplan([_label]), do: "level has no floorplan"
   defp has_no_floorplan(_labels), do: "levels have no floorplan"
-
-  defp pluralize_pathways(1), do: "1 pathway"
-  defp pluralize_pathways(count), do: "#{count} pathways"
 
   # One closed pathway's own line: its label when the snapshot still has it,
   # its exact natural id, and where on this floorplan it is (or that it is not

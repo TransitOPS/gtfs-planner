@@ -249,7 +249,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         Showing the suggestion
       </span>
       <span id="blocks-summary-note" class="ml-auto text-[13px] text-muted">
-        Whole service day · {day_count_label(@day_type.date_count)}
+        Whole service day · {Wording.count_noun(@day_type.date_count, "day")}
       </span>
     </section>
     """
@@ -505,7 +505,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       return_focus_id="blocks-service-dates"
       class="max-w-[520px]"
     >
-      <:lede>{@day_type.label} · {day_count_label(@day_type.date_count)}</:lede>
+      <:lede>{@day_type.label} · {Wording.count_noun(@day_type.date_count, "day")}</:lede>
 
       <.drawer_scroll>
         <p class="text-sm text-muted">
@@ -514,7 +514,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
         <section :for={{label, dates} <- @months} data-role="service-dates-month">
           <h3 class="text-[15px] font-bold text-strong">
-            {label} <span class="font-normal text-muted">· {day_count_label(length(dates))}</span>
+            {label}
+            <span class="font-normal text-muted">· {Wording.count_noun(length(dates), "day")}</span>
           </h3>
           <ul class="mt-2 flex flex-wrap gap-1.5">
             <li
@@ -636,7 +637,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               class="min-h-11"
               phx-click="request_remove_stale"
             >
-              Remove {@stale_count} {word(
+              Remove {@stale_count} {Wording.noun(
                 @stale_count,
                 "record that no longer matches",
                 "records that no longer match"
@@ -654,7 +655,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         them. --%>
         <section id="checks-in-seat-version" class="border-t border-subtle pt-5">
           <h3 class="text-[15px] font-bold text-strong">
-            This version · {length(@unmatched)} in-seat {word(
+            This version · {length(@unmatched)} in-seat {Wording.noun(
               length(@unmatched),
               "record doesn't",
               "records don't"
@@ -689,7 +690,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             class="mt-3 min-h-11"
             phx-click="request_remove_unmatched"
           >
-            Remove {length(@unmatched)} {word(length(@unmatched), "record", "records")}
+            Remove {length(@unmatched)} {Wording.noun(length(@unmatched), "record", "records")}
           </.button>
         </section>
       </.drawer_scroll>
@@ -797,12 +798,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # no question, which the caller checks before it renders a button asking it.
   defp removal_copy(scope, count) when count > 0 do
     %{
-      title: "Remove #{count} in-seat #{word(count, "record", "records")}?",
+      title: "Remove #{count} in-seat #{Wording.noun(count, "record", "records")}?",
       body:
-        "#{word(count, "This record no longer matches", "These records no longer match")} #{scope}. " <>
+        "#{Wording.noun(count, "This record no longer matches", "These records no longer match")} #{scope}. " <>
           "Trips and blocks don't change. " <>
           "Each deletion is audited; riders will see whatever apps infer from the blocks.",
-      confirm: "Remove #{count} #{word(count, "record", "records")}"
+      confirm: "Remove #{count} #{Wording.noun(count, "record", "records")}"
     }
   end
 
@@ -988,7 +989,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
         <details open>
           <summary class="flex min-h-11 cursor-pointer items-center text-sm font-[650] text-action">
-            Inspect {length(@moves)} affected {word(length(@moves), "trip", "trips")} and dates
+            Inspect {length(@moves)} affected {Wording.noun(length(@moves), "trip", "trips")} and dates
           </summary>
           <div class="mt-2 grid gap-3">
             <div
@@ -1241,7 +1242,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
     [
       if(existing > 0,
-        do: "#{existing} existing #{word(existing, "problem remains", "problems remain")}"
+        do: "#{existing} existing #{Wording.noun(existing, "problem remains", "problems remain")}"
       ),
       if(assigns.fixed_problems > 0, do: "#{assigns.fixed_problems} fixed")
     ]
@@ -1287,19 +1288,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp repeats_note([]), do: nil
 
   defp repeats_note(ids) do
-    "#{Enum.join(ids, ", ")} #{word(length(ids), "repeats", "repeat")} " <>
-      "without individual departures and #{word(length(ids), "stays", "stay")} unassigned."
+    "#{Enum.join(ids, ", ")} #{Wording.noun(length(ids), "repeats", "repeat")} " <>
+      "without individual departures and #{Wording.noun(length(ids), "stays", "stay")} unassigned."
   end
 
   defp estimate_note(0), do: nil
 
   defp estimate_note(count) do
-    "#{count} #{word(count, "driving time is", "driving times are")} still " <>
-      "#{word(count, "an estimate", "estimates")}."
+    "#{count} #{Wording.noun(count, "driving time is", "driving times are")} still " <>
+      "#{Wording.noun(count, "an estimate", "estimates")}."
   end
-
-  defp word(1, singular, _plural), do: singular
-  defp word(_count, _singular, plural), do: plural
 
   # The deadhead figure is printed in hours to one decimal; a plan's drive seconds
   # are whole minutes, so the same shape is one decimal of an hour.
@@ -1386,7 +1384,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       return_focus_id="blocks-summary-figures-item-vehicles"
       class="max-w-[520px]"
     >
-      <:lede :if={@day_type}>{@day_type.label} · {day_count_label(@day_type.date_count)}</:lede>
+      <:lede :if={@day_type}>
+        {@day_type.label} · {Wording.count_noun(@day_type.date_count, "day")}
+      </:lede>
 
       <.drawer_scroll>
         <section id="plan-summary-plan">
@@ -3154,8 +3154,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       class="rounded-card border border-subtle px-3.5 py-3 text-sm"
     >
       <p class="font-bold text-strong">
-        {if @effect.selected?, do: @current_label, else: "Also changes"} · {@effect.day_type.label} · {day_count_label(
-          @effect.day_type.date_count
+        {if @effect.selected?, do: @current_label, else: "Also changes"} · {@effect.day_type.label} · {Wording.count_noun(
+          @effect.day_type.date_count,
+          "day"
         )}
       </p>
       <p class="mt-1">{effect_sentence(@effect, @review)}</p>
@@ -3958,7 +3959,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       class="max-w-[520px]"
     >
       <:lede :if={@selected_day_type}>
-        {@selected_day_type.label} · {day_count_label(@selected_day_type.date_count)}
+        {@selected_day_type.label} · {Wording.count_noun(@selected_day_type.date_count, "day")}
       </:lede>
 
       <.drawer_scroll>
@@ -4063,7 +4064,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                 class="rounded-card border border-subtle px-3.5 py-3 text-sm"
               >
                 <p class="font-bold text-strong">
-                  {change.label} · {day_count_label(change.date_count)}
+                  {change.label} · {Wording.count_noun(change.date_count, "day")}
                 </p>
                 <p class="mt-1">{change.sentence}</p>
               </div>
@@ -8603,11 +8604,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   defp day_type_option_label(day_type) do
-    "#{day_type.label} · #{day_count_label(day_type.date_count)}"
+    "#{day_type.label} · #{Wording.count_noun(day_type.date_count, "day")}"
   end
-
-  defp day_count_label(1), do: "1 day"
-  defp day_count_label(count), do: "#{count} days"
 
   # The whole-day tiles. A tile that leads somewhere is an action; the rest are
   # figures. Unassigned trips and Problems take a state colour while there is
@@ -9018,7 +9016,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   defp in_seat_reason({:not_next, failures}) do
     "Riders are told they can stay on board, but the second trip isn't next on this vehicle on " <>
-      Enum.map_join(failures, " or ", &"#{&1.label} (#{day_count_label(&1.date_count)})") <> "."
+      Enum.map_join(
+        failures,
+        " or ",
+        &"#{&1.label} (#{Wording.count_noun(&1.date_count, "day")})"
+      ) <> "."
   end
 
   defp in_seat_reason(:next_service_day),

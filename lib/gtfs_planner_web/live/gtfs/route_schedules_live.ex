@@ -46,6 +46,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   alias GtfsPlanner.Gtfs.Schedules.Summary
   alias GtfsPlanner.Gtfs.Schedules.TimeEntry
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.ScheduleChangeComponents
@@ -1619,7 +1620,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
           })
           |> assign(:outcome, %{
             tone: :info,
-            text: "#{trip_count_label(length(ids))} copied. Press ⌘V in the grid to paste.",
+            text:
+              "#{Wording.count_noun(length(ids), "trip")} copied. Press ⌘V in the grid to paste.",
             undo?: false
           })
       end
@@ -1739,7 +1741,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       %{
         value: calendar.service_id,
         name: name,
-        label: "#{name} · #{trip_count_label(calendar.route_trip_count)}"
+        label: "#{name} · #{Wording.count_noun(calendar.route_trip_count, "trip")}"
       }
     end
   end
@@ -1778,7 +1780,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       %{
         value: calendar.service_id,
         name: name,
-        label: "#{name} · #{trip_count_label(calendar.route_trip_count)}"
+        label: "#{name} · #{Wording.count_noun(calendar.route_trip_count, "trip")}"
       }
     end
   end
@@ -2294,7 +2296,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
         do: " Blocks are kept.",
         else: ""
 
-    "Shifted #{trip_count_label(length(result.changed_trip_ids))} #{params.minutes} min " <>
+    "Shifted #{Wording.count_noun(length(result.changed_trip_ids), "trip")} #{params.minutes} min " <>
       "#{direction}.#{kept}"
   end
 
@@ -2302,7 +2304,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     count = length(result.changed_trip_ids)
     verb = if count == 1, do: "now uses", else: "now use"
 
-    "#{trip_count_label(count)} #{verb} #{timing_name(socket, timing_id)}."
+    "#{Wording.count_noun(count, "trip")} #{verb} #{timing_name(socket, timing_id)}."
   end
 
   # A copy names what it created and what the default skip left alone; a move
@@ -2310,14 +2312,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp change_outcome(socket, %{kind: :copy, params: params}, result) do
     skipped = consequence_count(result.change_set.consequences, :skipped_existing)
 
-    "Copied #{trip_count_label(length(result.created_trip_ids))} to " <>
+    "Copied #{Wording.count_noun(length(result.created_trip_ids), "trip")} to " <>
       "#{calendar_name(socket, params.service_id)}.#{skipped_clause(skipped)}"
   end
 
   defp change_outcome(socket, %{kind: :move, params: params}, result) do
     blocks = cleared_blocks(result.change_set.consequences)
 
-    "Moved #{trip_count_label(length(result.changed_trip_ids))} to " <>
+    "Moved #{Wording.count_noun(length(result.changed_trip_ids), "trip")} to " <>
       "#{calendar_name(socket, params.service_id)}.#{cleared_block_clause(blocks)}"
   end
 
@@ -2326,14 +2328,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp change_outcome(socket, %{kind: :paste, params: params}, result) do
     skipped = consequence_count(result.change_set.consequences, :skipped_existing)
 
-    "Pasted #{trip_count_label(length(result.created_trip_ids))} on " <>
+    "Pasted #{Wording.count_noun(length(result.created_trip_ids), "trip")} on " <>
       "#{calendar_name(socket, params.service_id)}.#{skipped_clause(skipped)}"
   end
 
   defp change_outcome(socket, %{kind: :duplicate, params: params}, result) do
     skipped = consequence_count(result.change_set.consequences, :skipped_existing)
 
-    "Duplicated #{trip_count_label(length(result.created_trip_ids))} on " <>
+    "Duplicated #{Wording.count_noun(length(result.created_trip_ids), "trip")} on " <>
       "#{calendar_name(socket, params.service_id)}.#{skipped_clause(skipped)}"
   end
 
@@ -2694,11 +2696,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp change_who(assigns, %{ids: [trip_id]}) do
     case strip_row(assigns, trip_id) do
       %{start_cell: %{text: text}} -> "the #{text} trip"
-      _missing -> trip_count_label(1)
+      _missing -> Wording.count_noun(1, "trip")
     end
   end
 
-  defp change_who(_assigns, %{ids: ids}), do: trip_count_label(length(ids))
+  defp change_who(_assigns, %{ids: ids}), do: Wording.count_noun(length(ids), "trip")
 
   # The reference's first consequence line: the reviewed first departures, the
   # earliest three shown and the rest counted.
@@ -3226,7 +3228,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     label = calendar_label(socket.assigns.payload.calendars, attrs.service_id)
 
     socket
-    |> put_flash(:info, "Added #{trip_count_label(length(trips))} to #{label}.")
+    |> put_flash(:info, "Added #{Wording.count_noun(length(trips), "trip")} to #{label}.")
     |> assign(:drawer, nil)
     |> assign(:vehicle_change_from, current_vehicle_count(socket))
     |> assign(:keep_vehicle_change, true)
@@ -3381,11 +3383,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   # The flash names the removed transfers only when the transaction removed any,
   # and always keeps the trip count first.
-  defp deleted_label(trips, 0), do: trip_count_label(trips)
-  defp deleted_label(trips, 1), do: "#{trip_count_label(trips)} and 1 transfer record"
+  defp deleted_label(trips, 0), do: Wording.count_noun(trips, "trip")
+  defp deleted_label(trips, 1), do: "#{Wording.count_noun(trips, "trip")} and 1 transfer record"
 
   defp deleted_label(trips, transfers),
-    do: "#{trip_count_label(trips)} and #{transfers} transfer records"
+    do: "#{Wording.count_noun(trips, "trip")} and #{transfers} transfer records"
 
   defp reload_or_fail(socket) do
     case reload_schedule(socket) do
@@ -4180,7 +4182,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       range: range_label(start_secs, total),
       total_minutes: total,
       sentence:
-        "Adds #{trip_count_label(count)}, #{GtfsTime.display(start_secs)} → #{GtfsTime.display(last)}" <>
+        "Adds #{Wording.count_noun(count, "trip")}, #{GtfsTime.display(start_secs)} → #{GtfsTime.display(last)}" <>
           " every #{every} min.",
       hint: "Includes the end time only when a departure falls exactly on it."
     }
@@ -4233,9 +4235,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   defp add_label(1), do: "Add 1 trip"
   defp add_label(count), do: "Add #{count} trips"
-
-  defp trip_count_label(1), do: "1 trip"
-  defp trip_count_label(count), do: "#{count} trips"
 
   defp range_label(start_secs, nil),
     do: "#{GtfsTime.display(start_secs)} → #{GtfsTime.display(start_secs)}"

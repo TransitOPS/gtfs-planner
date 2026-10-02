@@ -20,6 +20,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.TransitPresentation
   alias Phoenix.LiveView.JS
 
@@ -1757,8 +1758,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           :if={@coordinate_review}
           id="coordinate-review-dialog"
           open={@coordinate_review != nil}
-          title={"Update coordinates for #{review_stop_count(@review_change_count)}?"}
-          confirm_label={"Update #{review_stop_count(@review_change_count)}"}
+          title={"Update coordinates for #{Wording.count_noun(@review_change_count, "stop")}?"}
+          confirm_label={"Update #{Wording.count_noun(@review_change_count, "stop")}"}
           pending_label="Updating…"
           on_confirm="apply_coordinate_review"
           on_cancel="cancel_coordinate_review"
@@ -1790,7 +1791,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <div id="coordinate-review-table-scroller" class="mt-4 overflow-x-auto">
             <table id="coordinate-review-table" class="w-full text-sm border-collapse">
               <caption class="sr-only">
-                Proposed coordinate changes for {review_stop_count(@review_change_count)}
+                Proposed coordinate changes for {Wording.count_noun(@review_change_count, "stop")}
               </caption>
               <thead>
                 <tr class="border-b border-base-300 text-left text-xs text-base-content/60">
@@ -1867,7 +1868,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       %{
         state: "ready",
         value: "#{format_meters(rmse)} m",
-        qualifier: "over #{anchor_count_phrase(count)} — check the alignment",
+        qualifier: "over #{Wording.count_noun(count, "anchor")} — check the alignment",
         value_class: "font-medium tabular-nums text-warning",
         qualifier_class: "text-warning/80"
       }
@@ -1875,7 +1876,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       %{
         state: "ready",
         value: "#{format_meters(rmse)} m",
-        qualifier: "over #{anchor_count_phrase(count)}",
+        qualifier: "over #{Wording.count_noun(count, "anchor")}",
         value_class: "font-medium tabular-nums text-base-content",
         qualifier_class: "text-base-content/50"
       }
@@ -1913,9 +1914,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp unplaced_note(0), do: nil
   defp unplaced_note(1), do: "1 unplaced stays as it is"
   defp unplaced_note(count), do: "#{count} unplaced stay as they are"
-
-  defp anchor_count_phrase(1), do: "1 anchor"
-  defp anchor_count_phrase(count), do: "#{count} anchors"
 
   defp map_controls_disabled_reason(:fatal, _width, _height),
     do: "Map service is unavailable. Retry the map before saving or previewing coordinates."
@@ -2366,11 +2364,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     |> append_if(unplaced > 0, review_unplaced_clause(unplaced))
   end
 
-  defp review_stop_count(1), do: "1 stop"
-  defp review_stop_count(count), do: "#{count} stops"
-
   defp review_changed_clause(count),
-    do: "#{review_stop_count(count)} will receive new coordinates."
+    do: "#{Wording.count_noun(count, "stop")} will receive new coordinates."
 
   defp review_unchanged_clause(1), do: "1 stop already matches."
   defp review_unchanged_clause(count), do: "#{count} stops already match."

@@ -43,6 +43,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.Calendars.Combination
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.Gtfs.CalendarComponents
   alias GtfsPlannerWeb.Gtfs.CalendarCoverage
@@ -2685,11 +2686,12 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   defp line_predicate(%{kind: :run} = line), do: "already runs on #{line_these(line)}."
 
   defp line_effect(%{changes?: false}), do: "Nothing changes."
-  defp line_effect(%{kind: :stop, trips: trips}), do: "#{trips_label(trips)} affected."
-  defp line_effect(%{kind: :run, trips: trips}), do: "#{trips_label(trips)} will run."
 
-  defp trips_label(1), do: "1 trip"
-  defp trips_label(count), do: "#{count} trips"
+  defp line_effect(%{kind: :stop, trips: trips}),
+    do: "#{Wording.count_noun(trips, "trip")} affected."
+
+  defp line_effect(%{kind: :run, trips: trips}),
+    do: "#{Wording.count_noun(trips, "trip")} will run."
 
   defp line_dates(%{dates: [date]}), do: format_day(date)
   defp line_dates(%{dates: dates}), do: "#{length(dates)} dates"
@@ -2699,9 +2701,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
   defp rows_change_label(1), do: "1 row changes"
   defp rows_change_label(count), do: "#{count} rows change"
-
-  defp calendars_label(1), do: "1 calendar"
-  defp calendars_label(count), do: "#{count} calendars"
 
   defp warning_text(%{reason: :no_service}), do: "No service would remain on any selected date."
 
@@ -3439,7 +3438,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                         <span class="block text-sm font-[650] text-strong">{source.name}</span>
                         <span class="block text-[13px] text-muted">
                           <code class="font-mono">{source.service_id}</code>
-                          · {trips_label(source.trip_count)}
+                          · {Wording.count_noun(source.trip_count, "trip")}
                         </span>
                       </span>
                     </label>
@@ -3490,7 +3489,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                         <span class="block text-sm font-[650] text-strong">{source.name}</span>
                         <span class="block text-[13px] text-muted">
                           <code class="font-mono">{source.service_id}</code>
-                          · {trips_label(source.trip_count)}
+                          · {Wording.count_noun(source.trip_count, "trip")}
                         </span>
                       </span>
                     </label>
@@ -3554,7 +3553,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                 </ul>
                 <p id="calendar-date-change-review-count" class="text-sm">
                   <span :if={@date_change_review.affected_service_ids != []}>
-                    This changes <strong>{calendars_label(length(@date_change_review.affected_service_ids))}</strong>.
+                    This changes <strong>{Wording.count_noun(length(@date_change_review.affected_service_ids), "calendar")}</strong>.
                   </span>
                   <span :if={@date_change_review.affected_service_ids == []}>
                     No calendar changes.

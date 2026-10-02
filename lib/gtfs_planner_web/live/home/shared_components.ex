@@ -20,6 +20,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
 
   import GtfsPlannerWeb.CoreComponents, only: [icon: 1]
 
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias GtfsPlannerWeb.Home.ChangeLinks
   alias GtfsPlannerWeb.ProductSurfaces
@@ -647,13 +648,12 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
   Shared by the planner page's Check and share card and the Pathways rail.
   """
   def check_summary(check) do
-    "#{count_text(check.errors, "error", "No errors")} · " <>
-      count_text(check.warnings, "warning", "no warnings")
+    "#{if(check.errors == 0, do: "No errors", else: Wording.count_noun(check.errors, "error"))} · " <>
+      if(check.warnings == 0,
+        do: "no warnings",
+        else: Wording.count_noun(check.warnings, "warning")
+      )
   end
-
-  defp count_text(0, _noun, zero), do: zero
-  defp count_text(1, noun, _zero), do: "1 #{noun}"
-  defp count_text(count, noun, _zero), do: "#{count} #{noun}s"
 
   defp check_badge_class(check) do
     case check_tone(check) do
@@ -673,9 +673,14 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
 
   defp check_link_label(check) do
     case check_tone(check) do
-      :error -> "View the #{count_text(check.errors, "error", "No errors") |> String.downcase()}"
-      :warning -> "View warnings"
-      :success -> "View the check"
+      :error ->
+        "View the #{if(check.errors == 0, do: "No errors", else: Wording.count_noun(check.errors, "error")) |> String.downcase()}"
+
+      :warning ->
+        "View warnings"
+
+      :success ->
+        "View the check"
     end
   end
 

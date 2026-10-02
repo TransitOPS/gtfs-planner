@@ -2043,7 +2043,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
         <span class="text-sm">
           <span class="font-[650] text-strong">{label}</span>
           <span class="text-muted">
-            · {trip_count_label(Map.get(@trip_counts, service_id, 0), @service.route_id)}
+            · {case Map.get(@trip_counts, service_id, 0) do
+              0 -> "No Route #{@service.route_id} trips"
+              count -> Wording.count_noun(count, "Route #{@service.route_id} trip")
+            end}
           </span>
         </span>
       </label>
@@ -3005,11 +3008,11 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   defp inside_line(%{stop_ids: [], route_ids: []}), do: "no stops yet"
 
   defp inside_line(%{stop_ids: stops, route_ids: routes}) do
-    stops_text = "#{length(stops)} #{plural_word(length(stops), "stop")}"
+    stops_text = "#{length(stops)} #{Wording.noun(length(stops), "stop")}"
 
     case routes do
       [] -> stops_text
-      routes -> "#{stops_text} on #{length(routes)} #{plural_word(length(routes), "route")}"
+      routes -> "#{stops_text} on #{length(routes)} #{Wording.noun(length(routes), "route")}"
     end
   end
 
@@ -3035,10 +3038,6 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   end
 
   defp band_note(%FlexService{}), do: nil
-
-  defp trip_count_label(0, route_id), do: "No Route #{route_id} trips"
-  defp trip_count_label(1, route_id), do: "1 Route #{route_id} trip"
-  defp trip_count_label(count, route_id), do: "#{count} Route #{route_id} trips"
 
   # The prototype's headline states, in its order: inactive first, then a
   # registered-riders service kept out of the feed, then a service that export
@@ -3174,10 +3173,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
 
   defp delete_removes(%FlexService{} = service),
     do:
-      "its #{plural_word(length(service.areas), "area")} and its booking rule. Fixed routes and stops stay as they are"
-
-  defp plural_word(1, word), do: word
-  defp plural_word(_count, word), do: word <> "s"
+      "its #{Wording.noun(length(service.areas), "area")} and its booking rule. Fixed routes and stops stay as they are"
 
   # The version's calendars as select options: every calendar the version holds,
   # every calendar a stored hours row or booking rule names (so a row whose
@@ -3278,17 +3274,21 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
     added = Enum.count(exceptions, &(&1.exception_type == 1))
 
     case {off, added} do
-      {0, 0} -> "No exceptions"
-      {0, added} -> day_count(added) <> " added"
-      {off, 0} -> day_count(off) <> " off"
-      {off, added} -> day_count(off) <> " off, " <> day_count(added) <> " added"
+      {0, 0} ->
+        "No exceptions"
+
+      {0, added} ->
+        Wording.count_noun(added, "day") <> " added"
+
+      {off, 0} ->
+        Wording.count_noun(off, "day") <> " off"
+
+      {off, added} ->
+        Wording.count_noun(off, "day") <> " off, " <> Wording.count_noun(added, "day") <> " added"
     end
   end
 
   defp exceptions_label(_row), do: nil
-
-  defp day_count(1), do: "1 day"
-  defp day_count(count), do: "#{count} days"
 
   defp next_day_label(hour) do
     case RiderText.window(%{start: hour[:start].value, end: hour[:end].value}) do

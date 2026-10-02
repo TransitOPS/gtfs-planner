@@ -47,6 +47,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
 
   @typedoc """
   One readiness finding: `:error` excludes the service from the flex file (R4),
@@ -206,12 +207,12 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
         Map.merge(counts, %{tone: :neutral, label: "Not in trip planners"})
 
       errors > 0 ->
-        Map.merge(counts, %{tone: :error, label: "#{errors} problem#{plural(errors)}"})
+        Map.merge(counts, %{tone: :error, label: "#{errors} problem#{Wording.noun(errors, "")}"})
 
       warnings > 0 ->
         Map.merge(counts, %{
           tone: :warning,
-          label: "Ready · #{warnings} suggestion#{plural(warnings)}"
+          label: "Ready · #{warnings} suggestion#{Wording.noun(warnings, "")}"
         })
 
       true ->
@@ -1031,21 +1032,21 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
     rest = rem(minutes, 60)
 
     case {hours, rest} do
-      {hours, 0} -> "#{hours} hour#{plural(hours)}"
-      {hours, rest} -> "#{hours} hour#{plural(hours)} #{rest} minute#{plural(rest)}"
+      {hours, 0} ->
+        "#{hours} hour#{Wording.noun(hours, "")}"
+
+      {hours, rest} ->
+        "#{hours} hour#{Wording.noun(hours, "")} #{rest} minute#{Wording.noun(rest, "")}"
     end
   end
 
   defp day_count(days, business_days) do
     unit = if business_days, do: "business day", else: "day"
-    "#{days} #{unit}#{plural(days)}"
+    "#{days} #{unit}#{Wording.noun(days, "")}"
   end
 
   defp round1(number) when is_float(number), do: :erlang.float_to_binary(number, decimals: 1)
   defp round1(number), do: to_string(number)
 
   defp trimmed(value), do: value |> to_string() |> String.trim()
-
-  defp plural(1), do: ""
-  defp plural(_count), do: "s"
 end

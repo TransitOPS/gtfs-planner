@@ -20,6 +20,8 @@ defmodule GtfsPlannerWeb.Home.PlannerComponents do
 
   import GtfsPlannerWeb.CoreComponents, only: [icon: 1]
 
+  alias GtfsPlanner.Wording
+
   @doc """
   Needs attention: what needs a decision before riders notice.
 
@@ -156,7 +158,8 @@ defmodule GtfsPlannerWeb.Home.PlannerComponents do
   end
 
   defp action(%{kind: :check_errors} = item, version_id) do
-    {"View the #{error_count(item.errors)}", ~p"/gtfs/#{version_id}/validation/#{item.run_id}"}
+    {"View the #{Wording.count_noun(item.errors, "error")}",
+     ~p"/gtfs/#{version_id}/validation/#{item.run_id}"}
   end
 
   defp item_title(%{kind: :service_ends} = item) do
@@ -174,7 +177,7 @@ defmodule GtfsPlannerWeb.Home.PlannerComponents do
   end
 
   defp item_title(%{kind: :check_errors} = item) do
-    "The last check found #{error_count(item.errors)} in this version."
+    "The last check found #{Wording.count_noun(item.errors, "error")} in this version."
   end
 
   defp item_detail(%{kind: kind} = item) when kind in [:service_ends, :service_ended] do
@@ -217,9 +220,6 @@ defmodule GtfsPlannerWeb.Home.PlannerComponents do
 
   defp decide_text(1), do: "1 thing to decide before riders notice"
   defp decide_text(count), do: "#{count} things to decide before riders notice"
-
-  defp error_count(1), do: "1 error"
-  defp error_count(count), do: "#{count} errors"
 
   defp day(%Date{} = date), do: Calendar.strftime(date, "%b %-d")
   defp day(%NaiveDateTime{} = local), do: Calendar.strftime(local, "%b %-d")

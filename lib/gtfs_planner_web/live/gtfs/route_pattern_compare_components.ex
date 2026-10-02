@@ -2057,7 +2057,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
       {:chip, "B"},
       {:text, " starts "},
       {:text, Integer.to_string(length(b_only))},
-      {:text, plural_suffix(b_only)},
+      {:text, Wording.noun(length(b_only), " stop", " stops")},
       {:text, " earlier, at "},
       {:bold, stop_name(comparison, hd(b_only))},
       {:text, ", and joins "},
@@ -2077,7 +2077,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
       {:chip, "A"},
       {:text, " starts "},
       {:text, Integer.to_string(length(a_only))},
-      {:text, plural_suffix(a_only)},
+      {:text, Wording.noun(length(a_only), " stop", " stops")},
       {:text, " earlier, at "},
       {:bold, stop_name(comparison, hd(a_only))},
       {:text, "."}
@@ -2190,9 +2190,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
       Enum.join(rest, ", ") <> " and " <> last
     end
   end
-
-  defp plural_suffix([_one]), do: " stop"
-  defp plural_suffix(_ids), do: " stops"
 
   defp boarding_label(%{pickup_type: 1, drop_off_type: 1}), do: "passes without stopping"
   defp boarding_label(%{pickup_type: 1}), do: "only lets riders off"

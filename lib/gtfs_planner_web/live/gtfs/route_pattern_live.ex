@@ -32,6 +32,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   alias GtfsPlanner.Gtfs.TimingFill
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents
@@ -1646,7 +1647,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         blocked(
           socket,
           "This pattern is in use",
-          "#{trip_count_text(socket.assigns.detail_trip_count)} still #{trip_verb(socket.assigns.detail_trip_count)} this pattern. Trip assignment and removal are outside this interface. Copy the pattern to work on separate service."
+          "#{Wording.count_noun(socket.assigns.detail_trip_count, "trip")} still #{trip_verb(socket.assigns.detail_trip_count)} this pattern. Trip assignment and removal are outside this interface. Copy the pattern to work on separate service."
         )
 
       {:error, reason} ->
@@ -3571,14 +3572,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
     body =
       if kept > 0 do
-        "#{kept} #{trip_noun(kept)} kept a different headsign. Each change is in History."
+        "#{kept} #{Wording.noun(kept, "trip")} kept a different headsign. Each change is in History."
       else
         "Every trip now shows #{done_word(usage.default)}. Each change is in History."
       end
 
     %{
       title:
-        "#{count} #{trip_noun(count)} now #{if(count == 1, do: "shows", else: "show")} " <>
+        "#{count} #{Wording.noun(count, "trip")} now #{if(count == 1, do: "shows", else: "show")} " <>
           done_word(usage.default),
       body: body
     }
@@ -3846,16 +3847,16 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       title:
         if(trips == [],
           do: "Headsign saved",
-          else: "Headsign saved · #{length(trips)} #{trip_noun(length(trips))} updated"
+          else: "Headsign saved · #{length(trips)} #{Wording.noun(length(trips), "trip")} updated"
         ),
       to: headsign_undo_to(undo),
       trips: length(trips),
-      trips_text: "#{length(trips)} #{trip_noun(length(trips))}",
+      trips_text: "#{length(trips)} #{Wording.noun(length(trips), "trip")}",
       trips_verb: if(length(trips) == 1, do: "shows", else: "show"),
       differ: differ,
       differ_text:
-        "#{differ} #{trip_noun(differ)} #{if(differ == 1, do: "shows", else: "show")} a different headsign.",
-      differ_trips: "#{differ} #{trip_noun(differ)}",
+        "#{differ} #{Wording.noun(differ, "trip")} #{if(differ == 1, do: "shows", else: "show")} a different headsign.",
+      differ_trips: "#{differ} #{Wording.noun(differ, "trip")}",
       review_scope: review_scope_value(scope)
     }
   end
@@ -3916,7 +3917,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         do: default_word(hd(froms)),
         else: "their earlier headsign"
 
-    "#{count} #{trip_noun(count)} #{if(count == 1, do: "shows", else: "show")} #{value} again."
+    "#{count} #{Wording.noun(count, "trip")} #{if(count == 1, do: "shows", else: "show")} #{value} again."
   end
 
   defp default_word(nil), do: "blank"
@@ -3949,7 +3950,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     count = headsign_selected_count(assigns)
 
     if count > 0 do
-      "Saving updates #{count} #{trip_noun(count)}"
+      "Saving updates #{count} #{Wording.noun(count, "trip")}"
     else
       "Saving changes trips you add later, not existing trips"
     end
@@ -3961,9 +3962,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       _selection -> 0
     end
   end
-
-  defp trip_noun(1), do: "trip"
-  defp trip_noun(_count), do: "trips"
 
   defp reject_details(socket, params, errors, message) do
     socket
@@ -4355,7 +4353,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       %{
         timing_id: timing.id,
         name: timing.name,
-        trip_count_label: trip_count_text(trip_count),
+        trip_count_label: Wording.count_noun(trip_count, "trip"),
         shift: shift_label(Map.get(proposed, :start_shifts, []), timing.id),
         acknowledged: MapSet.member?(review.acks, timing.id),
         resequenced: resequenced_rows(socket, estimates, timing.id, rows, shift),
@@ -5361,7 +5359,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   defp timing_source_options(socket) do
     Enum.map(socket.assigns.timings, fn %{timing: timing, trip_count: count} ->
-      %{value: timing.id, label: "#{timing.name} · #{trip_count_text(count)}"}
+      %{value: timing.id, label: "#{timing.name} · #{Wording.count_noun(count, "trip")}"}
     end)
   end
 
@@ -5371,7 +5369,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         if candidate.id == timing.id, do: count
       end)
 
-    "#{trip_count_text(count)} #{trip_verb(count)} #{timing.name}"
+    "#{Wording.count_noun(count, "trip")} #{trip_verb(count)} #{timing.name}"
   end
 
   defp blocked(socket, title, message) do
@@ -5913,9 +5911,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp offset_input(nil), do: ""
   defp offset_input(seconds) when is_integer(seconds), do: GtfsTime.format_offset(seconds)
   defp offset_input(_value), do: ""
-
-  defp trip_count_text(1), do: "1 trip"
-  defp trip_count_text(count), do: "#{count} trips"
 
   defp trip_verb(1), do: "uses"
   defp trip_verb(_count), do: "use"

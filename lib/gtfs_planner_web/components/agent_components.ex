@@ -39,6 +39,8 @@ defmodule GtfsPlannerWeb.AgentComponents do
 
   import GtfsPlannerWeb.CoreComponents, only: [button: 1, callout: 1, icon: 1, input: 1]
 
+  alias GtfsPlanner.Wording
+
   @panel_statuses [
     :idle,
     :working,
@@ -332,7 +334,7 @@ defmodule GtfsPlannerWeb.AgentComponents do
           class="mt-3.5 border-l-2 border-info/40 pl-3 text-xs text-base-content/70"
         >
           <summary class="min-h-11 cursor-pointer py-1.5 font-semibold text-info">
-            Checked {length(@entry.activity)} {activity_noun(@entry.activity)} · View activity
+            Checked {length(@entry.activity)} {Wording.noun(length(@entry.activity), "step")} · View activity
           </summary>
           <ol class="mt-1 list-decimal pl-5">
             <li :for={label <- @entry.activity} class="py-0.5">{label}</li>
@@ -554,7 +556,4 @@ defmodule GtfsPlannerWeb.AgentComponents do
   defp callout_kind(:forbidden), do: "error"
   defp callout_kind(:unavailable), do: "error"
   defp callout_kind(_status), do: nil
-
-  defp activity_noun([_one]), do: "step"
-  defp activity_noun(_many), do: "steps"
 end

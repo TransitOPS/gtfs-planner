@@ -859,8 +859,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
     <%= case @result do %>
       <% {:ok, route} -> %>
         <p class="mt-1 text-[13px] tabular-nums text-muted">
-          {route.duration_seconds}s · {format_meters(route.distance_meters)} · {step_label(
-            route.step_count
+          {route.duration_seconds}s · {format_meters(route.distance_meters)} · {Wording.count_noun(
+            route.step_count,
+            "step"
           )}
         </p>
         <ol class="mt-3 grid gap-1.5">
@@ -1170,10 +1171,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
     topology = envelope["topology"] || %{}
 
     [
-      counted(topology["entrance_count"], "entrance", "entrances"),
-      counted(topology["platform_count"], "platform", "platforms"),
-      counted(topology["pathway_count"], "pathway", "pathways"),
-      counted(topology["level_count"], "level", "levels"),
+      if(is_integer(topology["entrance_count"]),
+        do: Wording.count_noun(topology["entrance_count"], "entrance")
+      ),
+      if(is_integer(topology["platform_count"]),
+        do: Wording.count_noun(topology["platform_count"], "platform")
+      ),
+      if(is_integer(topology["pathway_count"]),
+        do: Wording.count_noun(topology["pathway_count"], "pathway")
+      ),
+      if(is_integer(topology["level_count"]),
+        do: Wording.count_noun(topology["level_count"], "level")
+      ),
       duration_label(envelope["duration_ms"])
     ]
     |> Enum.reject(&is_nil/1)
@@ -1182,9 +1191,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
       parts -> Enum.join(parts, " · ")
     end
   end
-
-  defp counted(count, one, many) when is_integer(count), do: Wording.count_noun(count, one, many)
-  defp counted(_count, _one, _many), do: nil
 
   defp duration_label(ms) when is_integer(ms) and ms < 1000, do: "checked in #{ms} ms"
   defp duration_label(ms) when is_number(ms), do: "checked in #{Float.round(ms / 1000, 1)} s"
@@ -1423,9 +1429,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   defp direction_label(:follow_signs), do: "Follow signs"
   defp direction_label(:elevator), do: "Take the elevator"
   defp direction_label(other), do: other |> to_string() |> String.replace("_", " ")
-
-  defp step_label(1), do: "1 step"
-  defp step_label(count), do: "#{count} steps"
 
   defp format_meters(nil), do: "—"
   defp format_meters(meters) when is_integer(meters), do: "#{meters}m"

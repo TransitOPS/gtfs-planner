@@ -24,6 +24,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   alias GtfsPlanner.Gtfs.Headsigns
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Gtfs.ScheduleChangeComponents
 
   # The problems notice names three problems and counts the rest, so a block with
@@ -258,7 +259,9 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
       </button>
 
       <p id="schedules-view-counts" role="status" class="ml-auto text-sm text-muted">
-        <span class="font-semibold tabular-nums text-strong">{trip_count(@row_count)}</span>
+        <span class="font-semibold tabular-nums text-strong">
+          {Wording.count_noun(@row_count, "trip")}
+        </span>
         · {@calendar_label} · {@direction_label}
       </p>
     </div>
@@ -2269,7 +2272,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
               >
                 <span class="font-semibold text-strong">{line.name}</span>
                 {round_minutes(line.total_secs)} min ·
-                <span class="text-muted">{trip_count(line.trip_count)}</span>
+                <span class="text-muted">{Wording.count_noun(line.trip_count, "trip")}</span>
               </span>
               <span
                 :if={@section.custom_trip_count > 0}
@@ -2277,7 +2280,10 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
                 class="tabular-nums"
               >
                 <span class="font-semibold text-strong">Custom times</span>
-                · <span class="text-muted">{trip_count(@section.custom_trip_count)}</span>
+                ·
+                <span class="text-muted">
+                  {Wording.count_noun(@section.custom_trip_count, "trip")}
+                </span>
               </span>
               <details
                 :if={@section.timing_lines != []}
@@ -2597,7 +2603,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
           <% else %>
             Timepoints are the key stops used in public timetables.
             <span :if={@section.omitted_stop_count > 0} id={"section-#{@section_id}-omitted"}>
-              {stop_count(@section.omitted_stop_count)} not shown.
+              {Wording.count_noun(@section.omitted_stop_count, "stop")} not shown.
             </span>
           <% end %>
         </p>
@@ -2678,7 +2684,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
 
   defp calendar_option_label(calendar) do
     kind = if calendar.kind == :dates_only, do: " · Specific dates", else: ""
-    "#{calendar_name(calendar)} · #{trip_count(calendar.route_trip_count)}#{kind}"
+    "#{calendar_name(calendar)} · #{Wording.count_noun(calendar.route_trip_count, "trip")}#{kind}"
   end
 
   defp calendar_toggle_options(calendars) do
@@ -2705,12 +2711,6 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   end
 
   defp route_label(route), do: route.route_short_name || route.route_id
-
-  defp trip_count(1), do: "1 trip"
-  defp trip_count(count), do: "#{count} trips"
-
-  defp stop_count(1), do: "1 stop"
-  defp stop_count(count), do: "#{count} stops"
 
   defp hour_label(hour), do: hour |> Integer.to_string() |> String.pad_leading(2, "0")
 
@@ -2873,8 +2873,9 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
     total = length(section.all_columns)
 
     if shown == total,
-      do: "#{trip_count(row_count)} · #{stop_count(total)}",
-      else: "#{trip_count(row_count)} · showing #{shown} of #{stop_count(total)}"
+      do: "#{Wording.count_noun(row_count, "trip")} · #{Wording.count_noun(total, "stop")}",
+      else:
+        "#{Wording.count_noun(row_count, "trip")} · showing #{shown} of #{Wording.count_noun(total, "stop")}"
   end
 
   defp minutes_between_label(:all), do: "Minutes between stops"
@@ -2898,7 +2899,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
         do: GtfsTime.display(band.first_secs),
         else: "#{GtfsTime.display(band.first_secs)}–#{GtfsTime.display(band.last_secs)}"
 
-    {window, nil, trip_count(band.trip_count)}
+    {window, nil, Wording.count_noun(band.trip_count, "trip")}
   end
 
   defp band_parts(band) do
@@ -2908,7 +2909,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
         else: "#{band.min_headway_minutes}–#{band.max_headway_minutes} min"
 
     {"#{GtfsTime.display(band.first_secs)}–#{GtfsTime.display(band.last_secs)}", headway,
-     trip_count(band.trip_count)}
+     Wording.count_noun(band.trip_count, "trip")}
   end
 
   # The minutes between the displayed stops, with a trailing separator so the total

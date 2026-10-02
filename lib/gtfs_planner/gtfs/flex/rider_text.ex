@@ -32,6 +32,7 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
   alias GtfsPlanner.Gtfs.FlexService
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
 
   @registered_suffix " (registered riders)"
   @qualified ~r/registered|paratransit|\bADA\b|senior|eligib/i
@@ -622,7 +623,7 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
     unit = if rule.business_days, do: "business day", else: "day"
     days = days(rule)
 
-    "Book by #{t12(rule.by)} #{days} #{unit}#{plural(days)} before#{horizon(rule)}"
+    "Book by #{t12(rule.by)} #{days} #{unit}#{Wording.noun(days, "")} before#{horizon(rule)}"
   end
 
   defp deadline_text(%FlexBookingRule{}), do: ""
@@ -644,7 +645,7 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
 
   defp otp_line(%FlexBookingRule{when: :earlier_day} = rule) do
     days = days(rule)
-    "Reservation required at least #{days} day#{plural(days)} in advance"
+    "Reservation required at least #{days} day#{Wording.noun(days, "")} in advance"
   end
 
   defp otp_line(%FlexBookingRule{}), do: "Reservation required"
@@ -665,24 +666,19 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
   defp dur(minutes) do
     minutes = if is_integer(minutes), do: minutes, else: 0
 
-    [hours_phrase(div(minutes, 60)), minutes_phrase(rem(minutes, 60))]
+    hours = div(minutes, 60)
+    rest = rem(minutes, 60)
+
+    [
+      if(hours > 0, do: Wording.count_noun(hours, "hour")),
+      if(rest > 0, do: Wording.count_noun(rest, "minute"))
+    ]
     |> Enum.reject(&is_nil/1)
     |> case do
       [] -> "0 minutes"
       phrases -> Enum.join(phrases, " ")
     end
   end
-
-  defp hours_phrase(0), do: nil
-  defp hours_phrase(1), do: "1 hour"
-  defp hours_phrase(hours), do: "#{hours} hours"
-
-  defp minutes_phrase(0), do: nil
-  defp minutes_phrase(1), do: "1 minute"
-  defp minutes_phrase(minutes), do: "#{minutes} minutes"
-
-  defp plural(1), do: ""
-  defp plural(_count), do: "s"
 
   defp clock_caps(time) do
     time

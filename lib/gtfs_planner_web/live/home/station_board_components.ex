@@ -41,6 +41,7 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
 
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.StationBoard
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Home.ChangeLinks
 
   # The board's loading rows, as the title and detail placeholder widths the
@@ -763,7 +764,11 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
       assign(assigns,
         name: assigns.row.base.name || assigns.row.base.stop_id,
         subtext: row_subtext(assigns.row),
-        floorplans: floorplan_text(assigns.row.base.floorplan_count),
+        floorplans:
+          if(assigns.row.base.floorplan_count == 0,
+            do: "no floorplan",
+            else: Wording.count_noun(assigns.row.base.floorplan_count, "floorplan")
+          ),
         report: report,
         report_class: report_class,
         reachability: reachability,
@@ -898,7 +903,7 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
   # The station cell's second line: the id, its line count through the station's
   # platforms, and the editing marker (AC-21).
   defp row_subtext(row) do
-    lines = lines_text(row.lines)
+    lines = Wording.count_noun(row.lines, "line")
 
     if row.editing? do
       "#{row.base.stop_id} · #{lines} · editing now"
@@ -906,13 +911,6 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
       "#{row.base.stop_id} · #{lines}"
     end
   end
-
-  defp lines_text(1), do: "1 line"
-  defp lines_text(count), do: "#{count} lines"
-
-  defp floorplan_text(0), do: "no floorplan"
-  defp floorplan_text(1), do: "1 floorplan"
-  defp floorplan_text(count), do: "#{count} floorplans"
 
   # A station without pathways is "Not started" whatever its status; a station
   # with pathways whose statuses are unavailable is "Unavailable" (AC-21, AC-29).
@@ -955,7 +953,7 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
   defp tile_icon(_item), do: "hero-arrow-up-tray"
 
   defp item_title(%{kind: :check_errors} = item) do
-    "The last check found #{count_text(item.errors, "error")}."
+    "The last check found #{Wording.count_noun(item.errors, "error")}."
   end
 
   defp item_title(%{kind: :stopped_import, version_name: nil}), do: "An import stopped partway."
@@ -974,7 +972,7 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
   end
 
   defp item_action(%{kind: :check_errors} = item) do
-    "View the #{count_text(item.errors, "error")}"
+    "View the #{Wording.count_noun(item.errors, "error")}"
   end
 
   defp item_action(%{kind: :stopped_import}), do: "Review import"
@@ -984,9 +982,6 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
   end
 
   defp item_href(%{kind: :stopped_import}, version_id), do: ~p"/gtfs/#{version_id}/import"
-
-  defp count_text(1, noun), do: "1 #{noun}"
-  defp count_text(count, noun), do: "#{count} #{noun}s"
 
   # The rail's export line: the run's local day and its download state (AC-19).
   defp export_line(%{expired?: true}), do: "download expired"
@@ -1002,7 +997,7 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
   defp since_line(%{changes: 0}), do: "No changes since then"
 
   defp since_line(%{changes: changes, stations: stations}),
-    do: "#{count_text(changes, "change")}, #{count_text(stations, "station")}"
+    do: "#{Wording.count_noun(changes, "change")}, #{Wording.count_noun(stations, "station")}"
 
   defp check_tone_class(check) do
     case check_tone(check) do

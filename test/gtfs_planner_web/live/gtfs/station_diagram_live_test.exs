@@ -4854,6 +4854,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       assert has_element?(view, "#no-level-state", "This station has no levels yet")
+      assert has_element?(view, "#station-header-band", "Station · No levels yet")
     end
   end
 
