@@ -430,6 +430,46 @@ defmodule GtfsPlannerWeb.Gtfs.TransferAssistanceLiveTest do
       assert element(view, "#agent-prepared-2") |> render() =~ "Ready to review"
     end
 
+    test "closing the review after the first save counts the rest and says the proposal is partial",
+         ctx do
+      {view, _pid} = prepared_view(ctx, [forward_draft(), reverse_draft()])
+
+      view |> element("#agent-review-prepared-2") |> render_click()
+      render_click(view, "transfer_policy_apply", %{})
+      settle(view, &String.contains?(&1, "Review the next rule"))
+
+      render_click(view, "transfer_policy_close", %{})
+
+      # The rule left open is neither applied nor lost from the count, and the
+      # status no longer promises a next rule the drawer is not showing.
+      refute has_element?(view, "#transfer-policy-drawer")
+
+      assert element(view, "#transfer-policy-outcome #transfer-policy-counts") |> render() =~
+               "Saved 1 · Skipped 0 · Conflicts 0 · Not applied 1"
+
+      refute element(view, "#transfer-policy-status") |> render() =~ "Review the next rule"
+      assert notice_text(view) == @edited_notice
+      assert element(view, "#agent-prepared-2") |> render() =~ "Ready to review"
+      assert [%{from_stop_id: "CEN-A", to_stop_id: "MKT"}] = stored_transfers(ctx)
+    end
+
+    test "a proposal closed after its first save is not reviewed again from that rule", ctx do
+      {view, _pid} = prepared_view(ctx, [forward_draft(), reverse_draft()])
+
+      view |> element("#agent-review-prepared-2") |> render_click()
+      render_click(view, "transfer_policy_apply", %{})
+      settle(view, &String.contains?(&1, "Review the next rule"))
+      render_click(view, "transfer_policy_close", %{})
+
+      # Opening the card again would present the saved rule as a new one and
+      # refuse it as a duplicate, with the second rule out of reach.
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      refute has_element?(view, "#transfer-policy-drawer")
+      assert notice_text(view) == @edited_notice
+      assert [%{from_stop_id: "CEN-A", to_stop_id: "MKT"}] = stored_transfers(ctx)
+    end
+
     test "a skipped first item leaves the sequence unapplied and the draft open", ctx do
       {view, _pid} = prepared_view(ctx, [forward_draft(), reverse_draft()])
 
