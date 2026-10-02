@@ -234,29 +234,37 @@ defmodule GtfsPlannerWeb.AgentPanel do
   untouched (CR-5, INV-3) — clears this panel's transcript, draft and origin,
   binds the supplied context and reattaches if the panel is open. The hooks and
   the entries stream are the ones `mount` attached; switching never remounts.
+
+  Returns the socket with whether this panel moved to `pack_id`, so a host acts
+  on the switch itself rather than inferring it: a refused or already-current
+  selection reports `false`, and a host that invalidates state of its own when
+  the conversation moves leaves that state alone for a refusal.
   """
   @spec select_pack(Phoenix.LiveView.Socket.t(), String.t(), Scope.resource_context()) ::
-          Phoenix.LiveView.Socket.t()
+          {Phoenix.LiveView.Socket.t(), boolean()}
   def select_pack(socket, pack_id, context) do
     cond do
       not allowed?(socket, pack_id) ->
-        assign(socket, :agent_notice, @unavailable_pack_notice)
+        {assign(socket, :agent_notice, @unavailable_pack_notice), false}
 
       pack_id == socket.assigns.agent_pack_id and context == socket.assigns.agent_context ->
-        socket
+        {socket, false}
 
       true ->
         pack = Map.fetch!(Agents.packs(), pack_id)
 
-        socket
-        |> detach_session()
-        |> reset_panel()
-        |> assign(:agent_pack_id, pack_id)
-        |> assign(:agent_title, pack.title())
-        |> assign(:agent_intro, pack.intro())
-        |> assign(:agent_examples, pack.examples())
-        |> assign(:agent_context, context)
-        |> maybe_reopen()
+        switched =
+          socket
+          |> detach_session()
+          |> reset_panel()
+          |> assign(:agent_pack_id, pack_id)
+          |> assign(:agent_title, pack.title())
+          |> assign(:agent_intro, pack.intro())
+          |> assign(:agent_examples, pack.examples())
+          |> assign(:agent_context, context)
+          |> maybe_reopen()
+
+        {switched, true}
     end
   end
 

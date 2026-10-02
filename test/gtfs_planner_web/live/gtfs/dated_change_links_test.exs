@@ -66,6 +66,11 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeLinksTest do
 
   @first_message "Which dates would this shift affect?"
 
+  # A turn here is a real `prepare/2` snapshot read plus two OpenRouter round
+  # trips, and this host's PostgreSQL is shared, so the budget a turn needs is
+  # the environment's, not a fixed five seconds.
+  @agent_turn_timeout 60_000
+
   setup {Req.Test, :verify_on_exit!}
 
   setup do
@@ -324,10 +329,15 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeLinksTest do
 
       before = native_signature(context)
 
-      # Following the link is ordinary native navigation: it opens the calendar
-      # editor for this calendar and writes nothing on the way (AC-17, INV-1).
-      calendar_view =
-        view |> element("#dated-change-calendar-link a") |> render_click()
+      # Following the link is ordinary native navigation: it is a `navigate`
+      # link, so the click is a live redirect rather than a re-render, and it
+      # opens the calendar editor for this calendar without writing anything on
+      # the way (AC-17, INV-1).
+      {:ok, calendar_view, _html} =
+        view
+        |> element("#dated-change-calendar-link a")
+        |> render_click()
+        |> follow_redirect(context.conn)
 
       assert calendar_view |> element("h1") |> render() =~ @service
       assert native_signature(context) == before
@@ -350,7 +360,9 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeLinksTest do
       # Switching the date set re-reads nothing and re-pages the retained report,
       # and it re-resolves the link on the way, so the retained dates stay on
       # screen while the link becomes honest text.
-      view |> element("#dated-change-kind input[value=original]") |> render_click()
+      # `render_change/2` returns the re-rendered markup; the assertions below
+      # read the view itself, which is the same render.
+      view |> switch_date_set("original")
 
       refute has_element?(view, "#dated-change-calendar-link a")
       assert view |> element("#dated-change-calendar-link") |> render() =~ "no longer a calendar"
@@ -443,6 +455,13 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeLinksTest do
     view |> form("#schedule-helper-mode-form", %{"pack" => pack_id}) |> render_change()
   end
 
+  # `#dated-change-kind` is a segmented control inside a `phx-change` form, so its
+  # radio inputs carry no click handler; the date set is switched by changing
+  # the form, as the planning file's own `switch_date_set/2` does.
+  defp switch_date_set(view, kind) do
+    view |> form("#dated-change-kind-form", %{"partition_kind" => kind}) |> render_change()
+  end
+
   # The read the page started, waited on with a real monitor.
   defp await_plan(view) do
     case :sys.get_state(view.pid).socket.assigns.dated_change_task do
@@ -497,7 +516,8 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeLinksTest do
 
   # The working placeholder arrives before the settled entry.
   defp await_settled(pid) do
-    assert_receive {:agent_event, ^pid, {:entry, %{role: :assistant} = entry}}, 5_000
+    assert_receive {:agent_event, ^pid, {:entry, %{role: :assistant} = entry}},
+                   @agent_turn_timeout
 
     if entry.status == :working do
       await_settled(pid)

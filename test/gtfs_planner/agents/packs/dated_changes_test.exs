@@ -71,6 +71,11 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
   @owner GtfsPlanner.Agents.Model
   @turn_supervisor GtfsPlanner.Agents.TurnSupervisor
 
+  # A turn here is a real `prepare/2` snapshot read plus two OpenRouter round
+  # trips, and this host's PostgreSQL is shared, so the budget a turn needs is
+  # the environment's, not a fixed five seconds.
+  @agent_turn_timeout 60_000
+
   @first ~D[2026-11-02]
   @last ~D[2026-11-13]
   @holiday ~D[2026-11-11]
@@ -114,7 +119,13 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
     track_sessions()
 
     harbor = harbor_scope(supervisor)
-    Map.put(harbor, :scope, snapshot_context(harbor, "dated_changes"))
+
+    %{
+      harbor: harbor,
+      scope: snapshot_context(harbor, "dated_changes"),
+      accepted: accepted_source(harbor, nil),
+      supervisor: supervisor
+    }
   end
 
   describe "the shipped registration" do
@@ -431,9 +442,11 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
 
       monitor = Process.monitor(session)
 
-      assert {:error, :unavailable} = Agents.send_message(session, "Which dates change?")
+      # A revoked membership is the session's own `:forbidden` refusal, the one
+      # `session_test.exs` pins, and it stops the conversation with it.
+      assert {:error, :forbidden} = Agents.send_message(session, "Which dates change?")
       refute_received {:model_request, _request}
-      assert_receive {:agent_event, ^session, {:status, :unavailable}}, 5_000
+      assert_receive {:agent_event, ^session, {:status, :forbidden}}, @agent_turn_timeout
       assert_receive {:DOWN, ^monitor, :process, ^session, :normal}, 2_000
     end
 
@@ -447,10 +460,7 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
                )
 
       # A snapshot of another pack's kind is not this pack's source either.
-      other_kind =
-        context.harbor
-        |> snapshot_context("timetables")
-        |> scope(context.harbor)
+      other_kind = snapshot_context(context.harbor, "timetables")
 
       assert {:error, :unavailable} =
                Dispatch.call(DatedChanges, other_kind, "prepare_dated_change_plan", "{}")
@@ -553,7 +563,8 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
   end
 
   defp await_settled(pid) do
-    assert_receive {:agent_event, ^pid, {:entry, %{role: :assistant} = entry}}, 5_000
+    assert_receive {:agent_event, ^pid, {:entry, %{role: :assistant} = entry}},
+                   @agent_turn_timeout
 
     if entry.status == :working do
       await_settled(pid)
@@ -566,7 +577,7 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
   # decoded, so the assertions read what the model read. It only exists from the
   # request after the tool answered, so the earlier requests are drained first.
   defp tool_result do
-    assert_receive {:model_request, request}, 5_000
+    assert_receive {:model_request, request}, @agent_turn_timeout
 
     request
     |> tool_messages()
@@ -597,7 +608,7 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
   defp version_scope(harbor), do: scope(harbor, {:version, harbor.version.id})
 
   # The same route-bound conversation with no accepted source at all.
-  defp no_snapshot_scope(harbor), do: scope(harbor, {:route, harbor.route})
+  defp no_snapshot_scope(harbor), do: scope(harbor, {:route, harbor.route.id})
 
   # The accepted source in the JSON-safe form a host freezes: ISO dates, sorted
   # UUIDs and the server's own input digest.
@@ -621,7 +632,7 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
                %{kind: kind, payload: payload}
              )
 
-    harbor |> scope({:route, harbor.route}) |> Map.put(:resource_context, resource_context)
+    harbor |> scope({:route, harbor.route.id}) |> Map.put(:resource_context, resource_context)
   end
 
   # A snapshot whose payload no longer matches the digest the envelope computed,
@@ -687,7 +698,7 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
   # removes exactly its organization.
   defp harbor_scope(supervisor) do
     harbor = in_task(supervisor, fn -> build_harbor_scope() end)
-    commit_cleanup(supervisor, harbor.organization_ids)
+    commit_cleanup(harbor.organization_ids)
     harbor
   end
 
@@ -866,10 +877,9 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
   # fixture here, so the loader reads them through its ordinary boundary.
   defp wide_scope(context) do
     harbor = context.harbor
-    supervisor = start_supervised!({Task.Supervisor, []})
     long = String.duplicate("X", 240)
 
-    in_task(supervisor, fn ->
+    in_task(context.supervisor, fn ->
       for index <- 1..40 do
         transfer_fixture(harbor.organization.id, harbor.version.id, %{
           from_stop_id: "#{long}-#{index}",
@@ -1001,9 +1011,12 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
     |> Task.await(@task_timeout)
   end
 
-  defp commit_cleanup(supervisor, organization_ids) do
+  # `on_exit` runs after the test process has exited, so the `start_supervised!/1`
+  # supervisor is already dead here; the cleanup owns its own unboxed
+  # connection, as the four `dated_change_*` domain files do.
+  defp commit_cleanup(organization_ids) do
     on_exit(fn ->
-      in_task(supervisor, fn ->
+      ConcurrencyHelpers.unboxed(fn ->
         ConcurrencyHelpers.delete_committed_members!(organization_ids)
         ConcurrencyHelpers.delete_committed_scope!(organization_ids)
       end)

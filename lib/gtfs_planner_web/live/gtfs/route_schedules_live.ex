@@ -473,7 +473,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # stored at mount, so a forged id can only name a helper this page already
   # declared. Switching drops the accepted source with the plan, because the
   # source belongs to the dated helper's conversation and to this route's own
-  # selection, and neither survives a move to another helper (AC-15).
+  # selection, and neither survives a move to another helper (AC-15). The panel
+  # is asked first and reports whether it moved, so a refused forged id leaves
+  # the accepted source, the report and the date rows exactly as they were.
   @impl true
   def handle_event("helper_pack", %{"pack" => pack_id}, socket) do
     if pack_id == socket.assigns.agent_pack_id do
@@ -481,10 +483,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     else
       context = agent_resource_context(socket)
 
-      {:noreply,
-       socket
-       |> invalidate_dated_change()
-       |> AgentPanel.select_pack(pack_id, context)}
+      {:noreply, switch_helper_pack(socket, pack_id, context)}
     end
   end
 
@@ -3868,6 +3867,607 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       pattern -> pattern.id
     end
   end
+
+  defp audit_context(socket) do
+    %AuditContext{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      station_stop_id: nil,
+      actor_id: socket.assigns.current_user.id,
+      actor_email: socket.assigns.current_user.email
+    }
+  end
+
+  # --- dated change acceptance ----------------------------------------------
+
+  @dated_change_fields ~w(first_date last_date delta_seconds approval_note source_label)
+
+  # The form's own values, keyed as the component's form fields. Values are kept
+  # verbatim so a refusal leaves the editor's own text in the inputs, including a
+  # date or shift the domain could not read.
+  defp dated_change_form(params) do
+    nested = Map.get(params, "dated_change", %{})
+    values = Map.new(@dated_change_fields, &{&1, Map.get(params, &1, Map.get(nested, &1, ""))})
+
+    to_form(values, as: :dated_change)
+  end
+
+  # The submission's intent fields, read from either the nested form name or a
+  # flat post. Anything else the client sent (a forged `accepted`, `digest` or
+  # route identity) is passed through untouched so the domain refuses it rather
+  # than this host silently dropping it.
+  defp dated_change_params(params) do
+    case Map.get(params, "dated_change") do
+      nested when is_map(nested) -> Map.merge(params, nested)
+      _flat -> params
+    end
+  end
+
+  # A refusal keeps the typed draft, renders every invalid field's message at
+  # once, and focuses the first invalid input. Nothing is accepted and the
+  # panel's context is left holding no source (AC-2).
+  defp accept_dated_change(socket, raw) do
+    params = dated_change_params(raw)
+    selection = visible_ids(socket, MapSet.to_list(socket.assigns.selected_ids))
+
+    with true <- editor_access?(socket),
+         {:ok, draft} <- DatedChangePlan.normalize_intent(params, selection),
+         {:ok, accepted} <- DatedChangePlan.accept_intent(draft, selection) do
+      attach_dated_change(socket, params, accepted)
+    else
+      false ->
+        refuse_dated_change(socket, params, %{base: [dated_change_refusal_message(:unauthorized)]})
+
+      {:error, errors} when is_map(errors) ->
+        refuse_dated_change(socket, params, errors)
+
+      {:error, reason} ->
+        refuse_dated_change(socket, params, %{
+          base: [dated_change_refusal_message(reason)]
+        })
+    end
+  end
+
+  defp dated_change_refusal_message(:unauthorized),
+    do: ScheduleComponents.error_message(:unauthorized)
+
+  defp dated_change_refusal_message(:selection_changed),
+    do:
+      "The selected trips changed while you were filling this in. Select them again and review the inputs."
+
+  defp dated_change_refusal_message(_reason),
+    do: "Those inputs could not be reviewed. Check them and try again."
+
+  # The accepted source is attached to this panel's context through AI-04's seam.
+  # A payload the whole-context ceiling refuses is reported as a visible refusal
+  # naming that ceiling, and the native draft, timetables and editors all stay
+  # available: refusing the helper never disables native planning (AC-13, CR-3).
+  defp attach_dated_change(socket, params, accepted) do
+    context = agent_resource_context(assign(socket, :dated_change_accepted, accepted))
+
+    case Scope.with_source_snapshot(context, dated_change_snapshot(accepted)) do
+      {:ok, _admitted} ->
+        socket
+        |> assign(:dated_change_form, dated_change_form(params))
+        |> assign(:dated_change_errors, %{})
+        |> assign(:dated_change_accepted, accepted)
+        |> assign(:dated_change_notice, dated_change_accepted_message(accepted))
+        |> assign(:dated_change_refusal, nil)
+        |> bind_agent_context()
+
+      {:error, :too_large} ->
+        socket
+        |> assign(:dated_change_form, dated_change_form(params))
+        |> assign(:dated_change_errors, %{})
+        |> assign(:dated_change_accepted, nil)
+        |> assign(:dated_change_notice, nil)
+        |> assign(:dated_change_refusal, dated_change_too_large_message())
+        |> bind_agent_context()
+
+      {:error, _reason} ->
+        refuse_dated_change(socket, params, %{
+          base: ["Those inputs could not be attached to the helper. Check them and try again."]
+        })
+    end
+  end
+
+  # The refusal states the ceiling beside the number rather than repeating a
+  # literal at the call site, and promises only what stays true: the plan and the
+  # native editor remain.
+  defp dated_change_too_large_message do
+    "This reviewed input is larger than the helper's #{Scope.max_context_bytes()}-byte limit, " <>
+      "so it is not shared with the helper. Narrow the selection or the approval note and review again."
+  end
+
+  defp dated_change_accepted_message(accepted) do
+    "Reviewed #{length(accepted.trip_ids)} #{if length(accepted.trip_ids) == 1, do: "trip", else: "trips"} " <>
+      "for #{Date.to_iso8601(accepted.first_date)} to #{Date.to_iso8601(accepted.last_date)}. " <>
+      "Nothing has been saved or applied."
+  end
+
+  defp refuse_dated_change(socket, params, errors) do
+    socket
+    |> assign(:dated_change_form, dated_change_form(params))
+    |> assign(:dated_change_errors, errors)
+    |> assign(:dated_change_accepted, nil)
+    |> assign(:dated_change_notice, nil)
+    |> assign(:dated_change_refusal, nil)
+    |> bind_agent_context()
+    |> focus_dated_change_error()
+  end
+
+  # Focus lands on the first invalid input inside the form, falling back to the
+  # accept control when every message is a selection or base refusal with no
+  # field of its own.
+  defp focus_dated_change_error(socket) do
+    push_event(socket, "focus_form_error", %{
+      form_id: "dated-change-form",
+      fallback_id: "dated-change-accept"
+    })
+  end
+
+  # --- the dated change plan -------------------------------------------------
+
+  defp helper_pack_ids, do: Enum.map(@helper_packs, &elem(&1, 1))
+
+  # The plan's own lifecycle, written in one place so a replaced source, a
+  # native save and a finished analysis cannot disagree about what the page is
+  # showing. Only the keys a caller names are written, so a state change can keep
+  # the retained report on screen while dropping its currency claim.
+  @dated_change_assigns %{
+    plan: :dated_change_plan,
+    state: :dated_change_state,
+    message: :dated_change_message,
+    verified?: :dated_change_verified?,
+    generation: :dated_change_generation,
+    page_view: :dated_change_page_view,
+    services: :dated_change_services,
+    partition_kind: :dated_change_kind
+  }
+
+  defp assign_dated_change_plan(socket, plan) do
+    socket =
+      Enum.reduce(plan, socket, fn {key, value}, socket ->
+        case Map.fetch(@dated_change_assigns, key) do
+          {:ok, name} -> assign(socket, name, value)
+          :error -> socket
+        end
+      end)
+
+    socket = assign_dated_change_calendar_link(socket)
+
+    case Map.fetch(plan, :date_rows) do
+      {:ok, rows} -> stream(socket, :dates, rows, reset: true)
+      :error -> socket
+    end
+  end
+
+  # The one calendar the report is showing links to that calendar's own editor,
+  # through the panel's own resolver rather than a second copy of the rule: an
+  # identity this version no longer owns renders as plain text instead of a
+  # link that 404s or reaches another organization's calendar (AC-17, CR-4).
+  # Blocks and transfers stay explanatory text; no typed resolver owns them yet.
+  defp assign_dated_change_calendar_link(socket) do
+    case socket.assigns[:dated_change_page_view] do
+      %{service_id: service_id} ->
+        assign(
+          socket,
+          :dated_change_calendar_link,
+          AgentPanel.resolve_resource_link(socket, %{kind: "calendar", id: service_id})
+        )
+
+      _other ->
+        assign(socket, :dated_change_calendar_link, nil)
+    end
+  end
+
+  defp empty_dated_change_plan do
+    %{
+      plan: nil,
+      state: :empty,
+      message: nil,
+      verified?: false,
+      page_view: nil,
+      services: [],
+      partition_kind: :temporary,
+      date_rows: []
+    }
+  end
+
+  # A finished read presents the report with its first calendar and the dates
+  # inside the accepted window preselected, which is the set the person asked
+  # about. Every date below is a date the one admitted snapshot already held.
+  defp dated_change_plan_state(report, opts) do
+    services = plan_services(report)
+    service_id = services |> List.first() |> Map.get(:service_id)
+    kind = :temporary
+    page_view = page_report(report, service_id, kind, 1)
+
+    %{
+      plan: report,
+      state: Map.get(opts, :state, :complete),
+      message: Map.get(opts, :message),
+      verified?: Map.get(opts, :verified?, true),
+      services: services,
+      partition_kind: kind,
+      page_view: page_view,
+      date_rows: Map.get(page_view, :rows, [])
+    }
+  end
+
+  # One option per loaded calendar, labelled with the exact number of dates that
+  # calendar runs inside the accepted window, so the navigation states a total
+  # rather than implying every set is the same size.
+  defp plan_services(report) do
+    report
+    |> Map.get(:partitions, [])
+    |> List.wrap()
+    |> Enum.map(fn partition ->
+      total = length(Map.get(partition, :temporary_dates, []))
+
+      %{
+        service_id: partition.service_id,
+        label: "#{partition.service_id} · #{total} in window",
+        total: total
+      }
+    end)
+  end
+
+  defp page_report(nil, _service_id, _kind, _page), do: nil
+
+  defp page_report(report, service_id, kind, page) do
+    case DatedChangePlan.page(report, service_id, kind, page) do
+      {:ok, page_view} -> page_view
+      {:error, :invalid_selection} -> nil
+    end
+  end
+
+  # The scope the native read runs under. It is built from this page's own
+  # identity and the route it loaded, and the domain re-authorizes it inside the
+  # snapshot before any scoped row is read, so a membership revoked after the page
+  # loaded refuses the analysis rather than completing it (AC-3, INV-2).
+  defp dated_change_scope(socket) do
+    %Scope{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      user_id: socket.assigns.current_user.id,
+      user_email: socket.assigns.current_user.email,
+      pack_id: "dated_changes",
+      version_name: socket.assigns.current_gtfs_version.name,
+      resource_context: Scope.context({:route, socket.assigns.route.id})
+    }
+  end
+
+  # The service the dated change page view currently pages, or nil when nothing
+  # is paged.
+  defp current_dated_change_service(socket) do
+    case socket.assigns[:dated_change_page_view] do
+      nil -> nil
+      page_view -> page_view.service_id
+    end
+  end
+
+  defp dated_change_kind("original"), do: :original
+  defp dated_change_kind("temporary"), do: :temporary
+  defp dated_change_kind("normal"), do: :normal
+  defp dated_change_kind(_other), do: :temporary
+
+  defp dated_change_page_number(page) do
+    case Integer.parse(to_string(page)) do
+      {number, ""} when number >= 1 -> number
+      _other -> 1
+    end
+  end
+
+  defp show_dated_change_page(socket, nil, _kind, _page), do: socket
+
+  defp show_dated_change_page(socket, service_id, kind, page) do
+    case page_report(socket.assigns.dated_change_plan, service_id, kind, page) do
+      nil ->
+        socket
+
+      page_view ->
+        socket
+        |> assign(:dated_change_kind, kind)
+        |> assign(:dated_change_page_view, page_view)
+        |> stream(:dates, page_view.rows, reset: true)
+        |> assign_dated_change_calendar_link()
+    end
+  end
+
+  # A re-check re-reads a plan this page already holds, and only one read runs
+  # at a time: a second click while one is in flight is the same question.
+  defp analyze_dated_change(
+         %{assigns: %{dated_change_plan: plan, dated_change_task: nil}} = socket,
+         :recheck
+       )
+       when is_map(plan) do
+    start_dated_change_task(socket, :recheck, socket.assigns.dated_change_generation + 1)
+  end
+
+  # A second click while a read is in flight is the same question, so it never
+  # starts a second read.
+  defp analyze_dated_change(%{assigns: %{dated_change_task: task}} = socket, _mode)
+       when not is_nil(task) do
+    socket
+  end
+
+  defp analyze_dated_change(socket, :analyze) do
+    case {socket.assigns[:dated_change_accepted], socket.assigns[:route]} do
+      {nil, _route} ->
+        assign(socket, :dated_change_message, dated_change_needs_source_message())
+
+      {_accepted, nil} ->
+        socket
+
+      {_accepted, _route} ->
+        start_dated_change_task(socket, :analyze, socket.assigns.dated_change_generation + 1)
+    end
+  end
+
+  defp analyze_dated_change(socket, :recheck), do: socket
+
+  # The task and the generation it was started under are stored together, so a
+  # result is matched by reference *and* by the source it described. Either
+  # mismatch drops it whole: a replaced source, a changed route or a lost panel
+  # can never restore an answer the page has moved on from (AC-15).
+  defp start_dated_change_task(socket, mode, generation) do
+    scope = dated_change_scope(socket)
+    accepted = socket.assigns.dated_change_accepted
+    prepared = socket.assigns.dated_change_plan
+
+    task =
+      Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
+        run_dated_change(mode, scope, accepted, prepared)
+      end)
+
+    socket =
+      socket
+      |> assign(:dated_change_task, {task, generation})
+      # `async_nolink/2` sends the result but reports no exit, so a read that
+      # dies mid-flight would leave the page analysing forever. Monitoring the
+      # task is what makes the exit case reportable rather than silent
+      # (AC-15, AC-16).
+      |> assign(:dated_change_task_monitor, Process.monitor(task.pid))
+
+    assign_dated_change_plan(socket, %{
+      generation: generation,
+      state: :analyzing,
+      message: nil,
+      verified?: false
+    })
+  end
+
+  defp run_dated_change(:analyze, scope, accepted, _prepared),
+    do: DatedChangePlan.prepare(scope, accepted)
+
+  # A re-check reads the same dependencies again through the same loader and
+  # compares the full content digest, because a count cannot tell a same-count
+  # substitution from an unchanged read (AC-4, AC-15).
+  defp run_dated_change(:recheck, scope, accepted, prepared) when is_map(prepared) do
+    case DatedChangePlan.load(scope, accepted) do
+      {:ok, snapshot} ->
+        {:rechecked, prepared, Map.get(snapshot, :dependency_digest)}
+
+      {:error, reason} ->
+        {:recheck_refused, reason}
+    end
+  end
+
+  defp run_dated_change(:recheck, _scope, _accepted, _prepared), do: {:recheck_refused, :no_plan}
+
+  @impl true
+  def handle_info({ref, result}, socket) do
+    case socket.assigns[:dated_change_task] do
+      {%{ref: ^ref}, generation} when generation == socket.assigns.dated_change_generation ->
+        {:noreply, present_dated_change(clear_dated_change_task(socket), result)}
+
+      _other ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, socket) do
+    if socket.assigns[:dated_change_task_monitor] == ref do
+      {:noreply,
+       socket
+       |> clear_dated_change_task()
+       |> assign_dated_change_plan(%{
+         state: :failed,
+         message: "The analysis stopped before it finished. Nothing was changed.",
+         verified?: false
+       })}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info(_message, socket), do: {:noreply, socket}
+
+  defp present_dated_change(socket, {:rechecked, report, current}) do
+    if report.dependency_digest == current do
+      assign_dated_change_plan(socket, dated_change_plan_state(report, %{}))
+    else
+      assign_dated_change_plan(
+        socket,
+        dated_change_plan_state(report, %{
+          state: :stale,
+          verified?: true,
+          message:
+            "The timetable changed since this plan was prepared. The dates below are the ones " <>
+              "it was prepared from."
+        })
+      )
+    end
+  end
+
+  defp present_dated_change(socket, {:recheck_refused, reason}) do
+    assign_dated_change_plan(socket, %{
+      state: :stale,
+      message:
+        "The plan could not be re-checked (#{inspect(reason)}), so it is not shown as current.",
+      verified?: false
+    })
+  end
+
+  defp present_dated_change(socket, {:ok, report}) when is_map(report) do
+    assign_dated_change_plan(socket, dated_change_plan_state(report, %{}))
+  end
+
+  defp present_dated_change(socket, {:error, {:incomplete, reason}}) do
+    assign_dated_change_plan(socket, %{
+      plan: nil,
+      page_view: nil,
+      services: [],
+      date_rows: [],
+      state: :incomplete,
+      message: dated_change_incomplete_message(reason),
+      verified?: false
+    })
+  end
+
+  defp present_dated_change(socket, {:error, :not_found}) do
+    assign_dated_change_plan(socket, dated_change_failed_plan(dated_change_route_gone_message()))
+  end
+
+  defp present_dated_change(socket, {:error, :forbidden}) do
+    assign_dated_change_plan(socket, dated_change_failed_plan(dated_change_forbidden_message()))
+  end
+
+  defp present_dated_change(socket, _other) do
+    assign_dated_change_plan(socket, dated_change_failed_plan(dated_change_failed_message()))
+  end
+
+  defp dated_change_failed_plan(message) do
+    %{
+      plan: nil,
+      page_view: nil,
+      services: [],
+      date_rows: [],
+      state: :failed,
+      message: message,
+      verified?: false
+    }
+  end
+
+  defp dated_change_incomplete_message({:row_cap_exceeded, kind, cap}) do
+    "This version holds more #{kind} than the #{cap}-row read limit, so the read was refused " <>
+      "rather than answered from part of it. Nothing below is a complete plan."
+  end
+
+  defp dated_change_incomplete_message({:date_work_cap_exceeded, cells, cap}) do
+    "Enumerating every original service date would take #{cells} date cells, over the #{cap} " <>
+      "limit, so the plan was refused rather than answered from part of it."
+  end
+
+  defp dated_change_incomplete_message(:read_timeout),
+    do: "The dependency read passed its own deadline, so the plan was refused whole."
+
+  defp dated_change_incomplete_message({:unreadable_calendar, service_id}),
+    do: "The calendar #{inspect(service_id)} cannot be read, so the plan was refused whole."
+
+  defp dated_change_incomplete_message(_reason),
+    do:
+      "The read this plan needs is incomplete, so it was refused whole rather than answered " <>
+        "from part of the version."
+
+  defp dated_change_needs_source_message do
+    "Review the inputs above first. The plan reads the window you confirmed, not the form."
+  end
+
+  defp dated_change_route_gone_message do
+    "That route is no longer available in this version, so there is nothing to plan against."
+  end
+
+  defp dated_change_forbidden_message do
+    "Your access to this version changed, so nothing was analyzed."
+  end
+
+  defp dated_change_failed_message do
+    "The plan could not be prepared. Nothing was changed."
+  end
+
+  # Every source of invalidation lands here, so the accepted source, the retained
+  # report and any running task cannot disagree about what the page is showing.
+  # Dropping the task is what makes a late result unmatchable rather than
+  # renderable.
+  defp invalidate_dated_change(%{assigns: %{dated_change_accepted: nil}} = socket) do
+    socket = clear_dated_change_task(socket)
+
+    case socket.assigns[:dated_change_plan] do
+      nil -> socket
+      _plan -> assign_dated_change_plan(socket, empty_dated_change_plan())
+    end
+  end
+
+  defp invalidate_dated_change(socket) do
+    socket
+    |> clear_dated_change_task()
+    |> clear_dated_change_source()
+    |> assign_dated_change_plan(empty_dated_change_plan())
+  end
+
+  # A refused helper switch is the panel's to report, so it is asked before
+  # anything here is dropped: only a switch that actually moved to the requested
+  # helper takes the accepted source, the plan and the date rows with it.
+  defp switch_helper_pack(socket, pack_id, context) do
+    {socket, switched?} = AgentPanel.select_pack(socket, pack_id, context)
+
+    if switched?, do: invalidate_dated_change(socket), else: socket
+  end
+
+  # Every path that ends a read releases the monitor and forgets the task, so a
+  # finished, dropped or failed read can report nothing afterwards and the next
+  # one is free to start. This is the single owner of that release; the result,
+  # exit and invalidation paths all come through here.
+  defp clear_dated_change_task(socket) do
+    case socket.assigns[:dated_change_task_monitor] do
+      ref when is_reference(ref) -> Process.demonitor(ref, [:flush])
+      _other -> :ok
+    end
+
+    socket
+    |> assign(:dated_change_task, nil)
+    |> assign(:dated_change_task_monitor, nil)
+  end
+
+  # A native save changed the timetable this report was read from, so the
+  # retained plan stops being current immediately rather than at the next
+  # analysis. It is kept and relabelled, because deleting it would throw away a
+  # read the person may still be reading (AC-15).
+  defp mark_dated_change_stale(%{assigns: %{dated_change_plan: nil}} = socket), do: socket
+
+  defp mark_dated_change_stale(socket) do
+    assign_dated_change_plan(socket, %{
+      state: :stale,
+      message: "A native change to this timetable was saved after this plan was prepared.",
+      verified?: false
+    })
+  end
+
+  # The panel owns its own events, so this page observes the two that change what
+  # a retained plan may claim. Closing and reopening the panel, and every helper
+  # request, all mean the report has not been compared with a fresh dependency
+  # read; the plan stays visible and stops claiming currency until a re-check says
+  # otherwise (AC-15). The hook never halts: the panel's own handling is
+  # untouched, and a draft it holds is a draft, not a native edit.
+  defp handle_helper_lifecycle(event, _params, socket) do
+    {:cont,
+     if(helper_lifecycle_events()[event], do: mark_dated_change_unchecked(socket), else: socket)}
+  end
+
+  defp helper_lifecycle_events,
+    do:
+      Map.new(
+        ["agent_open", "agent_close", "agent_send", "agent_retry", "agent_example"],
+        &{&1, true}
+      )
+
+  defp mark_dated_change_unchecked(%{assigns: %{dated_change_plan: nil}} = socket), do: socket
+
+  defp mark_dated_change_unchecked(%{assigns: %{dated_change_state: :stale}} = socket), do: socket
+
+  defp mark_dated_change_unchecked(socket), do: assign(socket, :dated_change_verified?, false)
 
   # --- editor authority ------------------------------------------------------
 
