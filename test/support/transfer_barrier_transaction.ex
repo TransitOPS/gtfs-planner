@@ -87,6 +87,13 @@ defmodule GtfsPlanner.Gtfs.TransferBarrierTransaction do
     # checkout (which the manual-mode sandbox refuses).
     _ = Sandbox.checkin(Repo)
     :ok = Sandbox.checkout(Repo, sandbox: false)
+  rescue
+    error in DBConnection.OwnershipError ->
+      if attempts > 1 do
+        replace_connection(attempts - 1)
+      else
+        reraise error, __STACKTRACE__
+      end
   catch
     :exit, {:noproc, {DBConnection.Holder, :checkout, _opts}} when attempts > 1 ->
       replace_connection(attempts - 1)
