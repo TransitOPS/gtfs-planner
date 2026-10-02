@@ -14,6 +14,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   alias GtfsPlanner.Gtfs.Export.Runner, as: ExportRunner
   alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.ExportRuns
+  alias GtfsPlanner.Gtfs.ReleaseComparison
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Validations.Evidence
@@ -29,6 +30,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     only: [
       check_panel: 1,
       closures_omitted: 1,
+      comparison: 1,
       contents: 1,
       guide: 1,
       operations_note: 1,
@@ -45,6 +47,29 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   # these query values are accepted, and `export_type_from_param/1` maps them
   # onto the atoms `ExportRuns` accepts.
   @export_type_params ~w(full pathways operations)
+
+  # One page of retained full feed files the editor can choose from. The chosen
+  # identities are kept server-side, so a selection made on one page survives
+  # the next page load and is never taken from a submitted value.
+  @comparison_page_size 25
+
+  @comparison_unavailable_notice "Those exports aren’t available to compare."
+  @comparison_window_notice "Enter both dates, with the last date on or after the first."
+  @comparison_profile_notice "Only full feed exports can be compared."
+  @comparison_start_failed_notice "The comparison couldn’t start. Try again."
+
+  @comparison_reason_notices %{
+    unavailable: @comparison_unavailable_notice,
+    invalid_window: @comparison_window_notice,
+    unsupported_profile: @comparison_profile_notice,
+    unsupported_size: "Those exports are larger than a comparison can read.",
+    malformed_csv:
+      "One of those files has a table that isn’t valid CSV, so nothing was compared.",
+    invalid_archive: "One of those files isn’t a readable feed archive, so nothing was compared.",
+    cancelled: "The comparison was cancelled. Nothing in your feed was changed.",
+    timeout: "The comparison took longer than its time limit and stopped.",
+    worker_exit: "The comparison stopped unexpectedly. Nothing in your feed was changed."
+  }
 
   @export_busy_message "Another export is running. Try again when it finishes."
   @validation_busy_message "Another validation is running. Try again when it finishes."
@@ -86,6 +111,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:recent_checks, [])
      |> assign(:publication, default_publication())
      |> assign(:feed_quality, @empty_feed_quality)
+     |> assign(:comparison_form, comparison_form(%{}))
+     |> assign(:comparison_choices, %{rows: [], next_cursor: nil})
+     |> assign(:comparison_cursor, nil)
+     |> assign(:comparison_chosen, %{left: nil, right: nil})
+     |> assign(:comparison_status, :idle)
+     |> assign(:comparison_notice, nil)
+     |> assign(:comparison_request_ref, nil)
+     |> assign(:comparison_fingerprint, nil)
+     |> assign(:comparison_coordinator, nil)
+     |> assign(:comparison_monitor, nil)
+     |> assign(:comparison_result, nil)
      |> AgentPanel.mount("feed_quality")}
   end
 
@@ -112,6 +148,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       |> load_missing_summary()
       |> reset_publication()
       |> assign_publication()
+      |> reset_comparison_on_version_change()
+      |> load_comparison_choices()
 
     {:noreply, refresh_feed_quality(socket)}
   end
@@ -385,9 +423,350 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     end
   end
 
+  # The retained full feed files this organization can choose from. Listing is
+  # scoped by the same `Scope` the comparison itself is authorized with, so the
+  # options a form can offer never include another organization's file.
+  @impl Phoenix.LiveView
+  def handle_event("load_more_comparison_choices", _params, socket) do
+    {:noreply, load_comparison_choices(socket, socket.assigns.comparison_cursor)}
+  end
+
+  # A change to either side or to the dates is a replacement: the running
+  # comparison no longer describes what the form says, so it is cancelled and
+  # its request reference retired. The draft is kept exactly as entered.
+  @impl Phoenix.LiveView
+  def handle_event("select_comparison", %{"comparison" => draft}, socket) do
+    {:noreply,
+     socket
+     |> cancel_comparison()
+     |> assign(:comparison_form, comparison_form(draft))
+     |> retain_chosen_comparison(draft)
+     |> assign(:comparison_status, :idle)
+     |> assign(:comparison_notice, nil)
+     |> assign(:comparison_result, nil)}
+  end
+
+  def handle_event("select_comparison", _params, socket), do: {:noreply, socket}
+
+  # Authorization is checked again here, on the server, immediately before any
+  # claim is taken. The selected runs and window are re-resolved from the form
+  # draft rather than from anything the client kept.
+  @impl Phoenix.LiveView
+  def handle_event("start_comparison", %{"comparison" => draft}, socket) do
+    socket = assign(socket, :comparison_notice, nil)
+    scope = comparison_scope(socket)
+
+    case ReleaseComparison.resolve_selection(scope, selection_params(draft)) do
+      {:ok, selection} ->
+        {:noreply, start_coordinator(socket, selection, draft)}
+
+      {:error, reason} when is_atom(reason) ->
+        {:noreply, refuse_comparison(socket, draft, reason)}
+
+      # A selection this page cannot make sense of is refused like any other,
+      # never rendered and never allowed to reach a claim.
+      _unexpected ->
+        {:noreply, refuse_comparison(socket, draft, :unavailable)}
+    end
+  end
+
+  def handle_event("start_comparison", _params, socket), do: {:noreply, socket}
+
+  @impl Phoenix.LiveView
+  def handle_event("cancel_comparison", _params, socket) do
+    # The request reference is deliberately kept: the coordinator answers the
+    # cancellation itself, and that answer is what ends the "Cancelling…" band.
+    {:noreply,
+     socket
+     |> request_cancellation()
+     |> assign(:comparison_status, :cancelling)
+     |> assign(:comparison_notice, nil)}
+  end
+
+  # Closing the comparison region retires the request reference and clears the
+  # admitted result, so a reopened comparison can never adopt the previous
+  # request's answer.
+  @impl Phoenix.LiveView
+  def handle_event("close_comparison", _params, socket) do
+    {:noreply,
+     socket
+     |> cancel_comparison()
+     |> reset_comparison()}
+  end
+
+  defp start_coordinator(socket, selection, draft) do
+    request_ref = System.unique_integer([:positive])
+
+    case ReleaseComparison.start(
+           comparison_scope(socket),
+           selection_params(draft),
+           self(),
+           request_ref
+         ) do
+      {:ok, pid} ->
+        socket
+        |> assign(:comparison_form, comparison_form(draft))
+        |> retain_chosen_comparison(draft, selection)
+        |> assign(:comparison_status, :running)
+        |> assign(:comparison_notice, nil)
+        |> assign(:comparison_result, nil)
+        |> assign(:comparison_request_ref, request_ref)
+        |> assign(:comparison_coordinator, pid)
+        |> assign(:comparison_monitor, Process.monitor(pid))
+
+      {:error, :unavailable} ->
+        refuse_comparison(socket, draft, :unavailable)
+    end
+  end
+
+  # The refusal keeps the entered draft and the form the page already had: a
+  # refused comparison never clears the export form or the check panel.
+  defp refuse_comparison(socket, draft, reason) do
+    socket
+    |> assign(:comparison_form, comparison_form(draft))
+    |> assign(:comparison_status, :refused)
+    |> assign(
+      :comparison_notice,
+      Map.get(@comparison_reason_notices, reason, @comparison_start_failed_notice)
+    )
+  end
+
+  defp finish_comparison(socket, outcome) do
+    socket = demonitor(socket, :comparison_monitor)
+    finish_comparison_status(socket, outcome)
+  end
+
+  defp finish_comparison_status(socket, {:ok, result}) do
+    # A membership withdrawn while the comparison ran is the same opaque answer
+    # as one withdrawn before it started, and it never reaches the assigns.
+    socket =
+      if Scope.authorized_context(comparison_scope(socket)) == :ok do
+        socket
+        |> assign(:comparison_status, :completed)
+        |> assign(:comparison_fingerprint, result.fingerprint)
+        |> assign(:comparison_result, result)
+        # The finished band names the two files from the result the coordinator
+        # actually compared, so the sentence cannot describe a different pair
+        # than the one that was read.
+        |> assign(:comparison_chosen, compared_rows(socket, result))
+        |> assign(:comparison_notice, nil)
+      else
+        socket
+        |> assign(:comparison_status, :refused)
+        |> assign(:comparison_notice, Map.fetch!(@comparison_reason_notices, :unavailable))
+      end
+
+    socket
+    |> assign(:comparison_coordinator, nil)
+    |> assign(:comparison_monitor, nil)
+    |> assign(:comparison_request_ref, nil)
+  end
+
+  defp finish_comparison_status(socket, {:error, reason}) do
+    socket
+    |> assign(:comparison_status, :refused)
+    |> assign(
+      :comparison_notice,
+      Map.get(@comparison_reason_notices, reason, @comparison_start_failed_notice)
+    )
+    |> assign(:comparison_coordinator, nil)
+    |> assign(:comparison_monitor, nil)
+    |> assign(:comparison_request_ref, nil)
+  end
+
+  # Cancellation is scoped to this page's own coordinator and request reference.
+  # It never touches the export run, the check panel or any draft.
+  defp request_cancellation(%{assigns: %{comparison_coordinator: nil}} = socket), do: socket
+
+  defp request_cancellation(%{assigns: %{comparison_coordinator: pid}} = socket) do
+    ReleaseComparison.cancel(pid, socket.assigns.comparison_request_ref)
+    demonitor(socket, :comparison_monitor)
+  end
+
+  # Retiring the request reference is what makes the previous comparison's
+  # answer stale: a replacement, a close or a version change drops it here, so
+  # the retired coordinator's terminal message can no longer match.
+  defp cancel_comparison(socket) do
+    socket
+    |> request_cancellation()
+    |> assign(:comparison_coordinator, nil)
+    |> assign(:comparison_monitor, nil)
+    |> assign(:comparison_request_ref, nil)
+    |> assign(:comparison_fingerprint, nil)
+  end
+
+  # The chosen rows are server-held. A submitted run id is only accepted when it
+  # is one this page listed, so a forged value names nothing in the status band.
+  defp retain_chosen_comparison(socket, draft) do
+    assign(socket, :comparison_chosen, chosen_rows(known_choices(socket), draft))
+  end
+
+  defp retain_chosen_comparison(socket, draft, selection) do
+    rows =
+      known_choices(socket)
+      |> Map.put(to_string(selection.left.run_id), artifact_row(selection.left))
+      |> Map.put(to_string(selection.right.run_id), artifact_row(selection.right))
+
+    assign(socket, :comparison_chosen, chosen_rows(rows, draft))
+  end
+
+  defp known_choices(socket),
+    do: Map.new(socket.assigns.comparison_choices.rows, &{to_string(&1.run_id), &1})
+
+  # The identities the result carries, kept beside the rows this page listed so
+  # a file whose row has left the current page still names itself truthfully.
+  defp compared_rows(socket, result) do
+    known = known_choices(socket)
+
+    %{
+      left: Map.get(known, to_string(result.left.run_id)) || artifact_row(result.left),
+      right: Map.get(known, to_string(result.right.run_id)) || artifact_row(result.right)
+    }
+  end
+
+  defp chosen_rows(rows, draft) do
+    %{
+      left: Map.get(rows, to_string(Map.get(draft, "left_run_id"))),
+      right: Map.get(rows, to_string(Map.get(draft, "right_run_id")))
+    }
+  end
+
+  # The name a completed comparison reports when the page has no listed row for
+  # it: the export type the artifact identity itself recorded, never a guess at
+  # a version name.
+  defp artifact_row(identity) do
+    %{
+      run_id: identity.run_id,
+      version_name: nil,
+      created_at: nil,
+      export_type: identity.export_type
+    }
+  end
+
+  # Only the four fields the form owns travel to the domain. The source version
+  # identity is never submitted: `resolve_selection/2` resolves each run's own
+  # version inside the organization's scope.
+  defp selection_params(draft) do
+    %{
+      "left_run_id" => Map.get(draft, "left_run_id"),
+      "right_run_id" => Map.get(draft, "right_run_id"),
+      "from" => Map.get(draft, "from"),
+      "to" => Map.get(draft, "to")
+    }
+  end
+
+  defp comparison_scope(socket) do
+    %Scope{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      user_id: socket.assigns.current_user.id,
+      user_email: socket.assigns.current_user.email,
+      pack_id: "release_comparison",
+      version_name: socket.assigns.current_gtfs_version.name,
+      resource_context: Scope.context({:version, socket.assigns.current_gtfs_version.id})
+    }
+  end
+
+  defp load_comparison_choices(socket, cursor \\ nil) do
+    case ReleaseComparison.list_choices(comparison_scope(socket),
+           limit: @comparison_page_size,
+           cursor: cursor
+         ) do
+      {:ok, %{rows: rows, next_cursor: next_cursor}} ->
+        # Pages accumulate, so a run chosen on an earlier page stays selectable
+        # instead of disappearing from the form.
+        known = socket.assigns.comparison_choices.rows
+        merged = Enum.uniq_by(known ++ rows, & &1.run_id)
+
+        socket
+        |> assign(:comparison_choices, %{rows: merged, next_cursor: next_cursor})
+        |> assign(:comparison_cursor, next_cursor)
+
+      {:error, :unavailable} ->
+        assign(socket, :comparison_choices, %{rows: [], next_cursor: nil})
+    end
+  end
+
+  # Navigating to another version is a different feed, so the comparison ends
+  # here rather than answering under the new version's identity.
+  defp reset_comparison_on_version_change(socket) do
+    if socket.assigns[:comparison_version_id] == socket.assigns.current_gtfs_version.id do
+      socket
+    else
+      socket
+      |> cancel_comparison()
+      |> reset_comparison()
+      |> assign(:comparison_version_id, socket.assigns.current_gtfs_version.id)
+    end
+  end
+
+  defp reset_comparison(socket) do
+    socket
+    |> assign(:comparison_form, comparison_form(%{}))
+    |> assign(:comparison_chosen, %{left: nil, right: nil})
+    |> assign(:comparison_status, :idle)
+    |> assign(:comparison_notice, nil)
+    |> assign(:comparison_request_ref, nil)
+    |> assign(:comparison_fingerprint, nil)
+    |> assign(:comparison_result, nil)
+  end
+
+  defp comparison_form(draft) do
+    to_form(
+      %{
+        "left_run_id" => Map.get(draft, "left_run_id", ""),
+        "right_run_id" => Map.get(draft, "right_run_id", ""),
+        "from" => Map.get(draft, "from", ""),
+        "to" => Map.get(draft, "to", "")
+      },
+      as: :comparison
+    )
+  end
+
+  defp demonitor(socket, key) do
+    case socket.assigns[key] do
+      nil ->
+        socket
+
+      ref ->
+        # `Process.demonitor/2` answers `true`, so the socket is rebound rather
+        # than returning its result.
+        Process.demonitor(ref, [:flush])
+        socket
+    end
+  end
+
   @impl Phoenix.LiveView
   def handle_event("close_publication_review", _params, socket) do
     {:noreply, close_publication_review(socket)}
+  end
+
+  @impl Phoenix.LiveView
+  def handle_info({:release_comparison, request_ref, outcome}, socket) do
+    if request_ref == socket.assigns.comparison_request_ref do
+      {:noreply, finish_comparison(socket, outcome)}
+    else
+      # A stale request reference can never win over the current one.
+      {:noreply, socket}
+    end
+  end
+
+  # The coordinator is monitored so an exit that delivers no terminal message is
+  # still reported. It becomes a worker exit only while it is still the current
+  # request; a replaced coordinator's exit changes nothing.
+  @impl Phoenix.LiveView
+  def handle_info({:DOWN, ref, :process, pid, _reason}, socket) do
+    if socket.assigns.comparison_monitor == ref and
+         socket.assigns.comparison_coordinator == pid do
+      {:noreply,
+       socket
+       |> assign(:comparison_status, :refused)
+       |> assign(:comparison_notice, Map.fetch!(@comparison_reason_notices, :worker_exit))
+       |> assign(:comparison_coordinator, nil)
+       |> assign(:comparison_monitor, nil)}
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl Phoenix.LiveView
@@ -576,6 +955,15 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
                   <.publication_section publication={@publication} />
                 </.result_section>
+
+                <.comparison
+                  form={@comparison_form}
+                  choices={@comparison_choices}
+                  chosen={@comparison_chosen}
+                  status={@comparison_status}
+                  notice={@comparison_notice}
+                  result={@comparison_result}
+                />
 
                 <.guide
                   export_type={@export_type}

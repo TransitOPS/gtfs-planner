@@ -7,8 +7,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   (`run_status/1`). The status band is the only place the page changes state and
   holds the page's one primary action, so which control is primary follows the
   latest run: Export feed, Download file, Retry export, Export again, or, when a
-  garage ID clashes with a stop ID, Edit garages. `guide/1` says what to do with
-  the file, and the right column holds the feed check (`check_panel/1`) and its
+  garage ID clashes with a stop ID, Edit garages. `comparison/1` is the second
+  region's card: two retained files, one explicit date range, its own single
+  primary action, and a status band naming the comparison's state. `guide/1`
+  says what to do with the
+  file, and the right column holds the feed check (`check_panel/1`) and its
   history (`recent_checks/1`).
 
   The components carry no state and run no queries: `ExportLive` owns the events
@@ -1094,6 +1097,271 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
     </.link>
     """
   end
+
+  @doc """
+  Compare two retained full feed files over one explicit date range.
+
+  The form names both sides and the window, and starts nothing by itself: the
+  draft is `%{"left_run_id", "right_run_id", "from", "to"}` and
+  `ExportLive` owns the events, the choices and the running comparison. The two
+  run selectors carry a prompt and never a default, and the date range starts
+  blank: a comparison always compares two named files over dates the editor
+  chose.
+
+  `choices` is `%{rows: [row], next_cursor: String.t() | nil}` for the page the
+  server listed. A run the editor chose on an earlier page is still an option
+  here, because `ExportLive` keeps the selected identities server-side rather
+  than trusting the submitted value.
+
+  The caps and the storage effect sit beside the action rather than behind a
+  disclosure, because both change what starting a comparison does: it takes the
+  existing download claim on each file, and a file that turns out to be damaged
+  is closed and removed by the existing failed-run path.
+
+  The status band is a polite live region whose title takes focus when the
+  comparison starts, so a keyboard reader lands on the new state.
+  """
+  attr :form, :any, required: true
+  attr :choices, :map, required: true
+
+  attr :chosen, :map,
+    required: true,
+    doc: "`%{left: row | nil, right: row | nil}` the chosen rows, retained server-side"
+
+  attr :status, :atom, required: true
+  attr :notice, :string, default: nil
+  attr :result, :map, default: nil
+
+  def comparison(assigns) do
+    assigns =
+      assigns
+      |> assign(:options, Enum.map(assigns.choices.rows, &{run_label(&1), to_string(&1.run_id)}))
+      |> assign(:running?, assigns.status in [:running, :cancelling])
+      |> assign(:view, comparison_view(assigns.status, assigns.chosen, assigns.result))
+
+    ~H"""
+    <div id="export-comparison" class="px-5 py-5">
+      <.form
+        for={@form}
+        id="export-comparison-form"
+        phx-change="select_comparison"
+        phx-submit="start_comparison"
+      >
+        <fieldset>
+          <legend class="text-[13px] font-semibold text-strong">
+            Which two files do you want to compare?
+          </legend>
+          <div class="mt-2.5 grid gap-3 sm:grid-cols-2">
+            <.input
+              field={@form[:left_run_id]}
+              type="select"
+              id="comparison-left"
+              label="Earlier export"
+              prompt="Choose an export"
+              options={@options}
+            />
+            <.input
+              field={@form[:right_run_id]}
+              type="select"
+              id="comparison-right"
+              label="Candidate export"
+              prompt="Choose an export"
+              options={@options}
+            />
+          </div>
+        </fieldset>
+
+        <div class="mt-3 grid gap-3 sm:grid-cols-2">
+          <.input field={@form[:from]} type="date" id="comparison-from" label="From" />
+          <.input field={@form[:to]} type="date" id="comparison-to" label="To" />
+        </div>
+
+        <p id="comparison-window-note" class="mt-2 text-[13px] leading-relaxed text-muted">
+          The same dates are compared on both sides. One comparison covers at most 62 dates.
+        </p>
+
+        <div class="mt-4 flex flex-wrap items-center gap-2 max-sm:w-full max-sm:[&>*]:flex-1">
+          <.button
+            :if={not @running?}
+            id="comparison-start"
+            class="min-h-11"
+            phx-click={JS.focus(to: "#comparison-status-title")}
+          >
+            Compare exports
+          </.button>
+          <.button
+            :if={@status == :cancelling}
+            id="comparison-start"
+            class="min-h-11"
+            disabled
+          >
+            Cancelling…
+          </.button>
+          <.button
+            :if={@running?}
+            id="comparison-cancel"
+            variant="secondary"
+            class="min-h-11"
+            phx-click="cancel_comparison"
+          >
+            Cancel comparison
+          </.button>
+          <.button
+            :if={@status in [:completed, :refused]}
+            id="comparison-close"
+            variant="quiet"
+            class="min-h-11"
+            phx-click="close_comparison"
+          >
+            Start over
+          </.button>
+          <.button
+            :if={@choices.next_cursor}
+            id="comparison-more-choices"
+            variant="quiet"
+            class="min-h-11"
+            phx-click="load_more_comparison_choices"
+          >
+            Show more exports
+          </.button>
+        </div>
+
+        <div
+          id="comparison-caps"
+          class="mt-4 rounded-card border border-subtle bg-canvas px-4 py-3 text-[13px] leading-relaxed text-default"
+        >
+          <p class="font-semibold text-strong">What one comparison reads</p>
+          <ul class="mt-1.5 grid gap-1">
+            <li>At most 150 MB compressed and 20 MB of the compared tables per file.</li>
+            <li>At most 100,000 rows per file, and 200,000 exact departures per file.</li>
+            <li>A file over any of these limits is refused whole, never partly compared.</li>
+          </ul>
+          <p class="mt-2">
+            Comparing takes the normal download claim on each file, so that file’s download count goes
+            up. If a file turns out to be damaged, it is closed and deleted and must be exported again.
+          </p>
+        </div>
+      </.form>
+
+      <.comparison_status view={@view} notice={@notice} />
+    </div>
+    """
+  end
+
+  attr :view, :map, required: true
+  attr :notice, :string, default: nil
+
+  defp comparison_status(assigns) do
+    ~H"""
+    <div
+      id="comparison-status"
+      role="status"
+      aria-live="polite"
+      class="mt-4 flex items-start gap-3.5 rounded-card border border-subtle px-4 py-3.5"
+    >
+      <span class={[
+        "flex size-10 shrink-0 items-center justify-center rounded-full",
+        comparison_tone_class(@view.tone)
+      ]}>
+        <.icon name={@view.icon} class={["size-5", @view[:spin?] && "motion-safe:animate-spin"]} />
+      </span>
+      <div class="min-w-0">
+        <h3
+          id="comparison-status-title"
+          tabindex="-1"
+          class="text-base font-bold leading-snug text-strong focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-focus"
+        >
+          {@view.title}
+        </h3>
+        <p id="comparison-status-detail" class="mt-1 text-sm leading-relaxed text-default">
+          {@view.detail}
+        </p>
+        <p :if={@notice} id="comparison-notice" class="mt-1 text-[13px] font-semibold text-strong">
+          {@notice}
+        </p>
+      </div>
+    </div>
+    """
+  end
+
+  # Two files of the same version exported on the same day are different
+  # comparisons, so the label names the version and the exact export time. A run
+  # that never recorded a version name is labelled as an export rather than
+  # rendering a leading separator, and the time keeps two same-day files apart.
+  defp run_label(row) do
+    "#{version_label(row.version_name)} · exported #{format_timestamp(row.created_at)}"
+  end
+
+  defp version_label(name) when is_binary(name) and name != "", do: name
+  defp version_label(_absent), do: "Full feed export"
+
+  defp comparison_view(status, _chosen, _result) when status in [:idle],
+    do: %{
+      tone: :neutral,
+      icon: "hero-document",
+      title: "No comparison running",
+      detail:
+        "Choose two exported full feed files and the dates to compare them over. Nothing is read until you compare."
+    }
+
+  defp comparison_view(status, _chosen, _result) when status in [:running, :cancelling],
+    do: %{
+      tone: if(status == :running, do: :info, else: :warning),
+      icon: "hero-arrow-path",
+      spin?: true,
+      title: if(status == :running, do: "Comparing exports", else: "Cancelling comparison"),
+      detail:
+        if(
+          status == :running,
+          do:
+            "Reading both files and comparing their service over the dates you chose. This page updates on its own.",
+          else: "The comparison stops at the next safe point and releases both files."
+        )
+    }
+
+  defp comparison_view(:completed, chosen, result) do
+    %{
+      tone: :success,
+      icon: "hero-check",
+      title: "Comparison finished",
+      detail:
+        "Compared #{chosen_label(chosen.left)} with #{chosen_label(chosen.right)} over #{format_date_range(result.window)}."
+    }
+  end
+
+  defp comparison_view(:refused, _chosen, _result),
+    do: %{
+      tone: :error,
+      icon: "hero-exclamation-triangle",
+      title: "The comparison couldn’t finish",
+      detail: "Nothing in your feed was changed. Your dates and file choices are still here."
+    }
+
+  # The chosen rows are server-held, so a file that vanished from the current
+  # page still names itself honestly instead of rendering an empty comparison.
+  defp chosen_label(nil), do: "a chosen export"
+
+  defp chosen_label(%{version_name: name} = row) when is_binary(name) and name != "",
+    do: "#{name} (exported #{format_timestamp(row.created_at)})"
+
+  defp chosen_label(_row), do: "the other export"
+
+  defp comparison_tone_class(:neutral), do: "border border-subtle bg-white text-muted"
+  defp comparison_tone_class(:info), do: "bg-soft text-cyan-800"
+  defp comparison_tone_class(:success), do: "bg-soft text-cyan-700"
+  defp comparison_tone_class(:warning), do: "bg-warning-bg text-warning-fg"
+  defp comparison_tone_class(:error), do: "bg-error-bg text-error-fg"
+
+  # A window's bounds are plain `Date`s and a run's timestamp is a `DateTime`,
+  # so both are formatted here rather than at each call site.
+  defp format_timestamp(%DateTime{} = time),
+    do: Calendar.strftime(time, "%b %-d, %Y %-I:%M %p")
+
+  defp format_timestamp(%Date{} = date), do: Calendar.strftime(date, "%b %-d, %Y")
+  defp format_timestamp(nil), do: "an unknown time"
+
+  defp format_date_range(%{from: from, to: to}),
+    do: "#{format_timestamp(from)} – #{format_timestamp(to)}"
 
   @doc """
   The feed check: idle, running with its phase, finished with a verdict, or

@@ -145,6 +145,36 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.SelectionTest do
   end
 
   describe "resolve_selection/2" do
+    test "a malformed id or date is the same opaque refusal tuple, never a bare atom", context do
+      %{organization: organization, version: version, scope: scope} = context
+      left = ready_run!(organization, version)
+      right = ready_run!(organization, gtfs_version_fixture(organization.id))
+
+      base = %{
+        "left_run_id" => left.id,
+        "right_run_id" => right.id,
+        "from" => "2026-04-01",
+        "to" => "2026-05-02"
+      }
+
+      # `Ecto.UUID.cast/1` and `Date.from_iso8601/1` answer the bare atom
+      # `:error` on a malformed value. Each of those must still leave this
+      # function as the documented `{:error, reason}` tuple, because a caller
+      # that matches on the tuple would otherwise crash.
+      for malformed <- [
+            Map.put(base, "left_run_id", ""),
+            Map.put(base, "left_run_id", "not-a-uuid"),
+            Map.put(base, "right_run_id", nil),
+            Map.put(base, "left_version_id", "not-a-uuid"),
+            Map.put(base, "from", ""),
+            Map.put(base, "from", "not-a-date"),
+            Map.put(base, "to", "2026-13-45")
+          ] do
+        assert {:error, reason} = ReleaseComparison.resolve_selection(scope, malformed)
+        assert reason in [:unavailable, :invalid_window]
+      end
+    end
+
     test "resolves server-held identity for two retained full runs and writes no receipt",
          context do
       %{organization: organization, version: version, scope: scope} = context

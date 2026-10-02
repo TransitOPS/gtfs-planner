@@ -109,6 +109,11 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison do
 
   Resolution returns only server-held metadata: it takes no claim, reads no
   file, and creates no receipt.
+
+  Every refusal is a `{:error, reason}` tuple. A malformed UUID or date answers
+  `:error` from the cast helpers, so the `with` below normalizes anything that
+  is not a match into the same opaque `{:error, :unavailable}` rather than
+  letting a bare atom escape the function's declared contract.
   """
   @spec resolve_selection(Scope.t(), map()) ::
           {:ok, selection()}
@@ -127,6 +132,14 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison do
          from: from_date,
          to: to_date
        }}
+    else
+      {:error, reason} when reason in [:unavailable, :invalid_window, :unsupported_profile] ->
+        {:error, reason}
+
+      # A cast helper answering the bare atom `:error` is still just a
+      # malformed selection, and says no more than any other refusal.
+      _malformed ->
+        {:error, :unavailable}
     end
   end
 
