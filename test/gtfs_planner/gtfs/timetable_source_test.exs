@@ -190,7 +190,7 @@ defmodule GtfsPlanner.Gtfs.TimetableSourceTest do
       assert accepted.unresolved == [{:unsupported_column, 1, 5}]
     end
 
-    test "reads an unreadable mapped cell as unknown, never as a clock", %{draft: params} do
+    test "reads an unreadable mapped cell as unknown, never as a clock", %{params: params} do
       params =
         put_in(params, ["text"], String.replace(params["text"], "\t24:25\t", "\twhenever\t"))
 
@@ -311,7 +311,7 @@ defmodule GtfsPlanner.Gtfs.TimetableSourceTest do
       assert [
                %{
                  "source_row_id" => 1,
-                 "feed_trip_id" => "trip-a",
+                 "feed_trip_id" => "trip-weekday-a",
                  "service_id" => "svc-weekday",
                  "direction_id" => 0,
                  "pattern_id" => "pat-1",
