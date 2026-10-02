@@ -88,7 +88,7 @@ defmodule GtfsPlanner.Gtfs.Fares.BranchRepairsTest do
 
       refute Enum.any?(
                Fares.Checks.run(context.organization.id, context.version.id).repair,
-               &(&1.code == "routes_without_fare")
+               &(&1.code == "route_without_fare")
              )
     end
   end

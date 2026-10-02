@@ -174,9 +174,22 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       end
 
     if connected?(socket) do
-      {:noreply, load_workspace(socket)}
+      # Finish the channel join before the operational read. A database timeout
+      # can outlast the client's join timeout; the joined view must receive the
+      # unavailable state rather than repeatedly attempting the same mount.
+      send(self(), {:load_workspace, version_id(socket)})
+      {:noreply, socket}
     else
       # The static render ships the skeleton; the connected mount owns the load.
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_info({:load_workspace, gtfs_version_id}, socket) do
+    if gtfs_version_id == version_id(socket) do
+      {:noreply, load_workspace(socket)}
+    else
       {:noreply, socket}
     end
   end
@@ -3667,17 +3680,23 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
 
   defp priced_default_journey(defaults, workspace, routes, stops, rows) do
     pairs =
-      for from <- stops,
-          to <- stops,
-          from.stop_id != to.stop_id,
-          areas = Map.get(rows.stop_areas, from.stop_id, []),
-          Enum.any?(areas, &(&1 in Map.get(rows.stop_areas, to.stop_id, []))),
-          do: {from, to}
+      stops
+      |> Stream.flat_map(fn from -> Stream.map(stops, &{from, &1}) end)
+      |> Stream.filter(&shared_journey_area?(&1, rows))
 
-    for route <- routes, {from, to} <- pairs, rider <- workspace.riders do
-      {route, from, to, rider}
-    end
+    routes
+    |> Stream.flat_map(fn route -> Stream.map(pairs, &{route, &1}) end)
+    |> Stream.flat_map(fn {route, {from, to}} ->
+      Stream.map(workspace.riders, &{route, from, to, &1})
+    end)
     |> Enum.find_value(&priced_journey_choice(&1, defaults, workspace, routes, stops, rows))
+  end
+
+  defp shared_journey_area?({from, to}, rows) do
+    from.stop_id != to.stop_id and
+      Enum.any?(Map.get(rows.stop_areas, from.stop_id, []), fn area ->
+        area in Map.get(rows.stop_areas, to.stop_id, [])
+      end)
   end
 
   defp priced_journey_choice({route, from, to, rider}, defaults, workspace, routes, stops, rows) do

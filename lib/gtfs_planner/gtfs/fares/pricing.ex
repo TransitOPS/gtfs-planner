@@ -50,8 +50,9 @@ defmodule GtfsPlanner.Gtfs.Fares.Pricing do
     departure to departure, 2 from the first arrival to this departure, 3 arrival
     to arrival;
   - `fare_transfer_type` then prices the change: 0 keeps the fare already paid and
-    adds the transfer product (the `fee` policy of R5), 1 adds this ride's own
-    fare, and 2 replaces the fare already paid with the transfer product alone,
+    adds the transfer product (the `fee` policy of R5), 1 adds the transfer
+    product and this ride's own fare (A + AB + B), and 2 replaces the fare already
+    paid with the transfer product alone,
     which is the `difference` policy of R5.
 
   A rule that does not match, a limit that has passed, or a change the rule no

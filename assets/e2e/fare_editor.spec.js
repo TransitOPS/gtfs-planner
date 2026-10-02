@@ -11,7 +11,9 @@
 // the two LiveViews. The following steps add one journey block each, the way
 // `fare_zones.spec.js` grew alongside the zone workspace.
 import { test, expect } from "@playwright/test";
-import { existsSync, mkdirSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bodyFitsViewport } from "./browser_helpers.js";
@@ -72,7 +74,7 @@ const CAPTURE_DIR =
   process.env.FARE_EDITOR_CAPTURE_DIR ||
   resolve(dirname(REFERENCE_PATH), "../evidence/captures");
 
-let priceVersionIdForRecovery;
+let priceRecovery;
 
 // ── shared helpers ────────────────────────────────────────────────────────
 
@@ -101,6 +103,173 @@ async function waitForLiveView(page) {
       window.liveSocket?.isConnected(),
     );
   });
+}
+
+async function restoreFarePrice(page) {
+  if (!priceRecovery) return;
+
+  for (const otherPage of page.context().pages()) {
+    if (otherPage !== page) await otherPage.close();
+  }
+
+  await logIn(page);
+  await page.goto(`/gtfs/${priceRecovery.versionId}/settings/fares`);
+  await waitForLiveView(page);
+  await page.reload();
+  await waitForLiveView(page);
+
+  const amount = page.locator(priceRecovery.selector);
+  if ((await amount.inputValue()) !== priceRecovery.expected) {
+    await amount.fill(priceRecovery.value);
+    await amount.blur();
+    await page.locator("#save-prices").click();
+    await expect(page.locator("#fare-note")).toContainText("1 price saved");
+    await page.reload();
+    await waitForLiveView(page);
+  }
+
+  await expect(page.locator(priceRecovery.selector)).toHaveValue(priceRecovery.expected);
+  priceRecovery = undefined;
+}
+
+function psql(databaseUrl, sql) {
+  return execFileSync(
+    "psql",
+    [
+      "-X",
+      "--no-psqlrc",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "--tuples-only",
+      "--no-align",
+      "--dbname",
+      databaseUrl,
+      "-c",
+      sql,
+    ],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 },
+  ).trim();
+}
+
+function fareTestDatabase() {
+  const databaseUrl = process.env.GTFS_PLANNER_TEST_DATABASE_URL;
+  const ownedDirectory = process.env.FARE_EDITOR_OWNED_PG_DIR;
+  if (!databaseUrl || !ownedDirectory) {
+    throw new Error("The load-error capture requires the owned fare-editor test database environment.");
+  }
+
+  const parsed = new URL(databaseUrl);
+  const databasePath = decodeURIComponent(parsed.pathname.slice(1));
+  if (
+    !new Set(["127.0.0.1", "::1"]).has(parsed.hostname) ||
+    !/^gtfs_planner_exunit(?:_[a-zA-Z0-9]+)*$/.test(databasePath)
+  ) {
+    throw new Error("The load-error capture refused a database outside the loopback test target.");
+  }
+
+  const databaseName = psql(databaseUrl, "SELECT current_database()");
+  const serverAddress = psql(databaseUrl, "SELECT host(inet_server_addr())");
+  const dataDirectory = psql(databaseUrl, "SHOW data_directory");
+  if (databaseName !== databasePath || !new Set(["127.0.0.1", "::1"]).has(serverAddress)) {
+    throw new Error("The load-error capture refused a database whose server identity is not the loopback test target.");
+  }
+  if (realpathSync(dataDirectory) !== realpathSync(ownedDirectory)) {
+    throw new Error("The load-error capture refused a PostgreSQL data directory other than FARE_EDITOR_OWNED_PG_DIR.");
+  }
+
+  return databaseUrl;
+}
+
+function fareProductLockCount(databaseUrl, applicationName) {
+  const sql = `
+    SELECT count(*)
+    FROM pg_locks AS locks
+    JOIN pg_class AS relation ON relation.oid = locks.relation
+    JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    JOIN pg_stat_activity AS activity ON activity.pid = locks.pid
+    WHERE namespace.nspname = 'public'
+      AND relation.relname = 'fare_products'
+      AND locks.mode = 'AccessExclusiveLock'
+      AND locks.granted
+      AND activity.application_name = '${applicationName}'
+  `;
+  return psql(databaseUrl, sql);
+}
+
+async function withFareProductCatalogLock(callback) {
+  const databaseUrl = fareTestDatabase();
+  const applicationName = `fare_layout_lock_${randomUUID().replaceAll("-", "")}`;
+  const locker = spawn(
+    "gtimeout",
+    [
+      "--signal=TERM",
+      "--kill-after=10s",
+      "120s",
+      "psql",
+      "-X",
+      "--no-psqlrc",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "--tuples-only",
+      "--no-align",
+      "--dbname",
+      databaseUrl,
+    ],
+    { stdio: ["pipe", "ignore", "ignore"] },
+  );
+  let spawnError;
+  let backendPid;
+  locker.once("error", (error) => {
+    spawnError = error;
+  });
+  locker.stdin.end(
+    `SET application_name = '${applicationName}'; BEGIN; LOCK TABLE public.fare_products IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(300); ROLLBACK;`,
+  );
+
+  try {
+    await expect.poll(() => {
+      if (spawnError) throw spawnError;
+      return fareProductLockCount(databaseUrl, applicationName);
+    }, {
+      timeout: 10000,
+      intervals: [100, 250, 500],
+    }).toBe("1");
+    backendPid = psql(databaseUrl, `
+      SELECT pid FROM pg_stat_activity
+      WHERE datname = current_database() AND usename = current_user
+        AND application_name = '${applicationName}'
+    `);
+    expect(backendPid).toMatch(/^[0-9]+$/);
+    console.log("Owned fare catalog lock", JSON.stringify({ applicationName, backendPid }));
+    await callback();
+  } finally {
+    // Closing psql alone does not interrupt the server's pg_sleep; its lock
+    // could otherwise outlive a failed scenario. End only this recorded,
+    // uniquely named backend on the positively verified disposable cluster.
+    try {
+      if (backendPid) {
+        const terminated = psql(databaseUrl, `
+          SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+          WHERE pid = ${backendPid} AND datname = current_database()
+            AND usename = current_user AND application_name = '${applicationName}'
+        `);
+        console.log("Owned fare catalog lock termination", JSON.stringify({ backendPid, terminated }));
+      }
+    } finally {
+      if (locker.pid && locker.exitCode === null && locker.signalCode === null) {
+        locker.kill("SIGTERM");
+      }
+      if (locker.pid) {
+        await expect.poll(() => locker.exitCode !== null || locker.signalCode !== null, {
+          timeout: 5000,
+        }).toBe(true);
+      }
+      await expect.poll(() => fareProductLockCount(databaseUrl, applicationName), {
+        timeout: 5000,
+        intervals: [100, 250, 500],
+      }).toBe("0");
+    }
+  }
 }
 
 // Resolves any seeded version by its exact name through the version panel. The
@@ -156,22 +325,41 @@ async function captureDrawer(page, testInfo, name) {
   return path;
 }
 
-// Captures the prototype beside the production page, at the viewport the
-// comparison is made at.
+// Capture each immutable prototype state at both prepared viewports. Keep the
+// reference on its own page so it cannot replace the production state or its
+// measurements.
 async function captureReference(page, testInfo, query, name) {
-  if (!existsSync(REFERENCE_PATH)) return;
+  expect(existsSync(REFERENCE_PATH), `required fare editor prototype is missing: ${REFERENCE_PATH}`).toBe(true);
 
   const reference = await page.context().newPage();
   try {
-    await reference.setViewportSize(page.viewportSize());
-    await reference.goto(`file://${REFERENCE_PATH}${query}`);
-    await reference.waitForLoadState("networkidle");
-    // Keep the production page and its draft intact while capturing its paired
-    // immutable prototype at the same viewport.
     mkdirSync(CAPTURE_DIR, { recursive: true });
-    await reference.screenshot({ path: resolve(CAPTURE_DIR, `${name}.png`), fullPage: false });
+    for (const viewport of [DESKTOP, PHONE]) {
+      await reference.setViewportSize({ width: viewport.width, height: viewport.height });
+      await reference.goto(`file://${REFERENCE_PATH}${query}`);
+      await reference.waitForLoadState("networkidle");
+      await reference.screenshot({
+        path: resolve(CAPTURE_DIR, `${name}-${viewport.label}.png`),
+        fullPage: false,
+      });
+    }
   } finally {
     await reference.close();
+  }
+}
+
+async function captureFirstPaintLoading(page, testInfo, versionId) {
+  for (const viewport of [DESKTOP, PHONE]) {
+    const loadingPage = await page.context().newPage();
+    try {
+      await loadingPage.setViewportSize({ width: viewport.width, height: viewport.height });
+      await loadingPage.routeWebSocket("**/live/websocket*", () => {});
+      await loadingPage.goto(`/gtfs/${versionId}/settings/fares`);
+      await expect(loadingPage.locator("#fare-editor-loading")).toBeVisible();
+      await capture(loadingPage, testInfo, `prod-loading-${viewport.label}`);
+    } finally {
+      await loadingPage.close();
+    }
   }
 }
 
@@ -301,32 +489,24 @@ async function assertFareLayout(page) {
 // retired Fare rules path redirects to Where fares apply, and the header carries
 // exactly one primary per tab. Every later journey block builds on this.
 test.describe("layout", () => {
-test.afterEach(async ({ page }, testInfo) => {
-  if (testInfo.title !== "prices" || !priceVersionIdForRecovery) return;
-
-  // The conflict journey uses a second editor tab. Close it even when the
-  // journey fails so a later run can recover the shared fixture deterministically.
-  for (const otherPage of page.context().pages()) {
-    if (otherPage !== page) await otherPage.close();
+test.beforeEach(async ({ page }) => {
+  await restoreFarePrice(page);
+  // A replacement Playwright worker has no memory of the previous worker's
+  // pending recovery. Restore the two persisted prices through the real editor
+  // before each scenario, so a failed scenario cannot contaminate its successor.
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSIONS.managed);
+  for (const [selector, value] of [
+    ["#price-local_ride-adult", "1.50"],
+    ["#price-intercity_ride-adult", "6.00"],
+  ]) {
+    priceRecovery = { versionId, selector, value, expected: `$${value}` };
+    await restoreFarePrice(page);
   }
+});
 
-  await page.goto(`/gtfs/${priceVersionIdForRecovery}/settings/fares`);
-  await waitForLiveView(page);
-  await page.reload();
-  await waitForLiveView(page);
-
-  const amount = page.locator("#price-local_ride-adult");
-  if ((await amount.inputValue()) !== "$1.50") {
-    await amount.fill("1.50");
-    await amount.blur();
-    await page.locator("#save-prices").click();
-    await expect(page.locator("#fare-note")).toContainText("1 price saved");
-    await page.reload();
-    await waitForLiveView(page);
-  }
-
-  await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
-  priceVersionIdForRecovery = undefined;
+test.afterEach(async ({ page }) => {
+  await restoreFarePrice(page);
 });
 
 test("shell", async ({ page }, testInfo) => {
@@ -344,6 +524,8 @@ test("shell", async ({ page }, testInfo) => {
   expect(new Set(Object.values(found)).size).toBe(Object.keys(VERSIONS).length);
 
   const versionId = found.managed;
+
+  await captureFirstPaintLoading(page, testInfo, versionId);
 
   for (const key of Object.keys(VERSIONS)) {
     await page.goto(`/gtfs/${found[key]}/settings/fares`);
@@ -482,6 +664,21 @@ test("shell", async ({ page }, testInfo) => {
   await captureReference(page, testInfo, "?state=prices", "ref-prices");
   await captureReference(page, testInfo, "?state=loading", "ref-loading");
   await captureReference(page, testInfo, "?state=load-error", "ref-load-error");
+
+  await withFareProductCatalogLock(async () => {
+    for (const viewport of [DESKTOP, PHONE]) {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await page.goto(`/gtfs/${versionId}/settings/fares`);
+      await waitForLiveView(page);
+      await expect(page.locator("#fare-editor-error")).toBeVisible({ timeout: 25_000 });
+      await expect(page.locator("#fare-editor-reload")).toBeVisible();
+      await capture(page, testInfo, `prod-load-error-${viewport.label}`);
+    }
+  });
+
+  await page.locator("#fare-editor-reload").click();
+  await expect(page.locator("#fare-table")).toBeVisible();
+  await waitForLiveView(page);
 });
 
 // ── prices ─────────────────────────────────────────────────────────────────
@@ -497,7 +694,12 @@ test("prices", async ({ page }, testInfo) => {
   await logIn(page);
 
   const versionId = await versionIdByName(page, VERSIONS.managed);
-  priceVersionIdForRecovery = versionId;
+  priceRecovery = {
+    versionId,
+    selector: "#price-local_ride-adult",
+    expected: "$1.50",
+    value: "1.50",
+  };
 
   // The grid itself: one row per fare, one column per rider type, and the
   // payment method sub-row for a fare the app prices differently.
@@ -599,6 +801,22 @@ test("prices", async ({ page }, testInfo) => {
     await expect(bodyFitsViewport(page)).resolves.toBe(true);
     await capture(page, testInfo, `prices-${viewport.label}`);
 
+    // The seed's Toledo to Corvallis journey is $6.00. Its final intercity
+    // leg uses this cell, so the unsaved 25-cent change previews $6.25.
+    await page.locator("#price-intercity_ride-adult").fill("6.25");
+    await page.locator("#price-intercity_ride-adult").blur();
+    try {
+      await expect(page.locator("#price-save-bar")).toContainText(
+        "Toledo to Corvallis $6.00 → $6.25",
+      );
+      await capture(page, testInfo, `prod-prices-journeys-${viewport.label}`);
+    } finally {
+      if (await page.locator("#discard-prices").count()) {
+        await page.locator("#discard-prices").click();
+      }
+    }
+    await expect(page.locator("#price-intercity_ride-adult")).toHaveValue("$6.00");
+
     // The save bar with an unsaved price, the editing state.
     await page.locator("#price-local_ride-adult").fill("1.75");
     await page.locator("#price-local_ride-adult").blur();
@@ -691,8 +909,11 @@ test("prices", async ({ page }, testInfo) => {
 
   await captureReference(page, testInfo, "?state=prices", "ref-prices-grid");
   await captureReference(page, testInfo, "?state=prices-editing", "ref-prices-editing");
+  await captureReference(page, testInfo, "?state=prices-invalid", "ref-prices-invalid");
+  await captureReference(page, testInfo, "?state=prices-saved", "ref-prices-saved");
   await captureReference(page, testInfo, "?state=prices-conflict", "ref-prices-conflict");
   await captureReference(page, testInfo, "?state=prices-lens", "ref-prices-lens");
+  await captureReference(page, testInfo, "?state=prices-journeys", "ref-prices-journeys");
 });
 
 // ── drawers ───────────────────────────────────────────────────────────────
@@ -882,6 +1103,18 @@ test("drawers", async ({ page }, testInfo) => {
     await expect(bodyFitsViewport(page)).resolves.toBe(true);
     await capture(page, testInfo, `drawers-prices-${viewport.label}`);
 
+    // Passes use the same fare drawer with the pass-specific fields and
+    // older-format explanation.
+    await page.locator("#fare-open-day_pass").click();
+    await expect(page.locator("#fare-drawer")).toBeAttached();
+    await expect(page.locator("#fare-name")).toHaveValue("Day pass");
+    await expect(page.locator('#fare-kind input[type="radio"][value="pass"]')).toBeChecked();
+    await expect(page.locator("#fare-result-card")).toContainText("$4.00");
+    await expect(page.locator("#fare-result-card")).toContainText("Not in the older format");
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `prod-pass-edit-${viewport.label}`);
+    await page.locator("#fare-cancel").click();
+
     // The fare drawer, empty and ready to be filled in.
     await page.locator("#create-fare").click();
     await expect(page.locator("#fare-drawer")).toBeAttached();
@@ -944,6 +1177,11 @@ await captureDrawer(page, testInfo, `drawers-fare-create-${viewport.label}`);
     await expect(page.locator("#rider-drawer")).toBeAttached();
     await expect(bodyFitsViewport(page)).resolves.toBe(true);
     await captureDrawer(page, testInfo, `drawers-rider-edit-${viewport.label}`);
+    await page.locator("#rider-delete").click();
+    await expect(page.locator("#rider-delete-dialog")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `prod-rider-delete-${viewport.label}`);
+    await page.locator("#rider-delete-dialog-cancel").click();
     await page.locator("#rider-cancel").click();
 
     // The payment method drawer and its create.
@@ -965,10 +1203,14 @@ await captureDrawer(page, testInfo, `drawers-fare-create-${viewport.label}`);
     await page.locator("#media-delete-dialog-cancel").click();
   }
 
+  await captureReference(page, testInfo, "?state=fare-edit", "ref-fare-edit");
+  await captureReference(page, testInfo, "?state=pass-edit", "ref-pass-edit");
   await captureReference(page, testInfo, "?state=fare-create", "ref-fare-create");
   await captureReference(page, testInfo, "?state=fare-errors", "ref-fare-errors");
   await captureReference(page, testInfo, "?state=fare-delete", "ref-fare-delete");
   await captureReference(page, testInfo, "?state=rider-create", "ref-rider-create");
+  await captureReference(page, testInfo, "?state=rider-edit", "ref-rider-edit");
+  await captureReference(page, testInfo, "?state=rider-delete", "ref-rider-delete");
   await captureReference(page, testInfo, "?state=media-create", "ref-media-create");
 });
 
@@ -1249,6 +1491,14 @@ test("setup", async ({ page }, testInfo) => {
   await expect(page.locator("#change-prices")).toHaveCount(0);
   await expect(page.locator("#create-fare")).toHaveCount(0);
 
+  for (const viewport of [DESKTOP, PHONE]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await openVersion(conversionId);
+    await expect(page.locator("#unmanaged-fares")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await capture(page, testInfo, `prod-imported-v1-${viewport.label}`);
+  }
+
   await page.locator("#edit-fares").click();
   await expect(page.locator("#conversion-review")).toBeAttached();
   await expect(page.locator("#conversion-review-confirm")).toHaveText(
@@ -1299,6 +1549,7 @@ test("setup", async ({ page }, testInfo) => {
   await captureReference(page, testInfo, "?state=first-use", "ref-setup-first-use");
   await captureReference(page, testInfo, "?state=first-use-route", "ref-setup-route");
   await captureReference(page, testInfo, "?state=first-use-zone", "ref-setup-zone");
+  await captureReference(page, testInfo, "?state=free", "ref-setup-free");
   await captureReference(page, testInfo, "?state=imported-v1", "ref-setup-imported");
   await captureReference(page, testInfo, "?state=mismatch", "ref-setup-mismatch");
 });
@@ -1522,7 +1773,7 @@ test("route", async ({ page }, testInfo) => {
   await expect(page.locator("#route-details-network")).toHaveCount(0);
   await page.locator("#route-fares").scrollIntoViewIfNeeded();
   await capture(page, testInfo, "route-managed-1440");
-  await captureReference(page, testInfo, "?state=route", "ref-route-1440");
+  await captureReference(page, testInfo, "?state=route", "ref-route");
 
   await page.setViewportSize(PHONE);
   await page.goto(`/gtfs/${managedVersion}/routes/4`);
@@ -1531,7 +1782,6 @@ test("route", async ({ page }, testInfo) => {
   expect(await bodyFitsViewport(page)).toBe(true);
   await page.locator("#route-fares").scrollIntoViewIfNeeded();
   await capture(page, testInfo, "route-managed-390");
-  await captureReference(page, testInfo, "?state=route", "ref-route-390");
 
   await page.goto(`/gtfs/${unmanagedVersion}/routes/4`);
   await waitForLiveView(page);
@@ -1624,6 +1874,24 @@ test("transfers", async ({ page }, testInfo) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await openTransfers();
 
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await capture(page, testInfo, `prod-transfers-${viewport.label}`);
+
+    await page
+      .locator('#transfer-matrix button[phx-value-from="N_LOCAL"][phx-value-to="N_LOCAL"]')
+      .click();
+    await expect(page.locator("#transfer-drawer")).toBeAttached();
+    await expect(page.locator("#transfer-pay")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `prod-transfer-local-${viewport.label}`);
+    await page.locator("#cancel-transfer").click();
+
+    await page.locator("#add-transfer-rule").click();
+    await expect(page.locator("#transfer-drawer")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `prod-transfer-create-${viewport.label}`);
+    await page.locator("#cancel-transfer").click();
+
     await page
       .locator('#transfer-matrix button[phx-value-from="N_LOCAL"][phx-value-to="N_INTERCITY"]')
       .click();
@@ -1659,8 +1927,21 @@ test("transfers", async ({ page }, testInfo) => {
     await capture(page, testInfo, `transfers-matrix-${viewport.label}`);
   }
 
+  const blankVersion = await versionIdByName(page, VERSIONS.blank);
+  for (const viewport of [DESKTOP, PHONE]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await page.goto(`/gtfs/${blankVersion}/settings/fares/transfers`);
+    await waitForLiveView(page);
+    await expect(page.locator("#transfers-empty")).toBeAttached();
+    await expect(page.locator("#transfer-matrix")).toHaveCount(0);
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await capture(page, testInfo, `prod-transfers-empty-${viewport.label}`);
+  }
+
   await captureReference(page, testInfo, "?state=transfers", "ref-transfers");
   await captureReference(page, testInfo, "?state=transfer-edit", "ref-transfer-edit");
+  await captureReference(page, testInfo, "?state=transfer-local", "ref-transfer-local");
+  await captureReference(page, testInfo, "?state=transfer-create", "ref-transfer-create");
   await captureReference(page, testInfo, "?state=transfers-empty", "ref-transfers-empty");
 });
 
@@ -1689,8 +1970,23 @@ test("checks", async ({ page }, testInfo) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await expect(bodyFitsViewport(page)).resolves.toBe(true);
     await capture(page, testInfo, `checks-issues-${viewport.label}`);
-    await captureReference(page, testInfo, "?state=checks-issues", `ref-checks-issues-${viewport.label}`);
   }
+  await captureReference(page, testInfo, "?state=checks-issues", "ref-checks-issues");
+
+  await page.goto(`/gtfs/${managedId}/settings/fares/checks`);
+  await waitForLiveView(page);
+  await expect(page.locator("#formats")).toBeAttached();
+  for (const viewport of [DESKTOP, PHONE]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await expect(page.locator("#fare-problems")).toBeAttached();
+    await expect(page.locator("#formats")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await capture(page, testInfo, `prod-checks-${viewport.label}`);
+    await page.locator("#formats").scrollIntoViewIfNeeded();
+    await capture(page, testInfo, `prod-checks-formats-${viewport.label}`);
+  }
+  await captureReference(page, testInfo, "?state=checks", "ref-checks");
+  await captureReference(page, testInfo, "?state=checks-formats", "ref-checks-formats");
 
   await page.goto(`/gtfs/${managedId}/settings/fares/checks`);
   await waitForLiveView(page);
@@ -1702,13 +1998,70 @@ test("checks", async ({ page }, testInfo) => {
   await expect(page.locator("#journey-result")).toContainText("$1.50");
   await page.locator("#journey-rider").selectOption("reduced");
   await expect(page.locator("#journey-result")).toContainText("$0.75");
-  await page.setViewportSize({ width: DESKTOP.width, height: DESKTOP.height });
-  await capture(page, testInfo, "checks-pricing-1440");
-  await captureReference(page, testInfo, "?state=checks-local", "ref-checks-local-1440");
+  for (const viewport of [DESKTOP, PHONE]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await capture(page, testInfo, `prod-checks-local-${viewport.label}`);
+  }
+  await captureReference(page, testInfo, "?state=checks-local", "ref-checks-local");
 
-  await page.setViewportSize({ width: PHONE.width, height: PHONE.height });
-  await expect(bodyFitsViewport(page)).resolves.toBe(true);
-  await capture(page, testInfo, "checks-pricing-390");
-  await captureReference(page, testInfo, "?state=checks-late", "ref-checks-late-390");
+  // A second real ride boards 160 minutes after the first, beyond the
+  // N_LOCAL → N_INTERCITY transfer allowance. Both legs are priced
+  // independently, so the operator sees the $8.50 total and its two charges.
+  await page.locator("#journey-rider").selectOption("adult");
+  await page.locator("#journey-route-0").selectOption("4");
+  await page.locator("#journey-from-0").selectOption("TOLEDO");
+  await page.locator("#journey-to-0").selectOption("NTC");
+  await page.locator('input[name="journey[legs][0][departs]"]').fill("07:40");
+  await page.locator("#journey-add-leg").click();
+  await page.locator("#journey-route-1").selectOption("10");
+  await page.locator("#journey-from-1").selectOption("NTC");
+  await page.locator("#journey-to-1").selectOption("CORVALLIS");
+  await page.locator('input[name="journey[legs][1][departs]"]').fill("10:20");
+  await expect(page.locator("#journey-result")).toContainText("$8.50");
+  await expect(page.locator("#journey-result")).toContainText("Ride 1:");
+  await expect(page.locator("#journey-result")).toContainText("Ride 2:");
+  for (const viewport of [DESKTOP, PHONE]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await capture(page, testInfo, `prod-checks-late-${viewport.label}`);
+  }
+
+  // Changing the saved journey's intercity fare through Prices makes its
+  // existing Checks row visibly stale. Recovery is registered before the
+  // write and runs both here and in afterEach if any assertion fails.
+  priceRecovery = {
+    versionId: managedId,
+    selector: "#price-intercity_ride-adult",
+    expected: "$6.00",
+    value: "6.00",
+  };
+  try {
+    await page.goto(`/gtfs/${managedId}/settings/fares`);
+    await waitForLiveView(page);
+    await expect(page.locator(priceRecovery.selector)).toHaveValue("$6.00");
+    await page.locator(priceRecovery.selector).fill("6.25");
+    await page.locator(priceRecovery.selector).blur();
+    await page.locator("#save-prices").click();
+    await expect(page.locator("#fare-note")).toContainText("1 price saved");
+
+    await page.goto(`/gtfs/${managedId}/settings/fares/checks`);
+    await waitForLiveView(page);
+    const savedJourney = page
+      .locator("#saved-journeys li")
+      .filter({ hasText: "Toledo to Corvallis" });
+    await expect(savedJourney).toContainText("Expected $6.00 · current $6.25");
+    await expect(savedJourney).toContainText("Price changed");
+    for (const viewport of [DESKTOP, PHONE]) {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await expect(bodyFitsViewport(page)).resolves.toBe(true);
+      await capture(page, testInfo, `prod-checks-test-fail-${viewport.label}`);
+    }
+  } finally {
+    await restoreFarePrice(page);
+  }
+
+  await captureReference(page, testInfo, "?state=checks-late", "ref-checks-late");
+  await captureReference(page, testInfo, "?state=checks-test-fail", "ref-checks-test-fail");
 });
 });

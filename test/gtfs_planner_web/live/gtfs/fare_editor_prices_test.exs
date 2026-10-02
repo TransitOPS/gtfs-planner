@@ -85,7 +85,8 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorPricesTest do
     end
 
     test "the where line names the route groups and zones that charge the fare", context do
-      {:ok, _view, html} = live(context.conn, prices_path(context.version))
+      {:ok, view, _html} = live(context.conn, prices_path(context.version))
+      html = render(view)
 
       assert text_of(html) =~ "Local routes"
       # A fare the sample prices between zones says where between them.

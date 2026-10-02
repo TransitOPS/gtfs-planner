@@ -392,6 +392,103 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLiveTest do
       refute has_element?(view, "#fare-editor-error")
     end
 
+    for result <- [:ready, :unavailable] do
+      test "the joined skeleton precedes a delayed #{result} catalog result", %{
+        conn: conn,
+        user: user,
+        organization: organization,
+        gtfs_version: version
+      } do
+        parent = self()
+
+        stub(CatalogReadAdapterMock, :load_fare_editor, fn _organization_id, version_id, _opts ->
+          send(parent, {:catalog_read_started, self(), version_id})
+
+          receive do
+            {:finish_catalog_read, result} -> result
+          after
+            5_000 -> raise "The test did not release its catalog read"
+          end
+        end)
+
+        conn = log_in_user(conn, user, organization: organization)
+        {:ok, view, html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+        document = LazyHTML.from_fragment(html)
+        assert Enum.count(LazyHTML.query(document, "#fare-editor-loading")) == 1
+        assert Enum.empty?(LazyHTML.query(document, "#fare-editor-panel"))
+        assert_receive {:catalog_read_started, owner, version_id}, 1_000
+        assert owner == view.pid
+        assert version_id == version.id
+
+        result =
+          case unquote(result) do
+            :ready -> {:ok, empty_workspace()}
+            :unavailable -> {:error, :unavailable}
+          end
+
+        send(owner, {:finish_catalog_read, result})
+
+        case unquote(result) do
+          :ready ->
+            assert has_element?(view, "#fare-editor-panel")
+            refute has_element?(view, "#fare-editor-loading")
+
+          :unavailable ->
+            assert has_element?(view, "#fare-editor-error", "Fares couldn’t load")
+            assert has_element?(view, "#fare-editor-reload", "Reload fares")
+            Application.delete_env(:gtfs_planner, @adapter_key)
+            view |> element("#fare-editor-reload") |> render_click()
+            assert has_element?(view, "#fare-editor-panel")
+        end
+      end
+    end
+
+    test "an exited catalog owner cannot update the replacement version", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      parent = self()
+
+      stub(CatalogReadAdapterMock, :load_fare_editor, fn _organization_id, _version_id, _opts ->
+        send(parent, {:catalog_read_started, self()})
+
+        receive do
+          {:finish_catalog_read, result} -> result
+        after
+          5_000 -> raise "The test did not terminate its catalog owner"
+        end
+      end)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+      assert_receive {:catalog_read_started, owner}, 1_000
+      assert owner == view.pid
+      monitor = Process.monitor(owner)
+      {_ref, _topic, proxy} = view.proxy
+      proxy_monitor = Process.monitor(proxy)
+      Process.unlink(proxy)
+      Process.exit(owner, :kill)
+      assert_receive {:DOWN, ^monitor, :process, ^owner, :killed}, 1_000
+      assert_receive {:DOWN, ^proxy_monitor, :process, ^proxy, :killed}, 1_000
+
+      replacement = gtfs_version_fixture(organization.id, %{name: "Replacement version"})
+
+      expect(CatalogReadAdapterMock, :load_fare_editor, fn organization_id, version_id, _opts ->
+        assert organization_id == organization.id
+        assert version_id == replacement.id
+        {:ok, empty_workspace()}
+      end)
+
+      {:ok, replacement_view, _html} = live(conn, "/gtfs/#{replacement.id}/settings/fares")
+      assert has_element?(replacement_view, "#fare-editor-panel")
+      send(owner, {:finish_catalog_read, {:error, :unavailable}})
+      send(replacement_view.pid, {:load_workspace, version.id})
+      assert has_element?(replacement_view, "#fare-editor-panel")
+      refute has_element?(replacement_view, "#fare-editor-error")
+    end
+
     test "an ordinary mount loads through the default adapter without a mock", %{
       conn: conn,
       user: user,

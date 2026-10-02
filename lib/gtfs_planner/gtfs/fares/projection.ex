@@ -50,8 +50,6 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
   alias GtfsPlanner.Gtfs.Fares
   alias GtfsPlanner.Gtfs.Fares.Identifier
   alias GtfsPlanner.Gtfs.Fares.Interpreter
-  alias GtfsPlanner.Gtfs.Fares.PeriodCalendar
-  alias GtfsPlanner.Gtfs.FareTimePeriod
   alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.Stop
@@ -167,7 +165,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
       rows = Interpreter.load_rows(organization_id, gtfs_version_id)
       settings = Fares.settings(organization_id, gtfs_version_id)
 
-      {appended, timeframes} = fare_calendars(rows, organization_id, gtfs_version_id)
+      {appended, timeframes} = fare_calendars(rows)
 
       %{
         managed?: true,
@@ -213,46 +211,18 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
     }
   end
 
-  # R10: one `calendar.txt` row per time period, covering the version's own
-  # calendar date span, under a `service_id` that is unique among the version's
-  # calendar and calendar-date services and its other periods. The writer keeps
-  # that id unique when it saves; the export re-checks it, because a calendar
-  # imported after the period was saved can take the id the period holds.
-  #
-  # The second element is the `timeframes.txt` rows the re-suffix replaces, and
-  # is empty unless an id actually moved: a re-suffixed period whose
-  # `timeframes` rows kept the old id would price a different service than the
-  # calendar row the fare rule names.
-  defp fare_calendars(rows, organization_id, gtfs_version_id) do
-    periods =
-      FareTimePeriod
-      |> scoped(organization_id, gtfs_version_id)
-      |> Repo.all()
-      |> Enum.sort_by(& &1.timeframe_group_id)
+  # Interpreter binds authored services once against the version's calendars.
+  # Export consumes that same snapshot; applying the rename map again can move
+  # one period onto another period's service when suffixes form a chain.
+  defp fare_calendars(%{fare_calendars: []}), do: {%{}, %{}}
 
-    {calendars, renames} = PeriodCalendar.build(periods, rows)
-    appended = if calendars == [], do: %{}, else: %{@calendar_file => calendars}
-
-    replaced =
-      if map_size(renames) == 0,
-        do: %{},
-        else: %{@timeframes_file => timeframe_rows(rows, renames)}
-
-    {appended, replaced}
+  defp fare_calendars(rows) do
+    {%{@calendar_file => rows.fare_calendars}, %{@timeframes_file => timeframe_rows(rows)}}
   end
 
-  # The version's `timeframes.txt` rows with the re-suffixed services' rows
-  # renamed, in the order `StreamBuilder` writes that file.
-  defp timeframe_rows(rows, renames) do
+  defp timeframe_rows(rows) do
     rows.timeframes
-    |> Enum.map(fn timeframe ->
-      %{
-        timeframe_group_id: timeframe.timeframe_group_id,
-        start_time: timeframe.start_time,
-        end_time: timeframe.end_time,
-        service_id: Map.get(renames, timeframe.service_id, timeframe.service_id)
-      }
-    end)
+    |> Enum.map(&Map.take(&1, [:timeframe_group_id, :start_time, :end_time, :service_id]))
     |> Enum.sort_by(&{&1.timeframe_group_id, &1.start_time, &1.end_time, &1.service_id})
   end
 
@@ -372,14 +342,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
     timeframe_ids = rows.timeframes |> Enum.map(& &1.timeframe_group_id) |> Enum.uniq()
     timeframe_states = [[], timeframe_ids] ++ Enum.map(timeframe_ids, &[&1])
 
-    memberships = Map.merge(rows.route_network_ids, rows.route_networks)
-    ungrouped? = Enum.any?(Map.keys(version.route_agencies), &(not Map.has_key?(memberships, &1)))
-    version_networks = include_absent(networks(rows), ungrouped?)
-
-    for network_id <- version_networks,
-        version_areas = include_absent(areas(rows), unzoned_network?(version, network_id)),
-        from_area_id <- version_areas,
-        to_area_id <- version_areas,
+    for {network_id, from_area_id, to_area_id} <- fare_cells(version),
         timeframe_ids <- timeframe_states,
         reduce: MapSet.new() do
       charged ->
@@ -389,18 +352,29 @@ defmodule GtfsPlanner.Gtfs.Fares.Projection do
     end
   end
 
-  defp unzoned_network?(version, network_id) do
-    routes = Map.get(version.network_routes, network_id, [])
+  # Named cells describe fares even before routes serve them. Add the actual
+  # route endpoint cells separately, including ungrouped routes and unzoned
+  # stops, rather than inferring absent areas through network membership lists.
+  defp fare_cells(%{rows: rows, stops: stops}) do
+    named =
+      for network <- dimension_values(networks(rows)),
+          from <- dimension_values(areas(rows)),
+          to <- dimension_values(areas(rows)),
+          do: {network, from, to}
 
-    version.stops
-    |> Enum.filter(fn {route, _stops} -> route in routes end)
-    |> Enum.flat_map(&elem(&1, 1))
-    |> Enum.any?(fn {_stop, zone} -> is_nil(zone) end)
+    memberships = Map.merge(rows.route_network_ids, rows.route_networks)
+
+    served =
+      Enum.flat_map(stops, fn {route, endpoints} ->
+        zones = endpoints |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
+        for from <- zones, to <- zones, do: {Map.get(memberships, route), from, to}
+      end)
+
+    Enum.uniq(named ++ served)
   end
 
-  defp include_absent([], _needed?), do: [nil]
-  defp include_absent(values, true), do: [nil | values]
-  defp include_absent(values, false), do: values
+  defp dimension_values([]), do: [nil]
+  defp dimension_values(values), do: values
 
   defp networks(rows) do
     rows.networks
