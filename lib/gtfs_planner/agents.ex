@@ -25,13 +25,13 @@ defmodule GtfsPlanner.Agents do
   (`max_children: 200`, so `open/1` returns `{:error, :unavailable}` beyond the
   cap) and `GtfsPlanner.Agents.TurnSupervisor`, which bounds the eight active
   turns of AC-30. Session ids are
-  `{user_id, organization_id, gtfs_version_id, pack_id, identity,
-  approved_digest, subject_id}`, so a second tab on the same route shares the
+  `{user_id, organization_id, gtfs_version_id, pack_id, identity, approved_digest,
+  subject_id, context_digest}`, so a second tab on the same route shares the
   conversation while the same user on another route never does (INV-1).
-  `subject_id` is `nil` for a pack with no subject record. The key also carries
-  the context digest, which covers the approved extension and any admitted source
-  snapshot together, so attaching a different source starts its own conversation
-  instead of continuing one whose tools already answered from the previous source.
+  `subject_id` is `nil` for a pack with no subject record. The context digest
+  covers the approved extension and any admitted source snapshot together, so
+  attaching a different source starts its own conversation instead of continuing
+  one whose tools already answered from the previous source.
 
   `packs/0` and the session key are the only places here that name a concrete
   pack (INV-1). The Alerts pack is keyed by a subject: its tools read one alert of
