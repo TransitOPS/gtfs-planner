@@ -100,7 +100,7 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeInputLiveTest do
     test "the selected-trip count follows the timetable's own selection", context do
       view = schedules_view(context)
 
-      view |> element("#select-all") |> render_click()
+      select_all(view, context)
       assert view |> element("#dated-change-selected-count") |> render() =~ "2"
 
       view |> element("#clear-selection") |> render_click()
@@ -137,8 +137,11 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeInputLiveTest do
       refute Map.has_key?(payload, "accepted")
       assert Map.keys(payload) |> Enum.sort() == payload_keys()
 
-      # The page states that it is planning only, and nothing was written.
-      assert has_element?(view, "#dated-change-accepted", "Nothing has been saved")
+      # The page states that it is planning only, and nothing was written. The
+      # acceptance summary is the persistent record of what was reviewed; the
+      # sentence promising nothing was saved is the page's success notice.
+      assert view |> element("#dated-change-accepted-summary") |> render() =~ @first_date
+      assert has_element?(view, "#dated-change-notice", "Nothing has been saved")
       assert native_signature(context) == before
     end
 
@@ -150,9 +153,10 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeInputLiveTest do
       first = panel_source(view)
 
       later =
-        intent_params()
-        |> Map.put("last_date", "2026-11-20")
-        |> Map.put("approval_note", "Board extended the window by one week.")
+        intent_params(%{
+          "last_date" => "2026-11-20",
+          "approval_note" => "Board extended the window by one week."
+        })
 
       view |> element("#dated-change-form") |> render_submit(later)
 
@@ -166,7 +170,7 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeInputLiveTest do
       view = schedules_view(context)
       select_all(view, context)
 
-      params = Map.put(intent_params(), "source_label", "Board memo 2026-14")
+      params = intent_params(%{"source_label" => "Board memo 2026-14"})
       view |> element("#dated-change-form") |> render_submit(params)
 
       assert panel_source(view).payload["source_label"] == "Board memo 2026-14"
@@ -179,10 +183,7 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeInputLiveTest do
       view = schedules_view(context)
       select_all(view, context)
 
-      params =
-        intent_params()
-        |> Map.put("first_date", "11-02")
-        |> Map.put("approval_note", "   ")
+      params = intent_params(%{"first_date" => "11-02", "approval_note" => "   "})
 
       view |> element("#dated-change-form") |> render_submit(params)
 
@@ -214,9 +215,7 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeInputLiveTest do
       select_all(view, context)
 
       params =
-        intent_params()
-        |> Map.put("first_date", "2026-11-13")
-        |> Map.put("last_date", "2026-11-02")
+        intent_params(%{"first_date" => "2026-11-13", "last_date" => "2026-11-02"})
 
       view |> element("#dated-change-form") |> render_submit(params)
 
@@ -236,9 +235,10 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeInputLiveTest do
       select_all(view, context)
 
       params =
-        intent_params()
-        |> Map.put("delta_seconds", "999999")
-        |> Map.put("approval_note", String.duplicate("a", 2001))
+        intent_params(%{
+          "delta_seconds" => "999999",
+          "approval_note" => String.duplicate("a", 2001)
+        })
 
       view |> element("#dated-change-form") |> render_submit(params)
 
@@ -263,7 +263,9 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeInputLiveTest do
         view = schedules_view(context)
         select_all(view, context)
 
-        params = Map.put(intent_params(), field, "forged")
+        # A forged field is posted flat, beside the nested form, because that is
+        # how a tampered client would send it: the host must not drop it.
+        params = Map.put(intent_params(%{}), field, "forged")
         view |> element("#dated-change-form") |> render_submit(params)
 
         errors = view |> element("#dated-change-input-errors") |> render()
@@ -282,10 +284,8 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeInputLiveTest do
       assert panel_source(view) != nil
 
       view
-      |> element("#dated-change-form input[name='dated_change[delta_seconds]']")
-      |> render_change(%{
-        "dated_change" => %{"delta_seconds" => "-600"}
-      })
+      |> form("#dated-change-form", %{"dated_change" => %{"delta_seconds" => "-600"}})
+      |> render_change()
 
       refute has_element?(view, "#dated-change-accepted")
       assert panel_source(view) == nil
@@ -299,8 +299,8 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeInputLiveTest do
       assert panel_source(view) != nil
 
       # Deselecting one trip is enough: the source named two.
-      trip_id = hd(context.trips).id
-      view |> element("input[name='trip'][value='#{trip_id}']") |> render_click()
+      trip = hd(context.trips)
+      view |> element("#trip-select-#{trip.trip_id}") |> render_click()
 
       refute has_element?(view, "#dated-change-accepted")
       assert panel_source(view) == nil
@@ -363,7 +363,7 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeInputLiveTest do
       # one that can push the accepted source past the ceiling. The domain still
       # accepts it (its own limit is 2000 characters); the ceiling is the
       # host's, and this drives the refusal through the real submit.
-      params = Map.put(intent_params(), "source_label", String.duplicate("L", 200))
+      params = intent_params(%{"source_label" => String.duplicate("L", 200)})
 
       before = native_signature(context)
       view |> element("#dated-change-form") |> render_submit(params)
@@ -397,17 +397,20 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeInputLiveTest do
   end
 
   # The intent the spec's own example names: an inclusive two-week range and a
-  # five-minute later shift.
-  defp intent_params do
-    %{
-      "dated_change" => %{
+  # five-minute later shift. `overrides` replace fields inside the nested form
+  # name, because that is the only place the page's own inputs post from.
+  defp intent_params(overrides \\ %{}) do
+    fields =
+      %{
         "first_date" => @first_date,
         "last_date" => @last_date,
         "delta_seconds" => Integer.to_string(@delta_seconds),
         "approval_note" => @approval_note,
         "source_label" => ""
       }
-    }
+      |> Map.merge(overrides)
+
+    %{"dated_change" => fields}
   end
 
   # The page selects trips with its own per-row checkboxes and has no page-level

@@ -161,6 +161,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
      |> stream(:sections, [])
      |> stream(:dates, [])
      |> assign(:dated_change_task, nil)
+     |> assign(:dated_change_task_monitor, nil)
      |> assign_dated_change_plan(empty_dated_change_plan())
      |> assign(:dated_change_generation, 0)
      |> assign(:helper_packs, @helper_packs)
