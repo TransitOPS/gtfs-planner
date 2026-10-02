@@ -40,6 +40,7 @@ defmodule GtfsPlannerWeb.Gtfs.InSeatAssistanceLiveTest do
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Ecto.Query
+  import Mox
   import Phoenix.LiveViewTest
 
   import GtfsPlanner.AccountsFixtures
@@ -54,6 +55,8 @@ defmodule GtfsPlannerWeb.Gtfs.InSeatAssistanceLiveTest do
   alias GtfsPlanner.Agents.SessionSupervisor
   alias GtfsPlanner.Gtfs.Blocking.Connections
   alias GtfsPlanner.Gtfs.ChangeLog
+  alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
+  alias GtfsPlanner.Gtfs.ReviewedApplyTransactionMock
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
@@ -173,7 +176,7 @@ defmodule GtfsPlannerWeb.Gtfs.InSeatAssistanceLiveTest do
       # The result is the page's own, and every pair is accounted for.
       assert has_element?(view, "[data-role='bulk-result']", "Saved 2 connections")
       refute has_element?(view, "[data-role='bulk-result-skip']")
-      assert applied?(context, entry.id)
+      assert applied?(view, entry.id)
     end
 
     test "an unrelated rule on an unrelated pair is left exactly as it was", context do
@@ -236,6 +239,11 @@ defmodule GtfsPlannerWeb.Gtfs.InSeatAssistanceLiveTest do
       assert [written] = pair_transfers(context, context.other_pair)
       assert written.transfer_type == 4
 
+      # One pair was skipped, so the whole proposal was not saved: the session keeps
+      # the entry prepared and the page says it was only partly saved.
+      refute applied?(view, entry.id)
+      assert has_element?(view, "#in-seat-helper-notice", "only partly saved")
+
       # Undo is the page's existing guarded Undo: it restores the row the save
       # itself wrote and leaves the row an intervening editor replaced alone.
       view |> element("#bulk-undo") |> render_click()
@@ -244,7 +252,29 @@ defmodule GtfsPlannerWeb.Gtfs.InSeatAssistanceLiveTest do
       assert pair_transfers(context, context.other_pair) == []
       assert [untouched] = pair_transfers(context, context.stay_pair)
       assert untouched.transfer_type == 5
-      assert applied?(context, entry.id)
+    end
+
+    test "a review saved with a row left out is not recorded as the whole proposal", context do
+      view = helper_view(context)
+
+      view |> element("#in-seat-helper-group") |> render_click()
+      entry = prepared_entry(view, "Let riders stay on board for these connections.")
+
+      view |> element("#agent-review-prepared-#{entry.id}") |> render_click()
+
+      # The reader unticks one of the two rows the helper prepared and saves the
+      # other one.
+      render_click(view, "toggle_bulk_row", %{"id" => connection_id(context.other_pair)})
+      assert has_element?(view, "#set-all-review-included", "1 of 2 included")
+
+      view |> element("#set-all-review-save") |> render_click()
+      await_save(view)
+
+      assert [%{transfer_type: 4}] = pair_transfers(context, context.stay_pair)
+      assert pair_transfers(context, context.other_pair) == []
+
+      refute applied?(view, entry.id)
+      assert has_element?(view, "#in-seat-helper-notice", "only partly saved")
     end
   end
 
@@ -280,7 +310,31 @@ defmodule GtfsPlannerWeb.Gtfs.InSeatAssistanceLiveTest do
 
       # The pair the drawer was not showing is untouched.
       assert pair_transfers(context, context.other_pair) == []
-      assert applied?(context, entry.id)
+      assert applied?(view, entry.id)
+    end
+
+    test "a drawer saved with another setting than the prepared one is not recorded as applied",
+         context do
+      view = connection_view(context)
+
+      view |> element("#in-seat-helper-connection") |> render_click()
+      entry = prepared_entry(view, "These have to be a reboard.", "must_reboard")
+
+      view |> element("#agent-review-prepared-#{entry.id}") |> render_click()
+      assert has_element?(view, ~s(input#connection-choice-reboard[checked]))
+
+      # The reader changes the draft to the other setting and saves that instead.
+      view
+      |> element("#connection-form")
+      |> render_change(%{
+        "connection" => %{"choice" => "stay_on_board"},
+        "_target" => ["connection-choice-stay"]
+      })
+
+      view |> element("#connection-save") |> render_click()
+
+      assert [%{transfer_type: 4}] = pair_transfers(context, context.stay_pair)
+      refute applied?(view, entry.id)
     end
 
     test "a proposal the drawer is no longer showing is dropped rather than reviewed", context do
@@ -307,6 +361,135 @@ defmodule GtfsPlannerWeb.Gtfs.InSeatAssistanceLiveTest do
              )
 
       assert row_counts(context) == counts_before(context)
+    end
+  end
+
+  describe "a proposal for a selection the page has moved away from" do
+    test "another connection in the drawer is not reviewed with the first one's setting",
+         context do
+      view = connection_view(context)
+
+      view |> element("#in-seat-helper-connection") |> render_click()
+      entry = prepared_entry(view, "These have to be a reboard.", "must_reboard")
+
+      # The reader opens the other connection while the card for the first is still
+      # in the transcript.
+      render_patch(
+        view,
+        connections_url(context, view: "connections", gap: connection_id(context.other_pair))
+      )
+
+      assert has_element?(view, "#gap-drawer")
+      view |> element("#agent-review-prepared-#{entry.id}") |> render_click()
+
+      # The drawer for the other pair keeps its own draft, and nothing is written.
+      refute has_element?(view, ~s(input#connection-choice-reboard[checked]))
+      assert has_element?(view, "#in-seat-helper-notice", "no longer the ones this page selected")
+      assert row_counts(context) == counts_before(context)
+    end
+
+    test "another group in the URL is not reviewed as the one the helper was given", context do
+      view = helper_view(context)
+
+      view |> element("#in-seat-helper-group") |> render_click()
+      entry = prepared_entry(view, "Let riders stay on board for these connections.")
+
+      # A second place appears after the helper was given the first group, and the
+      # reader moves to it.
+      elsewhere_pair(context)
+      admitted = group(context).token
+      other = Enum.find(groups(context), &(&1.token != admitted))
+
+      render_patch(view, connections_url(context, view: "connections", group: other.token))
+      view |> element("#agent-review-prepared-#{entry.id}") |> render_click()
+
+      refute has_element?(view, "#set-all-review")
+      assert has_element?(view, "#in-seat-helper-notice", "no longer the ones this page selected")
+      assert row_counts(context) == counts_before(context)
+    end
+  end
+
+  describe "a save that lands after the review it came from" do
+    test "a late success changes neither the reopened review nor the entry's receipt", context do
+      view = helper_view(context)
+      view |> element("#in-seat-helper-group") |> render_click()
+      entry = prepared_entry(view, "Let riders stay on board for these connections.")
+      view |> element("#agent-review-prepared-#{entry.id}") |> render_click()
+
+      hold_write()
+      view |> element("#set-all-review-save") |> render_click()
+      task = write_pid()
+
+      # The reader closes the review and opens it again while the write is in
+      # flight, so the review on screen is a newer one than the write started from.
+      # The cancel control is disabled while the write is pending, so the close
+      # arrives the way a stale client or a restored tab sends it: as the event.
+      render_click(view, "close_bulk_review", %{})
+      view |> element("#agent-review-prepared-#{entry.id}") |> render_click()
+      assert has_element?(view, "#set-all-review")
+
+      release_write(task, :continue)
+      await_save(view)
+
+      # The late result is dropped: the reopened review is still on screen with its
+      # own state, no result card claims the write, and the entry stays prepared.
+      assert has_element?(view, "#set-all-review")
+      refute has_element?(view, "[data-role='bulk-result']")
+      assert assign(view, :bulk_pending) == false
+      refute applied?(view, entry.id)
+    end
+
+    test "a late exit leaves the reopened review without a pending state or an error", context do
+      view = helper_view(context)
+      view |> element("#in-seat-helper-group") |> render_click()
+      entry = prepared_entry(view, "Let riders stay on board for these connections.")
+      view |> element("#agent-review-prepared-#{entry.id}") |> render_click()
+
+      hold_write()
+      view |> element("#set-all-review-save") |> render_click()
+      task = write_pid()
+
+      # The cancel control is disabled while the write is pending, so the close
+      # arrives the way a stale client or a restored tab sends it: as the event.
+      render_click(view, "close_bulk_review", %{})
+      view |> element("#agent-review-prepared-#{entry.id}") |> render_click()
+
+      release_write(task, :exit)
+      await_save(view)
+
+      assert has_element?(view, "#set-all-review")
+      assert assign(view, :bulk_pending) == false
+      assert assign(view, :bulk_error) == nil
+      assert row_counts(context) == counts_before(context)
+    end
+
+    test "a late success after the group was replaced records nothing for the old group",
+         context do
+      view = helper_view(context)
+      view |> element("#in-seat-helper-group") |> render_click()
+      entry = prepared_entry(view, "Let riders stay on board for these connections.")
+
+      session = assign(view, :agent_session)
+      conversation = conversation_id(view)
+
+      view |> element("#agent-review-prepared-#{entry.id}") |> render_click()
+
+      hold_write()
+      view |> element("#set-all-review-save") |> render_click()
+      task = write_pid()
+
+      # The reader leaves the group while the write is in flight, which retires the
+      # reference the write was started under and takes the source back.
+      render_click(view, "close_group", %{})
+
+      release_write(task, :continue)
+      await_save(view)
+
+      # The page shows no result for a group it no longer holds, and the old
+      # conversation's entry was not settled by a write the page had moved past.
+      refute has_element?(view, "[data-role='bulk-result']")
+      assert assign(view, :bulk_pending) == false
+      assert {:ok, _prepared} = Agents.prepared(session, conversation, entry.id)
     end
   end
 
@@ -656,6 +839,13 @@ defmodule GtfsPlannerWeb.Gtfs.InSeatAssistanceLiveTest do
 
   defp group_token(context), do: group(context).token
 
+  defp groups(context) do
+    {:ok, day} =
+      GtfsPlanner.Gtfs.load_blocking_day(context.organization.id, context.version.id, nil)
+
+    Connections.build(day).groups
+  end
+
   # A membership with no roles: the current actor holds none of the roles the
   # write needs, which is the revocation this application's own scope enforces.
   defp revoke(context) do
@@ -688,8 +878,46 @@ defmodule GtfsPlannerWeb.Gtfs.InSeatAssistanceLiveTest do
   end
 
   # The entry the panel holds is applied when the save that wrote the exact
-  # prepared command settles it, so a reader of the transcript sees the receipt.
-  defp applied?(_context, _entry_id), do: true
+  # prepared command settles it. The session's own record answers: an applied
+  # proposal is no longer prepared, an open one still is.
+  defp applied?(view, entry_id),
+    do: Agents.prepared(assign(view, :agent_session), conversation_id(view), entry_id) == :error
+
+  defp connection_id(pair), do: "#{pair.from.id}|#{pair.to.id}"
+
+  # The native write runs in the page's own async task, so these cases hold its
+  # transaction: the adapter reports that it started, waits for the test to release
+  # it, and only then runs the page's own transaction. Nothing here decides an
+  # outcome; it only controls when the answer exists.
+  defp hold_write do
+    previous = Application.fetch_env(:gtfs_planner, :reviewed_apply_transaction)
+    test_pid = self()
+
+    on_exit(fn ->
+      case previous do
+        {:ok, value} -> Application.put_env(:gtfs_planner, :reviewed_apply_transaction, value)
+        :error -> Application.delete_env(:gtfs_planner, :reviewed_apply_transaction)
+      end
+    end)
+
+    Application.put_env(:gtfs_planner, :reviewed_apply_transaction, ReviewedApplyTransactionMock)
+
+    stub(ReviewedApplyTransactionMock, :run, fn transaction ->
+      send(test_pid, {:write_started, self()})
+
+      receive do
+        :write_exit -> exit(:write_crashed)
+        :write_continue -> ReviewedApplyTransaction.Sandbox.run(transaction)
+      after
+        5_000 -> exit(:write_never_released)
+      end
+    end)
+  end
+
+  defp release_write(pid, :continue), do: send(pid, :write_continue)
+  defp release_write(pid, :exit), do: send(pid, :write_exit)
+
+  defp write_pid, do: receive(do: ({:write_started, pid} -> pid))
 
   ## Scripted OpenRouter replies
 
