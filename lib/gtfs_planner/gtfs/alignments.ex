@@ -27,6 +27,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   import Ecto.Query
 
   alias GtfsPlanner.Authorization
+  alias GtfsPlanner.Color
   alias GtfsPlanner.Gtfs.Alignments.Draft
   alias GtfsPlanner.Gtfs.Alignments.Materializer
   alias GtfsPlanner.Gtfs.AlignmentSegment
@@ -2014,7 +2015,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   end
 
   defp route_color(color) when is_binary(color) do
-    if Regex.match?(~r/\A[0-9a-fA-F]{6}\z/, color) and relative_luminance(color) <= 0.85 do
+    if Regex.match?(~r/\A[0-9a-fA-F]{6}\z/, color) and Color.relative_luminance(color) <= 0.85 do
       "#" <> color
     else
       @fallback_route_color
@@ -2022,20 +2023,6 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   end
 
   defp route_color(_), do: @fallback_route_color
-
-  defp relative_luminance(<<r::binary-2, g::binary-2, b::binary-2>>) do
-    0.2126 * linear_channel(r) + 0.7152 * linear_channel(g) + 0.0722 * linear_channel(b)
-  end
-
-  defp linear_channel(hex) do
-    channel = String.to_integer(hex, 16) / 255
-
-    if channel <= 0.03928 do
-      channel / 12.92
-    else
-      :math.pow((channel + 0.055) / 1.055, 2.4)
-    end
-  end
 
   defp load_visits(%RoutePattern{} = pattern) do
     rows =

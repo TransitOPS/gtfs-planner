@@ -8,6 +8,8 @@ defmodule GtfsPlannerWeb.Components.DiagramPalette do
   JavaScript in later work.
   """
 
+  alias GtfsPlanner.Color
+
   @roles %{
     active_stop: %{
       css_variable: "--diagram-active-stop",
@@ -95,22 +97,5 @@ defmodule GtfsPlannerWeb.Components.DiagramPalette do
 
   @doc "Returns the WCAG contrast ratio for two six-digit CSS hex colors."
   @spec contrast_ratio(String.t(), String.t()) :: float()
-  def contrast_ratio(background, foreground) do
-    lighter = max(relative_luminance(background), relative_luminance(foreground))
-    darker = min(relative_luminance(background), relative_luminance(foreground))
-    (lighter + 0.05) / (darker + 0.05)
-  end
-
-  defp relative_luminance("#" <> hex), do: relative_luminance(hex)
-
-  defp relative_luminance(<<r::binary-size(2), g::binary-size(2), b::binary-size(2)>>) do
-    0.2126 * linearize(String.to_integer(r, 16)) +
-      0.7152 * linearize(String.to_integer(g, 16)) +
-      0.0722 * linearize(String.to_integer(b, 16))
-  end
-
-  defp linearize(channel) do
-    srgb = channel / 255
-    if srgb <= 0.04045, do: srgb / 12.92, else: :math.pow((srgb + 0.055) / 1.055, 2.4)
-  end
+  defdelegate contrast_ratio(background, foreground), to: Color
 end
