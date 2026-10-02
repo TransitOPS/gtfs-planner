@@ -294,6 +294,20 @@ defmodule GtfsPlanner.Agents.Packs.OperationsSnapshotTest do
       refute other["plan_ref"] == current["plan_ref"]
       assert other["native_fingerprint"] == String.duplicate("a", 64)
     end
+
+    test "a plan generated for another day type is not attached to this day", context do
+      native = suggest_blocks!(context)
+      payload = project!(context)
+
+      # The host switched day types while it still held the previous day's plan:
+      # the plan is whole and `plan/2` copies it, but it does not describe the
+      # payload's day.
+      saturday = Map.put(native, :day_type_key, DayTypes.key(["SATURDAY"]))
+      assert {:ok, _copied} = OperationsAssistance.plan(:blocks, saturday)
+
+      assert OperationsAssistance.with_plan(payload, :blocks, saturday) == {:error, :unavailable}
+      assert {:ok, _attached} = OperationsAssistance.with_plan(payload, :blocks, native)
+    end
   end
 
   describe "paging the frozen issues" do
@@ -335,6 +349,50 @@ defmodule GtfsPlanner.Agents.Packs.OperationsSnapshotTest do
       assert length(Enum.uniq(refs)) == 51
       assert Enum.sort(refs) == Enum.sort(Enum.map(payload["issues"], & &1["issue_ref"]))
       assert Enum.all?(first.rows ++ second.rows, &(&1["severity"] == "error"))
+    end
+
+    test "a page after the first holds at most 50 issues", context do
+      payload = project!(context)
+
+      # The 51 real issues twice over, each copy under its own ref, is 102 rows:
+      # the page reads the frozen copy alone, so this is the same pager over a
+      # longer collection.
+      issues = payload["issues"]
+      copies = Enum.map(issues, &Map.update!(&1, "issue_ref", fn ref -> ref <> "_copy" end))
+      long = Map.put(payload, "issues", issues ++ copies)
+
+      assert {:ok, first} = OperationsAssistance.page(long, "issues", %{}, nil)
+      assert {:ok, second} = OperationsAssistance.page(long, "issues", %{}, first.next_cursor)
+      assert {:ok, third} = OperationsAssistance.page(long, "issues", %{}, second.next_cursor)
+
+      assert {length(first.rows), length(second.rows), length(third.rows)} == {50, 50, 2}
+      assert second.next_cursor["offset"] == 100
+      assert third.next_cursor == nil
+    end
+
+    test "bytes reserved for the pack's envelope shrink the page or refuse it", context do
+      payload = project!(context)
+
+      assert {:ok, full} = OperationsAssistance.page(payload, "issues", %{}, nil)
+      assert OperationsAssistance.page(payload, "issues", %{}, nil, 0) == {:ok, full}
+      full_bytes = Jason.encode!(full) |> byte_size()
+
+      # A reserve one byte larger than the room the full page leaves forces the
+      # pager to serve fewer rows, and what it serves fits beside the reserve.
+      reserve = @max_page_bytes - full_bytes + 1
+      assert {:ok, smaller} = OperationsAssistance.page(payload, "issues", %{}, nil, reserve)
+
+      assert length(smaller.rows) < 50
+      assert Jason.encode!(smaller) |> byte_size() <= @max_page_bytes - reserve
+      assert smaller.total == 51
+      assert smaller.next_cursor["offset"] == length(smaller.rows)
+
+      # A reserve that leaves no room for even one row refuses the page, and so
+      # does a reserve that is not a byte count.
+      assert OperationsAssistance.page(payload, "issues", %{}, nil, @max_page_bytes) ==
+               {:error, :unavailable}
+
+      assert OperationsAssistance.page(payload, "issues", %{}, nil, -1) == {:error, :unavailable}
     end
 
     test "the host reloading its day and suggesting again cannot change the next page", context do

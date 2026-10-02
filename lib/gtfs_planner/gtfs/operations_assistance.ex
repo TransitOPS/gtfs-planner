@@ -5,7 +5,7 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   on host assigns.
 
   This module owns `block_day/2`, `run_day/1`, `plan/2`, `with_plan/3`,
-  `context/2` and `page/4`: the block-day projection of one
+  `context/2` and `page/4`/`page/5`: the block-day projection of one
   `GtfsPlanner.Gtfs.Blocking.load_day/3` result, the run-day projection of one
   `GtfsPlanner.Gtfs.Runs.load_runs/3` result, the completed-plan projection of
   one native plan, the admission of a projected payload as an immutable source
@@ -87,8 +87,9 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
 
   `page/4` serves one bounded page of a frozen payload - at most 50 issue
   instances, sorted by severity, code, the issue's own ref and its canonical
-  detail, and never more than 32 KiB once encoded including the envelope the
-  pack wraps it in. A page smaller than the limit is permitted when the byte
+  detail, and never more than 32 KiB once encoded. `page/5` takes the bytes a
+  pack's own envelope and evidence will add, so the page and that overhead fit
+  the same 32 KiB together. A page smaller than the limit is permitted when the byte
   budget needs it; a single row that cannot fit is refused rather than truncated.
   A cursor is a plain JSON object of the payload's digest, the collection, the
   normalized filters and an offset, with no server-side store behind it, so a
@@ -111,8 +112,9 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   @snapshot_kind_runs "operations_runs"
 
   # Paging bounds. 50 issue instances is the page's own limit; the 32 KiB budget
-  # covers the encoded page *and* the pack envelope wrapped around it, which is
-  # why a page may be smaller than the limit but never a partial row.
+  # covers the encoded page plus the envelope and evidence bytes the caller
+  # reserves through `page/5`, which is why a page may be smaller than the limit
+  # but never a partial row.
   @page_limit 50
   @max_page_bytes 32_768
 
@@ -455,6 +457,8 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
      %{
        key_digest: key_digest,
        trips: Map.new(all_trips(day), &{&1.id, ref(key_digest, "trip", &1.trip_id)}),
+       trip_ids: Map.new(all_trips(day), &{&1.trip_id, ref(key_digest, "trip", &1.trip_id)}),
+       other_day_trips: other_day_trips(day),
        blocks:
          Map.new(
            day.blocks,
@@ -463,9 +467,22 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
      }}
   end
 
+  # The technical GTFS ID of every trip the day's type 4/5 records were evaluated
+  # over, by row. A record can continue into a trip of another day type, which
+  # this day holds no ref for; its own GTFS ID is how the copy names it.
+  defp other_day_trips(%{in_seat_source: %{context: %{trips: trips}}}) when is_map(trips) do
+    Map.new(trips, fn {_trip_id, trip} -> {trip.id, trip.trip_id} end)
+  end
+
+  defp other_day_trips(_day), do: %{}
+
   # Keyed by the trip row's own id, because that is what a finding's `trip_ids`
   # names; the ref itself is derived from the trip's technical GTFS ID.
   defp trip_ref(refs, trip_id), do: Map.get(refs.trips, trip_id)
+
+  # Keyed by the technical GTFS ID, which is what a scope and a host selection
+  # name.
+  defp gtfs_trip_ref(refs, trip_id), do: Map.get(refs.trip_ids, trip_id)
 
   defp block_ref(refs, block_id), do: Map.get(refs.blocks, block_id)
 
@@ -474,7 +491,7 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   defp selection_copy(selected, refs) do
     %{
       "selected_block_refs" => Enum.map(selected.block_ids, &block_ref(refs, &1)),
-      "selected_trip_refs" => Enum.map(selected.trip_ids, &trip_ref(refs, &1))
+      "selected_trip_refs" => Enum.map(selected.trip_ids, &gtfs_trip_ref(refs, &1))
     }
   end
 
@@ -482,7 +499,7 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
     %{
       "mode" => Atom.to_string(scope.mode),
       "block_refs" => Enum.map(scope.blocks, &block_ref(refs, &1)),
-      "trip_refs" => Enum.map(scope.trips, &trip_ref(refs, &1))
+      "trip_refs" => Enum.map(scope.trips, &gtfs_trip_ref(refs, &1))
     }
   end
 
@@ -504,30 +521,41 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   # an overlap and a type mismatch is one finding of each code, and the payload
   # reports both counts rather than an invented total of problems.
   defp issue(finding, position, refs) do
-    with {:ok, trip_refs} <- finding_trip_refs(finding, refs) do
-      {:ok,
-       %{
-         "issue_ref" => issue_ref(refs.key_digest, finding, position),
-         "code" => Atom.to_string(finding.code),
-         "severity" => Atom.to_string(finding.severity),
-         "severity_rank" => Map.fetch!(@severity_rank, finding.severity),
-         "block_ref" => block_ref(refs, finding.block_id),
-         "block_id" => finding.block_id,
-         "trip_refs" => trip_refs,
-         "detail" => detail(finding)
-       }}
+    with {:ok, trip_refs, other_day} <- finding_trip_refs(finding, refs) do
+      issue = %{
+        "issue_ref" => issue_ref(refs.key_digest, finding, position),
+        "code" => Atom.to_string(finding.code),
+        "severity" => Atom.to_string(finding.severity),
+        "severity_rank" => Map.fetch!(@severity_rank, finding.severity),
+        "block_ref" => block_ref(refs, finding.block_id),
+        "block_id" => finding.block_id,
+        "trip_refs" => trip_refs,
+        "detail" => detail(finding)
+      }
+
+      {:ok, if(other_day, do: Map.put(issue, "other_day_trip_ids", other_day), else: issue)}
     end
   end
 
-  # A finding naming a trip this day does not hold means the copy cannot describe
-  # it, so the projection is unavailable rather than losing a row.
+  # A type 4/5 record can hand over to a trip of another day type - a Friday-night
+  # trip continuing into Saturday - so its trips this day holds keep their refs
+  # and the other end is named by its technical GTFS ID under
+  # `other_day_trip_ids`. Any other finding naming a trip this day does not hold
+  # means the copy cannot describe it, so the projection is unavailable rather
+  # than losing a row.
+  defp finding_trip_refs(%{code: code} = finding, refs)
+       when code in [:in_seat_stale, :in_seat_unconfirmed] do
+    {here, elsewhere} = Enum.split_with(finding.trip_ids, &Map.has_key?(refs.trips, &1))
+
+    with {:ok, other_day} <- resolve_all(elsewhere, &Map.get(refs.other_day_trips, &1)) do
+      {:ok, Enum.map(here, &trip_ref(refs, &1)), other_day}
+    end
+  end
+
   defp finding_trip_refs(finding, refs) do
-    Enum.reduce_while(finding.trip_ids, {:ok, []}, fn trip_id, {:ok, acc} ->
-      case trip_ref(refs, trip_id) do
-        nil -> {:halt, :error}
-        ref -> {:cont, {:ok, acc ++ [ref]}}
-      end
-    end)
+    with {:ok, trip_refs} <- resolve_all(finding.trip_ids, &trip_ref(refs, &1)) do
+      {:ok, trip_refs, nil}
+    end
   end
 
   # A finding's own key beside its position in the day's list, so two findings of
@@ -612,13 +640,21 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   # A frequency-based or an unplottable trip sequences into no block, and
   # everything a subset leaves out is named rather than dropped. Both are
   # receipts, not judgements: the `frequency_trip` and `unplottable` findings
-  # stay the authoritative statement about each trip.
+  # stay the authoritative statement about each trip. Only the scope's own trips
+  # are named as unsequenced, so a trip outside a subset is listed once, as
+  # `outside_scope`.
   defp exclusions(day, scope, refs) do
-    unsequenced(day, refs) ++ outside_scope(scope, refs)
+    in_scope = MapSet.new(scope.trip_ids)
+
+    day
+    |> all_trips()
+    |> Enum.filter(&MapSet.member?(in_scope, &1.id))
+    |> unsequenced(refs)
+    |> Kernel.++(outside_scope(scope, refs))
   end
 
-  defp unsequenced(day, refs) do
-    Enum.flat_map(all_trips(day), fn trip ->
+  defp unsequenced(trips, refs) do
+    Enum.flat_map(trips, fn trip ->
       cond do
         trip.frequency? ->
           [
@@ -654,7 +690,7 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
     ) ++
       Enum.map(
         scope.excluded_trips,
-        &%{"kind" => "outside_scope", "trip_ref" => trip_ref(refs, &1)}
+        &%{"kind" => "outside_scope", "trip_ref" => gtfs_trip_ref(refs, &1)}
       )
   end
 
@@ -779,7 +815,7 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
         "scope" => run_scope_copy(runs_day, refs),
         "totals" => Enum.frequencies_by(issues, & &1["code"]),
         "completeness" => "complete",
-        "exclusions" => unsequenced(runs_day.day, refs),
+        "exclusions" => runs_day.day |> all_trips() |> unsequenced(refs),
         "issues" => issues,
         "constraints" => run_constraints(runs_day),
         "entities" => entities,
@@ -1155,12 +1191,14 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   # A plan's day key is the key the generator ran against. Both plan shapes carry
   # it, and a payload's own `day_key` is what it is checked against when the copy
   # is attached.
-  defp plan_day_key(native_plan) do
+  defp plan_day_key(native_plan) when is_map(native_plan) do
     case Map.get(native_plan, :day_type_key) do
       key when is_binary(key) and key != "" -> {:ok, key}
       _none -> :error
     end
   end
+
+  defp plan_day_key(_native_plan), do: :error
 
   defp plan_identity(kind, day_key, native_plan) do
     fingerprint = native_plan.fingerprint
@@ -1384,13 +1422,15 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   under one digest.
 
   The result is `{:error, :unavailable}` for a payload that is not a projection,
-  a section that does not match the payload's own, or a plan `plan/2` refuses -
+  a section that does not match the payload's own, a plan generated for another
+  day type than the payload's `day_key`, or a plan `plan/2` refuses -
   which is how a missing, pending, failed or superseded plan never reaches a
   snapshot at all.
   """
   @spec with_plan(map(), :blocks | :runs, map()) :: {:ok, map()} | {:error, :unavailable}
   def with_plan(payload, kind, native_plan) when is_map(payload) and kind in [:blocks, :runs] do
     with {:ok, day_key} <- payload_day_key(payload, kind),
+         {:ok, ^day_key} <- plan_day_key(native_plan),
          {:ok, copied} <- plan(kind, native_plan) do
       content =
         payload
@@ -1505,6 +1545,13 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   single row that cannot fit is `{:error, :unavailable}` rather than a truncated
   one, and `total` and `next_cursor` survive that narrowing.
 
+  `page/5` is the same page with `reserve_bytes` held back from the 32 KiB
+  budget: the bytes the caller's own envelope and evidence add around the page,
+  measured by the caller. The rows then fit `32_768 - reserve_bytes`, and a
+  reserve that leaves no room for the page - not even an empty one, or one row
+  of a non-empty collection - is `{:error, :unavailable}`. `page/4` reserves
+  nothing.
+
   `filters` narrows by an optional `code` the snapshot actually carries, an
   optional `severity`, and optional `run_refs` - at most 100 distinct refs, each
   of which must resolve to a run in *this* payload, so a ref outside the frozen
@@ -1519,19 +1566,26 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   """
   @spec page(map(), String.t(), page_filters(), page_cursor() | nil) ::
           {:ok, map()} | {:error, :unavailable}
-  def page(payload, collection, filters, cursor)
-      when is_map(payload) and is_binary(collection) and is_map(filters) do
+  def page(payload, collection, filters, cursor),
+    do: page(payload, collection, filters, cursor, 0)
+
+  @spec page(map(), String.t(), page_filters(), page_cursor() | nil, non_neg_integer()) ::
+          {:ok, map()} | {:error, :unavailable}
+  def page(payload, collection, filters, cursor, reserve_bytes)
+      when is_map(payload) and is_binary(collection) and is_map(filters) and
+             is_integer(reserve_bytes) and reserve_bytes >= 0 do
     with {:ok, issues} <- page_issues(payload, collection),
          {:ok, normalized} <- normalize_filters(filters, payload, issues),
          {:ok, rows} <- filtered_issues(issues, normalized),
          {:ok, offset} <- read_offset(cursor, payload, collection, normalized, length(rows)) do
-      serve(rows, offset, payload, collection, normalized)
+      position = %{payload: payload, collection: collection, filters: normalized}
+      serve(rows, offset, position, @max_page_bytes - reserve_bytes)
     else
       _unavailable -> {:error, :unavailable}
     end
   end
 
-  def page(_payload, _collection, _filters, _cursor), do: {:error, :unavailable}
+  def page(_payload, _collection, _filters, _cursor, _reserve_bytes), do: {:error, :unavailable}
 
   defp page_issues(payload, @collection_issues) do
     with true <- Map.get(payload, "schema_version") == @schema_version,
@@ -1674,20 +1728,18 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
 
   defp read_offset(_cursor, _payload, _collection, _filters, _total), do: :error
 
-  # Up to the limit, then narrowed until the encoded rows and the envelope they
-  # travel in fit the byte budget. The measured value is the whole result map, so
-  # the cursor and the totals are inside the budget too - a pack that wraps this
-  # page in its own evidence has the remainder of the same ceiling to spend.
-  defp serve(rows, offset, payload, collection, filters) do
+  # Up to the limit, then narrowed until the encoded result fits `budget`: the
+  # 32 KiB ceiling less the bytes the caller reserved for its own envelope and
+  # evidence. The measured value is the whole result map, so the cursor and the
+  # totals are inside the budget too.
+  defp serve(rows, offset, position, budget) do
     total = length(rows)
-    limit = Enum.slice(rows, offset, offset + @page_limit)
+    window = Enum.slice(rows, offset, @page_limit)
 
-    case fit_rows(limit, offset, total, payload, collection, filters) do
+    case fit_rows(window, offset, total, position, budget) do
       {:ok, page_rows} ->
-        next_offset = offset + length(page_rows)
-        next_cursor = next_cursor(next_offset, total, payload, collection, filters)
-
-        {:ok, result(page_rows, total, next_cursor, payload)}
+        next_cursor = next_cursor(offset + length(page_rows), total, position)
+        {:ok, result(page_rows, total, next_cursor, position.payload)}
 
       :error ->
         {:error, :unavailable}
@@ -1695,56 +1747,34 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   end
 
   # One row over the budget on its own is refused: a partial issue is a finding
-  # the reader cannot act on, and silently dropping it would under-report.
-  defp fit_rows([], _offset, _total, _payload, _collection, _filters), do: {:ok, []}
-
-  defp fit_rows(rows, offset, total, payload, collection, filters) do
-    case page_bytes(rows, offset, total, payload, collection, filters) do
-      :too_large when length(rows) > 1 ->
-        fit_rows(
-          Enum.slice(rows, 0, length(rows) - 1),
-          offset,
-          total,
-          payload,
-          collection,
-          filters
-        )
-
-      :too_large ->
-        :error
-
-      :ok ->
-        {:ok, rows}
-    end
-  end
-
-  defp next_cursor(next_offset, total, _payload, _collection, _filters) when next_offset >= total,
-    do: nil
-
-  defp next_cursor(next_offset, _total, payload, collection, filters) do
-    %{
-      "digest" => payload["source_digest"],
-      "collection" => collection,
-      "filters" => filters,
-      "offset" => next_offset
-    }
-  end
-
-  defp page_bytes(rows, offset, total, payload, collection, filters) do
+  # the reader cannot act on, and silently dropping it would under-report. An
+  # empty page that does not fit is refused too, because the reserve left no
+  # room for any page at all.
+  defp fit_rows(rows, offset, total, position, budget) do
     served = offset + length(rows)
 
-    %{
-      rows: rows,
-      total: total,
-      next_cursor: next_cursor(served, total, payload, collection, filters),
-      digest: payload["source_digest"]
-    }
-    |> Jason.encode!()
-    |> byte_size()
-    |> case do
-      bytes when bytes > @max_page_bytes -> :too_large
-      _fits -> :ok
+    bytes =
+      rows
+      |> result(total, next_cursor(served, total, position), position.payload)
+      |> Jason.encode!()
+      |> byte_size()
+
+    cond do
+      bytes <= budget -> {:ok, rows}
+      length(rows) > 1 -> fit_rows(Enum.drop(rows, -1), offset, total, position, budget)
+      true -> :error
     end
+  end
+
+  defp next_cursor(next_offset, total, _position) when next_offset >= total, do: nil
+
+  defp next_cursor(next_offset, _total, position) do
+    %{
+      "digest" => position.payload["source_digest"],
+      "collection" => position.collection,
+      "filters" => position.filters,
+      "offset" => next_offset
+    }
   end
 
   defp result(rows, total, next_cursor, payload) do

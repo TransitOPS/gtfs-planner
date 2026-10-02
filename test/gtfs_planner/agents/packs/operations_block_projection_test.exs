@@ -265,10 +265,101 @@ defmodule GtfsPlanner.Agents.Packs.OperationsBlockProjectionTest do
       assert is_binary(excluded_block_ref)
       refute Enum.any?(payload["entities"]["blocks"], &(&1["block_ref"] == excluded_block_ref))
 
-      assert Enum.map(excluded_trips, & &1["trip_ref"]) == [
-               trip_entity(payload, "unknown_a")["trip_ref"],
-               trip_entity(payload, "unknown_b")["trip_ref"]
+      # A trip outside the scope has no entity here, so its receipt is checked
+      # against the whole-day projection of the same day, which names it.
+      whole = project!(load_day!(context, context.school_key), %{})
+      unknown_refs = Enum.map(["unknown_a", "unknown_b"], &trip_entity(whole, &1)["trip_ref"])
+
+      assert Enum.all?(unknown_refs, &is_binary/1)
+      assert Enum.map(excluded_trips, & &1["trip_ref"]) == unknown_refs
+    end
+
+    test "the pool and a selected loose trip are named by non-null refs", context do
+      seed_conflicting_block(context)
+      seed_repeat_and_untimed(context)
+
+      day = load_day!(context, context.school_key)
+      whole = project!(day, %{})
+      untimed_ref = trip_entity(whole, "untimed")["trip_ref"]
+
+      # The whole day's scope lists the pool - the trips no block holds - by the
+      # same refs its trip entities carry.
+      assert is_binary(untimed_ref)
+      assert whole["scope"]["trip_refs"] == [untimed_ref]
+
+      scoped = project!(day, %{selected_trip_ids: ["untimed"]})
+
+      assert scoped["selection"]["selected_trip_refs"] == [untimed_ref]
+      assert scoped["scope"]["trip_refs"] == [untimed_ref]
+      assert Enum.map(scoped["entities"]["trips"], & &1["trip_ref"]) == [untimed_ref]
+
+      # The selected trip is unplottable, so it is named once as such and never
+      # as outside its own scope.
+      assert Enum.filter(scoped["exclusions"], &(&1["trip_ref"] == untimed_ref)) == [
+               %{"kind" => "unplottable", "trip_ref" => untimed_ref, "block_ref" => nil}
              ]
+    end
+
+    test "a subset names trips outside it once, as outside its scope", context do
+      seed_conflicting_block(context)
+      seed_repeat_and_untimed(context)
+
+      day = load_day!(context, context.school_key)
+      whole = project!(day, %{})
+      scoped = project!(day, %{selected_block_ids: ["9"]})
+
+      # The repeated and the untimed trip are not in block 9, so the subset lists
+      # neither as unsequenced: each is one `outside_scope` exclusion.
+      kinds = scoped["exclusions"] |> Enum.map(& &1["kind"]) |> Enum.uniq()
+      assert kinds == ["outside_scope"]
+
+      for trip_id <- ["repeat", "untimed"] do
+        ref = trip_entity(whole, trip_id)["trip_ref"]
+
+        assert Enum.filter(scoped["exclusions"], &(&1["trip_ref"] == ref)) == [
+                 %{"kind" => "outside_scope", "trip_ref" => ref}
+               ]
+      end
+    end
+  end
+
+  describe "a stay-on-board record into another day type" do
+    test "a weekday trip continuing into Saturday keeps the weekday day readable", context do
+      calendar_service_fixture(context.organization.id, context.version.id, %{
+        service_id: "SATURDAY",
+        name: "Saturday",
+        monday: 0,
+        tuesday: 0,
+        wednesday: 0,
+        thursday: 0,
+        friday: 0,
+        saturday: 1,
+        sunday: 0
+      })
+
+      friday =
+        trip(context, %{trip_id: "fri_night", block_id: "7", first: "23:00:00", last: "23:50:00"})
+
+      saturday =
+        trip(context, %{
+          trip_id: "sat_early",
+          service_id: "SATURDAY",
+          block_id: "8",
+          first: "00:10:00",
+          last: "01:00:00"
+        })
+
+      in_seat_transfer_fixture(context.organization.id, context.version.id, friday, saturday)
+
+      # The two trips share no date and Saturday runs the day after a weekday,
+      # so the record is `{:unconfirmed, :next_service_day}` on the weekday.
+      payload = project!(load_day!(context, context.weekday_key), %{})
+
+      assert [record] = issues(payload, "in_seat_unconfirmed")
+      assert record["detail"] == %{"reason" => "next_service_day"}
+      assert record["trip_refs"] == [trip_entity(payload, "fri_night")["trip_ref"]]
+      assert record["other_day_trip_ids"] == ["sat_early"]
+      refute trip_entity(payload, "sat_early")
     end
   end
 
