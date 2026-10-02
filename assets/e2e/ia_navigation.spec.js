@@ -36,23 +36,17 @@ const DESKTOP = { width: 1440, height: 1000, label: "desktop" };
 const MOBILE = { width: 375, height: 812, label: "mobile" };
 const VIEWPORTS = [DESKTOP, MOBILE];
 
-// `[id, label, path segment]`, in the information architecture's order.
+// `[id, label, destination]`, in the information architecture's order, where the
+// destination is the address the task link must carry. Every task but Alerts is
+// version-scoped: Alerts is organization-owned, so its link carries no version.
 const TASKS = [
-  ["nav-routes", "Routes", "routes"],
-  ["nav-stops", "Stops", "stops"],
-  ["nav-calendars", "Calendars", "calendars"],
-  ["nav-alerts", "Alerts", "alerts"],
-  ["nav-flex", "Flex", "flex"],
-  ["nav-operations", "Operations", "blocks"],
-  ["nav-gtfs", "GTFS", "export"],
-];
-
-// The one remaining allowlisted placeholder section: overview entry id, page
-// title, URL slug. Feed details, Agencies, Flex, Export defaults and Fares left
-// this list when their pages were built; the journey asserts each of them
-// separately below.
-const SETTINGS_SECTIONS = [
-  ["settings-entry-feed_url", "Published feed URL", "feed-url"],
+  ["nav-routes", "Routes", (versionId) => `/gtfs/${versionId}/routes`],
+  ["nav-stops", "Stops", (versionId) => `/gtfs/${versionId}/stops`],
+  ["nav-calendars", "Calendars", (versionId) => `/gtfs/${versionId}/calendars`],
+  ["nav-alerts", "Alerts", () => "/alerts"],
+  ["nav-flex", "Flex", (versionId) => `/gtfs/${versionId}/flex`],
+  ["nav-operations", "Operations", (versionId) => `/gtfs/${versionId}/blocks`],
+  ["nav-gtfs", "GTFS", (versionId) => `/gtfs/${versionId}/export`],
 ];
 
 async function logIn(page, account = EDITOR) {
@@ -160,13 +154,10 @@ for (const { width, height, label } of VIEWPORTS) {
       const versionId = await seededVersionId(page);
 
       // ── Main navigation: the seven literal labels, in order, without icons ──
-      for (const [id, taskLabel, segment] of TASKS) {
+      for (const [id, taskLabel, destination] of TASKS) {
         const link = page.locator(`#main-navigation #${id}`);
         await expect(link).toHaveText(taskLabel);
-        await expect(link).toHaveAttribute(
-          "href",
-          `/gtfs/${versionId}/${segment}`,
-        );
+        await expect(link).toHaveAttribute("href", destination(versionId));
       }
 
       await expect(page.locator("#main-navigation a")).toHaveCount(
@@ -180,9 +171,9 @@ for (const { width, height, label } of VIEWPORTS) {
       await capture(page, testInfo, `header-${label}`);
 
       // ── Each task opens its own destination and is the only current one ──
-      for (const [id, taskLabel, segment] of TASKS) {
+      for (const [id, taskLabel, destination] of TASKS) {
         await page.locator(`#main-navigation #${id}`).click();
-        await page.waitForURL(new RegExp(`/gtfs/[^/]+/${segment}$`));
+        await page.waitForURL((url) => url.pathname === destination(versionId));
         await waitForLiveView(page);
 
         await expect(
@@ -367,29 +358,21 @@ for (const { width, height, label } of VIEWPORTS) {
       await expect(page.locator("#settings-back")).toHaveText("Settings");
       await expectNoPageOverflow(page);
 
-      // ── The one remaining allowlisted section renders its shared body ──
-      for (const [entry, title, slug] of SETTINGS_SECTIONS) {
-        await page.goto(`/gtfs/${versionId}/settings`);
-        await waitForLiveView(page);
-        await page.locator(`#${entry} a`).click();
-        await page.waitForURL(new RegExp(`/settings/${slug}$`));
-        await waitForLiveView(page);
+      // ── Published feeds is a built page, not a placeholder ──
+      await page.goto(`/gtfs/${versionId}/settings`);
+      await waitForLiveView(page);
+      await page.locator("#settings-entry-feed_url a").click();
+      await page.waitForURL(new RegExp(`/settings/published-feeds$`));
+      await waitForLiveView(page);
 
-        await expect(page.locator("h1")).toHaveText(title);
-        await expect(page.locator("#coming-soon-status")).toHaveText(
-          /Coming soon/,
-        );
-        await expect(
-          page.locator("#coming-soon form, #coming-soon button"),
-        ).toHaveCount(0);
-        await expect(page.locator("#settings-nav")).toHaveCount(0);
-        await expect(page.locator("#settings-back")).toHaveText("Settings");
-      }
+      await expect(page.locator("h1")).toHaveText("Published feeds");
+      await expect(page.locator("#coming-soon-status")).toHaveCount(0);
+      await expectNoPageOverflow(page);
+      await capture(page, testInfo, `settings-published-feeds-${label}`);
 
-      await capture(page, testInfo, `settings-section-${label}`);
-
-      await page.locator("#settings-back").click();
-      await page.waitForURL(new RegExp(`/gtfs/${versionId}/settings$`));
+      // The row leads out of this version's Settings path, and the page it opens
+      // carries no Settings link back, so the overview is reached by its address.
+      await page.goto(`/gtfs/${versionId}/settings`);
       await waitForLiveView(page);
       await expect(page.locator("#settings-overview")).toBeVisible();
 

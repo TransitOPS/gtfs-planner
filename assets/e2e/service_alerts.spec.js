@@ -2226,8 +2226,8 @@ async function settleScriptDrawer(page) {
   );
 }
 
-// The version this tab opens against, resolved through the header's own version
-// panel the way the other alert journeys resolve theirs.
+// The version the alert journeys that still enter by a versioned bookmark link
+// resolve through the header's own version panel, the way those journeys do.
 async function alertsVersionId(page) {
   return versionIdFor(page, ALERTS_VERSION);
 }
@@ -2241,7 +2241,7 @@ async function openAlertSettings(page, tab = "scripts") {
 // sign-in journey and goes straight to the page under test.
 async function openAlertSettingsSignedIn(page, tab = "scripts") {
   const versionId = await alertsVersionId(page);
-  await gotoLive(page, `/gtfs/${versionId}/settings/alerts?tab=${tab}`);
+  await gotoLive(page, `/alerts/settings?tab=${tab}`);
   // A full page load leaves the view connecting, and a change made before it is
   // mounted is never sent, so every interaction here waits for the page itself.
   await page.waitForSelector("#alert-settings-page", { timeout: 15000 });
@@ -2359,7 +2359,7 @@ test.describe("alert settings", () => {
     page,
   }, testInfo) => {
     await page.setViewportSize(DESKTOP);
-    const versionId = await openAlertSettings(page, "guidelines");
+    await openAlertSettings(page, "guidelines");
 
     // The recommended text is shown at revision 0, and reading it stored nothing.
     await expect(page.locator("#guidelines-revision")).toContainText(
@@ -2385,13 +2385,10 @@ test.describe("alert settings", () => {
     // stale one: it is refused with the conflict sentence rather than silently
     // overwriting (R6, FH-24).
     await page.locator("#guidelines-text").fill("A second wording from this tab.");
-    // A second page of the same context shares the sign-in but starts on a blank
-    // document, so the version is resolved from this tab rather than from a
-    // header panel the new page has not rendered yet.
+    // A second page of the same context shares the sign-in, so it opens the same
+    // organization-owned settings page directly.
     const otherSession = await page.context().newPage();
-    await otherSession.goto(
-      `/gtfs/${versionId}/settings/alerts?tab=guidelines`,
-    );
+    await otherSession.goto("/alerts/settings?tab=guidelines");
     await otherSession.waitForSelector("#guidelines-card", { timeout: 15000 });
     await otherSession.locator("#guidelines-text").fill("Another editor's wording.");
     await otherSession.locator("#save-guidelines").click();
@@ -2421,7 +2418,7 @@ test.describe("alert settings", () => {
     page,
   }, testInfo) => {
     await page.setViewportSize(DESKTOP);
-    const versionId = await openAlertSettings(page);
+    await openAlertSettings(page);
 
     await page.locator("#settings-back").click();
     await page.waitForURL(/\/settings$/, { timeout: 15_000 });
@@ -2430,7 +2427,7 @@ test.describe("alert settings", () => {
     await expect(allVersions.first()).toHaveAttribute("id", "settings-entry-alerts");
     await expect(page.locator("#settings-entry-alerts a")).toHaveAttribute(
       "href",
-      `/gtfs/${versionId}/settings/alerts`,
+      "/alerts/settings",
     );
 
     await page.screenshot({
@@ -2466,9 +2463,11 @@ async function captureInterviewReference(page, testInfo, state, width) {
 // only thing this waits for is the applied result: the preview's own assistant
 // tag. The helper asserts the row is a real alert before returning.
 async function runRoute12Interview(page) {
-  const versionId = await editorVersionId(page);
+  // The editor is organization-owned, so the destination carries no version; the
+  // assistant frame is still selected by its own query.
+  await editorVersionId(page);
 
-  await gotoLive(page, `/gtfs/${versionId}/alerts/new?mode=assistant`);
+  await gotoLive(page, "/alerts/new?mode=assistant");
   await page.waitForSelector("#alert-assistant-start", { timeout: 15_000 });
   // The example button is a LiveView event, and a click before the socket joins
   // is dropped.
@@ -2497,11 +2496,11 @@ test.describe("alert editor assistant", () => {
   test("the new alert start card matches the prototype layout @assistant-start", async ({
     page,
   }, testInfo) => {
-    const versionId = await editorVersionId(page);
+    await editorVersionId(page);
 
     for (const viewport of [DESKTOP, NARROW]) {
       await page.setViewportSize(viewport);
-      await gotoLive(page, `/gtfs/${versionId}/alerts/new?mode=assistant`);
+      await gotoLive(page, "/alerts/new?mode=assistant");
       await page.waitForSelector("#alert-assistant-start", { timeout: 15_000 });
       await waitForLiveConnected(page);
 
@@ -2546,9 +2545,9 @@ test.describe("alert editor assistant", () => {
   test("a sample situation fills the note rather than sending it @assistant-start", async ({
     page,
   }) => {
-    const versionId = await editorVersionId(page);
+    await editorVersionId(page);
     await page.setViewportSize(DESKTOP);
-    await gotoLive(page, `/gtfs/${versionId}/alerts/new?mode=assistant`);
+    await gotoLive(page, "/alerts/new?mode=assistant");
     await page.waitForSelector("#alert-assistant-start", { timeout: 15_000 });
     await waitForLiveConnected(page);
 
@@ -2673,7 +2672,7 @@ async function captureJourneyReference(page, testInfo, state, width) {
 // card would be testing the wrong surface (FH-28's own lesson).
 async function openJourneyAlert(page) {
   const versionId = await editorVersionId(page);
-  await gotoLive(page, `/gtfs/${versionId}/alerts/new?mode=form`);
+  await gotoLive(page, "/alerts/new?mode=form");
   await page.waitForSelector("#alert-question", { timeout: 15_000 });
   await waitForLiveConnected(page);
   await waitForEditorMounted(page);
