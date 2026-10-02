@@ -47,7 +47,9 @@ defmodule GtfsPlannerWeb.AgentPanelSelectionTest do
   @owner GtfsPlanner.Agents.Model
   @model "test/model-a"
 
-  @forged_pack "in_seat"
+  # A pack the application does not ship at all. `in_seat` stopped being one in
+  # step 11, so this name stays outside the registry for the whole branch.
+  @forged_pack "blocking"
   @approval_text "Extend the weekday calendar through the fall term."
 
   # A host in the shape step 8's Schedule host takes: it names its whole set of
@@ -350,8 +352,8 @@ defmodule GtfsPlannerWeb.AgentPanelSelectionTest do
     test "a host naming a helper the application does not ship fails the mount", context do
       socket = %Phoenix.LiveView.Socket{assigns: %{current_gtfs_version: context.version}}
 
-      # `connections` is the Schedule host's second helper and ships today, so a
-      # pack the application does not ship is one no host names either.
+      # Every shipped pack but one is named by some host, so a pack the
+      # application does not ship is one no host names either.
       assert_raise ArgumentError, ~r/does not ship/, fn ->
         AgentPanel.mount(socket, @forged_pack, allowed_packs: [@forged_pack])
       end
