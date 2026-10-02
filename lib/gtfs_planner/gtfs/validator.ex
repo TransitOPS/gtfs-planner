@@ -16,12 +16,18 @@ defmodule GtfsPlanner.Gtfs.Validator do
   claim, lease, completion and failure belong to `GtfsPlanner.Validations.Runner`,
   which calls it in a supervised task and reports progress to LiveViews through
   Phoenix.PubSub.
+
+  `validate_artifact/3` is the same validator over one already-exported artifact:
+  it feeds the CLI the exact bytes a publication pin holds instead of exporting
+  current database state a second time, so a report can only describe the bytes
+  its run recorded in `artifact_sha256`.
   """
 
   @behaviour GtfsPlanner.Gtfs.ValidatorBehaviour
 
-  alias GtfsPlanner.Gtfs.{Export, ExportDefaults, Validator.Result}
+  alias GtfsPlanner.Gtfs.{Export, ExportDefaults, ExportRuns, Validator.Result}
   alias GtfsPlanner.Validations
+  alias GtfsPlanner.Validations.ValidationRun
 
   require Logger
 
@@ -106,7 +112,83 @@ defmodule GtfsPlanner.Gtfs.Validator do
   end
 
   @doc """
-  Stops the validator CLI started by the process `pid` that is running `validate/3`.
+  Validates the exact artifact bytes one artifact-bound validation run selected.
+
+  The run's stored `artifact_sha256`, export run and slot are the only input: the
+  pinned bytes are read through `ExportRuns.pinned_artifact/4`, re-hashed by the
+  same ready-artifact verification a download claim uses, and handed to the CLI
+  without a second export. A hash that no longer matches the run's record is
+  refused rather than reported on.
+
+  Returns the same `{:ok, %Result{}}` / `{:error, reason}` shapes as `validate/3`
+  and, like it, never writes the run row.
+  """
+  @spec validate_artifact(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+          {:ok, Result.t()} | {:error, term()}
+  def validate_artifact(organization_id, validation_run_id, opts \\ []) do
+    _opts = opts
+    start_time = System.monotonic_time(:millisecond)
+
+    with %ValidationRun{organization_id: ^organization_id} = run <-
+           Validations.get_validation_run(validation_run_id),
+         true <- ValidationRun.artifact_run?(run),
+         {:ok, artifact} <- pinned_artifact_for(run),
+         :ok <- expect_hash(run, artifact) do
+      run_artifact_cli(run, artifact, start_time)
+    else
+      nil -> {:error, :not_found}
+      false -> {:error, :not_artifact_run}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp pinned_artifact_for(run) do
+    ExportRuns.pinned_artifact(
+      run.organization_id,
+      run.artifact_export_run_id,
+      run.artifact_slot,
+      Validations.artifact_pin_claim(run)
+    )
+  end
+
+  # The pin reader returns the run's recorded metadata only after re-hashing the
+  # file, so a mismatch means these are not the bytes this run reviewed.
+  defp expect_hash(run, artifact) do
+    if artifact.sha256 == run.artifact_sha256,
+      do: :ok,
+      else: {:error, :artifact_hash_mismatch}
+  end
+
+  defp run_artifact_cli(run, artifact, start_time) do
+    temp_dir =
+      Path.join(System.tmp_dir!(), "gtfs_validation_#{System.unique_integer([:positive])}")
+
+    try do
+      :ok = File.mkdir_p(temp_dir)
+
+      broadcast_progress(run.id, :validating, 50, "Running MobilityData validator...")
+
+      case run_validator_cli(artifact.path, temp_dir) do
+        {:ok, output_dir} ->
+          broadcast_progress(run.id, :processing, 95, "Processing results...")
+
+          with {:ok, _result} = parsed <- parse_report(output_dir, start_time) do
+            broadcast_progress(run.id, :processing, 100, "Done")
+            parsed
+          end
+
+        {:error, reason} = error ->
+          Logger.error("Validator CLI failed for artifact validation: #{inspect(reason)}")
+          error
+      end
+    after
+      File.rm_rf(temp_dir)
+    end
+  end
+
+  @doc """
+  Stops the validator CLI started by the process `pid` that is running `validate/3`
+  or `validate_artifact/3`.
 
   If the CLI is running, it is killed and `validate/3` returns `{:error, :cancelled}`.
   If the CLI has not started yet, it is never launched. The request is consumed by

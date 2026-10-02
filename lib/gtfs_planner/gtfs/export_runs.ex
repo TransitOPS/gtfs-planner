@@ -475,6 +475,76 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
     count
   end
 
+  @doc """
+  Returns one run the organization owns, or `nil`.
+  """
+  @spec get_scoped_run(Ecto.UUID.t(), Ecto.UUID.t()) :: Run.t() | nil
+  def get_scoped_run(organization_id, run_id) do
+    from(r in Run,
+      where: r.id == ^run_id and r.organization_id == ^organization_id
+    )
+    |> Repo.one()
+  end
+
+  @doc """
+  Returns the verified bytes a live pin holds, without renewing or releasing it.
+
+  This is the reader a validation run uses to feed the selected artifact to the
+  validator CLI: the pin row is still locked and owned by `claim`, the run is
+  still `ready`, and `ArtifactStorage.verify/1` re-hashes the file so the bytes
+  the caller reads are the bytes the run row recorded. It reuses the same
+  ready-artifact verification `claim_download/4` and `pin_publication/5` use and
+  records no download.
+
+  A pin that was released, rotated to another token, or moved to another slot is
+  `{:error, :pin_lost}`; expired or corrupt bytes are
+  `{:error, :missing_or_corrupt_artifact}` and normalize the run exactly as a
+  download claim normalizes them.
+  """
+  @spec pinned_artifact(Ecto.UUID.t(), Ecto.UUID.t(), :main | :flex, map()) ::
+          {:ok,
+           %{
+             path: String.t(),
+             filename: String.t(),
+             size: non_neg_integer(),
+             sha256: String.t()
+           }}
+          | {:error, :not_found | :pin_lost | :missing_or_corrupt_artifact}
+  def pinned_artifact(organization_id, run_id, slot, claim)
+      when slot in [:main, :flex] and is_map(claim) do
+    transaction_with_broadcast(fn ->
+      with %Run{state: :ready} = run <- lock_run(organization_id, run_id),
+           %PublicationPin{slot: ^slot} <- lock_scoped_pin(organization_id, run_id, claim) do
+        read_verified_artifact(run, slot)
+      else
+        %PublicationPin{} -> {{:error, :pin_lost}, []}
+        nil -> {{:error, :pin_lost}, []}
+        %Run{} -> {{:error, :not_found}, []}
+      end
+    end)
+  end
+
+  def pinned_artifact(_, _, _, _), do: {:error, :not_found}
+
+  # The same ready-artifact check `pin_ready_artifact/3` applies, without
+  # claiming a lease: corrupt or expired bytes are normalized the same way.
+  defp read_verified_artifact(%Run{} = run, slot) do
+    artifact = artifact_from_run(run, slot)
+
+    if is_binary(artifact.key) and artifact_current?(run) do
+      case ArtifactStorage.verify(artifact) do
+        {:ok, path} ->
+          {{:ok, pinned_artifact(artifact, path, nil)}, [run.id]}
+
+        {:error, :missing_or_corrupt_artifact} ->
+          _ = close_corrupt_artifact(run)
+          {{:error, :missing_or_corrupt_artifact}, [run.id]}
+      end
+    else
+      {{:error, :not_found}, []}
+    end
+  end
+
   @spec cleanup_expired(Ecto.UUID.t()) :: non_neg_integer()
   def cleanup_expired(organization_id) do
     transaction_with_broadcast(fn ->

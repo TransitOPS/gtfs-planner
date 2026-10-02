@@ -3,9 +3,11 @@ defmodule GtfsPlanner.Validations.Runner do
   Temporary supervised owner of one MobilityData validation run.
 
   `init/1` claims the run and starts the configured validator module's
-  `validate/3` in a task under `GtfsPlanner.TaskSupervisor`. The runner renews
-  the run's lease every `:validation_runner_heartbeat_ms` (default 60,000) and is
-  the only writer of the run's terminal state:
+  `validate/3` in a task under `GtfsPlanner.TaskSupervisor`. An artifact-bound
+  run calls `validate_artifact/3` instead, so the CLI sees the exact bytes the run
+  recorded rather than a fresh export of current rows. The runner renews the
+  run's lease every `:validation_runner_heartbeat_ms` (default 60,000) and is the
+  only writer of the run's terminal state:
 
     * `{:ok, result}` completes the run.
     * `{:error, reason}` fails it with a short reason (`"timeout"`, `"cancelled"`,
@@ -30,6 +32,7 @@ defmodule GtfsPlanner.Validations.Runner do
 
   alias GtfsPlanner.Gtfs.Validator
   alias GtfsPlanner.Validations
+  alias GtfsPlanner.Validations.ValidationRun
 
   require Logger
 
@@ -53,13 +56,14 @@ defmodule GtfsPlanner.Validations.Runner do
 
         task =
           Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
-            validator.validate(organization_id, run.gtfs_version_id, validation_run_id: run.id)
+            validate(validator, organization_id, run)
           end)
 
         state = %{
           organization_id: organization_id,
           run_id: run_id,
           token: token,
+          run: run,
           task: task,
           timer: nil
         }
@@ -133,8 +137,20 @@ defmodule GtfsPlanner.Validations.Runner do
     )
   end
 
-  defp conclude({:ok, _run}, state), do: {:stop, :normal, state}
-  defp conclude({:error, :lease_lost}, state), do: {:stop, {:shutdown, :lease_lost}, state}
+  # The terminal row is written before the pin is released, so a lost lease
+  # leaves the report and the claim intact for the run's owner to decide.
+  defp conclude({:ok, _run}, state) do
+    _ = Validations.release_artifact_pin(state.run)
+    {:stop, :normal, state}
+  end
+
+  defp validate(validator, organization_id, %ValidationRun{} = run) do
+    if ValidationRun.artifact_run?(run) do
+      validator.validate_artifact(organization_id, run.id, validation_run_id: run.id)
+    else
+      validator.validate(organization_id, run.gtfs_version_id, validation_run_id: run.id)
+    end
+  end
 
   # `error_details` holds a short reason: a `{:cli_failed, code, output}` reason
   # carries up to 64 KiB of CLI output, which the validator already logged.
