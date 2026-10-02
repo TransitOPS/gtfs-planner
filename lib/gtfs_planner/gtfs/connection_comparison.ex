@@ -62,6 +62,12 @@ defmodule GtfsPlanner.Gtfs.ConnectionComparison do
   cannot make the rows, the minimum and the digest describe different database
   states. The transaction closes before the snapshot is returned, so a caller
   that then waits on a provider holds no lock.
+
+  `compare/4` adds the margin arithmetic on top of that snapshot and reads
+  nothing of its own: every number it reports is arithmetic over rows this
+  module already loaded (CR-4). It is deliberately a pure step - a caller that
+  approved a candidate against an older snapshot is refused with `:stale`
+  rather than silently compared against the current one.
   """
 
   import Ecto.Query, warn: false
@@ -71,6 +77,7 @@ defmodule GtfsPlanner.Gtfs.ConnectionComparison do
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.Calendars.ServiceDates
   alias GtfsPlanner.Gtfs.DisplayClock
+  alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.ServiceQueries
@@ -91,6 +98,9 @@ defmodule GtfsPlanner.Gtfs.ConnectionComparison do
 
   @pair_keys [:from, :id, :minimum, :to]
   @endpoint_keys [:route_id, :service_date_offset, :stop_id, :stop_sequence, :trip_id]
+  @candidate_keys [:approval, :origin, :times]
+  @candidate_time_keys [:arrival, :departure]
+  @approval_keys [:base_digest, :label]
   @stored_minimum_keys [:origin]
   @supplied_minimum_keys [:approval, :origin, :seconds]
 
@@ -150,6 +160,82 @@ defmodule GtfsPlanner.Gtfs.ConnectionComparison do
   @typedoc "Why a read could not produce an answer."
   @type error :: :invalid_input | :not_found | :too_many | :unavailable
 
+  @typedoc """
+  The candidate a host supplied as external evidence: `%{origin: :supplied,
+  times: %{pair_id => %{arrival: clock, departure: clock}}, approval: approval}`.
+
+  It is external by construction - it is exact clock evidence the caller holds
+  and approved, never a native schedule draft projected from another process.
+  `approval` is the approving label, and its `base_digest` binds the candidate to
+  the snapshot it was approved against.
+  """
+  @type candidate :: %{
+          required(:origin) => :supplied,
+          required(:times) => %{optional(String.t()) => map()},
+          required(:approval) => String.t() | %{base_digest: String.t(), label: String.t()}
+        }
+
+  @typedoc "One pair's computed outcome: `:comparable`, `:unresolved`, `:not_applicable` or `:prohibited`."
+  @type status :: :comparable | :unresolved | :not_applicable | :prohibited
+
+  @typedoc "One side's exact clocks and the margin they leave against the stated minimum."
+  @type side_values :: %{
+          arrival_time: String.t() | nil,
+          arrival_secs: non_neg_integer(),
+          departure_time: String.t() | nil,
+          departure_secs: non_neg_integer(),
+          available_seconds: integer(),
+          margin_seconds: integer(),
+          margin_status: :meets_stated_minimum | :below_stated_minimum
+        }
+
+  @typedoc "Why one pair could not be given a margin; `nil` for a comparable pair."
+  @type comparison_reason ::
+          nil
+          | :conflicting_best_rules
+          | :inactive_route
+          | :missing_candidate_evidence
+          | :mixed_date_offset_basis
+          | :mixed_timezones
+          | :no_recorded_service
+          | :no_stated_minimum
+          | :occurrence_not_found
+          | :prohibited_by_best_rule
+          | :frequency_template
+          | :timezone_unavailable
+          | :unreadable_calendar
+          | :unknown_arrival_time
+          | :unknown_candidate_time
+          | :unknown_departure_time
+
+  @typedoc "One classified pair. Every requested pair appears exactly once."
+  @type comparison :: %{
+          required(:id) => String.t(),
+          required(:status) => status(),
+          required(:reason) => comparison_reason(),
+          required(:current) => side_values() | nil,
+          required(:candidate) => side_values() | nil,
+          required(:delta_seconds) => integer() | nil,
+          required(:minimum) => map()
+        }
+
+  @typedoc "The computed comparison of every requested pair."
+  @type report :: %{
+          required(:scope) => map(),
+          required(:service_date) => Date.t(),
+          required(:approved_route_ids) => [String.t()],
+          required(:base_digest) => String.t(),
+          required(:candidate) => map() | nil,
+          required(:rows) => [comparison()],
+          required(:totals) => map(),
+          required(:completeness) => map(),
+          required(:resources) => map(),
+          required(:digest) => String.t()
+        }
+
+  @typedoc "Why a comparison could not be computed."
+  @type comparison_error :: error() | :stale
+
   @doc """
   Returns the bound this module refuses to exceed: the most approved pairs one
   load may carry. It is public so the ceiling a caller is told about and the one
@@ -180,6 +266,305 @@ defmodule GtfsPlanner.Gtfs.ConnectionComparison do
     with {:ok, request} <- request(scope, pairs, service_date) do
       read(request)
     end
+  end
+
+  @doc """
+  Compares the loaded snapshot's current connection margins with a supplied
+  candidate, for `pairs` on `service_date`.
+
+  This is pure arithmetic over `load/3`'s rows: it loads once and reads nothing
+  else, so every number in the report comes from the one snapshot its
+  `base_digest` names (CR-4).
+
+  `candidate` is external exact supplied evidence -
+  `%{origin: :supplied, times: %{pair_id => %{arrival: clock, departure: clock}},
+  approval: ...}` - and is never a native schedule draft. Its `approval` carries
+  the `base_digest` of the snapshot it was approved against; a digest that is
+  absent or does not equal the snapshot loaded here is `{:error, :stale}`, which
+  asks the host for a fresh approval rather than reporting a margin against rows
+  the approver never saw.
+
+  Every requested pair produces exactly one row, classified `:comparable`,
+  `:unresolved`, `:not_applicable` or `:prohibited`, and `totals` counts them.
+  A pair is comparable only where its current occurrence is exact and active, its
+  stored minimum is resolved, both endpoints share one zone and one civil-date
+  basis, and the candidate supplied both of its clocks. Nothing is normalized to
+  guess: an above-24-hour clock stays as the feed records it, a different zone or
+  date offset is unresolved rather than converted, and a frequency template is
+  unresolved because native expansion has no proof here.
+  """
+  @spec compare(scope(), [pair()], Date.t(), candidate() | nil) ::
+          {:ok, report()} | {:error, comparison_error()}
+  def compare(scope, pairs, service_date, candidate) do
+    with {:ok, supplied} <- candidate(candidate),
+         {:ok, snapshot} <- load(scope, pairs, service_date),
+         :ok <- binding(supplied, snapshot) do
+      {:ok, report(snapshot, supplied)}
+    end
+  end
+
+  # -- the supplied candidate -------------------------------------------------
+
+  # A `nil` candidate is the "not approved yet" case, not a malformed request:
+  # every pair then resolves as unresolved for missing candidate evidence.
+  defp candidate(nil), do: {:ok, %{origin: :supplied, times: %{}, approval: nil}}
+
+  defp candidate(candidate) do
+    with true <- exact_keys?(candidate, @candidate_keys),
+         :supplied <- Map.get(candidate, :origin),
+         true <- is_map(Map.get(candidate, :times)),
+         {:ok, times} <- candidate_times(Map.get(candidate, :times)),
+         {:ok, approval} <- candidate_approval(Map.get(candidate, :approval)) do
+      {:ok, %{origin: :supplied, times: times, approval: approval}}
+    else
+      _other -> {:error, :invalid_input}
+    end
+  end
+
+  defp candidate_times(times) do
+    times
+    |> Enum.reduce_while({:ok, %{}}, fn {id, clocks}, {:ok, acc} ->
+      case candidate_clocks(id, clocks) do
+        {:ok, entry} -> {:cont, {:ok, Map.put(acc, id, entry)}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, times} -> {:ok, times}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp candidate_clocks(id, clocks) do
+    with true <- label?(id),
+         true <- exact_keys?(clocks, @candidate_time_keys),
+         true <- clock?(Map.get(clocks, :arrival)),
+         true <- clock?(Map.get(clocks, :departure)) do
+      {:ok, clocks}
+    else
+      false -> {:error, :invalid_input}
+    end
+  end
+
+  defp clock?(nil), do: true
+  defp clock?(value), do: is_binary(value)
+
+  # The approving label may be the bare string a caller supplies. Only the map
+  # form can bind the candidate to a snapshot, so the label-only form is stale
+  # rather than silently unbound.
+  defp candidate_approval(label) when is_binary(label) and label != "",
+    do: {:ok, %{label: label, base_digest: nil}}
+
+  defp candidate_approval(%{base_digest: base_digest, label: label} = approval) do
+    if exact_keys?(approval, @approval_keys) and label?(label) and
+         (is_binary(base_digest) or is_nil(base_digest)) do
+      {:ok, %{label: label, base_digest: base_digest}}
+    else
+      {:error, :invalid_input}
+    end
+  end
+
+  defp candidate_approval(_approval), do: {:error, :invalid_input}
+
+  # INV-2: an approval is bound to the content it was approved against, so a
+  # candidate that cannot name this snapshot's digest is refused rather than
+  # compared against rows the approver never saw.
+  defp binding(%{approval: %{base_digest: digest}}, snapshot) when is_binary(digest) do
+    if digest == snapshot.digest, do: :ok, else: {:error, :stale}
+  end
+
+  defp binding(%{approval: %{base_digest: nil}}, _snapshot), do: {:error, :stale}
+  defp binding(%{approval: nil}, _snapshot), do: :ok
+
+  # -- the computed report ---------------------------------------------------
+
+  defp report(snapshot, supplied) do
+    rows = Enum.map(snapshot.rows, &comparison(&1, supplied))
+
+    value = %{
+      scope: snapshot.scope,
+      service_date: snapshot.service_date,
+      approved_route_ids: snapshot.approved_route_ids,
+      base_digest: snapshot.digest,
+      candidate: candidate_entry(supplied),
+      rows: rows,
+      totals: totals(rows),
+      completeness: completeness(rows),
+      resources: %{
+        approved_route_ids: snapshot.approved_route_ids,
+        pair_limit: @max_pairs,
+        occurrence_limit: ServiceQueries.examined_occurrence_limit(),
+        snapshot: snapshot.totals
+      }
+    }
+
+    Map.put(value, :digest, digest(value))
+  end
+
+  defp candidate_entry(%{approval: nil}), do: nil
+
+  defp candidate_entry(supplied) do
+    %{
+      origin: :supplied,
+      evidence: :external_exact_supplied,
+      approval: supplied.approval,
+      supplied_pairs: supplied.times |> Map.keys() |> Enum.sort()
+    }
+  end
+
+  defp comparison(row, supplied) do
+    case verdict(row) do
+      {:comparable, nil} -> compared(row, supplied)
+      {status, reason} -> result(row, status, reason, nil, nil, nil)
+    end
+  end
+
+  # The first blocker decides, in the order the acceptance cases name them: the
+  # stored policy before the candidate, the occurrence before the arithmetic, and
+  # the arithmetic basis before any delta.
+  defp verdict(row) do
+    cond do
+      row.minimum.status == :prohibited -> {:prohibited, row.minimum.provenance.reason}
+      row.minimum.status == :conflicting -> {:unresolved, row.minimum.provenance.reason}
+      not is_nil(row.reason) -> {inactive_status(row.reason), row.reason}
+      row.minimum.status == :absent -> {:unresolved, :no_stated_minimum}
+      frequency_template?(row) -> {:unresolved, :frequency_template}
+      row.from.timezone != row.to.timezone -> {:unresolved, :mixed_timezones}
+      row.from.civil_date != row.to.civil_date -> {:unresolved, :mixed_date_offset_basis}
+      true -> {:comparable, nil}
+    end
+  end
+
+  # A pair that does not run on this date is not applicable to it; an occurrence
+  # this request could not read is unresolved.
+  defp inactive_status(reason) when reason in [:inactive_route, :no_recorded_service],
+    do: :not_applicable
+
+  defp inactive_status(_reason), do: :unresolved
+
+  # A trip with a `frequencies.txt` row is a template rather than one exact
+  # departure, at either `exact_times` value, and native expansion has no proof in
+  # this module.
+  defp frequency_template?(row) do
+    row.from.frequency_template? or row.to.frequency_template?
+  end
+
+  defp compared(row, supplied) do
+    current = side_values(row.from, row.to, row.minimum.seconds)
+
+    case candidate_values(supplied, row) do
+      {:ok, candidate} ->
+        result(
+          row,
+          :comparable,
+          nil,
+          current,
+          candidate,
+          candidate.margin_seconds - current.margin_seconds
+        )
+
+      {:error, reason} ->
+        result(row, :unresolved, reason, current, nil, nil)
+    end
+  end
+
+  # GTFS service-day seconds are subtracted as recorded: 24:10 to 24:18 is 480
+  # seconds, not 480 minus a guessed day, and nothing is wrapped to a 24-hour
+  # clock.
+  defp side_values(from, to, minimum) do
+    available = to.departure_secs - from.arrival_secs
+    margin = available - minimum
+
+    %{
+      arrival_time: from.arrival_time,
+      arrival_secs: from.arrival_secs,
+      departure_time: to.departure_time,
+      departure_secs: to.departure_secs,
+      available_seconds: available,
+      margin_seconds: margin,
+      margin_status: margin_status(margin)
+    }
+  end
+
+  defp margin_status(margin) when margin >= 0, do: :meets_stated_minimum
+  defp margin_status(_margin), do: :below_stated_minimum
+
+  defp candidate_values(supplied, row) do
+    case Map.fetch(supplied.times, row.id) do
+      {:ok, clocks} -> candidate_clocks_values(clocks, row.minimum.seconds)
+      :error -> {:error, :missing_candidate_evidence}
+    end
+  end
+
+  # The same integer arithmetic on the supplied clocks, at the same stated
+  # minimum. An unparsable supplied clock is unresolved, never zero.
+  defp candidate_clocks_values(clocks, minimum) do
+    with {:ok, arrival_secs} <- supplied_secs(Map.get(clocks, :arrival)),
+         {:ok, departure_secs} <- supplied_secs(Map.get(clocks, :departure)) do
+      available = departure_secs - arrival_secs
+      margin = available - minimum
+
+      {:ok,
+       %{
+         arrival_time: Map.get(clocks, :arrival),
+         arrival_secs: arrival_secs,
+         departure_time: Map.get(clocks, :departure),
+         departure_secs: departure_secs,
+         available_seconds: available,
+         margin_seconds: margin,
+         margin_status: margin_status(margin)
+       }}
+    end
+  end
+
+  defp supplied_secs(nil), do: {:error, :unknown_candidate_time}
+
+  defp supplied_secs(value) do
+    case GtfsTime.parse(value) do
+      {:ok, secs} -> {:ok, secs}
+      {:error, :invalid_time} -> {:error, :unknown_candidate_time}
+    end
+  end
+
+  defp result(row, status, reason, current, candidate, delta_seconds) do
+    %{
+      id: row.id,
+      status: status,
+      reason: reason,
+      current: current,
+      candidate: candidate,
+      delta_seconds: delta_seconds,
+      minimum: row.minimum
+    }
+  end
+
+  defp totals(rows) do
+    statuses = Enum.map(rows, & &1.status)
+
+    margins =
+      Enum.flat_map(rows, fn row -> Enum.reject([row.current, row.candidate], &is_nil/1) end)
+
+    %{
+      requested: length(rows),
+      comparable: Enum.count(statuses, &(&1 == :comparable)),
+      unresolved: Enum.count(statuses, &(&1 == :unresolved)),
+      not_applicable: Enum.count(statuses, &(&1 == :not_applicable)),
+      prohibited: Enum.count(statuses, &(&1 == :prohibited)),
+      meets_stated_minimum: Enum.count(margins, &(&1.margin_status == :meets_stated_minimum)),
+      below_stated_minimum: Enum.count(margins, &(&1.margin_status == :below_stated_minimum))
+    }
+  end
+
+  # Caps and unresolved rows are disclosed here rather than silently narrowing
+  # the answer: a report that withheld nothing is complete, and one that did says
+  # how many pairs carry no margin.
+  defp completeness(rows) do
+    %{
+      complete?: Enum.all?(rows, &(&1.status == :comparable)),
+      requested: length(rows),
+      classified: length(rows),
+      withheld: Enum.count(rows, &(&1.status != :comparable))
+    }
   end
 
   # -- request validation ----------------------------------------------------
@@ -341,6 +726,7 @@ defmodule GtfsPlanner.Gtfs.ConnectionComparison do
         occurrences: occurrences,
         policy: policy,
         calendars: scoped_calendars(request, trips),
+        frequencies: scoped_frequencies(request, trips),
         zones: scoped_zones(request, routes)
       }
 
@@ -361,7 +747,7 @@ defmodule GtfsPlanner.Gtfs.ConnectionComparison do
       rows: rows
     }
 
-    Map.put(value, :totals, totals(rows)) |> Map.put(:digest, digest(value))
+    Map.put(value, :totals, snapshot_totals(rows)) |> Map.put(:digest, digest(value))
   end
 
   # -- scoped reads ----------------------------------------------------------
@@ -554,6 +940,25 @@ defmodule GtfsPlanner.Gtfs.ConnectionComparison do
     end)
   end
 
+  # The frequency templates of this request's own trips, read in the same
+  # snapshot as their stop times. A trip that owns one is a template rather than
+  # one exact departure, which `compare/4` refuses to price.
+  defp scoped_frequencies(request, trips) do
+    trip_ids = trips |> Map.values() |> Enum.map(& &1.trip_id)
+
+    if trip_ids == [] do
+      MapSet.new()
+    else
+      from(f in Frequency,
+        where:
+          f.organization_id == ^request.organization_id and
+            f.gtfs_version_id == ^request.gtfs_version_id and f.trip_id in ^trip_ids
+      )
+      |> Repo.all()
+      |> MapSet.new(& &1.trip_id)
+    end
+  end
+
   # The date evaluator is pure but raises for unreadable retained calendar
   # source; an unreadable service is a disclosed fact here, never a zero.
   defp active_on?(calendars, service_id, %Date{} = date) do
@@ -658,6 +1063,7 @@ defmodule GtfsPlanner.Gtfs.ConnectionComparison do
       civil_date: civil_date,
       service_active?: service_active?,
       service_reason: service_reason,
+      frequency_template?: MapSet.member?(data.frequencies, trip.trip_id),
       occurrence_found?: occurrence != nil,
       arrival_secs: arrival_secs(occurrence),
       arrival_time: arrival_time(occurrence),
@@ -934,7 +1340,7 @@ defmodule GtfsPlanner.Gtfs.ConnectionComparison do
 
   # -- totals and digest -----------------------------------------------------
 
-  defp totals(rows) do
+  defp snapshot_totals(rows) do
     minimums = Enum.map(rows, & &1.minimum.status)
 
     %{
