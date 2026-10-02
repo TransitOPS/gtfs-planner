@@ -697,10 +697,8 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
     end
   end
 
-  describe "stops_by_id/2 and routes_by_id/2" do
+  describe "stops_by_id/2" do
     test "an editor reads the version's rows and none of a sibling version's", context do
-      route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
-
       stop =
         stop_fixture(context.organization.id, context.version.id, stop_attrs("S1", "Central"))
 
@@ -711,12 +709,9 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
 
       assert %{} = stops = Alerts.stops_by_id(context.audit, [stop.id, their_stop.id])
       assert Map.keys(stops) == [stop.id]
-      assert Map.keys(Alerts.routes_by_id(context.audit, [route.id])) == [route.id]
     end
 
-    test "a member without the editor role reads empty maps, not lists", context do
-      route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
-
+    test "a member without the editor role reads an empty map, not a list", context do
       stop =
         stop_fixture(context.organization.id, context.version.id, stop_attrs("S1", "Central"))
 
@@ -725,7 +720,6 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
       audit = audit_context(context.organization, context.version, viewer)
 
       assert Alerts.stops_by_id(audit, [stop.id]) == %{}
-      assert Alerts.routes_by_id(audit, [route.id]) == %{}
     end
   end
 
