@@ -276,6 +276,33 @@ defmodule GtfsPlannerWeb.Gtfs.InSeatAssistanceLiveTest do
       refute applied?(view, entry.id)
       assert has_element?(view, "#in-seat-helper-notice", "only partly saved")
     end
+
+    test "a Set-all save on another group leaves the reviewed group's entry prepared", context do
+      elsewhere_pair(context)
+      admitted = group(context)
+      other = Enum.find(groups(context), &(&1.token != admitted.token))
+      before = counts_before(context)
+
+      view = helper_view(context)
+      view |> element("#in-seat-helper-group") |> render_click()
+      entry = prepared_entry(view, "Let riders stay on board for these connections.")
+
+      view |> element("#agent-review-prepared-#{entry.id}") |> render_click()
+      assert has_element?(view, "#set-all-review")
+
+      # The reader moves to the other group through the URL and chooses the same
+      # setting there, which is a review of different connections.
+      render_patch(view, connections_url(context, view: "connections", group: other.token))
+      render_click(view, "bulk_choice", %{"bulk" => "stay"})
+      render_click(view, "open_bulk_review", %{})
+      view |> element("#set-all-review-save") |> render_click()
+      await_save(view)
+
+      # Only the other group was written, so the helper's proposal for the first
+      # group stays reviewable instead of reading as applied.
+      assert row_counts(context).transfers == before.transfers + length(other.connections)
+      refute applied?(view, entry.id)
+    end
   end
 
   describe "the helper command and one connection" do
@@ -334,6 +361,42 @@ defmodule GtfsPlannerWeb.Gtfs.InSeatAssistanceLiveTest do
       view |> element("#connection-save") |> render_click()
 
       assert [%{transfer_type: 4}] = pair_transfers(context, context.stay_pair)
+      refute applied?(view, entry.id)
+    end
+
+    test "a save on another connection leaves the reviewed connection's entry prepared",
+         context do
+      view = connection_view(context)
+
+      view |> element("#in-seat-helper-connection") |> render_click()
+      entry = prepared_entry(view, "These have to be a reboard.", "must_reboard")
+
+      view |> element("#agent-review-prepared-#{entry.id}") |> render_click()
+      assert has_element?(view, ~s(input#connection-choice-reboard[checked]))
+
+      # The reader opens the other connection without saving the first, chooses
+      # the same setting and saves that one.
+      render_patch(
+        view,
+        connections_url(context, view: "connections", gap: connection_id(context.other_pair))
+      )
+
+      assert has_element?(view, "#gap-drawer")
+
+      view
+      |> element("#connection-form")
+      |> render_change(%{
+        "connection" => %{"choice" => "must_reboard"},
+        "_target" => ["connection-choice-reboard"]
+      })
+
+      view |> element("#connection-save") |> render_click()
+
+      assert [%{transfer_type: 5}] = pair_transfers(context, context.other_pair)
+      assert pair_transfers(context, context.stay_pair) == []
+
+      # The helper's proposal was for the first connection, which was never
+      # written, so its card stays reviewable instead of reading as applied.
       refute applied?(view, entry.id)
     end
 
