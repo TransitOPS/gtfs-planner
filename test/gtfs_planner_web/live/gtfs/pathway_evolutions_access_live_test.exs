@@ -754,8 +754,8 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsAccessLiveTest do
       html = render_patch(view, access_path(version, other.station.stop_id, @friday, "12:00:00"))
 
       refute html =~ "Platform 1"
-      refute has_element?(view, "#preview-result")
-      assert has_element?(view, "#preview-skeleton")
+      refute rendered?(html, "#preview-result")
+      assert rendered?(html, "#preview-skeleton")
 
       html = render_async(view, 5_000)
 
