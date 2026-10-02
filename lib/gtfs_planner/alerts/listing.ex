@@ -16,16 +16,25 @@ defmodule GtfsPlanner.Alerts.Listing do
   (R8). Existence is checked with one `id in` query per table for every listed
   alert at once, so the cost does not grow with the number of rows.
 
-  `check_in_due?` compares the stored `check_in_at` with the agency-local time
-  the caller passes in. Both are civil values in the agency's own zone, so this
-  module converts nothing between zones (CR-7); `Alerts.agency_now/1` supplies
-  that time.
+  `check_in_due?` compares the stored `check_in_at` with the alert's own local
+  time. An organization holds alerts written against several versions, and each
+  alert carries the zone its source version declared, so the caller passes one
+  UTC instant and this module localizes it once per retained zone through
+  `Gtfs.DisplayClock.localize_many/2`. Every row is therefore classified against
+  its own civil date, which is what keeps a New York alert and a Tokyo alert in
+  the same organization from being grouped on the navbar version's day (CR-7).
+
+  An alert with no retained zone falls back to the organization's stated zone and
+  then to UTC. That fallback is a presentation answer only: it is what an absent
+  zone already disclosed on the timing answer, and publication still requires an
+  explicit valid zone (CR-5).
   """
 
   import Ecto.Query, warn: false
 
   alias GtfsPlanner.Alerts.Alert
   alias GtfsPlanner.Alerts.TimingAnswer
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Trip
@@ -44,21 +53,30 @@ defmodule GtfsPlanner.Alerts.Listing do
   @type tabs :: %{current: [row()], upcoming: [row()], in_progress: [row()], past: [row()]}
 
   @doc """
-  Builds the four tabs for the alerts of one version, as of `local_now`.
+  Builds the four tabs for a set of organization-owned alerts, as of `now_utc`.
 
-  `local_now` is the agency's own civil time, so `today` is that value's date
-  rather than a UTC date. Every tab is always present in the result, empty or
-  not, so the list page can show counts without special-casing a missing key.
+  `now_utc` is one instant rather than a civil time, because the rows do not
+  share a zone: each alert is grouped on the date its own retained zone is on at
+  that instant. `organization_timezone` is the organization's explicit zone, used
+  for an alert whose source version declared none; when that is absent too the
+  row is read in UTC, which is the disclosed display fallback and never a
+  publication consent (CR-5).
+
+  Every tab is always present in the result, empty or not, so the list page can
+  show counts without special-casing a missing key.
   """
-  @spec rows([Alert.t()], Ecto.UUID.t(), NaiveDateTime.t()) :: tabs()
-  def rows(alerts, gtfs_version_id, %NaiveDateTime{} = local_now) do
-    today = NaiveDateTime.to_date(local_now)
-    missing = missing_target_ids(alerts, gtfs_version_id)
+  @spec rows([Alert.t()], DateTime.t(), String.t() | nil) :: tabs()
+  def rows(alerts, %DateTime{} = now_utc, organization_timezone \\ nil) do
+    missing = missing_target_ids(alerts)
+    local = local_times(alerts, now_utc, organization_timezone)
 
     grouped =
-      Map.new(alerts |> Enum.group_by(&tab(&1, today)), fn {tab, tab_alerts} ->
-        {tab, tab_alerts |> order(tab) |> Enum.map(&row(&1, local_now, missing))}
-      end)
+      Map.new(
+        alerts |> Enum.group_by(&tab(&1, NaiveDateTime.to_date(Map.fetch!(local, &1.id)))),
+        fn {tab, tab_alerts} ->
+          {tab, tab_alerts |> order(tab) |> Enum.map(&row(&1, Map.fetch!(local, &1.id), missing))}
+        end
+      )
 
     # Every tab is present even when it holds nothing, so the list page can read
     # a count without special-casing an absent key.
@@ -66,27 +84,119 @@ defmodule GtfsPlanner.Alerts.Listing do
   end
 
   @doc """
-  Returns the target identities no longer present in the version, per table.
+  Returns the zone an alert's civil dates and check-in time are read in.
+
+  The alert's own retained zone is the answer, because it is the zone the
+  answers were written in. An organization with alerts from several versions
+  therefore reads each row in its own day rather than in the version the editor
+  happens to have selected.
+  """
+  @spec zone(Alert.t(), String.t() | nil) :: String.t()
+  def zone(%Alert{timezone: timezone}, _organization_timezone)
+      when is_binary(timezone) and timezone != "",
+      do: timezone
+
+  def zone(%Alert{}, organization_timezone) when is_binary(organization_timezone),
+    do: organization_timezone
+
+  def zone(%Alert{}, _organization_timezone), do: "UTC"
+
+  @doc """
+  Localizes one instant for every alert, one query per retained zone.
+
+  Rows that share a zone are converted together, so an organization with one
+  zone still costs a single query and a mixed organization costs one per distinct
+  zone rather than one per alert.
+  """
+  @spec local_times([Alert.t()], DateTime.t(), String.t() | nil) :: %{
+          optional(Ecto.UUID.t()) => NaiveDateTime.t()
+        }
+  def local_times(alerts, %DateTime{} = now_utc, organization_timezone \\ nil) do
+    alerts
+    |> Enum.group_by(&zone(&1, organization_timezone))
+    |> Enum.flat_map(fn {timezone, zone_alerts} ->
+      [now_utc]
+      |> DisplayClock.localize_many(%{timezone: timezone})
+      |> List.first()
+      |> then(&Enum.map(zone_alerts, fn alert -> {alert.id, &1} end))
+    end)
+    |> Map.new()
+  end
+
+  @doc """
+  Returns the target identities that no longer resolve, per table.
+
+  Each alert is checked against the version it was written against, so an alert
+  of a sibling version is never satisfied by a row that happens to carry the same
+  GTFS identifier. An alert whose source version has been deleted has no version
+  that could still resolve an identity, so every identity it names is reported:
+  the alert is about rows that no longer exist anywhere, which is exactly what
+  Needs attention means. Its stored `target_reference` still carries the wire IDs
+  and labels it was accepted with, so nothing is guessed and the message keeps
+  naming what it named (CR-5).
 
   A UUID that cannot be parsed can never name a row, so it is reported as
   missing rather than left to reach a query.
   """
-  @spec missing_target_ids([Alert.t()], Ecto.UUID.t()) :: %{
+  @spec missing_target_ids([Alert.t()]) :: %{
           routes: MapSet.t(String.t()),
           stops: MapSet.t(String.t()),
           trips: MapSet.t(String.t())
         }
-  def missing_target_ids(alerts, gtfs_version_id) do
-    referenced =
-      Enum.reduce(alerts, %{routes: [], stops: [], trips: []}, fn alert, acc ->
-        merge_referenced(acc, referenced_ids(alert))
+  def missing_target_ids(alerts) do
+    by_version =
+      alerts
+      |> Enum.group_by(& &1.source_gtfs_version_id)
+
+    # A version that no longer exists cannot resolve anything, so an alert left
+    # without one reports every identity it names.
+    {referenced, orphaned} =
+      Enum.reduce(by_version, {empty_referenced(), empty_referenced()}, fn
+        {nil, version_alerts}, {referenced, orphaned} ->
+          ids =
+            Enum.reduce(
+              version_alerts,
+              empty_referenced(),
+              &merge_referenced(&2, referenced_ids(&1))
+            )
+
+          {referenced, merge_referenced(orphaned, ids)}
+
+        {_version_id, version_alerts}, {referenced, orphaned} ->
+          ids =
+            Enum.reduce(
+              version_alerts,
+              empty_referenced(),
+              &merge_referenced(&2, referenced_ids(&1))
+            )
+
+          {merge_referenced(referenced, ids), orphaned}
+      end)
+
+    missing =
+      by_version
+      |> Enum.filter(fn {version_id, _alerts} -> not is_nil(version_id) end)
+      |> Enum.reduce(empty_sets(), fn {version_id, _alerts}, acc ->
+        merge_sets(acc, %{
+          routes: missing_ids(Route, version_id, referenced.routes),
+          stops: missing_ids(Stop, version_id, referenced.stops),
+          trips: missing_ids(Trip, version_id, referenced.trips)
+        })
       end)
 
     %{
-      routes: missing_ids(Route, gtfs_version_id, referenced.routes),
-      stops: missing_ids(Stop, gtfs_version_id, referenced.stops),
-      trips: missing_ids(Trip, gtfs_version_id, referenced.trips)
+      routes: MapSet.union(missing.routes, MapSet.new(orphaned.routes)),
+      stops: MapSet.union(missing.stops, MapSet.new(orphaned.stops)),
+      trips: MapSet.union(missing.trips, MapSet.new(orphaned.trips))
     }
+  end
+
+  defp empty_referenced, do: %{routes: [], stops: [], trips: []}
+
+  defp empty_sets, do: %{routes: MapSet.new(), stops: MapSet.new(), trips: MapSet.new()}
+
+  defp merge_sets(left, right) do
+    Map.new(left, fn {table, ids} -> {table, MapSet.union(ids, Map.fetch!(right, table))} end)
   end
 
   @doc """

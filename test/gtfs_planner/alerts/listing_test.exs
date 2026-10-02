@@ -1,12 +1,14 @@
 defmodule GtfsPlanner.Alerts.ListingTest do
   @moduledoc """
-  Step 7: `Alerts.list_alerts/2` groups a version's alerts into the four tabs and
+  `Alerts.list_alerts/2` groups an organization's alerts into the four tabs and
   derives Needs attention and Check-in due from the stored answers (AC-9, R8).
+  Organization ownership and the mixed-zone instants belong to
+  `organization_scope_test.exs`.
 
   Every expectation is a literal from the spec's rules, not a value recomputed by
-  the module under test. The agency-local time is passed in as a fixed
-  `NaiveDateTime`, so no assertion depends on a real clock; `agency_now/1` is the
-  one case that reads the clock and asserts only its shape.
+  the module under test. One UTC instant is passed in and each alert is
+  localized in its own retained zone, so no assertion depends on a real clock;
+  `agency_now/1` is the one case that reads the clock and asserts only its shape.
   """
 
   use GtfsPlanner.DataCase
@@ -25,7 +27,10 @@ defmodule GtfsPlanner.Alerts.ListingTest do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.DisplayClock
 
-  @local_now ~N[2026-10-05 10:00:00]
+  # 5 October 17:00 UTC is 5 October 10:00 in the fixture's America/Los_Angeles
+  # agency zone, so the existing literal expectations keep reading the same civil
+  # day while the command now takes one UTC instant.
+  @now_utc ~U[2026-10-05 17:00:00Z]
 
   setup do
     organization = organization_fixture()
@@ -45,7 +50,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
     test "an alert that has not answered every question is in progress", context do
       alert = alert_fixture(context.audit, %{"urgency" => "now"})
 
-      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @now_utc)
 
       assert [row] = tabs.in_progress
       assert row.alert.id == alert.id
@@ -57,7 +62,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
     test "a complete open-ended alert is current, not past", context do
       alert = open_ended_delay(context, "2026-10-01", nil)
 
-      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @now_utc)
 
       assert Enum.map(tabs.current, & &1.alert.id) == [alert.id]
       assert tabs.past == []
@@ -66,7 +71,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
     test "a complete alert starting later is upcoming", context do
       alert = open_ended_delay(context, "2026-10-10", nil)
 
-      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @now_utc)
 
       assert Enum.map(tabs.upcoming, & &1.alert.id) == [alert.id]
       assert tabs.current == []
@@ -75,7 +80,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
     test "a complete alert that ended before today is past", context do
       alert = open_ended_delay(context, "2026-10-01", "2026-10-04")
 
-      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @now_utc)
 
       assert Enum.map(tabs.past, & &1.alert.id) == [alert.id]
       assert tabs.current == []
@@ -84,7 +89,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
     test "a complete alert ending today is still current", context do
       alert = open_ended_delay(context, "2026-10-01", "2026-10-05")
 
-      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @now_utc)
 
       assert Enum.map(tabs.current, & &1.alert.id) == [alert.id]
       assert tabs.past == []
@@ -96,19 +101,19 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       # same alert grouped on 6 October would be Past.
       alert = open_ended_delay(context, "2026-10-05", "2026-10-05")
 
-      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @now_utc)
 
       assert Enum.map(tabs.current, & &1.alert.id) == [alert.id]
       assert tabs.past == []
 
       assert {:ok, later_tabs} =
-               Alerts.list_alerts(context.audit, ~N[2026-10-06 10:00:00])
+               Alerts.list_alerts(context.audit, ~U[2026-10-06 17:00:00Z])
 
       assert Enum.map(later_tabs.past, & &1.alert.id) == [alert.id]
       assert later_tabs.current == []
     end
 
-    test "an alert of another version of the same organization is not returned", context do
+    test "an alert of another version of the same organization is returned too", context do
       mine = open_ended_delay(context, "2026-10-01", nil)
 
       other_version = gtfs_version_fixture(context.organization.id)
@@ -117,11 +122,12 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       other_audit =
         audit_context(context.organization, other_version, context.actor)
 
-      _theirs = open_ended_delay(%{audit: other_audit}, "2026-10-01", nil)
+      theirs = open_ended_delay(%{audit: other_audit}, "2026-10-01", nil)
 
-      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @now_utc)
 
-      assert Enum.map(tabs.current, & &1.alert.id) == [mine.id]
+      assert Enum.sort(Enum.map(tabs.current, & &1.alert.id)) ==
+               Enum.sort([mine.id, theirs.id])
     end
 
     test "an alert of another organization is not returned", context do
@@ -139,7 +145,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
           nil
         )
 
-      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @now_utc)
 
       assert Enum.map(tabs.current, & &1.alert.id) == [mine.id]
     end
@@ -152,7 +158,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
 
       audit = audit_context(context.organization, context.version, viewer)
 
-      assert {:error, :forbidden} = Alerts.list_alerts(audit, @local_now)
+      assert {:error, :forbidden} = Alerts.list_alerts(audit, @now_utc)
     end
   end
 
@@ -162,7 +168,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       earlier = open_ended_delay(context, "2026-10-01", nil)
       latest = open_ended_delay(context, "2026-10-03", nil)
 
-      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @now_utc)
 
       assert Enum.map(tabs.current, & &1.alert.id) == [earlier.id, later.id, latest.id]
     end
@@ -178,7 +184,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       {:ok, _saved} =
         Alerts.save_draft(context.audit, second.id, second.revision, %{"cause" => "weather"})
 
-      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @now_utc)
 
       # `second` was saved last and leads, `first` follows, and `third` was only
       # created, so it keeps the earliest timestamp.
@@ -191,7 +197,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       ended_earlier = open_ended_delay(context, "2026-10-01", "2026-10-02")
       ended_later = open_ended_delay(context, "2026-10-01", "2026-10-04")
 
-      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @now_utc)
 
       assert Enum.map(tabs.past, & &1.alert.id) == [ended_later.id, ended_earlier.id]
     end
@@ -207,7 +213,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       november = in_memory(first_date: ~D[2026-11-02])
       october = in_memory(first_date: ~D[2026-10-30])
 
-      tabs = Listing.rows([november, october], Ecto.UUID.generate(), @local_now)
+      tabs = Listing.rows([november, october], @now_utc)
 
       assert Enum.map(tabs.upcoming, & &1.alert.id) == [october.id, november.id]
     end
@@ -216,7 +222,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       september = in_memory(first_date: ~D[2026-09-01], last_date: ~D[2026-09-30])
       october = in_memory(first_date: ~D[2026-09-01], last_date: ~D[2026-10-02])
 
-      tabs = Listing.rows([september, october], Ecto.UUID.generate(), @local_now)
+      tabs = Listing.rows([september, october], @now_utc)
 
       assert Enum.map(tabs.past, & &1.alert.id) == [october.id, september.id]
     end
@@ -225,7 +231,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       earlier = in_memory(complete: false, updated_at: ~U[2026-10-05 10:00:00.900000Z])
       later = in_memory(complete: false, updated_at: ~U[2026-10-05 10:25:00.100000Z])
 
-      tabs = Listing.rows([earlier, later], Ecto.UUID.generate(), @local_now)
+      tabs = Listing.rows([earlier, later], @now_utc)
 
       assert Enum.map(tabs.in_progress, & &1.alert.id) == [later.id, earlier.id]
     end
@@ -256,12 +262,12 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       stop = stop_fixture(context.organization.id, context.version.id, %{stop_id: "s_1"})
       _alert = stop_closure(context, stop.id)
 
-      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @now_utc)
       assert row.needs_attention? == false
 
       delete!(GtfsPlanner.Gtfs.Stop, stop.id)
 
-      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @now_utc)
       assert row.needs_attention? == true
       assert row.alert.scope.stop_ids == [stop.id]
     end
@@ -270,12 +276,12 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       route = route_fixture(context.organization.id, context.version.id, %{route_id: "r_1"})
       _alert = route_delay(context, route.id)
 
-      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @now_utc)
       assert row.needs_attention? == false
 
       delete!(GtfsPlanner.Gtfs.Route, route.id)
 
-      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @now_utc)
       assert row.needs_attention? == true
       assert row.alert.scope.route_ids == [route.id]
     end
@@ -285,7 +291,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       stop = stop_fixture(context.organization.id, context.version.id, %{stop_id: "s_1"})
       _alert = stop_closure(context, stop.id)
 
-      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @now_utc)
       assert row.needs_attention? == false
 
       # The row keeps its UUID and moves to a sibling version of the same
@@ -298,7 +304,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
           set: [gtfs_version_id: other_version.id]
         )
 
-      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @now_utc)
       assert row.needs_attention? == true
     end
 
@@ -308,20 +314,20 @@ defmodule GtfsPlanner.Alerts.ListingTest do
 
       _alert = cancellation(context, route.id, trip.id)
 
-      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, tabs} = Alerts.list_alerts(context.audit, @now_utc)
       assert [row] = tabs.current
       assert row.needs_attention? == false
 
       delete!(GtfsPlanner.Gtfs.Trip, trip.id)
 
-      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @now_utc)
       assert row.needs_attention? == true
     end
 
     test "an alert that names no target is never flagged", context do
       alert = alert_fixture(context.audit, %{"urgency" => "now"})
 
-      assert {:ok, %{in_progress: [row]}} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, %{in_progress: [row]}} = Alerts.list_alerts(context.audit, @now_utc)
       assert row.alert.id == alert.id
       assert row.needs_attention? == false
     end
@@ -331,7 +337,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
     test "a check-in time at or before the agency-local now is due", context do
       alert = open_ended_delay(context, "2026-10-01", nil, "2026-10-05 09:00:00")
 
-      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @now_utc)
       assert row.check_in_due? == true
       assert row.alert.id == alert.id
     end
@@ -339,14 +345,14 @@ defmodule GtfsPlanner.Alerts.ListingTest do
     test "a check-in exactly at the agency-local now is due", context do
       _alert = open_ended_delay(context, "2026-10-01", nil, "2026-10-05 10:00:00")
 
-      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @now_utc)
       assert row.check_in_due? == true
     end
 
     test "a later check-in is not yet due", context do
       _alert = open_ended_delay(context, "2026-10-01", nil, "2026-10-05 11:00:00")
 
-      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @now_utc)
       assert row.check_in_due? == false
     end
 
@@ -355,7 +361,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       # it and the timing answer stores none.
       _alert = open_ended_delay(context, "2026-10-01", "2026-10-06", nil)
 
-      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @local_now)
+      assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @now_utc)
       assert row.check_in_due? == false
     end
   end

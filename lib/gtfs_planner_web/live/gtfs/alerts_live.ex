@@ -1,15 +1,16 @@
 defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
   @moduledoc """
-  LiveView for the Alerts list: the version's alerts grouped into Current,
+  LiveView for the Alerts list: the organization's alerts grouped into Current,
   Upcoming, In progress and Past.
 
   Every row is a rendering of `Alerts.list_alerts/2`, which is the only place a
-  tab, a count or a badge is decided. The page reads that read model with the
-  agency's own civil time as of this load, so a tab cannot disagree with its own
-  count and the check-in badge is read in the agency's day rather than UTC's
-  (AC-9, CR-7). Because the read model is scoped to the context's version, the
-  list is the version being edited and never the version the editor last looked
-  at elsewhere (R1, CR-4).
+  tab, a count or a badge is decided. The page reads that read model with one UTC
+  instant, and each row is classified and stamped in that alert's own retained
+  zone, so a tab cannot disagree with its own count and an alert written against
+  another version's zone is read on its own civil day rather than the version the
+  editor last selected (AC-8, AC-9, CR-7). The read model is organization
+  scoped, so the list is the organization's alerts and never a slice of one
+  selected version (AC-8).
 
   The page shows what an editor is working on now and what is coming. It carries
   no publication state and no publication action: saving an alert never
@@ -81,7 +82,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
   defp load_alerts(socket, tab) do
     audit_context = audit_context(socket)
 
-    case Alerts.list_alerts(audit_context, Alerts.agency_now(audit_context)) do
+    case Alerts.list_alerts(audit_context, DateTime.utc_now()) do
       {:ok, grouped} ->
         counts = Map.new(@tabs, &{&1, length(Map.fetch!(grouped, &1))})
         rows = prepare_rows(Map.fetch!(grouped, tab), socket)
@@ -118,18 +119,37 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
   # template never queries. The route rows come from `Alerts.routes_for/2`, the
   # same scoped read the editor's own labels are built from, so a row cannot
   # name a route the editor's text does not (CR-4).
+  #
+  # Each row's change stamp is localized in that alert's own retained zone, so an
+  # organization holding alerts from several versions reads every row against the
+  # day its own answers were written in. One conversion query is issued per
+  # distinct zone, which for a single-zone organization is one.
   defp prepare_rows(rows, socket) do
     audit_context = audit_context(socket)
-    zone = DisplayClock.resolve_zone(audit_context.organization_id, audit_context.gtfs_version_id)
-    today = DateTime.utc_now() |> DisplayClock.local_date(zone) |> Date.to_iso8601()
-    emails = editor_emails(Enum.map(rows, & &1.alert.updated_by_id))
-    routes = Alerts.routes_for(audit_context, Enum.map(rows, & &1.alert))
-    local_changes = DisplayClock.localize_many(Enum.map(rows, & &1.alert.updated_at), zone)
+    alerts = Enum.map(rows, & &1.alert)
+    organization_timezone = Alerts.organization_zone(audit_context)
 
-    rows
-    |> Enum.zip(local_changes)
-    |> Enum.map(fn {row, local_change} ->
-      prepare_row(row, local_change, socket, today, emails, routes)
+    emails = editor_emails(Enum.map(alerts, & &1.updated_by_id))
+    routes = Alerts.routes_for(audit_context, alerts)
+    now_utc = DateTime.utc_now()
+
+    stamps =
+      alerts
+      |> Enum.group_by(&Alerts.Listing.zone(&1, organization_timezone))
+      |> Enum.flat_map(fn {zone, zone_alerts} ->
+        instants = [now_utc | Enum.map(zone_alerts, & &1.updated_at)]
+
+        [today | changes] = DisplayClock.localize_many(instants, %{timezone: zone})
+        today = Date.to_iso8601(NaiveDateTime.to_date(today))
+
+        Enum.zip(zone_alerts, changes)
+        |> Enum.map(fn {alert, change} -> {alert.id, {today, change}} end)
+      end)
+      |> Map.new()
+
+    Enum.map(rows, fn row ->
+      {today, local_change} = Map.fetch!(stamps, row.alert.id)
+      prepare_row(row, local_change, today, socket, emails, routes)
     end)
   end
 

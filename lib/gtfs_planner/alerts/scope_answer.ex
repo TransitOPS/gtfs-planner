@@ -69,6 +69,74 @@ defmodule GtfsPlanner.Alerts.ScopeAnswer do
         }
 
   @doc """
+  Returns a stable digest of the answer's target selection.
+
+  Two scopes with the same digest name the same targets in the same way, whatever
+  order they were entered in, so a message-only or timing-only save can tell that
+  it changed nothing an operator selected. `Alerts` compares this digest with the
+  one stored in `target_reference` to decide whether the trusted capture still
+  describes the answer, rather than re-validating every identity on every save
+  (R1, CR-5).
+
+  A nil answer digests as the empty selection, so an alert that has not answered
+  the question yet has the same digest as one answered with nothing.
+  """
+  @spec digest(t() | nil) :: String.t()
+  def digest(nil), do: digest(%__MODULE__{})
+
+  def digest(%__MODULE__{} = scope) do
+    scope
+    |> Map.take([
+      :shape,
+      :mode_route_type,
+      :direction_id,
+      :all_routes_at_stops,
+      :route_ids,
+      :stop_ids,
+      :stretch_from_stop_id,
+      :stretch_to_stop_id,
+      :alternative_stop_id,
+      :alternative_directions,
+      :facility
+    ])
+    |> Map.new(fn {key, value} -> {key, normalized(key, value)} end)
+    |> Map.put(:route_stop_pairs, pairs_digest(scope.route_stop_pairs))
+    |> Map.put(:trips, trips_digest(scope.trips))
+    |> :erlang.term_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
+  # An identity list and a set mean the same selection, so the digest sorts it
+  # and casts it: the same routes in another order, or with an upper-case
+  # spelling of the same UUID, are the same target selection.
+  defp normalized(_key, nil), do: nil
+  defp normalized(_key, ids) when is_list(ids), do: ids |> Enum.map(&canonical/1) |> Enum.sort()
+  defp normalized(:direction_id, value) when is_integer(value), do: value
+  defp normalized(_key, value), do: value
+
+  defp canonical(id) when is_binary(id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, uuid} -> uuid
+      :error -> id
+    end
+  end
+
+  defp canonical(id), do: id
+
+  defp pairs_digest(pairs) do
+    pairs
+    |> Enum.map(&{canonical(&1.route_id), canonical(&1.stop_id)})
+    |> Enum.sort()
+  end
+
+  defp trips_digest(trips) do
+    trips
+    |> Enum.map(&{canonical(&1.trip_id), &1.service_date})
+    |> Enum.sort()
+  end
+
+  @doc """
   Creates a changeset for the scope answer.
 
   Requires nothing, because a draft is saved at every step. Rejects more than

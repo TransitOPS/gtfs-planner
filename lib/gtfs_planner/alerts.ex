@@ -14,15 +14,31 @@ defmodule GtfsPlanner.Alerts do
   membership and holds it `FOR SHARE` before the alert row is locked
   (`Authorization.lock_editor!/1`). A revocation that commits while a save is
   waiting for that lock therefore refuses the save instead of letting it commit
-  (R5). The alert itself is then loaded `FOR UPDATE` scoped by organization and
-  version, so a forged UUID from another tenant or another version is
-  `:not_found` rather than a leak (R6).
+  (R5). The alert itself is then loaded `FOR UPDATE` scoped by organization, so a
+  forged UUID from another tenant is `:not_found` rather than a leak (R6).
+
+  An alert belongs to the organization, not to the version it was written
+  against. `source_gtfs_version_id` is provenance that a source deletion clears
+  and that `get_alert/2`, `save_draft/4` and `delete_alert/3` never scope by: an
+  organization edits one list of alerts whichever version the navigation happens
+  to have selected (AC-8, CR-5).
 
   The route, stop and departure identities a write adds are read back through
   `Alerts.Targets` inside the same transaction, so an answer can only name rows
-  of the context's own organization and version, whichever caller wrote it: the
-  editor's cards, its generic autosave or an assistant's prepared change (R1,
-  CR-4).
+  of the alert's own organization and source version, whichever caller wrote it:
+  the editor's cards, its generic autosave or an assistant's prepared change (R1,
+  CR-4). A save that changed nothing an operator *selected* - a message edit, a
+  timing edit - revalidates nothing: `ScopeAnswer.digest/1` of the stored answer
+  still matches the stored capture, so the trusted wire IDs, labels and zone the
+  alert keeps survive the save untouched (CR-5). `retarget/5` is the explicit
+  action that replaces the complete target selection within one owned version and
+  revalidates every identity in it.
+
+  `list_alerts/2` takes one UTC instant and classifies each row in that alert's
+  own retained zone, so an organization holding alerts from several versions and
+  several timezones sees each row on its own civil day. The UTC fallback an alert
+  with no zone reads in is a presentation answer and never a publication consent
+  (CR-5, CR-7).
 
   `save_draft/4` carries the client's expected revision. At the current revision
   it increments the revision and recomputes `effect`, `complete`, `first_date`
@@ -52,6 +68,7 @@ defmodule GtfsPlanner.Alerts do
   alias GtfsPlanner.Alerts.Completion
   alias GtfsPlanner.Alerts.Listing
   alias GtfsPlanner.Alerts.Recurrence
+  alias GtfsPlanner.Alerts.ScopeAnswer
   alias GtfsPlanner.Alerts.Targets
   alias GtfsPlanner.Alerts.TimingAnswer
   alias GtfsPlanner.Authorization
@@ -97,11 +114,13 @@ defmodule GtfsPlanner.Alerts do
         }
 
   @doc """
-  Reads one alert of the context's organization and version.
+  Reads one alert of the context's organization.
 
   Membership is resolved without a lock, because a read takes nothing and holds
-  nothing; the editor role and the organization/version scope are the same two
-  conditions every write applies.
+  nothing; the editor role and the organization scope are the same two conditions
+  every write applies. The alert's source version is not part of the scope: an
+  organization reads its own alert whether or not the version it was written
+  against still exists (AC-8).
   """
   @spec get_alert(AuditContext.t(), Ecto.UUID.t() | term()) ::
           {:ok, Alert.t()} | {:error, :forbidden | :not_found}
@@ -150,27 +169,43 @@ defmodule GtfsPlanner.Alerts do
   end
 
   @doc """
-  Returns the alerts list page's four tabs as of `local_now`.
+  Returns the alerts list page's four tabs as of one UTC instant.
 
-  `local_now` is the agency's own civil time, which `agency_now/1` supplies, so
-  the tabs and the check-in badge are read in the agency's day rather than UTC's
-  and a test can fix the time without a clock override (CR-7). Only the context's
-  version's alerts are read; `Alerts.Listing` derives the tab of each row and
-  its Needs attention and Check-in due badges from the answers stored on it (R1,
-  R8).
+  Every alert of the organization is listed, whichever version it was written
+  against, and each row is classified in that alert's own retained zone rather
+  than in the zone of the version the editor has selected. `organization_zone/1`
+  is the organization's explicit zone, used for an alert whose source version
+  declared none; an alert with neither reads the disclosed UTC fallback, which
+  never grants publication consent (CR-5, CR-7).
   """
-  @spec list_alerts(AuditContext.t(), NaiveDateTime.t()) :: {:ok, tabs()} | {:error, :forbidden}
-  def list_alerts(%AuditContext{} = audit_context, %NaiveDateTime{} = local_now) do
+  @spec list_alerts(AuditContext.t(), DateTime.t()) :: {:ok, tabs()} | {:error, :forbidden}
+  def list_alerts(%AuditContext{} = audit_context, %DateTime{} = now_utc) do
     with :ok <- Authorization.authorize_editor(audit_context) do
       alerts =
         from(a in Alert,
-          where:
-            a.organization_id == ^audit_context.organization_id and
-              a.source_gtfs_version_id == ^audit_context.gtfs_version_id
+          where: a.organization_id == ^audit_context.organization_id and is_nil(a.deleted_at)
         )
         |> Repo.all()
 
-      {:ok, Listing.rows(alerts, audit_context.gtfs_version_id, local_now)}
+      {:ok, Listing.rows(alerts, now_utc, organization_zone(audit_context))}
+    end
+  end
+
+  @doc """
+  Returns the organization's explicit alert zone, or nil when it has stated none.
+
+  An empty or absent zone is nil rather than UTC: the fallback an alert with no
+  retained zone reads in is a display answer, and publication requires an
+  explicit valid zone instead (CR-5).
+  """
+  @spec organization_zone(AuditContext.t()) :: String.t() | nil
+  def organization_zone(%AuditContext{} = audit_context) do
+    case scoped_settings(audit_context) do
+      %AlertSettings{timezone: timezone} when is_binary(timezone) ->
+        if String.trim(timezone) == "", do: nil, else: String.trim(timezone)
+
+      _absent ->
+        nil
     end
   end
 
@@ -290,6 +325,13 @@ defmodule GtfsPlanner.Alerts do
   @doc """
   Returns the labels of the routes, stops and trips the alert's scope names,
   keyed by the same row UUIDs the alert stored.
+
+  The labels are read from the alert's *own* source version rather than the
+  version the editor has selected, so a listing that spans several versions shows
+  each row against the schedule it was written against. An alert whose source
+  version is gone has no rows to read and therefore no labels: its stored
+  `target_reference` still carries the wire IDs and labels it was accepted with,
+  and the Needs attention badge says why the live rows are absent (CR-5).
   """
   @spec labels_for(AuditContext.t(), Alert.t()) :: %{
           routes: %{optional(Ecto.UUID.t()) => String.t()},
@@ -298,7 +340,7 @@ defmodule GtfsPlanner.Alerts do
         }
   def labels_for(%AuditContext{} = audit_context, %Alert{} = alert) do
     case Authorization.authorize_editor(audit_context) do
-      :ok -> Targets.labels_for(audit_context, alert)
+      :ok -> Targets.labels_for(source_context(audit_context, alert), alert)
       {:error, :forbidden} -> %{routes: %{}, stops: %{}, trips: %{}}
     end
   end
@@ -308,21 +350,43 @@ defmodule GtfsPlanner.Alerts do
 
   The list page reads this so each affected route renders as its own identity
   badge rather than as a word an editor has to recognize. The IDs come from the
-  whole page at once, so the table costs one route read rather than one per row.
+  whole page at once and are read from each alert's own source version, so a page
+  spanning several versions costs one query per version rather than one per row.
   It is the same scoped read `labels_for/2` performs, so a route that no longer
   exists is simply absent from both and the row's Needs attention badge explains
-  why (R8).
+  why (R8, CR-5).
   """
   @spec routes_for(AuditContext.t(), [Alert.t()]) :: %{optional(Ecto.UUID.t()) => map()}
   def routes_for(%AuditContext{} = audit_context, alerts) when is_list(alerts) do
     case Authorization.authorize_editor(audit_context) do
       :ok ->
-        ids = Enum.flat_map(alerts, &Listing.referenced_ids(&1).routes)
-        Targets.routes_by_id(audit_context, ids)
+        alerts
+        |> Enum.group_by(& &1.source_gtfs_version_id)
+        |> Enum.flat_map(&routes_for_version(audit_context, &1))
+        |> Enum.reduce(%{}, &Map.merge(&2, &1))
 
       {:error, :forbidden} ->
         %{}
     end
+  end
+
+  # The audit context the alert's own provenance names, never one a caller chose.
+  # A nil source version yields a context with no version, whose scoped reads
+  # return nothing rather than falling back to the selected version.
+  defp source_context(%AuditContext{} = audit_context, %Alert{source_gtfs_version_id: version_id}) do
+    %{audit_context | gtfs_version_id: version_id}
+  end
+
+  defp source_context(%AuditContext{} = audit_context, version_id) do
+    %{audit_context | gtfs_version_id: version_id}
+  end
+
+  # One read for every route identity the alerts of one version name, so a page
+  # spanning several versions costs one query per version rather than one per row.
+  defp routes_for_version(audit_context, {version_id, version_alerts}) do
+    ids = Enum.flat_map(version_alerts, &Listing.referenced_ids(&1).routes)
+
+    Targets.routes_by_id(source_context(audit_context, version_id), ids)
   end
 
   # A target lookup takes no lock and writes nothing, so it authorizes rather
@@ -342,12 +406,20 @@ defmodule GtfsPlanner.Alerts do
   end
 
   @doc """
-  Inserts a revision-1 draft in the context's organization and version.
+  Inserts a revision-1 draft in the context's organization.
 
   `created_by_id`, `updated_by_id` and the timing `time_zone` are server-owned:
   the zone is resolved from the version's agency through
   `Gtfs.DisplayClock.resolve_zone/2` and cannot be cast from a form param, so
-  every stored time is read in the agency's own zone (R12).
+  every stored time is read in the agency's own zone (R12). The alert's own
+  `timezone` and `target_reference` are captured here as well: `timezone` is the
+  source version's single usable agency zone, and `target_reference` is the
+  trusted wire IDs, labels and zone `Alerts.Targets` reads from that same
+  version. Neither is cast from the attributes (CR-5).
+
+  An organization with no usable schedule may still author a private draft: with
+  no source version there is nothing to resolve, so the alert stores no capture
+  and no guessed zone rather than failing to be written (AC-10).
   """
   @spec create_alert(AuditContext.t(), map()) ::
           {:ok, Alert.t()} | {:error, :forbidden | Changeset.t()}
@@ -357,12 +429,14 @@ defmodule GtfsPlanner.Alerts do
 
       %Alert{}
       |> Alert.draft_changeset(attrs)
-      |> validate_targets(audit_context)
+      |> validate_whole_selection(audit_context)
+      |> validate_mode(audit_context)
       |> put_change(:organization_id, audit_context.organization_id)
       |> put_change(:source_gtfs_version_id, audit_context.gtfs_version_id)
       |> put_change(:created_by_id, audit_context.actor_id)
       |> put_change(:updated_by_id, audit_context.actor_id)
       |> put_timing_zone(agency_time_zone(audit_context))
+      |> capture_target_reference(audit_context)
       |> derive()
       |> Repo.insert()
       |> commit()
@@ -381,6 +455,14 @@ defmodule GtfsPlanner.Alerts do
   nothing and returns `{:error, :stale, current}`; an invalid answer returns
   `{:error, changeset}` and also changes nothing, so the editor keeps the typed
   values.
+
+  A save that changed nothing an operator selected keeps the stored
+  `target_reference` and `timezone` exactly as they are. That is what lets a
+  message-only edit succeed after the source version has been deleted: the
+  trusted wire IDs, labels and zone the alert publishes from are the ones it was
+  accepted with, not a fresh reading of rows that no longer exist (AC-9, CR-5).
+  A changed selection is a retarget, which `retarget/5` performs against one
+  named version.
   """
   @spec save_draft(AuditContext.t(), Ecto.UUID.t() | term(), integer(), map()) ::
           {:ok, Alert.t()} | {:error, error()} | stale()
@@ -392,7 +474,7 @@ defmodule GtfsPlanner.Alerts do
 
       %{alert | revision: expected_revision}
       |> Alert.draft_changeset(attrs)
-      |> validate_targets(audit_context)
+      |> refresh_targets(audit_context, alert)
       |> put_change(:updated_by_id, audit_context.actor_id)
       |> derive()
       |> optimistic_lock(:revision)
@@ -402,7 +484,74 @@ defmodule GtfsPlanner.Alerts do
   end
 
   @doc """
-  Deletes one alert of the context's organization and version.
+  Replaces the alert's complete target selection within one owned version.
+
+  Retargeting is the only action that refreshes trusted identities: the caller
+  names the version the new selection is written against and the whole
+  `scope_attrs` selection, so a selection is never interpreted by reading old
+  UUIDs through whichever version the editor has selected now (AC-9).
+
+  The named version must belong to the context's organization, or the command
+  answers `{:error, :not_found}` without reading an identity of it. Every
+  identity the new selection names must resolve inside that version, so a
+  retarget cannot store a partially foreign selection: an unresolved identity is
+  refused through the same `:scope` errors `save_draft/4` uses.
+
+  On success the alert's `source_gtfs_version_id`, `timezone` and
+  `target_reference` are replaced with what that version resolves, its revision is
+  incremented like any other write, and `derive/1` recomputes the fields the
+  operator cannot set.
+  """
+  @spec retarget(AuditContext.t(), Ecto.UUID.t() | term(), integer(), term(), map()) ::
+          {:ok, Alert.t()} | {:error, :forbidden | :not_found | Changeset.t()} | stale()
+  def retarget(
+        %AuditContext{} = audit_context,
+        alert_id,
+        expected_revision,
+        source_version_id,
+        scope_attrs
+      )
+      when is_map(scope_attrs) do
+    transaction(fn ->
+      Authorization.lock_editor!(audit_context)
+      alert = lock_alert!(audit_context, alert_id)
+      assert_current_revision!(alert, expected_revision)
+
+      case owned_version(audit_context, source_version_id) do
+        nil ->
+          Repo.rollback(:not_found)
+
+        version ->
+          source_context = %{audit_context | gtfs_version_id: version.id}
+
+          %{alert | revision: expected_revision}
+          |> Alert.draft_changeset(%{"scope" => scope_attrs})
+          |> validate_whole_selection(source_context)
+          |> validate_mode(source_context)
+          |> put_change(:source_gtfs_version_id, version.id)
+          |> put_change(:updated_by_id, audit_context.actor_id)
+          |> capture_target_reference(source_context)
+          |> derive()
+          |> optimistic_lock(:revision)
+          |> Repo.update()
+          |> commit()
+      end
+    end)
+  end
+
+  # A version of the context's own organization, or nil. The read is tenant
+  # scoped, so a version id of another tenant is absent rather than adopted.
+  defp owned_version(%AuditContext{organization_id: organization_id}, version_id) do
+    if uuid?(version_id) do
+      from(v in GtfsPlanner.Versions.GtfsVersion,
+        where: v.organization_id == ^organization_id and v.id == ^version_id
+      )
+      |> Repo.one()
+    end
+  end
+
+  @doc """
+  Deletes one alert of the context's organization.
 
   A stale `expected_revision` keeps the row and returns
   `{:error, :stale, current}`.
@@ -634,40 +783,24 @@ defmodule GtfsPlanner.Alerts do
 
   # -- Scoped reads and locks ----------------------------------------------
 
-  defp scoped_alert(
-         %AuditContext{
-           organization_id: organization_id,
-           gtfs_version_id: gtfs_version_id
-         },
-         alert_id
-       ) do
+  defp scoped_alert(%AuditContext{organization_id: organization_id}, alert_id) do
     if uuid?(alert_id) do
       from(a in Alert,
-        where:
-          a.organization_id == ^organization_id and
-            a.source_gtfs_version_id == ^gtfs_version_id and
-            a.id == ^alert_id
+        where: a.organization_id == ^organization_id and a.id == ^alert_id
       )
       |> Repo.one()
     end
   end
 
-  # R1: the load is scoped to the context's organization and version, so an ID
-  # from another tenant or another version of the same tenant is not found, and
-  # the row is held `FOR UPDATE` before its revision is read. It is one query:
-  # a delete that commits while this waits for the lock leaves no row to return,
-  # and that reads as `:not_found` rather than raising.
-  defp lock_alert!(
-         %AuditContext{organization_id: organization_id, gtfs_version_id: gtfs_version_id},
-         alert_id
-       ) do
+  # R1: the load is scoped to the context's organization, so an ID from another
+  # tenant is not found, and the row is held `FOR UPDATE` before its revision is
+  # read. It is one query: a delete that commits while this waits for the lock
+  # leaves no row to return, and that reads as `:not_found` rather than raising.
+  defp lock_alert!(%AuditContext{organization_id: organization_id}, alert_id) do
     alert =
       if uuid?(alert_id) do
         from(a in Alert,
-          where:
-            a.organization_id == ^organization_id and
-              a.source_gtfs_version_id == ^gtfs_version_id and
-              a.id == ^alert_id,
+          where: a.organization_id == ^organization_id and a.id == ^alert_id,
           lock: "FOR UPDATE"
         )
         |> Repo.one()
@@ -838,44 +971,99 @@ defmodule GtfsPlanner.Alerts do
   end
 
   # The route, stop and departure identities are free strings in the scope
-  # answer, so a write re-reads the ones it adds inside the context's
-  # organization and version and refuses the rest. An identity already on the
-  # stored row is left alone: R8 lets a target deleted from the version stay on
-  # the alert and flags the row instead of rewriting who it is about.
-  defp validate_targets(%Changeset{valid?: false} = changeset, _audit_context), do: changeset
+  # answer, so a write that *adds* one re-reads it inside the alert's own
+  # organization and source version and refuses the rest. An identity already on
+  # the stored row is not re-read: R8 lets a target deleted from the version stay
+  # on the alert and flags the row instead of rewriting who it is about.
+  #
+  # A save that changed nothing an operator selected does no target work at all.
+  # `ScopeAnswer.digest/1` still matches the stored capture, so the trusted wire
+  # IDs, labels and zone survive the save untouched - which is what lets a
+  # message-only edit succeed after the source version has been deleted (AC-9).
+  defp refresh_targets(%Changeset{valid?: false} = changeset, _audit_context, _stored),
+    do: changeset
 
-  defp validate_targets(
-         %Changeset{data: %Alert{} = stored} = changeset,
-         %AuditContext{} = audit_context
+  defp refresh_targets(
+         %Changeset{} = changeset,
+         %AuditContext{} = audit_context,
+         %Alert{} = stored
        ) do
     alert = Changeset.apply_changes(changeset)
+
+    if ScopeAnswer.digest(alert.scope) == ScopeAnswer.digest(stored.scope) do
+      changeset
+    else
+      source_context = source_context(audit_context, stored)
+      added = added_ids(stored, alert)
+
+      changeset
+      |> validate_whole_selection(source_context, added)
+      |> validate_mode(source_context)
+      |> capture_target_reference(source_context)
+    end
+  end
+
+  defp added_ids(%Alert{} = stored, %Alert{} = alert) do
     previous = Listing.referenced_ids(stored)
 
-    added =
-      Map.new(Listing.referenced_ids(alert), fn {table, ids} ->
-        {table, ids -- Map.fetch!(previous, table)}
-      end)
+    Map.new(Listing.referenced_ids(alert), fn {table, ids} ->
+      {table, ids -- Map.fetch!(previous, table)}
+    end)
+  end
 
+  # Every identity the changeset carries must resolve inside the context's own
+  # organization and source version. A retarget replaces the whole selection, so
+  # it validates all of it; a save that changed the selection validates only what
+  # it added, because an identity the version has since dropped is still the
+  # alert's own target (R8).
+  defp validate_whole_selection(%Changeset{valid?: false} = changeset, _audit_context),
+    do: changeset
+
+  defp validate_whole_selection(%Changeset{} = changeset, %AuditContext{} = audit_context) do
+    ids = changeset |> Changeset.apply_changes() |> Listing.referenced_ids()
+
+    validate_whole_selection(changeset, audit_context, ids)
+  end
+
+  defp validate_whole_selection(%Changeset{valid?: false} = changeset, _audit_context, _ids),
+    do: changeset
+
+  defp validate_whole_selection(%Changeset{} = changeset, %AuditContext{} = audit_context, ids) do
     audit_context
-    |> Targets.unresolved_ids(added)
+    |> Targets.unresolved_ids(ids)
     |> Enum.reduce(changeset, fn
       {_table, []}, acc -> acc
       {table, _ids}, acc -> add_error(acc, :scope, Map.fetch!(@target_messages, table))
     end)
-    |> validate_mode(audit_context, stored, alert)
   end
 
   # `mode_route_type` is the one scope selector that is not a row identity, so it
   # is checked against the route types the version contains.
-  defp validate_mode(changeset, audit_context, stored, alert) do
-    mode = alert.scope && alert.scope.mode_route_type
+  defp validate_mode(%Changeset{valid?: false} = changeset, _audit_context), do: changeset
 
-    if is_nil(mode) or mode == (stored.scope && stored.scope.mode_route_type) or
-         mode in Targets.route_types(audit_context) do
+  defp validate_mode(%Changeset{} = changeset, %AuditContext{} = audit_context) do
+    mode = changeset |> Changeset.apply_changes() |> then(&(&1.scope && &1.scope.mode_route_type))
+
+    if is_nil(mode) or mode in Targets.route_types(audit_context) do
       changeset
     else
       add_error(changeset, :scope, "Choose a route type this version has.")
     end
+  end
+
+  # The server-owned capture of what the alert's answer resolves to, taken from
+  # the version named on the changeset. It is written on create and on retarget
+  # only; a save that changed no selection leaves the stored capture alone.
+  defp capture_target_reference(%Changeset{valid?: false} = changeset, _audit_context),
+    do: changeset
+
+  defp capture_target_reference(%Changeset{} = changeset, %AuditContext{} = audit_context) do
+    alert = Changeset.apply_changes(changeset)
+    reference = Targets.capture_reference(alert.scope, audit_context)
+
+    changeset
+    |> put_change(:target_reference, reference)
+    |> put_change(:timezone, reference["timezone"])
   end
 
   defp put_timing_zone(%Changeset{} = changeset, time_zone) do
@@ -887,6 +1075,12 @@ defmodule GtfsPlanner.Alerts do
 
     put_embed(changeset, :timing, %{timing | time_zone: time_zone})
   end
+
+  # The timing answer's own zone, disclosed exactly as before: with no selected
+  # version there is no agency to ask, so no zone is claimed and the answer's
+  # already-disclosed fallback stands. Publication never reads this field as a
+  # consent (CR-5).
+  defp agency_time_zone(%AuditContext{gtfs_version_id: nil}), do: "UTC"
 
   defp agency_time_zone(%AuditContext{
          organization_id: organization_id,
