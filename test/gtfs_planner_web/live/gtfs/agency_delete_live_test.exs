@@ -476,9 +476,6 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyDeleteLiveTest do
       assert text_of(blocked, "#agency-delete-blocked-callout p.font-bold") ==
                "Alpha Transit cannot be deleted yet"
 
-      assert text_of(blocked, "#agency-delete-blocked-callout p.font-bold") ==
-               "Alpha Transit cannot be deleted yet"
-
       assert text_of(blocked, "#agency-delete-blocked-callout") =~
                "A fare attribute still refers to this agency. Reassign those references " <>
                  "before moving routes and deleting the agency."
