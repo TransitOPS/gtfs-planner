@@ -115,11 +115,22 @@ defmodule GtfsPlanner.FeedPublishing.Manifest do
   defp valid_object?({role, descriptor}, prefix) do
     is_binary(role) and is_map(descriptor) and
       Enum.all?(@object_fields, &Map.has_key?(descriptor, &1)) and
-      is_binary(descriptor["key"]) and String.starts_with?(descriptor["key"], prefix <> "/") and
-      is_binary(descriptor["sha256"]) and Regex.match?(@sha256_pattern, descriptor["sha256"]) and
-      is_integer(descriptor["bytes"]) and descriptor["bytes"] >= 0 and
-      is_binary(descriptor["content_type"]) and descriptor["content_type"] != ""
+      valid_object_key?(descriptor["key"], prefix) and
+      valid_object_sha256?(descriptor["sha256"]) and
+      valid_object_bytes?(descriptor["bytes"]) and
+      valid_object_content_type?(descriptor["content_type"])
   end
+
+  defp valid_object_key?(key, prefix),
+    do: is_binary(key) and String.starts_with?(key, prefix <> "/")
+
+  defp valid_object_sha256?(sha256),
+    do: is_binary(sha256) and Regex.match?(@sha256_pattern, sha256)
+
+  defp valid_object_bytes?(bytes), do: is_integer(bytes) and bytes >= 0
+
+  defp valid_object_content_type?(content_type),
+    do: is_binary(content_type) and content_type != ""
 
   # A persisted attempt has an inserted_at, which keeps re-encoding the same
   # attempt byte-identical. The fallback only applies to an unsaved struct.
