@@ -396,7 +396,7 @@ defmodule GtfsPlanner.Alerts do
       :ok ->
         alerts
         |> Enum.group_by(& &1.source_gtfs_version_id)
-        |> Enum.flat_map(&routes_for_version(audit_context, &1))
+        |> Enum.map(&routes_for_version(audit_context, &1))
         |> Enum.reduce(%{}, &Map.merge(&2, &1))
 
       {:error, :forbidden} ->
