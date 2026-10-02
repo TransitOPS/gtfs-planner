@@ -25,10 +25,10 @@ defmodule GtfsPlanner.Agents.Packs.DatedChanges do
   or an audit row (CR-1, INV-1).
 
   The result the model reads is a bounded summary, never the report. Each date,
-  clock and dependency category carries at most #{20} witnesses beside its exact
+  clock and dependency category carries at most 20 witnesses beside its exact
   total and an explicit label saying how many of how many were shown, so a
   sampled row can never read as the whole computation (CR-3). A summary whose
-  encoded result and evidence together exceed the shared #{32_768}-byte tool
+  encoded result and evidence together exceed the shared 32,768-byte tool
   envelope is refused whole with a message that keeps the native plan and the
   native editors available, rather than cutting the encoded truth (AC-12).
   """

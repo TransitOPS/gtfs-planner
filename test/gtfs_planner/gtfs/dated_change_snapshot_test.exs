@@ -72,8 +72,6 @@ defmodule GtfsPlanner.Gtfs.DatedChangeSnapshotTest do
   @collect_timeout 10_000
   @pause_timeout 30_000
 
-  # `start_supervised!` rather than a linked supervisor: `on_exit` runs while a
-  # linked supervisor may already be stopping.
   setup do
     {:ok, supervisor: start_supervised!({Task.Supervisor, []})}
   end
@@ -169,7 +167,10 @@ defmodule GtfsPlanner.Gtfs.DatedChangeSnapshotTest do
         @collect_timeout -> flunk("the reader never reached the calendars read")
       end
 
-      assert :ok = commit_interleaving_writer(harbor)
+      # The writer commits from its own autocommit connection. Running it in
+      # this test process would execute inside the sandbox transaction, roll
+      # back, and prove nothing about a committed interleaving.
+      assert :ok = unboxed(fn -> commit_interleaving_writer(harbor) end)
       send(reader, :resume)
 
       assert {:ok, during} = await(reader)
@@ -184,9 +185,9 @@ defmodule GtfsPlanner.Gtfs.DatedChangeSnapshotTest do
       # of each.
       assert {:ok, after_change} = unboxed(fn -> DatedChangePlan.load(harbor.scope, accepted) end)
 
-      assert after_change.calendar_dates == [
-               %{service_id: "WEEKDAY", date: @holiday, exception_type: 1}
-             ]
+      assert after_change.calendar_dates
+             |> Enum.map(&Map.take(&1, [:service_id, :date, :exception_type])) ==
+               [%{service_id: "WEEKDAY", date: @holiday, exception_type: 1}]
 
       refute after_change.transfers == during.transfers
       refute after_change.dependency_digest == during.dependency_digest
@@ -269,7 +270,10 @@ defmodule GtfsPlanner.Gtfs.DatedChangeSnapshotTest do
       assert {:error, :not_found} = load(harbor, accepted, unknown_route)
 
       # A different version of this organization holds no such route.
-      other_version = gtfs_version_fixture(harbor.organization.id)
+      # A different version of this organization holds no such route. It is created
+      # on its own committing connection so the case does not leave an
+      # uncommitted row holding locks the committed-fixture cleanup needs.
+      other_version = unboxed(fn -> gtfs_version_fixture(harbor.organization.id) end)
 
       assert {:error, :not_found} =
                load(harbor, accepted, %{harbor.scope | gtfs_version_id: other_version.id})
@@ -342,7 +346,11 @@ defmodule GtfsPlanner.Gtfs.DatedChangeSnapshotTest do
                  unboxed(fn -> DatedChangePlan.load(harbor.scope, accepted) end)
                end)
 
-      # The same load without the lock still reads completely.
+      # The same load without the lock still reads completely. The 300 ms
+      # deadline above bounds how long a blocked read waits, not how long an
+      # ordinary read of this version may take, so it is lifted for this half.
+      use_read_timeout(60_000)
+
       assert {:ok, _snapshot} = unboxed(fn -> DatedChangePlan.load(harbor.scope, accepted) end)
     end
 
@@ -380,7 +388,7 @@ defmodule GtfsPlanner.Gtfs.DatedChangeSnapshotTest do
   # `WEEKDAY` and is never selected, and block `B1` carries both `H8` trips.
   defp harbor_scope(supervisor) do
     harbor = in_task(supervisor, fn -> build_harbor_scope() end)
-    commit_cleanup(supervisor, harbor.organization_ids)
+    commit_cleanup(harbor.organization_ids)
     harbor
   end
 
@@ -485,7 +493,7 @@ defmodule GtfsPlanner.Gtfs.DatedChangeSnapshotTest do
   # organization rather than inflating the fixture every other case reads.
   defp cap_scope(supervisor) do
     cap = in_task(supervisor, fn -> build_cap_scope() end)
-    commit_cleanup(supervisor, cap.organization_ids)
+    commit_cleanup(cap.organization_ids)
     cap
   end
 
@@ -525,10 +533,12 @@ defmodule GtfsPlanner.Gtfs.DatedChangeSnapshotTest do
   end
 
   # These cases commit their fixtures, so each one removes exactly the
-  # organizations it created.
-  defp commit_cleanup(supervisor, organization_ids) do
+  # organizations it created. `on_exit` runs after the test process has exited,
+  # so the cleanup owns its own unboxed connection rather than borrowing the
+  # `start_supervised!/1` supervisor, which is already dead by then.
+  defp commit_cleanup(organization_ids) do
     on_exit(fn ->
-      in_task(supervisor, fn ->
+      ConcurrencyHelpers.unboxed(fn ->
         ConcurrencyHelpers.delete_committed_members!(organization_ids)
         ConcurrencyHelpers.delete_committed_scope!(organization_ids)
       end)
@@ -606,39 +616,50 @@ defmodule GtfsPlanner.Gtfs.DatedChangeSnapshotTest do
 
   # -- committed writers ------------------------------------------------------
 
+  # Each of these writers commits from its own autocommit connection. A write
+  # made in the test process would stay in the sandbox transaction until ExUnit
+  # rolls it back, which is after `on_exit` runs, so it would hold row locks the
+  # committed-fixture cleanup needs and it would never really commit.
   defp substitute_trip(harbor) do
-    Repo.update_all(
-      from(t in Trip,
-        where:
-          t.organization_id == ^harbor.organization.id and t.gtfs_version_id == ^harbor.version.id and
-            t.trip_id == "H8-2"
-      ),
-      set: [trip_headsign: "Harbor via Market"]
-    )
+    unboxed(fn ->
+      Repo.update_all(
+        from(t in Trip,
+          where:
+            t.organization_id == ^harbor.organization.id and
+              t.gtfs_version_id == ^harbor.version.id and
+              t.trip_id == "H8-2"
+        ),
+        set: [trip_headsign: "Harbor via Market"]
+      )
+    end)
   end
 
   defp substitute_transfer(harbor) do
-    Repo.update_all(
-      from(x in Transfer,
-        where:
-          x.organization_id == ^harbor.organization.id and
-            x.gtfs_version_id == ^harbor.version.id and
-            x.from_trip_id == "H8-1"
-      ),
-      set: [min_transfer_time: 300]
-    )
+    unboxed(fn ->
+      Repo.update_all(
+        from(x in Transfer,
+          where:
+            x.organization_id == ^harbor.organization.id and
+              x.gtfs_version_id == ^harbor.version.id and
+              x.from_trip_id == "H8-1"
+        ),
+        set: [min_transfer_time: 300]
+      )
+    end)
   end
 
   defp move_exception(harbor) do
-    Repo.update_all(
-      from(d in CalendarDate,
-        where:
-          d.organization_id == ^harbor.organization.id and
-            d.gtfs_version_id == ^harbor.version.id and
-            d.service_id == "WEEKDAY"
-      ),
-      set: [date: @moved_holiday]
-    )
+    unboxed(fn ->
+      Repo.update_all(
+        from(d in CalendarDate,
+          where:
+            d.organization_id == ^harbor.organization.id and
+              d.gtfs_version_id == ^harbor.version.id and
+              d.service_id == "WEEKDAY"
+        ),
+        set: [date: @moved_holiday]
+      )
+    end)
   end
 
   defp commit_interleaving_writer(harbor) do
@@ -668,42 +689,48 @@ defmodule GtfsPlanner.Gtfs.DatedChangeSnapshotTest do
   end
 
   defp revoke(harbor) do
-    Repo.update_all(
-      from(m in UserOrgMembership,
-        where: m.user_id == ^harbor.user.id and m.organization_id == ^harbor.organization.id
-      ),
-      set: [deactivated_at: DateTime.utc_now()]
-    )
+    unboxed(fn ->
+      Repo.update_all(
+        from(m in UserOrgMembership,
+          where: m.user_id == ^harbor.user.id and m.organization_id == ^harbor.organization.id
+        ),
+        set: [deactivated_at: DateTime.utc_now()]
+      )
+    end)
   end
 
   defp restore(harbor) do
-    Repo.update_all(
-      from(m in UserOrgMembership,
-        where: m.user_id == ^harbor.user.id and m.organization_id == ^harbor.organization.id
-      ),
-      set: [deactivated_at: nil]
-    )
+    unboxed(fn ->
+      Repo.update_all(
+        from(m in UserOrgMembership,
+          where: m.user_id == ^harbor.user.id and m.organization_id == ^harbor.organization.id
+        ),
+        set: [deactivated_at: nil]
+      )
+    end)
   end
 
   # A reversed weekly range cannot be written through the changeset, so the row
   # is inserted as the persisted source it is.
   defp insert_unreadable_calendar(harbor, service_id) do
-    Repo.insert!(
-      struct!(%Calendar{}, %{
-        organization_id: harbor.organization.id,
-        gtfs_version_id: harbor.version.id,
-        service_id: service_id,
-        monday: 1,
-        tuesday: 0,
-        wednesday: 0,
-        thursday: 0,
-        friday: 0,
-        saturday: 0,
-        sunday: 0,
-        start_date: ~D[2026-12-31],
-        end_date: ~D[2026-01-01]
-      })
-    )
+    unboxed(fn ->
+      Repo.insert!(
+        struct!(%Calendar{}, %{
+          organization_id: harbor.organization.id,
+          gtfs_version_id: harbor.version.id,
+          service_id: service_id,
+          monday: 1,
+          tuesday: 0,
+          wednesday: 0,
+          thursday: 0,
+          friday: 0,
+          saturday: 0,
+          sunday: 0,
+          start_date: ~D[2026-12-31],
+          end_date: ~D[2026-01-01]
+        })
+      )
+    end)
   end
 
   # -- counts and snapshot plumbing ------------------------------------------

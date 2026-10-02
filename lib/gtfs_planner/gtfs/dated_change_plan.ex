@@ -178,7 +178,6 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
   alias GtfsPlanner.Versions.GtfsVersion
 
   @schema_version 1
-  @max_selected_trips 100
   @max_delta_seconds 86_400
   @max_approval_note_length 2_000
   @max_source_label_length 200
@@ -187,7 +186,9 @@ defmodule GtfsPlanner.Gtfs.DatedChangePlan do
   @signed_integer_format ~r/\A[+-]?[0-9]+\z/
 
   # Truthful computation admission limits, not evaluated agency capacity: an
-  # over-cap read is incomplete, never a partial complete snapshot.
+  # over-cap read is incomplete, never a partial complete snapshot. The trip
+  # selection cap is the single owner of `@max_selected_trips`, so the intent
+  # message and the loader's admission guard cannot disagree.
   @max_selected_trips 100
   @max_version_trips 10_000
   @max_stop_times 75_000

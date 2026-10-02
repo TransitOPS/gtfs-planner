@@ -72,7 +72,18 @@ defmodule GtfsPlanner.ScheduleEditingFixtures do
     version = Map.get(attrs, :version) || gtfs_version_fixture(organization.id)
     actor = Map.get(attrs, :actor) || editor_fixture(organization)
     audit = Map.get(attrs, :audit) || audit_context(organization, version, actor)
-    service = Map.get(attrs, :service) || calendar_service!(organization.id, version.id, %{})
+    # A named `:service` names the calendar rather than replacing one: the
+    # trips below run on it, so the scope still owns the weekly calendar row the
+    # editor's pages read. Passing no `:service` gets the default generated id.
+    service =
+      case Map.fetch(attrs, :service) do
+        {:ok, named} ->
+          calendar_service!(organization.id, version.id, %{service_id: named})
+          named
+
+        :error ->
+          calendar_service!(organization.id, version.id, %{})
+      end
 
     route = route_fixture(organization.id, version.id, %{route_id: route_id})
 
