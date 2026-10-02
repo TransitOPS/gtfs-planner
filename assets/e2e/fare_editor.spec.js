@@ -53,18 +53,21 @@ const BLANK_TILE = Buffer.from(
   "base64",
 );
 
-// The prototype this shell follows. It lives in the gitignored .specs/ workspace,
-// so the reference capture is skipped when the file is not present rather than
-// depending on a path that is not checked in.
+// Resolve design references and retained captures from the primary checkout.
+// Spec artifacts deliberately do not belong to implementation worktrees.
 const REFERENCE_PATH = resolve(
   REPO_ROOT,
+  "..",
+  "gtfs-planner",
   ".specs",
   "29-fares-v1-v2-add-edit",
   "references",
   "fares-editor-prototype.html",
 );
 
-const CAPTURE_DIR = process.env.FARE_EDITOR_CAPTURE_DIR;
+const CAPTURE_DIR =
+  process.env.FARE_EDITOR_CAPTURE_DIR ||
+  resolve(dirname(REFERENCE_PATH), "../evidence/captures");
 
 // ── shared helpers ────────────────────────────────────────────────────────
 
@@ -117,6 +120,7 @@ async function routeBlankTiles(page) {
 }
 
 async function capture(page, testInfo, name) {
+  await assertFareLayout(page);
   let path = testInfo.outputPath(`${name}.png`);
 
   if (CAPTURE_DIR) {
@@ -135,6 +139,7 @@ async function capture(page, testInfo, name) {
 // full-page capture — which the Prices tab needs for its whole grid — leaves
 // them off the image. Drawer states are captured in the viewport instead.
 async function captureDrawer(page, testInfo, name) {
+  await assertFareLayout(page);
   let path = testInfo.outputPath(`${name}.png`);
 
   if (CAPTURE_DIR) {
@@ -153,10 +158,72 @@ async function captureReference(page, testInfo, query, name) {
 
   await page.goto(`file://${REFERENCE_PATH}${query}`);
   await page.waitForLoadState("networkidle");
-  await page.screenshot({
-    path: testInfo.outputPath(`${name}.png`),
-    fullPage: false,
+  await assertFareLayout(page);
+  mkdirSync(CAPTURE_DIR, { recursive: true });
+  await page.screenshot({ path: resolve(CAPTURE_DIR, `${name}.png`), fullPage: false });
+}
+
+// Each layout-tagged journey calls this at the state it captures. Keep the
+// measurements in the browser so device-pixel scaling cannot hide CSS overflow
+// or undersized controls.
+async function assertFareLayout(page) {
+  const measurements = await page.evaluate(() => {
+    const visible = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+    };
+    const controls = [...document.querySelectorAll(
+      'button, input:not([type="hidden"]), select, textarea, summary, a.btn, [role="button"]',
+    )].filter(visible).filter((element) => !element.matches("a:not(.btn)"));
+    const primary = [...document.querySelectorAll(
+      'button.btn-primary, a.btn-primary, [role="button"].btn-primary',
+    )].filter(visible);
+    const overlays = primary.filter((element) => element.closest('[role="dialog"], dialog, .drawer'));
+    const pagePrimaries = primary.filter((element) => !element.closest('[role="dialog"], dialog, .drawer'));
+    return {
+      viewport: window.innerWidth,
+      document: document.documentElement.scrollWidth,
+      shortControls: controls.filter((element) => {
+        const target = element.matches('input[type="checkbox"], input[type="radio"]')
+          ? element.closest("label") || element
+          : element;
+        return target.getBoundingClientRect().height < 44;
+      }).map((element) => {
+        const target = element.matches('input[type="checkbox"], input[type="radio"]')
+          ? element.closest("label") || element
+          : element;
+        return {
+          tag: element.tagName,
+          id: element.id,
+          text: element.textContent.trim().slice(0, 50),
+          height: target.getBoundingClientRect().height,
+        };
+      }),
+      pagePrimaries: pagePrimaries.length,
+      overlayPrimaries: overlays.length,
+    };
   });
+
+  expect(measurements.document, `horizontal overflow at ${measurements.viewport}px: ${JSON.stringify(measurements)}`)
+    .toBeLessThanOrEqual(measurements.viewport);
+  expect(measurements.pagePrimaries, `multiple page primaries: ${JSON.stringify(measurements)}`)
+    .toBeLessThanOrEqual(1);
+  expect(measurements.overlayPrimaries, `multiple overlay primaries: ${JSON.stringify(measurements)}`)
+    .toBeLessThanOrEqual(1);
+  expect(measurements.shortControls, `controls below 44px: ${JSON.stringify(measurements.shortControls)}`)
+    .toEqual([]);
+
+  await page.keyboard.press("Tab");
+  const focus = await page.evaluate(() => {
+    const element = document.activeElement;
+    if (!element || element === document.body) return { visible: false };
+    const style = getComputedStyle(element);
+    const outline = style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0;
+    const shadow = style.boxShadow !== "none";
+    return { visible: element.matches(":focus-visible") && (outline || shadow) };
+  });
+  expect(focus.visible, "Tab must land on a visible control with a visible focus treatment").toBe(true);
 }
 
 // ── shell ─────────────────────────────────────────────────────────────────
@@ -166,6 +233,7 @@ async function captureReference(page, testInfo, query, name) {
 // their own paths, the Zones tab lands on the zone workspace's own LiveView, the
 // retired Fare rules path redirects to Where fares apply, and the header carries
 // exactly one primary per tab. Every later journey block builds on this.
+test.describe("layout", () => {
 test("shell", async ({ page }, testInfo) => {
   await routeBlankTiles(page);
   await logIn(page);
@@ -1530,4 +1598,5 @@ test("checks", async ({ page }, testInfo) => {
   await expect(bodyFitsViewport(page)).resolves.toBe(true);
   await capture(page, testInfo, "checks-pricing-390");
   await captureReference(page, testInfo, "?state=checks-late", "ref-checks-late-390");
+});
 });
