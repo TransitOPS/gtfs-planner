@@ -950,20 +950,37 @@ defmodule GtfsPlanner.Agents.Packs.OperationsSnapshotTest do
 
   # A payload padded - in a field no projection reads, because what is under test
   # is the cap - to exactly `target` whole-context bytes.
+  #
+  # The padding size is found by bisection rather than by scanning upward. The
+  # serialized size grows monotonically with the pad length, and each measurement
+  # encodes the whole context, so a linear scan over 70,000 candidates dominated
+  # the suite's runtime while proving nothing a bisection does not.
   defp boundary_payload(payload, version_id, target) do
-    padded =
-      Enum.reduce(0..70_000, nil, fn size, acc ->
-        candidate = Map.put(payload, "pad", String.duplicate("p", size))
-
-        cond do
-          is_nil(acc) and context_bytes(candidate, version_id) <= target -> candidate
-          is_nil(acc) -> nil
-          context_bytes(candidate, version_id) > target -> acc
-          true -> candidate
-        end
-      end)
+    size = pad_size(payload, version_id, target, 0, 70_000)
+    padded = Map.put(payload, "pad", String.duplicate("p", size))
 
     assert context_bytes(padded, version_id) == target
     padded
+  end
+
+  # The smallest pad length whose whole context is exactly `target` bytes.
+  defp pad_size(payload, version_id, target, low, high) do
+    if low == high do
+      low
+    else
+      mid = div(low + high, 2)
+      candidate = Map.put(payload, "pad", String.duplicate("p", mid))
+
+      cond do
+        context_bytes(candidate, version_id) < target ->
+          pad_size(payload, version_id, target, mid + 1, high)
+
+        context_bytes(candidate, version_id) > target ->
+          pad_size(payload, version_id, target, low, mid - 1)
+
+        true ->
+          mid
+      end
+    end
   end
 end

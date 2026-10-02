@@ -75,6 +75,23 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       message asking to check one direction first gets an
       `inspect_transfer_competition` call for the same selection, and its result
       gets the prepared-change sentence with no write;
+    * a `"user"` message asking what is wrong with this day's blocks or runs
+      gets an operations tool call carrying **no** `day_ref`. The ref is an
+      opaque server digest a model cannot type, and leaving it out is what the
+      two packs now accept, so the journey proves a real model can reach the
+      first call rather than reading the ref out of the snapshot the way the
+      ExUnit cases do;
+    * a `"user"` message naming a day that disagrees with the attached one gets
+      an operations call carrying a foreign `day_ref`, so the journey shows the
+      anti-forgery refusal is unchanged for a ref that IS supplied;
+    * a `"user"` message asking to prepare or fix the day gets a
+      `prepare_block_suggestion` or `prepare_run_suggestion` call, so the
+      journey can show the prepared card and the native drawer handoff;
+    * the `get_blocking_issues`, `get_run_issues` and `get_crew_rules` tool
+      results get the findings sentence, which quotes only codes the tool
+      returned;
+    * the `prepare_block_suggestion` and `prepare_run_suggestion` tool results
+      get the prepared-sentence the panel follows with a native drawer;
     * anything else gets the helper's generic sentence.
 
   The in-seat script is the Blocks page's own worked example, and it is the one the
@@ -156,6 +173,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   @timetable_inbound_direction_id 1
   @timetable_row ~r/prepare (inbound |outbound )?row (\d+)(?: for calendar ([A-Z0-9_]+))?/i
   @timetable_tools ~w(read_timetable_source inspect_timetable_scope prepare_timetable_input)
+  @operations_tools ~w(get_blocking_issues get_run_issues get_crew_rules prepare_block_suggestion prepare_run_suggestion)
 
   @prepared_transfer "I prepared the transfer rule. Review it before applying."
   @compared_connections "I compared the connections you approved with the minimum you supplied. The margins beside this reply are this version's own numbers."
@@ -178,6 +196,18 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   @alerts_not_prepared "I could not prepare that change. Tell me which route and dates you mean."
   @alerts_not_found "I could not find Route 12 in this service version. Which route did you mean?"
   @alerts_generic "I can read this alert's routes, stops and departures and prepare answers for you to review."
+
+  # The operations branches. The seeded in-seat day carries `overlap` and
+  # `in_seat_stale` findings, so these sentences name only codes the tools
+  # actually returned rather than counts the stand-in invented.
+  @block_findings "This day has overlap errors and stale in-seat warnings. Read the card for the per-block detail."
+  @run_findings "This day has run issues and uncovered work. Read the card for the per-run detail."
+  @crew_rules "This day carries the stored crew rules, the pull-out, relief and sign-off reports and the break and spread limits."
+  @operations_prepared "I prepared a change from what the card showed. Review it before applying."
+
+  # A ref shaped like the server's own, so the pack's fence is what refuses it
+  # and not the stand-in declining to invent a value.
+  @foreign_day_ref "day_ffffffffffffffffffffffffffffffff"
 
   @impl Plug
   def init(opts), do: opts
@@ -301,8 +331,16 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
         calendar_question_reply(content)
 
       true ->
-        text_reply(@generic)
+        unscripted_reply(content)
     end
+  end
+
+  # The operations questions are the last scripted family, so every earlier
+  # script keeps the messages it matched before they existed.
+  defp unscripted_reply(content) do
+    if operations_question?(content),
+      do: operations_reply(content),
+      else: text_reply(@generic)
   end
 
   # The Transfers page names its own selections, so the stand-in prepares the one
@@ -315,6 +353,79 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       tool_calls_reply("prepare_transfer_policy", %{"selection_ids" => ["selection-1"]})
     end
   end
+
+  # The operations questions are matched before the generic branch so a message
+  # naming a block, a run or the crew rules reaches a real operations tool call.
+  # `unassigned` and `uncovered` are the page's own vocabulary for the two
+  # scopes, so a question naming one of them is an operations question even
+  # without the word "block" or "run".
+  defp operations_question?(content) do
+    Enum.any?(
+      [
+        ~r/block/i,
+        ~r/run/i,
+        ~r/crew/i,
+        ~r/unassigned|uncovered|overlap|in-seat/i,
+        ~r/prepare|rebuild|fix|assign/i,
+        ~r/relief|pull-out|sign-off|spread|break/i
+      ],
+      &Regex.match?(&1, content)
+    )
+  end
+
+  # A question naming a day other than the attached one still asks for a call;
+  # the pack refuses it, which is the refusal the journey shows.
+  defp operations_reply(content) do
+    cond do
+      foreign_day?(content) ->
+        tool_calls_reply("get_blocking_issues", %{"day_ref" => @foreign_day_ref})
+
+      content =~ ~r/prepare|fix|rebuild|assign/i ->
+        prepare_operations_arguments(content)
+
+      crew_rules_question?(content) ->
+        tool_calls_reply("get_crew_rules", %{})
+
+      run_question?(content) ->
+        tool_calls_reply("get_run_issues", %{})
+
+      true ->
+        tool_calls_reply("get_blocking_issues", %{})
+    end
+  end
+
+  # A question about some day other than this conversation's own. The stand-in
+  # answers it with a `day_ref` no attached day has, so the refusal comes from
+  # the pack's own fence rather than from the stub refusing to answer.
+  defp foreign_day?(content) do
+    content =~ ~r/yesterday|last week|next week|tomorrow|another day|a different day/i
+  end
+
+  defp crew_rules_question?(content) do
+    Regex.match?(~r/crew rules|judging|pull-out|relief|sign-off|break|spread/i, content)
+  end
+
+  defp run_question?(content),
+    do: Regex.match?(~r/run|crew|assignment|uncovered/i, content)
+
+  # `replace_all` plans every trip on the day again, so the journeys that offer
+  # it expect the warning that hand-tuned blocks may change. The two packs name
+  # their narrowing differently: blocks takes a `mode`, runs takes a `scope`.
+  defp prepare_operations_arguments(content) do
+    replacement = content =~ ~r/rebuild|whole day|replace|everything|full/i
+
+    if run_question?(content) do
+      tool_calls_reply("prepare_run_suggestion", %{"scope" => scope(replacement)})
+    else
+      tool_calls_reply("prepare_block_suggestion", %{"mode" => mode(replacement)})
+    end
+  end
+
+  defp mode(true), do: "replace_all"
+  defp mode(false), do: "unassigned_only"
+
+  defp scope(true), do: "replace_all"
+  defp scope(false), do: "uncovered_only"
 
   defp calendar_question?(content) do
     Enum.any?([~r/route/i, ~r/dates|week/i, ~r/school/i], &Regex.match?(&1, content))
@@ -412,13 +523,18 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   defp tool_reply(messages, %{"tool_call_id" => tool_call_id}) do
     tool = answered_tool(messages, tool_call_id)
 
-    if tool in @timetable_tools do
-      timetable_tool_reply(tool, messages)
-    else
-      case prose_sentence(tool) do
-        nil -> calendar_tool_reply(tool, messages)
-        sentence -> text_reply(sentence)
-      end
+    cond do
+      tool in @timetable_tools ->
+        timetable_tool_reply(tool, messages)
+
+      tool in @operations_tools ->
+        operations_tool_reply(tool, messages)
+
+      true ->
+        case prose_sentence(tool) do
+          nil -> calendar_tool_reply(tool, messages)
+          sentence -> text_reply(sentence)
+        end
     end
   end
 
@@ -462,6 +578,48 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   defp prose_sentence("compare_connection_margins"), do: @compared_connections
 
   defp prose_sentence(_other), do: nil
+
+  # The turn loop treats a bounded tool error as a message the model may correct
+  # and asks again, so a stub that ignored it would answer a question its own
+  # call had just been refused for. These branches read the error back out of
+  # the last tool message and stand down, which is what the journeys assert: the
+  # refusal is the last word, and no evidence card follows it.
+  defp operations_tool_reply("get_blocking_issues", messages),
+    do: operations_result_reply(messages, @block_findings)
+
+  defp operations_tool_reply("get_run_issues", messages),
+    do: operations_result_reply(messages, @run_findings)
+
+  defp operations_tool_reply("get_crew_rules", messages),
+    do: operations_result_reply(messages, @crew_rules)
+
+  defp operations_tool_reply(_prepare, messages),
+    do: operations_result_reply(messages, @operations_prepared)
+
+  # A tool result that carries an `error` is a refusal. The stand-in does not
+  # retry past one: it names what the domain said and stops, which is what a
+  # model reading a refused day should do.
+  defp operations_result_reply(messages, answer) do
+    case last_tool_content(messages) do
+      %{"error" => error} when is_binary(error) -> text_reply(error)
+      _answered -> text_reply(answer)
+    end
+  end
+
+  defp last_tool_content(messages) do
+    messages
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      %{"role" => "tool", "content" => content} when is_binary(content) ->
+        case Jason.decode(content) do
+          {:ok, decoded} -> decoded
+          {:error, _reason} -> nil
+        end
+
+      _message ->
+        false
+    end)
+  end
 
   # The seeded A02 answer has two listed departures, so the stand-in's sentence
   # for that call contradicts the card; the refusal branches keep the generic

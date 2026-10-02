@@ -2243,7 +2243,7 @@ alias GtfsPlanner.Gtfs.OperationsAssistance
 
       <RunsComponents.toast toast={@toast} undo={@undo} />
 
-      <div id="runs-page" data-load-state={@load_state}>
+      <div id="runs-page" data-load-state={@load_state} phx-hook=".RunsHelperFocus">
         <div class={[
           "flex flex-col lg:grid lg:gap-6",
           @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"
@@ -2425,7 +2425,7 @@ alias GtfsPlanner.Gtfs.OperationsAssistance
           this page rather than a line a reader has to find in a conversation. --%>
           <div
             :if={@agent_open?}
-            class="order-first mb-5 min-w-0 lg:order-last lg:mb-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
+            class="order-first mb-5 min-w-0 lg:order-last lg:mb-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto"
           >
             <.message
               :if={@helper_notice}

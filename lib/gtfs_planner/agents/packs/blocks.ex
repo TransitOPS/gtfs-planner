@@ -116,7 +116,7 @@ defmodule GtfsPlanner.Agents.Packs.Blocks do
             "filters" => filters_schema(),
             "cursor" => cursor_schema()
           },
-          "required" => ["day_ref"],
+          "required" => [],
           "additionalProperties" => false
         }
       },
@@ -140,7 +140,7 @@ defmodule GtfsPlanner.Agents.Packs.Blocks do
               "maxItems" => @max_detail_trips
             }
           },
-          "required" => ["day_ref", "trip_refs"],
+          "required" => ["trip_refs"],
           "additionalProperties" => false
         }
       },
@@ -161,7 +161,7 @@ defmodule GtfsPlanner.Agents.Packs.Blocks do
             "day_ref" => %{"type" => "string", "minLength" => 1, "maxLength" => 255},
             "mode" => %{"type" => "string", "minLength" => 1, "maxLength" => 32}
           },
-          "required" => ["day_ref", "mode"],
+          "required" => ["mode"],
           "additionalProperties" => false
         }
       },
@@ -774,6 +774,17 @@ defmodule GtfsPlanner.Agents.Packs.Blocks do
 
   # The day is the one the page attached, so a `day_ref` from another day, another
   # section or a model's guess is refused before any read.
+  #
+  # An absent `day_ref` resolves to the attached day's own ref. The ref is an
+  # opaque server-generated digest over the section and day key, so a model could
+  # not derive it from anything it can see and could not retype it reliably even
+  # if it were disclosed; requiring it made every read unreachable in production
+  # while the ExUnit cases, which read the ref out of the snapshot and script it
+  # in, passed regardless. Omitting it therefore names the same day, and a ref
+  # that IS supplied is still checked exactly as before, so the model gains no
+  # path to a day this conversation did not attach.
+  defp check_day_ref(nil, _payload), do: :ok
+
   defp check_day_ref(day_ref, payload) when is_binary(day_ref) do
     if day_ref == payload["day_ref"] do
       :ok

@@ -357,6 +357,32 @@ defmodule GtfsPlanner.Agents.Packs.RunsTest do
       assert {:tool_error, "Unexpected argument: run_ids"} =
                crew(context, %{"day_ref" => day_ref(context), "run_ids" => ["4001"]})
     end
+
+    test "an omitted day_ref reads the attached day the supplied one names", context do
+      # The ref is an opaque server-generated digest the model can neither derive
+      # nor retype, so leaving it out has to reach the same day rather than fail.
+      assert {:ok, omitted, omitted_evidence} = crew(context, %{})
+      assert {:ok, supplied, supplied_evidence} = crew(context, %{"day_ref" => day_ref(context)})
+
+      assert omitted == supplied
+      assert omitted_evidence == supplied_evidence
+      assert omitted["day_ref"] == day_ref(context)
+
+      # The fence is unchanged for a ref that is supplied.
+      assert {:tool_error, "That day is not the day attached to this conversation."} =
+               crew(context, %{"day_ref" => "day_nope"})
+    end
+
+    test "an omitted day_ref prepares the attached day's scope", context do
+      assert {:prepared, prepared, result, _evidence} =
+               prepare(context, %{"scope" => "uncovered_only"})
+
+      assert {:operations_suggestion, command} = prepared.command
+      assert command.day_key == context.day_key
+      assert result["day_ref"] == day_ref(context)
+      assert result["suggestion_started?"] == false
+      assert result["saved?"] == false
+    end
   end
 
   describe "preparing a run suggestion scope" do

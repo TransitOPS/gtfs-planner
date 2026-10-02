@@ -6541,7 +6541,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         <.operations_sub_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:blocks} />
       </:sub_header>
 
-      <div id="blocks-page" class="ds-page">
+      <div id="blocks-page" class="ds-page" phx-hook=".BlocksHelperFocus">
         <.header>
           Blocks
           <:subtitle>{@subtitle}</:subtitle>
@@ -7022,7 +7022,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
           the panel being closed. --%>
           <div
             :if={@agent_open?}
-            class="order-first mb-5 min-w-0 lg:order-last lg:mb-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
+            class="order-first mb-5 min-w-0 lg:order-last lg:mb-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto"
           >
             <section
               id="blocks-helper-mode"

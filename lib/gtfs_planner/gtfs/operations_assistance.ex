@@ -552,6 +552,18 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
     %{"rows" => Enum.map(Map.get(detail, :rows, []), &attribute_row/1)}
   end
 
+  # The two in-seat codes are the only findings whose `detail.reason` is a
+  # tagged tuple rather than a map: `Blocking.InSeat.reason/0` is either a plain
+  # atom or `{:not_next, day_types}`. A tuple is not JSON, and the generic
+  # `json_safe/1` fallback passes one through unchanged, so an `in_seat_stale`
+  # row made the whole payload unencodable and the helper reported the day
+  # unreadable on any version holding a stale type 4/5 record. It is projected by
+  # its own shape here, exactly as `block_attributes_conflict` nests its rows.
+  defp detail(%{code: code, detail: detail})
+       when code in [:in_seat_stale, :in_seat_unconfirmed] do
+    %{"reason" => in_seat_reason(Map.get(detail, :reason))}
+  end
+
   defp detail(finding) do
     finding.detail
     |> Map.take(Map.get(@detail_keys, finding.code, []))
@@ -562,6 +574,30 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
     row
     |> Map.take(@attribute_row_keys)
     |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+  end
+
+  # The day types a record is not next on, by their own allowlist: the service
+  # key, its label, how many dates it runs and the trip it hands over to. Those
+  # are the fields `Blocking.InSeat` itself documents, and they are technical —
+  # no operator or roster data. A reason that is a plain atom is its own name,
+  # and anything else is dropped rather than serialized, so an unrecognised
+  # shape cannot widen what the payload carries.
+  defp in_seat_reason({:not_next, day_types}) when is_list(day_types) do
+    %{"not_next" => Enum.map(day_types, &in_seat_day_type/1)}
+  end
+
+  defp in_seat_reason(reason) when is_atom(reason) and not is_nil(reason),
+    do: Atom.to_string(reason)
+
+  defp in_seat_reason(_other), do: nil
+
+  defp in_seat_day_type(day_type) do
+    %{
+      "key" => Map.get(day_type, :key),
+      "label" => Map.get(day_type, :label),
+      "date_count" => Map.get(day_type, :date_count),
+      "next_trip_id" => Map.get(day_type, :next_trip_id)
+    }
   end
 
   defp json_safe(nil), do: nil

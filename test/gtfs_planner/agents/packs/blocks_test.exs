@@ -191,6 +191,35 @@ defmodule GtfsPlanner.Agents.Packs.BlocksTest do
                })
     end
 
+    test "an omitted day_ref reads the attached day the supplied one names", context do
+      # The ref is an opaque server-generated digest the model can neither derive
+      # nor retype, so leaving it out has to reach the same day rather than fail.
+      assert {:ok, omitted, omitted_evidence} = issues(context, %{})
+
+      assert {:ok, supplied, supplied_evidence} =
+               issues(context, %{"day_ref" => day_ref(context)})
+
+      assert omitted == supplied
+      assert omitted_evidence == supplied_evidence
+      assert omitted["day_ref"] == day_ref(context)
+
+      # And the fence is unchanged for a ref that is supplied: a foreign one is
+      # still refused, so omitting the argument is not a way past the check.
+      assert {:tool_error, "That day is not the day attached to this conversation."} =
+               issues(context, %{"day_ref" => "day_" <> String.duplicate("a", 32)})
+    end
+
+    test "an omitted day_ref prepares the attached day's scope", context do
+      assert {:prepared, prepared, result, _evidence} =
+               prepare(context, %{"mode" => "unassigned_only"})
+
+      assert {:operations_suggestion, command} = prepared.command
+      assert command.day_key == context.day_key
+      assert result["day_ref"] == day_ref(context)
+      assert result["suggestion_started?"] == false
+      assert result["saved?"] == false
+    end
+
     test "refuses a nested cursor with an undeclared field or a foreign position", context do
       assert {:ok, first, _evidence} = issues(context, %{"day_ref" => day_ref(context)})
       cursor = first["next_cursor"]
