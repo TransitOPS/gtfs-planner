@@ -615,25 +615,25 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 <.recent_checks :if={@recent_checks != []} checks={@recent_checks} />
               </div>
             </div>
+          </div>
 
-            <div
-              :if={@agent_open?}
-              class="flex min-w-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
-            >
-              <.agent_panel
-                id="agent-panel"
-                title={@agent_title}
-                intro={@agent_intro}
-                examples={@agent_examples}
-                scope_line={"Export · " <> @current_gtfs_version.name}
-                status={@agent_status}
-                entries={@streams.agent_entries}
-                form={@agent_form}
-                notice={@agent_notice}
-                entries_empty?={@agent_entries_empty?}
-                review_label={&agent_review_label/1}
-              />
-            </div>
+          <div
+            :if={@agent_open?}
+            class="flex min-w-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
+          >
+            <.agent_panel
+              id="agent-panel"
+              title={@agent_title}
+              intro={@agent_intro}
+              examples={@agent_examples}
+              scope_line={"Export · " <> @current_gtfs_version.name}
+              status={@agent_status}
+              entries={@streams.agent_entries}
+              form={@agent_form}
+              notice={@agent_notice}
+              entries_empty?={@agent_entries_empty?}
+              review_label={&agent_review_label/1}
+            />
           </div>
         </div>
       </div>

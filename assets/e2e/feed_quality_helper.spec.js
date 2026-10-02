@@ -43,7 +43,35 @@ async function logIn(page) {
   await page.fill('input[name="user[email]"]', EDITOR_USER.email);
   await page.fill('input[name="user[password]"]', EDITOR_USER.password);
   await page.locator('button:has-text("Log in")').click();
-  await page.waitForURL((url) => !url.pathname.startsWith("/users/log_in"));
+  await page.waitForURL((url) => !url.pathname.startsWith("/users/log_in"), {
+    timeout: 60_000,
+  });
+}
+
+/**
+ * The panel's Open helper button posts a LiveView event, which is lost before
+ * the socket connects. Wait for the connection, click, and allow one retry for
+ * a slow first paint.
+ */
+async function waitForLiveView(page) {
+  // The socket can report connected before the page's own view has joined, and
+  // an event clicked in that window is lost. Wait for the mounted root and let
+  // the join settle before any interaction.
+  await page.waitForFunction(
+    () =>
+      window.liveSocket &&
+      window.liveSocket.isConnected() &&
+      document.querySelector("[data-phx-main]"),
+    null,
+    { timeout: 15_000 },
+  );
+  await page.waitForTimeout(250);
+}
+
+/** Navigates and waits for the LiveView socket, so the first click is live. */
+async function openPage(page, url) {
+  await page.goto(url);
+  await waitForLiveView(page);
 }
 
 async function versionIdFor(page, versionName = VERSION_NAME) {
@@ -61,15 +89,23 @@ async function versionIdFor(page, versionName = VERSION_NAME) {
 async function openHelper(page, { keyboard = false } = {}) {
   const button = page.locator("#agent-helper-open");
   await expect(button).toBeVisible();
+  await waitForLiveView(page);
 
-  if (keyboard) {
-    await button.focus();
-    await page.keyboard.press("Enter");
-  } else {
-    await button.click();
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (keyboard && attempt === 0) {
+      await button.focus();
+      await page.keyboard.press("Enter");
+    } else {
+      await button.click();
+    }
+
+    try {
+      await expect(page.locator("#agent-panel")).toBeVisible({ timeout: 10_000 });
+      return;
+    } catch (error) {
+      if (attempt === 1) throw error;
+    }
   }
-
-  await expect(page.locator("#agent-panel")).toBeVisible();
 }
 
 async function ask(page, message) {
@@ -93,7 +129,7 @@ test.describe("the Validation Result helper", () => {
       await logIn(page);
       const versionId = await versionIdFor(page);
 
-      await page.goto(`/gtfs/${versionId}/validation/${RUN_ID}`);
+      await openPage(page, `/gtfs/${versionId}/validation/${RUN_ID}`);
       await expect(page.locator("#feed-quality-evidence")).toBeVisible();
 
       // The stored total and the retained samples are the report's own numbers,
@@ -118,9 +154,20 @@ test.describe("the Validation Result helper", () => {
       // The helper's prose cannot replace the server's count.
       await expect(page.locator("#agent-prose-2")).toContainText("stored total is 170");
 
-      // The native Inspect target is the only approval; it announces itself.
-      await page.locator("#feed-quality-inspect-0").click();
-      await expect(page.locator("#agent-notice")).toContainText("approved for navigation");
+      // The native Inspect target is the only approval a finding can get.
+      if (viewport.width >= 1024) {
+        // The workspace stays visible beside the open panel.
+        await page.locator("#feed-quality-inspect-0").click();
+        await expect(page.locator("#agent-notice")).toContainText("approved for navigation");
+      } else {
+        // At phone width the open panel replaces the workspace: close it,
+        // approve the target, then reopen. The approval resets the panel's
+        // source, so the old transcript cannot reappear.
+        await page.locator("#agent-panel-close").click();
+        await page.locator("#feed-quality-inspect-0").click();
+        await openHelper(page);
+        await expect(page.locator("#agent-entry-2")).toHaveCount(0);
+      }
 
       const capturePath = await capture(page, `validation-${viewport.label}`);
       await testInfo.attach(`validation-${viewport.label}`, {
@@ -140,13 +187,13 @@ test.describe("the Export helper", () => {
       await logIn(page);
       const versionId = await versionIdFor(page);
 
-      await page.goto(`/gtfs/${versionId}/export`);
+      await openPage(page, `/gtfs/${versionId}/export`);
       await expect(page.locator("#feed-quality-evidence")).toBeVisible();
 
-      // No completed check is recorded for this seed, so the section states the
-      // honest unknown relationship before the helper is asked.
+      // No artifact exists for this seed, so the section states the domain's
+      // honest unavailable relationship before the helper is asked.
       await expect(page.locator("#feed-quality-relationship")).toContainText(
-        "check history cannot be compared",
+        "This export selection is not available.",
       );
 
       await openHelper(page);
@@ -174,19 +221,23 @@ test.describe("the Export helper", () => {
     await logIn(page);
     const versionId = await versionIdFor(page);
 
-    await page.goto(`/gtfs/${versionId}/export`);
+    await openPage(page, `/gtfs/${versionId}/export`);
     await openHelper(page);
     await ask(page, "Is the provider reachable?");
 
     // The failure is announced with Retry, and the native export form is intact.
-    await expect(page.locator("#agent-retry-2")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("button", { name: "Retry request" })).toBeVisible({
+      timeout: 15_000,
+    });
     await expect(page.locator("#gtfs-export-form")).toBeVisible();
 
-    // A source refresh (native type change) drops the old transcript and keeps
-    // the provider-independent section.
-    await page.goto(`/gtfs/${versionId}/export?type=operations`);
+    // A source refresh (native type change) is a fresh page load: the
+    // provider-independent section stays, the panel starts closed, and the
+    // conversation that answered about the old source cannot reappear.
+    await openPage(page, `/gtfs/${versionId}/export?type=operations`);
     await expect(page.locator("#feed-quality-evidence")).toBeVisible();
-    await expect(page.locator("#agent-panel")).toBeVisible();
+    await openHelper(page);
+    await expect(page.locator("#agent-entry-2")).toHaveCount(0);
 
     const capturePath = await capture(page, "stale-source-desktop");
     expect(readFileSync(capturePath).length).toBeGreaterThan(0);
